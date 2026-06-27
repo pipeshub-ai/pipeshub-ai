@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 import pytest
 
-from app.config.constants.arangodb import Connectors, OriginTypes
+from app.config.constants.arangodb import Connectors, OriginTypes, RecordRelations
 from app.models.blocks import BlockType, GroupType
 from app.models.entities import (
     FileRecord,
@@ -38,7 +38,10 @@ from app.utils.chat_helpers import (
     create_block_from_metadata,
     create_record_instance_from_dict,
     context_includes_jira_tickets,
+    enrich_records_with_graph_context,
     enrich_virtual_record_id_to_result_with_fk_children,
+    build_parent_info,
+    build_record_relations_info,
     extract_bounding_boxes,
     extract_start_end_text,
     generate_text_fragment_url,
@@ -4995,6 +4998,859 @@ class TestEnrichVirtualRecordIdFKChildren:
             vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=None,
         )
         assert "vr-child" in vr_map
+
+
+# ===================================================================
+# enrich_records_with_graph_context (unified enrichment)
+# ===================================================================
+class TestEnrichRecordsWithGraphContext:
+    """Unified graph context enrichment: dependent parents + record relations."""
+
+    def _make_graph_provider(
+        self,
+        vrid_map=None,
+        docs_by_id=None,
+        outgoing_by_type=None,
+        incoming_by_type=None,
+    ):
+        outgoing_by_type = outgoing_by_type or {}
+        incoming_by_type = incoming_by_type or {}
+        docs_by_id = docs_by_id or {}
+        gp = AsyncMock()
+
+        async def _parent(record_id, relation_type):
+            return outgoing_by_type.get(relation_type, [])
+
+        async def _child(record_id, relation_type):
+            return incoming_by_type.get(relation_type, [])
+
+        gp.get_parent_record_ids_by_relation_type = AsyncMock(side_effect=_parent)
+        gp.get_child_record_ids_by_relation_type = AsyncMock(side_effect=_child)
+
+        async def _get_document(record_id, collection=None, *args, **kwargs):
+            if record_id in docs_by_id:
+                return docs_by_id[record_id]
+            return {
+                "id": record_id,
+                "_key": record_id,
+                "recordName": f"Name-{record_id}",
+                "recordType": "TICKET",
+                "connectorName": "JIRA",
+                "connectorId": "conn-1",
+                "externalRecordId": f"ext-{record_id}",
+            }
+
+        gp.get_document = AsyncMock(side_effect=_get_document)
+        gp.get_virtual_record_ids_for_record_ids = AsyncMock(return_value=vrid_map or {})
+        return gp
+
+    def _dependent_file_record(self, vrid="vr-attach", record_id="rec-attach", **overrides):
+        rec = _make_record_blob(
+            virtual_record_id=vrid,
+            record_type="FILE",
+            id=record_id,
+            connector_name="JIRA",
+        )
+        rec.update(overrides)
+        return rec
+
+    def _ticket_record(self, vrid="vr-ticket", record_id="rec-ticket", **overrides):
+        rec = _make_record_blob(
+            virtual_record_id=vrid,
+            record_type=RecordType.TICKET.value,
+            id=record_id,
+            connector_name=Connectors.JIRA.value,
+            record_name="[PST-9] Test ticket",
+        )
+        rec.update(overrides)
+        return rec
+
+    def _virtual_to_record_map_entry(self, **overrides):
+        entry = {
+            "isDependentNode": True,
+            "parentNodeId": "rec-issue-1",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "mimeType": "application/json",
+            "recordType": "FILE",
+            "id": "rec-attach",
+        }
+        entry.update(overrides)
+        return entry
+
+    # --- Dependent parent tests ---
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_graph_provider(self):
+        vr_map = {"vr-attach": self._dependent_file_record()}
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=None, flattened_results=flattened,
+        )
+        assert "parent_node_relation" not in flattened[0]
+
+    @pytest.mark.asyncio
+    async def test_skips_unsupported_connector(self):
+        rec = self._dependent_file_record(connector_name="GOOGLE DRIVE")
+        vr_map = {"vr-attach": rec}
+        gp = self._make_graph_provider()
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+        )
+        gp.get_document.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_not_dependent_node(self):
+        rec = self._dependent_file_record()
+        vr_map = {"vr-attach": rec}
+        gp = self._make_graph_provider()
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry(isDependentNode=False)}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+        )
+        # Not dependent and has no record_id on main result -> no edge queries
+        assert "parent_node_relation" not in flattened[0]
+
+    @pytest.mark.asyncio
+    async def test_skips_when_parent_node_id_missing(self):
+        rec = self._dependent_file_record()
+        vr_map = {"vr-attach": rec}
+        gp = self._make_graph_provider()
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry(parentNodeId=None)}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+        )
+        assert "parent_node_relation" not in flattened[0]
+
+    @pytest.mark.asyncio
+    async def test_annotates_flattened_results_with_parent_metadata(self):
+        rec = self._dependent_file_record()
+        vr_map = {"vr-attach": rec}
+        base_doc = {
+            "id": "rec-issue-1",
+            "_key": "rec-issue-1",
+            "orgId": "org-1",
+            "recordName": "PROJ-123",
+            "recordType": "TICKET",
+            "webUrl": "https://jira.example/browse/PROJ-123",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "mimeType": "application/json",
+            "externalRecordId": "ext-123",
+            "version": 1,
+            "origin": "CONNECTOR",
+        }
+        ticket_doc = {
+            "status": "In Progress",
+            "priority": "High",
+            "assignee": "Alice",
+            "labels": ["migration"],
+        }
+
+        async def _get_document(record_id, collection=None, *args, **kwargs):
+            if collection == "records":
+                return base_doc
+            if collection == "tickets":
+                return ticket_doc
+            return {}
+
+        gp = self._make_graph_provider(vrid_map={"rec-issue-1": "vr-issue-1"})
+        gp.get_document = AsyncMock(side_effect=_get_document)
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+        )
+        rel = flattened[0]["parent_node_relation"]
+        assert rel["record_id"] == "rec-issue-1"
+        assert "context_metadata" in rel
+        assert "PROJ-123" in rel["context_metadata"]
+        assert "In Progress" in rel["context_metadata"]
+
+    @pytest.mark.asyncio
+    async def test_reuses_parent_from_doc_index(self):
+        rec = self._dependent_file_record()
+        vr_map = {"vr-attach": rec}
+        parent_base_doc = {
+            "id": "rec-issue-1",
+            "_key": "rec-issue-1",
+            "orgId": "org-1",
+            "recordName": "PROJ-123",
+            "recordType": "TICKET",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "mimeType": "application/json",
+            "externalRecordId": "ext-123",
+            "version": 1,
+            "origin": "CONNECTOR",
+        }
+        gp = self._make_graph_provider(vrid_map={"rec-issue-1": "vr-issue-1"})
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {
+            "vr-attach": self._virtual_to_record_map_entry(),
+            "vr-issue-1": parent_base_doc,
+        }
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+        )
+        assert "context_metadata" in flattened[0]["parent_node_relation"]
+
+    @pytest.mark.asyncio
+    async def test_dedupes_same_parent_for_multiple_dependents(self):
+        rec1 = self._dependent_file_record(vrid="vr-a1", record_id="rec-a1")
+        rec2 = self._dependent_file_record(vrid="vr-a2", record_id="rec-a2")
+        vr_map = {"vr-a1": rec1, "vr-a2": rec2}
+        base_doc = {
+            "id": "rec-issue-1",
+            "_key": "rec-issue-1",
+            "orgId": "org-1",
+            "recordName": "PROJ-1",
+            "recordType": "TICKET",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "mimeType": "application/json",
+            "externalRecordId": "ext-1",
+            "version": 1,
+            "origin": "CONNECTOR",
+        }
+        gp = self._make_graph_provider(docs_by_id={"rec-issue-1": base_doc}, vrid_map={})
+        flattened = [
+            {"virtual_record_id": "vr-a1", "block_index": 0},
+            {"virtual_record_id": "vr-a2", "block_index": 0},
+        ]
+        vtr_map = {
+            "vr-a1": self._virtual_to_record_map_entry(id="rec-a1"),
+            "vr-a2": self._virtual_to_record_map_entry(id="rec-a2"),
+        }
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+        )
+        assert flattened[0]["parent_node_relation"]["record_id"] == "rec-issue-1"
+        assert flattened[1]["parent_node_relation"]["record_id"] == "rec-issue-1"
+
+    @pytest.mark.asyncio
+    async def test_includes_summary_from_blob_when_indexed(self):
+        rec = self._dependent_file_record()
+        vr_map = {"vr-attach": rec}
+        base_doc = {
+            "id": "rec-issue-1",
+            "_key": "rec-issue-1",
+            "recordName": "PROJ-99",
+            "recordType": "TICKET",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "externalRecordId": "ext-99",
+        }
+        gp = self._make_graph_provider(
+            vrid_map={"rec-issue-1": "vr-parent-1"},
+            docs_by_id={"rec-issue-1": base_doc},
+        )
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value={
+            "record_name": "PROJ-99",
+            "semantic_metadata": {"summary": "This ticket tracks the login bug fix."},
+        })
+
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+            blob_store=blob_store, org_id="org-1",
+        )
+        rel = flattened[0]["parent_node_relation"]
+        assert rel["record_id"] == "rec-issue-1"
+        assert "This ticket tracks the login bug fix." in rel["context_metadata"]
+        blob_store.get_record_from_storage.assert_awaited_once_with("vr-parent-1", "org-1")
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_graph_when_not_indexed(self):
+        rec = self._dependent_file_record()
+        vr_map = {"vr-attach": rec}
+        base_doc = {
+            "id": "rec-issue-1",
+            "_key": "rec-issue-1",
+            "recordName": "PROJ-50",
+            "recordType": "TICKET",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "externalRecordId": "ext-50",
+        }
+        gp = self._make_graph_provider(vrid_map={}, docs_by_id={"rec-issue-1": base_doc})
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=None)
+
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+            blob_store=blob_store, org_id="org-1",
+        )
+        rel = flattened[0]["parent_node_relation"]
+        assert rel["record_id"] == "rec-issue-1"
+        assert "PROJ-50" in rel["context_metadata"]
+        blob_store.get_record_from_storage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_in_context_parent_uses_short_form(self):
+        rec = self._dependent_file_record()
+        parent_record = _make_record_blob(
+            virtual_record_id="vr-parent-1",
+            record_type=RecordType.TICKET.value,
+            id="rec-issue-1",
+            connector_name=Connectors.JIRA.value,
+            record_name="PROJ-77",
+        )
+        vr_map = {"vr-attach": rec, "vr-parent-1": parent_record}
+        gp = self._make_graph_provider(vrid_map={"rec-issue-1": "vr-parent-1"})
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=None)
+
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
+        doc_index = {"rec-issue-1": {"recordName": "PROJ-77", "id": "rec-issue-1"}}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+            blob_store=blob_store, org_id="org-1", doc_index=doc_index,
+        )
+        rel = flattened[0]["parent_node_relation"]
+        assert rel["record_id"] == "rec-issue-1"
+        assert "context_metadata" not in rel
+        assert rel["record_name"] == "PROJ-77"
+        blob_store.get_record_from_storage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_parent_not_annotated(self):
+        """If parent record can't be resolved (deleted), no annotation is added."""
+        rec = self._dependent_file_record()
+        vr_map = {"vr-attach": rec}
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value=None)
+        gp.get_virtual_record_ids_for_record_ids = AsyncMock(return_value={})
+        gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
+        gp.get_child_record_ids_by_relation_type = AsyncMock(return_value=[])
+
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+        )
+        assert "parent_node_relation" not in flattened[0]
+
+    # --- Record relation tests ---
+
+    @pytest.mark.asyncio
+    async def test_relation_skips_dependent_node(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        vtr_map = {
+            "vr-ticket": {
+                "isDependentNode": True,
+                "parentNodeId": "rec-parent",
+                "connectorName": Connectors.JIRA.value,
+            }
+        }
+        gp = self._make_graph_provider()
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp,
+            flattened_results=[{"virtual_record_id": "vr-ticket", "block_index": 0}],
+            virtual_to_record_map=vtr_map,
+        )
+        assert "record_relations" not in rec
+
+    @pytest.mark.asyncio
+    async def test_queries_both_relation_types(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        gp = self._make_graph_provider()
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=[],
+        )
+        assert gp.get_parent_record_ids_by_relation_type.await_count == 2
+        assert gp.get_child_record_ids_by_relation_type.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_stores_minimal_related_records(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.ATTACHMENT.value: [{"record_id": "rec-file-1"}],
+                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-sub-1"}],
+            },
+        )
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=[],
+        )
+        relations = rec["record_relations"]
+        assert len(relations) == 2
+        by_id = {r["record_id"]: r for r in relations}
+        assert by_id["rec-file-1"]["record_name"] == "Name-rec-file-1"
+        assert by_id["rec-file-1"]["labels"] == ["ATTACHMENT"]
+        assert by_id["rec-sub-1"]["labels"] == ["CHILD"]
+
+    @pytest.mark.asyncio
+    async def test_dedupes_merged_labels_for_same_record_id(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.ATTACHMENT.value: [{"record_id": "rec-dup"}],
+                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-dup"}],
+            },
+        )
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=[],
+        )
+        relations = rec["record_relations"]
+        assert len(relations) == 1
+        assert set(relations[0]["labels"]) == {"ATTACHMENT", "CHILD"}
+
+    @pytest.mark.asyncio
+    async def test_excludes_parent_from_relations(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        flattened = [{
+            "virtual_record_id": "vr-ticket",
+            "block_index": 0,
+            "parent_node_relation": {"record_id": "rec-parent-1"},
+        }]
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-parent-1"}],
+            },
+        )
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+        )
+        assert "record_relations" not in rec
+
+    @pytest.mark.asyncio
+    async def test_excludes_deleted_targets(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.ATTACHMENT.value: [{"record_id": "rec-deleted"}],
+            },
+            docs_by_id={
+                "rec-deleted": {
+                    "id": "rec-deleted",
+                    "_key": "rec-deleted",
+                    "recordName": "gone",
+                    "isDeleted": True,
+                },
+            },
+        )
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=[],
+        )
+        assert "record_relations" not in rec
+
+    @pytest.mark.asyncio
+    async def test_returns_all_relations_without_cap(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        many = [{"record_id": f"rec-{i}"} for i in range(25)]
+        gp = self._make_graph_provider(
+            outgoing_by_type={RecordRelations.ATTACHMENT.value: many},
+        )
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=[],
+        )
+        assert len(rec["record_relations"]) == 25
+
+    @pytest.mark.asyncio
+    async def test_related_record_gets_context_metadata(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-child-1"}],
+            },
+            docs_by_id={
+                "rec-child-1": {
+                    "id": "rec-child-1",
+                    "_key": "rec-child-1",
+                    "recordName": "[PST-10] Subtask",
+                    "recordType": "TICKET",
+                    "connectorName": "JIRA",
+                    "connectorId": "conn-1",
+                    "externalRecordId": "ext-child",
+                    "webUrl": "https://jira.example/browse/PST-10",
+                },
+            },
+            vrid_map={},
+        )
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=[],
+            blob_store=None, org_id="org-1",
+        )
+        relations = rec["record_relations"]
+        assert len(relations) == 1
+        assert "context_metadata" in relations[0]
+        assert "[PST-10] Subtask" in relations[0]["context_metadata"]
+
+    @pytest.mark.asyncio
+    async def test_related_record_indexed_includes_summary(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-child-1"}],
+            },
+            docs_by_id={
+                "rec-child-1": {
+                    "id": "rec-child-1",
+                    "_key": "rec-child-1",
+                    "recordName": "[PST-10] Subtask",
+                    "recordType": "TICKET",
+                    "connectorName": "JIRA",
+                    "connectorId": "conn-1",
+                    "externalRecordId": "ext-child",
+                },
+            },
+            vrid_map={"rec-child-1": "vr-child-1"},
+        )
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value={
+            "record_name": "[PST-10] Subtask",
+            "record_type": "TICKET",
+            "semantic_metadata": {"summary": "This subtask adds test evidence."},
+        })
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=[],
+            blob_store=blob_store, org_id="org-1",
+        )
+        relations = rec["record_relations"]
+        assert len(relations) == 1
+        ctx = relations[0]["context_metadata"]
+        assert "Summary" in ctx
+        assert "This subtask adds test evidence." in ctx
+
+    @pytest.mark.asyncio
+    async def test_related_record_not_indexed_no_summary(self):
+        rec = self._ticket_record()
+        vr_map = {"vr-ticket": rec}
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-child-1"}],
+            },
+            docs_by_id={
+                "rec-child-1": {
+                    "id": "rec-child-1",
+                    "_key": "rec-child-1",
+                    "recordName": "[PST-10] Subtask",
+                    "recordType": "TICKET",
+                    "connectorName": "JIRA",
+                    "connectorId": "conn-1",
+                    "externalRecordId": "ext-child",
+                },
+            },
+            vrid_map={},
+        )
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=[],
+            blob_store=None, org_id="org-1",
+        )
+        relations = rec["record_relations"]
+        assert len(relations) == 1
+        ctx = relations[0]["context_metadata"]
+        assert "[PST-10] Subtask" in ctx
+        assert "Summary" not in ctx
+
+    # --- Combined test: dependent parent + relation-eligible in same batch ---
+
+    @pytest.mark.asyncio
+    async def test_combined_dependent_and_relation_in_same_batch(self):
+        """Both a dependent record and a relation-eligible record in one call."""
+        attach_rec = self._dependent_file_record(vrid="vr-attach", record_id="rec-attach")
+        ticket_rec = self._ticket_record(vrid="vr-ticket", record_id="rec-ticket")
+        vr_map = {"vr-attach": attach_rec, "vr-ticket": ticket_rec}
+
+        parent_doc = {
+            "id": "rec-issue-1",
+            "_key": "rec-issue-1",
+            "recordName": "PROJ-1",
+            "recordType": "TICKET",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "externalRecordId": "ext-1",
+        }
+        related_doc = {
+            "id": "rec-related",
+            "_key": "rec-related",
+            "recordName": "Related Task",
+            "recordType": "TICKET",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "externalRecordId": "ext-related",
+        }
+        gp = self._make_graph_provider(
+            docs_by_id={"rec-issue-1": parent_doc, "rec-related": related_doc},
+            outgoing_by_type={
+                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-related"}],
+            },
+            vrid_map={},
+        )
+        flattened = [
+            {"virtual_record_id": "vr-attach", "block_index": 0},
+            {"virtual_record_id": "vr-ticket", "block_index": 0},
+        ]
+        vtr_map = {
+            "vr-attach": self._virtual_to_record_map_entry(),
+            "vr-ticket": {"isDependentNode": False, "connectorName": "JIRA"},
+        }
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map,
+        )
+        # Dependent parent was annotated
+        assert flattened[0]["parent_node_relation"]["record_id"] == "rec-issue-1"
+        # Relation-eligible got relations
+        assert len(ticket_rec["record_relations"]) == 1
+        assert ticket_rec["record_relations"][0]["record_id"] == "rec-related"
+
+class TestBuildParentInfo:
+    def test_returns_empty_when_no_relation(self):
+        assert build_parent_info({}) == ""
+
+    def test_renders_parent_metadata_only(self):
+        text = build_parent_info({
+            "parent_node_relation": {
+                "record_id": "rec-1",
+                "context_metadata": "Record ID       : rec-1\nName            : PROJ-1",
+            }
+        })
+        assert "PROJ-1" in text
+        assert "rec-1" in text
+        assert "This record depends on:" in text
+        assert "fetch_full_record" not in text
+
+    def test_renders_short_form_for_in_context_parent(self):
+        text = build_parent_info({
+            "parent_node_relation": {
+                "record_id": "rec-issue-1",
+                "record_name": "PROJ-77",
+            }
+        })
+        assert "PROJ-77" in text
+        assert "rec-issue-1" in text
+        assert "This record depends on:" in text
+
+
+class TestBuildMessageContentArrayParentInfo:
+    def test_parent_info_once_per_record_not_per_block(self):
+        record = _make_record_blob(
+            virtual_record_id="vr-attach",
+            record_name="Asana Disaster Recovery Summary Report.pdf",
+        )
+        vr_map = {"vr-attach": record}
+        parent_metadata = (
+            "Record ID       : parent-rec-1\n"
+            "Name            : [PST-9] Jira Connector Indexing Progress Not Advancing"
+        )
+        flat = [
+            {
+                **_make_flattened_result(
+                    virtual_record_id="vr-attach",
+                    block_index=0,
+                    content="Block one",
+                ),
+                "parent_node_relation": {
+                    "record_id": "parent-rec-1",
+                    "context_metadata": parent_metadata,
+                },
+            },
+            {
+                **_make_flattened_result(
+                    virtual_record_id="vr-attach",
+                    block_index=1,
+                    content="Block two",
+                ),
+                "parent_node_relation": {
+                    "record_id": "parent-rec-1",
+                    "context_metadata": parent_metadata,
+                },
+            },
+        ]
+        contents, _ = build_message_content_array(flat, vr_map)
+        texts = [item["text"] for group in contents for item in group if item.get("type") == "text"]
+        combined = "\n".join(texts)
+        assert combined.count("* This record depends on:") == 1
+        assert combined.count("parent-rec-1") == 1
+        assert "Block one" in combined
+        assert "Block two" in combined
+        assert combined.index("* This record depends on:") < combined.index("Block one")
+        assert combined.index("* This record depends on:") < combined.index("Record blocks (sorted):")
+
+
+class TestBuildRecordRelationsInfo:
+    def test_returns_empty_when_no_relations(self):
+        assert build_record_relations_info({}) == ""
+        assert build_record_relations_info({"record_relations": []}) == ""
+
+    def test_renders_minimal_record_id_name_and_labels(self):
+        text = build_record_relations_info({
+            "record_relations": [
+                {
+                    "record_id": "rec-1",
+                    "record_name": "screenshot.png",
+                    "labels": ["ATTACHMENT"],
+                },
+                {
+                    "record_id": "rec-2",
+                    "record_name": "[PST-9-1] Subtask",
+                    "labels": ["CHILD"],
+                },
+            ],
+        })
+        assert "* Related records:" in text
+        assert "ATTACHMENT | Record ID: rec-1 | Name: screenshot.png" in text
+        assert "CHILD | Record ID: rec-2 | Name: [PST-9-1] Subtask" in text
+
+    def test_renders_rich_context_metadata_when_present(self):
+        context = (
+            "Record ID       : rec-task-1\n"
+            "Name            : [PST-10] Add test evidence\n"
+            "Connector       : JIRA\n"
+            "Type            : TICKET\n"
+            "Summary         : Task requesting addition of test evidence\n"
+            "Ticket Information:\n"
+            "* Status: DONE\n"
+            "* Priority: MEDIUM"
+        )
+        text = build_record_relations_info({
+            "record_relations": [
+                {
+                    "record_id": "rec-task-1",
+                    "record_name": "[PST-10] Add test evidence",
+                    "labels": ["CHILD"],
+                    "context_metadata": context,
+                },
+            ],
+        })
+        assert "* Related records:" in text
+        assert "CHILD:" in text
+        assert "Record ID       : rec-task-1" in text
+        assert "Status: DONE" in text
+        assert "Summary         : Task requesting addition of test evidence" in text
+
+    def test_mixed_rich_and_minimal_entries(self):
+        text = build_record_relations_info({
+            "record_relations": [
+                {
+                    "record_id": "rec-rich",
+                    "record_name": "Rich",
+                    "labels": ["CHILD"],
+                    "context_metadata": "Record ID       : rec-rich\nName            : Rich",
+                },
+                {
+                    "record_id": "rec-minimal",
+                    "record_name": "Minimal",
+                    "labels": ["ATTACHMENT"],
+                },
+            ],
+        })
+        assert "CHILD:" in text
+        assert "ATTACHMENT | Record ID: rec-minimal | Name: Minimal" in text
+
+
+class TestToLlmLinkedContext:
+    """Verify to_llm_linked_context produces summary-only output."""
+
+    def test_includes_summary_excludes_topics(self):
+        from app.models.blocks import SemanticMetadata
+        sem = SemanticMetadata(
+            summary="A brief summary of this ticket.",
+            topics=["auth", "login"],
+            category="Security",
+            sub_categories=["OAuth"],
+        )
+        record = TicketRecord(
+            id="rec-1",
+            record_name="Auth Bug",
+            record_type=RecordType.TICKET,
+            connector_name=Connectors.JIRA,
+            external_record_id="ext-1",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_id="conn-1",
+            semantic_metadata=sem,
+            status="Open",
+            priority="High",
+        )
+        ctx = record.to_llm_linked_context()
+        assert "Summary         : A brief summary of this ticket." in ctx
+        assert "Topics" not in ctx
+        assert "Category" not in ctx
+        assert "Sub-categories" not in ctx
+        assert "Status: Open" in ctx
+        assert "Priority: High" in ctx
+
+    def test_no_summary_when_semantic_metadata_none(self):
+        record = TicketRecord(
+            id="rec-2",
+            record_name="No Meta",
+            record_type=RecordType.TICKET,
+            connector_name=Connectors.JIRA,
+            external_record_id="ext-2",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_id="conn-1",
+            semantic_metadata=None,
+            status="Done",
+        )
+        ctx = record.to_llm_linked_context()
+        assert "Summary" not in ctx
+        assert "Status: Done" in ctx
+
+
+class TestBuildMessageContentArrayRecordRelations:
+    def test_related_records_once_per_record_not_per_block(self):
+        record = _make_record_blob(
+            virtual_record_id="vr-ticket",
+            record_name="[PST-9] Test ticket",
+            record_relations=[
+                {
+                    "record_id": "rec-file-1",
+                    "record_name": "screenshot.png",
+                    "labels": ["ATTACHMENT"],
+                },
+            ],
+        )
+        vr_map = {"vr-ticket": record}
+        flat = [
+            _make_flattened_result(
+                virtual_record_id="vr-ticket",
+                block_index=0,
+                content="Block one",
+            ),
+            _make_flattened_result(
+                virtual_record_id="vr-ticket",
+                block_index=1,
+                content="Block two",
+            ),
+        ]
+        contents, _ = build_message_content_array(flat, vr_map)
+        texts = [item["text"] for group in contents for item in group if item.get("type") == "text"]
+        combined = "\n".join(texts)
+        assert combined.count("* Related records:") == 1
+        assert combined.count("rec-file-1") == 1
+        assert combined.index("* Related records:") < combined.index("Block one")
 
 
 # ===================================================================
