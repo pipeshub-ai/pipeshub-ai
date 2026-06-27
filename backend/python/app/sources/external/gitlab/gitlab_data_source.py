@@ -77,7 +77,7 @@ class GitLabDataSource:
         if self._http_client is None or self._http_client.is_closed:
             self._http_client = httpx.AsyncClient(
                 follow_redirects=True,
-                timeout=30.0,
+                timeout=60.0,
             )
         return self._http_client
 

@@ -26,12 +26,14 @@ from app.models.entities import Record, RecordGroupType, RecordType, PullRequest
 from app.models.blocks import (
     Block,
     BlockGroup,
+    BlockGroupChildren,
     BlocksContainer,
     BlockSubType,
     BlockType,
     DataFormat,
     GroupSubType,
     GroupType,
+    IndexRange,
 )
 from app.utils.time_conversion import parse_timestamp, string_to_datetime
 
@@ -260,10 +262,11 @@ class MergeRequestsSync:
             children_records=list_child_records,
         )
         block_groups.append(bg_0)
+        block_group_number += 1
 
         if self._comments_indexing_enabled():
             comments_bg, remaining_attachments = await c.comments.build_merge_request_comment_blocks(
-                mr_url=record.weburl, parent_index=block_group_number, record=record
+                mr_url=record.weburl, parent_index=0, record=record
             )
             block_groups.extend(comments_bg)
             block_group_number += len(comments_bg)
@@ -276,6 +279,7 @@ class MergeRequestsSync:
             raise Exception(f"Failed to fetch commits for merge request {mr_number}: {mr_commits_res.error}")
 
         mr_commits = mr_commits_res.data or []
+        commits_block_start = block_number
         for commit in mr_commits:
             commit_message = getattr(commit, "message", "")
             commit_title = getattr(commit, "title", "")
@@ -302,6 +306,9 @@ class MergeRequestsSync:
             name="block group for commits",
             type=GroupType.COMMITS,
             description=f"List of commits for merge request : {mr_number}",
+            children=BlockGroupChildren(
+                block_ranges=[IndexRange(start=commits_block_start, end=block_number - 1)]
+            ) if blocks else None,
         )
         block_groups.append(bg_new)
         blocks_container = BlocksContainer(blocks=blocks, block_groups=block_groups)
