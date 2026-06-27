@@ -371,7 +371,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
 
         llp_emb_kwargs: Dict[str, Any] = dict(
             model=model_name,
-            api_key=configuration['apiKey'],
+            api_key=configuration.get("apiKey"),
             base_url=configuration["endpoint"],
             check_embedding_ctx_length=False,
         )
@@ -749,7 +749,7 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
                 model=model_name,
                 temperature=temperature,
                 timeout=DEFAULT_LLM_TIMEOUT,
-                api_key=configuration["apiKey"],
+                api_key=configuration.get("apiKey"),
                 base_url=configuration["endpoint"],
                 stream_usage=True,
             )
@@ -1131,7 +1131,7 @@ def get_image_generation_model(
     if provider == ImageGenerationProvider.LITELLM_PROXY.value:
         return _OpenAIImageAdapter(
             model=model_name,
-            api_key=configuration["apiKey"],
+            api_key=configuration.get("apiKey"),
             base_url=configuration["endpoint"],
             provider_override=ImageGenerationProvider.LITELLM_PROXY.value,
         )
@@ -1501,7 +1501,7 @@ def get_tts_model(
     if provider == TTSProvider.LITELLM_PROXY.value:
         return _OpenAITTSAdapter(
             model=model_name,
-            api_key=configuration["apiKey"],
+            api_key=configuration.get("apiKey"),
             default_voice=configuration.get("voice"),
             default_format=configuration.get("responseFormat"),
             base_url=configuration["endpoint"],
@@ -2168,7 +2168,7 @@ def get_stt_model(
     if provider == STTProvider.LITELLM_PROXY.value:
         return _OpenAISTTAdapter(
             model=model_name,
-            api_key=configuration["apiKey"],
+            api_key=configuration.get("apiKey"),
             base_url=configuration["endpoint"],
             provider_override=STTProvider.LITELLM_PROXY.value,
         )

@@ -922,12 +922,13 @@ async def perform_image_generation_health_check(
                     )
         elif provider == ImageGenerationProvider.LITELLM_PROXY.value:
             endpoint = configuration.get("endpoint", "").rstrip("/")
+            headers: dict[str, str] = {}
+            api_key = configuration.get("apiKey")
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
             async with httpx.AsyncClient(timeout=30.0) as http_client:
-                resp = await http_client.get(
-                    f"{endpoint}/health",
-                    headers={"Authorization": f"Bearer {configuration['apiKey']}"},
-                )
-                if resp.status_code >= 500:
+                resp = await http_client.get(f"{endpoint}/health", headers=headers)
+                if resp.status_code >= 400:
                     raise RuntimeError(
                         f"LiteLLM Proxy health check returned HTTP {resp.status_code}"
                     )
@@ -1044,12 +1045,13 @@ async def perform_tts_health_check(
                     )
         elif provider == TTSProvider.LITELLM_PROXY.value:
             endpoint = configuration.get("endpoint", "").rstrip("/")
+            headers = {}
+            api_key = configuration.get("apiKey")
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
             async with httpx.AsyncClient(timeout=30.0) as http_client:
-                resp = await http_client.get(
-                    f"{endpoint}/health",
-                    headers={"Authorization": f"Bearer {configuration['apiKey']}"},
-                )
-                if resp.status_code >= 500:
+                resp = await http_client.get(f"{endpoint}/health", headers=headers)
+                if resp.status_code >= 400:
                     raise RuntimeError(
                         f"LiteLLM Proxy health check returned HTTP {resp.status_code}"
                     )
@@ -1215,12 +1217,13 @@ async def perform_stt_health_check(
                     )
         elif provider == STTProvider.LITELLM_PROXY.value:
             endpoint = configuration.get("endpoint", "").rstrip("/")
+            headers = {}
+            api_key = configuration.get("apiKey")
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
             async with httpx.AsyncClient(timeout=30.0) as http_client:
-                resp = await http_client.get(
-                    f"{endpoint}/health",
-                    headers={"Authorization": f"Bearer {configuration['apiKey']}"},
-                )
-                if resp.status_code >= 500:
+                resp = await http_client.get(f"{endpoint}/health", headers=headers)
+                if resp.status_code >= 400:
                     raise RuntimeError(
                         f"LiteLLM Proxy health check returned HTTP {resp.status_code}"
                     )
