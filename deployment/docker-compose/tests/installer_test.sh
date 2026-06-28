@@ -172,6 +172,27 @@ check "plain progress applied to compose up/pull" "$inner" 'docker compose "${_P
 # First start (embedding model download + cold stack) can edge past 5 min; the
 # default must be generous and overridable so it does not falsely report failure.
 check "health wait default is 420s and overridable" "$inner" 'HEALTH_WAIT_SECS="${HEALTH_WAIT_SECS:-420}"'
+# Health wait: clean single-line spinner on TTY, sparse heartbeat when captured,
+# and a final probe so a last-interval pass is not reported as a failure.
+check "health wait has a TTY spinner (in-place)" "$inner" '\r  ${CYAN}%s${RESET} Starting services'
+check "health wait has sparse heartbeat for captured output" "$inner" "still starting (%ds / %ds)"
+if [[ "$inner" == *"Waiting... %ds elapsed"* ]]; then fail "old per-interval Waiting spam removed"; else pass "old per-interval Waiting spam removed"; fi
+check "health wait runs a final probe after the loop" "$inner" 'if ! $CONTAINER_HEALTHY && app_is_healthy; then'
+check "readiness probe factored into app_is_healthy" "$inner" "app_is_healthy() {"
+# A restart-looping container must be detected and reported as the cause, with
+# cause-neutral, actionable guidance — NOT a hard-coded "it's OOM" claim, since a
+# repeatedly restarting container may be crashing (exit 139) rather than OOM-killed.
+check "health wait detects crash loops" "$inner" "crash_looping_containers"
+check "crash loop reported as the failure cause" "$inner" "keeps restarting"
+check "crash loop guidance is cause-neutral (137 vs 139)" "$inner" "exit 137"
+check "crash loop guidance covers segfault/corruption" "$inner" "exit 139"
+check "crash loop guidance still offers slim profile" "$inner" "drops Kafka/Zookeeper"
+# Must not revert to asserting OOM as the definitive cause.
+if [[ "$inner" == *"almost always host memory pressure"* ]]; then
+  fail "crash-loop message must not assert OOM as the certain cause"
+else
+  pass "crash-loop message does not over-assert OOM"
+fi
 
 echo "== Compose: app healthcheck reconciled with installer =="
 compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
@@ -183,6 +204,33 @@ if [[ "$compose" == *"s.get('embedding') in ('healthy','starting')"* ]]; then
 else
   pass "embedding excluded from app container health gate"
 fi
+# Mongo must cap its WiredTiger cache + carry a memory limit, else it tries to
+# grab ~50% of host RAM and gets OOM-killed into a restart loop on small hosts.
+check "mongo caps WiredTiger cache" "$compose" "wiredTigerCacheSizeGB"
+check "mongo has a memory limit" "$compose" 'memory: ${MONGO_MEMORY_LIMIT:-2G}'
+# Mongo image tag must be overridable (default unchanged) so hosts where mongo 8.x
+# segfaults can pin a working tag (e.g. 7.0) without editing the compose file.
+check "mongo image tag is overridable" "$compose" 'image: mongo:${MONGO_IMAGE_TAG:-8.0.17}'
+
+echo "== In-tree installer: crash-loop detection (real function) =="
+eval "$(extract_fn crash_looping_containers "$INNER_INSTALLER")"
+(
+  CRASH_LOOP_THRESHOLD=4
+  PROJECT_NAME="pipeshub-ai"
+  docker() {
+    case "$1 $2" in
+      "ps -aq") echo c1; echo c2; return 0 ;;
+    esac
+    case "$*" in
+      *c1*RestartCount*) echo 7 ;; *c1*Name*) echo /mongodb ;; *c1*ExitCode*) echo 139 ;;
+      *c2*RestartCount*) echo 1 ;; *c2*Name*) echo /redis ;; *c2*ExitCode*) echo 0 ;;
+    esac
+  }
+  out="$(crash_looping_containers)"
+  check "reports container above restart threshold" "$out" "mongodb (7 restarts"
+  check "report includes last exit code" "$out" "last exit 139"
+  if [[ "$out" == *redis* ]]; then fail "must ignore containers under threshold"; else pass "ignores containers under threshold"; fi
+)
 
 # --stop must tear down ALL profile-gated containers (not just the active
 # profile) so leftover graph/broker containers do not block network removal.
