@@ -211,6 +211,9 @@ check "mongo has a memory limit" "$compose" 'memory: ${MONGO_MEMORY_LIMIT:-2G}'
 # Mongo image tag must be overridable (default unchanged) so hosts where mongo 8.x
 # segfaults can pin a working tag (e.g. 7.0) without editing the compose file.
 check "mongo image tag is overridable" "$compose" 'image: mongo:${MONGO_IMAGE_TAG:-8.0.17}'
+# Verified fix for the glibc rseq segfault on new kernels: an overridable
+# GLIBC_TUNABLES env (empty default, so normal hosts are unaffected).
+check "mongo GLIBC_TUNABLES is overridable" "$compose" 'GLIBC_TUNABLES=${MONGO_GLIBC_TUNABLES:-}'
 
 echo "== In-tree installer: crash-loop detection (real function) =="
 eval "$(extract_fn crash_looping_containers "$INNER_INSTALLER")"
