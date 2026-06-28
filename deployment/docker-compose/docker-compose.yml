@@ -251,6 +251,10 @@ services:
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-}
+      # Some very new/uncommon host kernels segfault mongo 8.x's tcmalloc via a
+      # glibc rseq conflict (exit 139). Set MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1
+      # in .env to work around it without downgrading. Empty = glibc default.
+      - GLIBC_TUNABLES=${MONGO_GLIBC_TUNABLES:-}
     volumes:
       - mongodb_data:/data/db
     networks:
