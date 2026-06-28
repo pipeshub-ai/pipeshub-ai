@@ -58,8 +58,6 @@ def _is_empty_split_container(block: Block) -> bool:
     if block.parent_block_index is not None:
         return False
     data = block.data
-    if data is None:
-        return True
     if isinstance(data, str) and not data.strip():
         return True
     if isinstance(data, dict):
@@ -68,6 +66,19 @@ def _is_empty_split_container(block: Block) -> bool:
         if block.type == BlockType.TABLE_ROW:
             return not data.get("row_natural_language_text") and not data.get("cells")
     return False
+
+
+def _assert_all_blocks_have_data(container: BlocksContainer) -> None:
+    for block in container.blocks:
+        assert block.data is not None, (
+            f"block index={block.index} type={block.type} "
+            f"sub_type={block.sub_type} has data=None"
+        )
+
+
+def _assert_empty_text_split_container(block: Block) -> None:
+    assert block.data == ""
+    assert _is_empty_split_container(block)
 
 
 def _fragment_blocks(container: BlocksContainer, container_index: int) -> list[Block]:
@@ -525,7 +536,7 @@ class TestImages:
 
         quote_containers = _split_container_blocks(container, BlockSubType.QUOTE)
         assert len(quote_containers) == 1
-        assert _is_empty_split_container(quote_containers[0])
+        _assert_empty_text_split_container(quote_containers[0])
         fragments = _fragment_blocks(container, quote_containers[0].index)
         assert len(fragments) == 1
         assert fragments[0].data == "> "
@@ -546,7 +557,7 @@ class TestImages:
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
 
         assert len(quote_containers) == 1
-        assert _is_empty_split_container(quote_containers[0])
+        _assert_empty_text_split_container(quote_containers[0])
         fragments = _fragment_blocks(container, quote_containers[0].index)
         assert fragments[0].data == "> "
         assert len(image_blocks) == 1
@@ -566,7 +577,7 @@ class TestImages:
         )
         assert _blocks_by_type(container, BlockType.IMAGE) == []
         quote_container = container.blocks[0]
-        assert _is_empty_split_container(quote_container)
+        _assert_empty_text_split_container(quote_container)
         assert _fragment_blocks(container, quote_container.index)[0].data == "> "
 
     def test_image_inside_list_is_preserved_in_raw_markdown(
@@ -581,7 +592,7 @@ class TestImages:
 
         list_container = container.blocks[0]
         assert list_container.sub_type == BlockSubType.LIST_ITEM
-        assert _is_empty_split_container(list_container)
+        _assert_empty_text_split_container(list_container)
         assert _fragment_blocks(container, list_container.index) == []
         assert list_container.parent_index == list_group.index
 
@@ -599,7 +610,7 @@ class TestImages:
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
 
         assert len(list_containers) == 1
-        assert _is_empty_split_container(list_containers[0])
+        _assert_empty_text_split_container(list_containers[0])
         fragments = _fragment_blocks(container, list_containers[0].index)
         assert fragments[0].data == "Available connectors: "
         assert fragments[0].sub_type is None
@@ -628,6 +639,7 @@ class TestImages:
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
 
         assert len(row_containers) == 1
+        assert row_containers[0].data is not None
         assert _is_empty_split_container(row_containers[0])
         assert len(image_blocks) == 1
         assert image_blocks[0].data == {"uri": "data:image/png;base64,TABLEIMG"}
@@ -655,6 +667,7 @@ class TestImages:
         text_fragments = [b for b in fragments if b.type == BlockType.TEXT]
         image_blocks = [b for b in fragments if b.type == BlockType.IMAGE]
 
+        assert row_container.data is not None
         assert _is_empty_split_container(row_container)
         assert len(text_fragments) == 2
         assert text_fragments[0].data == "col1: text1, col2: Text2"
@@ -744,6 +757,7 @@ class TestImages:
 
         container = converter.convert(modified_md, caption_map=caption_map)
 
+        _assert_all_blocks_have_data(container)
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
         assert len(image_blocks) == 1
         assert image_blocks[0].data == {"uri": fake_base64}
@@ -781,6 +795,7 @@ class TestImages:
             "Image_2": "data:image/png;base64,BANNER",
         }
         container = converter.convert(modified_md, caption_map=caption_map)
+        _assert_all_blocks_have_data(container)
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
         assert len(image_blocks) == 2
         assert image_blocks[0].data == {"uri": "data:image/png;base64,LOGO"}
@@ -801,6 +816,7 @@ class TestImages:
         caption_map: dict[str, str] = {}
 
         container = converter.convert(modified_md, caption_map=caption_map)
+        _assert_all_blocks_have_data(container)
         assert _blocks_by_type(container, BlockType.IMAGE) == []
 
 
@@ -918,6 +934,7 @@ class TestMixedContentOrder:
         )
         container = converter.convert(markdown)
 
+        _assert_all_blocks_have_data(container)
         assert len(_groups_by_type(container, GroupType.TEXT_SECTION)) == 1
         assert len(_groups_by_type(container, GroupType.TABLE)) == 1
         assert len(_groups_by_type(container, GroupType.LIST)) == 1
@@ -1121,6 +1138,52 @@ class TestSplitRawMarkdownIntoSegments:
         assert _split_raw_markdown_into_segments("   ") == []
 
 
+class TestBlockDataNeverNone:
+    """Emitted blocks must always carry data; empty text containers use ""."""
+
+    @pytest.mark.parametrize(
+        ("markdown", "caption_map"),
+        [
+            (
+                "- item ![Image_1](https://example.com/a.png) tail\n",
+                {"Image_1": "data:image/png;base64,IMG"},
+            ),
+            (
+                "> quote ![Image_1](https://example.com/a.png)\n",
+                {"Image_1": "data:image/png;base64,IMG"},
+            ),
+            (
+                "| A | B |\n| --- | --- |\n| x | ![Image_1](https://example.com/a.png) |\n",
+                {"Image_1": "data:image/png;base64,IMG"},
+            ),
+            ("- ![Image_1](https://example.com/a.png)\n", {}),
+        ],
+    )
+    def test_image_split_outputs_never_have_none_data(
+        self,
+        converter: MarkdownToBlocksConverter,
+        markdown: str,
+        caption_map: dict[str, str],
+    ) -> None:
+        container = converter.convert(markdown, caption_map=caption_map)
+        _assert_all_blocks_have_data(container)
+        for block in container.blocks:
+            if _is_empty_split_container(block) and block.type == BlockType.TEXT:
+                assert block.data == ""
+
+    def test_unsplit_document_never_has_none_data(
+        self, converter: MarkdownToBlocksConverter
+    ) -> None:
+        markdown = (
+            "# Report\n\n"
+            "Plain paragraph.\n\n"
+            "| Metric | Value |\n| --- | --- |\n| Users | 10 |\n\n"
+            "- action item\n"
+        )
+        container = converter.convert(markdown)
+        _assert_all_blocks_have_data(container)
+
+
 class TestImageSplitContainers:
     def test_image_only_list_item_emits_image_block_with_list_item_sub_type(
         self, converter: MarkdownToBlocksConverter
@@ -1152,6 +1215,7 @@ class TestImageSplitContainers:
         )
         row_container = _blocks_by_type(container, BlockType.TABLE_ROW)[0]
         assert row_container.data == {"row_number": 1}
+        assert row_container.data is not None
         assert _is_empty_split_container(row_container)
 
 

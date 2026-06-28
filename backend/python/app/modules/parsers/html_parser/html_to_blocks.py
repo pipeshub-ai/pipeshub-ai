@@ -1691,7 +1691,7 @@ class _DomWalker:
         sub_type: BlockSubType | None,
         format: DataFormat,
         segments: list[_Segment],
-        container_data: object | None = None,
+        container_data: str = "",
         markdown_source: str = "",
         image_nodes: list[LexborNode] | None = None,
     ) -> None:
@@ -1707,7 +1707,7 @@ class _DomWalker:
             sub_type: Sub-type (e.g. ``PARAGRAPH``, ``LIST_ITEM``).
             format: ``DataFormat`` for TEXT blocks.
             segments: Ordered text/image segments.
-            container_data: Optional payload for an empty container block.
+            container_data: Payload for an empty container block (defaults to ``""``).
             markdown_source: Rendered markdown for ``data:image`` URI lookup.
             image_nodes: ``<img>`` nodes aligned with image segments on the TXT path.
         """
@@ -1715,10 +1715,10 @@ class _DomWalker:
         has_images = any(seg.kind == "image" for seg in segments)
         if not has_images:
             full_text = "".join(seg.text for seg in segments if seg.kind == "text").strip()
-            if not full_text and container_data is None:
+            if not full_text and not container_data:
                 return
-            data = container_data if container_data is not None else full_text
-            if data is None or (isinstance(data, str) and not data.strip()):
+            data = container_data or full_text
+            if isinstance(data, str) and not data.strip():
                 return
             self._add_block(
                 Block(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
 from uuid import uuid4
 
 from markdown_it import MarkdownIt
@@ -684,7 +684,7 @@ class _TokenWalker:
         sub_type: BlockSubType | None,
         format: DataFormat,
         segments: list[_Segment],
-        container_data: Any | None = None,
+        container_data: str = "",
     ) -> None:
         """Emit blocks from text/image segments.
 
@@ -696,10 +696,10 @@ class _TokenWalker:
         has_images = any(seg.kind == "image" for seg in segments)
         if not has_images:
             full_text = "".join(seg.text for seg in segments if seg.kind == "text").strip()
-            if not full_text and container_data is None:
+            if not full_text and not container_data:
                 return
-            data = container_data if container_data is not None else full_text
-            if data is None or (isinstance(data, str) and not data.strip()):
+            data = container_data or full_text
+            if isinstance(data, str) and not data.strip():
                 return
             self._add_block(
                 Block(

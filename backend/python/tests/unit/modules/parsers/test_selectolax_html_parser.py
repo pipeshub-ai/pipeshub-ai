@@ -58,8 +58,6 @@ def _is_empty_split_container(block: Block) -> bool:
     if block.parent_block_index is not None:
         return False
     data = block.data
-    if data is None:
-        return True
     if isinstance(data, str) and not data.strip():
         return True
     if isinstance(data, dict):
@@ -68,6 +66,19 @@ def _is_empty_split_container(block: Block) -> bool:
         if block.type == BlockType.TABLE_ROW:
             return not data.get("row_natural_language_text") and not data.get("cells")
     return False
+
+
+def _assert_all_blocks_have_data(container) -> None:
+    for block in container.blocks:
+        assert block.data is not None, (
+            f"block index={block.index} type={block.type} "
+            f"sub_type={block.sub_type} has data=None"
+        )
+
+
+def _assert_empty_text_split_container(block: Block) -> None:
+    assert block.data == ""
+    assert _is_empty_split_container(block)
 
 
 def _fragment_blocks(container, container_index: int) -> list[Block]:
@@ -633,7 +644,7 @@ class TestImages:
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
 
         assert len(list_containers) == 1
-        assert _is_empty_split_container(list_containers[0])
+        _assert_empty_text_split_container(list_containers[0])
         fragments = _fragment_blocks(container, list_containers[0].index)
         assert fragments[0].data == "Item with "
         assert fragments[0].sub_type is None
@@ -670,7 +681,7 @@ class TestImages:
         fragments = _fragment_blocks(container, list_containers[0].index)
 
         assert len(list_containers) == 1
-        assert _is_empty_split_container(list_containers[0])
+        _assert_empty_text_split_container(list_containers[0])
         assert len(image_blocks) == 1
         assert image_blocks[0].format == DataFormat.BASE64
         assert image_blocks[0].parent_block_index == list_containers[0].index
@@ -692,6 +703,7 @@ class TestImages:
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
 
         assert len(quote_containers) == 1
+        _assert_empty_text_split_container(quote_containers[0])
         fragments = _fragment_blocks(container, quote_containers[0].index)
         assert fragments[0].data == "Quote "
         assert len(image_blocks) == 1
@@ -716,6 +728,7 @@ class TestImages:
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
 
         assert len(row_containers) == 1
+        assert row_containers[0].data is not None
         assert _is_empty_split_container(row_containers[0])
         assert len(image_blocks) == 1
         assert image_blocks[0].parent_index is None
@@ -747,6 +760,7 @@ class TestImages:
         text_fragments = [b for b in fragments if b.type == BlockType.TEXT]
         image_blocks = [b for b in fragments if b.type == BlockType.IMAGE]
 
+        assert row_container.data is not None
         assert _is_empty_split_container(row_container)
         assert len(text_fragments) == 2
         assert text_fragments[0].data == "col1: text1, col2: Text2"
@@ -800,6 +814,7 @@ class TestImages:
         text_fragments = [b for b in fragments if b.type == BlockType.TEXT]
         image_blocks = [b for b in fragments if b.type == BlockType.IMAGE]
 
+        assert row_container.data is not None
         assert _is_empty_split_container(row_container)
         assert len(text_fragments) == 2
         assert "Before" in text_fragments[0].data
@@ -864,6 +879,7 @@ class TestImages:
         )
         row_container = _blocks_by_type(container, BlockType.TABLE_ROW)[0]
         assert row_container.data == {"row_number": 1}
+        assert row_container.data is not None
         assert _is_empty_split_container(row_container)
 
     def test_deeply_nested_table_with_image_emits_image_block(
@@ -927,6 +943,7 @@ class TestComplexHtmlFixture:
     ) -> None:
         container = converter.convert(_COMPLEX_HTML.read_text(encoding="utf-8"))
 
+        _assert_all_blocks_have_data(container)
         table_group = next(
             group for group in container.block_groups
             if group.type == GroupType.TABLE
@@ -953,12 +970,68 @@ class TestComplexHtmlFixture:
         assert any("pip install my-package" in block.data for block in code_blocks)
 
 
+class TestBlockDataNeverNone:
+    """Emitted blocks must always carry data; empty text containers use ""."""
+
+    @pytest.mark.parametrize(
+        ("html", "caption_map"),
+        [
+            (
+                '<ul><li>item <img alt="Image_1" src="x"> tail</li></ul>',
+                {"Image_1": "data:image/png;base64,IMG"},
+            ),
+            (
+                '<blockquote><p>quote <img alt="Image_1" src="x"></p></blockquote>',
+                {"Image_1": "data:image/png;base64,IMG"},
+            ),
+            (
+                """
+                <table>
+                  <tr><th>A</th><th>B</th></tr>
+                  <tr><td>x</td><td><img alt="Image_1" src="x"></td></tr>
+                </table>
+                """,
+                {"Image_1": "data:image/png;base64,IMG"},
+            ),
+            (
+                '<ul><li><img alt="Image_1" src="https://example.com/a.png"></li></ul>',
+                {},
+            ),
+        ],
+    )
+    def test_image_split_outputs_never_have_none_data(
+        self,
+        converter: HtmlToBlocksConverter,
+        html: str,
+        caption_map: dict[str, str],
+    ) -> None:
+        container = converter.convert(html, caption_map=caption_map)
+        _assert_all_blocks_have_data(container)
+        for block in container.blocks:
+            if _is_empty_split_container(block) and block.type == BlockType.TEXT:
+                assert block.data == ""
+
+    def test_unsplit_document_never_has_none_data(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        html = (
+            "<h1>Report</h1>"
+            "<p>Plain paragraph.</p>"
+            "<table><tr><th>Metric</th><th>Value</th></tr>"
+            "<tr><td>Users</td><td>10</td></tr></table>"
+            "<ul><li>action item</li></ul>"
+        )
+        container = converter.convert(html)
+        _assert_all_blocks_have_data(container)
+
+
 class TestSelectolaxHtmlParser:
     def test_parse_to_blocks_delegates_to_converter(
         self,
         parser: SelectolaxHtmlParser,
     ) -> None:
         container = parser.parse_to_blocks("<h1>Title</h1>")
+        _assert_all_blocks_have_data(container)
         assert container.blocks[0].sub_type == BlockSubType.HEADING
         assert container.blocks[0].data == "Title"
 
@@ -971,6 +1044,7 @@ class TestSelectolaxHtmlParser:
             base_url="https://example.com",
             caption_map={"fig1": "data:image/png;base64,abc"},
         )
+        _assert_all_blocks_have_data(container)
         assert container.blocks[0].data == {"uri": "data:image/png;base64,abc"}
 
     def test_replace_relative_image_urls_delegates_to_html_parser(
