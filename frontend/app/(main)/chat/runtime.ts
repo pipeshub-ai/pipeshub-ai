@@ -92,12 +92,18 @@ export function loadHistoricalMessages(
     // on every `messages` ref replace (e.g. SSE complete or history refresh).
     id: msg._id,
     role: msg.messageType === 'user_query' ? ('user' as const) : ('assistant' as const),
-    content: [
-      {
-        type: 'text' as const,
-        text: msg.content,
-      },
-    ],
+    content:
+      msg.messageType === 'bot_response' && msg.reasoningSummary?.trim()
+        ? [
+            { type: 'reasoning' as const, text: msg.reasoningSummary.trim() },
+            { type: 'text' as const, text: msg.content },
+          ]
+        : [
+            {
+              type: 'text' as const,
+              text: msg.content,
+            },
+          ],
     metadata:
       msg.messageType === 'bot_response'
         ? {
@@ -106,6 +112,9 @@ export function loadHistoricalMessages(
               citationMaps: buildCitationMapsFromApi(msg.citations || []),
               confidence: msg.confidence,
               modelInfo: msg.modelInfo,
+              ...(msg.reasoningSummary?.trim()
+                ? { reasoningSummary: msg.reasoningSummary.trim() }
+                : {}),
               // Feedback is stored server-side but intentionally not displayed in the UI
             },
           }

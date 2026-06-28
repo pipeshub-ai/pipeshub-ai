@@ -331,6 +331,7 @@ export type SSEEventType =
   | 'connected'
   | 'status'
   | 'answer_chunk'
+  | 'reasoning_chunk'
   | 'complete'
   | 'tool_call'
   | 'tool_success'
@@ -432,6 +433,11 @@ export interface SSEAnswerChunkEvent {
   citations: SSEChunkCitation[];
 }
 
+export interface SSEReasoningChunkEvent {
+  delta: string;
+  accumulated: string;
+}
+
 /**
  * Raw citation shape received in SSE answer_chunk events.
  * Unlike CitationApiResponse, these do NOT have citationId — only chunkIndex.
@@ -488,6 +494,8 @@ export interface ConversationMessage {
   appliedFilters?: AppliedFilters;
   /** File attachments uploaded with this user query (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
+  /** Persisted model chain-of-thought summary (reasoning-capable LLMs). */
+  reasoningSummary?: string;
 }
 
 export interface ConversationCompleteData {
@@ -658,6 +666,7 @@ export interface ChatSlot {
   // ── Per-slot streaming state ──
   isStreaming: boolean;
   streamingContent: string;
+  streamingReasoning: string;
   streamingQuestion: string;
   currentStatusMessage: StatusMessage | null;
   streamingCitationMaps: CitationMaps | null;

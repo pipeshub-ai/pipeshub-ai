@@ -298,6 +298,18 @@ describe('Enterprise Search Utils', () => {
       expect(result.metadata?.reason).to.equal('completed')
     })
 
+    it('should persist reasoningSummary when present', () => {
+      const aiResponse = {
+        statusCode: 200,
+        data: {
+          answer: 'hello',
+          reasoningSummary: 'Model thought process',
+        },
+      }
+      const result = buildAIResponseMessage(aiResponse as any)
+      expect(result.reasoningSummary).to.equal('Model thought process')
+    })
+
     it('should include modelInfo when provided', () => {
       const aiResponse = {
         statusCode: 200,

@@ -244,6 +244,7 @@ export const buildAIResponseMessage = (
       aiTransactionId: aiResponse.data.metadata?.aiTransactionId,
       reason: aiResponse.data?.reason,
     },
+    reasoningSummary: aiResponse.data?.reasoningSummary,
     modelInfo: modelInfo,
   };
 

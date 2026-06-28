@@ -107,6 +107,8 @@ export interface IMessage {
   attachments?: IChatAttachmentRef[];
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];
+  /** Model chain-of-thought summary from reasoning-capable LLMs */
+  reasoningSummary?: string;
 }
 
 export interface IConversation {
@@ -198,6 +200,8 @@ export interface IAIResponse {
   modelInfo?: IAIModel;
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];
+  /** Model chain-of-thought summary persisted from stream complete */
+  reasoningSummary?: string;
 }
 
 export interface IAIModel {

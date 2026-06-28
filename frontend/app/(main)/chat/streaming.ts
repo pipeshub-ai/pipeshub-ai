@@ -189,6 +189,7 @@ export async function streamMessageForSlot(
     isStreaming: true,
     streamingQuestion: query,
     streamingContent: '',
+    streamingReasoning: '',
     currentStatusMessage: null,
     streamingCitationMaps: null,
     abortController,
@@ -263,6 +264,7 @@ export async function streamMessageForSlot(
   const ACTIVE_FLUSH_MS = 16;
   const BACKGROUND_FLUSH_MS = 200;
   let accumulatedContent = '';
+  let accumulatedReasoning = '';
   let pendingCitationMaps: ReturnType<typeof buildCitationMapsFromStreaming> | null = null;
   let lastCitationKey = ''; // JSON.stringify key for dedup
   let lastFlushTime = 0;
@@ -282,6 +284,7 @@ export async function streamMessageForSlot(
     }
     useChatStore.getState().updateSlot(slotId, {
       streamingContent: accumulatedContent,
+      streamingReasoning: accumulatedReasoning,
       ...(citationMaps ? { streamingCitationMaps: citationMaps } : {}),
     });
   }
@@ -338,11 +341,13 @@ export async function streamMessageForSlot(
         }
         cancelPendingStatus();
         accumulatedContent = '';
+        accumulatedReasoning = '';
         lastCitationKey = '';
         clearedStatusWhenAnswerVisible = false;
         pendingCitationMaps = null;
         useChatStore.getState().updateSlot(slotId, {
           streamingContent: '',
+          streamingReasoning: '',
           streamingCitationMaps: null,
         });
         applyStatus(statusMessageRestreaming());
@@ -356,6 +361,11 @@ export async function streamMessageForSlot(
           timestamp: new Date().toISOString(),
         };
         scheduleStatus(statusMessage);
+      },
+
+      onReasoningChunk: (data) => {
+        accumulatedReasoning = data.accumulated;
+        scheduleFlush();
       },
 
       onChunk: (data) => {
@@ -437,6 +447,7 @@ export async function streamMessageForSlot(
           useChatStore.getState().updateSlot(slotId, {
             isStreaming: false,
             streamingContent: '',
+            streamingReasoning: '',
             streamingQuestion: '',
             currentStatusMessage: null,
             streamingCitationMaps: null,
@@ -497,6 +508,7 @@ export async function streamMessageForSlot(
         useChatStore.getState().updateSlot(slotId, {
           isStreaming: false,
           streamingContent: '',
+          streamingReasoning: '',
           streamingQuestion: '',
           currentStatusMessage: null,
           streamingCitationMaps: null,
@@ -530,6 +542,7 @@ export async function streamMessageForSlot(
         useChatStore.getState().updateSlot(slotId, {
           isStreaming: false,
           streamingContent: '',
+          streamingReasoning: '',
           streamingQuestion: '',
           currentStatusMessage: null,
           streamingCitationMaps: null,
@@ -552,6 +565,7 @@ export async function streamMessageForSlot(
     useChatStore.getState().updateSlot(slotId, {
       isStreaming: false,
       streamingContent: '',
+      streamingReasoning: '',
       streamingQuestion: '',
       currentStatusMessage: null,
       streamingCitationMaps: null,
@@ -609,6 +623,7 @@ export async function streamRegenerateForSlot(
     isStreaming: true,
     regenerateMessageId: messageId,
     streamingContent: '',
+    streamingReasoning: '',
     currentStatusMessage: null,
     streamingCitationMaps: null,
     abortController,
@@ -620,6 +635,7 @@ export async function streamRegenerateForSlot(
   const ACTIVE_FLUSH_MS = 16;
   const BACKGROUND_FLUSH_MS = 200;
   let accumulatedContent = '';
+  let accumulatedReasoning = '';
   let pendingCitationMaps: ReturnType<typeof buildCitationMapsFromStreaming> | null = null;
   let lastCitationKey = '';
   let lastFlushTime = 0;
@@ -639,6 +655,7 @@ export async function streamRegenerateForSlot(
     }
     useChatStore.getState().updateSlot(slotId, {
       streamingContent: accumulatedContent,
+      streamingReasoning: accumulatedReasoning,
       ...(citationMaps ? { streamingCitationMaps: citationMaps } : {}),
     });
   }
@@ -680,11 +697,13 @@ export async function streamRegenerateForSlot(
       }
       cancelPendingStatus();
       accumulatedContent = '';
+      accumulatedReasoning = '';
       lastCitationKey = '';
       clearedStatusWhenAnswerVisible = false;
       pendingCitationMaps = null;
       useChatStore.getState().updateSlot(slotId, {
         streamingContent: '',
+        streamingReasoning: '',
         streamingCitationMaps: null,
       });
       applyStatus(statusMessageRestreaming());
@@ -697,6 +716,11 @@ export async function streamRegenerateForSlot(
         message: data.message,
         timestamp: new Date().toISOString(),
       });
+    },
+
+    onReasoningChunk: (data) => {
+      accumulatedReasoning = data.accumulated;
+      scheduleFlush();
     },
 
     onChunk: (data) => {
@@ -744,6 +768,7 @@ export async function streamRegenerateForSlot(
           isStreaming: false,
           regenerateMessageId: null,
           streamingContent: '',
+          streamingReasoning: '',
           currentStatusMessage: null,
           streamingCitationMaps: null,
           messages: finalMessages,
@@ -758,6 +783,7 @@ export async function streamRegenerateForSlot(
           isStreaming: false,
           regenerateMessageId: null,
           streamingContent: '',
+          streamingReasoning: '',
           currentStatusMessage: null,
           streamingCitationMaps: null,
           abortController: null,
@@ -777,6 +803,7 @@ export async function streamRegenerateForSlot(
         isStreaming: false,
         regenerateMessageId: null,
         streamingContent: '',
+        streamingReasoning: '',
         currentStatusMessage: null,
         streamingCitationMaps: null,
         abortController: null,

@@ -9,6 +9,7 @@ import { ResponseTabs } from './response-tabs';
 import { ConfidenceIndicator } from './confidence-indicator';
 import { AnswerContent } from './answer-content';
 import { StatusMessageComponent } from './status-message';
+import { ReasoningPanel } from './reasoning-panel';
 import { MessageActions } from './message-actions';
 import { SourcesTab } from './response-tabs/citations/sources-tab';
 import { CitationsTab } from './response-tabs/citations/citations-tab';
@@ -81,6 +82,10 @@ interface ChatResponseProps {
   isLastMessage?: boolean;
   /** Streaming content — only passed for the currently-streaming message */
   streamingContent?: string;
+  /** Live model reasoning — only passed for the currently-streaming message */
+  streamingReasoning?: string;
+  /** Persisted reasoning summary from API (historical messages) */
+  persistedReasoning?: string;
   /** Current status message — only passed for the currently-streaming message */
   currentStatusMessage?: StatusMessage | null;
   /** Streaming citation maps — only passed for the currently-streaming message */
@@ -112,6 +117,8 @@ export const ChatResponse = React.memo(function ChatResponse({
   messageId,
   isLastMessage = false,
   streamingContent = '',
+  streamingReasoning = '',
+  persistedReasoning,
   currentStatusMessage: currentStatusMessageProp = null,
   streamingCitationMaps = null,
   streamingArtifacts,
@@ -138,7 +145,8 @@ export const ChatResponse = React.memo(function ChatResponse({
   const currentCRVals: Record<string, unknown> = {
     question, answer, citationMaps, citationCallbacks, confidence,
     isStreaming, modelInfo, collections, appliedFilters, messageId,
-    isLastMessage, streamingContent, currentStatusMessage: currentStatusMessageProp,
+    isLastMessage, streamingContent, streamingReasoning, persistedReasoning,
+    currentStatusMessage: currentStatusMessageProp,
     streamingCitationMaps, createdAt,
   };
   const crReasons: string[] = [];
@@ -299,6 +307,9 @@ export const ChatResponse = React.memo(function ChatResponse({
     () => parseDownloadMarkers(contentWithoutArtifacts),
     [contentWithoutArtifacts],
   );
+  const effectiveReasoning = (
+    isStreaming ? streamingReasoning : persistedReasoning
+  )?.trim() ?? '';
   // During streaming, use live artifacts from SSE events (they arrive before
   // the final content exists). Once streaming ends, the markers in the saved
   // content become the source of truth — slot.artifacts gets wiped on
@@ -337,6 +348,14 @@ export const ChatResponse = React.memo(function ChatResponse({
             {/* Status indicator — always above content, same slot as ConfidenceIndicator */}
             {isStreaming && streamingStatusToShow && (
               <StatusMessageComponent status={streamingStatusToShow} />
+            )}
+
+            {effectiveReasoning && (
+              <ReasoningPanel
+                reasoning={effectiveReasoning}
+                isStreaming={isStreaming}
+                hasAnswerContent={Boolean(displayContent.trim())}
+              />
             )}
 
             {/* Show confidence only when not streaming and has answer */}
