@@ -9,6 +9,7 @@ from app.models.blocks import (
     Block,
     BlockSubType,
     BlockType,
+    BlocksContainer,
     DataFormat,
     GroupSubType,
     GroupType,
@@ -68,7 +69,7 @@ def _is_empty_split_container(block: Block) -> bool:
     return False
 
 
-def _assert_all_blocks_have_data(container) -> None:
+def _assert_all_blocks_have_data(container: BlocksContainer) -> None:
     for block in container.blocks:
         assert block.data is not None, (
             f"block index={block.index} type={block.type} "
