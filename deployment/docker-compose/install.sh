@@ -1155,8 +1155,6 @@ header "Waiting for PipesHub to become healthy"
 
 printf "  (May take up to %ds on first start — embedding model may need to download)\n\n" "$HEALTH_WAIT_SECS"
 
-ELAPSED=0
-INTERVAL=10
 CONTAINER_HEALTHY=false
 HOST_REACHABLE=false
 
@@ -1174,34 +1172,89 @@ check_host_reachable() {
   fi
 }
 
-while (( ELAPSED < HEALTH_WAIT_SECS )); do
-  if docker exec pipeshub-ai \
-      curl -sf http://localhost:3000/api/v1/health/services \
-      -o /tmp/pipeshub_hc.json 2>/dev/null && \
-     docker exec pipeshub-ai \
-      python3 -c "
+# One readiness probe: the core services must all report healthy. Runs inside the
+# container so the host needs no curl/python. embedding is intentionally excluded
+# — on first run it downloads its model and can sit 'unhealthy' for minutes
+# without blocking core usability (mirrors the compose healthcheck).
+app_is_healthy() {
+  docker exec pipeshub-ai \
+    curl -sf http://localhost:3000/api/v1/health/services \
+    -o /tmp/pipeshub_hc.json 2>/dev/null || return 1
+  docker exec pipeshub-ai python3 -c "
 import json, sys
 d = json.load(open('/tmp/pipeshub_hc.json'))
 s = d.get('services', {}) or {}
-# embedding is intentionally excluded: on first run it downloads its model
-# and may remain 'unhealthy' for several minutes; it is not required for
-# the core application to be usable.
 required = ('query', 'connector', 'indexing', 'docling')
-ok = all(s.get(k) == 'healthy' for k in required)
-sys.exit(0 if ok else 1)
-" 2>/dev/null; then
+sys.exit(0 if all(s.get(k) == 'healthy' for k in required) else 1)
+" 2>/dev/null
+}
+
+# A container that has restarted several times is broken in a way the stack can't
+# recover from on its own — it is crashing (e.g. SIGSEGV) or being killed (e.g.
+# OOM). Report any such container (by the compose project label, so profile-gated
+# services are included) with its restart count and last exit code so the failure
+# names the actual symptom instead of guessing a cause. exit 137 = killed (often
+# OOM), 139 = segfault. Output is one indented line per offending container.
+CRASH_LOOP_THRESHOLD=4
+crash_looping_containers() {
+  local id name count exit_code
+  for id in $(docker ps -aq --filter "label=com.docker.compose.project=${PROJECT_NAME}" 2>/dev/null); do
+    count="$(docker inspect "$id" --format '{{.RestartCount}}' 2>/dev/null || echo 0)"
+    if [[ "${count:-0}" -ge "$CRASH_LOOP_THRESHOLD" ]]; then
+      name="$(docker inspect "$id" --format '{{.Name}}' 2>/dev/null | sed 's#^/##')"
+      exit_code="$(docker inspect "$id" --format '{{.State.ExitCode}}' 2>/dev/null || echo '?')"
+      printf '    - %s (%s restarts, last exit %s)\n' "$name" "$count" "${exit_code:-?}"
+    fi
+  done
+}
+
+# Poll until healthy or the deadline passes. On a TTY, redraw a single spinner
+# line in place (clean, one line); when output is captured (logs, curl | bash,
+# CI) emit a sparse heartbeat instead so transcripts don't fill with frames.
+ELAPSED=0
+CHECK_EVERY=5
+HEARTBEAT_EVERY=30
+START_TS=$SECONDS
+_spinner=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+_spin=0
+_CRASH_REPORT=""
+_is_tty=false; [[ -t 1 ]] && _is_tty=true
+
+while (( ELAPSED < HEALTH_WAIT_SECS )); do
+  if (( ELAPSED % CHECK_EVERY == 0 )) && app_is_healthy; then
     CONTAINER_HEALTHY=true
     break
   fi
-  printf "  Waiting... %ds elapsed\n" "$ELAPSED"
-  sleep "$INTERVAL"
-  ELAPSED=$(( ELAPSED + INTERVAL ))
+  # After a grace period for normal startup churn (e.g. Kafka waiting on
+  # Zookeeper), give up early if a container is clearly restart-looping — it will
+  # not recover on its own, so there is no point waiting out the full timeout.
+  if (( ELAPSED >= 30 && ELAPSED % 15 == 0 )); then
+    _CRASH_REPORT="$(crash_looping_containers)"
+    [[ -n "$_CRASH_REPORT" ]] && break
+  fi
+  if $_is_tty; then
+    printf "\r  ${CYAN}%s${RESET} Starting services… ${BOLD}%ds${RESET} elapsed (timeout %ds)  " \
+      "${_spinner[_spin]}" "$ELAPSED" "$HEALTH_WAIT_SECS"
+    _spin=$(( (_spin + 1) % ${#_spinner[@]} ))
+    sleep 1
+    ELAPSED=$(( ELAPSED + 1 ))
+  else
+    (( ELAPSED % HEARTBEAT_EVERY == 0 )) && \
+      printf "  … still starting (%ds / %ds)\n" "$ELAPSED" "$HEALTH_WAIT_SECS"
+    sleep "$CHECK_EVERY"
+    ELAPSED=$(( ELAPSED + CHECK_EVERY ))
+  fi
 done
 
-printf "\n"
+# Final probe: the app may have crossed the line within the last interval; do not
+# report a false "not ready" verdict if it is in fact serving now.
+if ! $CONTAINER_HEALTHY && app_is_healthy; then CONTAINER_HEALTHY=true; fi
+
+# Erase the spinner line so the result prints cleanly.
+$_is_tty && printf "\r\033[K"
 
 if $CONTAINER_HEALTHY; then
-  success "PipesHub services are healthy."
+  success "PipesHub services are healthy (ready in $(( SECONDS - START_TS ))s)."
   if check_host_reachable; then
     HOST_REACHABLE=true
   else
@@ -1209,6 +1262,32 @@ if $CONTAINER_HEALTHY; then
     warn "This is usually a port-publish, firewall, or reverse-proxy issue."
     warn "  docker compose -f ${COMPOSE_FILE} -p ${PROJECT_NAME} logs -f pipeshub-ai"
   fi
+elif [[ -n "${_CRASH_REPORT:-}" ]]; then
+  error "A container keeps restarting, so the stack cannot become healthy:"
+  printf "%s\n" "$_CRASH_REPORT"
+  _c1="$(printf '%s' "$_CRASH_REPORT" | sed -n '1s/^[[:space:]]*-[[:space:]]*\([^ ]*\).*/\1/p')"
+  _c1="${_c1:-<name>}"
+  warn "A service that restarts repeatedly is crashing or being killed. Find out why:"
+  warn "  docker logs --tail 50 ${_c1}"
+  warn "  docker inspect ${_c1} --format 'exit={{.State.ExitCode}} oom={{.State.OOMKilled}}'"
+  warn "Read the last exit code above, then:"
+  # Memory hint: on Linux/WSL the host figure (free) is what matters; on
+  # macOS/Windows containers run in the Docker Desktop VM, so report its
+  # allocation instead. free(1)/awk do not exist on macOS in the host sense.
+  if $IS_LINUX || $IS_WSL; then
+    _free_mb="$(free -m 2>/dev/null | awk '/^Mem:/{print $7}')"
+    [[ -n "${_free_mb:-}" ]] && warn "  (available memory right now: ${_free_mb} MB; the full stack wants ~16 GB)"
+  else
+    _vm_mb="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
+    _vm_mb=$(( _vm_mb / 1024 / 1024 ))
+    (( _vm_mb > 0 )) && warn "  (Docker Desktop VM memory: ${_vm_mb} MB; the full stack wants ~16 GB — raise it in Settings → Resources)"
+  fi
+  warn "  • exit 137 / oom=true → out of memory. Free RAM, or switch to the lighter"
+  warn "      'slim' profile (Redis broker + KV; drops Kafka/Zookeeper): ./install.sh --reconfigure"
+  warn "  • exit 139            → the service crashed (segfault). Usually a corrupted data"
+  warn "      volume from an earlier hard kill — recreate it and re-run ./install.sh. If it"
+  warn "      recurs on a fresh volume, it is an incompatible host kernel/CPU (see docker logs)."
+  warn "  • anything else       → read 'docker logs' above for the specific error"
 else
   warn "Health check did not pass within ${HEALTH_WAIT_SECS}s."
   warn "Services may still be starting (first start can be slow while the embedding model downloads). Check logs:"
