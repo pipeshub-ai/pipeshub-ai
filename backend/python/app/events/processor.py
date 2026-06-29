@@ -1008,6 +1008,57 @@ class Processor:
 
         return processed_blocks_container.block_groups, processed_blocks_container.blocks
 
+    async def _process_single_blockgroup_html(
+        self,
+        block_group: BlockGroup,
+        record_name: str,
+    ) -> Tuple[List[BlockGroup], List[Block]]:
+        """
+        Process a single block group's HTML data into blocks.
+
+        Mirrors ``_process_single_blockgroup`` but uses the HTML parser.
+        Images should already be base64-inlined by the connector; any remaining
+        remote URLs are fetched as a safety net.
+        """
+        html_data = block_group.data
+        if not html_data or not isinstance(html_data, str):
+            raise ValueError(
+                f"BlockGroup {block_group.index} has no valid HTML data"
+            )
+
+        html_parser = self.parsers[ExtensionTypes.HTML.value]
+        html_content = html_parser.clean_html(html_data)
+
+        caption_map: Dict[str, str] = {}
+        modified_html, images = html_parser.extract_and_replace_images(html_content)
+
+        if images:
+            image_parser = self.parsers[ExtensionTypes.PNG.value]
+            urls_to_convert = [image["url"] for image in images]
+            base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+            for i, image in enumerate(images):
+                if base64_urls[i]:
+                    caption_map[image["new_alt_text"]] = base64_urls[i]
+
+            self.logger.debug(
+                f"📷 Extracted {len(images)} images from HTML BlockGroup {block_group.index}, "
+                f"converted {len([u for u in base64_urls if u])} to base64"
+            )
+
+        processed_blocks_container = await html_parser.parse(
+            modified_html,
+            caption_map=caption_map or None,
+            name=block_group.name or record_name,
+        )
+
+        self.logger.debug(
+            f"✅ Processed HTML BlockGroup {block_group.index}: "
+            f"collected {len(processed_blocks_container.blocks)} blocks, "
+            f"{len(processed_blocks_container.block_groups)} block_groups"
+        )
+
+        return processed_blocks_container.block_groups, processed_blocks_container.blocks
+
     def _calculate_index_shift_map(
         self,
         block_groups_with_index: List[BlockGroup],
@@ -1272,7 +1323,7 @@ class Processor:
             return block_containers
 
         self.logger.info(
-            f"🔄 Processing {len(block_groups_to_process)} BlockGroups with markdown parser"
+            f"🔄 Processing {len(block_groups_to_process)} BlockGroups"
         )
 
         # ========== PHASE 1: Process all BlockGroups and collect results ==========
@@ -1286,9 +1337,14 @@ class Processor:
 
         for block_group in block_groups_to_process:
             try:
-                new_block_groups, new_blocks = await self._process_single_blockgroup(
-                    block_group, record_name, md_parser
-                )
+                if block_group.format == DataFormat.HTML:
+                    new_block_groups, new_blocks = await self._process_single_blockgroup_html(
+                        block_group, record_name
+                    )
+                else:
+                    new_block_groups, new_blocks = await self._process_single_blockgroup(
+                        block_group, record_name, md_parser
+                    )
 
                 # Store results for later merging
                 processing_results[block_group.index] = (new_block_groups, new_blocks)
