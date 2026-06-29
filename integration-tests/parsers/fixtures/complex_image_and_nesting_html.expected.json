@@ -162,7 +162,14 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Connector",
+          "Status",
+          "Screenshot"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -214,7 +221,14 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "ID",
+          "Description",
+          "Preview"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -261,7 +275,13 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Connector",
+          "Details"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -308,7 +328,13 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Connector",
+          "Details"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -355,7 +381,13 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Level 1",
+          "Content"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -402,7 +434,13 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Level 1",
+          "Content"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],

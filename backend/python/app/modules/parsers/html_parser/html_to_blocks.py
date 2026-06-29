@@ -2112,6 +2112,7 @@ class _DomWalker:
             column_names=headers or None,
             captions=[caption] if caption else [],
         )
+        group.data = {"table_summary": caption, "column_headers": headers}
         group.children = BlockGroupChildren.from_indices(
             block_indices=row_block_indices,
             block_group_indices=open_group.child_group_indices,

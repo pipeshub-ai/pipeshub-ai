@@ -45,7 +45,15 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "Release history at a glance",
+        "column_headers": [
+          "Version",
+          "Date",
+          "Highlights",
+          "Types"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],

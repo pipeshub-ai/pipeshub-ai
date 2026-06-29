@@ -259,7 +259,15 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Cadence",
+          "Event",
+          "Format",
+          "Length"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -343,7 +351,14 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Topic",
+          "Person",
+          "Slack handle"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],

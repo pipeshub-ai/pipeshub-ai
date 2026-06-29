@@ -21,6 +21,7 @@ from app.modules.parsers.html_parser.html_to_blocks import (
 )
 from app.modules.parsers.markdown.markdown_to_blocks import _Segment
 from app.modules.parsers.html_parser.selectolax_html_parser import SelectolaxHtmlParser
+from app.modules.transformers.block_container_validator import BlockContainerValidator
 
 _COMPLEX_HTML = Path(__file__).resolve().parents[6] / "complex-html.html"
 
@@ -524,7 +525,10 @@ class TestTables:
             "Q2\nRevenue | Units",
             "YTD Total",
         ]
-        assert table_group.data is None
+        assert table_group.data == {
+            "table_summary": "",
+            "column_headers": table_group.table_metadata.column_names,
+        }
         row_blocks = [
             block for block in container.blocks
             if block.type == BlockType.TABLE_ROW
@@ -566,7 +570,10 @@ class TestTables:
         table_group = container.block_groups[0]
         assert table_group.table_metadata is not None
         assert table_group.table_metadata.captions == ["Quarterly Revenue Report"]
-        assert table_group.data is None
+        assert table_group.data == {
+            "table_summary": "Quarterly Revenue Report",
+            "column_headers": ["Quarter", "Revenue"],
+        }
         row_blocks = [
             block for block in container.blocks
             if block.type == BlockType.TABLE_ROW
@@ -970,7 +977,10 @@ class TestComplexHtmlFixture:
         )
         assert table_group.table_metadata is not None
         assert table_group.table_metadata.captions == ["Quarterly Revenue Report"]
-        assert table_group.data is None
+        assert table_group.data == {
+            "table_summary": "Quarterly Revenue Report",
+            "column_headers": ["Quarter", "Revenue"],
+        }
         row_blocks = [
             block for block in container.blocks
             if block.type == BlockType.TABLE_ROW
@@ -1043,6 +1053,56 @@ class TestBlockDataNeverNone:
         )
         container = converter.convert(html)
         _assert_all_blocks_have_data(container)
+
+
+class TestBlockContainerValidation:
+    """HTML table output must pass BlockContainerValidator checks."""
+
+    @pytest.mark.parametrize(
+        "html",
+        [
+            "<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>",
+            """
+            <table>
+              <caption>Revenue</caption>
+              <tr><th>Quarter</th><th>Amount</th></tr>
+              <tr><td>Q1</td><td>$10</td></tr>
+            </table>
+            """,
+            """
+            <table>
+              <tr><th>Label</th><th><img alt="Image_1" src="x"></th></tr>
+              <tr><td>Value</td><td>cell</td></tr>
+            </table>
+            """,
+            """
+            <table>
+              <tr><th>col1</th><th>col2</th></tr>
+              <tr><td>text</td><td>Text2 <img alt="Image_1" src="x"> Text3</td></tr>
+            </table>
+            """,
+        ],
+    )
+    def test_table_html_passes_block_container_validation(
+        self,
+        converter: HtmlToBlocksConverter,
+        html: str,
+    ) -> None:
+        container = converter.convert(
+            html,
+            caption_map={"Image_1": "data:image/png;base64,IMG"},
+        )
+        table_groups = [
+            group for group in container.block_groups
+            if group.type == GroupType.TABLE
+        ]
+        for group in table_groups:
+            assert group.data is not None
+            assert isinstance(group.data.get("column_headers"), list)
+            assert group.table_metadata is not None
+            assert group.table_metadata.num_of_cells is not None
+
+        BlockContainerValidator().validate(container)
 
 
 class TestSelectolaxHtmlParser:

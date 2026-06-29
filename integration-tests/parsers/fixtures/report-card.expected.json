@@ -46,7 +46,18 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Subject / Teacher",
+          "Term 1",
+          "Term 2",
+          "Annual Exam",
+          "Total %",
+          "Grade",
+          "Position"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -95,7 +106,15 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Month",
+          "Working Days",
+          "Present",
+          "%"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -143,7 +162,14 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Leave Type",
+          "Days Taken",
+          "Authorised"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -193,7 +219,16 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Activity",
+          "Category",
+          "Achievements & Participation",
+          "Discipline",
+          "Grade"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],

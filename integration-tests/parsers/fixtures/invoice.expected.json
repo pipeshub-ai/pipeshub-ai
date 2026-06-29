@@ -44,7 +44,16 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Description",
+          "Qty / Hrs",
+          "Unit Price",
+          "Discount",
+          "Amount"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -124,7 +133,10 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": []
+      },
       "format": null,
       "weburl": null,
       "comments": [],
