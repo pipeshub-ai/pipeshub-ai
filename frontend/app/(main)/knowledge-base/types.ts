@@ -127,6 +127,19 @@ export type IndexingStatus =
   | 'AUTO_INDEX_OFF'
   | 'QUEUED'
   | 'EMPTY';
+
+/**
+ * Coarse pipeline phase within an IN_PROGRESS record. Refines `indexingStatus`
+ * so the UI can show where a record is (and detect stalls). Written by the
+ * backend at the shared pipeline checkpoints, so it is file-type and model
+ * agnostic.
+ */
+export type IndexingStage =
+  | 'QUEUED'
+  | 'EXTRACTING'
+  | 'INDEXING'
+  | 'COMPLETED'
+  | 'FAILED';
 export type SharingStatus = 'private' | 'team' | 'personal' | 'shared';
 
 /**
@@ -203,6 +216,8 @@ export interface KnowledgeHubNode {
   recordType?: RecordType | null;
   indexingStatus?: IndexingStatus | null;
   reason?: string | null;
+  indexingStage?: IndexingStage | null;
+  lastActivityTimestamp?: number | null;
   sizeInBytes?: number | null;
   mimeType?: string | null;
   extension?: string | null;
@@ -481,6 +496,8 @@ export interface RecordDetailsResponse {
     isArchived: boolean;
     indexingStatus: IndexingStatus;
     reason?: string;
+    indexingStage?: IndexingStage | null;
+    lastActivityTimestamp?: number | null;
     connectorName?: string;
     hideWeburl?: boolean;
     previewRenderable?: boolean;

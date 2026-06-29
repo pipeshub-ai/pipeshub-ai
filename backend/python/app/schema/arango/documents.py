@@ -248,6 +248,11 @@ record_schema = {
             "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason
             "lastIndexTimestamp": {"type": ["number", "null"]},
             "lastExtractionTimestamp": {"type": ["number", "null"]},
+            # Coarse pipeline phase within IN_PROGRESS; refines indexingStatus for the UI.
+            # Values: QUEUED | EXTRACTING | INDEXING | COMPLETED | FAILED (backend-controlled).
+            "indexingStage": {"type": ["string", "null"]},
+            # Heartbeat updated at each pipeline checkpoint; UI flags stalled records from it.
+            "lastActivityTimestamp": {"type": ["number", "null"]},
             "summaryDocumentId": {"type": ["string", "null"]},
             "virtualRecordId": {"type": ["string", "null"], "default": None},
             "previewRenderable": {"type": ["boolean", "null"], "default": True},

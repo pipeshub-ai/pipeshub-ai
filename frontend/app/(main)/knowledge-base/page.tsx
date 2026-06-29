@@ -57,6 +57,7 @@ import {
   isKbCollectionsHubApp,
 } from './utils/all-records-transformer';
 import { buildFilterParams, buildAllRecordsFilterParams } from './utils';
+import { hasActiveIndexing } from './utils/indexing-progress';
 import { ShareSidebar } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { createKBShareAdapter } from './share-adapter';
@@ -262,6 +263,12 @@ function KnowledgeBasePageContent() {
       ? allRecordsTableData?.items ?? []
       : tableData?.items ?? [];
   }, [isAllRecordsMode, allRecordsTableData?.items, tableData?.items]);
+
+  // Auto-poll for indexing status only while a visible record is still in
+  // flight (QUEUED/IN_PROGRESS). Gating on this boolean keeps the polling effect
+  // (and its backoff) alive across refetches and stops the moment everything
+  // reaches a terminal state, so settled views never poll.
+  const hasActiveRecords = useMemo(() => hasActiveIndexing(tableItems), [tableItems]);
 
   const collectionRootNodes = useMemo(
     () => [
@@ -1282,6 +1289,43 @@ function KnowledgeBasePageContent() {
       }
     }
   }, [isAllRecordsMode, selectedNode, searchParams, fetchTableData, fetchAllRecordsTableData]);
+
+  useEffect(() => {
+    if (!hasActiveRecords) return undefined;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const startedAt = Date.now();
+
+    const nextDelay = (): number => {
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < 60_000) return 4_000;
+      if (elapsed < 5 * 60_000) return 10_000;
+      return 30_000;
+    };
+
+    const schedule = () => {
+      timer = setTimeout(async () => {
+        if (cancelled) return;
+        // Skip the network round-trip while the tab is hidden, but keep the
+        // loop alive so it resumes promptly when the user returns.
+        if (typeof document === 'undefined' || !document.hidden) {
+          try {
+            await refetchMainTableForCurrentRoute();
+          } catch {
+            // Best-effort; a transient failure shouldn't kill the poll loop.
+          }
+        }
+        if (!cancelled) schedule();
+      }, nextDelay());
+    };
+
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [hasActiveRecords, refetchMainTableForCurrentRoute]);
 
   // Handle refresh
   const handleRefresh = useCallback(async () => {

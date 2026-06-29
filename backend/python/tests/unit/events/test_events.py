@@ -178,6 +178,27 @@ class TestMarkRecordStatusEdgeCases:
         assert doc["other"] == "data"
 
     @pytest.mark.asyncio
+    async def test_in_progress_sets_extracting_stage_and_heartbeat(self):
+        """IN_PROGRESS records the EXTRACTING stage + a heartbeat for stall detection."""
+        ep, _, _, gp = _make_event_processor()
+        doc = {"_key": "k8"}
+
+        await ep.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
+
+        assert doc["indexingStage"] == "EXTRACTING"
+        assert isinstance(doc["lastActivityTimestamp"], int)
+
+    @pytest.mark.asyncio
+    async def test_empty_status_sets_no_stage(self):
+        """Terminal skip statuses (EMPTY) are rendered from indexingStatus, no stage."""
+        ep, _, _, gp = _make_event_processor()
+        doc = {"_key": "k9"}
+
+        await ep.mark_record_status(doc, ProgressStatus.EMPTY)
+
+        assert "indexingStage" not in doc
+
+    @pytest.mark.asyncio
     async def test_error_with_non_empty_status_does_not_raise(self):
         """Errors with non-EMPTY statuses are swallowed."""
         ep, logger, _, gp = _make_event_processor()

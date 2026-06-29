@@ -12,6 +12,7 @@ export default defineConfig({
       'app/(main)/notifications/__tests__/store.test.ts',
       'app/(main)/notifications/__tests__/useNotificationSocket.test.tsx',
       'lib/socket/__tests__/notification-socket.test.ts',
+      'app/(main)/knowledge-base/utils/__tests__/indexing-progress.test.ts',
     ],
     passWithNoTests: false,
   },

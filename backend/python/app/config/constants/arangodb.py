@@ -495,6 +495,22 @@ class ProgressStatus(Enum):
     QUEUED = "QUEUED"
 
 
+class IndexingStage(Enum):
+    """Coarse pipeline phase within an IN_PROGRESS record.
+
+    Written at the shared pipeline checkpoints that every file type and model
+    path flows through, so the UI can show where a record is and detect stalls.
+    This refines ``indexingStatus`` (which only distinguishes terminal vs
+    in-progress) without coupling to any specific parser.
+    """
+
+    QUEUED = "QUEUED"
+    EXTRACTING = "EXTRACTING"
+    INDEXING = "INDEXING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
 class RecordTypes(Enum):
     FILE = "FILE"
     ATTACHMENT = "ATTACHMENT"

@@ -8,6 +8,7 @@ import { formatFileSize } from '@/app/components/file-preview/utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
+import { getIndexingProgressView } from '@/app/(main)/knowledge-base/utils/indexing-progress';
 
 interface RecordMetadataPanelProps {
   recordDetails: RecordDetailsResponse;
@@ -139,6 +140,40 @@ function indexingStatusColors(status: string | undefined): IndexingStatusColors 
     default:
       return { bg: 'var(--olive-3)', text: 'var(--olive-11)', border: 'var(--olive-5)' };
   }
+}
+
+function IndexingProgressRow({ record }: { record: RecordDetailsResponse['record'] }) {
+  const view = getIndexingProgressView(record);
+  const accent = view.isStalled ? 'var(--orange-9)' : 'var(--blue-9)';
+  const labelColor = view.isStalled ? 'var(--orange-11)' : 'var(--blue-11)';
+  return (
+    <Box style={{ padding: 'var(--space-2) var(--space-3)', borderBottom: '1px solid var(--olive-3)' }}>
+      <Flex align="center" justify="between" style={{ marginBottom: 'var(--space-1)' }}>
+        <Text size="2" weight="medium" style={{ color: labelColor }}>
+          {view.label}
+        </Text>
+        <Text size="1" style={{ color: 'var(--olive-10)' }}>
+          {view.percent}%
+        </Text>
+      </Flex>
+      <Box style={{ height: '4px', borderRadius: '9999px', background: 'var(--olive-4)', overflow: 'hidden' }}>
+        <Box
+          style={{
+            height: '100%',
+            width: `${view.percent}%`,
+            background: accent,
+            borderRadius: '9999px',
+            transition: 'width 0.3s linear',
+          }}
+        />
+      </Box>
+      {view.detail ? (
+        <Text size="1" style={{ color: labelColor, marginTop: 'var(--space-1)' }}>
+          {view.detail}
+        </Text>
+      ) : null}
+    </Box>
+  );
 }
 
 function IndexingStatusChip({ status }: { status: string | undefined }) {
@@ -491,6 +526,9 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                   ) : null}
                 </Flex>
               </Flex>
+              {record.indexingStatus === 'IN_PROGRESS' ? (
+                <IndexingProgressRow record={record} />
+              ) : null}
               {fileSizeDisplay ? (
                 <DetailRow label={t('recordView.labels.fileSize')} value={fileSizeDisplay} />
               ) : null}

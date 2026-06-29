@@ -19,6 +19,7 @@ import type {
 import { FolderIcon } from '@/app/components/ui';
 import { KbNodeNameIcon } from '../utils/kb-node-name-icon';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
+import { getIndexingProgressView } from '../utils/indexing-progress';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import {
   runItemMenuOpenFromMenu,
@@ -266,7 +267,10 @@ function TableRow({
       let showReason = true;
       switch (item.indexingStatus) {
         case 'COMPLETED': baseLabel = 'Completed'; showReason = false; break;
-        case 'IN_PROGRESS': baseLabel = 'In Progress'; showReason = false; break;
+        case 'IN_PROGRESS': {
+          const view = getIndexingProgressView(item);
+          return view.isStalled && view.detail ? `${view.label} — ${view.detail}` : view.label;
+        }
         case 'FAILED': baseLabel = 'Failed'; break;
         case 'FILE_TYPE_NOT_SUPPORTED': baseLabel = 'File Type Not Supported'; break;
         case 'NOT_STARTED': baseLabel = 'Not Started'; break;
@@ -305,8 +309,12 @@ function TableRow({
       switch (item.indexingStatus) {
         case 'COMPLETED':
           return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--emerald-11)" />;
-        case 'IN_PROGRESS':
-          return <LapTimerIcon size={20} color="var(--amber-9)" />;
+        case 'IN_PROGRESS': {
+          const view = getIndexingProgressView(item);
+          return view.isStalled
+            ? <MaterialIcon name="error_outline" size={16} color="var(--orange-9)" />
+            : <LapTimerIcon size={20} color="var(--amber-9)" />;
+        }
         case 'FAILED':
           return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
         case 'FILE_TYPE_NOT_SUPPORTED':

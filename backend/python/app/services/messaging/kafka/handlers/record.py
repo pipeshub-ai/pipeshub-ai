@@ -11,6 +11,7 @@ from app.config.constants.arangodb import (
     CollectionNames,
     EventTypes,
     ExtensionTypes,
+    IndexingStage,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
@@ -28,6 +29,7 @@ from app.services.messaging.config import (
 from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.indexing_progress import build_indexing_progress, stage_for_status
 from app.utils.jwt import generate_jwt
 
 
@@ -488,6 +490,8 @@ class RecordEventHandler(BaseEventService):
                     on_event_gen = self.event_processor.on_event(event_data_for_processor)
                     try:
                         async for event in on_event_gen:
+                            if event.event == IndexingEvent.PARSING_COMPLETE and record_id:
+                                await self._mark_indexing_stage(record_id, IndexingStage.INDEXING)
                             yield event
                     finally:
                         await on_event_gen.aclose()
@@ -541,6 +545,8 @@ class RecordEventHandler(BaseEventService):
                     on_event_gen = self.event_processor.on_event(event_data_for_processor)
                     try:
                         async for event in on_event_gen:
+                            if event.event == IndexingEvent.PARSING_COMPLETE and record_id:
+                                await self._mark_indexing_stage(record_id, IndexingStage.INDEXING)
                             yield event
                     finally:
                         await on_event_gen.aclose()
@@ -606,6 +612,24 @@ class RecordEventHandler(BaseEventService):
                 else:
                     self.logger.warning(f"Record {record_id} not found in database")
 
+    async def _mark_indexing_stage(self, record_id: str, stage: IndexingStage) -> None:
+        """Best-effort write of the pipeline stage + heartbeat for a record.
+
+        Does not touch ``indexingStatus`` (which is owned by the start/terminal
+        writes); a failure here must never abort processing, so errors are only
+        logged. File-type/model agnostic — called from the shared event loop.
+        """
+        try:
+            doc = {"id": record_id, **build_indexing_progress(stage)}
+            await self.event_processor.graph_provider.batch_update_nodes(
+                [doc], CollectionNames.RECORDS.value
+            )
+        except Exception as e:
+            self.logger.warning(
+                "⚠️ Failed to mark indexing stage %s for record %s: %s",
+                stage.value, record_id, repr(e),
+            )
+
     async def __update_document_status(
         self,
         record_id: str,
@@ -631,6 +655,13 @@ class RecordEventHandler(BaseEventService):
                     "extractionStatus": extraction_status,
                 }
             )
+
+            try:
+                stage = stage_for_status(ProgressStatus(indexing_status))
+            except ValueError:
+                stage = None
+            if stage is not None:
+                doc.update(build_indexing_progress(stage))
 
             if reason:
                 doc["reason"] = reason

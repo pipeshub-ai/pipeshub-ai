@@ -13,6 +13,7 @@ import {
   shouldShowDownloadForTableItem,
 } from '../utils/kb-table-item-actions';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
+import { getIndexingProgressView } from '../utils/indexing-progress';
 import { useTranslation } from 'react-i18next';
 import {
   getReindexMenuState,
@@ -185,7 +186,24 @@ function GridCard({
               <MaterialIcon name="check_circle" size={12} color="var(--accent-a11)" />
             </Flex>
           );
-        case 'IN_PROGRESS':
+        case 'IN_PROGRESS': {
+          const view = getIndexingProgressView(item);
+          if (view.isStalled) {
+            return (
+              <Flex
+                align="center"
+                justify="center"
+                style={{
+                  backgroundColor: 'var(--orange-2)',
+                  border: '1px solid var(--orange-7)',
+                  borderRadius: 'var(--radius-1)',
+                  padding: '4px 6px',
+                }}
+              >
+                <MaterialIcon name="error_outline" size={12} color="var(--orange-9)" />
+              </Flex>
+            );
+          }
           return (
             <Flex
               align="center"
@@ -199,6 +217,7 @@ function GridCard({
               <LapTimerIcon size={16} color="var(--amber-9)" />
             </Flex>
           );
+        }
         case 'FAILED':
           return (
             <Flex
