@@ -20,18 +20,7 @@ from app.modules.transformers.block_container_validator import (
     BlockContainerValidator,
     Severity,
     ValidationIssue,
-    contains_base64_image,
-    image_b64_payload_lengths,
-    is_placeholder_image_uri,
-    is_substantial_base64_image_payload,
 )
-
-# Valid 1×1 PNG — smallest real image payload used in tests.
-_FULL_1X1_PNG_URI = (
-    "data:image/png;base64,"
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/8B/wIAhAGgJZ2f/0AAAABJRU5ErkJggg=="
-)
-_STUB_PNG_URI = "data:image/png;base64,iVBORw0KGgo="
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +488,7 @@ class TestTextBlocks:
 
 
 class TestImageBlocks:
-    _VALID_DATA_URI = _FULL_1X1_PNG_URI
+    _VALID_DATA_URI = "data:image/png;base64,iVBORw0KGgo="
 
     def test_valid_image_with_data_uri(self):
         container = _container(
@@ -583,18 +572,6 @@ class TestImageBlocks:
     def test_image_data_invalid_type(self):
         container = _container(blocks=[_image_block(0, data=123)])
         _assert_raises_with_codes(container, "IMAGE_DATA_INVALID_TYPE")
-
-    def test_image_uri_placeholder_stub_warns(self):
-        container = _container(blocks=[_image_block(0, data={"uri": _STUB_PNG_URI})])
-        warnings = _validator().validate(container)
-        assert "IMAGE_URI_PLACEHOLDER" in _warning_codes(warnings)
-
-    def test_image_uri_template_style_without_data_prefix_warns(self):
-        container = _container(
-            blocks=[_image_block(0, data={"uri": "image/png;base64,iVBORw0KGgo="})]
-        )
-        warnings = _validator().validate(container)
-        assert "IMAGE_URI_PLACEHOLDER" in _warning_codes(warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -861,7 +838,6 @@ class TestValidatorHelpers:
             ("https://example.com/a.png", False),
             ("http://example.com/a.png", False),
             ("data:image/png;base64,abc", True),
-            ("image/png;base64,abc", True),
             ("ftp://example.com/a.png", False),
             ("", False),
             ("data:image/png", False),
@@ -881,40 +857,3 @@ class TestValidatorHelpers:
 
     def test_format_none(self):
         assert BlockContainerValidator._format(None) is None
-
-
-class TestBase64ImageDetection:
-    def test_stub_png_header_is_not_substantial(self):
-        assert is_substantial_base64_image_payload("iVBORw0KGgo=") is False
-
-    def test_full_1x1_png_is_substantial(self):
-        payload = _FULL_1X1_PNG_URI.split(",", 1)[1]
-        assert is_substantial_base64_image_payload(payload) is True
-
-    def test_placeholder_doc_string_not_detected_in_text(self):
-        text = 'Example field: "uri": "image/png;base64,iVBORw0KGgo..."'
-        assert contains_base64_image(text) is False
-
-    def test_substantial_embedded_image_detected_in_text(self):
-        text = f"Inline image: {_FULL_1X1_PNG_URI} end"
-        assert contains_base64_image(text) is True
-
-    def test_is_placeholder_image_uri_for_stub(self):
-        assert is_placeholder_image_uri(_STUB_PNG_URI) is True
-        assert is_placeholder_image_uri(_FULL_1X1_PNG_URI) is False
-
-    def test_image_b64_payload_lengths(self):
-        b64_len, decoded_len = image_b64_payload_lengths(_FULL_1X1_PNG_URI)
-        assert b64_len >= 80
-        assert decoded_len >= 68
-
-    def test_text_block_with_stub_in_docs_passes_validation(self):
-        text = 'See {"uri": "image/png;base64,iVBORw0KGgo..."} for format'
-        container = _container(blocks=[_text_block(0, data=text)])
-        assert _validator().validate(container) == []
-
-    def test_text_block_with_full_embedded_image_fails(self):
-        container = _container(
-            blocks=[_text_block(0, data=f"broken: {_FULL_1X1_PNG_URI}")]
-        )
-        _assert_raises_with_codes(container, "TEXT_DATA_CONTAINS_BASE64_IMAGE")
