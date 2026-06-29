@@ -20370,7 +20370,7 @@ paths:
 
         **File conversion:**
 
-        Use the optional `convertTo` parameter to request file format conversion (e.g., PDF to text).
+        Use the optional `convertTo` parameter to request file format conversion (e.g., PDF to text). Supported conversions include PPT to PDF and PPTX to PDF.
       operationId: getRecordById
       x-pipeshub-sdk: true
       security:
@@ -20385,7 +20385,9 @@ paths:
             type: string
         - name: convertTo
           in: query
-          description: Optional format to convert the file to
+          description: >-
+            Optional format to convert the file to (e.g., PDF to text).
+            Supported conversions include PPT to PDF and PPTX to PDF.
           schema:
             type: string
             example: "txt"
