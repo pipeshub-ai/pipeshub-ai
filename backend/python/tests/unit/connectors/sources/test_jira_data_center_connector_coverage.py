@@ -3303,7 +3303,7 @@ async def test_parse_issue_to_blocks_rich_comments_and_attachments():
                     "created": "2024-01-01T00:00:00.000+0000",
                     "body": "[^doc.pdf]See attached.",
                     "renderedBody": (
-                        '<p><a href="http://localhost/secure/attachment/20/doc.pdf">'
+                        '<p><a href="http://localhost/secure/attachment/10/doc.pdf">'
                         "doc.pdf</a> See attached.</p>"
                     ),
                 },
