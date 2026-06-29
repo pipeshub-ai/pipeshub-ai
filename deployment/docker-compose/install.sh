@@ -11,6 +11,7 @@
 #   ./install.sh --yes           # accept all defaults, non-interactive (CI)
 #   ./install.sh --version 0.7.0 # pin a specific image tag
 #   ./install.sh --build         # build image locally instead of pulling from Docker Hub
+#   ./install.sh --no-pull       # start from the cached image (air-gapped / keep current)
 #   ./install.sh --print-env-only  # write .env and print compose command, don't launch
 #   ./install.sh --reconfigure   # overwrite an existing .env (re-run wizard)
 #   ./install.sh --upgrade       # pull/rebuild images and recreate containers
@@ -87,6 +88,7 @@ FLAG_UPGRADE=false
 FLAG_STOP=false
 FLAG_UNINSTALL=false
 FLAG_BUILD=false
+FLAG_NO_PULL=false
 CLI_VERSION=""
 
 # ── CLI argument parsing ──────────────────────────────────────────────────────
@@ -100,6 +102,8 @@ Options:
   -y, --yes            Accept all defaults, skip interactive prompts (CI)
       --version TAG    Pin a specific image tag (e.g. 0.7.0, latest, slim)
       --build          Build image locally from source instead of pulling from Docker Hub
+      --no-pull        Do not refresh the image; start from the locally cached one
+                       (air-gapped hosts, or to keep a known-good/old image)
       --print-env-only Write .env and print the compose command; do not launch
       --reconfigure    Overwrite an existing .env (re-run the wizard)
       --upgrade        Pull or rebuild images and recreate containers (data preserved)
@@ -113,6 +117,7 @@ Environment overrides (bypass prompts in CI):
   PIPESHUB_BROKER        kafka | redis
   PIPESHUB_KV_STORE      etcd | redis
   PIPESHUB_IMAGE_SOURCE  prebuilt | local  (default: prebuilt)
+  PIPESHUB_NO_PULL       1 | true to skip the image refresh (same as --no-pull)
   PIPESHUB_VERSION       image tag (prebuilt) or local build tag (default: local)
   PIPESHUB_PORT          host port (default: 3000)
   PIPESHUB_PUBLIC_URL    public HTTPS URL (e.g. https://pipeshub.yourdomain.com)
@@ -124,6 +129,7 @@ while [[ $# -gt 0 ]]; do
     -y|--yes)            FLAG_YES=true ;;
     --version)           [[ $# -lt 2 ]] && die "--version requires a TAG argument (e.g. --version 0.7.0)"; CLI_VERSION="$2"; shift ;;
     --build)             FLAG_BUILD=true ;;
+    --no-pull)           FLAG_NO_PULL=true ;;
     --print-env-only)    FLAG_PRINT_ENV_ONLY=true ;;
     --reconfigure)       FLAG_RECONFIGURE=true ;;
     --upgrade)           FLAG_UPGRADE=true ;;
@@ -1109,20 +1115,30 @@ _USE_BUILD=false
 # readable in every context.
 _PROGRESS=(--progress plain)
 
-if $FLAG_UPGRADE; then
-  if $_USE_BUILD; then
-    info "Rebuilding image from source for tag: ${IMAGE_TAG:-local}..."
-  else
-    info "Pulling new images for tag: ${IMAGE_TAG:-latest}..."
-    docker compose "${_PROGRESS[@]}" \
-      -f "$COMPOSE_FILE" \
-      -p "$PROJECT_NAME" \
-      --env-file "$ENV_FILE" \
-      pull 2>&1 || true
-  fi
-fi
+# Decide whether to refresh the prebuilt image from the registry before starting.
+# Pure decision (no side effects) so it is unit-testable in isolation.
+# `docker compose up -d` only pulls an image that is ABSENT locally, so a cached
+# :latest is reused forever — that is how a host ends up on a weeks-old build.
+# Refreshing by default fixes that, with deliberate opt-outs for the cases where
+# someone wants their current/specific image instead.
+should_pull_image() { # args: use_build flag_no_pull env_no_pull -> "true"|"false"
+  local use_build="$1" flag_no_pull="$2" env_no_pull="$3"
+  # Local build owns the image; nothing to pull.
+  [[ "$use_build" == true ]] && { echo false; return; }
+  # Explicit opt-out: keep a known-good/old cached image, or air-gapped host.
+  [[ "$flag_no_pull" == true ]] && { echo false; return; }
+  case "$env_no_pull" in 1|true|yes) echo false; return ;; esac
+  echo true
+}
+
+_DO_PULL="$(should_pull_image "$_USE_BUILD" "$FLAG_NO_PULL" "${PIPESHUB_NO_PULL:-}")"
+# Pinning a specific tag (--version / PIPESHUB_VERSION) still benefits from the
+# pull: it fetches exactly that immutable tag rather than a moving :latest, so
+# reproducibility is preserved while a stale local copy is corrected.
+_APP_IMAGE="pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}"
 
 if $_USE_BUILD; then
+  $FLAG_UPGRADE && info "Rebuilding image from source for tag: ${IMAGE_TAG:-local}..."
   info "Building image from source and starting containers..."
   info "(This may take 10–30+ minutes on first run)"
   if ! docker compose "${_PROGRESS[@]}" \
@@ -1135,6 +1151,27 @@ if $_USE_BUILD; then
     die "Fix the build error above and re-run install.sh."
   fi
 else
+  if [[ "$_DO_PULL" == true ]]; then
+    info "Refreshing the PipesHub image ($_APP_IMAGE)... (pass --no-pull to keep the cached image)"
+    # Only the app image is on a moving :latest; infra images use pinned tags and
+    # are fetched by `up -d` when absent, so refreshing just pipeshub-ai is enough.
+    # A pull failure is non-fatal when an image is already cached, so a flaky
+    # network or a temporary registry outage does not block a working install.
+    if ! docker compose "${_PROGRESS[@]}" \
+        -f "$COMPOSE_FILE" \
+        -p "$PROJECT_NAME" \
+        --env-file "$ENV_FILE" \
+        pull pipeshub-ai 2>&1; then
+      if docker image inspect "$_APP_IMAGE" >/dev/null 2>&1; then
+        warn "Could not refresh the image; continuing with the cached $_APP_IMAGE."
+      else
+        warn "Could not pull $_APP_IMAGE and none is cached locally — the next step may fail."
+        warn "On an air-gapped host, preload the image (docker load) and re-run with --no-pull."
+      fi
+    fi
+  else
+    info "Skipping image refresh; using the locally cached $_APP_IMAGE (--no-pull)."
+  fi
   info "Starting containers..."
   if ! docker compose "${_PROGRESS[@]}" \
       -f "$COMPOSE_FILE" \
