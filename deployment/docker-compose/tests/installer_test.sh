@@ -14,6 +14,11 @@
 #     progress, generous/overridable health-wait timeout).
 #   - Compose app healthcheck stays reconciled with the installer's readiness
 #     check (core services only; embedding excluded).
+#   - Compose runtime robustness guards: mongo WiredTiger cache cap + memory
+#     limit + overridable image tag / glibc rseq tunable, and HuggingFace offline
+#     mode (default on, overridable) so baked-in models load without a network
+#     check that would otherwise hang indexing startup on offline hosts.
+#   - env.template documents the above knobs.
 #
 # Run: bash deployment/docker-compose/tests/installer_test.sh
 # ==============================================================================
@@ -214,6 +219,27 @@ check "mongo image tag is overridable" "$compose" 'image: mongo:${MONGO_IMAGE_TA
 # Verified fix for the glibc rseq segfault on new kernels: an overridable
 # GLIBC_TUNABLES env (empty default, so normal hosts are unaffected).
 check "mongo GLIBC_TUNABLES is overridable" "$compose" 'GLIBC_TUNABLES=${MONGO_GLIBC_TUNABLES:-}'
+# The default local models (dense embedding + Qdrant/BM25 sparse) are baked into
+# the image. huggingface_hub still does a network check before using the cache,
+# which blocks indexing startup *forever* (sync model load in IndexingPipeline
+# __init__) on hosts whose container has no outbound internet. Offline mode must
+# default ON and stay overridable for users who pull a custom remote model.
+check "HF hub offline defaults on + overridable" "$compose" 'HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}'
+check "transformers offline defaults on + overridable" "$compose" 'TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-1}'
+# Guard against a non-overridable hard-coded offline flag (would break custom
+# remote-model users with no escape hatch).
+if [[ "$compose" == *"HF_HUB_OFFLINE=1"$'\n'* || "$compose" == *"- HF_HUB_OFFLINE=1 "* ]]; then
+  fail "HF_HUB_OFFLINE must be overridable, not hard-coded"
+else
+  pass "HF_HUB_OFFLINE is not hard-coded"
+fi
+
+echo "== env.template documents runtime robustness knobs =="
+envtmpl="$(cat "$COMPOSE_DIR/env.template")"
+check "env.template documents HF_HUB_OFFLINE" "$envtmpl" "HF_HUB_OFFLINE"
+check "env.template documents TRANSFORMERS_OFFLINE" "$envtmpl" "TRANSFORMERS_OFFLINE"
+check "env.template documents mongo rseq tunable" "$envtmpl" "MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1"
+check "env.template documents mongo image pin fallback" "$envtmpl" "MONGO_IMAGE_TAG=8.0.17"
 
 echo "== In-tree installer: crash-loop detection (real function) =="
 eval "$(extract_fn crash_looping_containers "$INNER_INSTALLER")"
