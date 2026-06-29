@@ -98,8 +98,8 @@
 | Text | Plain text files |
 | Google Docs, Sheets, Slides | Google Workspace formats |
 | Images | PNG, JPG, etc. |
-| Audio (Coming Soon) | Audio files |
-| Video (Coming Soon) | Video files |
+| Audio | Audio files (Coming Soon) |
+| Video | Video files (Coming Soon) |
 
 ## Tech Stack
 
