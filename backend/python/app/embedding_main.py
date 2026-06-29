@@ -22,10 +22,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
     EMBEDDING_SERVER_PORT,
 )
+from app.config.providers.encrypted_store import EncryptedKeyValueStore
+from app.telemetry import setup_telemetry
 from app.utils.logger import create_logger
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -263,8 +266,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "Failed to warm up default embedding model (will retry on first request): %s",
             exc,
         )
+
+    config_service: ConfigurationService | None = None
+    try:
+        config_service = ConfigurationService(
+            logger=logger,
+            key_value_store=EncryptedKeyValueStore(logger=logger),
+        )
+        await telemetry.bind(config_service, logger).start()
+    except Exception as exc:
+        logger.warning("Failed to start telemetry pusher: %s", exc)
+
     yield
+
     logger.info("Shutting down embedding server")
+    if telemetry.pusher is not None:
+        await telemetry.pusher.stop()
+    if config_service is not None:
+        try:
+            await config_service.close()
+        except Exception as exc:
+            logger.error("Error closing configuration service: %s", exc)
 
 
 from app.api.middlewares.request_context import RequestContextMiddleware
@@ -281,6 +303,9 @@ app = FastAPI(
 
 # Trace context — outermost.
 app.add_middleware(RequestContextMiddleware)
+
+# Telemetry: metrics middleware + pusher (started/stopped in lifespan).
+telemetry = setup_telemetry(app, service_name="embedding_service")
 
 
 @app.get("/health")

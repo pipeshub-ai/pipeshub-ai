@@ -36,6 +36,7 @@ from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.telemetry import setup_telemetry
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 container = ConnectorAppContainer.init("connector_service")
@@ -353,6 +354,31 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
     except Exception as e:
         logger.error(f"❌ Error during container resource shutdown: {str(e)}")
 
+async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60) -> None:
+    """Periodically set the connector_active gauge from active APPS instances.
+
+    Counts active connector instances by type
+    Uses the DB-agnostic get_all_documents; best-effort, never fatal.
+    """
+    from app.config.constants.arangodb import CollectionNames
+    from app.telemetry.modules.connector_metrics import set_connector_active
+
+    while True:
+        try:
+            docs = await graph_provider.get_all_documents(CollectionNames.APPS.value)
+            counts: dict = {}
+            for doc in docs or []:
+                if doc.get("isActive"):
+                    connector_type = doc.get("type") or "unknown"
+                    counts[connector_type] = counts.get(connector_type, 0) + 1
+            set_connector_active(counts)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Failed to refresh connector_active gauge: {e}")
+        await asyncio.sleep(interval_s)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
@@ -370,6 +396,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Use the already-resolved graph_provider from data_store to avoid coroutine reuse
     logger = app_container.logger()
     graph_provider = data_store.graph_provider
+
+    try:
+        await telemetry.bind(app_container.config_service(), logger).start()
+    except Exception as e:
+        logger.warning(f"❌ Failed to start telemetry pusher: {e}")
+
+    # Refresh the connector_active gauge from the graph DB on a tick.
+    app.state.connector_metrics_task = asyncio.create_task(
+        refresh_connector_metrics(graph_provider, logger, interval_s=60*5), name="connector_metrics_refresh"
+    )
 
     # Start token refresh service at app startup (database-agnostic)
     try:
@@ -452,6 +488,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except (asyncio.CancelledError, Exception):
             pass
     logger.info("🔄 Shut down application started")
+    # Stop connector metrics refresher
+    connector_metrics_task = getattr(app.state, "connector_metrics_task", None)
+    if connector_metrics_task is not None and not connector_metrics_task.done():
+        connector_metrics_task.cancel()
+        try:
+            await connector_metrics_task
+        except (asyncio.CancelledError, Exception):
+            pass
+    # Stop telemetry pusher
+    if telemetry.pusher is not None:
+        await telemetry.pusher.stop()
     # Shutdown all container resources
     try:
         await shutdown_container_resources(app_container)
@@ -538,6 +585,8 @@ app.add_middleware(
 
 # Trace context — outermost, before auth.
 app.add_middleware(RequestContextMiddleware)
+# Telemetry: outermost metrics middleware; pusher started/stopped in lifespan.
+telemetry = setup_telemetry(app, service_name="connector_service")
 
 
 @router.get("/health")

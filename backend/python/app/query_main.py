@@ -28,6 +28,7 @@ from app.services.messaging.config import get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.telemetry import setup_telemetry
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 container = QueryAppContainer.init("query_service")
@@ -137,6 +138,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = app.container.logger()
     logger.debug("🚀 Starting retrieval application")
 
+    try:
+        await telemetry.bind(app_container.config_service(), logger).start()
+    except Exception as e:
+        logger.warning(f"❌ Failed to start telemetry pusher: {e}")
+
     # Get the already-resolved graph_provider from container (set during initialization)
     # This avoids coroutine reuse error
     graph_provider = getattr(app_container, '_graph_provider', None)
@@ -202,6 +208,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
+
+    # Stop telemetry pusher
+    if telemetry.pusher is not None:
+        await telemetry.pusher.stop()
 
     # Cancel embedding warmup task if it is still running.
     warmup_task: asyncio.Task | None = getattr(app.state, "embedding_warmup_task", None)
@@ -281,6 +291,7 @@ app.add_middleware(
 
 # Trace context — outermost, before auth.
 app.add_middleware(RequestContextMiddleware)
+telemetry = setup_telemetry(app, service_name="query_service")
 
 
 @app.get("/health")

@@ -8,7 +8,6 @@ import {
 } from '../../../libs/middlewares/types';
 import { extensionToMimeType } from '../mimetypes/mimetypes';
 import { Logger } from '../../../libs/services/logger.service';
-import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import {
   UploadNewSchema,
   DocumentIdParams,
@@ -58,7 +57,6 @@ export function createStorageRouter(container: Container): Router {
     '/upload',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_UPLOAD),
-    metricsMiddleware(container),
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
       allowedMimeTypes: Object.values(extensionToMimeType),
@@ -85,7 +83,6 @@ export function createStorageRouter(container: Container): Router {
   router.post(
     '/internal/upload',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
-    metricsMiddleware(container),
     async (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
       try {
         const maxFileSize = await resolveMaxUploadSize();
@@ -129,7 +126,6 @@ export function createStorageRouter(container: Container): Router {
     '/placeholder',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(CreateDocumentSchema),
     async (
       req: AuthenticatedUserRequest,
@@ -151,7 +147,6 @@ export function createStorageRouter(container: Container): Router {
   router.post(
     '/internal/placeholder',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(CreateDocumentSchema),
     async (
       req: AuthenticatedServiceRequest,
@@ -173,7 +168,6 @@ export function createStorageRouter(container: Container): Router {
     '/:documentId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(DocumentIdParams),
     async (
       req: AuthenticatedUserRequest,
@@ -190,7 +184,6 @@ export function createStorageRouter(container: Container): Router {
   router.get(
     '/internal/:documentId',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(DocumentIdParams),
     async (
       req: AuthenticatedServiceRequest,
@@ -209,7 +202,6 @@ export function createStorageRouter(container: Container): Router {
     '/:documentId/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_DELETE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(DocumentIdParams),
     async (
       req: AuthenticatedUserRequest,
@@ -226,7 +218,6 @@ export function createStorageRouter(container: Container): Router {
   router.delete(
     '/internal/:documentId/',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(DocumentIdParams),
     async (
       req: AuthenticatedServiceRequest,
@@ -245,7 +236,6 @@ export function createStorageRouter(container: Container): Router {
     '/:documentId/download',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(DocumentIdParamsWithVersion),
     async (
       req: AuthenticatedUserRequest,
@@ -262,7 +252,6 @@ export function createStorageRouter(container: Container): Router {
   router.get(
     '/internal/:documentId/download',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(DocumentIdParamsWithVersion),
     async (
       req: AuthenticatedServiceRequest,
@@ -281,7 +270,6 @@ export function createStorageRouter(container: Container): Router {
     '/:documentId/buffer',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(GetBufferSchema),
     async (
       req: AuthenticatedUserRequest,
@@ -300,7 +288,6 @@ export function createStorageRouter(container: Container): Router {
   router.get(
     '/internal/:documentId/buffer',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(GetBufferSchema),
     async (
       req: AuthenticatedServiceRequest,
@@ -319,7 +306,6 @@ export function createStorageRouter(container: Container): Router {
     '/:documentId/buffer',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
       allowedMimeTypes: Object.values(extensionToMimeType),
@@ -347,7 +333,6 @@ export function createStorageRouter(container: Container): Router {
   router.put(
     '/internal/:documentId/buffer',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
-    metricsMiddleware(container),
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
       allowedMimeTypes: Object.values(extensionToMimeType),
@@ -384,7 +369,6 @@ export function createStorageRouter(container: Container): Router {
       maxFileSize: 1024 * 1024 * 100,
       strictFileUpload: true,
     }).getMiddleware,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(UploadNextVersionSchema),
     async (
       req: AuthenticatedUserRequest,
@@ -427,7 +411,6 @@ export function createStorageRouter(container: Container): Router {
         next(error);
       }
     },
-    metricsMiddleware(container),
     ValidationMiddleware.validate(UploadNextVersionSchema),
     async (
       req: AuthenticatedServiceRequest,
@@ -449,7 +432,6 @@ export function createStorageRouter(container: Container): Router {
     '/:documentId/rollBack',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(RollBackToPreviousVersionSchema),
     async (
       req: AuthenticatedUserRequest,
@@ -472,7 +454,6 @@ export function createStorageRouter(container: Container): Router {
   router.post(
     '/internal/:documentId/rollBack',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(RollBackToPreviousVersionSchema),
     async (
       req: AuthenticatedServiceRequest,
@@ -495,7 +476,6 @@ export function createStorageRouter(container: Container): Router {
     '/:documentId/directUpload',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(DirectUploadSchema),
     async (
       req: AuthenticatedUserRequest,
@@ -513,7 +493,6 @@ export function createStorageRouter(container: Container): Router {
   router.post(
     '/internal/:documentId/directUpload',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(DirectUploadSchema),
     async (
       req: AuthenticatedServiceRequest,
@@ -532,7 +511,6 @@ export function createStorageRouter(container: Container): Router {
     '/:documentId/isModified',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(DocumentIdParams),
     async (
       req: AuthenticatedUserRequest,
@@ -550,7 +528,6 @@ export function createStorageRouter(container: Container): Router {
   router.get(
     '/internal/:documentId/isModified',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(DocumentIdParams),
     async (
       req: AuthenticatedServiceRequest,

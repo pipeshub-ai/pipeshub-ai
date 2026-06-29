@@ -23,6 +23,7 @@ from app.services.messaging.config import ConsumerType, IndexingEvent, StreamMes
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.telemetry import setup_telemetry
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -323,6 +324,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = app.container.logger()
     logger.info("🚀 Starting application")
 
+    try:
+        await telemetry.bind(app_container.config_service(), logger).start()
+    except Exception as e:
+        logger.warning(f"❌ Failed to start telemetry pusher: {e}")
+
     graph_provider = getattr(app_container, '_graph_provider', None)
     if not graph_provider:
         # Fallback: if not set during initialization, resolve it now
@@ -348,6 +354,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
+    # Stop telemetry pusher
+    if telemetry.pusher is not None:
+        await telemetry.pusher.stop()
     # Stop message consumers
     try:
         await stop_kafka_consumers(app_container)
@@ -393,6 +402,8 @@ app = FastAPI(
 
 # Trace context — outermost.
 app.add_middleware(RequestContextMiddleware)
+# Telemetry: metrics middleware + pusher (started/stopped in lifespan).
+telemetry = setup_telemetry(app, service_name="indexing_service")
 
 
 @app.get("/health")

@@ -2,7 +2,6 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { Container } from 'inversify';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
-import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 
 import { TeamsController } from '../controller/teams.controller';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
@@ -24,7 +23,6 @@ export function createTeamsRouter(container: Container) {
     '/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.TEAM_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(createTeamSchema),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -41,7 +39,6 @@ export function createTeamsRouter(container: Container) {
     '/:teamId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.TEAM_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(getTeamSchema),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -57,7 +54,6 @@ export function createTeamsRouter(container: Container) {
     '/:teamId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.TEAM_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(updateTeamSchema),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -73,7 +69,6 @@ export function createTeamsRouter(container: Container) {
     '/:teamId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.TEAM_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(deleteTeamSchema),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -89,7 +84,6 @@ export function createTeamsRouter(container: Container) {
     '/:teamId/users',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.TEAM_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(getTeamUsersSchema),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -105,7 +99,6 @@ export function createTeamsRouter(container: Container) {
     '/user/teams',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.TEAM_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(getUserTeamsQuerySchema),
     async (req: Request, res: Response, next: NextFunction) => {
       try {

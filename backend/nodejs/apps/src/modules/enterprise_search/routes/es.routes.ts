@@ -101,7 +101,6 @@ import {
   listAgentsQuerySchema,
   getAgentConversationByIdSchema,
 } from '../validators/es_validators';
-import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
@@ -137,7 +136,6 @@ export function createConversationalRouter(container: Container): Router {
     '/create',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(enterpriseSearchCreateSchema),
     createConversation(appConfig),
   );
@@ -155,7 +153,6 @@ export function createConversationalRouter(container: Container): Router {
   router.post(
     '/internal/create',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(enterpriseSearchCreateSchema),
     createConversation(appConfig),
   );
@@ -174,7 +171,6 @@ export function createConversationalRouter(container: Container): Router {
     '/attachments/upload',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
-    metricsMiddleware(container),
     chatPdfUpload.array('files'),
     ValidationMiddleware.validate(attachmentUploadSchema),
     uploadChatAttachments(appConfig),
@@ -183,7 +179,6 @@ export function createConversationalRouter(container: Container): Router {
   router.post(
     '/internal/attachments/upload',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
-    metricsMiddleware(container),
     internalAttachmentUpload.array('files'),
     ValidationMiddleware.validate(attachmentUploadSchema),
     uploadChatAttachmentsInternal(appConfig),
@@ -199,7 +194,6 @@ export function createConversationalRouter(container: Container): Router {
     '/attachments/:recordId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(attachmentRecordIdParamsSchema),
     deleteChatAttachment(appConfig),
   );
@@ -208,7 +202,6 @@ export function createConversationalRouter(container: Container): Router {
     '/stream',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(enterpriseSearchCreateSchema),
     streamChat(appConfig),
   );
@@ -216,7 +209,6 @@ export function createConversationalRouter(container: Container): Router {
   router.post(
     '/internal/stream',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(enterpriseSearchCreateSchema),
     streamChatInternal(appConfig),
   );
@@ -234,7 +226,6 @@ export function createConversationalRouter(container: Container): Router {
     '/:conversationId/messages',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(addMessageParamsSchema),
     addMessage(appConfig),
   );
@@ -252,7 +243,6 @@ export function createConversationalRouter(container: Container): Router {
   router.post(
     '/internal/:conversationId/messages',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(addMessageParamsSchema),
     addMessage(appConfig),
   );
@@ -270,7 +260,6 @@ export function createConversationalRouter(container: Container): Router {
     '/:conversationId/messages/stream',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(addMessageParamsSchema),
     addMessageStream(appConfig),
   );
@@ -278,7 +267,6 @@ export function createConversationalRouter(container: Container): Router {
   router.post(
     '/internal/:conversationId/messages/stream',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(addMessageParamsSchema),
     addMessageStreamInternal(appConfig),
   );
@@ -293,7 +281,6 @@ export function createConversationalRouter(container: Container): Router {
     '/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(getAllConversationsQuerySchema),
     getAllConversations,
   );
@@ -308,7 +295,6 @@ export function createConversationalRouter(container: Container): Router {
     '/:conversationId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(conversationIdParamsSchema),
     getConversationById,
   );
@@ -323,7 +309,6 @@ export function createConversationalRouter(container: Container): Router {
     '/:conversationId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(conversationIdParamsSchema),
     deleteConversationById,
   );
@@ -338,7 +323,6 @@ export function createConversationalRouter(container: Container): Router {
     '/:conversationId/share',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(conversationShareParamsSchema),
     shareConversationById(appConfig),
   );
@@ -356,7 +340,6 @@ export function createConversationalRouter(container: Container): Router {
     '/:conversationId/unshare',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(conversationShareParamsSchema),
     unshareConversationById(appConfig),
   );
@@ -372,7 +355,6 @@ export function createConversationalRouter(container: Container): Router {
     '/:conversationId/message/:messageId/regenerate',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(regenerateAnswersParamsSchema),
     regenerateAnswers(appConfig),
   );
@@ -387,7 +369,6 @@ export function createConversationalRouter(container: Container): Router {
     '/:conversationId/title',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(conversationTitleParamsSchema),
     updateTitle,
   );
@@ -403,7 +384,6 @@ export function createConversationalRouter(container: Container): Router {
     '/:conversationId/message/:messageId/feedback',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(updateFeedbackParamsSchema),
     updateFeedback,
   );
@@ -418,7 +398,6 @@ export function createConversationalRouter(container: Container): Router {
     '/:conversationId/archive',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(conversationIdParamsSchema),
     archiveConversation,
   );
@@ -433,7 +412,6 @@ export function createConversationalRouter(container: Container): Router {
     '/:conversationId/unarchive',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(conversationIdParamsSchema),
     unarchiveConversation,
   );
@@ -448,7 +426,6 @@ export function createConversationalRouter(container: Container): Router {
     '/show/archives',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(listAllArchivesConversationQuerySchema),
     listAllArchivesConversation,
   );
@@ -465,7 +442,6 @@ export function createConversationalRouter(container: Container): Router {
     '/show/archives/search',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(searchArchivedConversationsQuerySchema),
     searchArchivedConversations(appConfig),
   );
@@ -482,7 +458,6 @@ export function createSemanticSearchRouter(container: Container): Router {
     '/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.SEMANTIC_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(enterpriseSearchSearchSchema),
     search(appConfig),
   );
@@ -491,7 +466,6 @@ export function createSemanticSearchRouter(container: Container): Router {
     '/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.SEMANTIC_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(enterpriseSearchSearchHistorySchema),
     searchHistory,
   );
@@ -500,7 +474,6 @@ export function createSemanticSearchRouter(container: Container): Router {
     '/:searchId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.SEMANTIC_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(searchIdParamsSchema),
     getSearchById,
   );
@@ -509,7 +482,6 @@ export function createSemanticSearchRouter(container: Container): Router {
     '/:searchId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.SEMANTIC_DELETE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(searchIdParamsSchema),
     deleteSearchById,
   );
@@ -518,7 +490,6 @@ export function createSemanticSearchRouter(container: Container): Router {
     '/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.SEMANTIC_DELETE),
-    metricsMiddleware(container),
     deleteSearchHistory,
   );
 
@@ -526,7 +497,6 @@ export function createSemanticSearchRouter(container: Container): Router {
     '/:searchId/share',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.SEMANTIC_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(searchShareParamsSchema),
     shareSearch(appConfig),
   );
@@ -535,7 +505,6 @@ export function createSemanticSearchRouter(container: Container): Router {
     '/:searchId/unshare',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.SEMANTIC_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(searchShareParamsSchema),
     unshareSearch(appConfig),
   );
@@ -544,7 +513,6 @@ export function createSemanticSearchRouter(container: Container): Router {
     '/:searchId/archive',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.SEMANTIC_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(searchIdParamsSchema),
     archiveSearch,
   );
@@ -553,7 +521,6 @@ export function createSemanticSearchRouter(container: Container): Router {
     '/:searchId/unarchive',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.SEMANTIC_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(searchIdParamsSchema),
     unarchiveSearch,
   );
@@ -609,7 +576,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/conversations/show/archives',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(listAllAgentsArchivedConversationsGroupedQuerySchema),
     listAllAgentsArchivedConversationsGrouped(appConfig),
   );
@@ -618,7 +584,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-    metricsMiddleware(container),
     createAgentConversation(appConfig),
   );
 
@@ -626,7 +591,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/stream',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(agentStreamCreateSchema),
     streamAgentConversation(appConfig),
   );
@@ -635,7 +599,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/:conversationId/messages',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-    metricsMiddleware(container),
     addMessageToAgentConversation(appConfig),
   );
 
@@ -643,7 +606,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/:conversationId/messages/stream',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(agentAddMessageParamsSchema),
     addMessageStreamToAgentConversation(appConfig),
   );
@@ -652,7 +614,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/internal/:conversationId/messages/stream',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     // requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-    metricsMiddleware(container),
     addMessageStreamToAgentConversationInternal(appConfig, keyValueStoreService),
   );
 
@@ -660,14 +621,12 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/internal/stream',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     // requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-    metricsMiddleware(container),
     streamAgentConversationInternal(appConfig, keyValueStoreService),
   );
 
   router.post(
     '/:agentKey/conversations/internal/attachments/upload',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
-    metricsMiddleware(container),
     agentAttachmentUpload.array('files'),
     ValidationMiddleware.validate(agentAttachmentUploadSchema),
     uploadChatAttachmentsInternal(appConfig, keyValueStoreService),
@@ -677,7 +636,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/attachments/upload',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-    metricsMiddleware(container),
     agentAttachmentUpload.array('files'),
     ValidationMiddleware.validate(agentAttachmentUploadSchema),
     uploadChatAttachments(appConfig),
@@ -691,7 +649,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/attachments/:recordId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(agentAttachmentRecordIdParamsSchema),
     deleteChatAttachment(appConfig),
   );
@@ -700,7 +657,6 @@ export function createAgentConversationalRouter(container: Container): Router {
       '/:agentKey/conversations/:conversationId/message/:messageId/regenerate',
       authMiddleware.authenticate,
       requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-      metricsMiddleware(container),
       ValidationMiddleware.validate(regenerateAgentAnswersParamsSchema),
       regenerateAgentAnswers(appConfig),
     );
@@ -713,7 +669,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/:conversationId/message/:messageId/feedback',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(updateAgentFeedbackParamsSchema),
     updateAgentFeedback,
   );
@@ -722,7 +677,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(getAllAgentConversationsQuerySchema),
     getAllAgentConversations,
   );
@@ -731,7 +685,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/:conversationId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(getAgentConversationByIdSchema),
     getAgentConversationById,
   );
@@ -740,7 +693,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/:conversationId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(deleteAgentConversationParamsSchema),
     deleteAgentConversationById,
   );
@@ -753,7 +705,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/:conversationId/title',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(agentConversationTitleParamsSchema),
     updateAgentConversationTitle,
   );
@@ -766,7 +717,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/:conversationId/archive',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(agentConversationParamsSchema),
     archiveAgentConversation,
   );
@@ -779,7 +729,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/:conversationId/unarchive',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(agentConversationParamsSchema),
     unarchiveAgentConversation,
   );
@@ -792,7 +741,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/show/archives',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(listAllArchivesAgentConversationQuerySchema),
     listAllArchivesAgentConversation(),
   ); 
@@ -801,7 +749,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/create',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(createAgentSchema),
     createAgent(appConfig),
   );
@@ -810,7 +757,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(getAgentParamsSchema),
     getAgent(appConfig),
   );
@@ -819,7 +765,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(updateAgentSchema),
     updateAgent(appConfig),
   );
@@ -828,7 +773,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(deleteAgentSchema),
     deleteAgent(appConfig),
   );
@@ -837,7 +781,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(listAgentsQuerySchema),
     listAgents(appConfig),
   );
@@ -846,7 +789,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/web-search-usage/:provider',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(getWebSearchProviderUsageRequestSchema),
     getWebSearchProviderUsage(appConfig),
   );
@@ -855,7 +797,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/model-usage/:model_key',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(getModelUsageRequestSchema),
     getModelUsage(appConfig),
   );
@@ -894,7 +835,6 @@ export function createChatSpeechRouter(container: Container): Router {
     '/speech/capabilities',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
-    metricsMiddleware(container),
     getSpeechCapabilities(appConfig),
   );
 
@@ -902,7 +842,6 @@ export function createChatSpeechRouter(container: Container): Router {
     '/speak',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
-    metricsMiddleware(container),
     synthesizeSpeech(appConfig),
   );
 
@@ -910,7 +849,6 @@ export function createChatSpeechRouter(container: Container): Router {
     '/transcribe',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
-    metricsMiddleware(container),
     audioUpload.single('file'),
     transcribeAudio(appConfig),
   );

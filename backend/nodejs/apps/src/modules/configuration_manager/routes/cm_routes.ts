@@ -102,7 +102,6 @@ import {
 } from '../validator/validators';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
-import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -149,7 +148,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(storageValidationSchema),
     createStorageConfig(keyValueStoreService, appConfig.storage),
   );
@@ -165,14 +163,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getStorageConfig(keyValueStoreService),
   );
 
   router.get(
     '/internal/storageConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
-    metricsMiddleware(container),
     getStorageConfig(keyValueStoreService),
   );
 
@@ -189,7 +185,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(smtpConfigSchema),
     createSmtpConfig(
       keyValueStoreService,
@@ -201,7 +196,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/connectors/atlassian/config',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
       if (!req.tokenPayload) {
         throw new NotFoundError('User not found');
@@ -215,7 +209,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
       if (!req.user) {
         throw new NotFoundError('User not found');
@@ -229,7 +222,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(atlassianCredentialsSchema),
     (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
       if (!req.user) {
@@ -242,7 +234,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.post(
     '/internal/connectors/atlassian/config',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(atlassianCredentialsSchema),
     (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
       if (!req.tokenPayload) {
@@ -257,7 +248,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
       if (!req.user) {
         throw new NotFoundError('User not found');
@@ -269,7 +259,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.post(
     '/internal/connectors/onedrive/config',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(onedriveCredentialsSchema),
     (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
       if (!req.tokenPayload) {
@@ -284,7 +273,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
       if (!req.user) {
         throw new NotFoundError('User not found');
@@ -296,7 +284,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.post(
     '/internal/connectors/sharepoint/config',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(sharepointCredentialsSchema),
     (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
       if (!req.tokenPayload) {
@@ -310,7 +297,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/connectors/:connector/config',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
       if (!req.tokenPayload) {
         throw new NotFoundError('User not found');
@@ -324,7 +310,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(sharepointCredentialsSchema),
     (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
       if (!req.user) {
@@ -339,7 +324,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(onedriveCredentialsSchema),
     (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
       if (!req.user) {
@@ -360,7 +344,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getSmtpConfig(keyValueStoreService),
   );
 
@@ -370,14 +353,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getAzureAdAuthConfig(keyValueStoreService),
   );
 
   router.get(
     '/internal/authConfig/azureAd',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     getAzureAdAuthConfig(keyValueStoreService),
   );
 
@@ -386,7 +367,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(azureAdConfigSchema),
     setAzureAdAuthConfig(keyValueStoreService),
   );
@@ -396,13 +376,11 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getMicrosoftAuthConfig(keyValueStoreService),
   );
   router.get(
     '/internal/authConfig/microsoft',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     getMicrosoftAuthConfig(keyValueStoreService),
   );
 
@@ -411,7 +389,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(azureAdConfigSchema),
     setMicrosoftAuthConfig(keyValueStoreService),
   );
@@ -421,14 +398,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getGoogleAuthConfig(keyValueStoreService),
   );
 
   router.get(
     '/internal/authConfig/google',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     getGoogleAuthConfig(keyValueStoreService),
   );
   router.post(
@@ -436,7 +411,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(googleAuthConfigSchema),
     setGoogleAuthConfig(keyValueStoreService),
   );
@@ -446,13 +420,11 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getSsoAuthConfig(keyValueStoreService),
   );
   router.get(
     '/internal/authConfig/sso',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     getSsoAuthConfig(keyValueStoreService),
   );
   router.post(
@@ -460,7 +432,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(ssoConfigSchema),
     setSsoAuthConfig(keyValueStoreService, samlController),
   );
@@ -471,14 +442,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getOAuthConfig(keyValueStoreService),
   );
 
   router.get(
     '/internal/authConfig/oauth',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     getOAuthConfig(keyValueStoreService),
   );
 
@@ -487,7 +456,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(oauthConfigSchema),
     setOAuthConfig(keyValueStoreService),
   );
@@ -498,7 +466,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(platformSettingsSchema),
     setPlatformSettings(keyValueStoreService),
   );
@@ -508,7 +475,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getPlatformSettings(keyValueStoreService),
   );
 
@@ -517,7 +483,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getAvailablePlatformFeatureFlags(),
   );
 
@@ -526,13 +491,11 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/slack-bot',
     authMiddleware.authenticate,
     userAdminCheck,
-    metricsMiddleware(container),
     getSlackBotConfigs(keyValueStoreService),
   );
   router.get(
     '/internal/slack-bot',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     getSlackBotConfigs(keyValueStoreService),
   );
 
@@ -540,7 +503,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/slack-bot',
     authMiddleware.authenticate,
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(createSlackBotConfigSchema),
     createSlackBotConfig(keyValueStoreService),
   );
@@ -549,7 +511,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/slack-bot/:configId',
     authMiddleware.authenticate,
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(updateSlackBotConfigSchema),
     updateSlackBotConfig(keyValueStoreService),
   );
@@ -558,7 +519,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/slack-bot/:configId',
     authMiddleware.authenticate,
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(deleteSlackBotConfigSchema),
     deleteSlackBotConfig(keyValueStoreService),
   );
@@ -569,7 +529,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getCustomSystemPrompt(keyValueStoreService),
   );
 
@@ -578,7 +537,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     setCustomSystemPrompt(keyValueStoreService),
   );
 
@@ -596,7 +554,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ...FileProcessorFactory.createJSONUploadProcessor({
       fieldName: 'googleWorkspaceCredentials',
       allowedMimeTypes: ['application/json'],
@@ -623,7 +580,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/internal/connectors/googleWorkspaceCredentials',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
 
-    metricsMiddleware(container),
     ...FileProcessorFactory.createJSONUploadProcessor({
       fieldName: 'googleWorkspaceCredentials',
       allowedMimeTypes: ['application/json'],
@@ -656,7 +612,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
       if (!req.user) {
         throw new NotFoundError('User not found');
@@ -672,7 +627,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/connectors/individual/googleWorkspaceCredentials',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
       if (!req.tokenPayload) {
         throw new NotFoundError('User not found');
@@ -687,7 +641,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/connectors/business/googleWorkspaceCredentials',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
       if (!req.tokenPayload) {
         throw new NotFoundError('User not found');
@@ -702,7 +655,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.delete(
     '/internal/connectors/business/googleWorkspaceCredentials',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
       if (!req.tokenPayload) {
         throw new NotFoundError('User not found');
@@ -719,7 +671,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getGoogleWorkspaceOauthConfig(keyValueStoreService),
   );
 
@@ -728,7 +679,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(googleWorkspaceConfigSchema),
     (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
       if (!req.user) {
@@ -745,14 +695,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/connectors/googleWorkspaceOauthConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     getGoogleWorkspaceOauthConfig(keyValueStoreService),
   );
 
   router.post(
     '/internal/connectors/googleWorkspaceOauthConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(googleWorkspaceConfigSchema),
     (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
       if (!req.tokenPayload) {
@@ -779,7 +727,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(aiModelsConfigSchema),
     createAIModelsConfig(keyValueStoreService, aiConfigEventService, appConfig),
   );
@@ -795,14 +742,12 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getAIModelsConfig(keyValueStoreService),
   );
 
   router.get(
     '/internal/aiModelsConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    metricsMiddleware(container),
     getAIModelsConfig(keyValueStoreService, false),
   );
 
@@ -816,7 +761,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getAIModelRegistryCapabilities(appConfig),
   );
 
@@ -825,7 +769,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getAIModelProviderSchema(appConfig),
   );
 
@@ -834,7 +777,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getAIModelRegistry(appConfig),
   );
 
@@ -848,7 +790,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getAIModelsProviders(keyValueStoreService),
   );
 
@@ -864,7 +805,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getModelRoles(keyValueStoreService),
   );
 
@@ -880,7 +820,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     updateModelRoles(keyValueStoreService),
   );
 
@@ -896,7 +835,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(modelTypeSchema),
     getModelsByType(keyValueStoreService),
   );
@@ -911,7 +849,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/ai-models/available/:modelType',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(modelTypeSchema),
     getAvailableModelsByType(keyValueStoreService),
   );
@@ -926,7 +863,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(addProviderRequestSchema),
     addAIModelProvider(keyValueStoreService, aiConfigEventService, appConfig),
   );
@@ -943,7 +879,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(updateProviderRequestSchema),
     updateAIModelProvider(keyValueStoreService, aiConfigEventService, appConfig),
   );
@@ -960,7 +895,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(deleteProviderSchema),
     deleteAIModelProvider(keyValueStoreService, aiConfigEventService, appConfig),
   );
@@ -977,7 +911,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(updateDefaultModelSchema),
     updateDefaultAIModel(keyValueStoreService, aiConfigEventService, appConfig),
   );
@@ -992,7 +925,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/web-search',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
-    metricsMiddleware(container),
     getWebSearchProviders(keyValueStoreService),
   );
 
@@ -1005,7 +937,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/web-search/settings',
     authMiddleware.authenticate,
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(updateWebSearchSettingsSchema),
     updateWebSearchSettings(keyValueStoreService),
   );
@@ -1019,7 +950,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/web-search/providers',
     authMiddleware.authenticate,
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(addWebSearchProviderSchema),
     addWebSearchProvider(keyValueStoreService, appConfig),
   );
@@ -1034,7 +964,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/web-search/providers/:providerKey',
     authMiddleware.authenticate,
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(updateWebSearchProviderSchema),
     updateWebSearchProvider(keyValueStoreService, appConfig),
   );
@@ -1049,7 +978,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/web-search/providers/:providerKey',
     authMiddleware.authenticate,
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(deleteWebSearchProviderSchema),
     deleteWebSearchProvider(keyValueStoreService, appConfig),
   );
@@ -1064,7 +992,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/web-search/default/:providerKey',
     authMiddleware.authenticate,
     userAdminCheck,
-    metricsMiddleware(container),
     ValidationMiddleware.validate(updateDefaultWebSearchProviderSchema),
     updateDefaultWebSearchProvider(keyValueStoreService, appConfig),
   );
@@ -1073,7 +1000,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/frontendPublicUrl',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
-    metricsMiddleware(container),
     getFrontendUrl(keyValueStoreService),
   );
 
@@ -1083,7 +1009,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(urlSchema),
-    metricsMiddleware(container),
     setFrontendUrl(
       keyValueStoreService,
       appConfig.scopedJwtSecret,
@@ -1095,7 +1020,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/connectorPublicUrl',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
-    metricsMiddleware(container),
     getConnectorPublicUrl(keyValueStoreService),
   );
 
@@ -1105,7 +1029,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(urlSchema),
-    metricsMiddleware(container),
     setConnectorPublicUrl(keyValueStoreService, syncEventService),
   );
 
@@ -1116,7 +1039,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(metricsCollectionToggleSchema),
-    metricsMiddleware(container),
     toggleMetricsCollection(keyValueStoreService),
   );
 
@@ -1124,7 +1046,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     '/internal/metricsCollection/toggle',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
     ValidationMiddleware.validate(metricsCollectionToggleSchema),
-    metricsMiddleware(container),
     toggleMetricsCollection(keyValueStoreService),
   );
 
@@ -1133,7 +1054,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
-    metricsMiddleware(container),
     getMetricsCollection(keyValueStoreService),
   );
 
@@ -1143,7 +1063,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(metricsCollectionPushIntervalSchema),
-    metricsMiddleware(container),
     setMetricsCollectionPushInterval(keyValueStoreService),
   );
 
@@ -1153,7 +1072,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(metricsCollectionRemoteServerSchema),
-    metricsMiddleware(container),
     setMetricsCollectionRemoteServer(keyValueStoreService),
   );
 
