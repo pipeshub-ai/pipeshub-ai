@@ -29,6 +29,11 @@ router = APIRouter()
 
 SPARSE_IDF = False
 
+# Cloud LLM health checks call external APIs; local runtimes do not need egress.
+_LOCAL_LLM_PROVIDERS = frozenset({"ollama", "lmStudio"})
+_OUTBOUND_PROBE_URL = "https://1.1.1.1/"
+_OUTBOUND_PROBE_TIMEOUT_S = 5.0
+
 # Outer cap vs I/O timeouts in web_search_tool / fetch_url (DDG 15s, httpx 30s).
 _WEB_SEARCH_HEALTH_TIMEOUTS_S = {
     "duckduckgo": 20.0,
@@ -36,6 +41,57 @@ _WEB_SEARCH_HEALTH_TIMEOUTS_S = {
     "tavily": 33.0,
     "exa": 33.0,
 }
+
+
+def _endpoint_is_local(endpoint: str) -> bool:
+    lower = endpoint.lower()
+    return any(
+        token in lower
+        for token in ("localhost", "127.0.0.1", "host.docker.internal", "[::1]", "::1")
+    )
+
+
+def _llm_health_check_needs_outbound(provider: str, configuration: dict[str, Any]) -> bool:
+    if provider in _LOCAL_LLM_PROVIDERS:
+        return False
+    if provider in ("openaiCompatible", "litellmProxy"):
+        endpoint = configuration.get("endpoint") or configuration.get("baseUrl") or ""
+        return not _endpoint_is_local(str(endpoint))
+    return True
+
+
+async def _probe_outbound_connectivity(timeout: float = _OUTBOUND_PROBE_TIMEOUT_S) -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            response = await client.get(_OUTBOUND_PROBE_URL)
+            return response.status_code < 600
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, OSError):
+        return False
+
+
+def _outbound_connectivity_error_response(
+    provider: str,
+    model_name: str,
+) -> JSONResponse:
+    message = (
+        "Cannot reach cloud LLM providers from PipesHub. "
+        "The container may not have outbound internet access. "
+        "Cloud LLMs and external connectors require container egress; "
+        "air-gapped installs should use local models (Ollama, LM Studio). "
+        "See deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity."
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "message": message,
+            "details": {
+                "error_code": "outbound_connectivity",
+                "provider": provider,
+                "model": model_name,
+            },
+        },
+    )
 
 
 def _extract_error_message(e: Exception) -> str:
@@ -510,7 +566,14 @@ async def perform_llm_health_check(
         logger.info("Getting generator model")
 
         provider = llm_config.get("provider", "")
-        configuration = llm_config.get("configuration", {})
+        configuration = llm_config.get("configuration", {}) or {}
+        if _llm_health_check_needs_outbound(provider, configuration):
+            if not await _probe_outbound_connectivity():
+                logger.error(
+                    "LLM health check skipped — container has no outbound internet "
+                    f"(provider={provider}, model={model_name})"
+                )
+                return _outbound_connectivity_error_response(provider, model_name)
         config_keys = list(configuration.keys()) if isinstance(configuration, dict) else type(configuration).__name__
         logger.debug(f"LLM health check configuration keys for {provider}: {config_keys}")
 
@@ -605,11 +668,16 @@ async def perform_llm_health_check(
             status_code=500,
             content={
                 "status": "error",
-                "message": "LLM health check timed out",
+                "message": (
+                    "LLM health check timed out. For cloud providers, verify your API key "
+                    "and that PipesHub containers can reach the internet. "
+                    "See deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity."
+                ),
                 "details": {
+                    "error_code": "health_check_timeout",
                     "provider": llm_config.get("provider"),
                     "model": model_name,
-                    "timeout_seconds": 120
+                    "timeout_seconds": 120,
                 },
             },
         )
