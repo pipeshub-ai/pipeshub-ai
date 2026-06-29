@@ -242,7 +242,8 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             # Extract content. LangChain message content may be a plain string or
             # a list of content blocks (e.g. Gemini returns the latter), so coerce
             # to text before any string handling.
-            markdown_content = self._coerce_content_to_text(response.content)
+            raw_content = getattr(response, "content", response)
+            markdown_content = self._coerce_content_to_text(raw_content)
 
             # Clean up: Remove markdown code block wrapper if present
             markdown_content = markdown_content.strip()
