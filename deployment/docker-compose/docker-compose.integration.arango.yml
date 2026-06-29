@@ -162,13 +162,18 @@ services:
       - "host.docker.internal:host-gateway"
 
   mongodb:
-    image: mongo:8.0.17
+    image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
     restart: always
+    # Cap WiredTiger cache (defaults to ~50% of RAM) so mongo fits on small hosts,
+    # and let empty GLIBC_TUNABLES override the image's rseq=0 default, which
+    # segfaults mongo 8.x on some very new kernels. See docker-compose.yml.
+    command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
     ports:
       - "27017:27017"
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-password}
+      - GLIBC_TUNABLES=${MONGO_GLIBC_TUNABLES:-}
     volumes:
       - mongodb_data:/data/db
     healthcheck:
