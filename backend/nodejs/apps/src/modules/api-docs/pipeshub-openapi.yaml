@@ -20587,7 +20587,7 @@ paths:
   /knowledgeBase/stream/record/{recordId}:
     get:
       tags:
-        - Records
+        - Knowledge Base
       summary: Stream record content
       description: |
         Stream the binary content of a record's file.
@@ -20606,6 +20606,7 @@ paths:
 
         Use the `convertTo` parameter to convert between formats (e.g. DOCX to PDF).
       operationId: streamRecordBuffer
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
