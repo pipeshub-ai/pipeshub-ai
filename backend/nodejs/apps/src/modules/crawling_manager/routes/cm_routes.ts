@@ -13,7 +13,6 @@ import {
   resumeCrawlingJob,
   getQueueStats,
 } from '../controller/cm_controller';
-import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
@@ -31,7 +30,6 @@ export function createCrawlingManagerRouter(container: Container): Router {
     '/:connector/:connectorId/schedule',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CRAWL_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(CrawlingScheduleRequestSchema),
     scheduleCrawlingJob(crawlingService, appConfig),
   );
@@ -42,7 +40,6 @@ export function createCrawlingManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CRAWL_READ),
     ValidationMiddleware.validate(ConnectorTypeSchema),
-    metricsMiddleware(container),
     getCrawlingJobStatus(crawlingService, appConfig),
   );
 
@@ -51,7 +48,6 @@ export function createCrawlingManagerRouter(container: Container): Router {
     '/schedule/all',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CRAWL_READ),
-    metricsMiddleware(container),
     getAllCrawlingJobStatus(crawlingService),
   );
 
@@ -60,7 +56,6 @@ export function createCrawlingManagerRouter(container: Container): Router {
     '/schedule/all',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CRAWL_DELETE),
-    metricsMiddleware(container),
     removeAllCrawlingJob(crawlingService),
   );
 
@@ -70,7 +65,6 @@ export function createCrawlingManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CRAWL_DELETE),
     ValidationMiddleware.validate(ConnectorTypeSchema),
-    metricsMiddleware(container),
     removeCrawlingJob(crawlingService, appConfig),
   );
 
@@ -80,7 +74,6 @@ export function createCrawlingManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CRAWL_WRITE),
     ValidationMiddleware.validate(ConnectorTypeSchema),
-    metricsMiddleware(container),
     pauseCrawlingJob(crawlingService, appConfig),
   );
 
@@ -90,7 +83,6 @@ export function createCrawlingManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CRAWL_WRITE),
     ValidationMiddleware.validate(ConnectorTypeSchema),
-    metricsMiddleware(container),
     resumeCrawlingJob(crawlingService, appConfig),
   );
 
@@ -99,7 +91,6 @@ export function createCrawlingManagerRouter(container: Container): Router {
     '/stats',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CRAWL_READ),
-    metricsMiddleware(container),
     getQueueStats(crawlingService),
   );
 

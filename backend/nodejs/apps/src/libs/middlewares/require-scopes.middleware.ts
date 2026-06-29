@@ -17,7 +17,6 @@ import { OAuthScopeNames } from '../enums/oauth-scopes.enum';
  *   '/',
  *   authMiddleware.authenticate,
  *   requireScopes(OAuthScopeNames.USER_READ),
- *   metricsMiddleware(container),
  *   handler,
  * );
  */
