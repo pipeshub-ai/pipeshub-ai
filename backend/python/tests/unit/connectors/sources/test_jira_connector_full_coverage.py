@@ -1047,6 +1047,37 @@ class TestCreateAttachmentFileRecord:
         )
         assert record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
 
+    def test_resolves_mime_type_from_extension_map(self):
+        connector = _make_connector()
+        record = connector._create_attachment_file_record(
+            attachment_id="104",
+            filename="notes.md",
+            mime_type="application/octet-stream",
+            file_size=200,
+            created_at=0,
+            parent_issue_id="issue-1",
+            parent_node_id=None,
+            project_id="proj-1",
+            weburl=None,
+        )
+        assert record.extension == "md"
+        assert record.mime_type == "text/markdown"
+
+    def test_falls_back_to_api_mime_for_unmapped_extension(self):
+        connector = _make_connector()
+        record = connector._create_attachment_file_record(
+            attachment_id="105",
+            filename="data.unknownext",
+            mime_type="application/custom",
+            file_size=50,
+            created_at=0,
+            parent_issue_id="issue-1",
+            parent_node_id=None,
+            project_id="proj-1",
+            weburl=None,
+        )
+        assert record.mime_type == "application/custom"
+
 
 class TestExtractAttachmentFilenamesFromWiki:
 

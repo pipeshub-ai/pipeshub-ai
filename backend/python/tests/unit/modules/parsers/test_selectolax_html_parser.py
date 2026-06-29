@@ -739,6 +739,25 @@ class TestImages:
         assert fragments[0].data == "Name: Connectors"
         assert _child_block_indices(table_group) == [row_containers[0].index]
 
+    def test_table_header_image_is_skipped(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        html = """
+        <table>
+          <tr><th>Label</th><th><img alt="Image_1" src="x"></th></tr>
+          <tr><td>Value</td><td>cell</td></tr>
+        </table>
+        """
+        container = converter.convert(
+            html,
+            caption_map={"Image_1": "data:image/png;base64,HEADERIMG"},
+        )
+        table_group = container.block_groups[0]
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+
+        assert table_group.data["column_headers"] == ["Label", ""]
+        assert len(image_blocks) == 0
+
     def test_table_mid_cell_image_splits_row_text_fragments(
         self, converter: HtmlToBlocksConverter
     ) -> None:

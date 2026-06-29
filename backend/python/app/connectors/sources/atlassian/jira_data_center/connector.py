@@ -22,6 +22,8 @@ from app.config.constants.arangodb import (
     Connectors,
     ProgressStatus,
     RecordRelations,
+    get_mime_type_for_extension,
+    normalize_file_extension,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -4031,10 +4033,14 @@ class JiraDataCenterConnector(BaseConnector):
         Returns:
             FileRecord with consistent field settings
         """
-        # Extract extension from filename
-        extension = None
-        if '.' in filename:
-            extension = filename.split('.')[-1].lower()
+        # Extract extension from filename and resolve MIME type
+        extension = normalize_file_extension(
+            filename.rsplit(".", 1)[-1] if "." in filename else None
+        )
+        resolved_mime_type = get_mime_type_for_extension(
+            extension,
+            fallback=mime_type or MimeTypes.UNKNOWN.value,
+        )
 
         # Build external_record_id
         external_record_id = f"{external_id_prefix}{attachment_id}"
@@ -4052,8 +4058,8 @@ class JiraDataCenterConnector(BaseConnector):
             connector_id=self.connector_id,
             origin=OriginTypes.CONNECTOR,
             version=version,
-            mime_type=mime_type,
-            extension=extension,
+            mime_type=resolved_mime_type,
+            extension=extension or None,
             size_in_bytes=file_size,
             record_group_type=RecordGroupType.PROJECT,
             external_record_group_id=project_id,

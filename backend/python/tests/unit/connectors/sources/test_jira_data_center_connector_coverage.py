@@ -1700,6 +1700,41 @@ def test_create_attachment_file_record_sets_auto_index_off_for_attachments_filte
     assert fr.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
 
+def test_create_attachment_file_record_resolves_mime_from_extension():
+    conn = _make_connector()
+    fr = conn._create_attachment_file_record(
+        attachment_id="2",
+        filename="sheet.xlsx",
+        mime_type="application/octet-stream",
+        file_size=10,
+        created_at=1000,
+        parent_issue_id="p",
+        parent_node_id=None,
+        project_id="proj",
+        weburl=None,
+    )
+    assert fr.extension == "xlsx"
+    assert fr.mime_type == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+
+def test_create_attachment_file_record_falls_back_for_unmapped_extension():
+    conn = _make_connector()
+    fr = conn._create_attachment_file_record(
+        attachment_id="3",
+        filename="blob.unknownext",
+        mime_type="application/custom",
+        file_size=10,
+        created_at=1000,
+        parent_issue_id="p",
+        parent_node_id=None,
+        project_id="proj",
+        weburl=None,
+    )
+    assert fr.mime_type == "application/custom"
+
+
 @pytest.mark.asyncio
 async def test_fetch_project_permission_scheme_extra_holder_branches():
     conn = _make_connector()

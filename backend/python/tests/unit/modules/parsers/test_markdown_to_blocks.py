@@ -651,6 +651,23 @@ class TestImages:
         assert fragments[0].data == "Name: Connectors"
         assert _child_block_indices(table_group) == [row_containers[0].index]
 
+    def test_table_header_image_is_skipped(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        markdown = (
+            "| Label | ![Image_1](https://example.com/logo.png) |\n"
+            "| --- | --- |\n"
+            "| Value | cell |\n"
+        )
+        caption_map = {"Image_1": "data:image/png;base64,HEADERIMG"}
+        container = converter.convert(markdown, caption_map=caption_map)
+
+        table_group = container.block_groups[0]
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+
+        assert table_group.data["column_headers"] == ["Label", ""]
+        assert len(image_blocks) == 0
+
     def test_table_mid_cell_image_splits_row_text_fragments(
         self, converter: MarkdownToBlocksConverter
     ):
@@ -1456,3 +1473,32 @@ class TestTokenWalkerUtilities:
         index = walker._process_token(tokens, 0)
         assert index == 1
         assert walker.table_state.current_row == [_TableCell(plain="", markdown="")]
+
+
+class TestLongTextSplitting:
+    def test_oversized_paragraph_splits_into_multiple_blocks(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        long_sentence = "A" * 600_000 + "."
+        markdown = long_sentence + " " + ("B" * 600_000 + ".")
+        container = converter.convert(markdown)
+
+        text_blocks = _blocks_by_type(container, BlockType.TEXT)
+        assert len(text_blocks) >= 2
+        assert all(
+            isinstance(block.data, str) and len(block.data) <= 500_000
+            for block in text_blocks
+        )
+
+    def test_oversized_blockquote_uses_container_and_fragments(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        long_text = ("Quote sentence. " * 80_000).strip()
+        container = converter.convert(f"> {long_text}")
+
+        text_blocks = _blocks_by_type(container, BlockType.TEXT)
+        containers = [b for b in text_blocks if b.data == ""]
+        fragments = [b for b in text_blocks if b.parent_block_index is not None]
+        assert containers
+        assert len(fragments) >= 2
+        assert all(len(block.data) <= 500_000 for block in fragments)

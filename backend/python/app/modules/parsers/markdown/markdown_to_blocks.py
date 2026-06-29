@@ -23,6 +23,7 @@ from app.models.blocks import (
     ImageMetadata,
     TableMetadata,
 )
+from app.modules.parsers.text_splitting import split_long_text
 
 _MD_IMAGE_RE = re.compile(r'!\[([^\]]*)\]\(([^\s)]+)(?:\s+"[^"]*")?\)')
 _HTML_IMG_ALT_RE = re.compile(
@@ -107,6 +108,36 @@ def _split_cell_into_segments(cell: _TableCell) -> list[_Segment]:
         value = (cell.plain or cell.markdown).strip()
         return [_Segment(kind="text", text=value)] if value else []
     return _split_raw_markdown_into_segments(cell.markdown)
+
+
+def _strip_inline_images_from_markdown(text: str) -> str:
+    """Return *text* with markdown/HTML inline images removed (text segments only)."""
+    if not text:
+        return ""
+    if not _MD_IMAGE_RE.search(text) and not _HTML_IMG_ALT_RE.search(text):
+        return text.strip()
+    parts = [
+        seg.text.strip()
+        for seg in _split_raw_markdown_into_segments(text)
+        if seg.kind == "text" and seg.text.strip()
+    ]
+    return " ".join(parts).strip()
+
+
+def _table_cell_text_without_images(cell: _TableCell) -> str:
+    """Return table cell text with inline images stripped (for header labels)."""
+    has_images = bool(
+        cell.images
+        or _MD_IMAGE_RE.search(cell.markdown or "")
+        or _HTML_IMG_ALT_RE.search(cell.markdown or "")
+    )
+    if cell.markdown:
+        stripped = _strip_inline_images_from_markdown(cell.markdown)
+        if stripped or has_images:
+            return stripped
+    if has_images:
+        return ""
+    return (cell.plain or "").strip()
 
 
 @dataclass
@@ -555,15 +586,11 @@ class _TokenWalker:
         if not any(seg.kind == "image" for seg in segments):
             text, data_format = self._split_inline_content(inline_token)
             if text:
-                self._add_block(
-                    Block(
-                        id=str(uuid4()),
-                        type=BlockType.TEXT,
-                        sub_type=sub_type,
-                        format=data_format,
-                        data=text,
-                        parent_index=self._current_parent_index(),
-                    )
+                self._emit_text_chunks(
+                    text=text,
+                    block_type=BlockType.TEXT,
+                    sub_type=sub_type,
+                    format=data_format,
                 )
             return
 
@@ -596,15 +623,11 @@ class _TokenWalker:
             else:
                 merged = para_text
             if merged:
-                self._add_block(
-                    Block(
-                        id=str(uuid4()),
-                        type=BlockType.TEXT,
-                        sub_type=BlockSubType.PARAGRAPH,
-                        format=DataFormat.MARKDOWN,
-                        data=merged,
-                        parent_index=self._current_parent_index(),
-                    )
+                self._emit_text_chunks(
+                    text=merged,
+                    block_type=BlockType.TEXT,
+                    sub_type=BlockSubType.PARAGRAPH,
+                    format=DataFormat.MARKDOWN,
                 )
             return
 
@@ -662,6 +685,83 @@ class _TokenWalker:
         block.parent_block_index = parent_block_index
         return self._append_block(block)
 
+    def _emit_text_chunks(
+        self,
+        *,
+        text: str,
+        block_type: BlockType,
+        sub_type: BlockSubType | None,
+        format: DataFormat,
+        parent_block_index: int | None = None,
+    ) -> Block | None:
+        """Emit one or more TEXT blocks, splitting oversized content at parse time."""
+        if not text or not text.strip():
+            return None
+
+        chunks = split_long_text(text)
+        if parent_block_index is not None:
+            last: Block | None = None
+            for chunk in chunks:
+                last = self._append_fragment_block(
+                    Block(
+                        id=str(uuid4()),
+                        type=BlockType.TEXT,
+                        format=format,
+                        data=chunk,
+                    ),
+                    parent_block_index,
+                )
+            return last
+
+        if len(chunks) == 1:
+            return self._add_block(
+                Block(
+                    id=str(uuid4()),
+                    type=block_type,
+                    sub_type=sub_type,
+                    format=format,
+                    data=chunks[0],
+                    parent_index=self._current_parent_index(),
+                )
+            )
+
+        if self._uses_image_split_container():
+            container = self._add_block(
+                Block(
+                    id=str(uuid4()),
+                    type=block_type,
+                    sub_type=sub_type,
+                    format=format,
+                    data="",
+                    parent_index=self._current_parent_index(),
+                )
+            )
+            for chunk in chunks:
+                self._append_fragment_block(
+                    Block(
+                        id=str(uuid4()),
+                        type=BlockType.TEXT,
+                        format=format,
+                        data=chunk,
+                    ),
+                    container.index,
+                )
+            return container
+
+        last = None
+        for chunk in chunks:
+            last = self._add_block(
+                Block(
+                    id=str(uuid4()),
+                    type=block_type,
+                    sub_type=sub_type,
+                    format=format,
+                    data=chunk,
+                    parent_index=self._current_parent_index(),
+                )
+            )
+        return last
+
     def _uses_image_split_container(self) -> bool:
         """Return True when inline images should use an empty container block.
 
@@ -701,15 +801,11 @@ class _TokenWalker:
             data = container_data or full_text
             if isinstance(data, str) and not data.strip():
                 return
-            self._add_block(
-                Block(
-                    id=str(uuid4()),
-                    type=block_type,
-                    sub_type=sub_type,
-                    format=format,
-                    data=data,
-                    parent_index=self._current_parent_index(),
-                )
+            self._emit_text_chunks(
+                text=data,
+                block_type=block_type,
+                sub_type=sub_type,
+                format=format,
             )
             return
 
@@ -718,15 +814,11 @@ class _TokenWalker:
                 if seg.kind == "text":
                     if not seg.text.strip():
                         continue
-                    self._add_block(
-                        Block(
-                            id=str(uuid4()),
-                            type=BlockType.TEXT,
-                            sub_type=sub_type,
-                            format=format,
-                            data=seg.text,
-                            parent_index=self._current_parent_index(),
-                        )
+                    self._emit_text_chunks(
+                        text=seg.text,
+                        block_type=BlockType.TEXT,
+                        sub_type=sub_type,
+                        format=format,
                     )
                 elif seg.kind == "image":
                     if image_block := self._build_image_block(seg.alt_text):
@@ -749,14 +841,12 @@ class _TokenWalker:
             if seg.kind == "text":
                 if not seg.text.strip():
                     continue
-                self._append_fragment_block(
-                    Block(
-                        id=str(uuid4()),
-                        type=BlockType.TEXT,
-                        format=format,
-                        data=seg.text,
-                    ),
-                    container_index,
+                self._emit_text_chunks(
+                    text=seg.text,
+                    block_type=BlockType.TEXT,
+                    sub_type=None,
+                    format=format,
+                    parent_block_index=container_index,
                 )
             elif seg.kind == "image":
                 if image_block := self._build_image_block(
@@ -909,14 +999,12 @@ class _TokenWalker:
             if seg.kind == "text":
                 if not seg.text.strip():
                     continue
-                self._append_fragment_block(
-                    Block(
-                        id=str(uuid4()),
-                        type=BlockType.TEXT,
-                        format=DataFormat.MARKDOWN,
-                        data=seg.text,
-                    ),
-                    container_index,
+                self._emit_text_chunks(
+                    text=seg.text,
+                    block_type=BlockType.TEXT,
+                    sub_type=None,
+                    format=DataFormat.MARKDOWN,
+                    parent_block_index=container_index,
                 )
             elif seg.kind == "image":
                 if image_block := self._build_image_block(
@@ -1053,18 +1141,9 @@ class _TokenWalker:
             else:
                 rows.append(self.table_state.current_row)
 
-        header_md = [h.markdown for h in headers]
+        header_md = [_table_cell_text_without_images(h) for h in headers]
 
         child_block_indices: list[int] = []
-
-        if headers and self._row_has_images(headers):
-            self._emit_table_row_with_image_splits(
-                group_index=group.index,
-                row_number=0,
-                headers=[f"Column {i + 1}" for i in range(len(headers))],
-                row_cells=headers,
-                child_block_indices=child_block_indices,
-            )
 
         for row_number, row_cells in enumerate(rows, start=1):
             if self._row_has_images(row_cells):

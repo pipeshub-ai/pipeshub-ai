@@ -70,6 +70,7 @@ from app.modules.parsers.markdown.markdown_to_blocks import (
     _TableCell,
     _split_cell_into_segments,
     _split_raw_markdown_into_segments,
+    _strip_inline_images_from_markdown,
 )
 from app.models.blocks import (
     Block,
@@ -85,6 +86,7 @@ from app.models.blocks import (
     ImageMetadata,
     TableMetadata,
 )
+from app.modules.parsers.text_splitting import split_long_text
 
 # ---------------------------------------------------------------------------
 # Tag classification
@@ -960,16 +962,17 @@ class HtmlTableNormalizer:
         attrs = cell_node.attributes or {}
         tag = _tag_name(cell_node)
         return NormalizedCell(
-            text=self._cell_content(cell_node),
+            text=self._cell_content(cell_node, is_header=is_header),
             rowspan=_span_int(attrs, "rowspan"),
             colspan=_span_int(attrs, "colspan"),
             is_header=is_header or tag == "th",
         )
 
-    def _cell_content(self, cell_node: LexborNode) -> str:
+    def _cell_content(self, cell_node: LexborNode, *, is_header: bool = False) -> str:
         """Build cell text from child nodes; nested ``<table>`` values are markdown tables.
 
         Inline/block markup is converted to markdown; plain text nodes are appended as-is.
+        Images inside header cells are skipped so column labels stay text-only.
         """
         parts: list[str] = []
         for child in _direct_children(cell_node):
@@ -979,12 +982,16 @@ class HtmlTableNormalizer:
                 serialized = normalized_table_to_markdown(nested)
                 if serialized:
                     parts.append(serialized)
+            elif tag == "img" and is_header:
+                continue
             elif tag is None:
                 text = child.text(deep=False, strip=False).strip()
                 if text:
                     parts.append(text)
             else:
                 markdown = _html_to_markdown(child.html)
+                if is_header:
+                    markdown = _strip_inline_images_from_markdown(markdown)
                 if markdown:
                     parts.append(markdown)
         return "\n".join(parts).strip()
@@ -1087,6 +1094,10 @@ class HtmlToBlocksConverter:
         Returns:
             Populated BlocksContainer with blocks and block_groups.
         """
+        # Write the html_content to @test.html for inspection/debugging
+        with open("@test.html", "w", encoding="utf-8") as f:
+            f.write(html_content)
+
         parser = LexborHTMLParser(html_content)
         root = parser.body or parser.root
         if root is None:
@@ -1669,6 +1680,83 @@ class _DomWalker:
         block.parent_block_index = parent_block_index
         return self._append_block_only(block)
 
+    def _emit_text_chunks(
+        self,
+        *,
+        text: str,
+        block_type: BlockType,
+        sub_type: BlockSubType | None,
+        format: DataFormat,
+        parent_block_index: int | None = None,
+    ) -> Block | None:
+        """Emit one or more TEXT blocks, splitting oversized content at parse time."""
+        if not text or not text.strip():
+            return None
+
+        chunks = split_long_text(text)
+        if parent_block_index is not None:
+            last: Block | None = None
+            for chunk in chunks:
+                last = self._append_fragment_block(
+                    Block(
+                        id=str(uuid4()),
+                        type=BlockType.TEXT,
+                        format=format,
+                        data=chunk,
+                    ),
+                    parent_block_index,
+                )
+            return last
+
+        if len(chunks) == 1:
+            return self._add_block(
+                Block(
+                    id=str(uuid4()),
+                    type=block_type,
+                    sub_type=sub_type,
+                    format=format,
+                    data=chunks[0],
+                    parent_index=self._current_parent_index(),
+                )
+            )
+
+        if self._uses_image_split_container():
+            container = self._add_block(
+                Block(
+                    id=str(uuid4()),
+                    type=block_type,
+                    sub_type=sub_type,
+                    format=format,
+                    data="",
+                    parent_index=self._current_parent_index(),
+                )
+            )
+            for chunk in chunks:
+                self._append_fragment_block(
+                    Block(
+                        id=str(uuid4()),
+                        type=BlockType.TEXT,
+                        format=format,
+                        data=chunk,
+                    ),
+                    container.index,
+                )
+            return container
+
+        last = None
+        for chunk in chunks:
+            last = self._add_block(
+                Block(
+                    id=str(uuid4()),
+                    type=block_type,
+                    sub_type=sub_type,
+                    format=format,
+                    data=chunk,
+                    parent_index=self._current_parent_index(),
+                )
+            )
+        return last
+
     def _uses_image_split_container(self) -> bool:
         """Return True when inline images should use an empty container block.
 
@@ -1720,15 +1808,11 @@ class _DomWalker:
             data = container_data or full_text
             if isinstance(data, str) and not data.strip():
                 return
-            self._add_block(
-                Block(
-                    id=str(uuid4()),
-                    type=block_type,
-                    sub_type=sub_type,
-                    format=format,
-                    data=data,
-                    parent_index=self._current_parent_index(),
-                )
+            self._emit_text_chunks(
+                text=data,
+                block_type=block_type,
+                sub_type=sub_type,
+                format=format,
             )
             return
 
@@ -1737,15 +1821,11 @@ class _DomWalker:
                 if seg.kind == "text":
                     if not seg.text.strip():
                         continue
-                    self._add_block(
-                        Block(
-                            id=str(uuid4()),
-                            type=BlockType.TEXT,
-                            sub_type=sub_type,
-                            format=format,
-                            data=seg.text,
-                            parent_index=self._current_parent_index(),
-                        )
+                    self._emit_text_chunks(
+                        text=seg.text,
+                        block_type=BlockType.TEXT,
+                        sub_type=sub_type,
+                        format=format,
                     )
                 elif seg.kind == "image":
                     img_node = next(image_node_iter, None)
@@ -1773,14 +1853,12 @@ class _DomWalker:
             if seg.kind == "text":
                 if not seg.text.strip():
                     continue
-                self._append_fragment_block(
-                    Block(
-                        id=str(uuid4()),
-                        type=BlockType.TEXT,
-                        format=format,
-                        data=seg.text,
-                    ),
-                    container_index,
+                self._emit_text_chunks(
+                    text=seg.text,
+                    block_type=BlockType.TEXT,
+                    sub_type=None,
+                    format=format,
+                    parent_block_index=container_index,
                 )
             elif seg.kind == "image":
                 img_node = next(image_node_iter, None)
@@ -1902,14 +1980,12 @@ class _DomWalker:
             if seg.kind == "text":
                 if not seg.text.strip():
                     continue
-                self._append_fragment_block(
-                    Block(
-                        id=str(uuid4()),
-                        type=BlockType.TEXT,
-                        format=DataFormat.MARKDOWN,
-                        data=seg.text,
-                    ),
-                    container_index,
+                self._emit_text_chunks(
+                    text=seg.text,
+                    block_type=BlockType.TEXT,
+                    sub_type=None,
+                    format=DataFormat.MARKDOWN,
+                    parent_block_index=container_index,
                 )
             elif seg.kind == "image":
                 if image_block := self._build_image_block(
@@ -1992,7 +2068,10 @@ class _DomWalker:
         group = self.block_groups[open_group.index]
 
         normalized = HtmlTableNormalizer().normalize(table_node)
-        headers = normalized.column_headers
+        headers = [
+            _strip_inline_images_from_markdown(header)
+            for header in normalized.column_headers
+        ]
         caption = _table_caption(table_node)
         body_rows = normalized.body_rows
 
