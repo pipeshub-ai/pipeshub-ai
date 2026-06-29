@@ -30188,7 +30188,7 @@ paths:
   /toolsets/my-toolsets:
     get:
       tags:
-        - Toolset Instances
+        - Toolset
       summary: List my toolsets with auth status
       description: Returns organization toolset instances merged with current user's authentication status.
       operationId: getMyToolsets
@@ -30287,7 +30287,7 @@ paths:
                           type: string
                         authType:
                           type: string
-                          enum: [OAUTH, API_TOKEN, BEARER_TOKEN, USERNAME_PASSWORD, NONE]
+                          enum: [OAUTH, API_TOKEN, BASIC_AUTH, BEARER_TOKEN, USERNAME_PASSWORD, NONE]
                         oauthConfigId:
                           type: string
                           nullable: true
@@ -30299,11 +30299,40 @@ paths:
                           type: string
                         category:
                           type: string
+                          description: Toolset category from the backend ToolsetCategory enum.
+                          enum:
+                            - app
+                            - file
+                            - file_storage
+                            - web_search
+                            - search
+                            - research
+                            - utility
+                            - communication
+                            - productivity
+                            - database
+                            - calendar
+                            - project_management
+                            - documentation
+                            - code_execution
                           example: app
                         supportedAuthTypes:
                           type: array
                           items:
                             type: string
+                        documentationLinks:
+                          type: array
+                          items:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              title:
+                                type: string
+                              url:
+                                type: string
+                              type:
+                                type: string
+                                description: Link category, e.g. setup or pipeshub.
                         toolCount:
                           type: integer
                         tools:
@@ -30325,8 +30354,113 @@ paths:
                         isFromRegistry:
                           type: boolean
                           description: true for registry-only (synthetic) entries.
+                        createdBy:
+                          type: string
+                          description: User ID that created the instance. Absent on registry-only entries.
+                        createdAtTimestamp:
+                          type: integer
+                          format: int64
+                          description: Epoch millis. Absent on registry-only entries.
+                        updatedAtTimestamp:
+                          type: integer
+                          format: int64
+                          description: Epoch millis. Absent on registry-only entries.
+                        auth:
+                          type: object
+                          nullable: true
+                          description: User/agent auth payload for the instance; null when not authenticated. Absent on registry-only entries.
+                          additionalProperties: true
+        '400':
+          description: Invalid query parameters (e.g. page/limit out of range, unknown authStatus value).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        description: VALIDATION_ERROR for query-schema failures; HTTP_BAD_REQUEST when forwarded from the connector backend.
+                        example: VALIDATION_ERROR
+                      message:
+                        type: string
         '401':
-          description: Unauthorized
+          description: Missing or invalid authentication token, or no user on the request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        example: HTTP_UNAUTHORIZED
+                      message:
+                        type: string
+        '403':
+          description: Authenticated user is not permitted to access these toolsets.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        example: HTTP_FORBIDDEN
+                      message:
+                        type: string
+        '404':
+          description: Connector backend returned no data for the request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        example: HTTP_NOT_FOUND
+                      message:
+                        type: string
+        '500':
+          description: Unexpected error, or an unmapped error forwarded from the connector backend.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        example: HTTP_INTERNAL_SERVER_ERROR
+                      message:
+                        type: string
+        '503':
+          description: Connector service is unreachable (connection refused or fetch failed).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        example: HTTP_SERVICE_UNAVAILABLE
+                      message:
+                        type: string
 
   /toolsets/agents/{agentKey}:
     get:
