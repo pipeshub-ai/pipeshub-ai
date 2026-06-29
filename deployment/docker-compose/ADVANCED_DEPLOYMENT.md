@@ -12,6 +12,7 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 - [Environment overrides for CI / scripted installs](#environment-overrides-for-ci--scripted-installs)
 - [Manual deployment with Compose profiles](#manual-deployment-with-compose-profiles)
 - [Secrets and configuration](#secrets-and-configuration)
+- [Container outbound connectivity](#container-outbound-connectivity)
 - [Developer / local build](#developer--local-build)
 
 ---
@@ -188,6 +189,48 @@ manager instead of `.env` — for example Docker/Swarm secrets, HashiCorp Vault,
 or your cloud provider's KMS / Secrets Manager — and inject the values into the
 containers at runtime. The Compose services read standard environment variables,
 so any tool that can populate the container environment will work.
+
+---
+
+## Container outbound connectivity
+
+PipesHub starts and indexes documents **without** outbound internet when models are
+cached locally (`HF_HUB_OFFLINE=1` by default). **Cloud LLMs** (Gemini, OpenAI,
+Anthropic, …) and **external connectors** (Google, Slack, Microsoft, …) require
+the **`pipeshub-ai` container** to reach the public internet — not just your
+browser or host shell.
+
+### Symptoms
+
+- **Add model** for a cloud provider hangs or fails with a connectivity / timeout error
+- Connectors fail OAuth or sync with network errors
+- Host can reach the internet, but `docker exec pipeshub-ai curl …` times out
+
+### Diagnose
+
+```bash
+# From the host — should return quickly (404 is fine; 000 means no route)
+docker exec pipeshub-ai curl -s -o /dev/null -m 6 -w "%{http_code}\n" https://1.1.1.1/
+```
+
+The installer prints a **warning** (not a failure) when this check fails, so
+air-gapped deployments still complete.
+
+### Common fixes
+
+| Cause | Fix |
+|-------|-----|
+| Docker `"iptables": false` in `/etc/docker/daemon.json` | Remove the setting or set `"iptables": true`, then `sudo systemctl restart docker` and `docker compose up -d` |
+| UFW blocking forwarded traffic (Linux) | Set `DEFAULT_FORWARD_POLICY="ACCEPT"` in `/etc/default/ufw`, then `sudo ufw reload` |
+| Corporate VPN / firewall | Allow egress from the Docker bridge subnet (e.g. `172.18.0.0/16`) |
+| Intentionally air-gapped | Use local models only (Ollama, LM Studio, built-in embeddings) — no fix required |
+
+After changing Docker daemon settings, **restart Docker and bring the stack back up**:
+
+```bash
+sudo systemctl restart docker
+cd deployment/docker-compose && ./install.sh --stop && ./install.sh
+```
 
 ---
 

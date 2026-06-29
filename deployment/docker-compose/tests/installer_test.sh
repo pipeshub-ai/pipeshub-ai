@@ -359,6 +359,19 @@ check "air-gapped guidance present" "$inner" "air-gapped host, preload the image
 # Must not have reverted to a blanket pull of every service image on the hot path.
 if [[ "$inner" == *"up -d --pull always"* ]]; then fail "must refresh only the app image, not force-pull all services"; else pass "does not force-pull all service images"; fi
 
+echo "== In-tree installer: container outbound connectivity (warn-only) =="
+check "defines outbound probe helper" "$inner" "container_has_outbound_internet()"
+check "defines docker iptables hint" "$inner" "docker_iptables_disabled()"
+check "warn helper present" "$inner" "warn_container_outbound_connectivity"
+check "warn mentions air-gapped/local models" "$inner" "air-gapped installs are supported"
+check "warn mentions iptables false" "$inner" 'iptables\": false'
+check "warn links outbound docs" "$inner" "container-outbound-connectivity"
+if [[ "$inner" == *"warn_container_outbound_connectivity"* ]] && ! [[ "$inner" == *"warn_container_outbound_connectivity || die"* ]]; then
+  pass "outbound check does not hard-fail install"
+else
+  fail "outbound check does not hard-fail install"
+fi
+
 echo
 PASS="$(wc -l <"$PASS_FILE" | tr -d ' ')"
 FAIL="$(wc -l <"$FAIL_FILE" | tr -d ' ')"

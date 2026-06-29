@@ -1332,6 +1332,45 @@ else
 fi
 
 # ==============================================================================
+# 16b. OUTBOUND CONNECTIVITY (warn-only — air-gapped installs are valid)
+# Cloud LLMs and external connectors need container egress; local models do not.
+# ==============================================================================
+docker_iptables_disabled() {
+  local f="/etc/docker/daemon.json"
+  [[ -r "$f" ]] || return 1
+  grep -qE '"iptables"[[:space:]]*:[[:space:]]*false' "$f" 2>/dev/null
+}
+
+container_has_outbound_internet() {
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'pipeshub-ai' || return 1
+  if docker exec pipeshub-ai sh -c \
+      'command -v curl >/dev/null 2>&1 && curl -sf -m 8 -4 -o /dev/null https://1.1.1.1/ 2>/dev/null'; then
+    return 0
+  fi
+  docker exec pipeshub-ai sh -c \
+    'command -v wget >/dev/null 2>&1 && wget -q -T 8 -O /dev/null https://1.1.1.1/ 2>/dev/null'
+}
+
+warn_container_outbound_connectivity() {
+  if container_has_outbound_internet; then
+    return 0
+  fi
+  warn "PipesHub container cannot reach the public internet."
+  warn "  Cloud LLMs (Gemini, OpenAI, …) and external connectors will not work until container egress is fixed."
+  warn "  Local models (Ollama, LM Studio, built-in embeddings) still work — air-gapped installs are supported."
+  if docker_iptables_disabled; then
+    warn "  Detected: /etc/docker/daemon.json has \"iptables\": false (Docker is not managing NAT for containers)."
+    warn "    Fix: remove that setting or set \"iptables\": true, then: sudo systemctl restart docker"
+  fi
+  warn "  Diagnose: docker exec pipeshub-ai curl -s -o /dev/null -m 6 -w '%{http_code}\\n' https://1.1.1.1/"
+  warn "  Docs: deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity"
+}
+
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'pipeshub-ai'; then
+  warn_container_outbound_connectivity
+fi
+
+# ==============================================================================
 # 17. FINAL STATUS BANNER
 # Ready only when services are healthy AND the app answers from the host.
 # ==============================================================================
