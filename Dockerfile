@@ -18,7 +18,10 @@ FROM ${PYTHON_DEPS_IMAGE} AS python-deps
 WORKDIR /app/python
 COPY backend/python/pyproject.toml ./
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
-    uv pip install --system -e .
+    uv pip install --system -e . && \
+    crawl4ai-setup && \
+    playwright install
+
 
 FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
 
@@ -96,6 +99,9 @@ COPY --from=python-deps /usr/local/bin /usr/local/bin
 COPY --from=python-deps /root/.cache/huggingface /root/.cache/huggingface
 COPY --from=python-deps /root/.cache/fastembed /root/.cache/fastembed
 COPY --from=python-deps /root/nltk_data /root/nltk_data
+
+# Copy Playwright browser binaries
+COPY --from=python-deps /root/.cache/ms-playwright /root/.cache/ms-playwright
 
 # Copy Node.js backend (already pruned)
 COPY --from=nodejs-backend /app/backend/dist ./backend/dist

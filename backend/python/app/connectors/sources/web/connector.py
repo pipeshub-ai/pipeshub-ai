@@ -4,6 +4,7 @@ import hashlib
 import random
 import re
 import uuid
+from enum import Enum
 from dataclasses import dataclass
 from enum import Enum
 from io import BytesIO
@@ -13,6 +14,11 @@ from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
 import pillow_avif  # noqa: F401  # pyright: ignore[reportUnusedImport]
+from bs4 import BeautifulSoup, Tag
+from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
+from PIL import Image
+
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
@@ -47,7 +53,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
-from app.connectors.sources.web.fetch_strategy import fetch_url_with_fallback
+from app.connectors.sources.web.fetch_strategy import Crawl4AIFetcher, fetch_url_with_fallback
 from app.models.entities import (
     AppUser,
     FileRecord,
@@ -67,6 +73,9 @@ from bs4 import BeautifulSoup, Tag
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from PIL import Image
+
+
+_headless_sync_semaphore = asyncio.Semaphore(1)
 
 
 async def _bytes_async_gen(data: bytes) -> AsyncGenerator[bytes, None]:
@@ -259,6 +268,18 @@ class WebApp(App):
             default_value=[],
             description="Sync only pages whose URL contains these strings; others are skipped. Leave empty to sync all pages."
         ))
+        .add_sync_custom_field(CustomField(
+            name="use_headless_browser",
+            display_name="Robust Mode (slower)",
+            field_type="BOOLEAN",
+            required=False,
+            default_value="false",
+            description=(
+                "Use a real Chromium browser to fetch pages. "
+                "Recommended for JavaScript-heavy or bot-protected sites — "
+                "without this, some pages may not be indexed properly."
+            )
+        ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(FilterField(
@@ -353,6 +374,8 @@ class WebConnector(BaseConnector):
         self.base_domain: Optional[str] = None
         self.session: Optional[aiohttp.ClientSession] = None
         self.full_sync: bool = False
+        self.use_headless_browser: bool = False
+        self.crawl4ai_fetcher: Optional[Crawl4AIFetcher] = None
 
         # Batch processing
         self.batch_size: int = 50
@@ -376,6 +399,10 @@ class WebConnector(BaseConnector):
             self.restrict_to_start_path = config_values["restrict_to_start_path"]
             self.start_path_prefix = config_values["start_path_prefix"]
             self.url_should_contain = config_values["url_should_contain"]
+            self.use_headless_browser = config_values["use_headless_browser"]
+            if self.use_headless_browser:
+                self.crawl4ai_fetcher = Crawl4AIFetcher(self.logger)
+                await self.crawl4ai_fetcher.start()
 
             # Load creator email if needed (for personal scope permission creation)
             await self._load_creator_email()
@@ -474,6 +501,7 @@ class WebConnector(BaseConnector):
             else:
                 self.logger.warning("⚠️ WebPage url_should_contain is not a list, setting to empty list: %s", _usc_raw)
                 url_should_contain = []
+            use_headless_browser = bool(sync_config.get("use_headless_browser", False))
 
             # restrict_to_start_path implies staying on the starting domain,
             # so follow_external must be False — override with a warning.
@@ -526,6 +554,7 @@ class WebConnector(BaseConnector):
                 "restrict_to_start_path": restrict_to_start_path,
                 "start_path_prefix": start_path_prefix,
                 "url_should_contain": url_should_contain,
+                "use_headless_browser": use_headless_browser,
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch and parse config: {e}")
@@ -650,7 +679,7 @@ class WebConnector(BaseConnector):
             await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
 
             self.logger.info(
-                f"✅ Created record group '{record_group_name}' with permissions for {len(permissions)} users"
+                f"✅ Created record group '{record_group_name}'"
             )
 
         except Exception as e:
@@ -713,6 +742,13 @@ class WebConnector(BaseConnector):
         """Main sync method to crawl and index web pages."""
         try:
             await self.reload_config()
+
+            self.logger.info(
+                f"🔧 Sync config: url={self.url}, type={self.crawl_type}, "
+                f"depth={self.max_depth}, max_pages={self.max_pages}, "
+                f"follow_external={self.follow_external}, restrict_to_start_path={self.restrict_to_start_path}, "
+                f"headless={self.use_headless_browser}"
+            )
 
             # Load filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -1015,6 +1051,10 @@ class WebConnector(BaseConnector):
         """
         # Queue for BFS crawling: (url, depth, referer)
         queue: List[Tuple[str, int, Optional[str]]] = [(start_url, depth, None)]
+        self.logger.info(
+            f"🕷️ BFS crawl starting from {start_url} "
+            f"(max_depth={self.max_depth}, max_pages={self.max_pages})"
+        )
 
         while (queue or self.retry_urls) and len(self.visited_urls) < self.max_pages:
             if not queue:
@@ -1048,6 +1088,9 @@ class WebConnector(BaseConnector):
 
             # Skip if depth exceeded
             if current_depth > self.max_depth:
+                self.logger.debug(
+                    f"⏭️ Depth {current_depth} > max {self.max_depth}, skipping: {current_url}"
+                )
                 continue
 
             self.logger.info(
@@ -1093,6 +1136,11 @@ class WebConnector(BaseConnector):
                             ):
                                 queue.append((link, current_depth + 1, current_url))
 
+                        self.logger.debug(
+                            f"📋 Queue: {len(queue)} pending after {current_url} "
+                            f"(visited: {len(self.visited_urls)}/{self.max_pages})"
+                        )
+
                     yield record_update
 
             except Exception as e:
@@ -1112,14 +1160,26 @@ class WebConnector(BaseConnector):
                 self.logger.error("❌ Session not initialized")
                 return None
 
-            result = await fetch_url_with_fallback(
-                url=url,
-                session=self.session,
-                logger=self.logger,
-                referer=referer,
-                timeout=15,
-                max_size_mb=self.max_size_mb,
+            self.logger.debug(
+                f"🌐 Fetching {url} via "
+                f"{'headless (crawl4ai)' if self.use_headless_browser else 'fallback chain'} "
+                f"(depth={depth})"
             )
+            if self.use_headless_browser and self.crawl4ai_fetcher:
+                async with _headless_sync_semaphore:
+                    result = await self.crawl4ai_fetcher.fetch(
+                        url=url,
+                        max_size_mb=self.max_size_mb,
+                    )
+            else:
+                result = await fetch_url_with_fallback(
+                    url=url,
+                    session=self.session,
+                    logger=self.logger,
+                    referer=referer,
+                    timeout=15,
+                    max_size_mb=self.max_size_mb,
+                )
 
             if result is None:
                 # Connection-level failure (all fetch strategies exhausted with no response).
@@ -1210,7 +1270,11 @@ class WebConnector(BaseConnector):
 
             # Determine MIME type and file extension
             mime_type, extension = self._determine_mime_type(url, content_type)
+            self.logger.debug(
+                f"🔍 {url}: content_type='{content_type}' → mime={mime_type.value}, ext={extension}"
+            )
             if not self._pass_extension_filter(extension):
+                self.logger.info(f"⏭️ Skipping {url}: extension '{extension}' excluded by filter")
                 return None
             html_bytes = content_bytes if mime_type == MimeTypes.HTML else None
 
@@ -1293,6 +1357,11 @@ class WebConnector(BaseConnector):
                     is_updated = metadata_changed or content_changed
             else:
                 is_new = True
+
+            self.logger.debug(
+                f"📊 {url}: is_new={is_new}, is_updated={is_updated}, "
+                f"metadata_changed={metadata_changed}, content_changed={content_changed}"
+            )
 
             # Create FileRecord
             file_record = FileRecord(
@@ -1383,13 +1452,20 @@ class WebConnector(BaseConnector):
                 if not self.session or not file_record.weburl:
                     return links
 
-                # Re-fetch using the same multi-strategy fallback used everywhere else
-                result = await fetch_url_with_fallback(
-                    url=file_record.weburl,
-                    session=self.session,
-                    logger=self.logger,
-                    referer=referer,
-                )
+                # Re-fetch using the same strategy configured for this connector
+                if self.use_headless_browser and self.crawl4ai_fetcher:
+                    async with _headless_sync_semaphore:
+                        result = await self.crawl4ai_fetcher.fetch(
+                            url=file_record.weburl,
+                            max_size_mb=self.max_size_mb,
+                        )
+                else:
+                    result = await fetch_url_with_fallback(
+                        url=file_record.weburl,
+                        session=self.session,
+                        logger=self.logger,
+                        referer=referer,
+                    )
                 if result is None or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
                     return links
 
@@ -1412,6 +1488,7 @@ class WebConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"⚠️ Failed to extract links from {base_url}: {e}")
 
+        self.logger.debug(f"🔗 {base_url}: extracted {len(links)} valid links")
         return links
 
     async def _create_failed_placeholder_record(
@@ -1975,6 +2052,9 @@ class WebConnector(BaseConnector):
 
     async def cleanup(self) -> None:
         """Cleanup resources."""
+        if self.crawl4ai_fetcher:
+            await self.crawl4ai_fetcher.close()
+            self.crawl4ai_fetcher = None
         if self.session:
             await self.session.close()
             self.session = None
@@ -2537,12 +2617,18 @@ class WebConnector(BaseConnector):
                     detail="Session not initialized",
                 )
 
-            result = await fetch_url_with_fallback(
-                url=record.weburl,
-                session=self.session,
-                logger=self.logger,
-                referer=referer,
-            )
+            if self.use_headless_browser and self.crawl4ai_fetcher:
+                async with _headless_sync_semaphore:
+                    result = await self.crawl4ai_fetcher.fetch(
+                        url=record.weburl,
+                    )
+            else:
+                result = await fetch_url_with_fallback(
+                    url=record.weburl,
+                    session=self.session,
+                    logger=self.logger,
+                    referer=referer,
+                )
 
             if result is None or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
                 raise HTTPException(
@@ -2557,8 +2643,12 @@ class WebConnector(BaseConnector):
             # Process HTML content
             cleaned_html_content = None
             if "html" in mime_type.lower():
+                if result.strategy == "crawl4ai":
+                    strategy = None
+                else:
+                    strategy = result.strategy
                 cleaned_html_content = await self._process_html_content(
-                    content_bytes, record, headers, result.strategy
+                    content_bytes, record, headers, strategy
                 )
 
             # Prepare response content
@@ -2567,7 +2657,7 @@ class WebConnector(BaseConnector):
                 if cleaned_html_content
                 else content_bytes
             )
-
+            
             return create_stream_record_response(
                 _bytes_async_gen(response_content),
                 filename=record.record_name,
