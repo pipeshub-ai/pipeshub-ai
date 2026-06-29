@@ -22,12 +22,14 @@ class QdrantConfig:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> 'QdrantConfig':
+    def from_dict(cls, data: dict) -> "QdrantConfig":
         return cls(
-            host=data.get("host", ""),
-            port=data.get("port", 0),
-            api_key=data.get("api_key", ""),
-            prefer_grpc=data.get("prefer_grpc", True),
-            https=data.get("https", False),
-            timeout=data.get("timeout", 180)
+            host=data.get("host", "localhost"),
+            # Accept both `port` (canonical) and legacy spellings
+            port=int(data.get("port", 6333)),
+            # Accept both `api_key` (canonical) and `apiKey` (Node.js style)
+            api_key=data.get("api_key") or data.get("apiKey") or "",
+            prefer_grpc=bool(data.get("prefer_grpc", True)),
+            https=bool(data.get("https", False)),
+            timeout=int(data.get("timeout", 300)),
         )

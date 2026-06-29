@@ -28,12 +28,9 @@ from app.services.featureflag.featureflag import FeatureFlagService
 from app.services.featureflag.provider.etcd import EtcdProvider
 from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.vector_db.const.const import (
-    VECTOR_DB_COLLECTION_NAME,
-    VECTOR_DB_SERVICE_NAME,
-)
+from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.services.vector_db.interface.vector_db import IVectorDBService
-from app.services.vector_db.vector_db_factory import VectorDBFactory
+from app.services.vector_db.vector_db_provider_factory import VectorDBProviderFactory
 from app.utils.logger import create_logger
 
 
@@ -47,10 +44,9 @@ class ContainerUtils:
         self,
         config_service: ConfigurationService,
     ) -> IVectorDBService:
-        return await VectorDBFactory.create_vector_db_service(
-            service_type=VECTOR_DB_SERVICE_NAME,
-            config=config_service,
-            is_async=False,
+        return await VectorDBProviderFactory.create_provider(
+            logger=self.logger,
+            config_service=config_service,
         )
 
     async def create_graph_provider(

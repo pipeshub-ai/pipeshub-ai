@@ -1,0 +1,322 @@
+services:
+  pipeshub-ai:
+    image: pipeshub-ai:latest
+    restart: always
+    build:
+      context: ../../../
+      dockerfile: Dockerfile
+      args:
+        BUILDKIT_INLINE_CACHE: "1"
+        PYTHON_DEPS_IMAGE: ${PYTHON_DEPS_IMAGE:-pipeshubai/pipeshub-ai-base:python-deps}
+        RUNTIME_BASE_IMAGE: ${RUNTIME_BASE_IMAGE:-pipeshubai/pipeshub-ai-base:runtime}
+      shm_size: 4gb
+      ulimits:
+        memlock:
+          soft: -1
+          hard: -1
+    ports:
+      - "3000:3000"
+    deploy:
+      resources:
+        limits:
+          memory: 12G
+    shm_size: 2gb
+    init: true
+    logging:
+      driver: local
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-15}"
+        compress: "true"
+    environment:
+      # Core environment settings
+      - NODE_ENV=${NODE_ENV:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3001}
+      - STRICT_MODE=${STRICT_MODE:-false}
+      - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
+      - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
+      # Security settings - allow override with custom secret
+      - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
+
+      # Public endpoints
+      - CONNECTOR_PUBLIC_BACKEND=${CONNECTOR_PUBLIC_BACKEND:-}
+      - FRONTEND_PUBLIC_URL=${FRONTEND_PUBLIC_URL:-}
+
+      # Internal service URLs
+      - QUERY_BACKEND=http://localhost:8000
+      - CONNECTOR_BACKEND=http://localhost:8088
+      - INDEXING_BACKEND=http://localhost:8091
+      - EMBEDDING_SERVER_URL=http://localhost:8002
+
+      # Key-Value Store Configuration
+      - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
+
+      # Graph Database config
+      - GRAPH_DB_TYPE=neo4j
+      - DATA_STORE=neo4j
+
+      # Neo4j config
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USERNAME=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-your_password}
+      - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
+      
+      # Message broker config
+      - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
+
+      # Redis config — general instance (KV, BullMQ/Celery, Streams)
+      # DB 0: KV persistent config  DB 1: BullMQ/Celery  DB 2: Streams
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-}@redis:6379
+      - REDIS_KV_PREFIX=${REDIS_KV_PREFIX:-pipeshub:kv:}
+      - REDIS_TIMEOUT=${REDIS_TIMEOUT:-10000}
+      - REDIS_DB=${REDIS_DB:-0}
+
+      # Redis vector instance — dedicated for RediSearch (isolated from KV/queues)
+      # Memory grows with doc count; separate from general instance to prevent OOM
+      # of KV/BullMQ/Streams.  REDIS_VECTOR_HOST/PORT fall back to REDIS_HOST/PORT
+      # when unset (single-instance mode).
+      - REDIS_VECTOR_HOST=redis-vector
+      - REDIS_VECTOR_PORT=6379
+
+      # MongoDB config
+      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@mongodb:27017/?authSource=admin
+      - MONGO_DB_NAME=es
+      # Standalone mongod — multi-document transactions unavailable. App branches on this.
+      - REPLICA_SET_AVAILABLE=false
+
+      # Vector DB — Redis Search (requires Redis >= 8.4 for FT.HYBRID)
+      - VECTOR_DB_TYPE=redis
+      # Dense vector storage dtype for new indexes: FLOAT16 (default, ~2x less
+      # index memory, negligible recall loss) or FLOAT32. Changing this only
+      # affects newly created indexes.
+      - REDIS_VECTOR_DENSE_DTYPE=${REDIS_VECTOR_DENSE_DTYPE:-FLOAT16}
+
+      - OLLAMA_API_URL=http://host.docker.internal:11434
+
+      # Rate limit config
+      - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-2000}
+      - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
+
+      # Set to true to replace secrets in config API responses with **** markers
+      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-true}
+
+      # MCP OAuth scopes
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read}
+
+      # Token config
+      - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
+      - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+      
+      # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
+
+      # Indexing service config
+      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
+      - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-5}
+      - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-40}
+      - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
+      - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
+      - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
+      - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
+      - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
+      - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
+      - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
+      - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
+      
+      - OPIK_API_KEY=${OPIK_API_KEY:-}
+      - OPIK_WORKSPACE=${OPIK_WORKSPACE:-}
+
+      # AWS credentials (for Bedrock IAM role access from inside the container)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-}
+
+      # Slack Bot config
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
+      - BOT_TOKEN=${BOT_TOKEN:-}
+      - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
+
+      # Sandbox execution mode (local = subprocess, docker = ephemeral containers).
+      # Defaults to "docker" -- the sandbox-image service below builds the required
+      # pipeshub/sandbox:latest image before pipeshub-ai starts.
+      # Production (docker-compose.prod.yml) pulls pipeshubai/pipeshub-sandbox:${IMAGE_TAG}
+      # from the registry instead; build/push from deployment/sandbox alongside pipeshub-ai.
+      - SANDBOX_MODE=${SANDBOX_MODE:-docker}
+
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-vector:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      sandbox-image:
+        condition: service_completed_successfully
+
+    volumes:
+      - pipeshub_data:/data/pipeshub
+      - pipeshub_root_local:/root/.local
+      # Persist the HuggingFace model cache so models pulled at runtime survive
+      # container recreation instead of being re-downloaded on every restart.
+      - pipeshub_hf_cache:/root/.cache/huggingface
+      - /var/run/docker.sock:/var/run/docker.sock  # Required for SANDBOX_MODE=docker
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Probe the aggregated /api/v1/health/services endpoint served by the
+    # nodejs API. If curl succeeds, the nodejs service itself is up; the JSON
+    # body must additionally report every Python application service
+    # (query, connector, indexing, docling, embedding) as "healthy" before the container
+    # is considered ready. This makes `docker compose up --wait` block until
+    # all pipeshub services inside the container have finished starting.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          curl -sf http://localhost:3000/api/v1/health/services -o /tmp/hc.json &&
+          python3 -c "import json,sys; d=json.load(open('/tmp/hc.json')); s=d.get('services',{}) or {}; required=('query','connector','indexing','docling'); sys.exit(0 if all(s.get(k)=='healthy' for k in required) and s.get('embedding') in ('healthy','starting') else 1)"
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+
+  mongodb:
+    image: mongo:8.0.17
+    restart: always
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-password}
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    # General-purpose Redis: KV persistent config (DB 0), BullMQ/Celery queues
+    # (DB 1), Redis Streams (DB 2).  No RediSearch modules needed here — lighter
+    # footprint, no HNSW background workers.  Memory stays bounded by design:
+    # KV has finite keys, BullMQ uses removeOnComplete, Streams use MAXLEN.
+    image: redis:8
+    restart: always
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    command: >
+      sh -c "redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory-policy noeviction
+      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis-vector:
+    # Dedicated Redis vector DB: HNSW indexes over HASH-backed documents with
+    # binary FLOAT16 vectors (2 bytes/dim).  Isolated from the general instance
+    # so vector memory growth (proportional to indexed docs) cannot OOM KV/queues.
+    #
+    # Memory budget (ON HASH + FLOAT16):
+    #   ~3 KB/doc  →  10K docs ≈ 30 MB, 100K docs ≈ 300 MB, 1M docs ≈ 3 GB
+    # Set deploy.resources.limits.memory accordingly when scaling past 100K docs.
+    #
+    # --search-workers moves HNSW indexing off the main thread into a background
+    # tiered pool. With the default (0) every HSET is indexed synchronously and
+    # per-insert latency grows with graph size (~25 ms/vector at 20k docs vs
+    # ~1 ms with workers).  Tune REDIS_SEARCH_WORKERS toward available CPU cores.
+    #
+    # The RediSearch module ships inside the redis:8 image but is NOT loaded by
+    # a plain `redis-server` start, so we load it explicitly here. The ReJSON
+    # module (rejson.so) is NOT needed — storage is ON HASH, not ON JSON.
+    image: redis:8
+    ports: 
+    - "6379:6379"
+    restart: always
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_SEARCH_WORKERS=${REDIS_SEARCH_WORKERS:-4}
+    command: >
+      sh -c "redis-server
+      --loadmodule /usr/local/lib/redis/modules/redisearch.so
+      --search-workers ${REDIS_SEARCH_WORKERS:-4}
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory-policy noeviction
+      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}"
+    volumes:
+      - redis_vector_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  neo4j:
+    image: neo4j:5.26.0
+    restart: always
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-your_password}
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_memory_heap_initial__size=1G
+      - NEO4J_dbms_memory_heap_max__size=2G
+      - NEO4J_dbms_memory_pagecache_size=1G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 3G
+        reservations:
+          cpus: '2'
+          memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Build-only helper that ensures the pipeshub/sandbox:latest image is
+  # available on the host Docker daemon before pipeshub-ai starts.
+  # The container itself is a no-op: it prints a message and exits 0, leaving
+  # the image in place for SANDBOX_MODE=docker ephemeral execution.
+  sandbox-image:
+    image: pipeshub/sandbox:latest
+    build:
+      context: ../../../deployment/sandbox
+      dockerfile: Dockerfile
+    restart: "no"
+    command: ["sh", "-c", "echo 'pipeshub/sandbox:latest image ready'"]
+
+volumes:
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
+  redis_vector_data:
+    driver: local
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  pipeshub_data:
+    driver: local
+  pipeshub_root_local:
+    driver: local
+  pipeshub_hf_cache:
+    driver: local

@@ -22,12 +22,12 @@ from app.containers.utils.utils import ContainerUtils
 class TestGetVectorDbServiceExtended:
     @pytest.mark.asyncio
     async def test_passes_correct_params(self):
-        """Verifies is_async=False and correct service_type."""
+        """Verifies config_service is forwarded to create_provider."""
         cu = ContainerUtils()
         config_service = MagicMock()
 
         with patch(
-            "app.containers.utils.utils.VectorDBFactory.create_vector_db_service",
+            "app.containers.utils.utils.VectorDBProviderFactory.create_provider",
             new_callable=AsyncMock,
         ) as mock_factory:
             mock_factory.return_value = MagicMock()
@@ -35,8 +35,7 @@ class TestGetVectorDbServiceExtended:
 
             mock_factory.assert_called_once()
             call_kwargs = mock_factory.call_args[1]
-            assert call_kwargs["is_async"] is False
-            assert call_kwargs["config"] is config_service
+            assert call_kwargs["config_service"] is config_service
 
 
 # ---------------------------------------------------------------------------

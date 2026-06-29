@@ -2168,6 +2168,71 @@
       "discardMessage": "Wenn Sie verwerfen, werden Ihre Änderungen nicht gespeichert",
       "discardConfirm": "Verwerfen",
       "discardCancel": "Weiter bearbeiten"
+    },
+    "services": {
+      "pageTitle": "Dienste",
+      "pageSubtitle": "Überwachen Sie den Zustand der Plattformdienste",
+      "infraSection": "Infrastrukturdienste",
+      "infraSubtitle": "Kerninfrastrukturkomponenten, die die Plattform antreiben",
+      "appSection": "Anwendungsdienste",
+      "appSubtitle": "Python-Microservices für Suche, Indizierung und Dokumentenverarbeitung",
+      "checkNow": "Jetzt prüfen",
+      "checking": "Prüfe…",
+      "lastChecked": "Zuletzt geprüft: {{time}}",
+      "loading": "Dienststatus wird geladen…",
+      "policyTitle": "Dienstintegritätsrichtlinie",
+      "policyDescription": "Query- und Connector-Dienste sind kritisch — die Anwendung wartet auf sie vor dem Laden. Indexierungs- und Docling-Dienste sind nicht-blockierend und betreffen nur die Hintergrundverarbeitung.",
+      "allHealthy": "Alle Dienste sind funktionsfähig",
+      "someUnhealthy": "Einige Dienste sind nicht funktionsfähig",
+      "fetchFailed": "Fehler beim Prüfen des Dienststatus",
+      "statusHealthy": "Funktionsfähig",
+      "statusUnhealthy": "Nicht funktionsfähig",
+      "statusUnknown": "Unbekannt",
+      "infra": {
+        "redis": {
+          "label": "Redis",
+          "descriptionWithKvStore": "Caching, Ratenbegrenzung und Konfiguration",
+          "description": "Caching und Ratenbegrenzung"
+        },
+        "mongodb": {
+          "label": "MongoDB",
+          "description": "Sitzungen und Benutzermetadaten"
+        },
+        "messageBroker": {
+          "label": "Nachrichtenbroker",
+          "description": "Verteiltes Ereignis-Streaming"
+        },
+        "etcd": {
+          "label": "etcd",
+          "description": "Verteilte Konfiguration"
+        },
+        "graphDb": {
+          "label": "Graphdatenbank",
+          "description": "Wissensgraphen"
+        },
+        "vectorDb": {
+          "label": "Vektordatenbank",
+          "description": "Hybridsuche — Schlüsselwort und semantisch"
+        }
+      },
+      "app": {
+        "query": {
+          "label": "Abfragedienst",
+          "description": "RAG, semantische Suche und LLM-Integration"
+        },
+        "connector": {
+          "label": "Connector-Dienst",
+          "description": "OAuth, Token-Aktualisierung und Datenquellenintegrationen"
+        },
+        "indexing": {
+          "label": "Indizierungsdienst",
+          "description": "Dokumentenparsing, Embedding-Generierung und Chunking"
+        },
+        "docling": {
+          "label": "Docling-Dienst",
+          "description": "Erweiterte Dokumentenverarbeitung und OCR"
+        }
+      }
     }
   },
   "filePreview": {

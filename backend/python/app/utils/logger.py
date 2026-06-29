@@ -129,6 +129,10 @@ if data_store == "neo4j":
     neo4j_notifications_logger = logging.getLogger("neo4j.notifications")
     neo4j_notifications_logger.setLevel(logging.ERROR)  # Only show errors, suppress warnings
 
+# Suppress opensearch-py transport INFO logs (logs every HTTP request at INFO level).
+# Errors and warnings are still visible.
+logging.getLogger("opensearch").setLevel(logging.WARNING)
+
 # Suppress /health* endpoint noise from uvicorn access logs (process_monitor polling)
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 

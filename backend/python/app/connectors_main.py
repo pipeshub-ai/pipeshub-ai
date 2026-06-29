@@ -473,6 +473,7 @@ app = FastAPI(
 EXCLUDE_PATHS = [
     "/health",          # Basic health check endpoint
     "/health/graph-db", # Graph DB connectivity probe (called by Node.js health route)
+    "/health/vector-db", # Vector DB connectivity probe (called by Node.js health route)
     "/drive/webhook",   # Google Drive webhook (has its own WebhookAuthVerifier)
     "/gmail/webhook",   # Gmail webhook (uses Google Pub/Sub authentication)
     "/admin/webhook",   # Admin webhook (has its own WebhookAuthVerifier)
@@ -663,6 +664,74 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
             "timestamp": get_epoch_timestamp_in_ms(),
         },
     )
+
+
+@router.get("/health/vector-db")
+async def vector_db_health_check(request: Request) -> JSONResponse:
+    """Probe the configured vector database.
+
+    Uses VECTOR_DB_TYPE to determine which provider to check (qdrant, opensearch,
+    or redis). Called by the Node.js health endpoint so it doesn't need to know
+    which vector DB is deployed.
+
+    The provider is created once and cached on app.state for subsequent calls.
+    """
+    import os
+
+    from app.services.vector_db.models import HealthStatus
+    from app.services.vector_db.vector_db_provider_factory import VectorDBProviderFactory
+    from app.utils.logger import create_logger
+
+    vector_db_type = os.getenv("VECTOR_DB_TYPE", "qdrant").lower().strip()
+
+    try:
+        # Reuse cached provider to avoid re-creating on every health check call
+        provider = getattr(request.app.state, "_vector_db_health_provider", None)
+        if provider is None:
+            logger = create_logger("vector_db_health")
+            container = request.app.container  # type: ignore[attr-defined]
+            config_service = container.config_service()
+            provider = await VectorDBProviderFactory.create_provider(
+                logger=logger,
+                config_service=config_service,
+            )
+            request.app.state._vector_db_health_provider = provider
+
+        result = await provider.health_check()
+
+        if result.status == HealthStatus.HEALTHY:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "healthy",
+                    "provider": vector_db_type,
+                    "version": result.server_version,
+                    "latency_ms": result.latency_ms,
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
+        else:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "unhealthy",
+                    "provider": vector_db_type,
+                    "error": result.message or f"{vector_db_type} health check failed",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
+    except Exception as e:
+        # Clear cached provider so next call retries connection
+        request.app.state._vector_db_health_provider = None
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "provider": vector_db_type,
+                "error": f"Vector DB ({vector_db_type}) health check failed: {str(e)}",
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
 
 
 # Include routes - more specific routes first
