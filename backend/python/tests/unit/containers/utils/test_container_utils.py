@@ -19,7 +19,7 @@ class TestGetVectorDbService:
         cu = ContainerUtils()
         config_service = MagicMock()
         with patch(
-            "app.containers.utils.utils.VectorDBFactory.create_vector_db_service",
+            "app.containers.utils.utils.VectorDBProviderFactory.create_provider",
             new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_factory:

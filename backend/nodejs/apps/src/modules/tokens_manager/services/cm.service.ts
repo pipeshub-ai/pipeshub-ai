@@ -161,7 +161,9 @@ export class ConfigService {
   // Kafka Configuration (supports standard Kafka and AWS MSK with SASL/SCRAM)
   public async getKafkaConfig(): Promise<KafkaConfig> {
     return this.getEncryptedConfig<KafkaConfig>(configPaths.broker.kafka, {
-      brokers: process.env.KAFKA_BROKERS!.split(','),
+      brokers: process.env.KAFKA_BROKERS
+        ? process.env.KAFKA_BROKERS.split(',')
+        : [],
       ssl: process.env.KAFKA_SSL === 'true',
       ...(process.env.KAFKA_USERNAME && {
         sasl: {

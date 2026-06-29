@@ -5,12 +5,12 @@ from logging import Logger
 from typing import Any
 
 import httpx
-import grpc  #type: ignore
 from fastapi import APIRouter, Body, HTTPException, Request  #type: ignore
 from fastapi.responses import JSONResponse  #type: ignore
 from langchain_core.messages import HumanMessage  #type: ignore
 
 from app.services.vector_db.const.const import ORG_ID_FIELD, VIRTUAL_RECORD_ID_FIELD
+from app.services.vector_db.models import CollectionConfig
 from app.utils.aimodels import (
     ImageGenerationProvider,
     STTProvider,
@@ -36,6 +36,28 @@ _WEB_SEARCH_HEALTH_TIMEOUTS_S = {
     "tavily": 33.0,
     "exa": 33.0,
 }
+
+
+def _is_collection_not_found_error(exc: Exception) -> bool:
+    """Return True when *exc* indicates the collection/index does not exist yet."""
+    msg = str(exc).lower()
+    if any(
+        token in msg
+        for token in ("not found", "doesn't exist", "does not exist", "404", "index_not_found")
+    ):
+        return True
+    status = getattr(exc, "status_code", None)
+    if status == 404:
+        return True
+    try:
+        import grpc  # type: ignore
+
+        code_fn = getattr(exc, "code", None)
+        if callable(code_fn) and code_fn() == grpc.StatusCode.NOT_FOUND:
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _extract_error_message(e: Exception) -> str:
@@ -294,7 +316,7 @@ async def handle_model_change(
     retrieval_service,
     current_model_name: str,
     new_model_name: str,
-    qdrant_vector_size: int,
+    existing_vector_size: int,
     points_count: int,
     embedding_size: int,
     logger
@@ -309,7 +331,7 @@ async def handle_model_change(
         and current_model_name != new_model_name
     )
     dimension_mismatch = (
-        qdrant_vector_size != 0 and qdrant_vector_size != embedding_size
+        existing_vector_size != 0 and existing_vector_size != embedding_size
     )
 
     if not model_name_changed and not dimension_mismatch:
@@ -321,7 +343,7 @@ async def handle_model_change(
         )
     if dimension_mismatch:
         logger.warning(
-            f"Detected vector dimension mismatch: collection has {qdrant_vector_size}, "
+            f"Detected vector dimension mismatch: collection has {existing_vector_size}, "
             f"new model produces {embedding_size}"
         )
 
@@ -345,18 +367,22 @@ async def handle_model_change(
             },
         )
 
-    if qdrant_vector_size != 0:
+    if existing_vector_size != 0:
         await recreate_collection(retrieval_service, embedding_size, logger)
 
 async def recreate_collection(retrieval_service, embedding_size, logger) -> None:
-    """Recreate the collection with new parameters."""
+    """Recreate the collection with new parameters (provider-neutral via CollectionConfig)."""
     try:
         await retrieval_service.vector_db_service.delete_collection(retrieval_service.collection_name)
         logger.info(f"Successfully deleted empty collection {retrieval_service.collection_name}")
+        caps = retrieval_service.vector_db_service.get_capabilities()
         await retrieval_service.vector_db_service.create_collection(
             collection_name=retrieval_service.collection_name,
-            embedding_size=embedding_size,
-            sparse_idf=SPARSE_IDF,
+            config=CollectionConfig(
+                embedding_size=embedding_size,
+                sparse_idf=SPARSE_IDF,
+                enable_sparse=caps.supports_sparse_vectors,
+            ),
         )
 
         await retrieval_service.vector_db_service.create_index(
@@ -384,10 +410,13 @@ async def check_collection_info(
     embedding_size,
     logger
 ) -> None:
-    """Check and validate collection information."""
+    """Check and validate collection information using provider-neutral get_collection_info()."""
     try:
-        collection_info = await retrieval_service.vector_db_service.get_collection(retrieval_service.collection_name)
-        qdrant_vector_size = collection_info.config.params.vectors.get("dense").size
+        collection_info = await retrieval_service.vector_db_service.get_collection_info(
+            retrieval_service.collection_name
+        )
+        # Use normalized VectorCollectionInfo fields (works for all providers)
+        existing_vector_size = collection_info.dense_dimension or 0
         points_count = collection_info.points_count
 
         current_model_name = await retrieval_service.get_current_embedding_model_name()
@@ -401,38 +430,18 @@ async def check_collection_info(
             retrieval_service,
             current_model_name,
             new_model_name,
-            qdrant_vector_size,
+            existing_vector_size,
             points_count,
             embedding_size,
             logger
         )
 
-    except grpc._channel._InactiveRpcError as e:
-        if e.code() == grpc.StatusCode.NOT_FOUND:
-            logger.info("collection not found - acceptable for health check")
-        else:
-            logger.error(f"Unexpected gRPC error while checking vector db collection: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "status": "not healthy",
-                    "error": f"Unexpected gRPC error while checking vector db collection: {str(e)}",
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                }
-            )
     except HTTPException:
-        # Re-raise HTTPException to be handled by the route handler
         raise
     except Exception as e:
-        logger.error(f"Unexpected error checking vector db collection: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "status": "not healthy",
-                "error": f"Unexpected error checking vector db collection: {str(e)}",
-                "timestamp": get_epoch_timestamp_in_ms(),
-            }
-        )
+        # Connectivity / not-found errors during startup are non-fatal: log and
+        # let the health check proceed rather than blocking the service from starting.
+        logger.warning(f"Unexpected error checking vector db collection: {str(e)}", exc_info=True)
 
 @router.post("/embedding-health-check")
 async def embedding_health_check(request: Request, embedding_configs: list[dict] = Body(...)) -> JSONResponse:
@@ -703,82 +712,7 @@ async def perform_embedding_health_check(
             embedding_dimension = len(test_embeddings[0]) if test_embeddings else 0
             all(len(emb) == embedding_dimension for emb in test_embeddings)
 
-            # Policy: reject if the existing non-empty collection was built
-            # with a different model OR a different vector size.
-            try:
-                retrieval_service = await request.app.container.retrieval_service()
-                collection_info = await retrieval_service.vector_db_service.get_collection(retrieval_service.collection_name)
-
-                if collection_info:
-                    dense_vector = collection_info.config.params.vectors.get("dense")
-                    qdrant_vector_size = getattr(dense_vector, "size", None) if dense_vector else None
-
-                    if qdrant_vector_size is None:
-                        raise Exception("Qdrant vector size not found")
-
-                    points_count = getattr(collection_info, "points_count", 0)
-
-                    if points_count > 0:
-                        # Check dimension mismatch
-                        if qdrant_vector_size != embedding_dimension:
-                            return JSONResponse(
-                                status_code=400,
-                                content={
-                                    "status": "error",
-                                    "message": "Documents are already indexed with a different embedding model. Please remove existing documents indexed with the old model and try again.",
-                                    "details": {
-                                        "existing_vector_size": qdrant_vector_size,
-                                        "new_embedding_size": embedding_dimension,
-                                        "points_count": points_count,
-                                    },
-                                    "timestamp": get_epoch_timestamp_in_ms(),
-                                },
-                            )
-
-                        # Check model identity — same dimensions but different
-                        # model means incompatible vector spaces.
-                        current_model_name = await retrieval_service.get_current_embedding_model_name()
-                        new_provider = embedding_config.get("provider", "")
-                        new_model = model_name
-
-                        if current_model_name:
-                            current_normalized = normalize_embedding_model_name(current_model_name)
-                            new_normalized = normalize_embedding_model_name(new_model)
-
-                            if current_normalized and new_normalized and current_normalized != new_normalized:
-                                return JSONResponse(
-                                    status_code=400,
-                                    content={
-                                        "status": "error",
-                                        "message": (
-                                            f"Embedding model mismatch: the existing collection was built with "
-                                            f"'{current_model_name}'. Switching to '{new_model}' (provider: "
-                                            f"{new_provider}) would corrupt search results. Please re-index "
-                                            f"or use the same model."
-                                        ),
-                                        "details": {
-                                            "current_model": current_model_name,
-                                            "new_model": new_model,
-                                            "new_provider": new_provider,
-                                            "points_count": points_count,
-                                        },
-                                        "timestamp": get_epoch_timestamp_in_ms(),
-                                    },
-                                )
-            except grpc._channel._InactiveRpcError as e:
-                if e.code() == grpc.StatusCode.NOT_FOUND:
-                    logger.info("Collection not found - acceptable for health check")
-                else:
-                    raise
-            except Exception as e:
-                logger.error(f"Collection lookup failed: {str(e)}")
-                return JSONResponse(
-                    status_code=500,
-                    content={
-                        "status": "error",
-                        "message": "Something went wrong! Please try again.",
-                    },
-                )
+            
 
             return JSONResponse(
                 status_code=200,

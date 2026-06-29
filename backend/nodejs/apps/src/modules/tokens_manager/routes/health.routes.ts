@@ -83,13 +83,19 @@ export function createHealthRouter(
 
       const brokerName = deployment.messageBrokerType === 'redis' ? 'Redis Streams' : 'Kafka';
       const graphDbName = deployment.dataStoreType === 'arangodb' ? 'ArangoDB' : 'Neo4j';
+      const vectorDbNames: Record<string, string> = {
+        qdrant: 'Qdrant',
+        opensearch: 'OpenSearch',
+        redis: 'Redis',
+      };
+      const vectorDbName = vectorDbNames[deployment.vectorDbType || ''] || 'VectorDB';
 
       const serviceNames: Record<string, string> = {
         redis: 'Redis',
         messageBroker: brokerName,
         mongodb: 'MongoDB',
         graphDb: graphDbName,
-        vectorDb: 'Qdrant',
+        vectorDb: vectorDbName,
       };
 
       // When KV store uses etcd, add it as a separate service
@@ -162,14 +168,23 @@ export function createHealthRouter(
         }
       }
 
-      try {
-        const qdrantUrl = `http://${appConfig.qdrant.host}:${appConfig.qdrant.port}`;
-        const qdrantResp = await axios.get(`${qdrantUrl}/healthz`, { timeout: 3000 });
-        services.vectorDb = qdrantResp.status === 200 ? 'healthy' : 'unhealthy';
-        if (qdrantResp.status !== 200) overallHealthy = false;
-      } catch (error) {
-        services.vectorDb = 'unhealthy';
-        overallHealthy = false;
+      // Vector DB — delegate to the Python connector service which knows the
+      // configured provider (Qdrant, OpenSearch, or Redis) via VECTOR_DB_TYPE.
+      if (!deployment.vectorDbType) {
+        services.vectorDb = 'pending';
+        logger.info('vectorDbType not yet available in deployment config — Python backend may not have started');
+      } else {
+        try {
+          const vectorDbResp = await axios.get(
+            `${appConfig.connectorBackend}/health/vector-db`,
+            { timeout: 5000, validateStatus: () => true },
+          );
+          services.vectorDb = vectorDbResp.status === 200 ? 'healthy' : 'unhealthy';
+          if (vectorDbResp.status !== 200) overallHealthy = false;
+        } catch (error) {
+          services.vectorDb = 'unhealthy';
+          overallHealthy = false;
+        }
       }
 
       const health: HealthStatus = {

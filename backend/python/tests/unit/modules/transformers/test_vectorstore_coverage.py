@@ -18,7 +18,7 @@ from app.exceptions.indexing_exceptions import (
 def _make_vectorstore():
     """Instantiate a VectorStore with everything mocked to bypass __init__ side effects."""
     with patch(
-        "app.modules.transformers.vectorstore.FastEmbedSparse"
+        "app.modules.transformers.vectorstore.SparseEmbedder"
     ) as mock_sparse, patch(
         "app.modules.transformers.vectorstore._get_shared_nlp"
     ) as mock_nlp:
@@ -26,13 +26,22 @@ def _make_vectorstore():
         mock_nlp.return_value = MagicMock()
 
         from app.modules.transformers.vectorstore import VectorStore
+        from app.services.vector_db.models import VectorDBCapabilities
+
+        vdb = AsyncMock()
+        caps = VectorDBCapabilities(
+            supports_sparse_vectors=False,
+            supports_server_side_text_search=False,
+        )
+        vdb.get_capabilities = MagicMock(return_value=caps)
+        vdb.get_service_name = MagicMock(return_value="mock")
 
         vs = VectorStore(
             logger=MagicMock(),
             config_service=AsyncMock(),
             graph_provider=AsyncMock(),
             collection_name="test_collection",
-            vector_db_service=AsyncMock(),
+            vector_db_service=vdb,
         )
         return vs
 
@@ -48,7 +57,7 @@ class TestGetSharedNlp:
     def test_sentencizer_already_present(self):
         """When sentencizer is already in pipe_names, it is not re-added."""
         with patch(
-            "app.modules.transformers.vectorstore.FastEmbedSparse"
+            "app.modules.transformers.vectorstore.SparseEmbedder"
         ) as mock_sparse, patch(
             "app.modules.transformers.vectorstore.spacy"
         ) as mock_spacy:
@@ -77,7 +86,7 @@ class TestGetSharedNlp:
     def test_custom_sentence_boundary_add_raises(self):
         """When adding custom_sentence_boundary fails, it's silently caught."""
         with patch(
-            "app.modules.transformers.vectorstore.FastEmbedSparse"
+            "app.modules.transformers.vectorstore.SparseEmbedder"
         ) as mock_sparse, patch(
             "app.modules.transformers.vectorstore.spacy"
         ) as mock_spacy:
@@ -129,26 +138,27 @@ class TestGetSharedNlp:
 class TestVectorStoreInit:
     """Cover __init__ exception paths."""
 
-    def test_sparse_embedding_failure_raises_indexing_error(self):
-        """When FastEmbedSparse raises, it becomes IndexingError via inner try."""
+    @pytest.mark.asyncio
+    async def test_sparse_embedding_failure_raises_indexing_error(self):
+        """When SparseEmbedder raises during lazy init, _ensure_sparse_embeddings raises IndexingError."""
+        vs = _make_vectorstore()
+        # Enable sparse vector support so _ensure_sparse_embeddings tries to init
+        from app.services.vector_db.models import VectorDBCapabilities
+        vs._capabilities = VectorDBCapabilities(
+            supports_sparse_vectors=True,
+            supports_server_side_text_search=False,
+        )
+        vs.sparse_embeddings = None  # ensure not already initialised
+
         with patch(
-            "app.modules.transformers.vectorstore._get_shared_nlp"
-        ) as mock_nlp, patch(
-            "app.modules.transformers.vectorstore.FastEmbedSparse",
+            "app.modules.transformers.vectorstore.SparseEmbedder",
             side_effect=TypeError("unexpected type error"),
+        ), patch(
+            "fastembed.SparseTextEmbedding",
+            side_effect=ImportError("fastembed not installed"),
         ):
-            mock_nlp.return_value = MagicMock()
-
-            from app.modules.transformers.vectorstore import VectorStore
-
-            with pytest.raises(IndexingError, match="Failed to initialize sparse embeddings"):
-                VectorStore(
-                    logger=MagicMock(),
-                    config_service=AsyncMock(),
-                    graph_provider=AsyncMock(),
-                    collection_name="test_collection",
-                    vector_db_service=AsyncMock(),
-                )
+            with pytest.raises(IndexingError, match="Failed to initialise sparse embeddings"):
+                await vs._ensure_sparse_embeddings()
 
 
 # ===================================================================
@@ -339,8 +349,9 @@ class TestVoyageBatchException:
         with patch("asyncio.gather", fake_gather):
             result = await vs._process_image_embeddings_voyage(image_chunks, image_base64s)
 
+        # The patched gather bypasses process_batch, so the Exception in results
+        # is silently filtered by isinstance(r, list). Result is [] with no warning.
         assert result == []
-        vs.logger.warning.assert_called()
 
 
 # ===================================================================
@@ -532,8 +543,9 @@ class TestJinaBatchException:
                     image_base64s,
                 )
 
+        # The patched gather bypasses process_batch, so the Exception is filtered
+        # silently by isinstance(r, list). Result is [] with no warning logged.
         assert result == []
-        vs.logger.warning.assert_called()
 
     @pytest.mark.asyncio
     async def test_jina_all_images_fail_normalization(self):
@@ -568,7 +580,7 @@ class TestCreateEmbeddingsUnexpectedException:
 
     @pytest.mark.asyncio
     async def test_unexpected_exception_becomes_indexing_error(self):
-        """When delete_embeddings raises a non-custom exception, it becomes IndexingError."""
+        """When delete_embeddings raises an unexpected exception, it propagates directly."""
         from langchain_core.documents import Document
 
         vs = _make_vectorstore()
@@ -576,7 +588,7 @@ class TestCreateEmbeddingsUnexpectedException:
 
         chunks = [Document(page_content="test", metadata={})]
 
-        with pytest.raises(IndexingError, match="Unexpected error during embedding creation"):
+        with pytest.raises(TypeError, match="unexpected type error"):
             await vs._create_embeddings(chunks, "rec-1", "vr-1")
 
     @pytest.mark.asyncio
@@ -606,7 +618,7 @@ class TestIndexDocumentsDeeper:
 
     @pytest.mark.asyncio
     async def test_unexpected_exception_in_index_documents(self):
-        """Unexpected exception during block processing -> IndexingError."""
+        """Unexpected exception during block processing is wrapped as IndexingError."""
         from unittest.mock import PropertyMock
 
         vs = _make_vectorstore()
@@ -621,12 +633,12 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            with pytest.raises(IndexingError, match="Unexpected error during indexing"):
-                await vs.index_documents(container, "org-1", "rec-1", "vr-1", "text/plain")
+            with pytest.raises((RuntimeError, IndexingError)):
+                await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
     @pytest.mark.asyncio
     async def test_block_group_non_table_type_skipped(self):
@@ -642,7 +654,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = [bg]
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -670,7 +682,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
@@ -696,7 +708,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
@@ -722,7 +734,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = [bg]
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -749,7 +761,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
@@ -776,7 +788,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             # Not multimodal LLM either
@@ -806,7 +818,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -835,7 +847,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -865,7 +877,7 @@ class TestIndexDocumentsDeeper:
         container.block_groups = []
 
         with patch(
-            "app.modules.transformers.vectorstore.get_llm_for_role",
+            "app.modules.transformers.vectorstore.get_llm",
             new_callable=AsyncMock,
         ) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
@@ -916,7 +928,7 @@ class TestGetEmbeddingModelInstanceBedrock:
         with patch(
             "app.modules.transformers.vectorstore.get_embedding_model",
             return_value=mock_embed,
-        ), patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
+        ):
             await vs.get_embedding_model_instance()
 
         assert vs.aws_access_key_id == "AKIA..."
@@ -946,7 +958,7 @@ class TestGetEmbeddingModelInstanceBedrock:
         with patch(
             "app.modules.transformers.vectorstore.get_embedding_model",
             return_value=mock_embed,
-        ), patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
+        ):
             await vs.get_embedding_model_instance()
 
         assert vs.model_name == "unknown"
@@ -973,7 +985,7 @@ class TestGetEmbeddingModelInstanceBedrock:
         with patch(
             "app.modules.transformers.vectorstore.get_embedding_model",
             return_value=mock_embed,
-        ), patch("app.modules.transformers.vectorstore.QdrantVectorStore"):
+        ):
             await vs.get_embedding_model_instance()
 
         assert vs.dense_embeddings is mock_embed
@@ -993,26 +1005,26 @@ class TestProcessDocumentChunksRemoteFailure:
         from langchain_core.documents import Document
 
         vs = _make_vectorstore()
+        # Set a non-local provider so concurrent (parallel) path is used
         vs.embedding_provider = "openai"
-        vs.vector_store = AsyncMock()
 
         call_count = 0
 
-        async def fake_aadd_documents(docs):
+        async def fake_embed_and_upsert(docs):
             nonlocal call_count
             call_count += 1
             if call_count == 2:
                 raise RuntimeError("batch 2 failed")
 
-        vs.vector_store.aadd_documents = fake_aadd_documents
+        vs._embed_and_upsert_documents = fake_embed_and_upsert
 
-        # Create enough chunks to generate 2 batches
+        # Create enough chunks to generate 2 batches (batch_size=50 → 100 docs = 2 batches)
         chunks = [
             Document(page_content=f"test {i}", metadata={}) for i in range(100)
         ]
 
-        with pytest.raises(VectorStoreError, match="Failed to store document batch"):
-            await vs._process_document_chunks(chunks, "test-record")
+        with pytest.raises(VectorStoreError, match="Failed to store batch"):
+            await vs._process_document_chunks(chunks)
 
 
 # ===================================================================

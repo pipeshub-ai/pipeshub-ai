@@ -232,7 +232,7 @@ class ToolsetTokenRefreshService:
             # LEGACY: Old format was /services/toolsets/{userId}/{toolset_type}
             try:
                 all_keys = await self.configuration_service.list_keys_in_directory("/services/toolsets/")
-                self.logger.info(f"🔍 Found {len(all_keys)} toolset keys in etcd (scanning /services/toolsets/)")
+                self.logger.info(f"🔍 Found {len(all_keys)} toolset keys in key value store (scanning /services/toolsets/)")
 
                 if all_keys:
                     self.logger.debug(f"📋 Sample keys found (first 5): {all_keys[:5]}")
