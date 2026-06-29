@@ -8,9 +8,12 @@ import pytest
 pytestmark = pytest.mark.confluence_datacenter
 
 from app.connectors.sources.atlassian.core.confluence_html import (
+    HtmlImageContext,
     bytes_to_data_uri,
+    extract_attachment_filename_from_download_url,
     extract_content_base_url,
     inline_authenticated_images_in_html,
+    is_cloud_attachment_download_url,
     is_data_uri,
     is_image_content_type,
     is_same_origin,
@@ -18,6 +21,32 @@ from app.connectors.sources.atlassian.core.confluence_html import (
     prepare_streaming_html,
     resolve_relative_urls_in_html,
 )
+
+
+class TestExtractAttachmentFilenameFromDownloadUrl:
+    def test_thumbnail_url(self) -> None:
+        url = (
+            "https://pipeshub.atlassian.net/wiki/download/thumbnails/358416386/"
+            "image-20260527-115846.png?version=1&width=111"
+        )
+        assert extract_attachment_filename_from_download_url(url) == "image-20260527-115846.png"
+        assert is_cloud_attachment_download_url(url)
+
+    def test_attachment_url(self) -> None:
+        url = "https://site.atlassian.net/wiki/download/attachments/123/report.pdf"
+        assert extract_attachment_filename_from_download_url(url) == "report.pdf"
+
+    def test_url_encoded_filename(self) -> None:
+        url = (
+            "https://site.atlassian.net/wiki/download/thumbnails/129105921/"
+            "Screenshot%202025-10-09%20104312.PNG?version=1"
+        )
+        assert extract_attachment_filename_from_download_url(url) == "Screenshot 2025-10-09 104312.PNG"
+
+    def test_emoticon_url_returns_none(self) -> None:
+        url = "https://site.atlassian.net/wiki/s/123/6452/abc/_/images/icons/emoticons/72/1f5d3.png"
+        assert extract_attachment_filename_from_download_url(url) is None
+        assert not is_cloud_attachment_download_url(url)
 
 
 class TestExtractContentBaseUrl:
@@ -169,7 +198,7 @@ class TestInlineAuthenticatedImagesInHtml:
         
         # Mock successful download
         png_bytes = b"\x89PNG\r\n\x1a\n"
-        async def mock_download(url: str):
+        async def mock_download(url: str, image_context: HtmlImageContext):
             return (png_bytes, "image/png")
         
         result = await inline_authenticated_images_in_html(
@@ -185,7 +214,7 @@ class TestInlineAuthenticatedImagesInHtml:
         base_url = "http://localhost:8090"
         
         download_called = False
-        async def mock_download(url: str):
+        async def mock_download(url: str, image_context: HtmlImageContext):
             nonlocal download_called
             download_called = True
             return (b"data", "image/png")
@@ -203,7 +232,7 @@ class TestInlineAuthenticatedImagesInHtml:
         base_url = "http://localhost:8090"
         
         download_called = False
-        async def mock_download(url: str):
+        async def mock_download(url: str, image_context: HtmlImageContext):
             nonlocal download_called
             download_called = True
             return (b"data", "image/png")
@@ -220,7 +249,7 @@ class TestInlineAuthenticatedImagesInHtml:
         html = '<img src="/download/attachments/123/test.png" />'
         base_url = "http://localhost:8090"
         
-        async def mock_download(url: str):
+        async def mock_download(url: str, image_context: HtmlImageContext):
             return None  # Simulate download failure
         
         result = await inline_authenticated_images_in_html(
@@ -236,7 +265,7 @@ class TestInlineAuthenticatedImagesInHtml:
         html = '<img src="/download/attachments/123/file.pdf" />'
         base_url = "http://localhost:8090"
         
-        async def mock_download(url: str):
+        async def mock_download(url: str, image_context: HtmlImageContext):
             return (b"pdf data", "application/pdf")
         
         result = await inline_authenticated_images_in_html(
@@ -258,7 +287,7 @@ class TestInlineAuthenticatedImagesInHtml:
         base_url = "http://localhost:8090"
         
         call_count = 0
-        async def mock_download(url: str):
+        async def mock_download(url: str, image_context: HtmlImageContext):
             nonlocal call_count
             call_count += 1
             if "success.png" in url:
@@ -284,6 +313,31 @@ class TestInlineAuthenticatedImagesInHtml:
         # fail.png should keep original relative URL
         assert 'src="/download/attachments/456/fail.png"' in result
 
+    async def test_passes_image_context_to_download(self) -> None:
+        html = (
+            '<img src="/download/thumbnails/1/photo.png" alt="My Photo" '
+            'data-linked-resource-id="128221190" data-linked-resource-type="attachment" '
+            'data-media-id="adb61214-e78f-409e-935f-d6e1fdfb059d" '
+            'data-linked-resource-default-alias="photo.png" />'
+        )
+        base_url = "http://localhost:8090"
+        received: list[HtmlImageContext] = []
+
+        async def mock_download(url: str, image_context: HtmlImageContext):
+            received.append(image_context)
+            return (b"\x89PNG", "image/png")
+
+        await inline_authenticated_images_in_html(
+            html, base_url, mock_download
+        )
+
+        assert len(received) == 1
+        assert received[0].alt_text == "My Photo"
+        assert received[0].linked_resource_id == "128221190"
+        assert received[0].linked_resource_type == "attachment"
+        assert received[0].media_id == "adb61214-e78f-409e-935f-d6e1fdfb059d"
+        assert received[0].default_alias == "photo.png"
+
 
 class TestPrependTitleToHtml:
     def test_prepends_h1(self) -> None:
@@ -300,6 +354,12 @@ class TestPrependTitleToHtml:
         assert prepend_title_to_html(html, "   ") == html
         assert prepend_title_to_html(html, None) == html
 
+    def test_injects_h1_inside_body_for_full_document(self) -> None:
+        html = "<html><head><title>T</title></head><body><p>Body</p></body></html>"
+        result = prepend_title_to_html(html, "My Page")
+        assert "<body><h1>My Page</h1><p>Body</p></body>" in result
+        assert not result.startswith("<h1>")
+
 
 @pytest.mark.asyncio
 class TestPrepareStreamingHtml:
@@ -315,7 +375,7 @@ class TestPrepareStreamingHtml:
         }
         
         png_bytes = b"\x89PNG\r\n\x1a\n"
-        async def mock_download(url: str):
+        async def mock_download(url: str, image_context: HtmlImageContext):
             return (png_bytes, "image/png")
         
         result = await prepare_streaming_html(
@@ -332,7 +392,7 @@ class TestPrepareStreamingHtml:
         html = '<p>Body</p>'
         response_data = {"title": "Comment Title"}
 
-        async def mock_download(url: str):
+        async def mock_download(url: str, image_context: HtmlImageContext):
             raise AssertionError("Should not be called")
 
         result = await prepare_streaming_html(
@@ -345,7 +405,7 @@ class TestPrepareStreamingHtml:
         html = "<p>Body</p>"
         response_data = {"title": ""}
 
-        async def mock_download(url: str):
+        async def mock_download(url: str, image_context: HtmlImageContext):
             return None
 
         result = await prepare_streaming_html(
@@ -362,7 +422,7 @@ class TestPrepareStreamingHtml:
         html = '<img src="/test.png" />'
         response_data = {}
 
-        async def mock_download(url: str):
+        async def mock_download(url: str, image_context: HtmlImageContext):
             raise AssertionError("Should not be called")
 
         result = await prepare_streaming_html(

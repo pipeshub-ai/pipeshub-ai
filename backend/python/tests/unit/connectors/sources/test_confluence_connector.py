@@ -22,6 +22,7 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     SyncFilterKey,
 )
+from app.connectors.sources.atlassian.core.confluence_html import HtmlImageContext
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     CONTENT_EXPAND_PARAMS,
     FOLDER_EXPAND_PARAMS,
@@ -3212,18 +3213,21 @@ class TestFetchPageContent:
         c = _conn()
         mock_ds = MagicMock()
         mock_ds.get_page_content_v2 = AsyncMock(return_value=_resp(200, {
-            "body": {"export_view": {"value": "<h1>Content</h1>"}},
+            "body": {"styled_view": {"value": "<h1>Content</h1>"}},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         result = await c._fetch_page_content("p1", RecordType.CONFLUENCE_PAGE)
         assert result == "<h1>Content</h1>"
+        mock_ds.get_page_content_v2.assert_awaited_once_with(
+            page_id="p1", body_format="styled_view"
+        )
 
     @pytest.mark.asyncio
     async def test_blogpost_success(self):
         c = _conn()
         mock_ds = MagicMock()
         mock_ds.get_blogpost_content_v2 = AsyncMock(return_value=_resp(200, {
-            "body": {"export_view": {"value": "<p>Blog</p>"}},
+            "body": {"styled_view": {"value": "<p>Blog</p>"}},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         result = await c._fetch_page_content("b1", RecordType.CONFLUENCE_BLOGPOST)
@@ -4292,7 +4296,7 @@ class TestFetchPageContentFullCoverage:
         c = _c()
         mock_ds = MagicMock()
         mock_ds.get_page_content_v2 = AsyncMock(return_value=_resp(200, {
-            "body": {"export_view": {"value": "<p>Content</p>"}},
+            "body": {"styled_view": {"value": "<p>Content</p>"}},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         result = await c._fetch_page_content("p1", RecordType.CONFLUENCE_PAGE)
@@ -4303,7 +4307,7 @@ class TestFetchPageContentFullCoverage:
         c = _c()
         mock_ds = MagicMock()
         mock_ds.get_blogpost_content_v2 = AsyncMock(return_value=_resp(200, {
-            "body": {"export_view": {"value": "<p>Blog</p>"}},
+            "body": {"styled_view": {"value": "<p>Blog</p>"}},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         result = await c._fetch_page_content("b1", RecordType.CONFLUENCE_BLOGPOST)
@@ -6129,7 +6133,7 @@ class TestFetchPageContentAdditional:
         ds = MagicMock()
         ds.get_blogpost_content_v2 = AsyncMock(
             return_value=_mk_resp(200, {
-                "body": {"export_view": {"value": "<html>Blog content</html>"}}
+                "body": {"styled_view": {"value": "<html>Blog content</html>"}}
             })
         )
         c._get_fresh_datasource = AsyncMock(return_value=ds)
@@ -6157,7 +6161,7 @@ class TestFetchPageContentAdditional:
         c = _mk_connector()
         ds = MagicMock()
         ds.get_page_content_v2 = AsyncMock(
-            return_value=_mk_resp(200, {"body": {"export_view": {"value": ""}}})
+            return_value=_mk_resp(200, {"body": {"styled_view": {"value": ""}}})
         )
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         result = await c._fetch_page_content("p1", RecordType.CONFLUENCE_PAGE)
@@ -7246,7 +7250,7 @@ class TestFetchPageContent:
         c = _mk_connector()
         ds = MagicMock()
         ds.get_blogpost_content_v2 = AsyncMock(
-            return_value=_mk_resp(200, {"body": {"export_view": {"value": "<h1>Blog</h1>"}}})
+            return_value=_mk_resp(200, {"body": {"styled_view": {"value": "<h1>Blog</h1>"}}})
         )
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         result = await c._fetch_page_content("b1", RecordType.CONFLUENCE_BLOGPOST)
@@ -7257,7 +7261,7 @@ class TestFetchPageContent:
         c = _mk_connector()
         ds = MagicMock()
         ds.get_page_content_v2 = AsyncMock(
-            return_value=_mk_resp(200, {"body": {"export_view": {"value": ""}}})
+            return_value=_mk_resp(200, {"body": {"styled_view": {"value": ""}}})
         )
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         result = await c._fetch_page_content("p1", RecordType.CONFLUENCE_PAGE)
@@ -8176,24 +8180,151 @@ class TestFetchConfluenceMediaAsBase64:
     @pytest.mark.asyncio
     async def test_media_fetcher_delegates(self):
         c = _mk_connector()
+        attachments = [{"id": "att-1", "title": "alt.png", "mediaType": "image/png"}]
+        c._fetch_page_attachments_list = AsyncMock(return_value=attachments)
         c._fetch_confluence_media_as_base64 = AsyncMock(return_value="data:image/png;base64,abc")
         fetcher = c._create_confluence_media_fetcher("page-1", "page")
         result = await fetcher("media-id", "alt.png")
         assert result == "data:image/png;base64,abc"
+        c._fetch_page_attachments_list.assert_awaited_once()
         c._fetch_confluence_media_as_base64.assert_awaited_once_with(
-            "page-1", "media-id", "alt.png", "page"
+            "page-1", "media-id", "alt.png", "page", attachments=attachments
+        )
+
+    @pytest.mark.asyncio
+    async def test_media_fetcher_uses_preloaded_attachments(self):
+        c = _mk_connector()
+        attachments = [{"id": "att-1", "title": "alt.png"}]
+        c._fetch_page_attachments_list = AsyncMock()
+        c._fetch_confluence_media_as_base64 = AsyncMock(return_value=None)
+        fetcher = c._create_confluence_media_fetcher(
+            "page-1", "page", attachments_data=attachments
+        )
+        await fetcher("media-id", "alt.png")
+        c._fetch_page_attachments_list.assert_not_awaited()
+        c._fetch_confluence_media_as_base64.assert_awaited_once_with(
+            "page-1", "media-id", "alt.png", "page", attachments=attachments
         )
 
     @pytest.mark.asyncio
     async def test_comment_media_fetcher_delegates(self):
         c = _mk_connector()
+        attachments = [{"id": "att-b", "title": "file.png"}]
+        c._fetch_page_attachments_list = AsyncMock(return_value=attachments)
         c._fetch_confluence_media_as_base64 = AsyncMock(return_value="data:image/png;base64,xyz")
         fetcher = c._create_comment_media_fetcher("page-2", "blogpost")
         result = await fetcher("mid", "file.png")
         assert result == "data:image/png;base64,xyz"
         c._fetch_confluence_media_as_base64.assert_awaited_once_with(
-            "page-2", "mid", "file.png", "blogpost"
+            "page-2", "mid", "file.png", "blogpost", attachments=attachments
         )
+
+    @pytest.mark.asyncio
+    async def test_page_image_resolves_by_file_id(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        file_id = "adb61214-e78f-409e-935f-d6e1fdfb059d"
+        ds.get_page_attachments = AsyncMock(return_value=_mk_resp(200, {
+            "results": [{
+                "id": "att-1",
+                "title": "different-name.png",
+                "fileId": file_id,
+                "mediaType": "image/png",
+            }],
+        }))
+
+        async def _download(**_kwargs):
+            yield b"\x89PNG"
+
+        ds.download_attachment = _download
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        result = await c._fetch_confluence_media_as_base64(
+            "100", file_id, "wrong-filename.png", "page"
+        )
+        assert result is not None
+        assert result.startswith("data:image/png;base64,")
+
+
+class TestCloudHtmlAttachmentHelpers:
+    def test_rest_attachment_id_from_linked_resource(self):
+        assert ConfluenceConnector._rest_attachment_id_from_linked_resource("128221190") == "att128221190"
+        assert ConfluenceConnector._rest_attachment_id_from_linked_resource("att999") == "att999"
+        assert ConfluenceConnector._rest_attachment_id_from_linked_resource("") == ""
+        assert ConfluenceConnector._rest_attachment_id_from_linked_resource("  ") == ""
+
+    def test_find_attachment_in_list_by_file_id_and_filename(self):
+        c = _mk_connector()
+        attachments = [
+            {"id": "att-1", "title": "photo.png", "fileId": "uuid-1"},
+            {"id": "att-2", "title": "Chart.PNG", "fileId": "uuid-2"},
+        ]
+        assert c._find_attachment_in_list(attachments, file_id="uuid-2") == attachments[1]
+        assert c._find_attachment_in_list(attachments, filename="photo.png") == attachments[0]
+        assert c._find_attachment_in_list(attachments, filename="chart.png") == attachments[1]
+        assert c._find_attachment_in_list(attachments, filename="missing.png") is None
+
+    @pytest.mark.asyncio
+    async def test_cloud_html_image_downloader_linked_resource(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_attachment_by_id = AsyncMock(return_value=_mk_resp(200, {
+            "id": "att128221190",
+            "mediaType": "image/png",
+            "title": "photo.png",
+        }))
+        download_calls: list[dict[str, Any]] = []
+
+        async def _download(**kwargs):
+            download_calls.append(kwargs)
+            yield b"\x89PNG"
+
+        ds.download_attachment = _download
+        download = c._create_cloud_html_image_downloader(
+            ds, "358416386", RecordType.CONFLUENCE_PAGE
+        )
+        url = (
+            "https://site.atlassian.net/wiki/download/thumbnails/358416386/"
+            "photo.png?version=1"
+        )
+        image_context = HtmlImageContext(
+            alt_text="photo.png",
+            linked_resource_id="128221190",
+            linked_resource_type="attachment",
+        )
+        result = await download(url, image_context)
+        assert result == (b"\x89PNG", "image/png")
+        ds.get_attachment_by_id.assert_awaited_once_with(id="att128221190")
+        assert len(download_calls) == 1
+        assert download_calls[0]["parent_page_id"] == "358416386"
+        assert download_calls[0]["attachment_id"] == "att128221190"
+
+    @pytest.mark.asyncio
+    async def test_cloud_html_image_downloader_skips_non_image(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_attachment_by_id = AsyncMock(return_value=_mk_resp(200, {
+            "id": "att1",
+            "mediaType": "application/pdf",
+            "title": "doc.pdf",
+        }))
+        download_calls: list[dict[str, Any]] = []
+
+        async def _download(**kwargs):
+            download_calls.append(kwargs)
+            yield b"pdf"
+
+        ds.download_attachment = _download
+        download = c._create_cloud_html_image_downloader(
+            ds, "100", RecordType.CONFLUENCE_PAGE
+        )
+        url = "https://site.atlassian.net/wiki/download/attachments/100/doc.pdf"
+        image_context = HtmlImageContext(
+            linked_resource_id="1",
+            linked_resource_type="attachment",
+        )
+        assert await download(url, image_context) is None
+        assert download_calls == []
 
 
 class TestOrganizeConfluenceCommentsToThreads:
