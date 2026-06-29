@@ -1094,10 +1094,6 @@ class HtmlToBlocksConverter:
         Returns:
             Populated BlocksContainer with blocks and block_groups.
         """
-        # Write the html_content to @test.html for inspection/debugging
-        with open("@test.html", "w", encoding="utf-8") as f:
-            f.write(html_content)
-
         parser = LexborHTMLParser(html_content)
         root = parser.body or parser.root
         if root is None:
