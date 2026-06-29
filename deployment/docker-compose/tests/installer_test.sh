@@ -19,6 +19,10 @@
 #     mode (default on, overridable) so baked-in models load without a network
 #     check that would otherwise hang indexing startup on offline hosts.
 #   - env.template documents the above knobs.
+#   - Image refresh policy: prebuilt installs refresh the app image by default
+#     (so a cached :latest is not run forever), with opt-outs for local builds,
+#     --no-pull / PIPESHUB_NO_PULL (air-gapped or keep-current), and pinned tags
+#     still refresh to the exact tag.
 #
 # Run: bash deployment/docker-compose/tests/installer_test.sh
 # ==============================================================================
@@ -330,6 +334,30 @@ echo "== In-tree installer: persist_env_var replaces in place =="
   persist_env_var COMPOSE_PROFILES "graph-neo4j"
   check "missing key appended" "$(cat "$ENV_FILE")" "COMPOSE_PROFILES=graph-neo4j"
 )
+
+echo "== In-tree installer: image refresh policy (real function + guards) =="
+# `docker compose up -d` reuses a cached :latest without re-checking the registry,
+# so a host can run a weeks-old build forever. The installer refreshes the app
+# image by default, with deliberate opt-outs. Exercise the real decision fn.
+eval "$(extract_fn should_pull_image "$INNER_INSTALLER")"
+check "prebuilt default refreshes the image" "$(should_pull_image false false '')" "true"
+check "local build never pulls" "$(should_pull_image true false '')" "false"
+check "--no-pull skips the refresh" "$(should_pull_image false true '')" "false"
+check "PIPESHUB_NO_PULL=1 skips the refresh" "$(should_pull_image false false 1)" "false"
+check "PIPESHUB_NO_PULL=true skips the refresh" "$(should_pull_image false false true)" "false"
+check "PIPESHUB_NO_PULL=yes skips the refresh" "$(should_pull_image false false yes)" "false"
+# A pinned/specific tag must still refresh (fetch that exact tag) — pinning is for
+# reproducibility, not a reason to keep a stale local copy.
+if [[ "$(should_pull_image false false '')" == true ]]; then pass "pinned/explicit tag still refreshes by default"; else fail "pinned/explicit tag still refreshes by default"; fi
+# Launch-path guards.
+check "refreshes only the app service image" "$inner" "pull pipeshub-ai"
+check "--no-pull flag is parsed" "$inner" "FLAG_NO_PULL=true"
+check "refresh decision uses the testable helper" "$inner" 'should_pull_image "$_USE_BUILD" "$FLAG_NO_PULL" "${PIPESHUB_NO_PULL:-}"'
+# A pull failure must NOT abort when an image is already cached (flaky network).
+check "pull failure tolerated when image cached" "$inner" "continuing with the cached"
+check "air-gapped guidance present" "$inner" "air-gapped host, preload the image"
+# Must not have reverted to a blanket pull of every service image on the hot path.
+if [[ "$inner" == *"up -d --pull always"* ]]; then fail "must refresh only the app image, not force-pull all services"; else pass "does not force-pull all service images"; fi
 
 echo
 PASS="$(wc -l <"$PASS_FILE" | tr -d ' ')"
