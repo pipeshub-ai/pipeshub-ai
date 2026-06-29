@@ -42,6 +42,8 @@ def coerce_message_content_to_text(content: Any) -> str:
                 text = block.get("text")
                 if isinstance(text, str):
                     parts.append(text)
+            elif block is not None:
+                parts.append(str(block))
         return "".join(parts)
     if content is None:
         return ""

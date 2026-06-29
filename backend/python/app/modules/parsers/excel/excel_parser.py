@@ -1149,7 +1149,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             )
             response = await self._call_llm(messages)
             # Gemini and similar return content as a list of blocks, not a string.
-            summary = coerce_message_content_to_text(getattr(response, "content", response))
+            summary = coerce_message_content_to_text(response.content)
             if '</think>' in summary:
                 summary = summary.split('</think>')[-1]
             self.logger.info("Table summary generated")
