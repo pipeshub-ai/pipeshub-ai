@@ -1,5 +1,7 @@
 import { isElectron } from '@/lib/electron';
 import { ConnectorsApi } from '../api';
+import { CONNECTOR_INSTANCE_STATUS } from '../constants';
+import { useConnectorsStore } from '../store';
 import type { ConnectorInstance } from '../types';
 import { isLocalFsConnectorType } from './local-fs-helpers';
 import { fullResyncElectronLocalSync } from './electron-local-sync';
@@ -17,6 +19,51 @@ export type ResyncOutcome =
   | { kind: 'backend' }
   | { kind: 'requires-desktop' };
 
+function isIdleSyncStatus(status?: string | null): boolean {
+  const normalized = (status ?? CONNECTOR_INSTANCE_STATUS.IDLE).toUpperCase();
+  return normalized === CONNECTOR_INSTANCE_STATUS.IDLE;
+}
+
+function persistConnectorSyncStatus(connectorId: string, status: string): void {
+  const state = useConnectorsStore.getState();
+  const existing =
+    state.activeConnectors.find((c) => c._key === connectorId) ??
+    state.instances.find((c) => c._key === connectorId) ??
+    (state.selectedInstance?._key === connectorId ? state.selectedInstance : undefined);
+
+  if (!existing) {
+    return;
+  }
+
+  state.upsertConnectorInstance({
+    ...existing,
+    status,
+  } as ConnectorInstance);
+}
+
+/** Optimistic in-progress status, refetch row, then re-apply if GET is still IDLE. */
+async function applyPostResyncInstanceRefresh(
+  connectorId: string,
+  fullSync: boolean
+): Promise<void> {
+  const expectedStatus = fullSync
+    ? CONNECTOR_INSTANCE_STATUS.FULL_SYNCING
+    : CONNECTOR_INSTANCE_STATUS.SYNCING;
+
+  persistConnectorSyncStatus(connectorId, expectedStatus);
+
+  await refreshConnectorInstanceDetails(connectorId);
+
+  const state = useConnectorsStore.getState();
+  const row =
+    state.activeConnectors.find((c) => c._key === connectorId) ??
+    state.instances.find((c) => c._key === connectorId);
+
+  if (isIdleSyncStatus(row?.status)) {
+    persistConnectorSyncStatus(connectorId, expectedStatus);
+  }
+}
+
 export async function runConnectorResync(args: {
   connectorId: string;
   connectorType: string;
@@ -28,11 +75,11 @@ export async function runConnectorResync(args: {
       return { kind: 'requires-desktop' };
     }
     await fullResyncElectronLocalSync(connectorId);
-    await refreshConnectorInstanceDetails(connectorId);
+    await applyPostResyncInstanceRefresh(connectorId, true);
     return { kind: 'electron-local' };
   }
   await ConnectorsApi.resyncConnector(connectorId, connectorType, fullSync);
-  await refreshConnectorInstanceDetails(connectorId);
+  await applyPostResyncInstanceRefresh(connectorId, fullSync);
   return { kind: 'backend' };
 }
 

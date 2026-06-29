@@ -23,6 +23,10 @@ import {
 } from './modules/enterprise_search/routes/es.routes';
 import { EnterpriseSearchAgentContainer } from './modules/enterprise_search/container/es.container';
 import { requestContextMiddleware } from './libs/middlewares/request.context';
+import {
+  runWithRequestContext,
+  newSystemRoot,
+} from './libs/context/request-context';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 
 import { createUserAccountRouter } from './modules/auth/routes/userAccount.routes';
@@ -380,7 +384,7 @@ export class Application {
         credentials: true,
         exposedHeaders: ['x-session-token', 'content-disposition'],
         methods: [HttpMethod.DELETE, HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.PATCH, HttpMethod.POST, HttpMethod.PUT],
-        allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token', 'client-name']
+        allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token', 'x-request-id', 'client-name']
       }),
     );
 
@@ -470,8 +474,7 @@ export class Application {
 
     // enterprise search connectors routes — pass the crawling container
     // whole so the route factory can resolve any crawling-side service it
-    // needs (currently the scheduler) without us threading individual
-    // bindings through here.
+    // needs (currently the scheduler).
     this.app.use(
       '/api/v1/connectors',
       createConnectorRouter(
@@ -647,6 +650,9 @@ export class Application {
     // are logged but never crash the process — startup must succeed even
     // if a migration cannot run this boot.
     setImmediate(async () => {
+      await runWithRequestContext(
+        { rootId: newSystemRoot() },
+        async () => {
       try {
         this.logger.info('Running migration...');
         const scheduler =
@@ -663,6 +669,8 @@ export class Application {
           error: error instanceof Error ? error.message : 'Unknown error',
         });
       }
+        },
+      );
     });
   }
 

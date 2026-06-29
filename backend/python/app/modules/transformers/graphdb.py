@@ -39,11 +39,19 @@ class GraphDBTransformer(Transformer):
                         "lastIndexTimestamp": timestamp,
                     }
                     self.logger.info(
-                        "🎯 Upserting indexing status metadata for document"
+                        "🎯 Updating indexing status metadata for document"
                     )
-                    await tx_store.batch_upsert_nodes(
+                    # batch_update_nodes returns bool only (not updated docs): True if all
+                    # nodes matched, False if any record was missing (see provider warning log).
+                    success = await tx_store.batch_update_nodes(
                         [status_doc], CollectionNames.RECORDS.value
                     )
+                    if not success:
+                        self.logger.warning(
+                            "⚠️ Failed to update indexing status for record %s - record may not exist",
+                            record_id,
+                        )
+                        return
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
                 raise
@@ -332,11 +340,17 @@ class GraphDBTransformer(Transformer):
                     status_doc["isVLMOcrProcessed"] = True
 
                 self.logger.info(
-                    "🎯 Upserting extraction status metadata for document"
+                    "🎯 Updating extraction status metadata for document"
                 )
-                await tx_store.batch_upsert_nodes(
+                success = await tx_store.batch_update_nodes(
                     [status_doc], CollectionNames.RECORDS.value
                 )
+                if not success:
+                    self.logger.warning(
+                        "⚠️ Failed to update extraction status for record %s - record may not exist",
+                        record_id,
+                    )
+                    return
 
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")

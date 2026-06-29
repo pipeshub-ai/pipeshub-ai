@@ -1,0 +1,1 @@
+"""Slack individual connector."""

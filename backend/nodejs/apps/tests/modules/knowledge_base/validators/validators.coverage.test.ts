@@ -1,18 +1,12 @@
-import 'reflect-metadata'
-import { expect } from 'chai'
+import 'reflect-metadata';
+import { expect } from 'chai';
 import {
   getRecordByIdSchema,
   updateRecordSchema,
   deleteRecordSchema,
   reindexRecordSchema,
   reindexRecordGroupSchema,
-  reindexFailedRecordSchema,
-  resyncConnectorSchema,
-  getConnectorStatsSchema,
   uploadRecordsSchema,
-  uploadRecordsToFolderSchema,
-  getAllRecordsSchema,
-  getAllKBRecordsSchema,
   createKBSchema,
   getKBSchema,
   listKnowledgeBasesSchema,
@@ -20,15 +14,14 @@ import {
   deleteKBSchema,
   createFolderSchema,
   kbPermissionSchema,
-  getFolderSchema,
   updateFolderSchema,
   deleteFolderSchema,
   getPermissionsSchema,
   updatePermissionsSchema,
   deletePermissionsSchema,
   moveRecordSchema,
-} from '../../../../src/modules/knowledge_base/validators/validators'
-import { FileRejectionReason } from '../../../../src/libs/middlewares/file_processor/fp.constant'
+} from '../../../../src/modules/knowledge_base/validators/validators';
+import { FileRejectionReason } from '../../../../src/libs/middlewares/file_processor/fp.constant';
 
 describe('Knowledge Base Validators - coverage', () => {
   // -----------------------------------------------------------------------
@@ -37,302 +30,128 @@ describe('Knowledge Base Validators - coverage', () => {
   describe('uploadRecordsSchema', () => {
     it('should accept valid upload with UUID kbId', () => {
       const result = uploadRecordsSchema.safeParse({
-        body: { recordName: 'test', recordType: 'FILE', origin: 'UPLOAD', isVersioned: false },
+        body: {
+          recordName: 'test',
+          recordType: 'FILE',
+          origin: 'UPLOAD',
+          isVersioned: false,
+        },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('should accept isVersioned as string true', () => {
       const result = uploadRecordsSchema.safeParse({
         body: { isVersioned: 'true' },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
+      });
+      expect(result.success).to.be.true;
       if (result.success) {
-        expect(result.data.body.isVersioned).to.be.true
+        expect(result.data.body.isVersioned).to.be.true;
       }
-    })
+    });
 
     it('should accept isVersioned as string false', () => {
       const result = uploadRecordsSchema.safeParse({
         body: { isVersioned: 'false' },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
+      });
+      expect(result.success).to.be.true;
       if (result.success) {
-        expect(result.data.body.isVersioned).to.be.false
+        expect(result.data.body.isVersioned).to.be.false;
       }
-    })
+    });
 
     it('should accept isVersioned as string 0', () => {
       const result = uploadRecordsSchema.safeParse({
         body: { isVersioned: '0' },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('should accept isVersioned as string 1', () => {
       const result = uploadRecordsSchema.safeParse({
         body: { isVersioned: '1' },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('should accept isVersioned as empty string', () => {
       const result = uploadRecordsSchema.safeParse({
         body: { isVersioned: '' },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('should accept valid files_metadata JSON', () => {
-      const metadata = JSON.stringify([{ file_path: '/test.pdf', last_modified: 12345 }])
+      const metadata = JSON.stringify([
+        { file_path: '/test.pdf', last_modified: 12345 },
+      ]);
       const result = uploadRecordsSchema.safeParse({
         body: { files_metadata: metadata },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('should reject invalid files_metadata JSON', () => {
       const result = uploadRecordsSchema.safeParse({
         body: { files_metadata: 'not-json' },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.false
-    })
+      });
+      expect(result.success).to.be.false;
+    });
 
     it('should reject files_metadata with missing fields', () => {
-      const metadata = JSON.stringify([{ file_path: '/test.pdf' }]) // missing last_modified
+      const metadata = JSON.stringify([{ file_path: '/test.pdf' }]); // missing last_modified
       const result = uploadRecordsSchema.safeParse({
         body: { files_metadata: metadata },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.false
-    })
+      });
+      expect(result.success).to.be.false;
+    });
 
     it('should reject files_metadata that is not an array', () => {
-      const metadata = JSON.stringify({ file_path: '/test.pdf', last_modified: 123 })
+      const metadata = JSON.stringify({
+        file_path: '/test.pdf',
+        last_modified: 123,
+      });
       const result = uploadRecordsSchema.safeParse({
         body: { files_metadata: metadata },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.false
-    })
+      });
+      expect(result.success).to.be.false;
+    });
 
     it('should reject non-UUID kbId', () => {
       const result = uploadRecordsSchema.safeParse({
         body: {},
         params: { kbId: 'not-a-uuid' },
-      })
-      expect(result.success).to.be.false
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // uploadRecordsToFolderSchema
-  // -----------------------------------------------------------------------
-  describe('uploadRecordsToFolderSchema', () => {
-    it('should require folderId param', () => {
-      const result = uploadRecordsToFolderSchema.safeParse({
+      });
+      expect(result.success).to.be.false;
+    });
+    it('should accept optional folderId query param', () => {
+      const result = uploadRecordsSchema.safeParse({
         body: {},
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.false
-    })
+        query: { folderId: 'folder-123' },
+      });
+      expect(result.success).to.be.true;
+    });
 
-    it('should accept valid params', () => {
-      const result = uploadRecordsToFolderSchema.safeParse({
+    it('should reject empty folderId query param', () => {
+      const result = uploadRecordsSchema.safeParse({
         body: {},
-        params: { kbId: '550e8400-e29b-41d4-a716-446655440000', folderId: 'folder-123' },
-      })
-      expect(result.success).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // getAllRecordsSchema - search validation
-  // -----------------------------------------------------------------------
-  describe('getAllRecordsSchema - search XSS validation', () => {
-    it('should reject script tags in search', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { search: '<script>alert(1)</script>' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should reject event handlers in search', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { search: 'onerror="alert(1)"' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should reject javascript: protocol in search', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { search: 'javascript:alert(1)' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should reject format specifiers in search', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { search: 'test %s injection' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should reject closing script tags', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { search: '</script >' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should accept safe search', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { search: 'hello world' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should trim and transform search value', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { search: '  hello  ' },
-      })
-      expect(result.success).to.be.true
-      if (result.success) {
-        expect(result.data.query.search).to.equal('hello')
-      }
-    })
-
-    it('should transform empty search to undefined', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { search: '   ' },
-      })
-      expect(result.success).to.be.true
-      if (result.success) {
-        expect(result.data.query.search).to.be.undefined
-      }
-    })
-
-    it('should parse comma-separated recordTypes', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { recordTypes: 'FILE,WEBPAGE,EMAIL' },
-      })
-      expect(result.success).to.be.true
-      if (result.success) {
-        expect(result.data.query.recordTypes).to.deep.equal(['FILE', 'WEBPAGE', 'EMAIL'])
-      }
-    })
-
-    it('should parse comma-separated origins', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { origins: 'UPLOAD,CONNECTOR' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should parse comma-separated connectors', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { connectors: 'google,slack' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should parse comma-separated indexingStatus', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { indexingStatus: 'QUEUED,COMPLETED' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should parse comma-separated permissions', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { permissions: 'OWNER,READER' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should validate dateFrom as positive integer', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { dateFrom: '1700000000' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should reject invalid dateFrom', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { dateFrom: 'abc' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should reject invalid dateTo', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { dateTo: 'abc' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should validate allowed sortBy fields', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { sortBy: 'createdAtTimestamp' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should reject invalid sortBy field', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { sortBy: 'invalidField' },
-      })
-      expect(result.success).to.be.false
-    })
-
-    it('should accept valid sortOrder', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { sortOrder: 'asc' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should accept source filter', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { source: 'local' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should reject unknown query params (strict mode)', () => {
-      const result = getAllRecordsSchema.safeParse({
-        query: { unknownParam: 'value' },
-      })
-      expect(result.success).to.be.false
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // getAllKBRecordsSchema
-  // -----------------------------------------------------------------------
-  describe('getAllKBRecordsSchema', () => {
-    it('should accept valid query params', () => {
-      const result = getAllKBRecordsSchema.safeParse({
-        query: { page: '1', limit: '20', search: 'test' },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('should reject script tags in search', () => {
-      const result = getAllKBRecordsSchema.safeParse({
-        query: { search: '<script>xss</script>' },
-      })
-      expect(result.success).to.be.false
-    })
-  })
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+        query: { folderId: '' },
+      });
+      expect(result.success).to.be.false;
+    });
+  });
 
   // -----------------------------------------------------------------------
   // kbPermissionSchema
@@ -342,34 +161,34 @@ describe('Knowledge Base Validators - coverage', () => {
       const result = kbPermissionSchema.safeParse({
         body: { userIds: ['user1'], role: 'READER' },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('should accept valid team permission', () => {
       const result = kbPermissionSchema.safeParse({
         body: { teamIds: ['team1'] },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('should reject when no userIds or teamIds', () => {
       const result = kbPermissionSchema.safeParse({
         body: { role: 'READER' },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.false
-    })
+      });
+      expect(result.success).to.be.false;
+    });
 
     it('should reject when userIds provided without role', () => {
       const result = kbPermissionSchema.safeParse({
         body: { userIds: ['user1'] },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.false
-    })
-  })
+      });
+      expect(result.success).to.be.false;
+    });
+  });
 
   // -----------------------------------------------------------------------
   // updatePermissionsSchema
@@ -379,18 +198,18 @@ describe('Knowledge Base Validators - coverage', () => {
       const result = updatePermissionsSchema.safeParse({
         body: { role: 'WRITER', teamIds: ['team1'] },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.false
-    })
+      });
+      expect(result.success).to.be.false;
+    });
 
     it('should accept userIds with role', () => {
       const result = updatePermissionsSchema.safeParse({
         body: { role: 'WRITER', userIds: ['user1'] },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
-    })
-  })
+      });
+      expect(result.success).to.be.true;
+    });
+  });
 
   // -----------------------------------------------------------------------
   // listKnowledgeBasesSchema
@@ -399,24 +218,24 @@ describe('Knowledge Base Validators - coverage', () => {
     it('should accept valid query params', () => {
       const result = listKnowledgeBasesSchema.safeParse({
         query: { page: '1', limit: '20', sortBy: 'name', sortOrder: 'asc' },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('should reject unknown query params (strict mode)', () => {
       const result = listKnowledgeBasesSchema.safeParse({
         query: { unknownParam: 'value' },
-      })
-      expect(result.success).to.be.false
-    })
+      });
+      expect(result.success).to.be.false;
+    });
 
     it('should accept search with permissions filter', () => {
       const result = listKnowledgeBasesSchema.safeParse({
         query: { permissions: 'OWNER,READER' },
-      })
-      expect(result.success).to.be.true
-    })
-  })
+      });
+      expect(result.success).to.be.true;
+    });
+  });
 
   // -----------------------------------------------------------------------
   // moveRecordSchema
@@ -425,19 +244,25 @@ describe('Knowledge Base Validators - coverage', () => {
     it('should accept valid move request', () => {
       const result = moveRecordSchema.safeParse({
         body: { newParentId: 'folder-123' },
-        params: { kbId: '550e8400-e29b-41d4-a716-446655440000', recordId: 'rec-1' },
-      })
-      expect(result.success).to.be.true
-    })
+        params: {
+          kbId: '550e8400-e29b-41d4-a716-446655440000',
+          recordId: 'rec-1',
+        },
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('should accept null newParentId (move to root)', () => {
       const result = moveRecordSchema.safeParse({
         body: { newParentId: null },
-        params: { kbId: '550e8400-e29b-41d4-a716-446655440000', recordId: 'rec-1' },
-      })
-      expect(result.success).to.be.true
-    })
-  })
+        params: {
+          kbId: '550e8400-e29b-41d4-a716-446655440000',
+          recordId: 'rec-1',
+        },
+      });
+      expect(result.success).to.be.true;
+    });
+  });
 
   // -----------------------------------------------------------------------
   // Simple schemas
@@ -447,70 +272,58 @@ describe('Knowledge Base Validators - coverage', () => {
       const result = getRecordByIdSchema.safeParse({
         params: { recordId: 'rec-1' },
         query: { convertTo: 'pdf' },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('reindexRecordSchema should accept depth', () => {
       const result = reindexRecordSchema.safeParse({
         params: { recordId: 'rec-1' },
         body: { depth: 5 },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('reindexRecordGroupSchema should accept depth', () => {
       const result = reindexRecordGroupSchema.safeParse({
         params: { recordGroupId: 'grp-1' },
         body: { depth: -1 },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('reindexFailedRecordSchema should accept valid input', () => {
-      const result = reindexFailedRecordSchema.safeParse({
-        body: { app: 'google', connectorId: 'c-1', statusFilters: ['FAILED'] },
-      })
-      expect(result.success).to.be.true
-    })
-
-    it('resyncConnectorSchema should accept valid input', () => {
-      const result = resyncConnectorSchema.safeParse({
-        body: { connectorName: 'google', connectorId: 'c-1', fullSync: true },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('createKBSchema should accept valid input', () => {
       const result = createKBSchema.safeParse({
         body: { kbName: 'My KB' },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('updateKBSchema should accept valid input', () => {
       const result = updateKBSchema.safeParse({
         body: { kbName: 'Updated KB' },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('createFolderSchema should accept valid input', () => {
       const result = createFolderSchema.safeParse({
         body: { folderName: 'New Folder' },
-      })
-      expect(result.success).to.be.true
-    })
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+        query: { folderId: 'parent-folder-1' },
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('deletePermissionsSchema should accept valid input', () => {
       const result = deletePermissionsSchema.safeParse({
         body: { userIds: ['u1'], teamIds: ['t1'] },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
-    })
-  })
+      });
+      expect(result.success).to.be.true;
+    });
+  });
 
   // -----------------------------------------------------------------------
   // rejectedFiles schema validation (new in this PR)
@@ -531,9 +344,9 @@ describe('Knowledge Base Validators - coverage', () => {
           ],
         },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('should accept rejectedFiles with EXCEEDS_SIZE_LIMIT reason', () => {
       const result = uploadRecordsSchema.safeParse({
@@ -550,9 +363,9 @@ describe('Knowledge Base Validators - coverage', () => {
           ],
         },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('should accept rejectedFiles with DUPLICATE_NAME reason', () => {
       const result = uploadRecordsSchema.safeParse({
@@ -569,9 +382,9 @@ describe('Knowledge Base Validators - coverage', () => {
           ],
         },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('should reject rejectedFiles with an invalid reason string', () => {
       const result = uploadRecordsSchema.safeParse({
@@ -588,9 +401,9 @@ describe('Knowledge Base Validators - coverage', () => {
           ],
         },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.false
-    })
+      });
+      expect(result.success).to.be.false;
+    });
 
     it('should reject rejectedFiles missing required fields', () => {
       const result = uploadRecordsSchema.safeParse({
@@ -603,33 +416,30 @@ describe('Knowledge Base Validators - coverage', () => {
           ],
         },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.false
-    })
+      });
+      expect(result.success).to.be.false;
+    });
 
     it('should accept empty rejectedFiles array', () => {
       const result = uploadRecordsSchema.safeParse({
         body: { rejectedFiles: [] },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('should accept omitted rejectedFiles (optional)', () => {
       const result = uploadRecordsSchema.safeParse({
         body: {},
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
-    })
-  })
+      });
+      expect(result.success).to.be.true;
+    });
+  });
 
-  // -----------------------------------------------------------------------
-  // rejectedFiles in uploadRecordsToFolderSchema
-  // -----------------------------------------------------------------------
-  describe('rejectedFiles schema in uploadRecordsToFolderSchema', () => {
-    it('should accept valid rejectedFiles', () => {
-      const result = uploadRecordsToFolderSchema.safeParse({
+  describe('rejectedFiles schema in uploadRecordsSchema (folder query)', () => {
+    it('should accept valid rejectedFiles with folderId query', () => {
+      const result = uploadRecordsSchema.safeParse({
         body: {
           rejectedFiles: [
             {
@@ -642,13 +452,14 @@ describe('Knowledge Base Validators - coverage', () => {
             },
           ],
         },
-        params: { kbId: '550e8400-e29b-41d4-a716-446655440000', folderId: 'folder-1' },
-      })
-      expect(result.success).to.be.true
-    })
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+        query: { folderId: 'folder-1' },
+      });
+      expect(result.success).to.be.true;
+    });
 
-    it('should reject invalid reason in rejectedFiles', () => {
-      const result = uploadRecordsToFolderSchema.safeParse({
+    it('should reject invalid reason in rejectedFiles with folderId query', () => {
+      const result = uploadRecordsSchema.safeParse({
         body: {
           rejectedFiles: [
             {
@@ -661,11 +472,12 @@ describe('Knowledge Base Validators - coverage', () => {
             },
           ],
         },
-        params: { kbId: '550e8400-e29b-41d4-a716-446655440000', folderId: 'folder-1' },
-      })
-      expect(result.success).to.be.false
-    })
-  })
+        params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+        query: { folderId: 'folder-1' },
+      });
+      expect(result.success).to.be.false;
+    });
+  });
 
   // -----------------------------------------------------------------------
   // fileBufferSchema MIME type validation
@@ -686,9 +498,9 @@ describe('Knowledge Base Validators - coverage', () => {
           ],
         },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.true
-    })
+      });
+      expect(result.success).to.be.true;
+    });
 
     it('should reject a fileBuffer with an unknown MIME type', () => {
       const result = uploadRecordsSchema.safeParse({
@@ -705,8 +517,8 @@ describe('Knowledge Base Validators - coverage', () => {
           ],
         },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      })
-      expect(result.success).to.be.false
-    })
-  })
-})
+      });
+      expect(result.success).to.be.false;
+    });
+  });
+});

@@ -1,3 +1,10 @@
+# Global ARG — must be declared before the first FROM so it can be used in
+# FROM instructions.  Override with a pre-built image to skip re-installing
+# packages that haven't changed:
+#   --build-arg PYTHON_DEPS_BASE=ghcr.io/pipeshub/python-deps:latest
+# Default falls back to the locally-built build-base stage (full install).
+ARG PYTHON_DEPS_BASE=build-base
+
 # -----------------------------------------------------------------------------
 # Stage 1: Build Base - Contains all build tools (NOT in final image)
 # -----------------------------------------------------------------------------
@@ -31,8 +38,11 @@ RUN pip install --no-cache-dir uv
 
 # -----------------------------------------------------------------------------
 # Stage 2: Python Dependencies Build
+# When PYTHON_DEPS_BASE is a pre-built image, uv skips already-satisfied
+# packages and only installs the delta introduced by pyproject.toml changes.
+# ML model downloads below are no-ops when the models are already present.
 # -----------------------------------------------------------------------------
-FROM build-base AS python-deps
+FROM ${PYTHON_DEPS_BASE} AS python-deps
 WORKDIR /app/python
 
 COPY ./backend/python/pyproject.toml ./
@@ -40,7 +50,7 @@ COPY ./backend/python/pyproject.toml ./
 # Install Python dependencies + watchdog for hot reload (watchmedo command)
 RUN uv pip install --system -e . && \
     uv pip install --system watchdog && \
-    # Download ML models
+    # Download ML models (no-op when already present in the base image)
     python -m spacy download en_core_web_sm && \
     python -c "import nltk; nltk.download('punkt', quiet=True)" && \
     python -c "from sentence_transformers import CrossEncoder; CrossEncoder(model_name='BAAI/bge-reranker-base')" && \

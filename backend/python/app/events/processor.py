@@ -3,9 +3,6 @@ import json
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
-from bs4 import BeautifulSoup
-from html_to_markdown import convert
-
 from app.config.constants.ai_models import AzureDocIntelligenceModel, OCRProvider
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -156,14 +153,14 @@ class Processor:
                         })
 
                     docs = [record]
-                    success = await self.graph_provider.batch_upsert_nodes(
+                    success = await self.graph_provider.batch_update_nodes(
                         docs, CollectionNames.RECORDS.value
                     )
                     if not success:
-                        raise DocumentProcessingError(
-                            "Failed to update indexing status", doc_id=record_id
+                        self.logger.warning(
+                            "⚠️ Failed to update indexing status for record %s - record may not exist",
+                            record_id,
                         )
-
                     # Yield both events since we're skipping processing
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -822,8 +819,9 @@ class Processor:
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process BlocksContainer and attach to record for indexing, yielding phase completion events.
 
-        For BlockGroups with requires_processing=True, processes their data through docling
-        and merges the resulting blocks back into the container.
+        For BlockGroups with requires_processing=True, processes their markdown data
+        through the configured markdown parser and merges the resulting blocks back
+        into the container.
 
         Args:
             recordName (str): Name of the record
@@ -853,8 +851,8 @@ class Processor:
             # Convert dict to BlocksContainer
             block_containers = BlocksContainer(**blocks_dict)
 
-            # Process BlockGroups with requires_processing=True through docling
-            block_containers = await self._process_blockgroups_through_docling(
+            # Process BlockGroups with requires_processing=True via markdown parser
+            block_containers = await self._process_blockgroups(
                 block_containers, recordName
             )
 
@@ -961,59 +959,25 @@ class Processor:
 
         return modified_markdown, caption_map
 
-    def _map_base64_images_to_blocks(
-        self, blocks: List[Block], caption_map: Dict[str, str], block_group_index: int
-    ) -> None:
-        """
-        Map base64 images to image blocks using captions.
-
-        Args:
-            blocks: List of blocks to process
-            caption_map: Map of alt text to base64 URIs
-            block_group_index: Index of the block group (for logging)
-        """
-        if not caption_map:
-            return
-
-        for block in blocks:
-            if block.type == BlockType.IMAGE.value and block.image_metadata:
-                caption = block.image_metadata.captions
-                if caption:
-                    caption = caption[0] if isinstance(caption, list) else caption
-                    if caption_map.get(caption):
-                        if block.data is None:
-                            block.data = {}
-                        if isinstance(block.data, dict):
-                            block.data["uri"] = caption_map[caption]
-                        else:
-                            # If data is not a dict, create a new dict with the uri
-                            block.data = {"uri": caption_map[caption]}
-                    else:
-                        self.logger.warning(
-                            f"⚠️ Skipping image with caption '{caption}' in BlockGroup {block_group_index} - no valid base64 data available"
-                        )
-
-    async def _process_single_blockgroup_through_docling(
+    async def _process_single_blockgroup(
         self,
         block_group: BlockGroup,
         record_name: str,
-        processor: DoclingProcessor,
-        md_parser: Optional[MarkdownParser]
+        md_parser: MarkdownParser,
     ) -> Tuple[List[BlockGroup], List[Block]]:
         """
-        Process a single block group through docling.
+        Process a single block group's markdown into blocks.
 
         Args:
             block_group: Block group to process
             record_name: Name of the record (for filename generation)
-            processor: DoclingProcessor instance
             md_parser: Markdown parser instance
 
         Returns:
             Tuple of (new_block_groups, new_blocks) from processing
 
         Raises:
-            ValueError: If block group has no valid markdown data or docling returns empty result
+            ValueError: If block group has no valid markdown data
         """
         # Extract markdown data from BlockGroup
         markdown_data = block_group.data
@@ -1027,31 +991,13 @@ class Processor:
             markdown_data, block_group.index
         )
 
-        # Parse the modified markdown to bytes
-        if md_parser:
-            md_bytes = md_parser.parse_string(modified_markdown)
-        else:
-            md_bytes = modified_markdown.encode('utf-8')
-
-        # Create filename from BlockGroup name or use default
-        filename = block_group.name or f"{Path(record_name).stem}_blockgroup_{block_group.index}.md"
-        if not filename.endswith('.md'):
-            filename = f"{filename}.md"
-
-        # Process through docling
         self.logger.debug(
-            f"📄 Processing BlockGroup {block_group.index} ({block_group.name}) through docling"
+            f"📄 Processing BlockGroup {block_group.index} ({block_group.name})"
         )
-        processed_blocks_container = await processor.load_document(filename, md_bytes)
-
-        if not processed_blocks_container:
-            raise ValueError(
-                f"Docling returned empty result for BlockGroup {block_group.index}"
-            )
-
-        # Map base64 images to image blocks using captions
-        self._map_base64_images_to_blocks(
-            processed_blocks_container.blocks, caption_map, block_group.index
+        processed_blocks_container = await md_parser.parse(
+            modified_markdown,
+            caption_map=caption_map or None,
+            name=block_group.name or record_name,
         )
 
         self.logger.debug(
@@ -1289,11 +1235,11 @@ class Processor:
             blocks=sorted_blocks
         )
 
-    async def _process_blockgroups_through_docling(
+    async def _process_blockgroups(
         self, block_containers: BlocksContainer, record_name: str
     ) -> BlocksContainer:
         """
-        Process BlockGroups with requires_processing=True through docling.
+        Process BlockGroups with requires_processing=True via the markdown parser.
 
         Uses a functional approach:
         1. Process all BlockGroups that need processing, collecting results
@@ -1302,7 +1248,7 @@ class Processor:
 
         Args:
             block_containers: BlocksContainer to process
-            record_name: Name of the record (for docling processing)
+            record_name: Name of the record (for parser context)
 
         Returns:
             BlocksContainer with processed blocks merged in
@@ -1326,22 +1272,22 @@ class Processor:
             return block_containers
 
         self.logger.info(
-            f"🔄 Processing {len(block_groups_to_process)} BlockGroups through docling"
+            f"🔄 Processing {len(block_groups_to_process)} BlockGroups with markdown parser"
         )
 
         # ========== PHASE 1: Process all BlockGroups and collect results ==========
         # Map: parent_index -> (new_block_groups, new_blocks)
         processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]] = {}
-        processor = DoclingProcessor(logger=self.logger, config=self.config_service)
         initial_block_count = len(block_containers.blocks)
 
-        # Get markdown parser for processing
         md_parser = self.parsers.get(ExtensionTypes.MD.value)
+        if md_parser is None:
+            raise ValueError("Markdown parser is not configured")
 
         for block_group in block_groups_to_process:
             try:
-                new_block_groups, new_blocks = await self._process_single_blockgroup_through_docling(
-                    block_group, record_name, processor, md_parser
+                new_block_groups, new_blocks = await self._process_single_blockgroup(
+                    block_group, record_name, md_parser
                 )
 
                 # Store results for later merging
@@ -1349,7 +1295,7 @@ class Processor:
 
             except Exception as e:
                 self.logger.error(
-                    f"❌ Error processing BlockGroup {block_group.index} through docling: {e}",
+                    f"❌ Error processing BlockGroup {block_group.index}: {e}",
                     exc_info=True
                 )
                 # Stop processing if any BlockGroup fails
@@ -1588,13 +1534,15 @@ class Processor:
 
         docs = [doc]
 
-        success = await self.graph_provider.batch_upsert_nodes(
+        success = await self.graph_provider.batch_update_nodes(
             docs, CollectionNames.RECORDS.value
         )
         if not success:
-            raise DocumentProcessingError(
-                "Failed to update indexing status", doc_id=record_id
+            self.logger.warning(
+                "⚠️ Failed to update indexing status for record %s - record may not exist",
+                record_id,
             )
+            return
 
     async def process_html_document(
         self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
@@ -1605,41 +1553,83 @@ class Processor:
         )
 
         try:
-            html_content = None
-            try:
-                soup = BeautifulSoup(html_binary, 'html.parser')
+            # Convert binary to string
+            if isinstance(html_binary, bytes):
+                html_content = html_binary.decode("utf-8")
+            else:
+                html_content = html_binary
 
-                # Remove script, style, and other non-content elements
-                for element in soup(["script", "style", "noscript", "iframe", "nav", "footer", "header"]):
-                    element.decompose()
+            html_content = html_content.strip()
 
-                html_content = str(soup)
+            if not html_content:
+                try:
+                    await self._mark_record(recordId, ProgressStatus.EMPTY)
+                    self.logger.info("✅ HTML processing completed - empty content.")
+                    yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                    return
+                except DocumentProcessingError:
+                    raise
+                except Exception as e:
+                    raise DocumentProcessingError(
+                        "Error updating record status: " + str(e),
+                        doc_id=recordId,
+                        details={"error": str(e)},
+                    ) from e
 
-            except Exception as e:
-                self.logger.warning(f"⚠️ Failed to clean HTML: {e}")
-
-            if html_content is None:
-                if isinstance(html_binary, bytes):
-                    html_content = html_binary.decode("utf-8")
-                else:
-                    html_content = html_binary
+            # Use the unified HTML parser interface
+            self.logger.debug("📄 Processing HTML content")
             html_parser = self.parsers[ExtensionTypes.HTML.value]
+            html_content = html_parser.clean_html(html_content)
             html_content = html_parser.replace_relative_image_urls(html_content)
-            markdown = convert(html_content)
-            md_binary = markdown.encode("utf-8")
 
-            # Use the existing markdown processing function
-            async for event in self.process_md_document(
-                recordName=recordName,
-                recordId=recordId,
-                md_binary=md_binary,
-                virtual_record_id=virtual_record_id,
-                event_type=event_type,
-                prev_virtual_record_id=prev_virtual_record_id,
-            ):
-                yield event
+            # Extract image URLs and convert to base64 (mirrors the Markdown flow)
+            caption_map: Dict[str, str] = {}
+            modified_html, images = html_parser.extract_and_replace_images(html_content)
 
-            self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
+            if images:
+                image_parser = self.parsers[ExtensionTypes.PNG.value]
+                urls_to_convert = [image["url"] for image in images]
+                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+
+                for i, image in enumerate(images):
+                    if base64_urls[i]:
+                        caption_map[image["new_alt_text"]] = base64_urls[i]
+
+                self.logger.debug(
+                    f"📷 Extracted {len(images)} images from HTML, "
+                    f"converted {len([u for u in base64_urls if u])} to base64"
+                )
+
+            block_containers = await html_parser.parse(
+                modified_html,
+                caption_map=caption_map if caption_map else None,
+                name=recordName,
+            )
+
+            # Signal parsing complete
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+
+            record = await self.graph_provider.get_document(
+                recordId, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                return
+            record = convert_record_dict_to_record(record)
+
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+
+            ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+
+            # Signal indexing complete
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+
+            self.logger.info("✅ HTML processing completed successfully.")
 
         except Exception as e:
             self.logger.error(f"❌ Error processing HTML document: {str(e)}")
@@ -1725,19 +1715,13 @@ class Processor:
                     if base64_urls[i]:
                         caption_map[image["new_alt_text"]] = base64_urls[i]
 
-            md_bytes = parser.parse_string(modified_markdown)
+            block_containers = await parser.parse(
+                modified_markdown,
+                caption_map=caption_map or None,
+                name=recordName,
+            )
 
-            processor = DoclingProcessor(logger=self.logger,config=self.config_service)
-            filename_without_ext = Path(recordName).stem
-
-            # Phase 1: Parse document with Docling (no LLM calls)
-            conv_res = await processor.parse_document(f"{filename_without_ext}.md", md_bytes)
-
-            # Signal parsing complete after Docling parsing
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
-
-            # Phase 2: Create blocks (involves LLM calls for tables)
-            block_containers = await processor.create_blocks(conv_res)
 
             record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
@@ -1749,25 +1733,6 @@ class Processor:
                 return
             record = convert_record_dict_to_record(record)
 
-            blocks = block_containers.blocks
-            for block in blocks:
-                if block.type == BlockType.IMAGE.value and block.image_metadata:
-                    caption = block.image_metadata.captions
-                    if caption:
-                        caption = caption[0]
-                        if caption_map.get(caption):
-                            if block.data is None:
-                                block.data = {}
-                            if isinstance(block.data, dict):
-                                block.data["uri"] = caption_map[caption]
-                            else:
-                                # If data is not a dict, create a new dict with the uri
-                                block.data = {"uri": caption_map[caption]}
-                        else:
-                            self.logger.warning(f"⚠️ Skipping image with caption '{caption}' - no valid base64 data available")
-
-            block_containers.blocks = blocks
-
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
 
@@ -1778,7 +1743,7 @@ class Processor:
             # Signal indexing complete
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            self.logger.info("✅ MD processing completed successfully using docling")
+            self.logger.info("✅ MD processing completed successfully")
             return
         except Exception as e:
             self.logger.error(f"❌ Error processing Markdown document: {str(e)}")

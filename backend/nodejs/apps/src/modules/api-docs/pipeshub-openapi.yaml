@@ -136,7 +136,7 @@ tags:
   # Storage
   - name: Document Management
     description: Document CRUD and retrieval operations
-  - name: Knowledge Bases
+  - name: Knowledge Base
     description: Knowledge base management operations
   - name: Knowledge Hub
     description: Unified browse API for root and child nodes (apps, record groups, folders, records) with filtering and search
@@ -1034,6 +1034,19 @@ components:
               additionalProperties: true
       required:
         - error
+
+    StreamRecordErrorResponse:
+      type: object
+      additionalProperties: false
+      description: |
+        Error payload returned by the legacy record-stream proxy when the downstream
+        streaming request fails after route middleware has passed.
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable error message from the gateway or downstream stream service
 
     AuthError:
       type: object
@@ -2958,7 +2971,7 @@ components:
           description: User ID of the creator
         userRole:
           type: string
-          enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+          enum: [OWNER, WRITER, READER]
           description: User's role in this knowledge base
         folders:
           type: array
@@ -2967,6 +2980,332 @@ components:
           description: Folders in this knowledge base
       required:
         - name
+
+    KnowledgeBaseCreateResponse:
+      type: object
+      additionalProperties: false
+      description: Response returned when a knowledge base is created
+      properties:
+        id:
+          type: string
+          description: Knowledge base ID
+        name:
+          type: string
+          description: Knowledge base name
+        createdAtTimestamp:
+          type: integer
+          format: int64
+          description: Creation timestamp in milliseconds
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+          description: Last update timestamp in milliseconds
+        userRole:
+          type: string
+          enum: [OWNER, WRITER, READER]
+          description: User's role in this knowledge base
+      required:
+        - id
+        - name
+        - createdAtTimestamp
+        - updatedAtTimestamp
+        - userRole
+
+    FolderCreateResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned when a folder is created (root or nested subfolder)
+      properties:
+        id:
+          type: string
+          description: Unique folder identifier
+        name:
+          type: string
+          description: Name of the folder
+      required:
+        - id
+        - name
+
+    FolderUpdateResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by PUT /knowledgeBase/{kbId}/folder/{folderId} (updateFolder).
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Folder updated successfully"
+
+    FolderDeleteResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by DELETE /knowledgeBase/{kbId}/folder/{folderId} (deleteFolder).
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Folder deleted successfully"
+
+    KnowledgeBaseMoveRecordRequestBody:
+      type: object
+      additionalProperties: false
+      description: Request body for PUT /knowledgeBase/{kbId}/record/{recordId}/move (moveRecord).
+      required:
+        - newParentId
+      properties:
+        newParentId:
+          type: string
+          nullable: true
+          description: Target folder ID, or null to move the record to the knowledge base root
+
+    KnowledgeBaseMoveRecordResponse:
+      type: object
+      additionalProperties: false
+      description: Response returned by PUT /knowledgeBase/{kbId}/record/{recordId}/move (moveRecord).
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Record moved successfully"
+
+    GetAllKnowledgeBaseResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by GET /knowledgeBase (listKnowledgeBases).
+      required:
+        - knowledgeBases
+        - pagination
+        - filters
+      properties:
+        knowledgeBases:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - id
+              - name
+              - connectorId
+              - createdAtTimestamp
+              - updatedAtTimestamp
+              - createdBy
+              - userRole
+              - folders
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              connectorId:
+                type: string
+                nullable: true
+              createdAtTimestamp:
+                type: integer
+                format: int64
+              updatedAtTimestamp:
+                type: integer
+                format: int64
+              createdBy:
+                type: string
+              userRole:
+                type: string
+                enum: [OWNER, WRITER, READER]
+              folders:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required:
+                    - id
+                    - name
+                  properties:
+                    id:
+                      type: string
+                    name:
+                      type: string
+                    createdAtTimestamp:
+                      type: integer
+                      format: int64
+                    path:
+                      type: string
+        pagination:
+          type: object
+          additionalProperties: false
+          required:
+            - page
+            - limit
+            - totalCount
+            - totalPages
+            - hasNext
+            - hasPrev
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalCount:
+              type: integer
+            totalPages:
+              type: integer
+            hasNext:
+              type: boolean
+            hasPrev:
+              type: boolean
+        filters:
+          type: object
+          additionalProperties: false
+          required:
+            - applied
+            - available
+          properties:
+            applied:
+              type: object
+              additionalProperties: false
+              description: |
+                Active filters. Empty `{}` when defaults. Keys use snake_case for sort
+                fields (backend convention in kb_service.py).
+              properties:
+                search:
+                  type: string
+                permissions:
+                  type: array
+                  items:
+                    type: string
+                    enum: [OWNER, WRITER, READER]
+                sort_by:
+                  type: string
+                  enum: [name, createdAtTimestamp, updatedAtTimestamp, userRole]
+                sort_order:
+                  type: string
+                  enum: [asc, desc]
+            available:
+              type: object
+              additionalProperties: false
+              required:
+                - permissions
+                - sortFields
+                - sortOrders
+              properties:
+                permissions:
+                  type: array
+                  items:
+                    type: string
+                    enum: [OWNER, WRITER, READER]
+                sortFields:
+                  type: array
+                  items:
+                    type: string
+                    enum: [name, createdAtTimestamp, updatedAtTimestamp, userRole]
+                sortOrders:
+                  type: array
+                  items:
+                    type: string
+                    enum: [asc, desc]
+
+    GetKnowledgeBaseById:
+      type: object
+      additionalProperties: false
+      description: Response returned by GET /knowledgeBase/{kbId} (getKnowledgeBase).
+      required:
+        - id
+        - name
+        - connectorId
+        - createdAtTimestamp
+        - updatedAtTimestamp
+        - createdBy
+        - userRole
+        - folders
+      properties:
+        id:
+          type: string
+          description: Knowledge base ID
+        name:
+          type: string
+          description: Knowledge base name
+        connectorId:
+          type: string
+          nullable: true
+          description: Associated connector ID (null for manual KBs)
+        createdAtTimestamp:
+          type: integer
+          format: int64
+          description: Creation timestamp in milliseconds
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+          description: Last update timestamp in milliseconds
+        createdBy:
+          type: string
+          description: User ID of the creator
+        userRole:
+          type: string
+          enum: [OWNER, WRITER, READER]
+          description: User's role in this knowledge base
+        folders:
+          type: array
+          description: Root-level folders in this knowledge base
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - id
+              - name
+            properties:
+              id:
+                type: string
+                description: Folder ID
+              name:
+                type: string
+                description: Folder name
+              createdAtTimestamp:
+                type: integer
+                format: int64
+                description: Creation timestamp in milliseconds
+
+    UpdateKnowledgeBaseById:
+      type: object
+      additionalProperties: false
+      description: Response returned by PUT /knowledgeBase/{kbId} (updateKnowledgeBase).
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Knowledge base updated successfully"
+
+    DeleteKnowledgeBaseById:
+      type: object
+      additionalProperties: false
+      description: Response returned by DELETE /knowledgeBase/{kbId} (deleteKnowledgeBase).
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Knowledge base deleted successfully"
 
     Folder:
       type: object
@@ -3003,6 +3342,136 @@ components:
         - kbId
         - orgId
 
+    RecordTypeEnum:
+      type: string
+      description: |
+        Type of content. Mirrors the backend `RecordType` enum
+        (`backend/python/app/models/entities.py`); connector-sourced records
+        may use any of the connector-specific types below.
+        - FILE: Uploaded or synced documents (PDF, DOCX, etc.)
+        - DRIVE: Drive/folder container (Google Drive, OneDrive, etc.)
+        - WEBPAGE: Web pages crawled or bookmarked
+        - DATABASE: Database object (e.g. Notion database)
+        - DATASOURCE: Data source object
+        - MESSAGE: Chat/messaging content (Slack, Teams)
+        - MAIL: Email messages (Gmail, Outlook)
+        - GROUP_MAIL: Group/shared mailbox email messages
+        - TICKET: Support/issue tickets (Jira, ServiceNow)
+        - COMMENT: Comments from collaboration tools
+        - INLINE_COMMENT: Inline comments anchored to content (e.g. Confluence)
+        - CONFLUENCE_PAGE: Confluence page
+        - CONFLUENCE_BLOGPOST: Confluence blog post
+        - SHAREPOINT_PAGE: SharePoint page
+        - SHAREPOINT_LIST: SharePoint list
+        - SHAREPOINT_LIST_ITEM: SharePoint list item
+        - SHAREPOINT_DOCUMENT_LIBRARY: SharePoint document library
+        - LINK: Web link / bookmark
+        - PROJECT: Project entity (e.g. Jira project)
+        - PULL_REQUEST: Source-control pull request
+        - MEETING: Meeting record (e.g. Zoom)
+        - PRODUCT: Product entity (CRM)
+        - DEAL: Deal/opportunity entity (CRM)
+        - CASE: Case entity (CRM/support)
+        - TASK: Task entity
+        - ARTIFACT: Generated/derived artifact
+        - CODE_FILE: Source-code file
+        - SQL_TABLE: SQL table object
+        - SQL_VIEW: SQL view object
+        - OTHERS: Miscellaneous content types
+      enum:
+        - FILE
+        - DRIVE
+        - WEBPAGE
+        - DATABASE
+        - DATASOURCE
+        - MESSAGE
+        - MAIL
+        - GROUP_MAIL
+        - TICKET
+        - COMMENT
+        - INLINE_COMMENT
+        - CONFLUENCE_PAGE
+        - CONFLUENCE_BLOGPOST
+        - SHAREPOINT_PAGE
+        - SHAREPOINT_LIST
+        - SHAREPOINT_LIST_ITEM
+        - SHAREPOINT_DOCUMENT_LIBRARY
+        - LINK
+        - PROJECT
+        - PULL_REQUEST
+        - MEETING
+        - PRODUCT
+        - DEAL
+        - CASE
+        - TASK
+        - ARTIFACT
+        - CODE_FILE
+        - SQL_TABLE
+        - SQL_VIEW
+        - OTHERS
+      example: "FILE"
+
+    ConnectorNameEnum:
+      type: string
+      description: |
+        Name of the source connector. Mirrors the values of the backend
+        `Connectors` enum (`backend/python/app/config/constants/arangodb.py`);
+        records store the enum value (e.g. Google Drive is `DRIVE`,
+        SharePoint Online is `SHAREPOINT ONLINE`), not the enum member name.
+      enum:
+        - "DRIVE"
+        - "DRIVE WORKSPACE"
+        - "GMAIL"
+        - "GMAIL WORKSPACE"
+        - "CALENDAR"
+        - "ONEDRIVE"
+        - "SHAREPOINT ONLINE"
+        - "OUTLOOK"
+        - "OUTLOOK PERSONAL"
+        - "OUTLOOK CALENDAR"
+        - "MICROSOFT TEAMS"
+        - "NOTION"
+        - "SLACK"
+        - "SLACK WORKSPACE"
+        - "KB"
+        - "CONFLUENCE"
+        - "CONFLUENCE DATA CENTER"
+        - "CONFLUENCE DATA CENTER PERSONAL"
+        - "JIRA"
+        - "JIRA PERSONAL"
+        - "JIRA DATA CENTER"
+        - "JIRA DATA CENTER PERSONAL"
+        - "BOX"
+        - "NEXTCLOUD"
+        - "DROPBOX"
+        - "DROPBOX PERSONAL"
+        - "WEB"
+        - "BOOKSTACK"
+        - "GITHUB"
+        - "SERVICENOW"
+        - "SALESFORCE"
+        - "S3"
+        - "MINIO"
+        - "GCS"
+        - "AZURE BLOB"
+        - "AZURE FILES"
+        - "LINEAR"
+        - "ZAMMAD"
+        - "ZOOM"
+        - "GITLAB"
+        - "GITLAB PERSONAL"
+        - "SNOWFLAKE"
+        - "POSTGRESQL"
+        - "MARIADB"
+        - "UNKNOWN"
+        - "RSS"
+        - "LOCAL_FS"
+        - "CODING_SANDBOX"
+        - "DATABASE_SANDBOX"
+        - "IMAGE_GENERATION"
+        - "ATTACHMENTS"
+      example: "DRIVE"
+
     Record:
       type: object
       description: |
@@ -3025,18 +3494,7 @@ components:
           description: External storage document ID (links to Storage module)
           example: "507f1f77bcf86cd799439011"
         recordType:
-          type: string
-          enum: [FILE, WEBPAGE, COMMENT, MESSAGE, EMAIL, TICKET, OTHERS]
-          description: |
-            Type of content:
-            - FILE: Uploaded documents (PDF, DOCX, etc.)
-            - WEBPAGE: Web pages crawled or bookmarked
-            - COMMENT: Comments from collaboration tools
-            - MESSAGE: Chat/messaging content (Slack, Teams)
-            - EMAIL: Email messages (Gmail, Outlook)
-            - TICKET: Support tickets (Jira, ServiceNow)
-            - OTHERS: Miscellaneous content types
-          example: "FILE"
+          $ref: '#/components/schemas/RecordTypeEnum'
         origin:
           type: string
           enum: [UPLOAD, CONNECTOR]
@@ -3050,10 +3508,7 @@ components:
           description: ID of the connector that synced this record (null for uploads)
           example: "conn_123456"
         connectorName:
-          type: string
-          enum: [KB, ONEDRIVE, GOOGLE_DRIVE, CONFLUENCE, JIRA, SLACK, SHAREPOINT_ONLINE, GMAIL, DROPBOX, OUTLOOK, SERVICENOW, BOOKSTACK, WEB]
-          description: Name of the source connector
-          example: "GOOGLE_DRIVE"
+          $ref: '#/components/schemas/ConnectorNameEnum'
         orgId:
           type: string
           description: Organization ID that owns this record
@@ -3168,7 +3623,7 @@ components:
         mailRecord:
           type: object
           nullable: true
-          description: Email-specific metadata (present when recordType is EMAIL)
+          description: Email-specific metadata (present when recordType is MAIL or GROUP_MAIL)
         ticketRecord:
           type: object
           nullable: true
@@ -3200,25 +3655,420 @@ components:
         userPermission:
           type: string
 
-    RecordsResponse:
+    GetRecordByIdResponseSchema:
       type: object
-      description: Paginated response for records listing
+      additionalProperties: false
+      description: Response returned by GET /knowledgeBase/record/{recordId}.
+      required:
+        - record
+        - knowledgeBase
+        - folder
+        - metadata
+        - permissions
       properties:
-        records:
+        record:
+          type: object
+          additionalProperties: false
+          required:
+            - id
+            - orgId
+            - recordName
+            - externalRecordId
+            - connectorId
+            - connectorName
+            - recordType
+            - origin
+            - version
+            - isLatestVersion
+            - createdAtTimestamp
+            - updatedAtTimestamp
+            - sourceCreatedAtTimestamp
+            - sourceLastModifiedTimestamp
+            - lastSyncTimestamp
+            - indexingStatus
+            - extractionStatus
+            - isDeleted
+            - isArchived
+            - isDirty
+            - isVLMOcrProcessed
+            - mimeType
+            - sizeInBytes
+            - webUrl
+            - fileRecord
+            - mailRecord
+            - ticketRecord
+          properties:
+            id:
+              type: string
+            orgId:
+              type: string
+            recordName:
+              type: string
+            externalRecordId:
+              type: string
+            externalRootGroupId:
+              type: string
+              nullable: true
+            externalGroupId:
+              type: string
+              nullable: true
+            connectorId:
+              type: string
+            connectorName:
+              $ref: '#/components/schemas/ConnectorNameEnum'
+            recordType:
+              $ref: '#/components/schemas/RecordTypeEnum'
+            origin:
+              type: string
+            version:
+              type: integer
+            isLatestVersion:
+              type: boolean
+            createdAtTimestamp:
+              type: integer
+              format: int64
+            updatedAtTimestamp:
+              type: integer
+              format: int64
+            sourceCreatedAtTimestamp:
+              type: integer
+              format: int64
+            sourceLastModifiedTimestamp:
+              type: integer
+              format: int64
+            lastSyncTimestamp:
+              type: integer
+              format: int64
+            lastIndexTimestamp:
+              type: integer
+              format: int64
+            lastExtractionTimestamp:
+              type: integer
+              format: int64
+            indexingStatus:
+              type: string
+            extractionStatus:
+              type: string
+            isDeleted:
+              type: boolean
+            isArchived:
+              type: boolean
+            isDirty:
+              type: boolean
+            isVLMOcrProcessed:
+              type: boolean
+            mimeType:
+              type: string
+            sizeInBytes:
+              type: integer
+              format: int64
+            md5Checksum:
+              type: string
+            virtualRecordId:
+              type: string
+            webUrl:
+              type: string
+            fileRecord:
+              type: object
+              nullable: true
+              additionalProperties: false
+              required:
+                - id
+                - orgId
+                - name
+                - extension
+                - mimeType
+                - sizeInBytes
+                - isFile
+                - webUrl
+              properties:
+                id:
+                  type: string
+                orgId:
+                  type: string
+                name:
+                  type: string
+                extension:
+                  type: string
+                mimeType:
+                  type: string
+                sizeInBytes:
+                  type: integer
+                  format: int64
+                isFile:
+                  type: boolean
+                webUrl:
+                  type: string
+                path:
+                  type: string
+                  nullable: true
+                localFsRelativePath:
+                  type: string
+                  nullable: true
+            mailRecord:
+              type: object
+              nullable: true
+              additionalProperties: false
+              properties: {}
+            ticketRecord:
+              type: object
+              nullable: true
+              additionalProperties: false
+              properties: {}
+        knowledgeBase:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required:
+            - id
+            - name
+            - orgId
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            orgId:
+              type: string
+        folder:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required:
+            - id
+            - name
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+        metadata:
+          type: object
+          additionalProperties: false
+          required:
+            - languages
+            - topics
+            - subcategories1
+            - subcategories2
+            - subcategories3
+            - departments
+            - categories
+          properties:
+            languages:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - name
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+            topics:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - name
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+            subcategories1:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - name
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+            subcategories2:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - name
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+            subcategories3:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - name
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+            departments:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - name
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+            categories:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - id
+                  - name
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+        permissions:
           type: array
           items:
-            $ref: '#/components/schemas/Record'
-        pagination:
-          $ref: '#/components/schemas/PaginationInfo'
-        filters:
-          type: object
-          properties:
-            applied:
-              type: object
-              description: Currently applied filters
-            available:
-              type: object
-              description: Available filter options with counts
+            type: object
+            additionalProperties: false
+            required:
+              - id
+              - name
+              - type
+              - relationship
+              - accessType
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              type:
+                type: string
+              relationship:
+                type: string
+                enum: [OWNER, WRITER, READER]
+              accessType:
+                type: string
+
+    DeleteRecordResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by DELETE /knowledgeBase/record/{recordId}.
+      required:
+        - success
+        - message
+        - recordId
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        message:
+          type: string
+        recordId:
+          type: string
+        connector:
+          type: string
+          nullable: true
+        timestamp:
+          type: integer
+          format: int64
+          nullable: true
+
+    reIndexRecordResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by POST /knowledgeBase/reindex/record/{recordId}.
+      required:
+        - success
+        - message
+        - eventPublished
+        - depth
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        message:
+          type: string
+        recordId:
+          type: string
+          nullable: true
+        recordName:
+          type: string
+          nullable: true
+        connector:
+          type: string
+          nullable: true
+        eventPublished:
+          type: boolean
+        userRole:
+          type: string
+          nullable: true
+        depth:
+          type: integer
+
+    ReIndexRecordGroupResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by POST /knowledgeBase/reindex/record-group/{recordGroupId}.
+      required:
+        - success
+        - message
+        - recordGroupId
+        - depth
+        - eventPublished
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        message:
+          type: string
+        recordGroupId:
+          type: string
+        depth:
+          type: integer
+        connector:
+          type: string
+          nullable: true
+        eventPublished:
+          type: boolean
+
+    UploadLimitsResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Upload constraints returned by GET /knowledgeBase/limits.
+      required:
+        - maxFilesPerRequest
+        - maxFileSizeBytes
+      properties:
+        maxFilesPerRequest:
+          type: integer
+          minimum: 1
+          example: 1000
+          description: Maximum number of files per upload request
+        maxFileSizeBytes:
+          type: integer
+          minimum: 1
+          example: 31457280
+          description: Maximum file size in bytes (default 30MB when platform settings unavailable)
 
     FileRejectionReason:
       type: string
@@ -3313,9 +4163,8 @@ components:
     UploadStreamSSEEvent:
       type: object
       description: |
-        Server-Sent Event envelope for the KB streaming upload endpoints
-        (`POST /knowledgeBase/{kbId}/upload` and
-        `POST /knowledgeBase/{kbId}/folder/{folderId}/upload`).
+        Server-Sent Event envelope for the KB streaming upload endpoint
+        (`POST /knowledgeBase/{kbId}/upload`, with optional `folderId` query param).
 
         These endpoints respond with `Content-Type: text/event-stream`: the upload
         and its per-file progress are a single request. The body streams one
@@ -3417,21 +4266,31 @@ components:
       type: object
       required:
         - app
-        - connectorId
       properties:
         app:
           type: string
-          description: Connector app name (e.g. `KB`, `GOOGLE_DRIVE`).
-          example: "GOOGLE_DRIVE"
-        connectorId:
-          type: string
-          description: Connector instance ID.
+          description: Connector app name (e.g. `KB`, `DRIVE`).
+          example: "DRIVE"
         statusFilters:
           type: array
           items:
             $ref: '#/components/schemas/IndexingStatusFilter'
           description: |
             Statuses to reindex. Defaults to `FAILED` when omitted (connector-wide reindex).
+
+    ResyncConnectorRequestBody:
+      type: object
+      required:
+        - connectorName
+      properties:
+        connectorName:
+          type: string
+          description: Connector type name (e.g. `Google Drive`, `DRIVE`).
+          example: "DRIVE"
+        fullSync:
+          type: boolean
+          description: When true, triggers a full sync instead of incremental.
+          default: false
 
     ConnectorStats:
       type: object
@@ -3920,7 +4779,7 @@ components:
           description: User display name
         role:
           type: string
-          enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+          enum: [OWNER, WRITER, READER]
         type:
           type: string
           enum: [USER, TEAM]
@@ -3932,12 +4791,171 @@ components:
           type: integer
           format: int64
 
-    # ==================== ENTERPRISE SEARCH SCHEMAS ====================
-    AppType:
-      type: string
-      enum: [drive, gmail, onedrive, sharepointOnline, bookstack, confluence, jira, slack, dropbox, outlook, servicenow, web, local]
-      description: Supported application/connector types
+    KnowledgeBasePermissionCreate:
+      type: object
+      additionalProperties: false
+      description: Response returned when permissions are granted on a knowledge base
+      properties:
+        kbId:
+          type: string
+          description: Knowledge base ID
+        permissionResult:
+          type: object
+          additionalProperties: false
+          description: Connector result from permission creation
+          properties:
+            success:
+              type: boolean
+              description: Success status
+            grantedCount:
+              type: integer
+              description: Number of new permissions granted (users and teams)
+            grantedUsers:
+              type: array
+              items:
+                type: string
+              description: User IDs that received new permissions
+            grantedTeams:
+              type: array
+              items:
+                type: string
+              description: Team IDs that received new permissions
+            role:
+              type: string
+              enum: [OWNER, WRITER, READER]
+              description: Granted role (defaults to READER for team-only grants)
+            kbId:
+              type: string
+              description: Knowledge base ID
+            details:
+              type: object
+              additionalProperties: false
+              description: Additional details of the permissions created (currently always empty)
+          required:
+            - success
+            - grantedCount
+            - grantedUsers
+            - grantedTeams
+            - role
+            - kbId
+            - details
+      required:
+        - kbId
+        - permissionResult
 
+    KnowledgeBasePermissionList:
+      type: object
+      additionalProperties: false
+      description: Response returned when listing permissions on a knowledge base
+      properties:
+        kbId:
+          type: string
+          description: Knowledge base ID
+        permissions:
+          type: array
+          description: All user and team permissions granted on the knowledge base
+          items:
+            type: object
+            additionalProperties: false
+            description: A single user or team permission entry
+            properties:
+              id:
+                type: string
+                description: Permission entry ID (user or team document key)
+              userId:
+                type: string
+                nullable: true
+                description: User ID (null for team permissions)
+              email:
+                type: string
+                nullable: true
+                description: User email (null for team permissions)
+              name:
+                type: string
+                nullable: true
+                description: Display name (user full name or team name)
+              role:
+                type: string
+                nullable: true
+                enum: [OWNER, WRITER, READER]
+                description: Permission role (null for team permissions; teams are not assigned roles)
+              type:
+                type: string
+                enum: [USER, TEAM]
+                description: Whether permission is for a user or team
+              createdAtTimestamp:
+                type: integer
+                format: int64
+                description: Permission creation timestamp (epoch milliseconds)
+              updatedAtTimestamp:
+                type: integer
+                format: int64
+                description: Permission last update timestamp (epoch milliseconds)
+            required:
+              - id
+              - type
+              - createdAtTimestamp
+              - updatedAtTimestamp
+        totalCount:
+          type: integer
+          description: Total number of permissions in the list
+      required:
+        - kbId
+        - permissions
+        - totalCount
+
+    KnowledgebaseUpdatePermissionResponse:
+      type: object
+      additionalProperties: false
+      description: Response returned when user permission roles are updated on a knowledge base
+      properties:
+        kbId:
+          type: string
+          description: Knowledge base ID
+        userIds:
+          type: array
+          items:
+            type: string
+          description: Graph user document IDs whose roles were updated (Arango `users/{id}` key, not Mongo user `_id`)
+        teamIds:
+          type: array
+          items:
+            type: string
+          description: Graph team document IDs updated (always empty — teams cannot have roles updated)
+        newRole:
+          type: string
+          enum: [OWNER, WRITER, READER]
+          description: New role assigned to the updated users
+      required:
+        - kbId
+        - userIds
+        - teamIds
+        - newRole
+
+    KnowledgeBaseDeleteResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned when user or team permissions are removed from a knowledge base
+      properties:
+        kbId:
+          type: string
+          description: Knowledge base ID
+        userIds:
+          type: array
+          items:
+            type: string
+          description: Graph user document IDs whose permissions were removed (Arango `users/{id}` key, not Mongo user `_id`)
+        teamIds:
+          type: array
+          items:
+            type: string
+          description: Graph team document IDs whose permissions were removed
+      required:
+        - kbId
+        - userIds
+        - teamIds
+
+    # ==================== ENTERPRISE SEARCH SCHEMAS ====================
     Filters:
       type: object
       additionalProperties: false
@@ -4686,7 +5704,10 @@ components:
           description: References to source documents used in the response
         confidence:
           type: string
-          description: AI's confidence level in the response
+          nullable: true
+          description: |
+            AI confidence in the answer. Present only on `bot_response` messages,
+            and only when the model emitted a trailing confidence block.
         followUpQuestions:
           type: array
           items:
@@ -8404,6 +9425,10 @@ components:
         confidence:
           type: string
           enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
+          nullable: true
+          description: |
+            AI confidence in the answer. Present only on `bot_response` messages,
+            and only when the model emitted a trailing confidence block.
         followUpQuestions:
           type: array
           items:
@@ -16260,7 +17285,6 @@ paths:
         **Observed behavior:**
         Returns `{ status, message, data }` where `data` is the created team. Node enriches `createdByUser` and member `profilePicture` when present.
       operationId: createTeam
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:write]
@@ -16331,7 +17355,6 @@ paths:
         **Observed behavior:**
         On non-200 from the Python service, the Node gateway may return HTTP 200 with `{ teams: [], pagination: { page: 1, limit: 10, total: 0, pages: 0 } }`. Successful responses include `status` and `message` from Python plus enriched `createdByUser` / member `profilePicture` when applicable.
       operationId: getUserTeams
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:read]
@@ -16360,7 +17383,7 @@ paths:
             type: string
             minLength: 1
             maxLength: 1000
-          description: Search team names (trimmed; blank-after-trim rejected)
+          description: Search team names; empty or whitespace-only values are ignored (no filter)
         - in: query
           name: created_by
           required: false
@@ -16448,7 +17471,6 @@ paths:
         **Observed behavior:**
         Returns `{ status, message, team }`. Node enriches member and `createdByUser` `profilePicture` when present.
       operationId: getTeamById
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:read]
@@ -16538,7 +17560,6 @@ paths:
         **Observed behavior:**
         Returns `{ status, message, team }`. Node enriches `createdByUser` and member `profilePicture` when present.
       operationId: updateTeam
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:write]
@@ -16637,7 +17658,6 @@ paths:
         **Observed behavior:**
         Returns `{ status, message }` on success.
       operationId: deleteTeam
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:write]
@@ -16700,7 +17720,6 @@ paths:
         **Observed behavior:**
         Returns `{ status, message, team, pagination }` where `pagination` includes `totalCount`, `hasNextPage`, and `hasPrevPage`. Node enriches member `profilePicture` on the nested `team` object.
       operationId: getTeamUsers
-      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [team:read]
@@ -18830,29 +19849,34 @@ paths:
   /knowledgeBase:
     post:
       tags:
-        - Knowledge Bases
+        - Knowledge Base
       summary: Create a new knowledge base
       description: |
-        Create a new knowledge base for organizing and managing documents within your organization.<br><br>
-        <b>Overview:</b><br>
-        A knowledge base is a container for organizing related documents, files, and content. It provides a central location for teams to collaborate on shared information.<br><br>
-        <b>Features:</b><br>
-        <ul>
-        <li>Hierarchical folder structure support</li>
-        <li>Role-based access control (OWNER, ORGANIZER, WRITER, READER, etc.)</li>
-        <li>Full-text search across all records</li>
-        <li>Integration with external connectors (Google Drive, OneDrive, etc.)</li>
-        <li>Automatic content indexing for AI-powered search</li>
-        </ul>
-        <b>Naming Rules:</b><br>
-        <ul>
-        <li>Name must be 1-255 characters</li>
-        <li>Special characters and HTML tags are sanitized</li>
-        <li>Names don't need to be unique within organization</li>
-        </ul>
-        <b>Creator Permissions:</b><br>
+        Create a new knowledge base for organizing and managing documents within your organization.
+
+        **Overview:**
+
+        A knowledge base is a container for organizing related documents, files, and content. It provides a central location for teams to collaborate on shared information.
+
+        **Features:**
+
+        - Hierarchical folder structure support
+        - Role-based access control (OWNER, WRITER, READER)
+        - Full-text search across all records
+        - Integration with external connectors (Google Drive, OneDrive, etc.)
+        - Automatic content indexing for AI-powered search
+
+        **Naming Rules:**
+
+        - Name must be 1-255 characters
+        - Special characters and HTML tags are sanitized
+        - Names don't need to be unique within organization
+
+        **Creator Permissions:**
+
         The user creating the KB automatically becomes the OWNER with full administrative rights.
       operationId: createKnowledgeBase
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -18878,54 +19902,100 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/KnowledgeBase'
+                $ref: '#/components/schemas/KnowledgeBaseCreateResponse'
         '400':
           description: |
-            Invalid request:<br>
-            <ul>
-            <li>Name too short or too long</li>
-            <li>Invalid characters in name</li>
-            </ul>
+            **Invalid request:**
+
+            - Name too short or too long
+            - Invalid characters in name
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:write` scope
+            - Connector service denied the request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found - Authenticated user does not exist in the graph database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Knowledge base creation failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable - Connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
-        - Knowledge Bases
+        - Knowledge Base
       summary: List all knowledge bases
       description: |
-        Retrieve a paginated list of all knowledge bases accessible to the authenticated user.<br><br>
-        <b>Overview:</b><br>
-        Returns knowledge bases where the user has at least READER permission. Results include the user's role for each KB.<br><br>
-        <b>Filtering:</b><br>
-        <ul>
-        <li><b>search:</b> Full-text search on KB names (max 1000 chars)</li>
-        <li><b>permissions:</b> Filter by user's role (comma-separated: OWNER,WRITER,READER)</li>
-        </ul>
-        <b>Sorting Options:</b><br>
-        <ul>
-        <li><code>name</code> - Alphabetical by KB name</li>
-        <li><code>createdAtTimestamp</code> - By creation date</li>
-        <li><code>updatedAtTimestamp</code> - By last modification</li>
-        <li><code>userRole</code> - By permission level</li>
-        </ul>
-        <b>Performance:</b><br>
+        Retrieve a paginated list of all knowledge bases accessible to the authenticated user.
+
+        **Overview:**
+
+        Returns knowledge bases where the user has at least READER permission. Results include the user's role for each KB.
+
+        **Filtering:**
+
+        - **search:** Full-text search on KB names (max 1000 chars)
+        - **permissions:** Filter by user's role (comma-separated: OWNER, WRITER, READER)
+
+        **Sorting Options:**
+
+        - `name` — Alphabetical by KB name
+        - `createdAtTimestamp` — By creation date
+        - `updatedAtTimestamp` — By last modification
+        - `userRole` — By permission level
+
+        **Performance:**
+
         Uses efficient pagination with limit/offset. For large result sets, use smaller page sizes.
+
+        **Query parameters:**
+
+        Only `page`, `limit`, `search`, `permissions`, `sortBy`, and `sortOrder` are allowed; unknown query keys are rejected.
       operationId: listKnowledgeBases
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
       parameters:
         - name: page
           in: query
-          description: Page number (1-indexed)
+          required: false
+          description: Page number (1-indexed). Omitted values default to 1.
           schema:
             type: integer
             minimum: 1
             default: 1
         - name: limit
           in: query
-          description: Results per page (max 100)
+          required: false
+          description: Results per page (max 100). Omitted values default to 20.
           schema:
             type: integer
             minimum: 1
@@ -18933,26 +20003,34 @@ paths:
             default: 20
         - name: search
           in: query
-          description: Search query for KB names (max 1000 chars)
+          required: false
+          description: |
+            Search KB names (max 1000 chars). Rejected if it contains HTML/script tags,
+            event handlers, `javascript:`, or format specifiers (validated in Zod + controller).
           schema:
             type: string
             maxLength: 1000
         - name: permissions
           in: query
-          description: Filter by permission roles (comma-separated)
+          required: false
+          description: |
+            Comma-separated permission roles to filter by. Each token must be one of:
+            OWNER, WRITER, READER.
           schema:
             type: string
-            example: "OWNER,ORGANIZER,WRITER"
+            example: "OWNER,WRITER"
         - name: sortBy
           in: query
-          description: Field to sort by
+          required: false
+          description: Field to sort by.
           schema:
             type: string
             enum: [name, createdAtTimestamp, updatedAtTimestamp, userRole]
             default: name
         - name: sortOrder
           in: query
-          description: Sort direction
+          required: false
+          description: Sort direction.
           schema:
             type: string
             enum: [asc, desc]
@@ -18963,58 +20041,74 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  knowledgeBases:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/KnowledgeBase'
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                        description: Current page number
-                      limit:
-                        type: integer
-                        description: Items per page
-                      totalCount:
-                        type: integer
-                        description: Total number of items
-                      totalPages:
-                        type: integer
-                        description: Total number of pages
-                      hasNext:
-                        type: boolean
-                        description: Whether there is a next page
-                      hasPrev:
-                        type: boolean
-                        description: Whether there is a previous page
-                  filters:
-                    type: object
-                    description: Applied and available filters
-                    properties:
-                      applied:
-                        type: object
-                      available:
-                        type: object
+                $ref: '#/components/schemas/GetAllKnowledgeBaseResponseSchema'
         '400':
-          description: Invalid query parameters
+          description: |
+            **Invalid query parameters:**
+
+            - `page` not a positive integer
+            - `limit` not between 1 and 100
+            - Unknown query parameter (only `page`, `limit`, `search`, `permissions`, `sortBy`, `sortOrder` allowed)
+            - Invalid `sortBy` or `sortOrder`
+            - Invalid `permissions` role token
+            - `search` too long, or contains HTML/scripts/format specifiers
+            - Connector returned a 400 error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid bearer token required
+          description: Unauthorized — valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:read` scope
+            - Connector service denied the request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found — authenticated user does not exist in the graph database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error — listing knowledge bases failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable — connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /knowledgeBase/{kbId}:
     get:
       tags:
-        - Knowledge Bases
+        - Knowledge Base
       summary: Get knowledge base by ID
       description: |
-        Retrieve detailed information about a specific knowledge base.<br><br>
-        <b>Overview:</b><br>
-        Returns complete KB metadata including name, timestamps, and the requesting user's role/permissions.<br><br>
-        <b>Access Control:</b><br>
+        Retrieve detailed information about a specific knowledge base.
+
+        **Overview:**
+
+        Returns complete KB metadata including name, timestamps, root-level folders, and the requesting user's role.
+
+        **Access Control:**
+
         User must have at least READER permission to view KB details.
       operationId: getKnowledgeBase
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -19022,37 +20116,76 @@ paths:
         - name: kbId
           in: path
           required: true
-          description: Knowledge base ID
+          description: Knowledge base ID (non-empty string)
           schema:
             type: string
-            example: "kb_550e8400-e29b-41d4-a716"
+            minLength: 1
+            example: "8a095180-2989-4018-b448-70eb75fba1c7"
       responses:
         '200':
-          description: Successful operation
+          description: Knowledge base retrieved successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/KnowledgeBase'
+                $ref: '#/components/schemas/GetKnowledgeBaseById'
         '401':
-          description: Unauthorized - Valid bearer token required
+          description: Unauthorized — valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - No access to this knowledge base
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:read` scope
+            - User does not have permission to access this knowledge base
+            - Connector service denied the request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Knowledge base not found
+          description: |
+            Not found. Possible reasons:
+
+            - Knowledge base does not exist
+            - Authenticated user does not exist in the graph database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error — retrieving knowledge base failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable — connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
-        - Knowledge Bases
+        - Knowledge Base
       summary: Update knowledge base
       description: |
-        Update a knowledge base's name.<br><br>
-        <b>Required Permission:</b> OWNER or ORGANIZER<br><br>
-        <b>Validation:</b><br>
-        <ul>
-        <li>Name must be 1-255 characters</li>
-        <li>XSS protection applied to input</li>
-        </ul>
+        Update a knowledge base's name.
+
+        **Required permission:**
+
+        User must have one of `OWNER` or `WRITER` on the knowledge base.
+
+        **Validation:**
+
+        - `kbId` path parameter must be a valid UUID (`updateKBSchema`)
+        - When provided, `kbName` must be 1–255 characters
+        - XSS and format-specifier checks are applied to `kbName` in the gateway controller
       operationId: updateKnowledgeBase
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -19060,16 +20193,19 @@ paths:
         - name: kbId
           in: path
           required: true
-          description: Knowledge base ID
+          description: Knowledge base ID (UUID)
           schema:
             type: string
+            format: uuid
+            example: "8a095180-2989-4018-b448-70eb75fba1c7"
       requestBody:
         required: true
-        description: "Request payload"
+        description: Fields to update. `kbName` is optional; an empty object is valid.
         content:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 kbName:
                   type: string
@@ -19083,32 +20219,82 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/KnowledgeBase'
+                $ref: '#/components/schemas/UpdateKnowledgeBaseById'
         '400':
-          description: Invalid request - Name validation failed
+          description: |
+            Invalid request. Possible reasons:
+
+            - `kbId` is not a valid UUID (gateway `updateKBSchema`)
+            - `kbName` is empty or longer than 255 characters
+            - `kbName` fails XSS or format-specifier validation in the gateway controller
+            - Invalid JSON request body at the connector (`Invalid request body`)
+            - Connector rejected the update payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized - Valid bearer token required
+          description: Unauthorized — valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Requires OWNER or ORGANIZER role
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:write` scope
+            - User has no permission on this knowledge base
+            - User role is insufficient (`READER`; requires `OWNER` or `WRITER`)
+            - Connector service denied the request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Knowledge base not found
+          description: |
+            Not found. Possible reasons:
+
+            - Knowledge base does not exist
+            - Authenticated user does not exist in the graph database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error — updating knowledge base failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable — connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
-        - Knowledge Bases
+        - Knowledge Base
       summary: Delete knowledge base
       description: |
-        Permanently delete a knowledge base and all its contents.<br><br>
-        <b>Required Permission:</b> OWNER only<br><br>
-        <b>What Gets Deleted:</b><br>
-        <ul>
-        <li>All folders within the KB</li>
-        <li>All records and their indexed content</li>
-        <li>All permission grants</li>
-        <li>Associated storage files</li>
-        </ul>
-        <b>Warning:</b> This action is irreversible. Consider exporting data before deletion.
+        Permanently delete a knowledge base and all its contents.
+
+        **Required permission:**
+
+        User must have `OWNER` role on the knowledge base.
+
+        **What gets deleted:**
+
+        - All folders within the KB
+        - All records and their indexed content
+        - All permission grants
+        - Associated storage files
+
+        **Warning:** This action is irreversible. Consider exporting data before deletion.
       operationId: deleteKnowledgeBase
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:delete]
@@ -19116,510 +20302,77 @@ paths:
         - name: kbId
           in: path
           required: true
-          description: Knowledge base ID
+          description: Knowledge base ID (non-empty string)
           schema:
             type: string
+            minLength: 1
+            example: "8a095180-2989-4018-b448-70eb75fba1c7"
       responses:
         '200':
           description: Knowledge base deleted successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  message:
-                    type: string
-                    example: "Knowledge base deleted successfully"
+                $ref: '#/components/schemas/DeleteKnowledgeBaseById'
         '401':
-          description: Unauthorized - Valid bearer token required
-        '403':
-          description: Forbidden - Only OWNER can delete KB
-        '404':
-          description: Knowledge base not found
-
-  # -------------------- Records Endpoints --------------------
-  /knowledgeBase/records:
-    get:
-      tags:
-        - Records
-      summary: Get all records across knowledge bases
-      description: |
-        Retrieve records from all knowledge bases accessible to the user.<br><br>
-        <b>Overview:</b><br>
-        Search and filter records across your entire organization. Useful for global search, reporting, and cross-KB content discovery.<br><br>
-        <b>Filtering Options:</b><br>
-        <ul>
-        <li><b>search:</b> Full-text search in record names</li>
-        <li><b>recordTypes:</b> FILE, WEBPAGE, EMAIL, MESSAGE, TICKET, etc.</li>
-        <li><b>origins:</b> UPLOAD or CONNECTOR</li>
-        <li><b>connectors:</b> Filter by connector source</li>
-        <li><b>indexingStatus:</b> COMPLETED, FAILED, IN_PROGRESS, etc.</li>
-        <li><b>dateFrom/dateTo:</b> Filter by creation date range</li>
-        </ul>
-        <b>Response Includes:</b><br>
-        <ul>
-        <li>Paginated record list</li>
-        <li>Applied and available filter counts</li>
-        <li>Pagination metadata</li>
-        </ul>
-      operationId: getAllRecords
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:read]
-      parameters:
-        - name: page
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 20
-        - name: search
-          in: query
-          description: Search query (max 1000 chars)
-          schema:
-            type: string
-            maxLength: 1000
-        - name: recordTypes
-          in: query
-          description: Filter by record types (comma-separated)
-          schema:
-            type: string
-            example: "FILE,WEBPAGE,EMAIL"
-        - name: origins
-          in: query
-          description: Filter by origin (comma-separated)
-          schema:
-            type: string
-            enum: [UPLOAD, CONNECTOR]
-        - name: connectors
-          in: query
-          description: Filter by connector names (comma-separated)
-          schema:
-            type: string
-            example: "GOOGLE_DRIVE,ONEDRIVE"
-        - name: indexingStatus
-          in: query
-          description: Filter by indexing status (comma-separated)
-          schema:
-            type: string
-            example: "COMPLETED,FAILED"
-        - name: dateFrom
-          in: query
-          description: Start date filter (Unix timestamp ms)
-          schema:
-            type: integer
-            format: int64
-        - name: dateTo
-          in: query
-          description: End date filter (Unix timestamp ms)
-          schema:
-            type: integer
-            format: int64
-        - name: sortBy
-          in: query
-          schema:
-            type: string
-            default: createdAtTimestamp
-        - name: sortOrder
-          in: query
-          schema:
-            type: string
-            enum: [asc, desc]
-            default: desc
-      responses:
-        '200':
-          description: Successful operation
+          description: Unauthorized — valid bearer token required
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RecordsResponse'
-        '401':
-          description: Unauthorized
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden. Possible reasons:
 
-  /knowledgeBase/{kbId}/records:
-    get:
-      tags:
-        - Records
-      summary: Get records for a knowledge base
-      description: |
-        Retrieve a paginated list of records within a specific knowledge base.<br><br>
-        <b>Overview:</b><br>
-        Returns all records (documents, files, content) stored in the specified KB, with powerful filtering and sorting capabilities.<br><br>
-        <b>Filtering:</b><br>
-        <ul>
-        <li><b>search:</b> Search by record name (partial match, max 1000 chars)</li>
-        <li><b>recordTypes:</b> FILE, WEBPAGE, COMMENT, MESSAGE, EMAIL, TICKET</li>
-        <li><b>origins:</b> UPLOAD (manual uploads) or CONNECTOR (synced)</li>
-        <li><b>indexingStatus:</b> Filter by processing state</li>
-        <li><b>dateFrom/dateTo:</b> Creation date range (Unix timestamps)</li>
-        </ul>
-        <b>Sorting:</b><br>
-        Default sorts by <code>createdAtTimestamp</code> descending (newest first).
-      operationId: getKBRecords
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:read]
-      parameters:
-        - name: kbId
-          in: path
-          required: true
-          description: Knowledge base ID
-          schema:
-            type: string
-        - name: page
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 20
-        - name: search
-          in: query
-          description: Search query for record names
-          schema:
-            type: string
-            maxLength: 1000
-        - name: recordTypes
-          in: query
-          description: Filter by record types (comma-separated)
-          schema:
-            type: string
-        - name: origins
-          in: query
-          description: Filter by origin
-          schema:
-            type: string
-        - name: indexingStatus
-          in: query
-          description: Filter by indexing status
-          schema:
-            type: string
-        - name: dateFrom
-          in: query
-          description: Start date filter (Unix timestamp)
-          schema:
-            type: integer
-            format: int64
-        - name: dateTo
-          in: query
-          description: End date filter (Unix timestamp)
-          schema:
-            type: integer
-            format: int64
-        - name: sortBy
-          in: query
-          schema:
-            type: string
-            default: createdAtTimestamp
-        - name: sortOrder
-          in: query
-          schema:
-            type: string
-            enum: [asc, desc]
-            default: desc
-      responses:
-        '200':
-          description: Successful operation
+            - OAuth token lacks the `kb:delete` scope
+            - User has no permission on this knowledge base
+            - User is not `OWNER` (only KB owners can delete)
+            - Connector service denied the request
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  container:
-                    type: object
-                    properties:
-                      id:
-                        type: string
-                      name:
-                        type: string
-                      path:
-                        type: string
-                      type:
-                        type: string
-                      webUrl:
-                        type: string
-                      recordGroupId:
-                        type: string
-                  folders:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Folder'
-                  records:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Record'
-                  level:
-                    type: integer
-                  totalCount:
-                    type: integer
-                  counts:
-                    type: object
-                    properties:
-                      folders:
-                        type: integer
-                      records:
-                        type: integer
-                      totalItems:
-                        type: integer
-                      totalFolders:
-                        type: integer
-                      totalRecords:
-                        type: integer
-                  availableFilters:
-                    type: object
-                  paginationMode:
-                    type: string
-                  userPermission:
-                    type: object
-                    properties:
-                      role:
-                        type: string
-                      canUpload:
-                        type: boolean
-                      canCreateFolders:
-                        type: boolean
-                      canEdit:
-                        type: boolean
-                      canDelete:
-                        type: boolean
-                      canManagePermissions:
-                        type: boolean
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      totalItems:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNext:
-                        type: boolean
-                      hasPrev:
-                        type: boolean
-                  filters:
-                    type: object
-                    description: Applied and available filters
-        '401':
-          description: Unauthorized
-        '403':
-          description: No access to this knowledge base
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Knowledge base not found
+          description: |
+            Not found. Possible reasons:
 
-  /knowledgeBase/{kbId}/children:
-    get:
-      tags:
-        - Records
-      summary: Get KB children (alias for records)
-      description: |
-        Retrieve a paginated list of children (folders and records) within a specific knowledge base.<br><br>
-        <b>Overview:</b><br>
-        This is an alias endpoint for <code>/knowledgeBase/{kbId}/records</code>. It returns all direct children of the KB root, including both folders and records.<br><br>
-        <b>Filtering:</b><br>
-        <ul>
-        <li><b>search:</b> Search by record name (partial match, max 1000 chars)</li>
-        <li><b>recordTypes:</b> FILE, WEBPAGE, COMMENT, MESSAGE, EMAIL, TICKET</li>
-        <li><b>origins:</b> UPLOAD (manual uploads) or CONNECTOR (synced)</li>
-        <li><b>indexingStatus:</b> Filter by processing state</li>
-        <li><b>dateFrom/dateTo:</b> Creation date range (Unix timestamps)</li>
-        </ul>
-        <b>Sorting:</b><br>
-        Default sorts by <code>createdAtTimestamp</code> descending (newest first).
-      operationId: getKBChildren
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:read]
-      parameters:
-        - name: kbId
-          in: path
-          required: true
-          description: Knowledge base ID
-          schema:
-            type: string
-        - name: page
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 20
-        - name: search
-          in: query
-          description: Search query for record names
-          schema:
-            type: string
-            maxLength: 1000
-        - name: recordTypes
-          in: query
-          description: Filter by record types (comma-separated)
-          schema:
-            type: string
-        - name: origins
-          in: query
-          description: Filter by origin
-          schema:
-            type: string
-        - name: indexingStatus
-          in: query
-          description: Filter by indexing status
-          schema:
-            type: string
-        - name: dateFrom
-          in: query
-          description: Start date filter (Unix timestamp)
-          schema:
-            type: integer
-            format: int64
-        - name: dateTo
-          in: query
-          description: End date filter (Unix timestamp)
-          schema:
-            type: integer
-            format: int64
-        - name: sortBy
-          in: query
-          schema:
-            type: string
-            default: createdAtTimestamp
-        - name: sortOrder
-          in: query
-          schema:
-            type: string
-            enum: [asc, desc]
-            default: desc
-      responses:
-        '200':
-          description: Successful operation
+            - Knowledge base does not exist
+            - Authenticated user does not exist in the graph database
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  container:
-                    type: object
-                    properties:
-                      id:
-                        type: string
-                      name:
-                        type: string
-                      path:
-                        type: string
-                      type:
-                        type: string
-                      webUrl:
-                        type: string
-                      recordGroupId:
-                        type: string
-                  folders:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Folder'
-                  records:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Record'
-                  level:
-                    type: integer
-                  totalCount:
-                    type: integer
-                  counts:
-                    type: object
-                    properties:
-                      folders:
-                        type: integer
-                      records:
-                        type: integer
-                      totalItems:
-                        type: integer
-                      totalFolders:
-                        type: integer
-                      totalRecords:
-                        type: integer
-                  availableFilters:
-                    type: object
-                  paginationMode:
-                    type: string
-                  userPermission:
-                    type: object
-                    properties:
-                      role:
-                        type: string
-                      canUpload:
-                        type: boolean
-                      canCreateFolders:
-                        type: boolean
-                      canEdit:
-                        type: boolean
-                      canDelete:
-                        type: boolean
-                      canManagePermissions:
-                        type: boolean
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      totalItems:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNext:
-                        type: boolean
-                      hasPrev:
-                        type: boolean
-                  filters:
-                    type: object
-                    description: Applied and available filters
-        '401':
-          description: Unauthorized
-        '403':
-          description: No access to this knowledge base
-        '404':
-          description: Knowledge base not found
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error — deleting knowledge base failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable — connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
 
   /knowledgeBase/record/{recordId}:
     get:
       tags:
-        - Records
+        - Knowledge Base
       summary: Get record by ID
       description: |
-        Retrieve detailed information about a specific record.<br><br>
-        <b>Overview:</b><br>
-        Returns complete record metadata including name, type, indexing status, storage information, and version history.<br><br>
-        <b>File Conversion:</b><br>
-        Use the optional <code>convertTo</code> parameter to request file format conversion (e.g., PDF to text).
+        Retrieve detailed information about a specific record.
+
+        **Overview:**
+
+        Returns complete record metadata including name, type, indexing status, storage information, and version history.
+
+        **File conversion:**
+
+        Use the optional `convertTo` parameter to request file format conversion (e.g., PDF to text).
       operationId: getRecordById
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -19642,79 +20395,70 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  record:
-                    $ref: '#/components/schemas/Record'
-                  knowledgeBase:
-                    type: object
-                    properties:
-                      id:
-                        type: string
-                      name:
-                        type: string
-                      orgId:
-                        type: string
-                  folder:
-                    type: object
-                    nullable: true
-                  metadata:
-                    type: object
-                    properties:
-                      departments:
-                        type: array
-                        items:
-                          type: object
-                      categories:
-                        type: array
-                        items:
-                          type: object
-                      topics:
-                        type: array
-                        items:
-                          type: object
-                      languages:
-                        type: array
-                        items:
-                          type: object
-                  permissions:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                        name:
-                          type: string
-                        type:
-                          type: string
-                        relationship:
-                          type: string
-                        accessType:
-                          type: string
+                $ref: '#/components/schemas/GetRecordByIdResponseSchema'
+        '400':
+          description: Invalid request parameters or query shape
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
-        '404':
-          description: Record not found
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: OAuth token is missing the required kb:read scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Internal server error while retrieving record details.
+
+            Current API behavior includes record-access lookup failures returning
+            `HTTP_INTERNAL_SERVER_ERROR` with messages such as
+            `Failed to check record access`, including cases where callers might
+            otherwise expect a not-found style response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
-        - Records
+        - Knowledge Base
       summary: Update record
       description: |
-        Update a record's name and/or file content.<br><br>
-        <b>Overview:</b><br>
-        Allows updating the display name and optionally replacing the file content. Triggers re-indexing when content changes.<br><br>
-        <b>Required Permission:</b> WRITER or higher<br><br>
-        <b>Updating File Content:</b><br>
-        Include a new file in the request to replace the existing content. The file extension must match the original.<br><br>
-        <b>Side Effects:</b><br>
-        <ul>
-        <li>Updates <code>updatedAtTimestamp</code></li>
-        <li>Increments version if file content changed</li>
-        <li>Triggers re-indexing for content changes</li>
-        </ul>
+        Update a record's name and/or file content.
+
+        **Overview:**
+
+        Allows updating the display name and optionally replacing the file content. Triggers re-indexing when content changes.
+
+        **Required permission:**
+
+        WRITER or higher
+
+        **Updating file content:**
+
+        Include a new file in the request to replace the existing content. The file extension must match the original.
+
+        **Side effects:**
+
+        - Updates `updatedAtTimestamp`
+        - Increments version if file content changed
+        - Triggers re-indexing for content changes
       operationId: updateRecord
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
       parameters:
@@ -19766,19 +20510,24 @@ paths:
 
     delete:
       tags:
-        - Records
+        - Knowledge Base
       summary: Delete record
       description: |
-        Permanently delete a record from the knowledge base.<br><br>
-        <b>Required Permission:</b> WRITER or higher<br><br>
-        <b>What Gets Deleted:</b><br>
-        <ul>
-        <li>Record metadata</li>
-        <li>Associated storage file</li>
-        <li>Indexed content and embeddings</li>
-        </ul>
-        <b>Warning:</b> This action is irreversible.
+        Permanently delete a record from the knowledge base.
+
+        **Required permission:**
+
+        WRITER or higher
+
+        **What gets deleted:**
+
+        - Record metadata
+        - Associated storage file
+        - Indexed content and embeddings
+
+        **Warning:** This action is irreversible.
       operationId: deleteRecord
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:delete]
@@ -19792,12 +20541,46 @@ paths:
       responses:
         '200':
           description: Record deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteRecordResponseSchema'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions
+          description: OAuth token is missing the required kb:delete scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while deleting record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /knowledgeBase/stream/record/{recordId}:
     get:
@@ -19805,17 +20588,21 @@ paths:
         - Records
       summary: Stream record content
       description: |
-        Stream the binary content of a record's file.<br><br>
-        <b>Overview:</b><br>
-        Returns the raw file content with appropriate Content-Type and Content-Disposition headers for download or inline viewing.<br><br>
-        <b>Use Cases:</b><br>
-        <ul>
-        <li>File downloads</li>
-        <li>Inline document preview</li>
-        <li>Content extraction pipelines</li>
-        </ul>
-        <b>Format Conversion:</b><br>
-        Use <code>convertTo</code> parameter to convert between formats (e.g., DOCX to PDF).
+        Stream the binary content of a record's file.
+
+        **Overview:**
+
+        Returns the raw file content with appropriate `Content-Type` and `Content-Disposition` headers for download or inline viewing.
+
+        **Use cases:**
+
+        - File downloads
+        - Inline document preview
+        - Content extraction pipelines
+
+        **Format conversion:**
+
+        Use the `convertTo` parameter to convert between formats (e.g. DOCX to PDF).
       operationId: streamRecordBuffer
       security:
         - bearerAuth: []
@@ -19836,41 +20623,82 @@ paths:
         '200':
           description: File content stream
           content:
-            application/octet-stream:
+            '*/*':
               schema:
                 type: string
                 format: binary
+        '400':
+          description: Invalid record ID or query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden. Returned either when the OAuth token is missing the required
+            `kb:read` scope or when the authenticated user does not have access to the record.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/StreamRecordErrorResponse'
         '404':
-          description: Record not found
+          description: Record, organization, or backing connector not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamRecordErrorResponse'
         '409':
           description: |
-            Conflict — the connector instance for this record is disabled. Enable it from Connector Settings and try again.
-            Response body is JSON with a `detail` string (FastAPI error shape), not a binary stream.
-
+            Conflict - the connector instance for this record is disabled. Enable it from Connector Settings and try again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamRecordErrorResponse'
+        '500':
+          description: |
+            Internal streaming failure, downstream conversion failure, or connector/backend
+            error proxied by the gateway.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamRecordErrorResponse'
   # -------------------- Folder Endpoints --------------------
   /knowledgeBase/{kbId}/folder:
     post:
       tags:
-        - Folders
-      summary: Create root folder
+        - Knowledge Base
+      summary: Create folder
       description: |
-        Create a new folder at the root level of a knowledge base.<br><br>
-        <b>Required Permission:</b> FILEORGANIZER or higher<br><br>
-        <b>Folder Features:</b><br>
-        <ul>
-        <li>Organize records hierarchically</li>
-        <li>Support nested subfolders</li>
-        <li>Inherit parent KB permissions</li>
-        </ul>
-        <b>Naming Rules:</b><br>
-        <ul>
-        <li>1-255 characters</li>
-        <li>XSS protection applied</li>
-        <li>Can contain spaces and special characters</li>
-        </ul>
-      operationId: createRootFolder
+        Create a folder in a knowledge base. Omit `folderId` to create at the KB root;
+        pass `folderId` as a query parameter to create a nested subfolder inside an
+        existing parent folder.
+
+        **Required permission:** WRITER or higher
+
+        **Folder features:**
+
+        - Organize records hierarchically
+        - Support nested subfolders (unlimited depth)
+        - Inherit parent KB permissions
+
+        **Naming rules:**
+
+        - 1–255 characters
+        - XSS protection applied
+        - Spaces and special characters allowed
+        - Duplicate names rejected within the same parent (`409`)
+
+        **Response:** Returns `id` and `name` for the created folder.
+      operationId: createFolder
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -19879,6 +20707,12 @@ paths:
           in: path
           required: true
           description: Knowledge base ID
+          schema:
+            type: string
+        - name: folderId
+          in: query
+          required: false
+          description: Parent folder ID. Omit to create at the knowledge base root.
           schema:
             type: string
       requestBody:
@@ -19903,90 +20737,58 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Folder'
+                $ref: '#/components/schemas/FolderCreateResponseSchema'
         '400':
-          description: Invalid folder name
-        '401':
-          description: Unauthorized
-        '403':
-          description: Insufficient permissions
-        '404':
-          description: Knowledge base not found
+          description: |
+            Invalid request. Possible reasons:
 
-  /knowledgeBase/{kbId}/folder/{folderId}:
-    get:
-      tags:
-        - Folders
-      summary: Get folder contents
-      description: |
-        Retrieve the contents of a folder including subfolders and records.<br><br>
-        <b>Overview:</b><br>
-        Returns paginated list of records within the folder, with same filtering options as KB-level record listing.<br><br>
-        <b>Navigation:</b><br>
-        Use this endpoint to browse folder hierarchies. Response includes folder metadata and child items.
-      operationId: getFolderContents
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:read]
-      parameters:
-        - name: kbId
-          in: path
-          required: true
-          description: Knowledge base ID
-          schema:
-            type: string
-        - name: folderId
-          in: path
-          required: true
-          description: Folder ID
-          schema:
-            type: string
-        - name: page
-          in: query
-          schema:
-            type: integer
-            default: 1
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 20
-            maximum: 100
-        - name: search
-          in: query
-          schema:
-            type: string
-        - name: sortBy
-          in: query
-          schema:
-            type: string
-            default: createdAtTimestamp
-        - name: sortOrder
-          in: query
-          schema:
-            type: string
-            enum: [asc, desc]
-            default: desc
-      responses:
-        '200':
-          description: Folder contents retrieved
+            - Missing or empty folder name
+            - Folder name exceeds 255 characters
+            - XSS or invalid characters in folder name
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RecordsResponse'
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
-        '404':
-          description: Folder or knowledge base not found
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden. Possible reasons:
 
+            - OAuth token lacks the `kb:write` scope
+            - User lacks WRITER or higher permission on the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Knowledge base or parent folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Folder with this name already exists at the knowledge base root or within the parent folder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/{kbId}/folder/{folderId}:
     put:
       tags:
-        - Folders
+        - Knowledge Base
       summary: Update folder
       description: |
-        Rename a folder.<br><br>
-        <b>Required Permission:</b> FILEORGANIZER or higher
+        Rename a folder.
+
+        **Required permission:** WRITER or higher
       operationId: updateFolder
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -20017,31 +20819,67 @@ paths:
                 - folderName
       responses:
         '200':
-          description: Folder updated
+          description: Folder updated successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Folder'
+                $ref: '#/components/schemas/FolderUpdateResponseSchema'
         '400':
-          description: Invalid folder name
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing or empty folder name
+            - Folder name exceeds 255 characters
+            - XSS or invalid characters in folder name
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:write` scope
+            - User lacks WRITER or higher permission on the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Folder not found
+          description: Knowledge base or folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Folder with this name already exists at the knowledge base root
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
-        - Folders
+        - Knowledge Base
       summary: Delete folder
       description: |
-        Delete a folder and all its contents.<br><br>
-        <b>Required Permission:</b> FILEORGANIZER or higher<br><br>
-        <b>Cascade Delete:</b><br>
-        All subfolders and records within will be permanently deleted.<br><br>
-        <b>Warning:</b> This action is irreversible.
+        Delete a folder and all its contents.
+
+        **Required permission:** WRITER or higher
+
+        **Cascade delete:**
+
+        All subfolders and records within will be permanently deleted.
+
+        **Warning:** This action is irreversible.
       operationId: deleteFolder
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:delete]
@@ -20059,165 +20897,75 @@ paths:
       responses:
         '200':
           description: Folder deleted successfully
-        '401':
-          description: Unauthorized
-        '403':
-          description: Insufficient permissions
-        '404':
-          description: Folder not found
-
-  /knowledgeBase/{kbId}/folder/{folderId}/children:
-    get:
-      tags:
-        - Folders
-      summary: Get folder children (alias for folder contents)
-      description: |
-        Retrieve the children (subfolders and records) of a folder.<br><br>
-        <b>Overview:</b><br>
-        This is an alias endpoint for <code>/knowledgeBase/{kbId}/folder/{folderId}</code>. Returns paginated list of records within the folder, with same filtering options as KB-level record listing.<br><br>
-        <b>Navigation:</b><br>
-        Use this endpoint to browse folder hierarchies. Response includes folder metadata and child items.
-      operationId: getFolderChildren
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:read]
-      parameters:
-        - name: kbId
-          in: path
-          required: true
-          description: Knowledge base ID
-          schema:
-            type: string
-        - name: folderId
-          in: path
-          required: true
-          description: Folder ID
-          schema:
-            type: string
-        - name: page
-          in: query
-          schema:
-            type: integer
-            default: 1
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 20
-            maximum: 100
-        - name: search
-          in: query
-          schema:
-            type: string
-        - name: sortBy
-          in: query
-          schema:
-            type: string
-            default: createdAtTimestamp
-        - name: sortOrder
-          in: query
-          schema:
-            type: string
-            enum: [asc, desc]
-            default: desc
-      responses:
-        '200':
-          description: Folder children retrieved
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RecordsResponse'
+                $ref: '#/components/schemas/FolderDeleteResponseSchema'
         '401':
-          description: Unauthorized
-        '404':
-          description: Folder or knowledge base not found
-
-  /knowledgeBase/{kbId}/folder/{folderId}/subfolder:
-    post:
-      tags:
-        - Folders
-      summary: Create subfolder
-      description: |
-        Create a nested folder within an existing folder.<br><br>
-        <b>Required Permission:</b> FILEORGANIZER or higher<br><br>
-        <b>Nesting:</b><br>
-        Supports unlimited folder nesting depth for complex organizational structures.
-      operationId: createSubfolder
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:write]
-      parameters:
-        - name: kbId
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: folderId
-          in: path
-          required: true
-          description: Parent folder ID
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                folderName:
-                  type: string
-                  minLength: 1
-                  maxLength: 255
-              required:
-                - folderName
-      responses:
-        '200':
-          description: Subfolder created
+          description: Unauthorized - Valid bearer token required
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Folder'
-        '400':
-          description: Invalid folder name
-        '401':
-          description: Unauthorized
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:delete` scope
+            - User lacks OWNER permission on the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Parent folder not found
+          description: Knowledge base or folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Upload Endpoints --------------------
   /knowledgeBase/{kbId}/upload:
     post:
       tags:
-        - Upload
-      summary: Upload files to knowledge base
+        - Knowledge Base
+      summary: Upload files to knowledge base or folder
       description: |
-        Upload one or more files directly to a knowledge base.<br><br>
-        <b>Overview:</b><br>
-        Batch upload multiple files in a single request. Each file becomes a new record in the KB with automatic content indexing.<br><br>
-        <b>Upload Limits:</b><br>
-        <ul>
-        <li><b>Max files per request:</b> 1000</li>
-        <li><b>Default max file size:</b> 30MB (configurable via platform settings)</li>
-        <li>Use <code>GET /knowledgeBase/limits</code> to check current limits</li>
-        </ul>
-        <b>Supported File Types:</b><br>
-        Documents (PDF, DOCX, DOC, XLS, XLSX, PPT, PPTX, TXT, CSV, MD), Images (PNG, JPG, GIF, SVG, WebP, BMP, HEIC), Web (HTML, HTM), and Google Workspace formats.<br><br>
-        <b>File Metadata:</b><br>
-        Use <code>files_metadata</code> to provide additional info like file paths and last modified timestamps.<br><br>
-        <b>Versioning:</b><br>
-        Set <code>isVersioned: true</code> to enable version tracking for uploaded files.<br><br>
-        <b>Streaming response:</b><br>
-        This endpoint responds with <code>Content-Type: text/event-stream</code>.
+        Upload one or more files to a knowledge base root or to a specific folder.
+
+        **Overview**
+
+        Batch upload multiple files in a single request. Each file becomes a new record with automatic content indexing.
+        Omit the `folderId` query parameter to upload to the KB root; include it to upload into that folder.
+
+        **Upload Limits**
+
+        - **Max files per request:** 1000
+        - **Default max file size:** 30MB (configurable via platform settings)
+        - Use `GET /knowledgeBase/limits` to check current limits
+
+        **Supported File Types**
+
+        Documents (PDF, DOCX, DOC, XLS, XLSX, PPT, PPTX, TXT, CSV, MD), Images (PNG, JPG, JPEG, SVG, WebP), Web (HTML, HTM), and Google Workspace formats.
+
+        **File Metadata**
+
+        Use `files_metadata` to provide additional info like file paths and last modified timestamps.
+
+        **Versioning**
+
+        Set `isVersioned: true` to enable version tracking for uploaded files.
+
+        **Streaming response**
+
+        This endpoint responds with `Content-Type: text/event-stream`.
         The upload and its per-file progress are a single request: the body streams
-        a <code>file:succeeded</code> or <code>file:failed</code> event per file
+        a `file:succeeded` or `file:failed` event per file
         (including files rejected up front for size/type), followed by a final
-        <code>done</code> summary, then closes. See the
-        <code>UploadStreamSSEEvent</code> schema for the event/payload contract.
-      operationId: uploadRecordsToKB
+        `done` summary, then closes. See the
+        `UploadStreamSSEEvent` schema for the event/payload contract.
+      operationId: uploadRecords
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:upload]
@@ -20226,6 +20974,12 @@ paths:
           in: path
           required: true
           description: Knowledge base ID
+          schema:
+            type: string
+        - name: folderId
+          in: query
+          required: false
+          description: Target folder ID. Omit to upload to the KB root.
           schema:
             type: string
       requestBody:
@@ -20273,83 +21027,9 @@ paths:
         '403':
           description: Insufficient permissions (requires WRITER or higher)
         '404':
-          description: Knowledge base not found
+          description: Knowledge base or folder not found
         '413':
           description: File size exceeds maximum allowed
-        '429':
-          description: Too many upload requests, or too many concurrent uploads for this user
-        '500':
-          description: Failed to verify knowledge base access
-
-  /knowledgeBase/{kbId}/folder/{folderId}/upload:
-    post:
-      tags:
-        - Upload
-      summary: Upload files to folder
-      description: |
-        Upload files directly to a specific folder within a knowledge base.<br><br>
-        <b>Same as KB upload</b> but files are placed in the specified folder instead of KB root.<br><br>
-        <b>Streaming response:</b><br>
-        Like <code>POST /knowledgeBase/{kbId}/upload</code>, this endpoint responds
-        with <code>Content-Type: text/event-stream</code> and streams a
-        <code>file:succeeded</code> / <code>file:failed</code> event per file and a
-        final <code>done</code> summary. See the <code>UploadStreamSSEEvent</code>
-        schema for the event/payload contract.
-      operationId: uploadRecordsToFolder
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:upload]
-      parameters:
-        - name: kbId
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: folderId
-          in: path
-          required: true
-          description: Target folder ID
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              properties:
-                files:
-                  type: array
-                  items:
-                    type: string
-                    format: binary
-                files_metadata:
-                  type: string
-                  description: JSON array with file metadata
-                isVersioned:
-                  type: boolean
-                  default: true
-              required:
-                - files
-      responses:
-        '200':
-          description: |
-            SSE stream (`text/event-stream`) of per-file upload outcomes. The
-            stream emits `file:succeeded` / `file:failed` per file and a final
-            `done` summary, then closes. See `UploadStreamSSEEvent`.
-          content:
-            text/event-stream:
-              schema:
-                $ref: '#/components/schemas/UploadStreamSSEEvent'
-        '400':
-          description: Invalid request
-        '401':
-          description: Unauthorized
-        '403':
-          description: Insufficient permissions
-        '404':
-          description: Folder or knowledge base not found
         '429':
           description: Too many upload requests, or too many concurrent uploads for this user
         '500':
@@ -20358,43 +21038,15 @@ paths:
   /knowledgeBase/limits:
     get:
       tags:
-        - Upload
-      summary: Get upload limits
+        - Knowledge Base
+      summary: Get knowledge base upload limits
       description: |
-        Retrieve current upload constraints for the organization.<br><br>
-        <b>Use Case:</b><br>
-        Call this before uploads to validate file sizes on the client side and display appropriate limits to users.
-      operationId: getUploadLimits
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:read]
-      responses:
-        '200':
-          description: Upload limits retrieved
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  maxFilesPerRequest:
-                    type: integer
-                    example: 1000
-                    description: Maximum number of files per upload request
-                  maxFileSizeBytes:
-                    type: integer
-                    example: 31457280
-                    description: Maximum file size in bytes (default 30MB)
-        '401':
-          description: Unauthorized
+        Retrieve current upload constraints for the organization.
 
-  # Same contract as GET /knowledgeBase/limits (clients may use lowercase path under /api/v1)
-  /knowledgebase/limits:
-    get:
-      tags:
-        - Upload
-      summary: Get upload limits
-      description: Alias path for <code>GET /knowledgeBase/limits</code>.
-      operationId: getUploadLimitsKnowledgebaseAlias
+        **Use case:** Call this before uploads to validate file sizes on the client
+        side and display appropriate limits to users.
+      operationId: getUploadLimits
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -20404,16 +21056,13 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  maxFilesPerRequest:
-                    type: integer
-                    example: 1000
-                  maxFileSizeBytes:
-                    type: integer
-                    example: 31457280
+                $ref: '#/components/schemas/UploadLimitsResponseSchema'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # Local KB connector — router prefix /api/v1/kb (PUT response includes UpdateRecordEnrichment)
   /kb/record/{recordId}:
@@ -20472,18 +21121,25 @@ paths:
   /knowledgeBase/reindex/record/{recordId}:
     post:
       tags:
-        - Connector
+        - Knowledge Base
       summary: Reindex single record
       description: |
-        Trigger reindexing for a specific record.<br><br>
-        <b>Overview:</b><br>
-        Reprocesses the record's content to update search indexes and AI embeddings. Useful after content changes or to fix indexing failures.<br><br>
-        <b>Depth Parameter:</b><br>
-        Controls processing depth for complex documents (-1 for full depth, 0-100 for limited).<br><br>
-        <b>Status filters:</b><br>
+        Trigger reindexing for a specific record.
+
+        **Overview:**
+
+        Reprocesses the record's content to update search indexes and AI embeddings. Useful after content changes or to fix indexing failures.
+
+        **Depth parameter:**
+
+        Controls processing depth for complex documents (`-1` for full depth, `0`–`100` for limited).
+
+        **Status filters:**
+
         Optional `statusFilters` array limits reindex to records in matching indexing states
         (e.g. `FAILED`, `AUTO_INDEX_OFF`).
       operationId: reindexRecord
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -20502,24 +21158,71 @@ paths:
       responses:
         '200':
           description: Reindexing triggered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/reIndexRecordResponseSchema'
+        '400':
+          description: Invalid request body or parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: OAuth token is missing the required kb:write scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: Conflict — the connector instance for this record is disabled. Enable it from Connector Settings and try again.
+
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while reindexing the record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /knowledgeBase/reindex/record-group/{recordGroupId}:
     post:
       tags:
-        - Connector
+        - Knowledge Base
       summary: Reindex record group
       description: |
-        Trigger reindexing for all records in a folder or knowledge base.<br><br>
-        <b>Overview:</b><br>
-        Batch reindex operation for entire containers. The recordGroupId can be a folder ID or KB ID.<br><br>
+        Trigger reindexing for all records in a folder or knowledge base.
+
+        **Overview:**
+
+        Batch reindex operation for entire containers. The `recordGroupId` can be a folder ID or KB ID.
+
+        **Status filters:**
+
         Optional `statusFilters` limit which child records are queued (e.g. failed-only or manual-indexing).
       operationId: reindexRecordGroup
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -20539,130 +21242,66 @@ paths:
       responses:
         '200':
           description: Reindexing triggered for all records in group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReIndexRecordGroupResponseSchema'
+        '400':
+          description: Invalid request body or parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: OAuth token is missing the required kb:write scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Record group not found
-        '409':
-          description: Conflict — the connector instance is disabled. Enable it from Connector Settings and try again.
-
-  /knowledgeBase/resync/connector:
-    post:
-      tags:
-        - Connector
-      summary: Resync connector
-      description: |
-        Trigger a full resync of all records from a connector.<br><br>
-        <b>Overview:</b><br>
-        Fetches all content from the external source and updates local records. Use when you suspect data is out of sync.<br><br>
-        <b>Warning:</b> This can be resource-intensive for large connectors.
-      operationId: resyncConnector
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:write]
-      requestBody:
-        required: true
-        description: "Request body for Resync connector"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                connectorName:
-                  type: string
-                  description: Connector type name
-                  example: "GOOGLE_DRIVE"
-                connectorId:
-                  type: string
-                  description: Connector instance ID
-              required:
-                - connectorName
-                - connectorId
-      responses:
-        '200':
-          description: Resync initiated
-        '400':
-          description: Invalid connector parameters
-        '401':
-          description: Unauthorized
-        '409':
-          description: Conflict — the connector instance is disabled. Enable it from Connector Settings and try again.
-
-  /knowledgeBase/stats/{connectorId}:
-    get:
-      tags:
-        - Connector
-      summary: Get connector statistics
-      description: |
-        Retrieve statistics for a specific connector including record counts, indexing status breakdown, and sync information.
-      operationId: getConnectorStats
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:read]
-      parameters:
-        - name: connectorId
-          in: path
-          required: true
-          description: Connector ID
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Connector statistics
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ConnectorStats'
-        '401':
-          description: Unauthorized
-        '404':
-          description: Connector not found
-
-  /knowledgeBase/reindex-failed/connector:
-    post:
-      tags:
-        - Knowledge Bases
-      summary: Reindex failed records for connector
-      description: |
-        Trigger reindexing for a connector instance, scoped by indexing status. When
-        `statusFilters` is omitted, only `FAILED` records are reindexed.
-      operationId: reindexFailedRecords
-      security:
-        - bearerAuth: []
-        - oauth2: [kb:write]
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ReindexFailedConnectorRequestBody'
-      responses:
-        '200':
-          description: Reindex triggered successfully
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict - the connector instance is disabled. Enable it from Connector Settings and try again.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  reindexResponse:
-                    type: object
-                    description: Connector reindex job acknowledgement from the relation service.
-        '401':
-          description: Unauthorized
-        '404':
-          description: Connector not found
-        '409':
-          description: Conflict — the connector instance is disabled. Enable it from Connector Settings and try again.
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while reindexing the record group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /knowledgeBase/{kbId}/record/{recordId}/move:
     put:
       tags:
-        - Knowledge Bases
+        - Knowledge Base
       summary: Move record to another location
       description: |
-        Move a record from one location to another within a knowledge base.
+        Move a file or folder record to a different location within the same knowledge base.
+
+        Set `newParentId` to a folder ID to move the record into that folder, or `null` to move it to the knowledge base root.
+
+        **Required Permission:** OWNER or WRITER
       operationId: moveRecord
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -20673,32 +21312,68 @@ paths:
           schema:
             type: string
             format: uuid
+          description: Knowledge base UUID
         - name: recordId
           in: path
           required: true
           schema:
             type: string
+            minLength: 1
+          description: Record identifier (file or folder)
       requestBody:
         required: true
-        description: "Request payload"
+        description: Target location for the record
         content:
           application/json:
             schema:
-              type: object
+              $ref: '#/components/schemas/KnowledgeBaseMoveRecordRequestBody'
       responses:
         '200':
           description: Record moved successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
+                $ref: '#/components/schemas/KnowledgeBaseMoveRecordResponse'
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing `newParentId` in the request body
+            - Invalid `kbId` (must be a UUID)
+            - Empty `recordId`
+            - Cannot move a folder into itself
+            - Cannot move a folder into one of its own sub-folders (circular reference)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:write` scope
+            - User lacks OWNER or WRITER permission on the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Record or knowledge base not found
+          description: |
+            Not found. Possible reasons:
+
+            - Knowledge base does not exist
+            - Record does not exist in the knowledge base
+            - Target folder does not exist in the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Permissions Endpoints --------------------
   /knowledgeBase/{kbId}/permissions:
@@ -20707,18 +21382,18 @@ paths:
         - Permissions
       summary: Grant permissions
       description: |
-        Grant access permissions to users or teams for a knowledge base.<br><br>
-        <b>Required Permission:</b> OWNER or ORGANIZER<br><br>
-        <b>Permission Roles (highest to lowest):</b><br>
-        <ol>
-        <li><b>OWNER:</b> Full control, can delete KB, manage all permissions</li>
-        <li><b>ORGANIZER:</b> Can manage permissions (except OWNER), edit KB settings</li>
-        <li><b>FILEORGANIZER:</b> Can create/delete folders, organize content</li>
-        <li><b>WRITER:</b> Can upload, edit, delete records</li>
-        <li><b>COMMENTER:</b> Can add comments (if supported)</li>
-        <li><b>READER:</b> View-only access</li>
-        </ol>
-        <b>Grant to Multiple:</b><br>
+        Grant access permissions to users or teams for a knowledge base.
+
+        **Required Permission:** OWNER
+
+        **Permission Roles (highest to lowest):**
+
+        1. **OWNER:** Full control, can delete KB, manage all permissions
+        2. **WRITER:** Can upload, edit, delete records, create/delete folders
+        3. **READER:** View-only access
+
+        **Grant to Multiple:**
+
         Provide arrays of userIds and/or teamIds to grant the same role to multiple entities.
       operationId: createKBPermission
       security:
@@ -20749,41 +21424,77 @@ paths:
                   description: Team IDs to grant permission
                 role:
                   type: string
-                  enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
-                  description: Permission role to grant
-              required:
-                - role
+                  enum: [OWNER, WRITER, READER]
+                  description: Permission role to grant. Required when userIds is provided; omit for team-only grants.
       responses:
-        '200':
+        '201':
           description: Permissions granted successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  kbId:
-                    type: string
-                  permissionResult:
-                    type: object
-                    properties:
-                      grantedCount:
-                        type: integer
-                      updatedCount:
-                        type: integer
+                $ref: '#/components/schemas/KnowledgeBasePermissionCreate'
         '400':
-          description: Invalid request
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing userIds and teamIds
+            - Role required when adding users
+            - Invalid role value
+            - Invalid kbId (must be UUID)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Only OWNER/ORGANIZER can grant permissions
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:write` scope
+            - Caller is not KB OWNER (only owners can grant permissions)
+            - Caller has no access to the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Not found. Possible reasons:
+
+            - Knowledge base does not exist
+            - Authenticated user not found in graph database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error - Permission creation failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable - Connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     get:
       tags:
         - Permissions
       summary: List permissions
       description: |
-        Retrieve all permissions granted on a knowledge base.<br><br>
-        <b>Required Permission:</b> ORGANIZER or higher to see all permissions, others see only their own.
+        Retrieve all permissions granted on a knowledge base.
+
+        **Required access:** Caller must hold any role on the knowledge base (OWNER, WRITER, or READER) and the `kb:read` OAuth scope when using an OAuth token.
+
+        Returns every user and team permission on the KB. Team entries have `type: TEAM` and `role: null` (teams are not assigned roles).
       operationId: listKBPermissions
       security:
         - bearerAuth: []
@@ -20794,36 +21505,77 @@ paths:
           required: true
           schema:
             type: string
+            minLength: 1
+          description: Knowledge base ID
       responses:
         '200':
-          description: Permissions list retrieved
+          description: Permissions list retrieved successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  kbId:
-                    type: string
-                  permissions:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/KBPermission'
-                  totalCount:
-                    type: integer
+                $ref: '#/components/schemas/KnowledgeBasePermissionList'
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - Empty `kbId` path parameter (Zod `getPermissionsSchema` requires `params.kbId` min length 1)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: No access to this knowledge base
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:read` scope
+            - Caller has no access to the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Knowledge base not found
+          description: |
+            Not found. Possible reasons:
+
+            - Knowledge base does not exist
+            - Authenticated user not found in graph database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error — permission listing failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable — connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
         - Permissions
       summary: Update permissions
       description: |
-        Update permission roles for users or teams.<br><br>
-        <b>Required Permission:</b> OWNER or ORGANIZER
+        Update permission roles for users on a knowledge base.
+
+        **Required access:** Caller must be KB **OWNER** and hold the `kb:write` OAuth scope when using an OAuth token.
+
+        **User IDs:** Provide graph user document IDs (the `id` field from list permissions / user `graphId` after graph sync), not Mongo user `_id` values.
+
+        **Teams:** `teamIds` must be empty or omitted. Teams do not have roles; only user permissions can be updated.
+
+        Users without an existing permission on the KB are skipped. If none of the supplied users have a permission to update, the request returns **404**.
       operationId: updateKBPermissions
       security:
         - bearerAuth: []
@@ -20834,57 +21586,126 @@ paths:
           required: true
           schema:
             type: string
+            format: uuid
+          description: Knowledge base ID (must be a valid UUID)
       requestBody:
         required: true
-        description: "Request body for Update permissions"
+        description: User permission role update payload
         content:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
+                role:
+                  type: string
+                  enum: [OWNER, WRITER, READER]
+                  description: New permission role to assign (required)
                 userIds:
                   type: array
                   items:
                     type: string
+                  description: Graph user document IDs to update (at least one of `userIds` or `teamIds` must be non-empty)
                 teamIds:
                   type: array
                   items:
                     type: string
-                role:
-                  type: string
-                  enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
+                  description: Must be empty or omitted — non-empty values are rejected (teams cannot have roles updated)
               required:
                 - role
       responses:
         '200':
-          description: Permissions updated
+          description: Permissions updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgebaseUpdatePermissionResponse'
         '400':
-          description: Invalid request
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing or invalid `role` (must be OWNER, WRITER, or READER)
+            - Missing `userIds` and `teamIds`, or both empty
+            - Non-empty `teamIds` (teams cannot have roles updated)
+            - Invalid `kbId` (must be UUID)
+            - Bulk update involving OWNER permissions (owners must be updated one at a time)
+            - Attempt to remove the last OWNER from the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:write` scope
+            - Caller is not KB OWNER (only owners can update permissions)
+            - Caller has no access to the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Not found. Possible reasons:
+
+            - Knowledge base does not exist
+            - Authenticated user not found in graph database
+            - None of the supplied users have an existing permission to update
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error — permission update failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable — connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
         - Permissions
       summary: Remove permissions
       description: |
-        Remove access permissions from users or teams.<br><br>
-        <b>Required Permission:</b> OWNER or ORGANIZER<br><br>
-        <b>Note:</b> Cannot remove the last OWNER from a KB.
+        Remove access permissions from users or teams on a knowledge base.
+
+        **Required access:** Caller must be KB **OWNER** and hold the `kb:delete` OAuth scope when using an OAuth token.
+
+        **User IDs:** Provide graph user document IDs (the `id` field from list permissions / user `graphId` after graph sync), not Mongo user `_id` values.
+
+        **Request body:** Send both `userIds` and `teamIds` arrays (use `[]` when not removing that entity type). Omitting either field can cause a server error because the controller reads `.length` on both arrays.
+
+        Users or teams without an existing permission on the KB are skipped. If none of the supplied entities have a permission to remove, the request returns **404**.
+
+        **Owner restriction:** Cannot remove the last OWNER from the knowledge base — at least one owner must remain.
       operationId: deleteKBPermissions
       security:
         - bearerAuth: []
+        - oauth2: [kb:delete]
       parameters:
         - name: kbId
           in: path
           required: true
           schema:
             type: string
+            format: uuid
+          description: Knowledge base ID (must be a valid UUID)
       requestBody:
         required: true
-        description: "Request body for Remove permissions"
+        description: User and/or team permission removal payload
         content:
           application/json:
             schema:
@@ -20894,25 +21715,76 @@ paths:
                   type: array
                   items:
                     type: string
+                  description: Graph user document IDs to remove (at least one of `userIds` or `teamIds` must be non-empty)
                 teamIds:
                   type: array
                   items:
                     type: string
+                  description: Graph team document IDs to remove
       responses:
         '200':
-          description: Permissions removed
+          description: Permissions removed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeBaseDeleteResponseSchema'
         '400':
-          description: Invalid request or cannot remove last owner
+          description: |
+            Invalid request. Possible reasons:
+
+            - Missing `userIds` and `teamIds`, or both empty arrays
+            - Invalid `kbId` (must be UUID)
+            - Attempt to remove the last OWNER from the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Unauthorized — valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions
+          description: |
+            Forbidden. Possible reasons:
+
+            - OAuth token lacks the `kb:delete` scope
+            - Caller is not KB OWNER (only owners can remove permissions)
+            - Caller has no access to the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Not found. Possible reasons:
+
+            - Knowledge base does not exist
+            - Authenticated user not found in graph database
+            - None of the supplied users or teams have an existing permission to remove
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error — permission removal failed in connector or database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable — connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Knowledge Hub --------------------
   /knowledgeBase/knowledge-hub/nodes:
     get:
       tags:
-        - Knowledge Hub
+        - Knowledge Base
       summary: Get knowledge hub root nodes
       description: |
         Returns root-level nodes (connector apps and Collection apps) or, when
@@ -21385,7 +22257,7 @@ paths:
   /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}:
     get:
       tags:
-        - Knowledge Hub
+        - Knowledge Base
       summary: Get knowledge hub child nodes
       description: |
         Returns the children of a specific node in the knowledge hub tree.
@@ -24078,6 +24950,7 @@ paths:
                               default: MARKDOWN
                             confidence:
                               type: string
+                              nullable: true
                               description: |
                                 AI confidence in the answer. Present only on
                                 `bot_response` messages, and only when the
@@ -27891,6 +28764,132 @@ paths:
           description: Permission denied
         '404':
           description: Connector not found
+
+  /connectors/{connectorId}/stats:
+    get:
+      tags:
+        - Connector Instances
+      summary: Get connector statistics
+      description: |
+        Retrieve statistics for a specific connector instance including record counts,
+        indexing status breakdown, and sync information.
+      operationId: getConnectorStats
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Connector statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorStats'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Insufficient OAuth scope or no access to connector stats
+        '404':
+          description: Connector not found
+
+  /connectors/{connectorId}/reindex-failed:
+    post:
+      tags:
+        - Connector Instances
+      summary: Reindex failed records for connector
+      description: |
+        Trigger reindexing for a connector instance, scoped by indexing status. When
+        `statusFilters` is omitted, only `FAILED` records are reindexed.
+      operationId: reindexFailedRecords
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:write]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: Request payload
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReindexFailedConnectorRequestBody'
+      responses:
+        '200':
+          description: Reindex triggered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reindexResponse:
+                    type: object
+                    description: Connector reindex job acknowledgement from the relation service.
+        '401':
+          description: Unauthorized
+        '404':
+          description: Connector not found
+        '409':
+          description: Conflict — the connector instance is disabled or locked.
+
+  /connectors/{connectorId}/resync:
+    post:
+      tags:
+        - Connector Instances
+      summary: Resync connector
+      description: |
+        Trigger a resync of records from a connector instance.
+
+        **Overview:**
+
+        Fetches content from the external source and updates local records. Use when you suspect data is out of sync.
+
+        **Warning:** This can be resource-intensive for large connectors.
+      operationId: resyncConnector
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:write]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: Request body for resync connector
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResyncConnectorRequestBody'
+      responses:
+        '200':
+          description: Resync initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resyncConnectorResponse:
+                    type: object
+                    description: Connector resync job acknowledgement from the relation service.
+        '400':
+          description: Invalid connector parameters
+        '401':
+          description: Unauthorized
+        '409':
+          description: Conflict — the connector instance is disabled or locked.
 
   /connectors/{connectorId}/name:
     put:

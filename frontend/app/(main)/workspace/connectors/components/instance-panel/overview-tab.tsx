@@ -41,7 +41,7 @@ import { formatSnakeCaseTitle } from '@/lib/utils/formatters';
 
 interface OverviewTabProps {
   instance: ConnectorInstance;
-  /** Stats data from GET /knowledgeBase/stats/{connectorId} */
+  /** Stats data from GET /connectors/{connectorId}/stats */
   stats?: ConnectorStatsResponse['data'] | null;
   /** Initial stats fetch in progress (panel open) */
   statsLoading?: boolean;

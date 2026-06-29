@@ -25,6 +25,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.capability_summary import fetch_connector_configs
 from app.utils.execute_query import has_sql_connector_configured
+from app.utils.fetch_slack_thread import has_slack_connector_configured
 from app.modules.agents.deep.graph import deep_agent_graph
 from app.modules.agents.deep.state import build_deep_agent_state
 from app.modules.agents.qna.cache_manager import get_cache_manager
@@ -1535,6 +1536,9 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         has_sql_connector = await has_sql_connector_configured(
             graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
         )
+        has_slack_connector = await has_slack_connector_configured(
+            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
+        )
         if selected_graph == deep_agent_graph:
             initial_state = build_deep_agent_state(
                 query_info.model_dump(),
@@ -1549,6 +1553,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 query_info.modelName,
                 query_info.modelKey,
                 has_sql_connector=has_sql_connector,
+                has_slack_connector=has_slack_connector,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -1566,6 +1571,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 org_info,
                 graph_type,
                 has_sql_connector=has_sql_connector,
+                has_slack_connector=has_slack_connector,
             )
 
         graph_to_use = selected_graph
@@ -1649,6 +1655,9 @@ async def stream_response(
         has_sql_connector = await has_sql_connector_configured(
             graph_provider, user_info["userId"], user_info["orgId"]
         )
+        has_slack_connector = await has_slack_connector_configured(
+            graph_provider, user_info["userId"], user_info["orgId"]
+        )
         if selected_graph == deep_agent_graph:
             graph_type = "deep"
             initial_state = build_deep_agent_state(
@@ -1665,6 +1674,7 @@ async def stream_response(
                 modelKey,
                 has_sql_connector=has_sql_connector,
                 is_multimodal_llm=is_multimodal_llm,
+                has_slack_connector=has_slack_connector,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -1683,6 +1693,7 @@ async def stream_response(
                 graph_type,
                 has_sql_connector=has_sql_connector,
                 is_multimodal_llm=is_multimodal_llm,
+                has_slack_connector=has_slack_connector,
             )
 
         config = {
@@ -3383,6 +3394,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         has_sql_connector = await has_sql_connector_configured(
             graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
         )
+        has_slack_connector = await has_slack_connector_configured(
+            graph_provider, enriched_user_info["userId"], enriched_user_info["orgId"]
+        )
         if selected_graph == deep_agent_graph:
             initial_state = build_deep_agent_state(
                 query_info,
@@ -3397,6 +3411,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 chat_query.modelName,
                 chat_query.modelKey,
                 has_sql_connector=has_sql_connector,
+                has_slack_connector=has_slack_connector,
             )
         else:
             graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
@@ -3414,6 +3429,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 org_info,
                 graph_type,
                 has_sql_connector=has_sql_connector,
+                has_slack_connector=has_slack_connector,
             )
 
         graph_to_use = selected_graph

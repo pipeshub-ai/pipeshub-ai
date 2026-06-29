@@ -15,6 +15,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from app.config.constants.ai_models import (
     AZURE_EMBEDDING_API_VERSION,
     DEFAULT_EMBEDDING_MODEL,
+    OPENROUTER_BASE_URL,
     AzureOpenAILLM,
 )
 from app.utils.embedding_server_client import get_embedding_server_embeddings
@@ -43,10 +44,13 @@ class EmbeddingProvider(Enum):
     GEMINI = "gemini"
     HUGGING_FACE = "huggingFace"
     JINA_AI = "jinaAI"
+    LITELLM_PROXY = "litellmProxy"
+    LM_STUDIO = "lmStudio"
     MISTRAL = "mistral"
     OLLAMA = "ollama"
     OPENAI = "openAI"
     OPENAI_COMPATIBLE = "openAICompatible"
+    OPENROUTER = "openRouter"
     SENTENCE_TRANSFOMERS = "sentenceTransformers"
     TOGETHER = "together"
     VERTEX_AI = "vertexAI"
@@ -61,31 +65,40 @@ class LLMProvider(Enum):
     FIREWORKS = "fireworks"
     GEMINI = "gemini"
     GROQ = "groq"
+    LITELLM_PROXY = "litellmProxy"
+    LM_STUDIO = "lmStudio"
     MINIMAX = "minimax"
     MISTRAL = "mistral"
     OLLAMA = "ollama"
     OPENAI = "openAI"
     OPENAI_COMPATIBLE = "openAICompatible"
+    OPENROUTER = "openRouter"
     TOGETHER = "together"
     VERTEX_AI = "vertexAI"
     XAI = "xai"
 
 
 class ImageGenerationProvider(Enum):
+    LITELLM_PROXY = "litellmProxy"
     OPENAI = "openAI"
     GEMINI = "gemini"
+    OPENROUTER = "openRouter"
 
 
 class TTSProvider(Enum):
+    LITELLM_PROXY = "litellmProxy"
     OPENAI = "openAI"
     GEMINI = "gemini"
+    OPENROUTER = "openRouter"
 
 
 class STTProvider(Enum):
+    LITELLM_PROXY = "litellmProxy"
     OPENAI = "openAI"
     WHISPER = "whisper"
     WISPR = "wispr"
     GEMINI = "gemini"
+    OPENROUTER = "openRouter"
 
 MAX_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
@@ -328,6 +341,42 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
         )
         _set_embedding_dimensions_kwarg(compat_kwargs, dimensions)
         return OpenAIEmbeddings(**compat_kwargs)
+
+    elif provider == EmbeddingProvider.OPENROUTER.value:
+        from langchain_openai.embeddings import OpenAIEmbeddings
+
+        or_emb_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            api_key=configuration['apiKey'],
+            base_url=OPENROUTER_BASE_URL,
+            check_embedding_ctx_length=True,
+        )
+        _set_embedding_dimensions_kwarg(or_emb_kwargs, dimensions)
+        return OpenAIEmbeddings(**or_emb_kwargs)
+
+    elif provider == EmbeddingProvider.LM_STUDIO.value:
+        from langchain_openai.embeddings import OpenAIEmbeddings
+
+        lms_emb_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            api_key=configuration.get("apiKey") or "lm-studio",
+            base_url=configuration["endpoint"],
+            check_embedding_ctx_length=False,
+        )
+        _set_embedding_dimensions_kwarg(lms_emb_kwargs, dimensions)
+        return OpenAIEmbeddings(**lms_emb_kwargs)
+
+    elif provider == EmbeddingProvider.LITELLM_PROXY.value:
+        from langchain_openai.embeddings import OpenAIEmbeddings
+
+        llp_emb_kwargs: Dict[str, Any] = dict(
+            model=model_name,
+            api_key=configuration.get("apiKey"),
+            base_url=configuration["endpoint"],
+            check_embedding_ctx_length=False,
+        )
+        _set_embedding_dimensions_kwarg(llp_emb_kwargs, dimensions)
+        return OpenAIEmbeddings(**llp_emb_kwargs)
 
     elif provider == EmbeddingProvider.TOGETHER.value:
         from app.utils.custom_embeddings import TogetherEmbeddings
@@ -679,6 +728,46 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
                 stream_usage=True,  # Enable token usage tracking for Opik
             )
 
+    elif provider == LLMProvider.LM_STUDIO.value:
+        from langchain_openai import ChatOpenAI
+        is_reasoning_model = config.get("isReasoning", False)
+        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+        return ChatOpenAI(
+                model=model_name,
+                temperature=temperature,
+                timeout=DEFAULT_LLM_TIMEOUT,
+                api_key=configuration.get("apiKey") or "lm-studio",
+                base_url=configuration["endpoint"],
+                stream_usage=True,
+            )
+
+    elif provider == LLMProvider.LITELLM_PROXY.value:
+        from langchain_openai import ChatOpenAI
+        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
+        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+        return ChatOpenAI(
+                model=model_name,
+                temperature=temperature,
+                timeout=DEFAULT_LLM_TIMEOUT,
+                api_key=configuration.get("apiKey"),
+                base_url=configuration["endpoint"],
+                stream_usage=True,
+            )
+
+    elif provider == LLMProvider.OPENROUTER.value:
+        from langchain_openai import ChatOpenAI
+
+        is_reasoning_model = "gpt-5" in model_name or config.get("isReasoning", False)
+        temperature = 1 if is_reasoning_model else configuration.get("temperature", 0.2)
+        return ChatOpenAI(
+                model=model_name,
+                temperature=temperature,
+                timeout=DEFAULT_LLM_TIMEOUT,
+                api_key=configuration["apiKey"],
+                base_url=OPENROUTER_BASE_URL,
+                stream_usage=True,
+            )
+
     elif provider == LLMProvider.VERTEX_AI.value:
         from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -774,11 +863,14 @@ class _OpenAIImageAdapter(ImageGenerationAdapter):
         model: str,
         api_key: str,
         organization: str | None = None,
+        base_url: str | None = None,
+        provider_override: str | None = None,
     ) -> None:
-        self.provider = ImageGenerationProvider.OPENAI.value
+        self.provider = provider_override or ImageGenerationProvider.OPENAI.value
         self.model = model
         self._api_key = api_key
         self._organization = organization
+        self._base_url = base_url or None
 
     async def generate(
         self,
@@ -791,10 +883,13 @@ class _OpenAIImageAdapter(ImageGenerationAdapter):
 
         from openai import AsyncOpenAI
 
-        client = AsyncOpenAI(
-            api_key=self._api_key,
-            organization=self._organization,
-        )
+        client_kwargs: dict[str, Any] = {
+            "api_key": self._api_key,
+            "organization": self._organization,
+        }
+        if self._base_url:
+            client_kwargs["base_url"] = self._base_url
+        client = AsyncOpenAI(**client_kwargs)
 
         # The ``response_format`` parameter is **only** accepted by DALL-E
         # models; ``gpt-image-*`` rejects it with HTTP 400 ("Unknown parameter:
@@ -902,6 +997,90 @@ class _GeminiImageAdapter(ImageGenerationAdapter):
         return [img for batch in results for img in batch]
 
 
+# OpenRouter uses POST /images (not /images/generations) and returns
+# data[].b64_json. Aspect ratio is specified as "W:H" rather than "WxH".
+_OPENROUTER_ASPECT_RATIO_MAP = {
+    "1024x1024": "1:1",
+    "1024x1792": "9:16",
+    "1792x1024": "16:9",
+    "1536x1024": "3:2",
+    "1024x1536": "2:3",
+    "1024x1792": "9:16",
+    "1792x1024": "16:9",
+}
+
+
+def _size_to_openrouter_aspect_ratio(size: str) -> str:
+    return _OPENROUTER_ASPECT_RATIO_MAP.get(size, "1:1")
+
+
+class _OpenRouterImageAdapter(ImageGenerationAdapter):
+    def __init__(self, *, model: str, api_key: str) -> None:
+        self.provider = ImageGenerationProvider.OPENROUTER.value
+        self.model = model
+        self._api_key = api_key
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        size: str = "1024x1024",
+        n: int = 1,
+    ) -> list[bytes]:
+        import base64
+
+        import httpx
+
+        body: Dict[str, Any] = {
+            "model": self.model,
+            "prompt": prompt,
+            "n": n,
+            "aspect_ratio": _size_to_openrouter_aspect_ratio(size),
+        }
+        url = f"{OPENROUTER_BASE_URL}/images"
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, headers=headers, json=body)
+
+        if response.status_code >= 400:
+            snippet = ""
+            try:
+                payload = response.json()
+                if isinstance(payload, dict):
+                    err = payload.get("error")
+                    if isinstance(err, dict):
+                        snippet = str(err.get("message") or "")
+                    else:
+                        snippet = str(err or payload.get("message") or "")
+            except Exception:
+                pass
+            logger.error(
+                "OpenRouter image generation failed: status=%d body=%r",
+                response.status_code,
+                response.text[:500],
+            )
+            raise RuntimeError(
+                f"OpenRouter image generation failed (upstream {response.status_code})"
+                + (f": {snippet}" if snippet else "")
+            )
+
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise RuntimeError("OpenRouter image generation returned a non-JSON response.") from exc
+
+        images: list[bytes] = []
+        for item in (payload.get("data") or []):
+            b64 = item.get("b64_json") if isinstance(item, dict) else None
+            if b64:
+                images.append(base64.b64decode(b64))
+        return images
+
+
 def get_image_generation_model(
     provider: str,
     config: Dict[str, Any],
@@ -941,6 +1120,20 @@ def get_image_generation_model(
         return _GeminiImageAdapter(
             model=model_name,
             api_key=configuration["apiKey"],
+        )
+
+    if provider == ImageGenerationProvider.OPENROUTER.value:
+        return _OpenRouterImageAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+        )
+
+    if provider == ImageGenerationProvider.LITELLM_PROXY.value:
+        return _OpenAIImageAdapter(
+            model=model_name,
+            api_key=configuration.get("apiKey"),
+            base_url=configuration["endpoint"],
+            provider_override=ImageGenerationProvider.LITELLM_PROXY.value,
         )
 
     raise ValueError(f"Unsupported image generation provider: {provider}")
@@ -996,13 +1189,16 @@ class _OpenAITTSAdapter(TTSAdapter):
         organization: str | None = None,
         default_voice: str | None = None,
         default_format: str | None = None,
+        base_url: str | None = None,
+        provider_override: str | None = None,
     ) -> None:
-        self.provider = TTSProvider.OPENAI.value
+        self.provider = provider_override or TTSProvider.OPENAI.value
         self.model = model
         self._api_key = api_key
         self._organization = organization
         self.default_voice = default_voice or _OPENAI_TTS_DEFAULT_VOICE
         self.default_format = default_format or "mp3"
+        self._base_url = base_url or None
 
     async def synthesize(
         self,
@@ -1018,10 +1214,14 @@ class _OpenAITTSAdapter(TTSAdapter):
         if fmt not in _OPENAI_TTS_VALID_FORMATS:
             fmt = "mp3"
 
-        client = AsyncOpenAI(
-            api_key=self._api_key,
-            organization=self._organization,
-        )
+        client_kwargs: Dict[str, Any] = {
+            "api_key": self._api_key,
+            "organization": self._organization,
+        }
+        if self._base_url:
+            client_kwargs["base_url"] = self._base_url
+
+        client = AsyncOpenAI(**client_kwargs)
         try:
             response = await client.audio.speech.create(
                 model=self.model,
@@ -1288,6 +1488,26 @@ def get_tts_model(
             endpoint=configuration.get("endpoint") or None,
         )
 
+    if provider == TTSProvider.OPENROUTER.value:
+        return _OpenAITTSAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+            default_voice=configuration.get("voice"),
+            default_format=configuration.get("responseFormat"),
+            base_url=OPENROUTER_BASE_URL,
+            provider_override=TTSProvider.OPENROUTER.value,
+        )
+
+    if provider == TTSProvider.LITELLM_PROXY.value:
+        return _OpenAITTSAdapter(
+            model=model_name,
+            api_key=configuration.get("apiKey"),
+            default_voice=configuration.get("voice"),
+            default_format=configuration.get("responseFormat"),
+            base_url=configuration["endpoint"],
+            provider_override=TTSProvider.LITELLM_PROXY.value,
+        )
+
     raise ValueError(f"Unsupported TTS provider: {provider}")
 
 
@@ -1336,11 +1556,14 @@ class _OpenAISTTAdapter(STTAdapter):
         model: str,
         api_key: str,
         organization: str | None = None,
+        base_url: str | None = None,
+        provider_override: str | None = None,
     ) -> None:
-        self.provider = STTProvider.OPENAI.value
+        self.provider = provider_override or STTProvider.OPENAI.value
         self.model = model
         self._api_key = api_key
         self._organization = organization
+        self._base_url = base_url or None
 
     async def transcribe(
         self,
@@ -1352,10 +1575,13 @@ class _OpenAISTTAdapter(STTAdapter):
     ) -> str:
         from openai import AsyncOpenAI
 
-        client = AsyncOpenAI(
-            api_key=self._api_key,
-            organization=self._organization,
-        )
+        client_kwargs: Dict[str, Any] = {
+            "api_key": self._api_key,
+            "organization": self._organization,
+        }
+        if self._base_url:
+            client_kwargs["base_url"] = self._base_url
+        client = AsyncOpenAI(**client_kwargs)
         file_tuple = (
             _stt_filename_for_mime(mime, filename),
             audio,
@@ -1762,6 +1988,122 @@ class _GeminiSTTAdapter(STTAdapter):
         return "".join(pieces).strip()
 
 
+# ---------------------------------------------------------------------------
+# OpenRouter STT — JSON body with base64 audio (not multipart upload)
+# ---------------------------------------------------------------------------
+
+_OPENROUTER_STT_FORMAT_MAP = {
+    "audio/webm": "webm",
+    "audio/ogg": "ogg",
+    "audio/mp4": "mp4",
+    "audio/m4a": "m4a",
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/flac": "flac",
+    "audio/aac": "aac",
+}
+
+_OPENROUTER_STT_EXT_MAP = {
+    "webm": "webm",
+    "ogg": "ogg",
+    "opus": "ogg",
+    "mp4": "mp4",
+    "m4a": "m4a",
+    "mp3": "mp3",
+    "wav": "wav",
+    "flac": "flac",
+    "aac": "aac",
+}
+
+
+def _openrouter_stt_format(mime: str, filename: str | None = None) -> str:
+    """Map a browser-supplied MIME type to an OpenRouter audio format string."""
+    if not mime:
+        return "webm"
+    normalized = mime.split(";")[0].strip().lower()
+    if normalized in ("application/octet-stream", "binary/octet-stream"):
+        if filename and "." in filename:
+            ext = filename.rsplit(".", 1)[-1].strip().lower()
+            mapped = _OPENROUTER_STT_EXT_MAP.get(ext)
+            if mapped:
+                return mapped
+        return "webm"
+    return _OPENROUTER_STT_FORMAT_MAP.get(normalized, "webm")
+
+
+class _OpenRouterSTTAdapter(STTAdapter):
+    def __init__(self, *, model: str, api_key: str) -> None:
+        self.provider = STTProvider.OPENROUTER.value
+        self.model = model
+        self._api_key = api_key
+
+    async def transcribe(
+        self,
+        audio: bytes,
+        *,
+        mime: str = "audio/webm",
+        filename: str | None = None,
+        language: str | None = None,
+    ) -> str:
+        import base64
+
+        import httpx
+
+        fmt = _openrouter_stt_format(mime, filename)
+        body: Dict[str, Any] = {
+            "model": self.model,
+            "input_audio": {
+                "data": base64.b64encode(audio).decode("ascii"),
+                "format": fmt,
+            },
+        }
+        if language:
+            body["language"] = language
+
+        url = f"{OPENROUTER_BASE_URL}/audio/transcriptions"
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, headers=headers, json=body)
+
+        if response.status_code >= 400:
+            snippet = ""
+            try:
+                data = response.json()
+                if isinstance(data, dict):
+                    err = data.get("error")
+                    if isinstance(err, dict):
+                        snippet = str(err.get("message") or "")
+                    else:
+                        snippet = str(err or data.get("message") or "")
+            except Exception:
+                pass
+            logger.error(
+                "OpenRouter STT transcription failed: status=%d body=%r",
+                response.status_code,
+                response.text[:500],
+            )
+            raise RuntimeError(
+                f"OpenRouter STT transcription failed (upstream {response.status_code})"
+                + (f": {snippet}" if snippet else "")
+            )
+
+        try:
+            data = response.json()
+        except Exception as exc:
+            raise RuntimeError("OpenRouter STT returned a non-JSON response.") from exc
+
+        if not isinstance(data, dict):
+            return ""
+        text = data.get("text")
+        return text if isinstance(text, str) else ""
+
+
 def get_stt_model(
     provider: str,
     config: Dict[str, Any],
@@ -1815,6 +2157,20 @@ def get_stt_model(
             model=model_name,
             api_key=configuration["apiKey"],
             endpoint=configuration.get("endpoint") or None,
+        )
+
+    if provider == STTProvider.OPENROUTER.value:
+        return _OpenRouterSTTAdapter(
+            model=model_name,
+            api_key=configuration["apiKey"],
+        )
+
+    if provider == STTProvider.LITELLM_PROXY.value:
+        return _OpenAISTTAdapter(
+            model=model_name,
+            api_key=configuration.get("apiKey"),
+            base_url=configuration["endpoint"],
+            provider_override=STTProvider.LITELLM_PROXY.value,
         )
 
     raise ValueError(f"Unsupported STT provider: {provider}")

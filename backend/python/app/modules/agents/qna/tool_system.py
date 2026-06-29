@@ -17,6 +17,8 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Optional
 
+from pydantic import BaseModel
+
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
     from app.agents.tools.models import Tool
@@ -712,6 +714,10 @@ def get_tool_results_summary(state: ChatState) -> str:
 # Modern Tool System with Pydantic Schemas (for ReAct Agent)
 # ============================================================================
 
+class _EmptyInput(BaseModel):
+    """Schema for tools that accept no arguments."""
+    pass
+
 def get_agent_tools_with_schemas(state: ChatState) -> list:
     """
     Convert registry tools to StructuredTools with Pydantic schemas.
@@ -805,13 +811,21 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
                         coroutine=async_tool_func,  # Explicitly pass the coroutine
                     )
                 else:
-                    # Fallback: no schema (for legacy tools without Pydantic schemas)
-                    structured_tool = StructuredTool.from_function(
-                        func=async_tool_func,
-                        name=sanitized_tool_name,
-                        description=tool_wrapper.description,
-                        coroutine=async_tool_func,  # Explicitly pass the coroutine
-                    )
+                    # No Pydantic schema. For truly no-arg tools, use
+                    # _EmptyInput so LangChain doesn't auto-infer a "kwargs"
+                    # parameter from the wrapper's **kwargs signature (which
+                    # causes LLMs to send spurious {"kwargs": {}} arguments).
+                    has_params = bool(getattr(registry_tool, 'parameters', None))
+                    fallback_schema = None if has_params else _EmptyInput
+                    tool_kwargs: dict[str, Any] = {
+                        "func": async_tool_func,
+                        "name": sanitized_tool_name,
+                        "description": tool_wrapper.description,
+                        "coroutine": async_tool_func,
+                    }
+                    if fallback_schema:
+                        tool_kwargs["args_schema"] = fallback_schema
+                    structured_tool = StructuredTool.from_function(**tool_kwargs)
 
                 # Store original name and wrapper reference for backward compatibility
                 setattr(structured_tool, '_original_name', original_tool_name)
@@ -876,7 +890,37 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
                 state_logger = state.get("logger")
                 if state_logger:
                     state_logger.warning(f"Failed to add execute_sql_query_tool: {e}")
-        # Add web tools when agent has web search configured in the builder
+
+        if config_service and state.get("has_slack_connector") and state.get("has_slack_knowledge"):
+            try:
+                from app.utils.fetch_slack_nearby_messages import (
+                    create_fetch_slack_nearby_messages_tool,
+                )
+                from app.utils.fetch_slack_thread import create_fetch_slack_thread_tool
+                slack_thread_tool = create_fetch_slack_thread_tool(
+                    virtual_record_id_to_result=virtual_record_map,
+                    org_id=state.get("org_id", ""),
+                    graph_provider=state.get("graph_provider"),
+                    blob_store=state.get("blob_store"),
+                    config_service=config_service,
+                )
+                setattr(slack_thread_tool, "_original_name", "slack.fetch_slack_thread")
+                structured_tools.append(slack_thread_tool)
+                slack_nearby_tool = create_fetch_slack_nearby_messages_tool(
+                    config_service=config_service,
+                )
+                setattr(slack_nearby_tool, "_original_name", "slack.fetch_slack_nearby_messages")
+                structured_tools.append(slack_nearby_tool)
+                state_logger = state.get("logger")
+                if state_logger:
+                    state_logger.debug(
+                        "✅ Added fetch_slack_thread and fetch_slack_nearby_messages tools"
+                    )
+            except Exception as e:
+                state_logger = state.get("logger")
+                if state_logger:
+                    state_logger.warning(f"Failed to add Slack context tools: {e}")
+        # Add web tools (fetch_url always, web_search if agent has it configured)
         try:
             web_tools = _create_web_tools(state)
             structured_tools.extend(web_tools)

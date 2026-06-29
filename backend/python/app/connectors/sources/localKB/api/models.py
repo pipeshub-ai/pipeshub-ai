@@ -257,7 +257,7 @@ class CreateKnowledgeBaseResponse(BaseModel):
     name: str = Field(..., description="Knowledge base name")
     createdAtTimestamp: int = Field(..., description="Creation timestamp")
     updatedAtTimestamp: int = Field(..., description="Update timestamp")
-    userRole: Optional[str] = Field(None, description="User's role in this KB")
+    userRole: str = Field(..., description="User's role in this KB")
 
 class CreateFolderResponse(BaseModel):
     """Response model for creating a folder"""

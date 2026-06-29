@@ -31,6 +31,7 @@ def _make_tx_store():
     store.get_edge = AsyncMock(return_value=None)
     store.get_edges_from_node_with_target_name = AsyncMock(return_value=[])
     store.batch_upsert_nodes = AsyncMock()
+    store.batch_update_nodes = AsyncMock(return_value=True)
     store.batch_create_edges = AsyncMock()
     store.batch_delete_edges = AsyncMock(return_value=0)
     return store
@@ -103,13 +104,13 @@ class TestSubcategoryChainThreeLevels:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # Verify batch_upsert_nodes was called for:
+        # Verify batch_upsert_nodes was called for taxonomy nodes:
         # 1. category node (MainCategory)
         # 2. subcategory1 node (SubLevel1)
         # 3. subcategory2 node (SubLevel2)
         # 4. subcategory3 node (SubLevel3)
-        # 5. status doc
-        assert tx_store.batch_upsert_nodes.await_count >= 5
+        assert tx_store.batch_upsert_nodes.await_count >= 4
+        tx_store.batch_update_nodes.assert_awaited_once()
 
         # Verify batch_create_edges was called for:
         # 1. category -> record (BELONGS_TO_CATEGORY)
@@ -135,10 +136,10 @@ class TestSubcategoryChainThreeLevels:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # Only category node + status doc should be upserted
+        # Only category node should be upserted; status uses batch_update_nodes
         upsert_calls = tx_store.batch_upsert_nodes.call_args_list
-        # One for category creation, one for status doc = 2
-        assert len(upsert_calls) == 2
+        assert len(upsert_calls) == 1
+        tx_store.batch_update_nodes.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_sub3_not_created_when_sub2_missing(self):
@@ -155,9 +156,10 @@ class TestSubcategoryChainThreeLevels:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # category + sub1 + status = 3 upserts
+        # category + sub1 upserts; status uses batch_update_nodes
         upsert_calls = tx_store.batch_upsert_nodes.call_args_list
-        assert len(upsert_calls) == 3
+        assert len(upsert_calls) == 2
+        tx_store.batch_update_nodes.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_existing_subcategory_reuses_key(self):
@@ -183,10 +185,10 @@ class TestSubcategoryChainThreeLevels:
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
         # The subcategory1 node should NOT be created (it already exists)
-        # So we should have: category creation + status doc = 2 upserts
-        # (sub1 already exists, so no upsert for it)
+        # So we should have only category creation upserted
         upsert_calls = tx_store.batch_upsert_nodes.call_args_list
-        assert len(upsert_calls) == 2
+        assert len(upsert_calls) == 1
+        tx_store.batch_update_nodes.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_hierarchy_edge_idempotent_when_already_exists(self):
@@ -454,10 +456,10 @@ class TestTransactionErrorPropagation:
             await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
     @pytest.mark.asyncio
-    async def test_batch_upsert_nodes_error_propagates(self):
-        """Error in batch_upsert_nodes propagates."""
+    async def test_batch_update_nodes_error_propagates(self):
+        """Error in batch_update_nodes propagates."""
         tx_store = _make_tx_store()
-        tx_store.batch_upsert_nodes = AsyncMock(
+        tx_store.batch_update_nodes = AsyncMock(
             side_effect=Exception("Write failed")
         )
         transformer, _ = _setup_transformer_with_tx(tx_store)
@@ -529,8 +531,9 @@ class TestTransactionErrorPropagation:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # Should upsert: category, language, status = at least 3
-        assert tx_store.batch_upsert_nodes.await_count >= 3
+        # Should upsert: category, language
+        assert tx_store.batch_upsert_nodes.await_count >= 2
+        tx_store.batch_update_nodes.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_topic_node_created_when_not_exists(self):
@@ -552,8 +555,9 @@ class TestTransactionErrorPropagation:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # Should upsert: category, topic, status = at least 3
-        assert tx_store.batch_upsert_nodes.await_count >= 3
+        # Should upsert: category, topic
+        assert tx_store.batch_upsert_nodes.await_count >= 2
+        tx_store.batch_update_nodes.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_existing_language_edge_not_recreated(self):

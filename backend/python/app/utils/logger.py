@@ -1,6 +1,63 @@
+import asyncio
 import logging
 import os
 import sys
+from collections.abc import Callable
+
+from app.utils.request_context import NO_CONTEXT, current_display_id, get_context
+
+# ``%(trace)s`` expands to ``[req:<id> thr:<thread> task:<task>] `` only when a
+# context is in flight, so startup/background lines stay clean.
+LOG_FORMAT = (
+    "%(asctime)s - %(name)s - %(levelname)s - "
+    "%(trace)s[%(filename)s:%(lineno)d] - %(message)s"
+)
+
+
+def _make_record_factory(
+    base_factory: Callable[..., logging.LogRecord],
+) -> Callable[..., logging.LogRecord]:
+    # base_factory is captured in the closure, not a module global, so reloading
+    # this module cannot rebind it to ourselves and cause infinite recursion.
+    def _record_factory(*args: object, **kwargs: object) -> logging.LogRecord:
+        record = base_factory(*args, **kwargs)  # type: ignore[arg-type]
+
+        if get_context() is None:
+            record.request_id = ""
+            record.task = NO_CONTEXT
+            record.trace = ""
+            return record
+
+        try:
+            task = asyncio.current_task()
+            task_name = task.get_name() if task is not None else NO_CONTEXT
+        except RuntimeError:
+            task_name = NO_CONTEXT
+
+        display_id = current_display_id()
+        record.request_id = display_id
+        record.task = task_name
+        record.trace = f"[req:{display_id} thr:{record.threadName} task:{task_name}] "
+        return record
+
+    _record_factory._pipeshub_trace = True  # type: ignore[attr-defined]
+    _record_factory._pipeshub_base = base_factory  # type: ignore[attr-defined]
+    return _record_factory
+
+
+# On reload, reuse the original base our installed factory already captured
+# rather than wrapping the installed factory (which would recurse).
+_existing_factory = logging.getLogRecordFactory()
+if getattr(_existing_factory, "_pipeshub_trace", False):
+    _base_record_factory = getattr(
+        _existing_factory, "_pipeshub_base", logging.LogRecord
+    )
+else:
+    _base_record_factory = _existing_factory
+
+_record_factory = _make_record_factory(_base_record_factory)
+if not getattr(_existing_factory, "_pipeshub_trace", False):
+    logging.setLogRecordFactory(_record_factory)
 
 
 class ColoredFormatter(logging.Formatter):
@@ -62,7 +119,7 @@ if sys.platform == "win32":
 # Configure base logging settings
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",
+    format=LOG_FORMAT,
     encoding="utf-8",
 )
 
@@ -90,8 +147,8 @@ def create_logger(service_name: str) -> logging.Logger:
 
     # Prevent DUPLICATE handlers
     if not logger.handlers:
-        # Enhanced format with filename and line number
-        log_format = "%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s"
+        # Enhanced format: request id + thread/task + filename and line number
+        log_format = LOG_FORMAT
 
         # File handler with enhanced format
         file_handler = logging.FileHandler(

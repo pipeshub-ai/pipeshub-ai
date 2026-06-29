@@ -1,7 +1,5 @@
 from logging import Logger
 
-from gitlab.v4.objects import Project
-
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -32,10 +30,66 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
-from app.connectors.sources.gitlab.connector import GITLAB_CLOUD_URL, GitLabConnector
+from gitlab.v4.objects import Project
+from app.connectors.sources.gitlab.connector import GitLabConnector
+from app.connectors.sources.gitlab.constants import GITLAB_CLOUD_URL
+from app.connectors.sources.gitlab.projects import ProjectsSync
 from app.connectors.sources.gitlab_personal.common.apps import GitLabPersonalApp
 from app.models.entities import RecordGroup, RecordGroupType
 from app.models.permission import Permission
+
+
+class GitLabPersonalProjectsSync(ProjectsSync):
+    """ProjectsSync variant for the personal connector.
+
+    Overrides the two permission-building hooks so every project and GitLab-group
+    ``RecordGroup`` is granted access through the single internal ``ConnectorGroup``
+    (materialized by ``ensure_connector_group_permission``) rather than by fanning
+    out individual user edges derived from GitLab membership lists.
+    """
+
+    async def _sync_project_members_as_pseudo(self, project: Project) -> None:
+        """Route all project access through the ConnectorGroup."""
+        await self._apply_creator_fallback_for_project(project)
+
+    async def _ensure_gitlab_group_record_groups(
+        self,
+        group_paths: list[str],
+        candidate_projects: list[Project] | None = None,
+    ) -> None:
+        """Create GitLab-group record groups with ConnectorGroup permissions only."""
+        c = self.c
+        if not c.data_source:
+            return
+        group_permission = c.creator_user_permission()
+        if group_permission is None:
+            return
+        self.logger.info(
+            "Ensuring GitLab personal group record groups for %s", group_paths
+        )
+        for group_path in group_paths:
+            group_res = await c.runtime.ds_call(c.data_source.get_group, group_path)
+            if group_res.success and group_res.data:
+                group = group_res.data
+                full_path = getattr(group, "full_path", None) or group_path
+                name = getattr(group, "name", full_path) or full_path
+                web_url = getattr(group, "web_url", None)
+            else:
+                full_path = group_path
+                name = group_path
+                web_url = None
+            group_rg = RecordGroup(
+                org_id=c.data_entities_processor.org_id,
+                name=name,
+                group_type=RecordGroupType.PROJECT.value,
+                connector_name=c.connector_name,
+                connector_id=c.connector_id,
+                external_group_id=full_path,
+                web_url=web_url,
+            )
+            await c.data_entities_processor.on_new_record_groups(
+                [(group_rg, [group_permission])]
+            )
 
 
 @(
@@ -217,8 +271,11 @@ class GitLabPersonalConnector(GitLabConnector):
         )
         self.app = GitLabPersonalApp(connector_id)
         self.connector_name = Connectors.GITLAB_PERSONAL.value
+        # Replace the default ProjectsSync with the personal variant so the two
+        # permission-building hooks route access through ConnectorGroup.
+        self.projects = GitLabPersonalProjectsSync(self)
 
-    def _creator_user_permission(self) -> Permission | None:
+    def creator_user_permission(self) -> Permission | None:
         """Override: emit a GROUP permission on the shared ConnectorGroup.
 
         The workspace connector grants the creator direct USER access. For
@@ -242,7 +299,7 @@ class GitLabPersonalConnector(GitLabConnector):
     async def run_sync(self) -> None:
         """Sync GitLab content visible to the configured user; access routed via ConnectorGroup."""
         try:
-            await self._refresh_token_if_needed()
+            await self.runtime.refresh_token_if_needed()
             self.logger.info("Starting GitLab Personal sync")
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "gitlabpersonal", self.connector_id, self.logger
@@ -267,58 +324,15 @@ class GitLabPersonalConnector(GitLabConnector):
                 # before any record-group write, so the GROUP-permission
                 # lookup in on_new_record_groups resolves on the first
                 # write rather than dropping the permission for the first
-                # project / group. _creator_user_permission (overridden
+                # project / group. creator_user_permission (overridden
                 # above) reads the cached permission populated here.
                 await self.ensure_connector_group_permission()
 
             self.logger.info("Starting sync of projects")
-            await self._sync_all_project()
+            await self.projects.sync_all_projects()
         except Exception as e:
             self.logger.error(f"Error in GitLab Personal sync: {e}", exc_info=True)
             raise
-
-    async def _sync_project_members_as_pseudo(self, project: Project) -> None:
-        """Create project record groups with ConnectorGroup permissions."""
-        await self._apply_creator_fallback_for_project(project)
-
-    async def _ensure_gitlab_group_record_groups(
-        self,
-        group_paths: list[str],
-        candidate_projects: list[Project] | None = None,
-    ) -> None:
-        """Create GitLab-group record groups with ConnectorGroup permissions."""
-        del candidate_projects  # personal connector does not union child-project members
-        if not self.data_source:
-            return
-        group_permission = self._creator_user_permission()
-        if group_permission is None:
-            return
-        self.logger.info(
-            "Ensuring GitLab personal group record groups for %s", group_paths
-        )
-        for group_path in group_paths:
-            group_res = await self._ds_call(self.data_source.get_group, group_path)
-            if group_res.success and group_res.data:
-                group = group_res.data
-                full_path = getattr(group, "full_path", None) or group_path
-                name = getattr(group, "name", full_path) or full_path
-                web_url = getattr(group, "web_url", None)
-            else:
-                full_path = group_path
-                name = group_path
-                web_url = None
-            group_rg = RecordGroup(
-                org_id=self.data_entities_processor.org_id,
-                name=name,
-                group_type=RecordGroupType.PROJECT.value,
-                connector_name=self.connector_name,
-                connector_id=self.connector_id,
-                external_group_id=full_path,
-                web_url=web_url,
-            )
-            await self.data_entities_processor.on_new_record_groups(
-                [(group_rg, [group_permission])]
-            )
 
     @classmethod
     async def create_connector(

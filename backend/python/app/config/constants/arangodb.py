@@ -44,6 +44,7 @@ class Connectors(Enum):
 
     NOTION = "NOTION"
     SLACK = "SLACK"
+    SLACK_WORKSPACE = "SLACK WORKSPACE"
 
     KNOWLEDGE_BASE = "KB"
 
@@ -107,6 +108,7 @@ class AppGroups(Enum):
     GOOGLE_CLOUD = "Google Cloud"
     AZURE = "Azure"
     LINEAR = "Linear"
+    SLACK = "Slack"
     ZAMMAD = "Zammad"
     ZOOM = "Zoom"
     LOCAL_STORAGE = "Local Storage"
@@ -159,7 +161,7 @@ class CollectionNames(Enum):
     FILES = "files"
     LINKS = "links"
     MAILS = "mails"
-    # MESSAGES = "messages"
+    MESSAGES = "messages"
     WEBPAGES = "webpages"
     COMMENTS = "comments"
     TICKETS = "tickets"
@@ -268,8 +270,34 @@ class ExtensionTypes(Enum):
     HEIC = "heic"
     HEIF = "heif"
     SQL_TABLE = "sql_table"  
-    SQL_VIEW = "sql_view"    
-
+    SQL_VIEW = "sql_view"
+    PY = "py"
+    JS = "js"
+    JSX = "jsx"
+    MJS = "mjs"
+    CJS = "cjs"
+    TS = "ts"
+    TSX = "tsx"
+    JAVA = "java"
+    C = "c"
+    H = "h"
+    CPP = "cpp"
+    CC = "cc"
+    CXX = "cxx"
+    HPP = "hpp"
+    HXX = "hxx"
+    CS = "cs"
+    GO = "go"
+    RS = "rs"
+    RB = "rb"
+    PHP = "php"
+    SWIFT = "swift"
+    KT = "kt"
+    KTS = "kts"
+    DART = "dart"
+    SH = "sh"
+    BASH = "bash"
+    HTM = "htm"
 
 
 class MimeTypes(Enum):
@@ -310,8 +338,78 @@ class MimeTypes(Enum):
     HEIF = "image/heif"
     ZIP = "application/zip"
     GIF = "image/gif"
+    PYTHON = "text/x-python"
+    JAVA_SOURCE = "text/x-java-source"
+    C_SOURCE = "text/x-c"
+    CPP = "text/x-c++"
+    PHP = "text/x-php"
+    JAVASCRIPT = "application/javascript"
+    TYPESCRIPT = "application/typescript"
+    CSHARP = "text/x-csharp"
+    GO = "text/x-go"
+    RUST = "text/x-rust"
+    RUBY = "text/x-ruby"
+    SWIFT = "text/x-swift"
+    KOTLIN = "text/x-kotlin"
+    DART = "application/dart"
+    SHELL = "application/x-sh"
     SQL_TABLE = "application/vnd.sql.table"  
     SQL_VIEW = "application/vnd.sql.view"  
+
+CODE_FILE_MIME_TYPE_VALUES = frozenset({
+    MimeTypes.PYTHON.value,
+    MimeTypes.JAVA_SOURCE.value,
+    MimeTypes.C_SOURCE.value,
+    MimeTypes.CPP.value,
+    MimeTypes.PHP.value,
+    MimeTypes.JAVASCRIPT.value,
+    MimeTypes.TYPESCRIPT.value,
+    MimeTypes.CSHARP.value,
+    MimeTypes.GO.value,
+    MimeTypes.RUST.value,
+    MimeTypes.RUBY.value,
+    MimeTypes.SWIFT.value,
+    MimeTypes.KOTLIN.value,
+    MimeTypes.DART.value,
+    MimeTypes.SHELL.value,
+})
+
+CODE_FILE_EXTENSION_VALUES = frozenset({
+    ExtensionTypes.PY.value,
+    ExtensionTypes.JS.value,
+    ExtensionTypes.JSX.value,
+    ExtensionTypes.MJS.value,
+    ExtensionTypes.CJS.value,
+    ExtensionTypes.TS.value,
+    ExtensionTypes.TSX.value,
+    ExtensionTypes.JAVA.value,
+    ExtensionTypes.C.value,
+    ExtensionTypes.H.value,
+    ExtensionTypes.CPP.value,
+    ExtensionTypes.CC.value,
+    ExtensionTypes.CXX.value,
+    ExtensionTypes.HPP.value,
+    ExtensionTypes.HXX.value,
+    ExtensionTypes.CS.value,
+    ExtensionTypes.GO.value,
+    ExtensionTypes.RS.value,
+    ExtensionTypes.RB.value,
+    ExtensionTypes.PHP.value,
+    ExtensionTypes.SWIFT.value,
+    ExtensionTypes.KT.value,
+    ExtensionTypes.KTS.value,
+    ExtensionTypes.DART.value,
+    ExtensionTypes.SH.value,
+    ExtensionTypes.BASH.value,
+})
+
+
+def normalize_file_extension(extension: str | None) -> str:
+    """Lower-case extension without a leading dot."""
+    if not extension:
+        return ""
+    return extension.lower().lstrip(".")
+
 
 RECONCILIATION_ENABLED_MIME_TYPES = {
     MimeTypes.SQL_TABLE.value,
@@ -324,6 +422,7 @@ RECONCILIATION_ENABLED_MIME_TYPES = {
     MimeTypes.DOC.value,
     MimeTypes.PLAIN_TEXT.value,
     MimeTypes.HTML.value,
+    MimeTypes.BLOCKS.value,
 }
 
 RECONCILIATION_ENABLED_EXTENSIONS = {
@@ -403,6 +502,8 @@ class EntityRelations(Enum):
     CREATED_BY = "CREATED_BY"
     LEAD_BY = "LEAD_BY"
     RELATED_TO_PERSON = "RELATED_TO_PERSON"
+    MENTIONED_IN = "MENTIONED_IN"  # User mentioned in a message/record
+    INVOLVED_IN = "INVOLVED_IN"
 
 
 class EventTypes(Enum):
@@ -436,6 +537,7 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "FILE": CollectionNames.FILES.value,
     "MAIL": CollectionNames.MAILS.value,
     "GROUP_MAIL": CollectionNames.MAILS.value,
+    "MESSAGE": CollectionNames.MESSAGES.value,
     "WEBPAGE": CollectionNames.WEBPAGES.value,
     "SHAREPOINT_PAGE": CollectionNames.WEBPAGES.value,
     "CONFLUENCE_PAGE": CollectionNames.WEBPAGES.value,

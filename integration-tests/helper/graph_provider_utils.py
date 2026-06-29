@@ -136,34 +136,30 @@ async def wait_for_sync_completion(
         )
     """
     deadline = time.time() + timeout
-    logger.info("⏳ Waiting for sync completion for connector %s", connector_id)
+    logger.info("⏳ Waiting for sync completion...")
 
     while time.time() < deadline:
         connector = pipeshub_client.get_connector(connector_id)
         status = connector.get("status", "IDLE")
 
         if status == AppStatus.IDLE.value:
-            logger.info("✅ Connector %s status is IDLE", connector_id)
+            logger.info("✅ Connector status is IDLE")
             break
 
         logger.info(
-            "⏳ Connector %s status: %s, waiting... (%.0fs remaining)",
-            connector_id, status, deadline - time.time(),
+            "⏳ Connector status: %s, waiting... (%.0fs remaining)",
+            status, deadline - time.time(),
         )
         await asyncio.sleep(poll_interval)
     else:
-        raise TimeoutError(f"Connector {connector_id} did not reach IDLE status within {timeout}s")
+        raise TimeoutError(f"Connector did not reach IDLE status within {timeout}s")
 
     final_count = await graph_provider.count_records(connector_id)
 
     if min_records is not None and final_count < min_records:
         raise AssertionError(
-            f"Expected at least {min_records} records, got {final_count} "
-            f"for connector {connector_id}"
+            f"Expected at least {min_records} records, got {final_count}"
         )
 
-    logger.info(
-        "✅ Sync complete for connector %s: %d records",
-        connector_id, final_count
-    )
+    logger.info("✅ Sync complete: %d records", final_count)
     return final_count

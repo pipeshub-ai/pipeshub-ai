@@ -144,6 +144,7 @@ async def _enrich_sql_table_with_fk_relations(
     
     return enriched_record
 
+
 async def _fetch_multiple_records_impl(
     record_ids: list[str],
     virtual_record_id_to_result: dict[str, Any],

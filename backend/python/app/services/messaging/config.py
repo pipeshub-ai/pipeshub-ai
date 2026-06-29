@@ -53,6 +53,8 @@ class StreamMessage(BaseModel):
     eventType: str
     payload: dict[str, JsonValue]
     timestamp: Optional[int] = None
+    # Trace id propagated from the producer; optional so legacy messages parse.
+    requestId: Optional[str] = None
 
 
 class PipelineEventData(BaseModel):

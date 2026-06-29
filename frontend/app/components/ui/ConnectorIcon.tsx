@@ -131,7 +131,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'localfs': { svg: `${CONNECTOR_ICONS_BASE_PATH}/local-fs.png`, fallback: 'folder', needDarkModeInvert: true },
   'nextcloud': { svg: svg('nextcloud'), fallback: 'cloud' },
   // Document & Knowledge
-  'notion': { svg: svg('notion'), fallback: 'description', needDarkModeInvert: true },
+  'notion': { svg: svg('notion'), fallback: 'description' },
   'confluence': { svg: svg('confluence'), fallback: 'article' },
   'bookstack': { svg: svg('bookstack'), fallback: 'menu_book' },
   'google-docs': { svg: svg('docs'), fallback: 'description' },

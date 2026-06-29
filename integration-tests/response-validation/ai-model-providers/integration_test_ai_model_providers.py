@@ -40,7 +40,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import pytest
-import requests
 
 _ROOT = Path(__file__).resolve().parents[2]
 _RV_HELPER = _ROOT / "response-validation" / "helper"
@@ -50,6 +49,7 @@ for _p in (_ROOT, _RV_HELPER, _AUTH_UTILS):
     if s not in sys.path:
         sys.path.insert(0, s)
 
+from helper.clients.ai_models_client import AIModelsClient  # noqa: E402
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
@@ -58,8 +58,6 @@ from openapi_schema_validator import (  # noqa: E402
 
 logger = logging.getLogger("ai-model-providers-integration-test")
 
-_PROVIDERS_PATH = "/api/v1/configurationManager/ai-models/providers"
-_AI_MODELS_PATH = "/api/v1/configurationManager/ai-models"
 _MODEL_TYPE_LLM = "llm"
 _AI_MODEL_BUCKET_KEYS = (
     "ocr",
@@ -101,6 +99,20 @@ class CreatedProvider:
     provider: str
 
 
+# ------------------------------------------------------------------ #
+# Base test class
+# ------------------------------------------------------------------ #
+class AIModelsTestBase:
+    """Base class with shared ai_models_client fixture for AI models tests."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, ai_models_client: AIModelsClient) -> None:
+        self.ai = ai_models_client
+
+
+# ------------------------------------------------------------------ #
+# Helpers
+# ------------------------------------------------------------------ #
 def _env(name: str, fallback: Optional[str] = None) -> Optional[str]:
     value = os.getenv(name, "").strip()
     if value:
@@ -110,32 +122,6 @@ def _env(name: str, fallback: Optional[str] = None) -> Optional[str]:
         if fb:
             return fb
     return None
-
-
-def _admin_headers(client: PipeshubClient) -> Dict[str, str]:
-    client._ensure_access_token()
-    return {
-        "Authorization": f"Bearer {client._access_token}",
-        "Content-Type": "application/json",
-    }
-
-
-def _providers_url(client: PipeshubClient) -> str:
-    return client._url(_PROVIDERS_PATH)
-
-
-def _ai_models_url(client: PipeshubClient) -> str:
-    return client._url(_AI_MODELS_PATH)
-
-
-def _models_by_type_url(client: PipeshubClient, model_type: str) -> str:
-    return client._url(f"{_AI_MODELS_PATH}/{model_type}")
-
-
-def _delete_provider_url(
-    client: PipeshubClient, model_type: str, model_key: str
-) -> str:
-    return client._url(f"{_PROVIDERS_PATH}/{model_type}/{model_key}")
 
 
 def _assert_validation_error(body: dict, *, label: str) -> None:
@@ -150,29 +136,6 @@ def _assert_validation_error(body: dict, *, label: str) -> None:
 def _assert_error_envelope_matches_spec(body: dict) -> None:
     """Error paths without per-operation response schemas use ErrorResponse."""
     assert_response_matches_openapi_ref(body, "#/components/schemas/ErrorResponse")
-
-
-def _teardown_provider(client: PipeshubClient, created: CreatedProvider) -> None:
-    try:
-        resp = requests.delete(
-            _delete_provider_url(client, created.model_type, created.model_key),
-            headers=_admin_headers(client),
-            timeout=client.timeout_seconds,
-        )
-    except Exception as exc:
-        logger.warning(
-            "Teardown delete failed for modelKey=%s: %s",
-            created.model_key,
-            exc,
-        )
-        return
-    if resp.status_code >= 300:
-        logger.warning(
-            "Teardown delete modelKey=%s: HTTP %s %s",
-            created.model_key,
-            resp.status_code,
-            resp.text[:300],
-        )
 
 
 def _live_provider_specs() -> List[LiveProviderSpec]:
@@ -285,85 +248,6 @@ def _minimal_llm_payload(
     return payload
 
 
-def _post_provider(
-    client: PipeshubClient,
-    payload: Dict[str, Any],
-    *,
-    headers: Optional[Dict[str, str]] = None,
-    raw_data: Optional[str] = None,
-) -> requests.Response:
-    kwargs: Dict[str, Any] = {
-        "url": _providers_url(client),
-        "timeout": client.timeout_seconds,
-    }
-    if raw_data is not None:
-        kwargs["data"] = raw_data
-        kwargs["headers"] = headers or {"Content-Type": "application/json"}
-    else:
-        kwargs["json"] = payload
-        kwargs["headers"] = headers or _admin_headers(client)
-    return requests.post(**kwargs)
-
-
-def _put_provider(
-    client: PipeshubClient,
-    model_type: str,
-    model_key: str,
-    payload: Dict[str, Any],
-    *,
-    headers: Optional[Dict[str, str]] = None,
-    raw_data: Optional[str] = None,
-) -> requests.Response:
-    url = client._url(f"{_PROVIDERS_PATH}/{model_type}/{model_key}")
-    kwargs: Dict[str, Any] = {"url": url, "timeout": client.timeout_seconds}
-    if raw_data is not None:
-        kwargs["data"] = raw_data
-        kwargs["headers"] = headers or {"Content-Type": "application/json"}
-    else:
-        kwargs["json"] = payload
-        kwargs["headers"] = headers or _admin_headers(client)
-    return requests.put(**kwargs)
-
-
-def _delete_provider(
-    client: PipeshubClient,
-    model_type: str,
-    model_key: str,
-    *,
-    headers: Optional[Dict[str, str]] = None,
-) -> requests.Response:
-    return requests.delete(
-        _delete_provider_url(client, model_type, model_key),
-        headers=headers or _admin_headers(client),
-        timeout=client.timeout_seconds,
-    )
-
-
-def _get_ai_models(
-    client: PipeshubClient,
-    *,
-    headers: Optional[Dict[str, str]] = None,
-) -> requests.Response:
-    return requests.get(
-        _ai_models_url(client),
-        headers=headers or _admin_headers(client),
-        timeout=client.timeout_seconds,
-    )
-
-
-def _get_models_by_type(
-    client: PipeshubClient,
-    model_type: str,
-    *,
-    headers: Optional[Dict[str, str]] = None,
-) -> requests.Response:
-    return requests.get(
-        _models_by_type_url(client, model_type),
-        headers=headers or _admin_headers(client),
-        timeout=client.timeout_seconds,
-    )
-
-
 def _assert_all_models_bucket_structure(body: dict, *, label: str) -> None:
     assert body.get("status") == "success", f"[{label}] Unexpected status: {body}"
     models = body.get("models")
@@ -405,16 +289,33 @@ def _minimal_update_body(
     return body
 
 
+def _teardown_provider(ai: AIModelsClient, created: CreatedProvider) -> None:
+    try:
+        resp = ai.delete_provider(created.model_type, created.model_key)
+    except Exception as exc:
+        logger.warning(
+            "Teardown delete failed for modelKey=%s: %s",
+            created.model_key,
+            exc,
+        )
+        return
+    if resp.status_code >= 300:
+        logger.warning(
+            "Teardown delete modelKey=%s: HTTP %s %s",
+            created.model_key,
+            resp.status_code,
+            resp.text[:300],
+        )
+
+
 def _create_live_provider(
-    client: PipeshubClient,
+    ai: AIModelsClient,
     spec: LiveProviderSpec,
-    *,
-    headers: Dict[str, str],
 ) -> CreatedProvider:
     """POST a provider using live credentials; caller must teardown."""
     provider_id, _model, configuration = _skip_if_no_live_credentials(spec)
     payload = _minimal_llm_payload(provider_id, configuration)
-    resp = _post_provider(client, payload, headers=headers)
+    resp = ai.add_provider(**payload)
     assert resp.status_code == 200, (
         f"[{provider_id}] create failed: {resp.status_code}: {resp.text}"
     )
@@ -429,36 +330,14 @@ def _create_live_provider(
     )
 
 
-# ------------------------------------------------------------------ #
-# Fixtures
-# ------------------------------------------------------------------ #
-
-
-@pytest.fixture(scope="module")
-def providers_api(pipeshub_client: PipeshubClient) -> Dict[str, Any]:
-    """Shared URL, timeout, and admin headers for this module."""
-    return {
-        "client": pipeshub_client,
-        "url": _providers_url(pipeshub_client),
-        "timeout": pipeshub_client.timeout_seconds,
-        "headers": _admin_headers(pipeshub_client),
-    }
-
-
 # ==================================================================== #
 # Negative — validation & auth (no live API keys)
 # ==================================================================== #
 
 
 @pytest.mark.integration
-class TestAddAIModelProviderValidation:
+class TestAddAIModelProviderValidation(AIModelsTestBase):
     """Invalid bodies rejected by ValidationMiddleware (Zod) before health-check."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, providers_api: Dict[str, Any]) -> None:
-        self.client: PipeshubClient = providers_api["client"]
-        self.headers = providers_api["headers"]
-        self.timeout = providers_api["timeout"]
 
     @pytest.mark.parametrize(
         "label,payload",
@@ -526,7 +405,7 @@ class TestAddAIModelProviderValidation:
     def test_validation_rejects_invalid_body(
         self, label: str, payload: Dict[str, Any]
     ) -> None:
-        resp = _post_provider(self.client, payload, headers=self.headers)
+        resp = self.ai.add_provider(**payload)
         assert resp.status_code == 400, (
             f"[{label}] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -535,11 +414,10 @@ class TestAddAIModelProviderValidation:
         _assert_error_envelope_matches_spec(body)
 
     def test_malformed_json_body(self) -> None:
-        resp = _post_provider(
-            self.client,
-            {},
-            headers=self.headers,
-            raw_data='{"modelType": "llm", "provider": "openAI", broken}',
+        resp = self.ai.post(
+            "/providers",
+            data='{"modelType": "llm", "provider": "openAI", broken}',
+            headers={"Content-Type": "application/json"},
         )
         assert resp.status_code >= 400, (
             f"Expected client error for malformed JSON, got {resp.status_code}: {resp.text}"
@@ -550,12 +428,7 @@ class TestAddAIModelProviderValidation:
             _PROVIDER_OPENAI,
             {"model": "gpt-4o-mini", "apiKey": "sk-test"},
         )
-        resp = requests.post(
-            _providers_url(self.client),
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout,
-        )
+        resp = self.ai.post("/providers", json=payload, auth=False)
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 without Authorization, got {resp.status_code}: {resp.text}"
         )
@@ -564,13 +437,8 @@ class TestAddAIModelProviderValidation:
 
 
 @pytest.mark.integration
-class TestAddAIModelProviderHealthCheckFailure:
+class TestAddAIModelProviderHealthCheckFailure(AIModelsTestBase):
     """Health-check failures for invalid credentials (no valid API key required)."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, providers_api: Dict[str, Any]) -> None:
-        self.client = providers_api["client"]
-        self.headers = providers_api["headers"]
 
     @pytest.mark.slow
     @pytest.mark.parametrize(
@@ -597,7 +465,7 @@ class TestAddAIModelProviderHealthCheckFailure:
         self, provider: str, configuration: Dict[str, Any]
     ) -> None:
         payload = _minimal_llm_payload(provider, configuration)
-        resp = _post_provider(self.client, payload, headers=self.headers)
+        resp = self.ai.add_provider(**payload)
         assert resp.status_code in (400, 401, 422, 500), (
             f"[{provider}] Expected health-check failure status, "
             f"got {resp.status_code}: {resp.text}"
@@ -619,13 +487,8 @@ class TestAddAIModelProviderHealthCheckFailure:
 
 @pytest.mark.integration
 @pytest.mark.slow
-class TestAddAIModelProviderLive:
+class TestAddAIModelProviderLive(AIModelsTestBase):
     """Successful add + modelKey assignment; tears down via DELETE."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, providers_api: Dict[str, Any]) -> None:
-        self.client = providers_api["client"]
-        self.headers = providers_api["headers"]
 
     @pytest.mark.parametrize("spec", _live_provider_specs(), ids=lambda s: s.provider_id)
     def test_add_minimal_llm_provider(
@@ -635,7 +498,7 @@ class TestAddAIModelProviderLive:
         payload = _minimal_llm_payload(provider_id, configuration)
         created: Optional[CreatedProvider] = None
         try:
-            resp = _post_provider(self.client, payload, headers=self.headers)
+            resp = self.ai.add_provider(**payload)
             assert resp.status_code == 200, (
                 f"[{provider_id}] Expected 200, got {resp.status_code}: {resp.text}"
             )
@@ -656,7 +519,7 @@ class TestAddAIModelProviderLive:
             )
         finally:
             if created:
-                _teardown_provider(self.client, created)
+                _teardown_provider(self.ai, created)
 
     @pytest.mark.parametrize("spec", _live_provider_specs(), ids=lambda s: s.provider_id)
     def test_add_llm_with_optional_flags(
@@ -677,7 +540,7 @@ class TestAddAIModelProviderLive:
         )
         created: Optional[CreatedProvider] = None
         try:
-            resp = _post_provider(self.client, payload, headers=self.headers)
+            resp = self.ai.add_provider(**payload)
             assert resp.status_code == 200, (
                 f"[{provider_id} optional flags] "
                 f"Expected 200, got {resp.status_code}: {resp.text}"
@@ -696,17 +559,12 @@ class TestAddAIModelProviderLive:
             )
         finally:
             if created:
-                _teardown_provider(self.client, created)
+                _teardown_provider(self.ai, created)
 
 
 @pytest.mark.integration
-class TestAddAIModelProviderAzureFields:
+class TestAddAIModelProviderAzureFields(AIModelsTestBase):
     """Azure OpenAI requires endpoint, apiKey, deploymentName per registry."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, providers_api: Dict[str, Any]) -> None:
-        self.client = providers_api["client"]
-        self.headers = providers_api["headers"]
 
     def test_azure_missing_deployment_rejected_at_health_check(self) -> None:
         api_key = _env("TEST_AZURE_OPENAI_API_KEY")
@@ -724,14 +582,14 @@ class TestAddAIModelProviderAzureFields:
                 # deploymentName intentionally omitted
             },
         )
-        resp = _post_provider(self.client, payload, headers=self.headers)
+        resp = self.ai.add_provider(**payload)
         assert resp.status_code in (400, 422, 500), (
             f"Expected failure without deploymentName, got {resp.status_code}: {resp.text}"
         )
 
 
 @pytest.mark.integration
-class TestAddAIModelProviderNonAdmin:
+class TestAddAIModelProviderNonAdmin(AIModelsTestBase):
     """Admin gate via userAdminCheck — skipped when no non-admin fixture exists."""
 
     def test_non_admin_rejected(self, pipeshub_client: PipeshubClient) -> None:
@@ -745,20 +603,19 @@ class TestAddAIModelProviderNonAdmin:
         from auth_helpers import login_with_user, session_headers  # noqa: E402
 
         token, _ = login_with_user(
-            pipeshub_client.base_url,
+            pipeshub_client,
             os.environ["PIPESHUB_TEST_NON_ADMIN_EMAIL"].strip(),
             os.environ["PIPESHUB_TEST_NON_ADMIN_PASSWORD"].strip(),
-            pipeshub_client.timeout_seconds,
         )
         payload = _minimal_llm_payload(
             _PROVIDER_OPENAI,
             {"model": "gpt-4o-mini", "apiKey": "sk-test"},
         )
-        resp = requests.post(
-            _providers_url(pipeshub_client),
+        resp = self.ai.post(
+            "/providers",
             json=payload,
             headers=session_headers(token),
-            timeout=pipeshub_client.timeout_seconds,
+            auth=False,
         )
         assert resp.status_code == 400, (
             f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
@@ -774,14 +631,8 @@ class TestAddAIModelProviderNonAdmin:
 
 
 @pytest.mark.integration
-class TestUpdateAIModelProviderValidation:
+class TestUpdateAIModelProviderValidation(AIModelsTestBase):
     """Invalid params/bodies rejected by Zod before health-check."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, providers_api: Dict[str, Any]) -> None:
-        self.client = providers_api["client"]
-        self.headers = providers_api["headers"]
-        self.timeout = providers_api["timeout"]
 
     @pytest.mark.parametrize(
         "label,model_type,model_key,payload",
@@ -861,9 +712,7 @@ class TestUpdateAIModelProviderValidation:
         model_key: str,
         payload: Dict[str, Any],
     ) -> None:
-        resp = _put_provider(
-            self.client, model_type, model_key, payload, headers=self.headers
-        )
+        resp = self.ai.update_provider(model_type, model_key, **payload)
         assert resp.status_code == 400, (
             f"[{label}] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -879,9 +728,7 @@ class TestUpdateAIModelProviderValidation:
             _PROVIDER_OPENAI,
             {"model": "gpt-4o-mini", "apiKey": "sk-test"},
         )
-        resp = _put_provider(
-            self.client, _MODEL_TYPE_LLM, "", payload, headers=self.headers
-        )
+        resp = self.ai.update_provider(_MODEL_TYPE_LLM, "", **payload)
         assert resp.status_code == 404, (
             f"Expected 404 for empty modelKey (no route match), "
             f"got {resp.status_code}: {resp.text}"
@@ -899,9 +746,7 @@ class TestUpdateAIModelProviderValidation:
         _, _, configuration = _skip_if_no_live_credentials(openai_spec)
         unknown_key = str(uuid.uuid4())
         payload = _minimal_update_body(_PROVIDER_OPENAI, configuration)
-        resp = _put_provider(
-            self.client, _MODEL_TYPE_LLM, unknown_key, payload, headers=self.headers
-        )
+        resp = self.ai.update_provider(_MODEL_TYPE_LLM, unknown_key, **payload)
         assert resp.status_code == 500, (
             f"Expected 500 for unknown modelKey on PUT, got {resp.status_code}: {resp.text}"
         )
@@ -917,13 +762,10 @@ class TestUpdateAIModelProviderValidation:
             _PROVIDER_OPENAI,
             {"model": "gpt-4o-mini", "apiKey": "sk-test"},
         )
-        resp = requests.put(
-            self.client._url(
-                f"{_PROVIDERS_PATH}/{_MODEL_TYPE_LLM}/{uuid.uuid4()}"
-            ),
+        resp = self.ai.put(
+            f"/providers/{_MODEL_TYPE_LLM}/{uuid.uuid4()}",
             json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout,
+            auth=False,
         )
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 without Authorization, got {resp.status_code}: {resp.text}"
@@ -932,13 +774,10 @@ class TestUpdateAIModelProviderValidation:
             _assert_error_envelope_matches_spec(resp.json())
 
     def test_malformed_json_body(self) -> None:
-        resp = _put_provider(
-            self.client,
-            _MODEL_TYPE_LLM,
-            str(uuid.uuid4()),
-            {},
-            headers=self.headers,
-            raw_data='{"provider": "openAI", broken}',
+        resp = self.ai.put(
+            f"/providers/{_MODEL_TYPE_LLM}/{uuid.uuid4()}",
+            data='{"provider": "openAI", broken}',
+            headers={"Content-Type": "application/json"},
         )
         assert resp.status_code >= 400, (
             f"Expected client error for malformed JSON, got {resp.status_code}: {resp.text}"
@@ -946,7 +785,7 @@ class TestUpdateAIModelProviderValidation:
 
 
 @pytest.mark.integration
-class TestUpdateAIModelProviderNonAdmin:
+class TestUpdateAIModelProviderNonAdmin(AIModelsTestBase):
     """PUT rejected for non-admin session JWT."""
 
     def test_non_admin_put_rejected(self, pipeshub_client: PipeshubClient) -> None:
@@ -960,22 +799,19 @@ class TestUpdateAIModelProviderNonAdmin:
         from auth_helpers import login_with_user, session_headers  # noqa: E402
 
         token, _ = login_with_user(
-            pipeshub_client.base_url,
+            pipeshub_client,
             os.environ["PIPESHUB_TEST_NON_ADMIN_EMAIL"].strip(),
             os.environ["PIPESHUB_TEST_NON_ADMIN_PASSWORD"].strip(),
-            pipeshub_client.timeout_seconds,
         )
         payload = _minimal_update_body(
             _PROVIDER_OPENAI,
             {"model": "gpt-4o-mini", "apiKey": "sk-test"},
         )
-        resp = requests.put(
-            pipeshub_client._url(
-                f"{_PROVIDERS_PATH}/{_MODEL_TYPE_LLM}/{uuid.uuid4()}"
-            ),
+        resp = self.ai.put(
+            f"/providers/{_MODEL_TYPE_LLM}/{uuid.uuid4()}",
             json=payload,
             headers=session_headers(token),
-            timeout=pipeshub_client.timeout_seconds,
+            auth=False,
         )
         assert resp.status_code == 400, (
             f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
@@ -992,20 +828,15 @@ class TestUpdateAIModelProviderNonAdmin:
 
 @pytest.mark.integration
 @pytest.mark.slow
-class TestUpdateAIModelProviderLive:
+class TestUpdateAIModelProviderLive(AIModelsTestBase):
     """Successful update after POST; OpenAPI + teardown via DELETE."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, providers_api: Dict[str, Any]) -> None:
-        self.client = providers_api["client"]
-        self.headers = providers_api["headers"]
 
     @pytest.mark.parametrize("spec", _live_provider_specs(), ids=lambda s: s.provider_id)
     def test_create_update_delete_llm_provider(self, spec: LiveProviderSpec) -> None:
         created: Optional[CreatedProvider] = None
         try:
             created = _create_live_provider(
-                self.client, spec, headers=self.headers
+                self.ai, spec
             )
             provider_id, _model, configuration = _skip_if_no_live_credentials(spec)
             updated_config = {
@@ -1018,12 +849,10 @@ class TestUpdateAIModelProviderLive:
                 is_multimodal=provider_id == _PROVIDER_GEMINI,
                 context_length=64000,
             )
-            resp = _put_provider(
-                self.client,
+            resp = self.ai.update_provider(
                 created.model_type,
                 created.model_key,
-                update_body,
-                headers=self.headers,
+                **update_body,
             )
             assert resp.status_code == 200, (
                 f"[{provider_id}] PUT expected 200, got {resp.status_code}: {resp.text}"
@@ -1038,11 +867,9 @@ class TestUpdateAIModelProviderLive:
             )
         finally:
             if created:
-                _teardown_provider(self.client, created)
+                _teardown_provider(self.ai, created)
 
-    def test_model_type_mismatch_returns_400(
-        self, providers_api: Dict[str, Any]
-    ) -> None:
+    def test_model_type_mismatch_returns_400(self) -> None:
         """PUT embedding path + LLM modelKey: health-check runs before KV mismatch check.
 
         updateAIModelProvider validates provider/config, then calls the AI health-check
@@ -1053,19 +880,15 @@ class TestUpdateAIModelProviderLive:
         openai_spec = next(
             s for s in _live_provider_specs() if s.provider_id == _PROVIDER_OPENAI
         )
-        client = providers_api["client"]
-        headers = providers_api["headers"]
         created: Optional[CreatedProvider] = None
         try:
-            created = _create_live_provider(client, openai_spec, headers=headers)
+            created = _create_live_provider(self.ai, openai_spec)
             _, _, configuration = _skip_if_no_live_credentials(openai_spec)
             update_body = _minimal_update_body(_PROVIDER_OPENAI, configuration)
-            resp = _put_provider(
-                client,
+            resp = self.ai.update_provider(
                 "embedding",
                 created.model_key,
-                update_body,
-                headers=headers,
+                **update_body,
             )
             assert resp.status_code in (400, 401, 422, 500), (
                 f"Expected health-check failure before type mismatch, "
@@ -1080,7 +903,7 @@ class TestUpdateAIModelProviderLive:
             assert "belongs to type" not in message, body
         finally:
             if created:
-                _teardown_provider(client, created)
+                _teardown_provider(self.ai, created)
 
     @pytest.mark.parametrize("spec", _live_provider_specs(), ids=lambda s: s.provider_id)
     def test_update_invalid_api_key_fails_health_check(
@@ -1089,7 +912,7 @@ class TestUpdateAIModelProviderLive:
         created: Optional[CreatedProvider] = None
         try:
             created = _create_live_provider(
-                self.client, spec, headers=self.headers
+                self.ai, spec
             )
             bad_config = {"model": "gpt-4o-mini", "apiKey": "sk-invalid-update-test"}
             if spec.provider_id == _PROVIDER_GEMINI:
@@ -1103,12 +926,10 @@ class TestUpdateAIModelProviderLive:
                     "apiKey": "gsk_invalid_update_test",
                 }
             update_body = _minimal_update_body(spec.provider_id, bad_config)
-            resp = _put_provider(
-                self.client,
+            resp = self.ai.update_provider(
                 created.model_type,
                 created.model_key,
-                update_body,
-                headers=self.headers,
+                **update_body,
             )
             assert resp.status_code in (400, 401, 422, 500), (
                 f"[{spec.provider_id}] Expected health-check failure on PUT, "
@@ -1116,7 +937,7 @@ class TestUpdateAIModelProviderLive:
             )
         finally:
             if created:
-                _teardown_provider(self.client, created)
+                _teardown_provider(self.ai, created)
 
 
 # ==================================================================== #
@@ -1125,14 +946,8 @@ class TestUpdateAIModelProviderLive:
 
 
 @pytest.mark.integration
-class TestDeleteAIModelProviderValidation:
+class TestDeleteAIModelProviderValidation(AIModelsTestBase):
     """Invalid path params rejected by Zod (deleteProviderSchema)."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, providers_api: Dict[str, Any]) -> None:
-        self.client = providers_api["client"]
-        self.headers = providers_api["headers"]
-        self.timeout = providers_api["timeout"]
 
     @pytest.mark.parametrize(
         "label,model_type,model_key",
@@ -1143,9 +958,7 @@ class TestDeleteAIModelProviderValidation:
     def test_validation_rejects_invalid_delete(
         self, label: str, model_type: str, model_key: str
     ) -> None:
-        resp = _delete_provider(
-            self.client, model_type, model_key, headers=self.headers
-        )
+        resp = self.ai.delete_provider(model_type, model_key)
         assert resp.status_code == 400, (
             f"[{label}] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -1157,9 +970,7 @@ class TestDeleteAIModelProviderValidation:
         # Express does not match DELETE .../providers/:modelType/:modelKey when
         # modelKey is empty (URL ends with .../llm/); deleteProviderSchema min(1)
         # is never reached — same routing limitation as PUT empty modelKey.
-        resp = _delete_provider(
-            self.client, _MODEL_TYPE_LLM, "", headers=self.headers
-        )
+        resp = self.ai.delete_provider(_MODEL_TYPE_LLM, "")
         assert resp.status_code == 404, (
             f"Expected 404 (no route match for empty modelKey), "
             f"got {resp.status_code}: {resp.text}"
@@ -1167,9 +978,7 @@ class TestDeleteAIModelProviderValidation:
 
     def test_unknown_model_key_delete_returns_404(self) -> None:
         unknown_key = str(uuid.uuid4())
-        resp = _delete_provider(
-            self.client, _MODEL_TYPE_LLM, unknown_key, headers=self.headers
-        )
+        resp = self.ai.delete_provider(_MODEL_TYPE_LLM, unknown_key)
         assert resp.status_code == 404, (
             f"Expected 404 for unknown modelKey, got {resp.status_code}: {resp.text}"
         )
@@ -1182,10 +991,9 @@ class TestDeleteAIModelProviderValidation:
         )
 
     def test_missing_authorization(self) -> None:
-        resp = requests.delete(
-            _delete_provider_url(self.client, _MODEL_TYPE_LLM, str(uuid.uuid4())),
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout,
+        resp = self.ai.delete(
+            f"/providers/{_MODEL_TYPE_LLM}/{uuid.uuid4()}",
+            auth=False,
         )
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 without Authorization, got {resp.status_code}: {resp.text}"
@@ -1195,7 +1003,7 @@ class TestDeleteAIModelProviderValidation:
 
 
 @pytest.mark.integration
-class TestDeleteAIModelProviderNonAdmin:
+class TestDeleteAIModelProviderNonAdmin(AIModelsTestBase):
     """DELETE rejected for non-admin session JWT."""
 
     def test_non_admin_delete_rejected(self, pipeshub_client: PipeshubClient) -> None:
@@ -1209,15 +1017,14 @@ class TestDeleteAIModelProviderNonAdmin:
         from auth_helpers import login_with_user, session_headers  # noqa: E402
 
         token, _ = login_with_user(
-            pipeshub_client.base_url,
+            pipeshub_client,
             os.environ["PIPESHUB_TEST_NON_ADMIN_EMAIL"].strip(),
             os.environ["PIPESHUB_TEST_NON_ADMIN_PASSWORD"].strip(),
-            pipeshub_client.timeout_seconds,
         )
-        resp = requests.delete(
-            _delete_provider_url(pipeshub_client, _MODEL_TYPE_LLM, str(uuid.uuid4())),
+        resp = self.ai.delete(
+            f"/providers/{_MODEL_TYPE_LLM}/{uuid.uuid4()}",
             headers=session_headers(token),
-            timeout=pipeshub_client.timeout_seconds,
+            auth=False,
         )
         assert resp.status_code == 400, (
             f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
@@ -1234,26 +1041,19 @@ class TestDeleteAIModelProviderNonAdmin:
 
 @pytest.mark.integration
 @pytest.mark.slow
-class TestDeleteAIModelProviderLive:
+class TestDeleteAIModelProviderLive(AIModelsTestBase):
     """Successful DELETE after POST; OpenAPI status + teardown safety."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, providers_api: Dict[str, Any]) -> None:
-        self.client = providers_api["client"]
-        self.headers = providers_api["headers"]
 
     @pytest.mark.parametrize("spec", _live_provider_specs(), ids=lambda s: s.provider_id)
     def test_create_then_delete_llm_provider(self, spec: LiveProviderSpec) -> None:
         created: Optional[CreatedProvider] = None
         try:
             created = _create_live_provider(
-                self.client, spec, headers=self.headers
+                self.ai, spec
             )
-            resp = _delete_provider(
-                self.client,
+            resp = self.ai.delete_provider(
                 created.model_type,
                 created.model_key,
-                headers=self.headers,
             )
             assert resp.status_code == 200, (
                 f"[{spec.provider_id}] DELETE expected 200, "
@@ -1267,37 +1067,23 @@ class TestDeleteAIModelProviderLive:
             assert details.get("provider") == created.provider
             deleted_key = created.model_key
             created = None
-            second = _delete_provider(
-                self.client,
-                _MODEL_TYPE_LLM,
-                deleted_key,
-                headers=self.headers,
-            )
+            second = self.ai.delete_provider(_MODEL_TYPE_LLM, deleted_key)
             assert second.status_code == 404, (
                 f"Expected 404 on second DELETE, got {second.status_code}: {second.text}"
             )
         finally:
             if created:
-                _teardown_provider(self.client, created)
+                _teardown_provider(self.ai, created)
 
-    def test_model_type_mismatch_returns_400(
-        self, providers_api: Dict[str, Any]
-    ) -> None:
+    def test_model_type_mismatch_returns_400(self) -> None:
         """Model exists under llm but path uses embedding → 400."""
         openai_spec = next(
             s for s in _live_provider_specs() if s.provider_id == _PROVIDER_OPENAI
         )
-        client = providers_api["client"]
-        headers = providers_api["headers"]
         created: Optional[CreatedProvider] = None
         try:
-            created = _create_live_provider(client, openai_spec, headers=headers)
-            resp = _delete_provider(
-                client,
-                "embedding",
-                created.model_key,
-                headers=headers,
-            )
+            created = _create_live_provider(self.ai, openai_spec)
+            resp = self.ai.delete_provider("embedding", created.model_key)
             assert resp.status_code == 400, (
                 f"Expected 400 model type mismatch, got {resp.status_code}: {resp.text}"
             )
@@ -1305,27 +1091,21 @@ class TestDeleteAIModelProviderLive:
             assert "belongs to type" in (body.get("message") or ""), body
         finally:
             if created:
-                _teardown_provider(client, created)
+                _teardown_provider(self.ai, created)
 
 
 @pytest.mark.integration
-class TestDeleteAIModelProviderConflict:
+class TestDeleteAIModelProviderConflict(AIModelsTestBase):
     """409 when an agent references the model (optional — requires env fixture)."""
 
-    def test_delete_blocked_when_agent_uses_model(
-        self, providers_api: Dict[str, Any]
-    ) -> None:
+    def test_delete_blocked_when_agent_uses_model(self) -> None:
         model_key = os.getenv("PIPESHUB_TEST_DELETE_CONFLICT_MODEL_KEY", "").strip()
         if not model_key:
             pytest.skip(
                 "Set PIPESHUB_TEST_DELETE_CONFLICT_MODEL_KEY to an LLM modelKey "
                 "that is referenced by at least one agent to test 409 conflict"
             )
-        client = providers_api["client"]
-        headers = providers_api["headers"]
-        resp = _delete_provider(
-            client, _MODEL_TYPE_LLM, model_key, headers=headers
-        )
+        resp = self.ai.delete_provider(_MODEL_TYPE_LLM, model_key)
         assert resp.status_code == 409, (
             f"Expected 409 when model is in use, got {resp.status_code}: {resp.text}"
         )
@@ -1342,17 +1122,11 @@ class TestDeleteAIModelProviderConflict:
 
 
 @pytest.mark.integration
-class TestGetAIModelsProviders:
+class TestGetAIModelsProviders(AIModelsTestBase):
     """GET /configurationManager/ai-models — getAIModelsProviders."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, providers_api: Dict[str, Any]) -> None:
-        self.client = providers_api["client"]
-        self.headers = providers_api["headers"]
-        self.timeout = providers_api["timeout"]
-
     def test_list_all_returns_200_with_bucket_structure(self) -> None:
-        resp = _get_ai_models(self.client, headers=self.headers)
+        resp = self.ai.get_providers()
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -1366,18 +1140,14 @@ class TestGetAIModelsProviders:
 
     def test_list_all_openapi_contract(self) -> None:
         """May fail if spec stays loose `type: object` — intentional drift signal."""
-        resp = _get_ai_models(self.client, headers=self.headers)
+        resp = self.ai.get_providers()
         assert resp.status_code == 200, resp.text
         assert_response_matches_openapi_operation(
             resp.json(), "getAIModelsProviders", status_code="200"
         )
 
     def test_missing_authorization(self) -> None:
-        resp = requests.get(
-            _ai_models_url(self.client),
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout,
-        )
+        resp = self.ai.get("/", auth=False)
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 without Authorization, got {resp.status_code}: {resp.text}"
         )
@@ -1386,7 +1156,7 @@ class TestGetAIModelsProviders:
 
 
 @pytest.mark.integration
-class TestGetAIModelsProvidersNonAdmin:
+class TestGetAIModelsProvidersNonAdmin(AIModelsTestBase):
     """GET /ai-models rejected for non-admin session JWT."""
 
     def test_non_admin_list_rejected(self, pipeshub_client: PipeshubClient) -> None:
@@ -1400,16 +1170,11 @@ class TestGetAIModelsProvidersNonAdmin:
         from auth_helpers import login_with_user, session_headers  # noqa: E402
 
         token, _ = login_with_user(
-            pipeshub_client.base_url,
+            pipeshub_client,
             os.environ["PIPESHUB_TEST_NON_ADMIN_EMAIL"].strip(),
             os.environ["PIPESHUB_TEST_NON_ADMIN_PASSWORD"].strip(),
-            pipeshub_client.timeout_seconds,
         )
-        resp = requests.get(
-            _ai_models_url(pipeshub_client),
-            headers=session_headers(token),
-            timeout=pipeshub_client.timeout_seconds,
-        )
+        resp = self.ai.get("/", headers=session_headers(token), auth=False)
         assert resp.status_code == 400, (
             f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
         )
@@ -1420,13 +1185,8 @@ class TestGetAIModelsProvidersNonAdmin:
 
 @pytest.mark.integration
 @pytest.mark.slow
-class TestGetAIModelsProvidersLive:
+class TestGetAIModelsProvidersLive(AIModelsTestBase):
     """POST provider then GET list-all includes entry under models.llm."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, providers_api: Dict[str, Any]) -> None:
-        self.client = providers_api["client"]
-        self.headers = providers_api["headers"]
 
     @pytest.mark.parametrize("spec", _live_provider_specs(), ids=lambda s: s.provider_id)
     def test_list_all_includes_created_llm_provider(
@@ -1434,8 +1194,8 @@ class TestGetAIModelsProvidersLive:
     ) -> None:
         created: Optional[CreatedProvider] = None
         try:
-            created = _create_live_provider(self.client, spec, headers=self.headers)
-            resp = _get_ai_models(self.client, headers=self.headers)
+            created = _create_live_provider(self.ai, spec)
+            resp = self.ai.get_providers()
             assert resp.status_code == 200, (
                 f"[{spec.provider_id}] list-all expected 200, "
                 f"got {resp.status_code}: {resp.text}"
@@ -1454,7 +1214,7 @@ class TestGetAIModelsProvidersLive:
             # Stored KV entries omit modelType; bucket path implies llm.
         finally:
             if created:
-                _teardown_provider(self.client, created)
+                _teardown_provider(self.ai, created)
 
 
 # ==================================================================== #
@@ -1463,19 +1223,11 @@ class TestGetAIModelsProvidersLive:
 
 
 @pytest.mark.integration
-class TestGetModelsByType:
+class TestGetModelsByType(AIModelsTestBase):
     """GET /configurationManager/ai-models/{modelType} — getModelsByType."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, providers_api: Dict[str, Any]) -> None:
-        self.client = providers_api["client"]
-        self.headers = providers_api["headers"]
-        self.timeout = providers_api["timeout"]
-
     def test_get_llm_empty_or_list_returns_200(self) -> None:
-        resp = _get_models_by_type(
-            self.client, _MODEL_TYPE_LLM, headers=self.headers
-        )
+        resp = self.ai.get_models_by_type(_MODEL_TYPE_LLM)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -1493,9 +1245,7 @@ class TestGetModelsByType:
     def test_validation_rejects_invalid_model_type(
         self, label: str, model_type: str
     ) -> None:
-        resp = _get_models_by_type(
-            self.client, model_type, headers=self.headers
-        )
+        resp = self.ai.get_models_by_type(model_type)
         assert resp.status_code == 400, (
             f"[{label}] Expected 400, got {resp.status_code}: {resp.text}"
         )
@@ -1504,20 +1254,14 @@ class TestGetModelsByType:
         _assert_error_envelope_matches_spec(body)
 
     def test_get_by_type_openapi_contract(self) -> None:
-        resp = _get_models_by_type(
-            self.client, _MODEL_TYPE_LLM, headers=self.headers
-        )
+        resp = self.ai.get_models_by_type(_MODEL_TYPE_LLM)
         assert resp.status_code == 200, resp.text
         assert_response_matches_openapi_operation(
             resp.json(), "getModelsByType", status_code="200"
         )
 
     def test_missing_authorization(self) -> None:
-        resp = requests.get(
-            _models_by_type_url(self.client, _MODEL_TYPE_LLM),
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout,
-        )
+        resp = self.ai.get(f"/{_MODEL_TYPE_LLM}", auth=False)
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 without Authorization, got {resp.status_code}: {resp.text}"
         )
@@ -1526,7 +1270,7 @@ class TestGetModelsByType:
 
 
 @pytest.mark.integration
-class TestGetModelsByTypeNonAdmin:
+class TestGetModelsByTypeNonAdmin(AIModelsTestBase):
     """GET /ai-models/{modelType} rejected for non-admin session JWT."""
 
     def test_non_admin_get_by_type_rejected(
@@ -1542,15 +1286,12 @@ class TestGetModelsByTypeNonAdmin:
         from auth_helpers import login_with_user, session_headers  # noqa: E402
 
         token, _ = login_with_user(
-            pipeshub_client.base_url,
+            pipeshub_client,
             os.environ["PIPESHUB_TEST_NON_ADMIN_EMAIL"].strip(),
             os.environ["PIPESHUB_TEST_NON_ADMIN_PASSWORD"].strip(),
-            pipeshub_client.timeout_seconds,
         )
-        resp = requests.get(
-            _models_by_type_url(pipeshub_client, _MODEL_TYPE_LLM),
-            headers=session_headers(token),
-            timeout=pipeshub_client.timeout_seconds,
+        resp = self.ai.get(
+            f"/{_MODEL_TYPE_LLM}", headers=session_headers(token), auth=False
         )
         assert resp.status_code == 400, (
             f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
@@ -1562,13 +1303,8 @@ class TestGetModelsByTypeNonAdmin:
 
 @pytest.mark.integration
 @pytest.mark.slow
-class TestGetModelsByTypeLive:
+class TestGetModelsByTypeLive(AIModelsTestBase):
     """POST provider then GET by type returns the created entry."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, providers_api: Dict[str, Any]) -> None:
-        self.client = providers_api["client"]
-        self.headers = providers_api["headers"]
 
     @pytest.mark.parametrize("spec", _live_provider_specs(), ids=lambda s: s.provider_id)
     def test_get_llm_includes_created_provider(
@@ -1576,10 +1312,8 @@ class TestGetModelsByTypeLive:
     ) -> None:
         created: Optional[CreatedProvider] = None
         try:
-            created = _create_live_provider(self.client, spec, headers=self.headers)
-            resp = _get_models_by_type(
-                self.client, _MODEL_TYPE_LLM, headers=self.headers
-            )
+            created = _create_live_provider(self.ai, spec)
+            resp = self.ai.get_models_by_type(_MODEL_TYPE_LLM)
             assert resp.status_code == 200, (
                 f"[{spec.provider_id}] get-by-type expected 200, "
                 f"got {resp.status_code}: {resp.text}"
@@ -1600,4 +1334,4 @@ class TestGetModelsByTypeLive:
             )
         finally:
             if created:
-                _teardown_provider(self.client, created)
+                _teardown_provider(self.ai, created)

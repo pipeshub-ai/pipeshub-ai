@@ -89,7 +89,11 @@ class IndexingAppContainer(BaseAppContainer):
     )
 
     # Parsers
-    parsers = providers.Resource(container_utils.create_parsers, logger=logger)
+    parsers = providers.Resource(
+        container_utils.create_parsers,
+        logger=logger,
+        config_service=config_service,
+    )
 
     # Processor - depends on indexing_pipeline and graph_provider
     processor = providers.Resource(

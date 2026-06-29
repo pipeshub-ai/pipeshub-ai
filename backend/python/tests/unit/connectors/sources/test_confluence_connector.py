@@ -1,5 +1,7 @@
 """Tests for app.connectors.sources.atlassian.confluence_cloud.connector."""
 
+import base64
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -26,6 +28,7 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
     PSEUDO_USER_GROUP_PREFIX,
     TIME_OFFSET_HOURS,
     ConfluenceConnector,
+    extract_media_from_adf,
 )
 from app.models.entities import (
     AppUser,
@@ -36,8 +39,10 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    User,
     WebpageRecord,
 )
+from app.models.blocks import ChildRecord, ChildType, GroupSubType
 from app.models.permission import EntityType, Permission, PermissionType
 from fastapi import HTTPException
 
@@ -1881,6 +1886,31 @@ class TestSyncContentPermissionsByTitles:
 
         await connector._sync_content_permissions_by_titles(["Test Page"])
         connector.data_entities_processor.on_new_records.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_blogpost_type_and_read_permissions(self):
+        connector = _make_connector()
+        mock_ds = MagicMock()
+        mock_ds.search_content_by_titles = AsyncMock(return_value=_make_mock_response(200, {
+            "results": [
+                {"id": "blog-1", "title": "Test Blog", "type": "blogpost"},
+            ],
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=MagicMock(id="existing-blog")
+        )
+        mock_record = MagicMock()
+        mock_record.inherit_permissions = True
+        connector._transform_to_webpage_record = MagicMock(return_value=mock_record)
+        connector._fetch_page_permissions = AsyncMock(return_value=[
+            Permission(entity_type=EntityType.USER, type=PermissionType.READ, email="bob@example.com")
+        ])
+
+        await connector._sync_content_permissions_by_titles(["Test Blog"])
+
+        assert mock_record.inherit_permissions is False
+        connector.data_entities_processor.on_new_records.assert_awaited_once()
 
 
 # =============================================================================
@@ -3760,9 +3790,11 @@ def _make_mock_deps_fullcov():
     mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
     mock_tx.get_user_by_source_id = AsyncMock(return_value=None)
     mock_tx.get_user_group_by_external_id = AsyncMock(return_value=None)
+    mock_tx.batch_upsert_records = AsyncMock()
     mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
     mock_tx.__aexit__ = AsyncMock(return_value=None)
     dsp.transaction.return_value = mock_tx
+    dep.data_store_provider = dsp
 
     cs = MagicMock()
     cs.get_config = AsyncMock()
@@ -4582,6 +4614,65 @@ def _mk_resp(status=200, data=None):
     r.json = MagicMock(return_value=data or {})
     r.text = MagicMock(return_value="")
     return r
+
+
+def _mock_ds_for_embedded_images(
+    *,
+    content_type="page",
+    attachments_v2,
+    adf_body,
+    footer_comments=None,
+    inline_comments=None,
+    adf_status=200,
+):
+    """Build datasource mock for _sync_content embedded-image detection paths."""
+    ds = MagicMock()
+    base_links = {"base": "https://wiki.example.com/wiki"}
+    adf_resp = _mk_resp(adf_status, {
+        "body": {"atlas_doc_format": {"value": json.dumps(adf_body)}},
+    })
+    footer_resp = _mk_resp(200, {"results": footer_comments or []})
+    inline_resp = _mk_resp(200, {"results": inline_comments or []})
+    att_resp = _mk_resp(200, {"results": attachments_v2, "_links": base_links})
+
+    if content_type == "page":
+        ds.get_page_attachments = AsyncMock(return_value=att_resp)
+        ds.get_page_content_v2 = AsyncMock(return_value=adf_resp)
+        ds.get_page_footer_comments = AsyncMock(return_value=footer_resp)
+        ds.get_page_inline_comments = AsyncMock(return_value=inline_resp)
+    else:
+        ds.get_blogpost_attachments = AsyncMock(return_value=att_resp)
+        ds.get_blogpost_content_v2 = AsyncMock(return_value=adf_resp)
+        ds.get_blog_post_footer_comments = AsyncMock(return_value=footer_resp)
+        ds.get_blog_post_inline_comments = AsyncMock(return_value=inline_resp)
+    return ds
+
+
+def _sync_page_data_with_attachments(attachments, item_id="100001", title="Page1"):
+    return {
+        "id": item_id,
+        "title": title,
+        "space": {"id": "sp1", "key": "S1"},
+        "version": {"number": 1, "when": "2024-01-01T10:00:00Z"},
+        "history": {
+            "createdDate": "2024-01-01T09:00:00Z",
+            "lastUpdated": {"when": "2024-01-01T10:00:00Z", "number": 1},
+        },
+        "ancestors": [],
+        "_links": {
+            "webui": f"/spaces/S1/pages/{item_id}",
+            "self": f"https://x.atlassian.net/wiki/rest/api/content/{item_id}",
+        },
+        "childTypes": {"comment": {"value": False}},
+        "children": {"attachment": {"results": attachments}},
+    }
+
+
+async def _collect_bytes(gen):
+    chunks = []
+    async for chunk in gen:
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 # ===========================================================================
@@ -5962,28 +6053,56 @@ class TestGetSignedUrl:
 
 class TestStreamRecordAdditional:
     @pytest.mark.asyncio
-    async def test_comment_streaming_raises_400(self):
+    async def test_comment_streaming_raises_404_when_not_found(self):
         c = _mk_connector()
+        ds = MagicMock()
+        ds.get_footer_comment_by_id = AsyncMock(return_value=_mk_resp(404))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
         record = MagicMock(
             record_type=RecordType.COMMENT,
             record_name="comment",
-            external_record_id="c1",
+            external_record_id="321748993",
         )
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 404
+        assert "321748993" in exc_info.value.detail
 
     @pytest.mark.asyncio
-    async def test_inline_comment_streaming_raises_400(self):
+    async def test_comment_streaming_returns_html(self):
         c = _mk_connector()
+        ds = MagicMock()
+        ds.get_footer_comment_by_id = AsyncMock(
+            return_value=_mk_resp(
+                200,
+                {"body": {"storage": {"value": "<p>Comment body</p>"}}},
+            )
+        )
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        record = MagicMock(
+            record_type=RecordType.COMMENT,
+            record_name="comment",
+            external_record_id="321748993",
+        )
+        result = await c.stream_record(record)
+        assert result is not None
+        assert result.media_type == MimeTypes.HTML.value
+
+    @pytest.mark.asyncio
+    async def test_inline_comment_streaming_raises_404_when_not_found(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_inline_comment_by_id = AsyncMock(return_value=_mk_resp(404))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
         record = MagicMock(
             record_type=RecordType.INLINE_COMMENT,
             record_name="inline comment",
-            external_record_id="ic1",
+            external_record_id="321814529",
         )
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 404
+        assert "321814529" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_unsupported_type_raises_http_exception(self):
@@ -6175,6 +6294,23 @@ class TestSyncUserGroupsTransformNone:
         c._fetch_group_members = AsyncMock(return_value=(["u@x.com"], []))
         await c._sync_user_groups()
         c.data_entities_processor.on_new_user_groups.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_pagination_continues_when_size_equals_batch(self):
+        c = _mk_connector()
+        group_page_1 = {"id": "grp-1", "name": "Team A"}
+        ds = MagicMock()
+        ds.get_groups = AsyncMock(side_effect=[
+            _mk_resp(200, {"results": [group_page_1], "size": 50}),
+            _mk_resp(200, {"results": [], "size": 0}),
+        ])
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        c._fetch_group_members = AsyncMock(return_value=([], []))
+
+        await c._sync_user_groups()
+
+        assert ds.get_groups.await_count == 2
+        c.data_entities_processor.on_new_user_groups.assert_awaited_once()
 
 
 class TestSyncSpacesFailedResponse:
@@ -7028,16 +7164,40 @@ class TestStreamRecord:
         assert result is not None  # StreamingResponse
 
     @pytest.mark.asyncio
-    async def test_stream_comment_raises_400(self):
+    async def test_stream_comment_raises_404_when_not_found(self):
         c = _mk_connector()
+        ds = MagicMock()
+        ds.get_footer_comment_by_id = AsyncMock(return_value=_mk_resp(404))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
         record = MagicMock(
             record_type=RecordType.COMMENT,
             record_name="Comment1",
-            external_record_id="c1",
+            external_record_id="321748993",
         )
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 404
+        assert "321748993" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_stream_comment_returns_html(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_footer_comment_by_id = AsyncMock(
+            return_value=_mk_resp(
+                200,
+                {"body": {"storage": {"value": "<p>Footer comment</p>"}}},
+            )
+        )
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        record = MagicMock(
+            record_type=RecordType.COMMENT,
+            record_name="Comment1",
+            external_record_id="321748993",
+        )
+        result = await c.stream_record(record)
+        assert result is not None
+        assert result.media_type == MimeTypes.HTML.value
 
     @pytest.mark.asyncio
     async def test_stream_file(self):
@@ -7642,3 +7802,1525 @@ class TestSyncSpacesNotInFilter:
         await c._sync_spaces()
         # Only space1 should be processed (space2 is excluded)
         assert c._transform_to_space_record_group.call_count == 1
+
+
+class TestExtractMediaFromAdf:
+    def test_invalid_input_returns_empty(self):
+        assert extract_media_from_adf(None) == []
+        assert extract_media_from_adf({}) == []
+        assert extract_media_from_adf("not-a-dict") == []
+
+    def test_extracts_media_with_all_attrs(self):
+        adf = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "media",
+                    "attrs": {
+                        "id": "media-uuid-1",
+                        "alt": "photo.png",
+                        "__fileName": "report.pdf",
+                        "type": "file",
+                        "width": 100,
+                        "height": 200,
+                        "collection": "contentId-123",
+                    },
+                }
+            ],
+        }
+        result = extract_media_from_adf(adf)
+        assert len(result) == 1
+        assert result[0]["id"] == "media-uuid-1"
+        assert result[0]["filename"] == "report.pdf"
+        assert result[0]["alt"] == "photo.png"
+        assert result[0]["width"] == 100
+        assert result[0]["height"] == 200
+        assert result[0]["collection"] == "contentId-123"
+
+    def test_prefers_filename_over_alt(self):
+        adf = {
+            "content": [
+                {"type": "media", "attrs": {"id": "m1", "alt": "image.jpg", "__fileName": "doc.pdf"}},
+            ]
+        }
+        result = extract_media_from_adf(adf)
+        assert result[0]["filename"] == "doc.pdf"
+
+    def test_skips_media_without_id(self):
+        adf = {"content": [{"type": "media", "attrs": {"alt": "orphan.png"}}]}
+        assert extract_media_from_adf(adf) == []
+
+    def test_nested_content_traversal(self):
+        adf = {
+            "content": [
+                {
+                    "type": "panel",
+                    "content": [
+                        {"type": "media", "attrs": {"id": "nested-1", "alt": "nested.png"}},
+                    ],
+                }
+            ],
+        }
+        result = extract_media_from_adf(adf)
+        assert len(result) == 1
+        assert result[0]["id"] == "nested-1"
+
+    def test_direct_node_without_content_key(self):
+        adf = {"type": "media", "attrs": {"id": "direct-1", "alt": "direct.png"}}
+        result = extract_media_from_adf(adf)
+        assert len(result) == 1
+        assert result[0]["id"] == "direct-1"
+
+    def test_multiple_media_nodes(self):
+        adf = {
+            "content": [
+                {"type": "media", "attrs": {"id": "a", "alt": "a.png"}},
+                {"type": "media", "attrs": {"id": "b", "alt": "b.png"}},
+            ]
+        }
+        assert len(extract_media_from_adf(adf)) == 2
+
+    def test_non_dict_node_in_content_skipped(self):
+        adf = {
+            "content": [
+                "bad-node",
+                {"type": "media", "attrs": {"id": "ok-1", "alt": "ok.png"}},
+            ],
+        }
+        result = extract_media_from_adf(adf)
+        assert len(result) == 1
+        assert result[0]["id"] == "ok-1"
+
+
+class TestLinkPlatformUsersViaJiraFullFlow:
+    @pytest.mark.asyncio
+    async def test_no_unlinked_users_early_return(self):
+        c = _mk_connector()
+        c.config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "API_TOKEN", "email": "a@b.com", "apiToken": "tok"}}
+        )
+        c.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+        mock_ds = MagicMock()
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await c._link_platform_users_via_jira()
+
+        mock_ds.find_user_account_id_by_email.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_invalid_and_already_linked_emails(self):
+        c = _mk_connector()
+        c.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})
+        active = [
+            User(email="no-at-sign", org_id="org-1"),
+            User(email="  ", org_id="org-1"),
+            User(email="linked@corp.com", org_id="org-1", full_name="Linked"),
+            User(email="new@corp.com", org_id="org-1", full_name="New User"),
+        ]
+        linked = [AppUser(
+            app_name=Connectors.CONFLUENCE,
+            connector_id="conn-new-1",
+            source_user_id="acc-linked",
+            org_id="org-1",
+            email="linked@corp.com",
+            full_name="Linked",
+            is_active=False,
+        )]
+        c.data_entities_processor.get_all_active_users = AsyncMock(return_value=active)
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=linked)
+
+        mock_ds = MagicMock()
+        mock_ds.find_user_account_id_by_email = AsyncMock(return_value="acc-new")
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await c._link_platform_users_via_jira()
+
+        mock_ds.find_user_account_id_by_email.assert_awaited_once_with("new@corp.com")
+        c.data_entities_processor.on_new_app_users.assert_awaited_once()
+        c.data_entities_processor.migrate_group_to_user_by_external_id.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_user_not_found_in_jira(self):
+        c = _mk_connector()
+        c.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})
+        c.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[User(email="missing@corp.com", org_id="org-1")]
+        )
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        mock_ds = MagicMock()
+        mock_ds.find_user_account_id_by_email = AsyncMock(return_value=None)
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await c._link_platform_users_via_jira()
+
+        c.data_entities_processor.on_new_app_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_rate_limit_api_error_continues(self):
+        c = _mk_connector()
+        c.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})
+        c.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[User(email="fail@corp.com", org_id="org-1")]
+        )
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        mock_ds = MagicMock()
+        mock_ds.find_user_account_id_by_email = AsyncMock(side_effect=RuntimeError("network blip"))
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await c._link_platform_users_via_jira()
+
+        c.data_entities_processor.on_new_app_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_stops_processing(self):
+        c = _mk_connector()
+        c.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})
+        users = [User(email=f"u{i}@corp.com", org_id="org-1") for i in range(3)]
+        c.data_entities_processor.get_all_active_users = AsyncMock(return_value=users)
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        mock_ds = MagicMock()
+        mock_ds.find_user_account_id_by_email = AsyncMock(side_effect=Exception("HTTP 429 rate limit"))
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await c._link_platform_users_via_jira()
+
+        c.data_entities_processor.on_new_app_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_batch_save_failure(self):
+        c = _mk_connector()
+        c.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})
+        c.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[User(email="save-fail@corp.com", org_id="org-1")]
+        )
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        c.data_entities_processor.on_new_app_users = AsyncMock(side_effect=RuntimeError("db fail"))
+
+        mock_ds = MagicMock()
+        mock_ds.find_user_account_id_by_email = AsyncMock(return_value="acc-1")
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await c._link_platform_users_via_jira()
+
+        c.data_entities_processor.migrate_group_to_user_by_external_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_migrate_failure_logs_but_links(self):
+        c = _mk_connector()
+        c.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})
+        c.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[User(email="migrate-fail@corp.com", org_id="org-1")]
+        )
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        c.data_entities_processor.migrate_group_to_user_by_external_id = AsyncMock(
+            side_effect=RuntimeError("migrate fail")
+        )
+
+        mock_ds = MagicMock()
+        mock_ds.find_user_account_id_by_email = AsyncMock(return_value="acc-migrate")
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await c._link_platform_users_via_jira()
+
+        c.data_entities_processor.on_new_app_users.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_oauth_without_jira_scope_skips(self):
+        c = _mk_connector()
+        c.config_service.get_config = AsyncMock(
+            return_value={"auth": {"authType": "OAUTH", "includeJiraScope": "no"}}
+        )
+        mock_ds = MagicMock()
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await c._link_platform_users_via_jira()
+
+        mock_ds.find_user_account_id_by_email.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_batch_gather_exception_breaks(self):
+        import asyncio
+
+        c = _mk_connector()
+        c.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})
+        c.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[User(email=f"u{i}@corp.com", org_id="org-1") for i in range(3)]
+        )
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        mock_ds = MagicMock()
+        mock_ds.find_user_account_id_by_email = AsyncMock(return_value="acc-1")
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        with patch.object(asyncio, "gather", side_effect=RuntimeError("gather fail")):
+            await c._link_platform_users_via_jira()
+
+        c.data_entities_processor.on_new_app_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_exception_in_results_loop_rate_limit(self):
+        import asyncio
+
+        c = _mk_connector()
+        c.config_service.get_config = AsyncMock(return_value={"auth": {"authType": "API_TOKEN"}})
+        c.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[User(email="u@corp.com", org_id="org-1")]
+        )
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        c._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+
+        with patch.object(asyncio, "gather", new_callable=AsyncMock, return_value=[Exception("429")]):
+            await c._link_platform_users_via_jira()
+
+        c.data_entities_processor.on_new_app_users.assert_not_awaited()
+
+
+class TestResolveConfluenceAttachmentId:
+    def test_match_by_file_id(self):
+        c = _mk_connector()
+        media = {"id": "file-uuid", "filename": "x.png"}
+        attachments = [{"id": "att-1", "fileId": "file-uuid", "title": "other.png"}]
+        assert c._resolve_confluence_attachment_id(media, attachments) == "att-1"
+
+    def test_match_by_exact_title(self):
+        c = _mk_connector()
+        media = {"filename": "report.pdf"}
+        attachments = [{"id": "att-2", "title": "report.pdf"}]
+        assert c._resolve_confluence_attachment_id(media, attachments) == "att-2"
+
+    def test_match_by_case_insensitive_title(self):
+        c = _mk_connector()
+        media = {"alt": "IMAGE.PNG"}
+        attachments = [{"id": "att-3", "title": "image.png"}]
+        assert c._resolve_confluence_attachment_id(media, attachments) == "att-3"
+
+    def test_no_match_returns_none(self):
+        c = _mk_connector()
+        assert c._resolve_confluence_attachment_id({"id": "x"}, []) is None
+        assert c._resolve_confluence_attachment_id({}, [{"id": "1", "title": "a"}]) is None
+
+
+class TestFetchConfluenceMediaAsBase64:
+    @pytest.mark.asyncio
+    async def test_page_image_success(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_page_attachments = AsyncMock(return_value=_mk_resp(200, {
+            "results": [{"id": "att-1", "title": "logo.png", "mediaType": "image/png"}],
+        }))
+
+        async def _download(**_kwargs):
+            yield b"\x89PNG"
+
+        ds.download_attachment = _download
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        result = await c._fetch_confluence_media_as_base64("100", "file-id", "logo.png", "page")
+        assert result is not None
+        assert result.startswith("data:image/png;base64,")
+        decoded = base64.b64decode(result.split(",", 1)[1])
+        assert decoded == b"\x89PNG"
+
+    @pytest.mark.asyncio
+    async def test_blogpost_attachments_api(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_blogpost_attachments = AsyncMock(return_value=_mk_resp(200, {
+            "results": [{"id": "att-b", "title": "chart.png", "mediaType": "image/png"}],
+        }))
+
+        async def _download(**_kwargs):
+            yield b"img"
+
+        ds.download_attachment = _download
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        result = await c._fetch_confluence_media_as_base64("200", "fid", "chart.png", "blogpost")
+        assert result is not None
+        ds.get_blogpost_attachments.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_non_success_response(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_page_attachments = AsyncMock(return_value=_mk_resp(404, {}))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        assert await c._fetch_confluence_media_as_base64("1", "m", "x.png") is None
+
+    @pytest.mark.asyncio
+    async def test_no_matching_attachment(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_page_attachments = AsyncMock(return_value=_mk_resp(200, {"results": []}))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        assert await c._fetch_confluence_media_as_base64("1", "m", "missing.png") is None
+
+    @pytest.mark.asyncio
+    async def test_non_image_mime_skipped(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_page_attachments = AsyncMock(return_value=_mk_resp(200, {
+            "results": [{"id": "att-pdf", "title": "doc.pdf", "mediaType": "application/pdf"}],
+        }))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        assert await c._fetch_confluence_media_as_base64("1", "m", "doc.pdf") is None
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_none(self):
+        c = _mk_connector()
+        c._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("boom"))
+        assert await c._fetch_confluence_media_as_base64("1", "m", "x.png") is None
+
+    @pytest.mark.asyncio
+    async def test_media_fetcher_delegates(self):
+        c = _mk_connector()
+        c._fetch_confluence_media_as_base64 = AsyncMock(return_value="data:image/png;base64,abc")
+        fetcher = c._create_confluence_media_fetcher("page-1", "page")
+        result = await fetcher("media-id", "alt.png")
+        assert result == "data:image/png;base64,abc"
+        c._fetch_confluence_media_as_base64.assert_awaited_once_with(
+            "page-1", "media-id", "alt.png", "page"
+        )
+
+    @pytest.mark.asyncio
+    async def test_comment_media_fetcher_delegates(self):
+        c = _mk_connector()
+        c._fetch_confluence_media_as_base64 = AsyncMock(return_value="data:image/png;base64,xyz")
+        fetcher = c._create_comment_media_fetcher("page-2", "blogpost")
+        result = await fetcher("mid", "file.png")
+        assert result == "data:image/png;base64,xyz"
+        c._fetch_confluence_media_as_base64.assert_awaited_once_with(
+            "page-2", "mid", "file.png", "blogpost"
+        )
+
+
+class TestOrganizeConfluenceCommentsToThreads:
+    def test_empty_returns_empty(self):
+        c = _mk_connector()
+        assert c._organize_confluence_comments_to_threads([]) == []
+
+    def test_top_level_comments_form_threads(self):
+        c = _mk_connector()
+        comments = [
+            {"id": "c2", "version": {"createdAt": "2025-02-01T00:00:00.000Z"}},
+            {"id": "c1", "version": {"createdAt": "2025-01-01T00:00:00.000Z"}},
+        ]
+        threads = c._organize_confluence_comments_to_threads(comments)
+        assert len(threads) == 2
+        assert threads[0][0]["id"] == "c1"
+
+    def test_replies_grouped_under_parent(self):
+        c = _mk_connector()
+        comments = [
+            {"id": "parent", "version": {"createdAt": "2025-01-01T00:00:00.000Z"}},
+            {
+                "id": "reply",
+                "parentCommentId": "parent",
+                "version": {"createdAt": "2025-01-02T00:00:00.000Z"},
+            },
+        ]
+        threads = c._organize_confluence_comments_to_threads(comments)
+        assert len(threads) == 1
+        assert len(threads[0]) == 2
+        assert threads[0][0]["id"] == "parent"
+
+
+class TestFetchPageDataWithAdf:
+    @pytest.mark.asyncio
+    async def test_page_success(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_page_content_v2 = AsyncMock(return_value=_mk_resp(200, {"id": "p1", "body": {}}))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        data = await c._fetch_page_data_with_adf("p1", RecordType.CONFLUENCE_PAGE)
+        assert data["id"] == "p1"
+
+    @pytest.mark.asyncio
+    async def test_blogpost_success(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_blogpost_content_v2 = AsyncMock(return_value=_mk_resp(200, {"id": "b1"}))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        data = await c._fetch_page_data_with_adf("b1", RecordType.CONFLUENCE_BLOGPOST)
+        assert data["id"] == "b1"
+
+    @pytest.mark.asyncio
+    async def test_unsupported_type_raises(self):
+        c = _mk_connector()
+        c._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+        with pytest.raises(ValueError, match="Unsupported record type"):
+            await c._fetch_page_data_with_adf("x", RecordType.TICKET)
+
+    @pytest.mark.asyncio
+    async def test_not_found_raises_http_exception(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_page_content_v2 = AsyncMock(return_value=_mk_resp(404, {}))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        with pytest.raises(HTTPException) as exc:
+            await c._fetch_page_data_with_adf("p-missing", RecordType.CONFLUENCE_PAGE)
+        assert exc.value.status_code == 404
+
+
+class TestProcessPageAttachmentsForChildren:
+    @pytest.mark.asyncio
+    async def test_maps_existing_attachment(self):
+        c = _mk_connector()
+        existing = MagicMock()
+        existing.id = "rec-att-1"
+        existing.record_name = "file.pdf"
+        mock_tx = c.data_store_provider.transaction.return_value
+        mock_tx.get_record_by_external_id = AsyncMock(return_value=existing)
+
+        result = await c._process_page_attachments_for_children(
+            [{"id": "att-1", "title": "file.pdf", "_links": {}}],
+            "page-1",
+            "node-1",
+            "space-1",
+            None,
+        )
+        assert "att-1" in result
+        assert result["att-1"].child_id == "rec-att-1"
+        c.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_creates_new_file_record(self):
+        c = _mk_connector()
+        mock_tx = c.data_store_provider.transaction.return_value
+        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
+
+        attachments = [{
+            "id": "att-new",
+            "title": "new.docx",
+            "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "_links": {},
+        }]
+        result = await c._process_page_attachments_for_children(
+            attachments, "page-1", "node-1", "space-1", None,
+        )
+        assert "att-new" in result
+        c.data_entities_processor.on_new_records.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_attachment_without_id(self):
+        c = _mk_connector()
+        result = await c._process_page_attachments_for_children(
+            [{"title": "no-id.pdf"}], "page-1", "node-1", "space-1", None,
+        )
+        assert result == {}
+
+
+class TestFetchAttachmentContentStreaming:
+    @pytest.mark.asyncio
+    async def test_streams_chunks(self):
+        c = _mk_connector()
+        ds = MagicMock()
+
+        async def _download(**_kwargs):
+            yield b"chunk1"
+            yield b"chunk2"
+
+        ds.download_attachment = _download
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        record = MagicMock()
+        record.external_record_id = "att-1"
+        record.parent_external_record_id = "page-1"
+        record.id = "rec-1"
+
+        data = await _collect_bytes(c._fetch_attachment_content(record))
+        assert data == b"chunk1chunk2"
+
+    @pytest.mark.asyncio
+    async def test_missing_attachment_id_raises_400(self):
+        c = _mk_connector()
+        record = MagicMock(external_record_id=None, parent_external_record_id="p1", id="r1")
+        with pytest.raises(HTTPException) as exc:
+            await _collect_bytes(c._fetch_attachment_content(record))
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_missing_parent_raises_400(self):
+        c = _mk_connector()
+        record = MagicMock(external_record_id="att-1", parent_external_record_id=None, id="r1")
+        with pytest.raises(HTTPException) as exc:
+            await _collect_bytes(c._fetch_attachment_content(record))
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_generic_error_raises_500(self):
+        c = _mk_connector()
+        c._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("download fail"))
+        record = MagicMock(external_record_id="att-1", parent_external_record_id="p1", id="r1")
+        with pytest.raises(HTTPException) as exc:
+            await _collect_bytes(c._fetch_attachment_content(record))
+        assert exc.value.status_code == 500
+
+
+class TestStreamRecordLegacyHtml:
+    @pytest.mark.asyncio
+    async def test_legacy_html_mime_streams_html(self):
+        c = _mk_connector()
+        record = MagicMock(spec=WebpageRecord)
+        record.record_type = RecordType.CONFLUENCE_PAGE
+        record.mime_type = MimeTypes.HTML.value
+        record.external_record_id = "legacy-1"
+        record.record_name = "Legacy Page"
+        c._fetch_page_content = AsyncMock(return_value="<p>Legacy</p>")
+
+        response = await c.stream_record(record)
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        assert b"<p>Legacy</p>" in body
+
+
+class TestFetchCommentData:
+    @pytest.mark.asyncio
+    async def test_footer_comment_success(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_footer_comment_by_id = AsyncMock(return_value=_mk_resp(200, {"id": "c1"}))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        record = MagicMock(external_record_id="101", record_type=RecordType.COMMENT)
+        data = await c._fetch_comment_data(record)
+        assert data["id"] == "c1"
+
+    @pytest.mark.asyncio
+    async def test_inline_comment_success(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_inline_comment_by_id = AsyncMock(return_value=_mk_resp(200, {"id": "ic1"}))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        record = MagicMock(external_record_id="202", record_type=RecordType.INLINE_COMMENT)
+        data = await c._fetch_comment_data(record)
+        assert data["id"] == "ic1"
+
+    @pytest.mark.asyncio
+    async def test_unsupported_type_returns_none(self):
+        c = _mk_connector()
+        c._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+        record = MagicMock(external_record_id="1", record_type=RecordType.CONFLUENCE_PAGE)
+        assert await c._fetch_comment_data(record) is None
+
+    @pytest.mark.asyncio
+    async def test_api_failure_returns_none(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_footer_comment_by_id = AsyncMock(return_value=_mk_resp(404))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        record = MagicMock(external_record_id="999", record_type=RecordType.COMMENT)
+        assert await c._fetch_comment_data(record) is None
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_none(self):
+        c = _mk_connector()
+        c._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("ds fail"))
+        record = MagicMock(external_record_id="101", record_type=RecordType.COMMENT)
+        assert await c._fetch_comment_data(record) is None
+
+
+class TestBatchFetchUserDisplayNames:
+    @pytest.mark.asyncio
+    async def test_empty_set(self):
+        c = _mk_connector()
+        assert await c._batch_fetch_user_display_names(set()) == {}
+
+    @pytest.mark.asyncio
+    async def test_successful_fetch(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_user_v1 = AsyncMock(return_value=_mk_resp(200, {"displayName": "Alice"}))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        result = await c._batch_fetch_user_display_names({"acc-1"})
+        assert result["acc-1"] == "Alice"
+
+    @pytest.mark.asyncio
+    async def test_exception_maps_unknown(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_user_v1 = AsyncMock(side_effect=RuntimeError("fail"))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        result = await c._batch_fetch_user_display_names({"acc-err"})
+        assert result["acc-err"] == "Unknown"
+
+    @pytest.mark.asyncio
+    async def test_http_error_maps_unknown(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_user_v1 = AsyncMock(return_value=_mk_resp(500))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        result = await c._batch_fetch_user_display_names({"acc-500"})
+        assert result["acc-500"] == "Unknown"
+
+    @pytest.mark.asyncio
+    async def test_json_parse_failure_maps_unknown(self):
+        c = _mk_connector()
+        bad_resp = _mk_resp(200, {})
+        bad_resp.json = MagicMock(side_effect=ValueError("bad json"))
+        ds = MagicMock()
+        ds.get_user_v1 = AsyncMock(return_value=bad_resp)
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        result = await c._batch_fetch_user_display_names({"acc-json"})
+        assert result["acc-json"] == "Unknown"
+
+
+class TestTransformToCommentRecord:
+    def _comment_data(self, **overrides):
+        data = {
+            "id": "comment-1",
+            "title": "A comment",
+            "version": {
+                "authorId": "author-1",
+                "createdAt": "2025-01-01T00:00:00.000Z",
+                "number": 1,
+            },
+            "_links": {"webui": "/comments/1"},
+        }
+        data.update(overrides)
+        return data
+
+    def test_footer_comment(self):
+        c = _mk_connector()
+        rec = c._transform_to_comment_record(
+            self._comment_data(), "page-1", "space-1", "footer", None,
+            base_url="https://wiki.example.com",
+        )
+        assert rec is not None
+        assert rec.record_type == RecordType.COMMENT
+        assert rec.parent_external_record_id == "page-1"
+        assert rec.parent_record_type == RecordType.WEBPAGE
+        assert rec.author_source_id == "author-1"
+
+    def test_inline_comment_resolution_open(self):
+        c = _mk_connector()
+        data = self._comment_data(resolutionStatus=False)
+        rec = c._transform_to_comment_record(data, "page-1", "space-1", "inline", None)
+        assert rec.record_type == RecordType.INLINE_COMMENT
+        assert rec.resolution_status == "open"
+
+    def test_inline_comment_resolution_resolved(self):
+        c = _mk_connector()
+        data = self._comment_data(
+            resolutionStatus=True,
+            properties={"inlineOriginalSelection": "selected text"},
+        )
+        rec = c._transform_to_comment_record(data, "page-1", "space-1", "inline", None)
+        assert rec.resolution_status == "resolved"
+        assert rec.comment_selection == "selected text"
+
+    def test_nested_comment_uses_parent(self):
+        c = _mk_connector()
+        rec = c._transform_to_comment_record(
+            self._comment_data(), "page-1", "space-1", "footer", "parent-comment",
+        )
+        assert rec.parent_external_record_id == "parent-comment"
+        assert rec.parent_record_type == RecordType.COMMENT
+
+    def test_missing_id_returns_none(self):
+        c = _mk_connector()
+        assert c._transform_to_comment_record({}, "p", "s", "footer", None) is None
+
+    def test_missing_author_returns_none(self):
+        c = _mk_connector()
+        data = self._comment_data()
+        data["version"] = {"number": 1}
+        assert c._transform_to_comment_record(data, "p", "s", "footer", None) is None
+
+    def test_existing_record_version_bump(self):
+        c = _mk_connector()
+        existing = MagicMock()
+        existing.id = "existing-c1"
+        existing.version = 2
+        existing.external_revision_id = "1"
+        data = self._comment_data()
+        data["version"]["number"] = 3
+        rec = c._transform_to_comment_record(
+            data, "page-1", "space-1", "footer", None, existing_record=existing,
+        )
+        assert rec.id == "existing-c1"
+        assert rec.version == 3
+
+    def test_existing_record_same_version(self):
+        c = _mk_connector()
+        existing = MagicMock()
+        existing.id = "existing-c2"
+        existing.version = 2
+        existing.external_revision_id = "2"
+        data = self._comment_data()
+        data["version"]["number"] = 2
+        rec = c._transform_to_comment_record(
+            data, "page-1", "space-1", "footer", None, existing_record=existing,
+        )
+        assert rec.version == 2
+
+    def test_exception_returns_none(self):
+        c = _mk_connector()
+        with patch.object(c, "_parse_confluence_datetime", side_effect=Exception("bad date")):
+            data = self._comment_data()
+            assert c._transform_to_comment_record(data, "p", "s", "footer", None) is None
+
+
+class TestCheckAndFetchUpdatedComment:
+    @pytest.mark.asyncio
+    async def test_not_found_returns_none(self):
+        c = _mk_connector()
+        c._fetch_comment_data = AsyncMock(return_value=None)
+        record = MagicMock(external_record_id="c1")
+        assert await c._check_and_fetch_updated_comment("org-1", record) is None
+
+    @pytest.mark.asyncio
+    async def test_no_version_returns_none(self):
+        c = _mk_connector()
+        c._fetch_comment_data = AsyncMock(return_value={"id": "c1", "version": {}})
+        record = MagicMock(external_record_id="c1")
+        assert await c._check_and_fetch_updated_comment("org-1", record) is None
+
+    @pytest.mark.asyncio
+    async def test_version_unchanged_returns_none(self):
+        c = _mk_connector()
+        c._fetch_comment_data = AsyncMock(return_value={"id": "c1", "version": {"number": 2}})
+        record = MagicMock(external_record_id="c1", external_revision_id="2")
+        assert await c._check_and_fetch_updated_comment("org-1", record) is None
+
+    @pytest.mark.asyncio
+    async def test_version_changed_returns_record_and_permissions(self):
+        c = _mk_connector()
+        comment_data = {
+            "id": "c1",
+            "title": "Updated",
+            "version": {"authorId": "a1", "number": 3, "createdAt": "2025-01-01T00:00:00.000Z"},
+            "_links": {},
+        }
+        c._fetch_comment_data = AsyncMock(return_value=comment_data)
+        c._fetch_page_permissions = AsyncMock(return_value=[
+            Permission(type=PermissionType.READ, entity_type=EntityType.USER, email="u@t.com"),
+        ])
+
+        record = MagicMock(
+            external_record_id="c1",
+            external_revision_id="2",
+            record_type=RecordType.COMMENT,
+            parent_external_record_id="page-1",
+            external_record_group_id="space-1",
+            parent_node_id="node-1",
+            id="rec-c1",
+            version=1,
+        )
+        result = await c._check_and_fetch_updated_comment("org-1", record)
+        assert result is not None
+        updated, perms = result
+        assert updated.external_revision_id == "3"
+        assert len(perms) == 1
+
+    @pytest.mark.asyncio
+    async def test_permission_fetch_failure_still_returns_record(self):
+        c = _mk_connector()
+        comment_data = {
+            "id": "c2",
+            "title": "Comment",
+            "version": {"authorId": "a1", "number": 2, "createdAt": "2025-01-01T00:00:00.000Z"},
+            "_links": {},
+        }
+        c._fetch_comment_data = AsyncMock(return_value=comment_data)
+        c._fetch_page_permissions = AsyncMock(side_effect=RuntimeError("perm fail"))
+
+        record = MagicMock(
+            external_record_id="c2",
+            external_revision_id="1",
+            record_type=RecordType.COMMENT,
+            parent_external_record_id="page-1",
+            external_record_group_id="space-1",
+            parent_node_id="node-1",
+            id="rec-c2",
+            version=0,
+        )
+        result = await c._check_and_fetch_updated_comment("org-1", record)
+        assert result is not None
+        assert result[1] == []
+
+    @pytest.mark.asyncio
+    async def test_transform_none_returns_none(self):
+        c = _mk_connector()
+        comment_data = {
+            "id": "c3",
+            "title": "Bad",
+            "version": {"authorId": "a1", "number": 2, "createdAt": "2025-01-01T00:00:00.000Z"},
+            "_links": {},
+        }
+        c._fetch_comment_data = AsyncMock(return_value=comment_data)
+        c._transform_to_comment_record = MagicMock(return_value=None)
+        record = MagicMock(
+            external_record_id="c3",
+            external_revision_id="1",
+            record_type=RecordType.COMMENT,
+        )
+        assert await c._check_and_fetch_updated_comment("org-1", record) is None
+
+    @pytest.mark.asyncio
+    async def test_outer_exception_returns_none(self):
+        c = _mk_connector()
+        c._fetch_comment_data = AsyncMock(side_effect=RuntimeError("fetch boom"))
+        record = MagicMock(external_record_id="c4", record_type=RecordType.COMMENT)
+        assert await c._check_and_fetch_updated_comment("org-1", record) is None
+
+    @pytest.mark.asyncio
+    async def test_dispatches_comment_types(self):
+        c = _mk_connector()
+        c._check_and_fetch_updated_comment = AsyncMock(return_value=None)
+
+        for rtype in (RecordType.COMMENT, RecordType.INLINE_COMMENT):
+            record = MagicMock(record_type=rtype)
+            await c._check_and_fetch_updated_record("org-1", record)
+        assert c._check_and_fetch_updated_comment.await_count == 2
+
+
+class TestFixLegacyMimeTypes:
+    """Tests for deprecated _fix_legacy_mime_types method (no longer called in production)."""
+    
+    @pytest.mark.asyncio
+    @pytest.mark.skip(reason="Method deprecated - tests backward compatibility only")
+    async def test_updates_html_page_to_blocks(self):
+        c = _mk_connector()
+        page = MagicMock()
+        page.record_type = RecordType.CONFLUENCE_PAGE
+        page.mime_type = MimeTypes.HTML.value
+        page.record_name = "Old Page"
+        page.external_record_id = "p1"
+
+        other = MagicMock()
+        other.record_type = RecordType.FILE
+        other.mime_type = MimeTypes.HTML.value
+
+        to_fix, ok = await c._fix_legacy_mime_types([page, other])
+        assert page in to_fix
+        assert page.mime_type == MimeTypes.BLOCKS.value
+        assert other in ok
+        mock_tx = c.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.batch_upsert_records.assert_awaited_once_with(to_fix)
+
+    @pytest.mark.asyncio
+    @pytest.mark.skip(reason="Method deprecated - tests backward compatibility only")
+    async def test_no_fix_needed(self):
+        c = _mk_connector()
+        page = MagicMock()
+        page.record_type = RecordType.CONFLUENCE_PAGE
+        page.mime_type = MimeTypes.BLOCKS.value
+
+        to_fix, ok = await c._fix_legacy_mime_types([page])
+        assert to_fix == []
+        assert ok == [page]
+        mock_tx = c.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.batch_upsert_records.assert_not_awaited()
+
+
+class TestTransformSpacePermissionException:
+    @pytest.mark.asyncio
+    async def test_exception_returns_none(self):
+        c = _mk_connector()
+        c._create_permission_from_principal = AsyncMock(side_effect=RuntimeError("boom"))
+        perm_data = {
+            "principal": {"type": "user", "id": "u1"},
+            "operation": {"key": "read", "targetType": "space"},
+        }
+        assert await c._transform_space_permission(perm_data) is None
+
+
+class TestParseConfluencePageToBlocks:
+    @pytest.mark.asyncio
+    async def test_minimal_adf_parses_blocks_container(self):
+        c = _mk_connector()
+        adf = {
+            "type": "doc",
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Hello"}]}],
+        }
+        page_data = {"body": {"atlas_doc_format": {"value": json.dumps(adf)}}}
+        c._fetch_page_comments_recursive = AsyncMock(return_value=[])
+        c._batch_fetch_user_display_names = AsyncMock(return_value={})
+
+        container = await c._parse_confluence_page_to_blocks(
+            page_data=page_data,
+            page_id="page-1",
+            page_title="Test Page",
+            weburl="https://wiki.example.com/page",
+            record_type=RecordType.CONFLUENCE_PAGE,
+        )
+        assert container is not None
+        assert len(container.blocks) >= 1
+
+    @pytest.mark.asyncio
+    async def test_invalid_adf_json_still_returns_container(self):
+        c = _mk_connector()
+        page_data = {"body": {"atlas_doc_format": {"value": "not-json"}}}
+        c._fetch_page_comments_recursive = AsyncMock(return_value=[])
+        c._batch_fetch_user_display_names = AsyncMock(return_value={})
+
+        container = await c._parse_confluence_page_to_blocks(
+            page_data=page_data,
+            page_id="page-2",
+            page_title="Broken ADF",
+            record_type=RecordType.CONFLUENCE_PAGE,
+        )
+        assert container is not None
+
+    @pytest.mark.asyncio
+    async def test_footer_comment_thread_processing(self):
+        c = _mk_connector()
+        adf = {"type": "doc", "content": []}
+        page_data = {"body": {"atlas_doc_format": {"value": json.dumps(adf)}}}
+        comment_adf = {
+            "type": "doc",
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Nice"}]}],
+        }
+        footer_comments = [{
+            "id": "fc1",
+            "version": {"authorId": "author-1", "createdAt": "2025-01-01T00:00:00.000Z"},
+            "body": {"atlas_doc_format": {"value": json.dumps(comment_adf)}},
+            "_links": {"webui": "/comments/fc1"},
+        }]
+        c._fetch_page_comments_recursive = AsyncMock(side_effect=[footer_comments, []])
+        c._batch_fetch_user_display_names = AsyncMock(return_value={"author-1": "Author One"})
+
+        container = await c._parse_confluence_page_to_blocks(
+            page_data=page_data,
+            page_id="page-3",
+            page_title="With Comments",
+            weburl="https://wiki.example.com/wiki/spaces/ENG/pages/3",
+            record_type=RecordType.CONFLUENCE_PAGE,
+        )
+        assert any(bg.sub_type == GroupSubType.COMMENT_THREAD for bg in container.block_groups)
+
+    @pytest.mark.asyncio
+    async def test_embedded_image_excluded_from_remaining_attachments(self):
+        c = _mk_connector()
+        adf = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "media",
+                    "attrs": {"id": "fid-1", "alt": "photo.png", "type": "file"},
+                }
+            ],
+        }
+        page_data = {"body": {"atlas_doc_format": {"value": json.dumps(adf)}}}
+        attachment_children_map = {
+            "img-1": ChildRecord(
+                child_type=ChildType.RECORD, child_id="rec-img", child_name="photo.png"
+            ),
+            "pdf-1": ChildRecord(
+                child_type=ChildType.RECORD, child_id="rec-pdf", child_name="doc.pdf"
+            ),
+        }
+        c._fetch_page_comments_recursive = AsyncMock(return_value=[])
+        c._batch_fetch_user_display_names = AsyncMock(return_value={})
+
+        container = await c._parse_confluence_page_to_blocks(
+            page_data=page_data,
+            page_id="page-4",
+            page_title="Attachments Page",
+            weburl="https://wiki.example.com/wiki/spaces/ENG/pages/4",
+            attachment_children_map=attachment_children_map,
+            attachment_mime_types={"img-1": "image/png", "pdf-1": "application/pdf"},
+            attachments_data=[
+                {"id": "img-1", "fileId": "fid-1", "title": "photo.png"},
+                {"id": "pdf-1", "title": "doc.pdf"},
+            ],
+            record_type=RecordType.CONFLUENCE_PAGE,
+        )
+
+        content_groups = [
+            bg for bg in container.block_groups if bg.sub_type == GroupSubType.CONTENT
+        ]
+        assert content_groups
+        child_names = [
+            cr.child_name
+            for bg in content_groups
+            if bg.children_records
+            for cr in bg.children_records
+        ]
+        assert "doc.pdf" in child_names
+        assert "photo.png" not in child_names
+
+    @pytest.mark.asyncio
+    async def test_inline_comments_attached_to_blocks(self):
+        from app.connectors.sources.atlassian.confluence_cloud.block_parser import (
+            ConfluenceBlockParser,
+        )
+
+        c = _mk_connector()
+        adf = {
+            "type": "doc",
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Body"}]}],
+        }
+        page_data = {"body": {"atlas_doc_format": {"value": json.dumps(adf)}}}
+        inline_comments = [{
+            "id": "ic1",
+            "version": {"authorId": "author-1"},
+            "body": {"atlas_doc_format": {"value": json.dumps(adf)}},
+        }]
+        c._fetch_page_comments_recursive = AsyncMock(side_effect=[[], inline_comments])
+        c._batch_fetch_user_display_names = AsyncMock(return_value={"author-1": "Author"})
+
+        with patch.object(
+            ConfluenceBlockParser,
+            "attach_inline_comments_to_blocks",
+            new_callable=AsyncMock,
+        ) as mock_attach:
+            await c._parse_confluence_page_to_blocks(
+                page_data=page_data,
+                page_id="page-5",
+                page_title="Inline Page",
+                weburl="https://wiki.example.com/wiki/spaces/ENG/pages/5",
+                record_type=RecordType.CONFLUENCE_PAGE,
+            )
+            mock_attach.assert_awaited_once()
+            assert mock_attach.call_args.kwargs["inline_comments"] == inline_comments
+
+    @pytest.mark.asyncio
+    async def test_footer_comment_invalid_adf_skipped(self):
+        c = _mk_connector()
+        adf = {"type": "doc", "content": []}
+        page_data = {"body": {"atlas_doc_format": {"value": json.dumps(adf)}}}
+        footer_comments = [{
+            "id": "fc-bad",
+            "version": {"authorId": "author-1"},
+            "body": {"atlas_doc_format": {"value": "not-json"}},
+            "_links": {"webui": "/comments/fc-bad"},
+        }]
+        c._fetch_page_comments_recursive = AsyncMock(side_effect=[footer_comments, []])
+        c._batch_fetch_user_display_names = AsyncMock(return_value={"author-1": "Author"})
+
+        container = await c._parse_confluence_page_to_blocks(
+            page_data=page_data,
+            page_id="page-6",
+            page_title="Bad Comment ADF",
+            weburl="https://wiki.example.com/wiki/spaces/ENG/pages/6",
+            record_type=RecordType.CONFLUENCE_PAGE,
+        )
+        assert not any(bg.sub_type == GroupSubType.COMMENT for bg in container.block_groups)
+
+    @pytest.mark.asyncio
+    async def test_footer_comment_with_non_image_attachment(self):
+        c = _mk_connector()
+        adf = {"type": "doc", "content": []}
+        page_data = {"body": {"atlas_doc_format": {"value": json.dumps(adf)}}}
+        comment_adf = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "See attached PDF"}],
+                },
+                {
+                    "type": "media",
+                    "attrs": {"id": "fid-pdf", "alt": "doc.pdf", "type": "file"},
+                },
+            ],
+        }
+        footer_comments = [{
+            "id": "fc-pdf",
+            "version": {"authorId": "author-1", "createdAt": "2025-01-01T00:00:00.000Z"},
+            "body": {"atlas_doc_format": {"value": json.dumps(comment_adf)}},
+            "_links": {"webui": "/comments/fc-pdf"},
+        }]
+        attachment_children_map = {
+            "pdf-1": ChildRecord(
+                child_type=ChildType.RECORD, child_id="rec-pdf", child_name="doc.pdf"
+            ),
+        }
+        c._fetch_page_comments_recursive = AsyncMock(side_effect=[footer_comments, []])
+        c._batch_fetch_user_display_names = AsyncMock(return_value={"author-1": "Author"})
+
+        container = await c._parse_confluence_page_to_blocks(
+            page_data=page_data,
+            page_id="page-7",
+            page_title="Comment Attachment",
+            weburl="https://wiki.example.com/wiki/spaces/ENG/pages/7",
+            attachment_children_map=attachment_children_map,
+            attachment_mime_types={"pdf-1": "application/pdf"},
+            attachments_data=[{"id": "pdf-1", "fileId": "fid-pdf", "title": "doc.pdf"}],
+            record_type=RecordType.CONFLUENCE_PAGE,
+        )
+
+        comment_groups = [
+            bg for bg in container.block_groups if bg.sub_type == GroupSubType.COMMENT
+        ]
+        assert comment_groups
+        assert any(
+            cr.child_name == "doc.pdf"
+            for bg in comment_groups
+            if bg.children_records
+            for cr in bg.children_records
+        )
+
+    @pytest.mark.asyncio
+    async def test_remaining_attachments_creates_content_wrapper_when_no_groups(self):
+        c = _mk_connector()
+        page_data = {"body": {"atlas_doc_format": {"value": "not-json"}}}
+        attachment_children_map = {
+            "pdf-1": ChildRecord(
+                child_type=ChildType.RECORD, child_id="rec-pdf", child_name="doc.pdf"
+            ),
+        }
+        c._fetch_page_comments_recursive = AsyncMock(return_value=[])
+        c._batch_fetch_user_display_names = AsyncMock(return_value={})
+
+        container = await c._parse_confluence_page_to_blocks(
+            page_data=page_data,
+            page_id="page-8",
+            page_title="Wrapper Page",
+            weburl="https://wiki.example.com/wiki/spaces/ENG/pages/8",
+            attachment_children_map=attachment_children_map,
+            attachment_mime_types={"pdf-1": "application/pdf"},
+            attachments_data=[{"id": "pdf-1", "title": "doc.pdf"}],
+            record_type=RecordType.CONFLUENCE_PAGE,
+        )
+
+        content_groups = [
+            bg for bg in container.block_groups if bg.sub_type == GroupSubType.CONTENT
+        ]
+        assert len(content_groups) == 1
+        assert content_groups[0].children_records
+        assert content_groups[0].children_records[0].child_name == "doc.pdf"
+
+
+class TestSyncContentEmbeddedImages:
+    """Cover _sync_content embedded image detection (connector.py 1488-1649)."""
+
+    @pytest.mark.asyncio
+    async def test_page_skips_embedded_image_saves_pdf(self):
+        c = _mk_connector()
+        _setup_sync_content(c)
+        v1_attachments = [
+            {"id": "img-1", "title": "photo.png", "mediaType": "image/png", "fileId": "fid-1"},
+            {"id": "pdf-1", "title": "doc.pdf", "mediaType": "application/pdf"},
+        ]
+        page_data = _sync_page_data_with_attachments(v1_attachments)
+        adf_body = {
+            "type": "doc",
+            "content": [
+                {"type": "media", "attrs": {"id": "fid-1", "alt": "photo.png", "type": "file"}},
+            ],
+        }
+        ds = _mock_ds_for_embedded_images(
+            content_type="page",
+            attachments_v2=v1_attachments,
+            adf_body=adf_body,
+        )
+        ds.get_pages_v1 = AsyncMock(
+            return_value=_mk_resp(200, {"results": [page_data], "_links": {}})
+        )
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        c._fetch_page_permissions = AsyncMock(return_value=[])
+        page_record = MagicMock(id="rec-p1", inherit_permissions=True)
+        c._process_webpage_with_update = AsyncMock(
+            return_value=MagicMock(record=page_record)
+        )
+
+        await c._sync_content("S1", RecordType.CONFLUENCE_PAGE)
+
+        ds.get_page_attachments.assert_awaited_once()
+        ds.get_page_content_v2.assert_awaited_once()
+        saved = c.data_entities_processor.on_new_records.call_args[0][0]
+        attachment_ids = [
+            r.external_record_id
+            for r, _ in saved
+            if getattr(r, "record_type", None) == RecordType.FILE
+        ]
+        assert "pdf-1" in attachment_ids
+        assert "img-1" not in attachment_ids
+
+    @pytest.mark.asyncio
+    async def test_blogpost_embedded_image_detection(self):
+        c = _mk_connector()
+        _setup_sync_content(c)
+        v1_attachments = [
+            {"id": "img-b1", "title": "banner.png", "mediaType": "image/png", "fileId": "fid-b1"},
+            {"id": "pdf-b1", "title": "notes.pdf", "mediaType": "application/pdf"},
+        ]
+        blog_data = _sync_page_data_with_attachments(v1_attachments, item_id="200002", title="Blog1")
+        adf_body = {
+            "type": "doc",
+            "content": [
+                {"type": "media", "attrs": {"id": "fid-b1", "alt": "banner.png", "type": "file"}},
+            ],
+        }
+        ds = _mock_ds_for_embedded_images(
+            content_type="blogpost",
+            attachments_v2=v1_attachments,
+            adf_body=adf_body,
+        )
+        ds.get_blogposts_v1 = AsyncMock(
+            return_value=_mk_resp(200, {"results": [blog_data], "_links": {}})
+        )
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        c._fetch_page_permissions = AsyncMock(return_value=[])
+        blog_record = MagicMock(id="rec-b1", inherit_permissions=True)
+        c._process_webpage_with_update = AsyncMock(
+            return_value=MagicMock(record=blog_record)
+        )
+
+        await c._sync_content("S1", RecordType.CONFLUENCE_BLOGPOST)
+
+        ds.get_blogpost_attachments.assert_awaited_once()
+        ds.get_blogpost_content_v2.assert_awaited_once()
+        saved = c.data_entities_processor.on_new_records.call_args[0][0]
+        attachment_ids = [
+            r.external_record_id
+            for r, _ in saved
+            if getattr(r, "record_type", None) == RecordType.FILE
+        ]
+        assert "pdf-b1" in attachment_ids
+        assert "img-b1" not in attachment_ids
+
+    @pytest.mark.asyncio
+    async def test_footer_and_inline_comments_contribute_embedded_ids(self):
+        c = _mk_connector()
+        _setup_sync_content(c)
+        v1_attachments = [
+            {"id": "img-2", "title": "footer.png", "mediaType": "image/png", "fileId": "fid-2"},
+            {"id": "img-3", "title": "inline.png", "mediaType": "image/png", "fileId": "fid-3"},
+            {"id": "pdf-1", "title": "doc.pdf", "mediaType": "application/pdf"},
+        ]
+        page_data = _sync_page_data_with_attachments(v1_attachments)
+        footer_adf = {
+            "type": "doc",
+            "content": [
+                {"type": "media", "attrs": {"id": "fid-2", "alt": "footer.png", "type": "file"}},
+            ],
+        }
+        inline_adf = {
+            "type": "doc",
+            "content": [
+                {"type": "media", "attrs": {"id": "fid-3", "alt": "inline.png", "type": "file"}},
+            ],
+        }
+        footer_comments = [{"body": {"atlas_doc_format": {"value": json.dumps(footer_adf)}}}]
+        inline_comments = [{"body": {"atlas_doc_format": {"value": json.dumps(inline_adf)}}}]
+        ds = _mock_ds_for_embedded_images(
+            content_type="page",
+            attachments_v2=v1_attachments,
+            adf_body={"type": "doc", "content": []},
+            footer_comments=footer_comments,
+            inline_comments=inline_comments,
+        )
+        ds.get_pages_v1 = AsyncMock(
+            return_value=_mk_resp(200, {"results": [page_data], "_links": {}})
+        )
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        c._fetch_page_permissions = AsyncMock(return_value=[])
+        c._process_webpage_with_update = AsyncMock(
+            return_value=MagicMock(record=MagicMock(id="rec-p1", inherit_permissions=True))
+        )
+
+        await c._sync_content("S1", RecordType.CONFLUENCE_PAGE)
+
+        saved = c.data_entities_processor.on_new_records.call_args[0][0]
+        attachment_ids = [
+            r.external_record_id
+            for r, _ in saved
+            if getattr(r, "record_type", None) == RecordType.FILE
+        ]
+        assert attachment_ids == ["pdf-1"]
+
+    @pytest.mark.asyncio
+    async def test_adf_fetch_failure_fallback_creates_all_attachments(self):
+        c = _mk_connector()
+        _setup_sync_content(c)
+        v1_attachments = [
+            {"id": "img-1", "title": "photo.png", "mediaType": "image/png", "fileId": "fid-1"},
+            {"id": "pdf-1", "title": "doc.pdf", "mediaType": "application/pdf"},
+        ]
+        page_data = _sync_page_data_with_attachments(v1_attachments)
+        ds = _mock_ds_for_embedded_images(
+            content_type="page",
+            attachments_v2=v1_attachments,
+            adf_body={"type": "doc", "content": []},
+            adf_status=500,
+        )
+        ds.get_pages_v1 = AsyncMock(
+            return_value=_mk_resp(200, {"results": [page_data], "_links": {}})
+        )
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        c._fetch_page_permissions = AsyncMock(return_value=[])
+        c._process_webpage_with_update = AsyncMock(
+            return_value=MagicMock(record=MagicMock(id="rec-p1", inherit_permissions=True))
+        )
+
+        await c._sync_content("S1", RecordType.CONFLUENCE_PAGE)
+
+        saved = c.data_entities_processor.on_new_records.call_args[0][0]
+        attachment_ids = [
+            r.external_record_id
+            for r, _ in saved
+            if getattr(r, "record_type", None) == RecordType.FILE
+        ]
+        assert set(attachment_ids) == {"img-1", "pdf-1"}
+
+    @pytest.mark.asyncio
+    async def test_v2_attachments_fetch_exception_uses_v1_list(self):
+        c = _mk_connector()
+        _setup_sync_content(c)
+        v1_attachments = [
+            {"id": "pdf-1", "title": "doc.pdf", "mediaType": "application/pdf"},
+        ]
+        page_data = _sync_page_data_with_attachments(v1_attachments)
+        ds = _mock_ds_for_embedded_images(
+            content_type="page",
+            attachments_v2=v1_attachments,
+            adf_body={"type": "doc", "content": []},
+            adf_status=500,
+        )
+        ds.get_page_attachments = AsyncMock(side_effect=RuntimeError("v2 down"))
+        ds.get_pages_v1 = AsyncMock(
+            return_value=_mk_resp(200, {"results": [page_data], "_links": {}})
+        )
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        c._fetch_page_permissions = AsyncMock(return_value=[])
+        c._process_webpage_with_update = AsyncMock(
+            return_value=MagicMock(record=MagicMock(id="rec-p1", inherit_permissions=True))
+        )
+
+        await c._sync_content("S1", RecordType.CONFLUENCE_PAGE)
+
+        saved = c.data_entities_processor.on_new_records.call_args[0][0]
+        attachment_ids = [
+            r.external_record_id
+            for r, _ in saved
+            if getattr(r, "record_type", None) == RecordType.FILE
+        ]
+        assert "pdf-1" in attachment_ids
+
+
+class TestStreamRecordBlocksPath:
+    """Cover stream_record blocks path without mocking _parse_confluence_page_to_blocks."""
+
+    @pytest.mark.asyncio
+    async def test_stream_page_blocks_end_to_end(self):
+        c = _mk_connector()
+        record = MagicMock(spec=WebpageRecord)
+        record.record_type = RecordType.CONFLUENCE_PAGE
+        record.mime_type = MimeTypes.BLOCKS.value
+        record.external_record_id = "100001"
+        record.record_name = "Blocks Page"
+        record.id = "rec-1"
+        record.external_record_group_id = "sp1"
+        record.weburl = "https://wiki.example.com/wiki/spaces/ENG/pages/100001"
+
+        adf = {
+            "type": "doc",
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Hi"}]}],
+        }
+        c._fetch_page_data_with_adf = AsyncMock(
+            return_value={"body": {"atlas_doc_format": {"value": json.dumps(adf)}}}
+        )
+        c._fetch_page_comments_recursive = AsyncMock(return_value=[])
+        ds = MagicMock()
+        ds.get_page_attachments = AsyncMock(return_value=_mk_resp(200, {
+            "results": [{
+                "id": "att-1",
+                "title": "file.pdf",
+                "metadata": {"mediaType": "application/pdf"},
+            }],
+            "_links": {"base": "https://wiki.example.com/wiki"},
+        }))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        response = await c.stream_record(record)
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        payload = json.loads(body.decode("utf-8"))
+
+        assert response.media_type == MimeTypes.BLOCKS.value
+        assert "blocks" in payload
+
+    @pytest.mark.asyncio
+    async def test_stream_blogpost_uses_blogpost_attachments(self):
+        c = _mk_connector()
+        record = MagicMock(spec=WebpageRecord)
+        record.record_type = RecordType.CONFLUENCE_BLOGPOST
+        record.mime_type = MimeTypes.BLOCKS.value
+        record.external_record_id = "200002"
+        record.record_name = "Blog"
+        record.id = "rec-b1"
+        record.external_record_group_id = "sp1"
+        record.weburl = "https://wiki.example.com/wiki/spaces/ENG/blog/200002"
+
+        adf = {"type": "doc", "content": []}
+        c._fetch_page_data_with_adf = AsyncMock(
+            return_value={"body": {"atlas_doc_format": {"value": json.dumps(adf)}}}
+        )
+        c._fetch_page_comments_recursive = AsyncMock(return_value=[])
+        ds = MagicMock()
+        ds.get_blogpost_attachments = AsyncMock(return_value=_mk_resp(200, {
+            "results": [],
+            "_links": {},
+        }))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        response = await c.stream_record(record)
+        ds.get_blogpost_attachments.assert_awaited_once()
+        assert response.media_type == MimeTypes.BLOCKS.value
+
+    @pytest.mark.asyncio
+    async def test_stream_attachment_fetch_failure_continues(self):
+        c = _mk_connector()
+        record = MagicMock(spec=WebpageRecord)
+        record.record_type = RecordType.CONFLUENCE_PAGE
+        record.mime_type = MimeTypes.BLOCKS.value
+        record.external_record_id = "100002"
+        record.record_name = "Page"
+        record.id = "rec-2"
+        record.external_record_group_id = "sp1"
+        record.weburl = "https://wiki.example.com/wiki/spaces/ENG/pages/100002"
+
+        adf = {"type": "doc", "content": []}
+        c._fetch_page_data_with_adf = AsyncMock(
+            return_value={"body": {"atlas_doc_format": {"value": json.dumps(adf)}}}
+        )
+        c._fetch_page_comments_recursive = AsyncMock(return_value=[])
+        ds = MagicMock()
+        ds.get_page_attachments = AsyncMock(side_effect=RuntimeError("attachments fail"))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        response = await c.stream_record(record)
+        assert response.media_type == MimeTypes.BLOCKS.value
+
+
+class TestFilterOptionsCursorParseFailure:
+    @pytest.mark.asyncio
+    async def test_page_options_cursor_parse_failure(self):
+        c = _mk_connector()
+        mock_ds = MagicMock()
+        mock_ds.get_pages = AsyncMock(return_value=_mk_resp(200, {
+            "results": [{"id": "p1", "title": "Page 1"}],
+            "_links": {"next": "https://example.com/pages?cursor=abc"},
+        }))
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        with patch(
+            "app.connectors.sources.atlassian.confluence_cloud.connector.urlparse",
+            side_effect=ValueError("bad url"),
+        ):
+            result = await c._get_page_options(1, 20, None, None)
+
+        assert result.has_more is False
+        assert result.cursor is None
+
+    @pytest.mark.asyncio
+    async def test_blogpost_options_cursor_parse_failure(self):
+        c = _mk_connector()
+        mock_ds = MagicMock()
+        mock_ds.get_blog_posts = AsyncMock(return_value=_mk_resp(200, {
+            "results": [{"id": "b1", "title": "Blog 1"}],
+            "_links": {"next": "https://example.com/blogposts?cursor=xyz"},
+        }))
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        with patch(
+            "app.connectors.sources.atlassian.confluence_cloud.connector.urlparse",
+            side_effect=ValueError("bad url"),
+        ):
+            result = await c._get_blogpost_options(1, 20, None, None)
+
+        assert result.has_more is False
+        assert result.cursor is None

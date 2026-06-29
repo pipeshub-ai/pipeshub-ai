@@ -108,7 +108,7 @@ class TestConfluenceIncrementalSync:
             external_record_id=page_id,
             record_type=RecordType.CONFLUENCE_PAGE.value,
             record_name=title,
-            mime_type="application/blocks",
+            mime_type="text/html",
             external_record_group_id=space_id,
         )
 

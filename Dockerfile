@@ -8,6 +8,18 @@ ARG PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps
 ARG RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime
 
 FROM ${PYTHON_DEPS_IMAGE} AS python-deps
+# The base image bakes in dependencies as of its publish time. Reconcile with the
+# current pyproject.toml so packages added since the base was published (e.g. new
+# connector SDKs like opensearch-py) end up in the app image. uv skips
+# already-satisfied packages, so this is a fast no-op when the base is current and
+# installs only the delta otherwise. The base carries uv + the build toolchain
+# (it is built FROM build-base in Dockerfile.base), so native wheels can still
+# compile here when a new dependency needs it.
+WORKDIR /app/python
+COPY backend/python/pyproject.toml ./
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    uv pip install --system -e .
+
 FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
 
 # -----------------------------------------------------------------------------

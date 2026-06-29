@@ -16,6 +16,7 @@ from app.models.entities import (
     LinkPublicStatus,
     LinkRecord,
     MailRecord,
+    MessageRecord,
     ProjectRecord,
     Record,
     RecordType,
@@ -1599,7 +1600,7 @@ class TestRecordToMessageContent:
         record["block_containers"]["block_groups"] = [table_group]
         result = record_to_message_content(record)
         text = _all_text(result)
-        assert "Sales table" in text
+        assert "* Block Group Type: table" in text
         assert "Row 0" in text
         assert "Row 1" in text
 
@@ -1613,7 +1614,7 @@ class TestRecordToMessageContent:
         record["block_containers"]["block_groups"] = [table_group]
         result = record_to_message_content(record)
         text = _all_text(result)
-        assert text.count("My table") == 1
+        assert text.count("* Block Group Type: table") == 1
 
     def test_text_block_with_parent_index_renders_group(self):
         block = _make_text_block(index=0, data="Item in list", parent_index=0)
@@ -3317,7 +3318,7 @@ class TestRecordToMessageContentEdgeCases:
         assert "raw string row data" in text
 
     def test_table_with_table_summary_as_string_data(self):
-        """Table group with string data should use str()."""
+        """Table group with string data still renders rows via record_to_message_content."""
         row = _make_table_row_block(index=0, row_text="R0", parent_index=0)
         table_group = {
             "index": 0,
@@ -3331,7 +3332,8 @@ class TestRecordToMessageContentEdgeCases:
         record["block_containers"]["block_groups"] = [table_group]
         result = record_to_message_content(record)
         text = _all_text(result)
-        assert "plain summary string" in text
+        assert "R0" in text
+        assert "* Block Group Type: table" in text
 
     def test_block_group_dedup_for_parent_index_blocks(self):
         """Multiple blocks with same parent_index should only render group once."""
@@ -5563,3 +5565,97 @@ class TestCreateRecordFromVectorMetadataConnectorId:
             )
 
         assert record["connector_id"] == "conn-pg-99"
+
+
+# ============================================================================
+# MessageRecord support in chat_helpers (slack diff additions)
+# ============================================================================
+
+import json as _json_ch
+from app.config.constants.arangodb import OriginTypes as _CH_OriginTypes
+
+
+def _ch_record_dict(**overrides):
+    defaults = {
+        "id": "msg-record-1",
+        "org_id": "org-1",
+        "record_name": "general_2021-05-03_00-00-00",
+        "record_type": RecordType.MESSAGE.value,
+        "external_record_id": "1620000000.000100",
+        "version": 1,
+        "origin": "CONNECTOR",
+        "connector_name": "SLACK WORKSPACE",
+        "connector_id": "conn-123",
+        "mime_type": "blocks",
+        "source_created_at": 1620000000000,
+        "source_updated_at": 1620000000000,
+        "weburl": "https://myws.slack.com/archives/C123/p1620000000000100",
+        "semantic_metadata": {},
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def _ch_graph_doc(**overrides):
+    defaults = {
+        "content": "Hello world",
+        "threadId": None,
+        "hasReplies": False,
+        "authorId": "U123",
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+class TestCollectionMapMessage:
+    def test_message_maps_to_messages(self):
+        from app.utils.chat_helpers import collection_map
+        assert collection_map[RecordType.MESSAGE.value] == "messages"
+
+    def test_existing_mappings_unchanged(self):
+        from app.utils.chat_helpers import collection_map
+        assert collection_map[RecordType.FILE.value] == "files"
+        assert collection_map[RecordType.MAIL.value] == "mails"
+
+
+class TestValidGroupLabelsConversation:
+    def test_conversation_in_valid_labels(self):
+        from app.utils.chat_helpers import valid_group_labels
+        from app.models.blocks import GroupType
+        assert GroupType.CONVERSATION.value in valid_group_labels
+
+
+class TestCreateRecordInstanceFromDictMessage:
+    def test_basic_message_creation(self):
+        from app.utils.chat_helpers import create_record_instance_from_dict
+        record = create_record_instance_from_dict(_ch_record_dict(), _ch_graph_doc())
+        assert record is not None
+        assert isinstance(record, MessageRecord)
+
+    def test_content_not_hydrated_from_graph(self):
+        from app.utils.chat_helpers import create_record_instance_from_dict
+        record = create_record_instance_from_dict(
+            _ch_record_dict(), _ch_graph_doc(content="Test message")
+        )
+        assert record.content is None
+
+    def test_author_id_populated(self):
+        from app.utils.chat_helpers import create_record_instance_from_dict
+        assert create_record_instance_from_dict(
+            _ch_record_dict(), _ch_graph_doc(authorId="U999")
+        ).author_id == "U999"
+
+    def test_record_type_is_message(self):
+        from app.utils.chat_helpers import create_record_instance_from_dict
+        assert create_record_instance_from_dict(_ch_record_dict(), _ch_graph_doc()).record_type == RecordType.MESSAGE
+
+    def test_message_without_graph_doc_returns_base_record(self):
+        """Without graph_doc the MESSAGE branch is not entered → returns base Record."""
+        from app.utils.chat_helpers import create_record_instance_from_dict
+        result = create_record_instance_from_dict(_ch_record_dict(), graph_doc=None)
+        assert result is not None
+        assert not isinstance(result, MessageRecord)
+
+    def test_org_id_propagated(self):
+        from app.utils.chat_helpers import create_record_instance_from_dict
+        assert create_record_instance_from_dict(_ch_record_dict(org_id="org-99"), _ch_graph_doc()).org_id == "org-99"

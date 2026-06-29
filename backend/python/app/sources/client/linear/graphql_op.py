@@ -301,15 +301,13 @@ class LinearGraphQLOperations:
         "viewer": {
             "query": """
                 query viewer {
-                    organization {
-                        id
-                        name
-                        urlKey
+                    viewer {
+                        ...UserFields
                     }
                 }
             """,
-            "fragments": [],
-            "description": "Get organization information"
+            "fragments": ["UserFields"],
+            "description": "Get current user information"
         },
 
         "teams": {
@@ -458,7 +456,7 @@ class LinearGraphQLOperations:
                     }
                 }
             """,
-            "fragments": ["IssueFields", "UserFields", "TeamFields"],
+            "fragments": ["IssueFields", "CommentFields", "UserFields", "TeamFields"],
             "description": "Search issues by query string"
         },
 
@@ -751,7 +749,7 @@ class LinearGraphQLOperations:
                     }
                 }
             """,
-            "fragments": ["IssueFields", "UserFields", "TeamFields"],
+            "fragments": ["IssueFields", "CommentFields", "UserFields", "TeamFields"],
             "description": "Create a new issue"
         },
 
@@ -767,7 +765,7 @@ class LinearGraphQLOperations:
                     }
                 }
             """,
-            "fragments": ["IssueFields", "UserFields", "TeamFields"],
+            "fragments": ["IssueFields", "CommentFields", "UserFields", "TeamFields"],
             "description": "Update an existing issue"
         },
 

@@ -3,6 +3,10 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import axios from 'axios'
 import { ConnectorServiceCommand } from '../../../../src/libs/commands/connector_service/connector.service.command'
+import {
+  BadRequestError,
+  InternalServerError,
+} from '../../../../src/libs/errors/http.errors'
 import * as kbUtils from '../../../../src/modules/knowledge_base/utils/utils'
 import {
   getKnowledgeHubNodes,
@@ -11,16 +15,11 @@ import {
   listKnowledgeBases,
   updateKnowledgeBase,
   deleteKnowledgeBase,
-  createRootFolder,
-  createNestedFolder,
+  createFolder,
   updateFolder,
   deleteFolder,
-  uploadRecordsToKB,
-  uploadRecordsToFolder,
+  uploadRecords,
   updateRecord,
-  getKBContent,
-  getFolderContents,
-  getAllRecords,
   getRecordById,
   reindexRecord,
   reindexRecordGroup,
@@ -29,12 +28,14 @@ import {
   updateKBPermission,
   removeKBPermission,
   listKBPermissions,
-  getConnectorStats,
   getRecordBuffer,
-  reindexFailedRecords,
-  resyncConnectorRecords,
   moveRecord,
 } from '../../../../src/modules/knowledge_base/controllers/kb_controllers'
+import {
+  getConnectorStats,
+  reindexFailedRecords,
+  resyncConnectorRecords,
+} from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -144,7 +145,7 @@ function createMockKeyValueStore(): any {
   }
 }
 
-/** Stub KB access check + folder validate calls for uploadRecordsToFolder happy paths. */
+/** Stub KB access check + folder validate calls for uploadRecords happy paths. */
 function stubFolderUploadPreValidationSuccess(userRole = 'OWNER'): sinon.SinonStub {
   const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute')
   executeStub.onFirstCall().resolves({
@@ -158,7 +159,7 @@ function stubFolderUploadPreValidationSuccess(userRole = 'OWNER'): sinon.SinonSt
   return executeStub
 }
 
-/** Stub KB access check success then folder validate failure for uploadRecordsToFolder. */
+/** Stub KB access check success then folder validate failure for uploadRecords. */
 function stubFolderUploadPreValidationFailure(
   validationStatusCode: number,
   validationDetail: string,
@@ -173,6 +174,59 @@ function stubFolderUploadPreValidationFailure(
     statusCode: validationStatusCode,
     data: { detail: validationDetail },
   })
+  return executeStub
+}
+
+/** Sample file buffer body for updateRecord file-replace tests. */
+const UPDATE_RECORD_FILE_BUFFER = {
+  fileBuffer: {
+    originalname: 'report.pdf',
+    mimetype: 'application/pdf',
+    size: 4096,
+    lastModified: Date.now(),
+    buffer: Buffer.from('new file content'),
+  },
+}
+
+/**
+ * Stub connector calls for updateRecord file-replace flow:
+ *   1. GET existing record (for externalRecordId)
+ *   2. PUT update record (after storage upload)
+ */
+function stubUpdateRecordFileUploadConnectorCalls(options: {
+  existingExternalRecordId?: string | null
+  updatedRecord?: Record<string, any>
+  getRecordStatus?: number
+  updateRecordStatus?: number
+} = {}): sinon.SinonStub {
+  const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute')
+  const externalRecordId =
+    options.existingExternalRecordId === undefined
+      ? 'ext-doc-123'
+      : options.existingExternalRecordId
+
+  executeStub.onFirstCall().resolves({
+    statusCode: options.getRecordStatus ?? 200,
+    data: {
+      record:
+        externalRecordId != null
+          ? { externalRecordId }
+          : { externalRecordId: null },
+    },
+  })
+
+  executeStub.onSecondCall().resolves({
+    statusCode: options.updateRecordStatus ?? 200,
+    data: {
+      updatedRecord: options.updatedRecord ?? {
+        _key: 'r1',
+        recordName: 'report',
+        externalRecordId: externalRecordId ?? undefined,
+        version: 2,
+      },
+    },
+  })
+
   return executeStub
 }
 
@@ -419,14 +473,14 @@ describe('Knowledge Base Controller', () => {
   // -----------------------------------------------------------------------
   // Folder Operations
   // -----------------------------------------------------------------------
-  describe('createRootFolder', () => {
+  describe('createFolder', () => {
     it('should return a handler function', () => {
-      const handler = createRootFolder(createMockAppConfig())
+      const handler = createFolder(createMockAppConfig())
       expect(handler).to.be.a('function')
     })
 
     it('should call next when user not authenticated', async () => {
-      const handler = createRootFolder(createMockAppConfig())
+      const handler = createFolder(createMockAppConfig())
       const req = createMockRequest({ user: undefined })
       const res = createMockResponse()
       const next = createMockNext()
@@ -437,7 +491,7 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when userId is missing', async () => {
-      const handler = createRootFolder(createMockAppConfig())
+      const handler = createFolder(createMockAppConfig())
       const req = createMockRequest({ user: { orgId: 'org-1' }, params: { kbId: 'kb-1' } })
       const res = createMockResponse()
       const next = createMockNext()
@@ -448,37 +502,8 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when orgId is missing', async () => {
-      const handler = createRootFolder(createMockAppConfig())
+      const handler = createFolder(createMockAppConfig())
       const req = createMockRequest({ user: { userId: 'user-1' }, params: { kbId: 'kb-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('createNestedFolder', () => {
-    it('should return a handler function', () => {
-      const handler = createNestedFolder(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should call next when user not authenticated', async () => {
-      const handler = createNestedFolder(createMockAppConfig())
-      const req = createMockRequest({ user: undefined, params: { kbId: 'kb-1', folderId: 'f-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when userId is missing', async () => {
-      const handler = createNestedFolder(createMockAppConfig())
-      const req = createMockRequest({ user: { orgId: 'org-1' }, params: { kbId: 'kb-1', folderId: 'f-1' } })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -549,9 +574,9 @@ describe('Knowledge Base Controller', () => {
   // -----------------------------------------------------------------------
   // Upload
   // -----------------------------------------------------------------------
-  describe('uploadRecordsToKB', () => {
+  describe('uploadRecords', () => {
     it('should return a handler function', () => {
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -559,7 +584,7 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when user not authenticated', async () => {
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -573,7 +598,7 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when userId is missing', async () => {
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -587,7 +612,7 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when kbId is missing and files are empty', async () => {
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -604,7 +629,7 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when files are empty but kbId is provided', async () => {
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -621,52 +646,11 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should accept notification service as optional parameter', () => {
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       expect(handler).to.be.a('function')
-    })
-  })
-
-  describe('uploadRecordsToFolder', () => {
-    it('should return a handler function', () => {
-      const handler = uploadRecordsToFolder(
-        createMockKeyValueStore(),
-        createMockAppConfig(),
-      )
-      expect(handler).to.be.a('function')
-    })
-
-    it('should call next when user not authenticated', async () => {
-      const handler = uploadRecordsToFolder(
-        createMockKeyValueStore(),
-        createMockAppConfig(),
-      )
-      const req = createMockRequest({ user: undefined })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when kbId, folderId, or files are missing', async () => {
-      const handler = uploadRecordsToFolder(
-        createMockKeyValueStore(),
-        createMockAppConfig(),
-      )
-      const req = createMockRequest({
-        params: { kbId: 'kb-1' },
-        body: { fileBuffers: [] },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
     })
   })
 
@@ -716,126 +700,6 @@ describe('Knowledge Base Controller', () => {
         createMockAppConfig(),
       )
       const req = createMockRequest({ user: { userId: 'user-1' }, params: { recordId: 'r-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('getKBContent', () => {
-    it('should return a handler function', () => {
-      const handler = getKBContent(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should call next when user not authenticated', async () => {
-      const handler = getKBContent(createMockAppConfig())
-      const req = createMockRequest({ user: undefined })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when kbId is missing', async () => {
-      const handler = getKBContent(createMockAppConfig())
-      const req = createMockRequest({ params: {} })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('getFolderContents', () => {
-    it('should return a handler function', () => {
-      const handler = getFolderContents(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should call next when user not authenticated', async () => {
-      const handler = getFolderContents(createMockAppConfig())
-      const req = createMockRequest({ user: undefined })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when kbId is missing', async () => {
-      const handler = getFolderContents(createMockAppConfig())
-      const req = createMockRequest({ params: { folderId: 'f-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('getAllRecords', () => {
-    it('should return a handler function', () => {
-      const handler = getAllRecords(createMockAppConfig())
-      expect(handler).to.be.a('function')
-    })
-
-    it('should call next when user not authenticated', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({ user: undefined })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when userId is missing', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({ user: { orgId: 'org-1' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next with BadRequestError for page less than 1', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({ query: { page: '0' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next with BadRequestError for limit greater than 100', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({ query: { limit: '200' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next with BadRequestError for limit less than 1', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({ query: { limit: '0' } })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -1474,9 +1338,9 @@ describe('Knowledge Base Controller', () => {
     })
   })
 
-  describe('createRootFolder (happy path)', () => {
+  describe('createFolder (happy path)', () => {
     it('should create a root folder successfully', async () => {
-      const handler = createRootFolder(createMockAppConfig())
+      const handler = createFolder(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
         statusCode: 201,
         data: { _key: 'folder-1', name: 'New Folder' },
@@ -1495,18 +1359,17 @@ describe('Knowledge Base Controller', () => {
         expect(res.json.calledOnce).to.be.true
       }
     })
-  })
 
-  describe('createNestedFolder (happy path)', () => {
     it('should create a nested folder successfully', async () => {
-      const handler = createNestedFolder(createMockAppConfig())
+      const handler = createFolder(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
         statusCode: 201,
         data: { _key: 'folder-2', name: 'Sub Folder' },
       })
 
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'folder-1' },
         body: { folderName: 'Sub Folder' },
       })
       const res = createMockResponse()
@@ -1553,167 +1416,6 @@ describe('Knowledge Base Controller', () => {
 
       const req = createMockRequest({
         params: { kbId: 'kb-1', folderId: 'folder-1' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-  })
-
-  describe('getKBContent (happy path)', () => {
-    it('should get KB content with default params', async () => {
-      const handler = getKBContent(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { records: [{ name: 'file.pdf' }], total: 1 },
-      })
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1' },
-        query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should get KB content with all filters', async () => {
-      const handler = getKBContent(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { records: [], total: 0 },
-      })
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1' },
-        query: {
-          page: '2',
-          limit: '10',
-          search: 'test',
-          recordTypes: 'file,folder',
-          origins: 'upload',
-          connectors: 'c1',
-          indexingStatus: 'completed',
-          dateFrom: '1000000',
-          dateTo: '2000000',
-          sortBy: 'createdAtTimestamp',
-          sortOrder: 'desc',
-        },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next when dateFrom is invalid', async () => {
-      const handler = getKBContent(createMockAppConfig())
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1' },
-        query: { dateFrom: 'invalid' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when dateTo is invalid', async () => {
-      const handler = getKBContent(createMockAppConfig())
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1' },
-        query: { dateTo: 'invalid' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('getFolderContents (happy path)', () => {
-    it('should get folder contents successfully', async () => {
-      const handler = getFolderContents(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { records: [{ name: 'child.pdf' }], total: 1 },
-      })
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
-        query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-  })
-
-  describe('getAllRecords (happy path)', () => {
-    it('should get all records with defaults', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { records: [], total: 0 },
-      })
-
-      const req = createMockRequest({
-        query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should get all records with search and filters', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { records: [{ name: 'file.pdf' }], total: 1 },
-      })
-
-      const req = createMockRequest({
-        query: {
-          page: '1',
-          limit: '50',
-          search: 'test',
-          recordTypes: 'file',
-          origins: 'upload',
-          connectors: 'c1',
-          indexingStatus: 'completed',
-          sortBy: 'name',
-          sortOrder: 'asc',
-        },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -2136,7 +1838,8 @@ describe('Knowledge Base Controller', () => {
 
       const handler = reindexFailedRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
-        body: { app: 'Google Drive', connectorId: 'c1', statusFilters: ['failed'] },
+        params: { connectorId: 'c1' },
+        body: { app: 'Google Drive', statusFilters: ['failed'] },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -2165,7 +1868,8 @@ describe('Knowledge Base Controller', () => {
 
       const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
-        body: { connectorName: 'Google Drive', connectorId: 'c1', fullSync: false },
+        params: { connectorId: 'c1' },
+        body: { connectorName: 'Google Drive', fullSync: false },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -2187,7 +1891,8 @@ describe('Knowledge Base Controller', () => {
 
       const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
-        body: { connectorName: 'Google Drive', connectorId: 'c1', fullSync: false },
+        params: { connectorId: 'c1' },
+        body: { connectorName: 'Google Drive', fullSync: false },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -2222,9 +1927,9 @@ describe('Knowledge Base Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // uploadRecordsToKB (deep coverage with utils stubbing)
+  // uploadRecords (deep coverage with utils stubbing)
   // -----------------------------------------------------------------------
-  describe('uploadRecordsToKB (deep happy paths)', () => {
+  describe('uploadRecords (deep happy paths)', () => {
     it('should upload records successfully with placeholder creation', async () => {
       const createPlaceholderStub = sinon.stub(kbUtils, 'createPlaceholderDocument').resolves({
         documentId: 'doc-123',
@@ -2232,7 +1937,7 @@ describe('Knowledge Base Controller', () => {
       })
       const processUploadsStub = sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2279,7 +1984,7 @@ describe('Knowledge Base Controller', () => {
       createPlaceholderStub.onSecondCall().rejects(new Error('Storage full'))
       sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2324,7 +2029,7 @@ describe('Knowledge Base Controller', () => {
     it('should handle all files failing placeholder creation', async () => {
       sinon.stub(kbUtils, 'createPlaceholderDocument').rejects(new Error('Storage error'))
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2364,7 +2069,7 @@ describe('Knowledge Base Controller', () => {
       })
       sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2404,7 +2109,7 @@ describe('Knowledge Base Controller', () => {
       })
       sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2442,7 +2147,7 @@ describe('Knowledge Base Controller', () => {
       })
       sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2476,7 +2181,7 @@ describe('Knowledge Base Controller', () => {
       err.response = { data: { error: { message: 'Quota exceeded' } } }
       sinon.stub(kbUtils, 'createPlaceholderDocument').rejects(err)
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2512,7 +2217,7 @@ describe('Knowledge Base Controller', () => {
       err.response = { data: { message: 'File too large' } }
       sinon.stub(kbUtils, 'createPlaceholderDocument').rejects(err)
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2552,7 +2257,7 @@ describe('Knowledge Base Controller', () => {
       // No accepted buffers, so the indexing path is never reached.
       const processStub = sinon.stub(kbUtils, 'processUploadsInBackground')
 
-      const handler = uploadRecordsToKB(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2603,9 +2308,9 @@ describe('Knowledge Base Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // uploadRecordsToFolder (deep coverage)
+  // uploadRecords (deep coverage)
   // -----------------------------------------------------------------------
-  describe('uploadRecordsToFolder (deep happy paths)', () => {
+  describe('uploadRecords (deep happy paths — folder)', () => {
     it('should upload records to folder successfully', async () => {
       stubFolderUploadPreValidationSuccess()
       sinon.stub(kbUtils, 'createPlaceholderDocument').resolves({
@@ -2614,12 +2319,13 @@ describe('Knowledge Base Controller', () => {
       })
       sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'folder-1' },
         body: {
           fileBuffers: [
             {
@@ -2652,12 +2358,13 @@ describe('Knowledge Base Controller', () => {
       createStub.onSecondCall().rejects(new Error('Failed'))
       sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'folder-1' },
         body: {
           fileBuffers: [
             { originalname: 'f1.pdf', mimetype: 'application/pdf', size: 100, filePath: 'f1.pdf', lastModified: Date.now(), buffer: Buffer.from('d1') },
@@ -2681,12 +2388,13 @@ describe('Knowledge Base Controller', () => {
       stubFolderUploadPreValidationSuccess()
       sinon.stub(kbUtils, 'createPlaceholderDocument').rejects(new Error('All fail'))
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'folder-1' },
         body: {
           fileBuffers: [
             { originalname: 'f1.pdf', mimetype: 'application/pdf', size: 100, filePath: 'f1.pdf', lastModified: Date.now(), buffer: Buffer.from('d') },
@@ -2705,8 +2413,15 @@ describe('Knowledge Base Controller', () => {
       expect(done!.data.summary).to.deep.equal({ total: 1, succeeded: 0, failed: 1 })
     })
 
-    it('should handle missing folderId in folder upload', async () => {
-      const handler = uploadRecordsToFolder(
+    it('should upload to KB root when folderId query is omitted', async () => {
+      stubFolderUploadPreValidationSuccess()
+      sinon.stub(kbUtils, 'createPlaceholderDocument').resolves({
+        documentId: 'doc-root',
+        documentName: 'root-file',
+      })
+      sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
+
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
@@ -2723,8 +2438,9 @@ describe('Knowledge Base Controller', () => {
 
       await handler(req, res, next)
 
-      // Rejected before the validation call — next called with BadRequestError
-      expect(next.calledOnce).to.be.true
+      expect(next.called).to.be.false
+      expect(res.writeHead.calledWith(200)).to.be.true
+      expect(getStreamedEvents(res).some((e) => e.event === 'done')).to.be.true
     })
 
     it('should handle file with nested path in folder upload', async () => {
@@ -2735,12 +2451,13 @@ describe('Knowledge Base Controller', () => {
       })
       sinon.stub(kbUtils, 'processUploadsInBackground').resolves({ succeeded: 1, failed: 0 } as any)
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'folder-1' },
         body: {
           fileBuffers: [
             {
@@ -2769,12 +2486,13 @@ describe('Knowledge Base Controller', () => {
       const createStub = sinon.stub(kbUtils, 'createPlaceholderDocument')
       createStub.rejects(new Error('Storage fail'))
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'folder-1' },
         body: {
           fileBuffers: [
             { originalname: 'f1.pdf', mimetype: 'application/pdf', size: 100, filePath: 'f1.pdf', lastModified: Date.now(), buffer: Buffer.from('d') },
@@ -2797,9 +2515,9 @@ describe('Knowledge Base Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // uploadRecordsToFolder — folder validation failures
+  // uploadRecords — folder validation failures
   // -----------------------------------------------------------------------
-  describe('uploadRecordsToFolder (folder validation)', () => {
+  describe('uploadRecords (folder validation)', () => {
     const fileBuffers = [
       { originalname: 'f.pdf', mimetype: 'application/pdf', size: 100, filePath: 'f.pdf', lastModified: Date.now(), buffer: Buffer.from('d') },
     ]
@@ -2807,12 +2525,13 @@ describe('Knowledge Base Controller', () => {
     it('should return 404 when folder does not exist', async () => {
       stubFolderUploadPreValidationFailure(404, 'Folder ghost not found in KB kb-1')
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'ghost' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'ghost' },
         body: { fileBuffers },
       })
       const res = createMockResponse()
@@ -2828,12 +2547,13 @@ describe('Knowledge Base Controller', () => {
     it('should return 404 when folder exists but belongs to a different KB', async () => {
       stubFolderUploadPreValidationFailure(404, 'Folder f1 not found in KB kb-1')
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'f1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'f1' },
         body: { fileBuffers },
       })
       const res = createMockResponse()
@@ -2848,12 +2568,13 @@ describe('Knowledge Base Controller', () => {
     it('should return 403 when user lacks write permission on the KB', async () => {
       stubFolderUploadPreValidationFailure(403, 'Insufficient permissions. Role: READER')
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'f1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'f1' },
         body: { fileBuffers },
       })
       const res = createMockResponse()
@@ -2872,12 +2593,13 @@ describe('Knowledge Base Controller', () => {
         documentName: 'should-not-be-called',
       })
 
-      const handler = uploadRecordsToFolder(
+      const handler = uploadRecords(
         createMockKeyValueStore(),
         createMockAppConfig(),
       )
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'ghost' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'ghost' },
         body: { fileBuffers },
       })
       const res = createMockResponse()
@@ -2973,18 +2695,8 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should update record with file upload', async () => {
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: {
-          updatedRecord: {
-            _key: 'r1',
-            recordName: 'report',
-            externalRecordId: 'ext-doc-123',
-            version: 2,
-          },
-        },
-      })
-      sinon.stub(kbUtils, 'uploadNextVersionToStorage').resolves()
+      const connectorStub = stubUpdateRecordFileUploadConnectorCalls()
+      const uploadStub = sinon.stub(kbUtils, 'uploadNextVersionToStorage').resolves()
 
       const handler = updateRecord(
         createMockKeyValueStore(),
@@ -2994,13 +2706,7 @@ describe('Knowledge Base Controller', () => {
         params: { recordId: 'r1' },
         body: {
           recordName: 'report',
-          fileBuffer: {
-            originalname: 'report.pdf',
-            mimetype: 'application/pdf',
-            size: 4096,
-            lastModified: Date.now(),
-            buffer: Buffer.from('new file content'),
-          },
+          ...UPDATE_RECORD_FILE_BUFFER,
         },
       })
       const res = createMockResponse()
@@ -3008,12 +2714,14 @@ describe('Knowledge Base Controller', () => {
 
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-        const response = res.json.firstCall.args[0]
-        expect(response.message).to.equal('Record updated with new file version')
-        expect(response.fileUploaded).to.be.true
-      }
+      expect(next.called).to.be.false
+      expect(connectorStub.callCount).to.equal(2)
+      expect(uploadStub.calledOnce).to.be.true
+      expect(uploadStub.firstCall.args[2]).to.equal('ext-doc-123')
+      expect(res.status.calledWith(200)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.message).to.equal('Record updated with new file version')
+      expect(response.fileUploaded).to.be.true
     })
 
     it('should use originalname when recordName is not provided', async () => {
@@ -3047,17 +2755,7 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when storage upload fails with 404', async () => {
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: {
-          updatedRecord: {
-            _key: 'r1',
-            recordName: 'report',
-            externalRecordId: 'ext-doc-123',
-            version: 2,
-          },
-        },
-      })
+      const connectorStub = stubUpdateRecordFileUploadConnectorCalls()
       const storageError: any = new Error('Not found in storage')
       storageError.response = { status: 404 }
       sinon.stub(kbUtils, 'uploadNextVersionToStorage').rejects(storageError)
@@ -3068,15 +2766,7 @@ describe('Knowledge Base Controller', () => {
       )
       const req = createMockRequest({
         params: { recordId: 'r1' },
-        body: {
-          fileBuffer: {
-            originalname: 'report.pdf',
-            mimetype: 'application/pdf',
-            size: 4096,
-            lastModified: Date.now(),
-            buffer: Buffer.from('new content'),
-          },
-        },
+        body: UPDATE_RECORD_FILE_BUFFER,
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -3084,20 +2774,12 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
+      expect(connectorStub.callCount).to.equal(1)
     })
 
     it('should call next when storage upload fails with non-404 error', async () => {
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: {
-          updatedRecord: {
-            _key: 'r1',
-            recordName: 'report',
-            externalRecordId: 'ext-doc-123',
-            version: 2,
-          },
-        },
-      })
+      const connectorStub = stubUpdateRecordFileUploadConnectorCalls()
       sinon.stub(kbUtils, 'uploadNextVersionToStorage').rejects(new Error('Storage timeout'))
 
       const handler = updateRecord(
@@ -3106,15 +2788,7 @@ describe('Knowledge Base Controller', () => {
       )
       const req = createMockRequest({
         params: { recordId: 'r1' },
-        body: {
-          fileBuffer: {
-            originalname: 'report.pdf',
-            mimetype: 'application/pdf',
-            size: 4096,
-            lastModified: Date.now(),
-            buffer: Buffer.from('new content'),
-          },
-        },
+        body: UPDATE_RECORD_FILE_BUFFER,
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -3122,20 +2796,16 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
+      expect(next.firstCall.args[0].message).to.include('File upload failed')
+      expect(connectorStub.callCount).to.equal(1)
     })
 
-    it('should call next when updated record has no externalRecordId for file upload', async () => {
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: {
-          updatedRecord: {
-            _key: 'r1',
-            recordName: 'report',
-            externalRecordId: null, // no external ID
-            version: 2,
-          },
-        },
+    it('should call next when existing record has no externalRecordId for file upload', async () => {
+      const connectorStub = stubUpdateRecordFileUploadConnectorCalls({
+        existingExternalRecordId: null,
       })
+      const uploadStub = sinon.stub(kbUtils, 'uploadNextVersionToStorage').resolves()
 
       const handler = updateRecord(
         createMockKeyValueStore(),
@@ -3143,15 +2813,7 @@ describe('Knowledge Base Controller', () => {
       )
       const req = createMockRequest({
         params: { recordId: 'r1' },
-        body: {
-          fileBuffer: {
-            originalname: 'report.pdf',
-            mimetype: 'application/pdf',
-            size: 4096,
-            lastModified: Date.now(),
-            buffer: Buffer.from('new content'),
-          },
-        },
+        body: UPDATE_RECORD_FILE_BUFFER,
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -3159,18 +2821,18 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(connectorStub.callCount).to.equal(1)
+      expect(uploadStub.called).to.be.false
     })
 
     it('should handle file with no extension in filename', async () => {
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: {
-          updatedRecord: {
-            _key: 'r1',
-            recordName: 'Dockerfile',
-            externalRecordId: 'ext-123',
-            version: 2,
-          },
+      const connectorStub = stubUpdateRecordFileUploadConnectorCalls({
+        updatedRecord: {
+          _key: 'r1',
+          recordName: 'Dockerfile',
+          externalRecordId: 'ext-123',
+          version: 2,
         },
       })
       sinon.stub(kbUtils, 'uploadNextVersionToStorage').resolves()
@@ -3196,9 +2858,33 @@ describe('Knowledge Base Controller', () => {
 
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
+      expect(next.called).to.be.false
+      expect(connectorStub.callCount).to.equal(2)
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('should call next when GET existing record fails before file upload', async () => {
+      const connectorStub = stubUpdateRecordFileUploadConnectorCalls({
+        getRecordStatus: 404,
+      })
+      const uploadStub = sinon.stub(kbUtils, 'uploadNextVersionToStorage').resolves()
+
+      const handler = updateRecord(
+        createMockKeyValueStore(),
+        createMockAppConfig(),
+      )
+      const req = createMockRequest({
+        params: { recordId: 'r1' },
+        body: UPDATE_RECORD_FILE_BUFFER,
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(connectorStub.callCount).to.equal(1)
+      expect(uploadStub.called).to.be.false
     })
 
     it('should call next when connector command throws', async () => {
@@ -3225,62 +2911,6 @@ describe('Knowledge Base Controller', () => {
   // Additional error response handling for connector-backed endpoints
   // -----------------------------------------------------------------------
   describe('connector error handling deep paths', () => {
-    it('should call next when getKBContent connector returns non-200', async () => {
-      const handler = getKBContent(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 500,
-        data: { detail: 'Internal error' },
-      })
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1' },
-        query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when getFolderContents connector returns non-200', async () => {
-      const handler = getFolderContents(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 404,
-        data: { detail: 'Folder not found' },
-      })
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
-        query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next when getAllRecords connector returns non-200', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 500,
-        data: null,
-      })
-
-      const req = createMockRequest({
-        query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
     it('should call next when getRecordById connector returns non-200', async () => {
       const handler = getRecordById(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
@@ -3355,8 +2985,8 @@ describe('Knowledge Base Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('should call next when createRootFolder connector returns non-200', async () => {
-      const handler = createRootFolder(createMockAppConfig())
+    it('should call next when createFolder connector returns non-200 for root folder', async () => {
+      const handler = createFolder(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
         statusCode: 409,
         data: { detail: 'Folder already exists' },
@@ -3374,15 +3004,16 @@ describe('Knowledge Base Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('should call next when createNestedFolder connector returns non-200', async () => {
-      const handler = createNestedFolder(createMockAppConfig())
+    it('should call next when createFolder connector returns non-200 for nested folder', async () => {
+      const handler = createFolder(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
         statusCode: 400,
         data: { detail: 'Invalid parent folder' },
       })
 
       const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'folder-1' },
+        params: { kbId: 'kb-1' },
+        query: { folderId: 'folder-1' },
         body: { folderName: 'Sub Folder' },
       })
       const res = createMockResponse()
@@ -3561,7 +3192,8 @@ describe('Knowledge Base Controller', () => {
 
       const handler = reindexFailedRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
-        body: { app: 'Google Drive', connectorId: 'c1', statusFilters: ['failed'] },
+        params: { connectorId: 'c1' },
+        body: { app: 'Google Drive', statusFilters: ['failed'] },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -3577,161 +3209,8 @@ describe('Knowledge Base Controller', () => {
 
       const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
-        body: { connectorName: 'Google Drive', connectorId: 'c1', fullSync: false },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // getKBContent and getFolderContents with all query filters
-  // -----------------------------------------------------------------------
-  describe('getKBContent (additional filter coverage)', () => {
-    it('should handle connector returning null data', async () => {
-      const handler = getKBContent(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: null,
-      })
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1' },
-        query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      // Should call next since data is null
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  describe('getFolderContents (additional paths)', () => {
-    it('should pass all filter query params to connector', async () => {
-      const handler = getFolderContents(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { records: [], total: 0 },
-      })
-
-      const req = createMockRequest({
-        params: { kbId: 'kb-1', folderId: 'f-1' },
-        query: {
-          page: '2',
-          limit: '10',
-          search: 'report',
-          recordTypes: 'file,folder',
-          origins: 'upload',
-          connectors: 'c1',
-          indexingStatus: 'completed',
-          dateFrom: '1000000',
-          dateTo: '2000000',
-          sortBy: 'name',
-          sortOrder: 'asc',
-        },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next when folderId is missing', async () => {
-      const handler = getFolderContents(createMockAppConfig())
-      const req = createMockRequest({
-        params: { kbId: 'kb-1' },
-        query: {},
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // getAllRecords with date filters
-  // -----------------------------------------------------------------------
-  describe('getAllRecords (date filter coverage)', () => {
-    it('should handle dateFrom and dateTo filters', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
-        statusCode: 200,
-        data: { records: [], total: 0 },
-      })
-
-      const req = createMockRequest({
-        query: {
-          dateFrom: '1000000',
-          dateTo: '2000000',
-        },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
-    })
-
-    it('should call next for invalid dateFrom', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({
-        query: { dateFrom: 'not-a-number' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next for invalid dateTo', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({
-        query: { dateTo: 'not-a-number' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next for invalid sortBy field', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({
-        query: { sortBy: 'invalidColumn' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-
-    it('should call next for invalid sortOrder', async () => {
-      const handler = getAllRecords(createMockAppConfig())
-      const req = createMockRequest({
-        query: { sortOrder: 'random' },
+        params: { connectorId: 'c1' },
+        body: { connectorName: 'Google Drive', fullSync: false },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -3867,7 +3346,8 @@ describe('Knowledge Base Controller', () => {
 
       const handler = reindexFailedRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
-        body: { app: 'Google Drive', connectorId: 'c1', statusFilters: ['failed'] },
+        params: { connectorId: 'c1' },
+        body: { app: 'Google Drive', statusFilters: ['failed'] },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -3893,7 +3373,8 @@ describe('Knowledge Base Controller', () => {
 
       const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
-        body: { connectorName: 'Google Drive', connectorId: 'c1', fullSync: false },
+        params: { connectorId: 'c1' },
+        body: { connectorName: 'Google Drive', fullSync: false },
       })
       const res = createMockResponse()
       const next = createMockNext()

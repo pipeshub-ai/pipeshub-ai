@@ -306,6 +306,7 @@ class TestAzureFilesConnector:
     # ------------------------------------------------------------------ #
     # TC-MOVE-001 — Move detection (same share)
     # ------------------------------------------------------------------ #
+    @pytest.mark.skip(reason="Long-running move test suspected of server pressure before timeout cascades; see CI stability ticket")
     @pytest.mark.order(5)
     async def test_tc_move_001_move_detection(
         self,

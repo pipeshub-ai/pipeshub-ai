@@ -39,7 +39,6 @@ import sys
 from pathlib import Path
 
 import pytest
-import requests
 
 _ROOT = Path(__file__).resolve().parents[2]
 _RV_HELPER = _ROOT / "response-validation" / "helper"
@@ -49,11 +48,12 @@ for _p in (_AUTH_ROOT, _ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
+from helper.clients.auth_client import UserAccountClient  # noqa: E402
+from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
     assert_response_matches_openapi_ref,
 )
-from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from utils.auth_helpers import (  # noqa: E402
     authenticate_password,
     init_auth,
@@ -62,23 +62,36 @@ from utils.auth_helpers import (  # noqa: E402
     session_headers,
 )
 
+logger = logging.getLogger("user-account-integration-test")
+
+
+# ------------------------------------------------------------------ #
+# Base test class
+# ------------------------------------------------------------------ #
+class UserAccountTestBase:
+    """Base class with shared user_account_client fixture."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        user_account_client: UserAccountClient,
+        pipeshub_client: PipeshubClient,
+    ) -> None:
+        self.account = user_account_client
+        self.client = pipeshub_client
+
 
 # ====================================================================
 # POST /api/v1/userAccount/initAuth
 # ====================================================================
 @pytest.mark.integration
-class TestInitAuth:
+class TestInitAuth(UserAccountTestBase):
     """POST /api/v1/userAccount/initAuth — initialize authentication session."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.base_url = pipeshub_client.base_url
-        self.timeout = pipeshub_client.timeout_seconds
 
     def test_init_auth_response_schema(self) -> None:
         """initAuth with test user email — schema, x-session-token, allowedMethods, step 0."""
         email, _ = require_test_user_credentials()
-        resp = init_auth(self.base_url, email, self.timeout)
+        resp = self.account.init_auth(email)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -96,13 +109,9 @@ class TestInitAuth:
 
     def test_init_auth_negative_tests(self) -> None:
         """Invalid email / wrong body type: ErrorResponse; real init body ≠ authenticate schema."""
-        init_url = f"{self.base_url}/api/v1/userAccount/initAuth"
-
         # Invalid email string: Zod rejects format with a 400 ErrorResponse.
-        resp = requests.post(
-            init_url,
-            json={"email": "not-a-valid-email"},
-            timeout=self.timeout,
+        resp = self.account.post(
+            "/initAuth", json={"email": "not-a-valid-email"}, auth=False
         )
         assert resp.status_code == 400, (
             f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
@@ -121,11 +130,7 @@ class TestInitAuth:
             )
 
         # Email field wrong JSON type (number): Zod returns a 400 ErrorResponse.
-        resp = requests.post(
-            init_url,
-            json={"email": 123},
-            timeout=self.timeout,
-        )
+        resp = self.account.post("/initAuth", json={"email": 123}, auth=False)
         assert resp.status_code == 400, (
             f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
         )
@@ -137,9 +142,7 @@ class TestInitAuth:
 
         # Successful initAuth JSON must not satisfy the authenticate success schema
         email, _ = require_test_user_credentials()
-        init_auth_success_http_response = init_auth(
-            self.base_url, email, self.timeout
-        )
+        init_auth_success_http_response = init_auth(self.client, email)
         assert init_auth_success_http_response.status_code == 200, (
             init_auth_success_http_response.text
         )
@@ -151,33 +154,25 @@ class TestInitAuth:
             )
 
 
-
 # ====================================================================
 # POST /api/v1/userAccount/authenticate
 # ====================================================================
 @pytest.mark.integration
-class TestAuthenticate:
+class TestAuthenticate(UserAccountTestBase):
     """POST /api/v1/userAccount/authenticate — full password login flow."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.base_url = pipeshub_client.base_url
-        self.timeout = pipeshub_client.timeout_seconds
 
     def test_authenticate_response_schema(self) -> None:
         """initAuth + password authenticate — OpenAPI schema, accessToken, refreshToken."""
         email, password = require_test_user_credentials()
 
-        init_resp = init_auth(self.base_url, email, self.timeout)
+        init_resp = self.account.init_auth(email)
         assert init_resp.status_code == 200, (
             f"initAuth failed: {init_resp.status_code}: {init_resp.text}"
         )
         session_token = init_resp.headers.get("x-session-token")
         assert session_token, "initAuth did not return x-session-token"
 
-        auth_resp = authenticate_password(
-            self.base_url, session_token, email, password, self.timeout,
-        )
+        auth_resp = self.account.authenticate(session_token, email, password)
         assert auth_resp.status_code == 200, (
             f"Expected 200, got {auth_resp.status_code}: {auth_resp.text}"
         )
@@ -201,14 +196,14 @@ class TestAuthenticate:
         email, password = require_test_user_credentials()
 
         # No x-session-token header — authSessionMiddleware → 401 Invalid session token
-        resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/authenticate",
+        resp = self.account.post(
+            "/authenticate",
             json={
                 "method": "password",
                 "credentials": {"password": password},
                 "email": email,
             },
-            timeout=self.timeout,
+            auth=False,
         )
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
@@ -228,20 +223,13 @@ class TestAuthenticate:
             )
 
         # Valid session but wrong password — app returns 400 + ErrorResponse
-        init_resp = init_auth(self.base_url, email, self.timeout)
+        init_resp = self.account.init_auth(email)
         assert init_resp.status_code == 200, init_resp.text
         session_token = init_resp.headers.get("x-session-token")
         assert session_token
 
-        auth_resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/authenticate",
-            headers={"x-session-token": session_token},
-            json={
-                "method": "password",
-                "credentials": {"password": password + "__wrong_suffix__"},
-                "email": email,
-            },
-            timeout=self.timeout,
+        auth_resp = self.account.authenticate(
+            session_token, email, password + "__wrong_suffix__"
         )
         assert auth_resp.status_code == 400, (
             f"Expected 400, got {auth_resp.status_code}: {auth_resp.text}"
@@ -263,16 +251,16 @@ class TestAuthenticate:
             )
 
         # Body missing required `method`: Zod returns a 400 ErrorResponse.
-        init_resp = init_auth(self.base_url, email, self.timeout)
+        init_resp = self.account.init_auth(email)
         assert init_resp.status_code == 200
         session_token = init_resp.headers.get("x-session-token")
         assert session_token
 
-        auth_resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/authenticate",
+        auth_resp = self.account.post(
+            "/authenticate",
             headers={"x-session-token": session_token},
             json={"credentials": {"password": "x"}},
-            timeout=self.timeout,
+            auth=False,
         )
         assert auth_resp.status_code == 400, (
             f"Expected 400 validation error, got {auth_resp.status_code}: {auth_resp.text}"
@@ -292,21 +280,16 @@ class TestAuthenticate:
             )
 
         # Unknown top-level field: authenticate body schema is .strict(), so this is 400.
-        init_resp = init_auth(self.base_url, email, self.timeout)
+        init_resp = self.account.init_auth(email)
         assert init_resp.status_code == 200, init_resp.text
         session_token = init_resp.headers.get("x-session-token")
         assert session_token
 
-        auth_resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/authenticate",
-            headers={"x-session-token": session_token},
-            json={
-                "method": "password",
-                "credentials": {"password": "x"},
-                "email": email,
-                "extraTopLevelField": True,
-            },
-            timeout=self.timeout,
+        auth_resp = self.account.authenticate(
+            session_token,
+            email,
+            "x",
+            extra_json={"extraTopLevelField": True},
         )
         assert auth_resp.status_code == 400, (
             f"Expected 400 (authenticate body is .strict()), got {auth_resp.status_code}: {auth_resp.text}"
@@ -319,7 +302,7 @@ class TestAuthenticate:
 
         # Successful authenticate JSON must not satisfy the initAuth success schema
         authenticate_success_http_response = authenticate_password(
-            self.base_url, session_token, email, password, self.timeout,
+            self.client, session_token, email, password
         )
         assert authenticate_success_http_response.status_code == 200, (
             authenticate_success_http_response.text
@@ -338,37 +321,22 @@ class TestAuthenticate:
 # POST /api/v1/userAccount/password/reset
 # ====================================================================
 @pytest.mark.integration
-class TestResetPassword:
+class TestResetPassword(UserAccountTestBase):
     """POST /api/v1/userAccount/password/reset — reset password then restore."""
 
     TEMP_PASSWORD = "TempP@ssw0rd!Integration#2026"
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.base_url = pipeshub_client.base_url
-        self.timeout = pipeshub_client.timeout_seconds
-
     def _reset_password(
         self, access_token: str, current: str, new: str,
-    ) -> requests.Response:
-        return requests.post(
-            f"{self.base_url}/api/v1/userAccount/password/reset",
-            headers=session_headers(access_token),
-            json={
-                "currentPassword": current,
-                "newPassword": new,
-            },
-            timeout=self.timeout,
-        )
+    ):
+        return self.account.reset_password(access_token, current, new)
 
     def test_reset_password_response_schema(self) -> None:
         """Reset password, validate schema, then restore original password."""
         email, original_password = require_test_user_credentials()
 
         # Login with original password
-        access_token, _ = login_with_user(
-            self.base_url, email, original_password, self.timeout,
-        )
+        access_token, _ = login_with_user(self.client, email, original_password)
 
         # Step 1: Change to temporary password
         resp = self._reset_password(
@@ -386,7 +354,7 @@ class TestResetPassword:
 
         # Step 2: Login with temporary password and restore original
         new_access_token, _ = login_with_user(
-            self.base_url, email, self.TEMP_PASSWORD, self.timeout,
+            self.client, email, self.TEMP_PASSWORD
         )
         restore_resp = self._reset_password(
             new_access_token, self.TEMP_PASSWORD, original_password,
@@ -400,16 +368,14 @@ class TestResetPassword:
 
     def test_reset_password_negative_tests(self) -> None:
         """Missing Authorization; empty body with token — ErrorResponse."""
-        reset_url = f"{self.base_url}/api/v1/userAccount/password/reset"
-
         # No Authorization header — userValidator / validateJwt → 400 + ErrorResponse
-        resp = requests.post(
-            reset_url,
+        resp = self.account.post(
+            "/password/reset",
             json={
                 "currentPassword": "any",
                 "newPassword": "AnyOtherP@ssw0rd!",
             },
-            timeout=self.timeout,
+            auth=False,
         )
         assert resp.status_code == 400, (
             f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
@@ -430,14 +396,12 @@ class TestResetPassword:
 
         # Logged in but empty JSON body — Zod requires currentPassword/newPassword → 400
         email, original_password = require_test_user_credentials()
-        access_token, _ = login_with_user(
-            self.base_url, email, original_password, self.timeout,
-        )
-        resp = requests.post(
-            reset_url,
+        access_token, _ = login_with_user(self.client, email, original_password)
+        resp = self.account.post(
+            "/password/reset",
             headers=session_headers(access_token),
             json={},
-            timeout=self.timeout,
+            auth=False,
         )
         assert resp.status_code == 400, (
             f"Expected 400 validation error, got {resp.status_code}: {resp.text}"
@@ -459,29 +423,18 @@ class TestResetPassword:
 # POST /api/v1/userAccount/logout/manual
 # ====================================================================
 @pytest.mark.integration
-class TestLogoutManual:
+class TestLogoutManual(UserAccountTestBase):
     """POST /api/v1/userAccount/logout/manual — logout then re-login."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.base_url = pipeshub_client.base_url
-        self.timeout = pipeshub_client.timeout_seconds
 
     def test_logout_returns_200_empty_body(self) -> None:
         """Logout must return 200 with empty body, then re-login succeeds."""
         email, password = require_test_user_credentials()
 
         # Login
-        access_token, _ = login_with_user(
-            self.base_url, email, password, self.timeout,
-        )
+        access_token, _ = login_with_user(self.client, email, password)
 
         # Logout
-        resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/logout/manual",
-            headers=session_headers(access_token),
-            timeout=self.timeout,
-        )
+        resp = self.account.logout_manual(access_token)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -491,16 +444,13 @@ class TestLogoutManual:
         )
 
         # Re-login to confirm session was properly ended and new login works
-        new_access_token, _ = login_with_user(
-            self.base_url, email, password, self.timeout,
-        )
+        new_access_token, _ = login_with_user(self.client, email, password)
         assert len(new_access_token) > 0, "Re-login after logout must succeed"
 
     def test_logout_negative_tests(self) -> None:
         """Without Authorization — ErrorResponse; success-shaped operation rejects error body."""
-        logout_url = f"{self.base_url}/api/v1/userAccount/logout/manual"
         # No Authorization — userValidator → 400 Authorization header not found + ErrorResponse
-        resp = requests.post(logout_url, timeout=self.timeout)
+        resp = self.account.post("/logout/manual", auth=False)
         assert resp.status_code == 400, (
             f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
@@ -524,29 +474,18 @@ class TestLogoutManual:
 # POST /api/v1/userAccount/refresh/token
 # ====================================================================
 @pytest.mark.integration
-class TestRefreshToken:
+class TestRefreshToken(UserAccountTestBase):
     """POST /api/v1/userAccount/refresh/token — use refreshToken from login."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.base_url = pipeshub_client.base_url
-        self.timeout = pipeshub_client.timeout_seconds
 
     def test_refresh_token_response_schema(self) -> None:
         """Use refreshToken from authenticate as Bearer — response must match schema."""
         email, password = require_test_user_credentials()
 
         # Login to get both tokens
-        _, refresh_token = login_with_user(
-            self.base_url, email, password, self.timeout,
-        )
+        _, refresh_token = login_with_user(self.client, email, password)
 
         # Use refreshToken as Bearer to get a new accessToken
-        resp = requests.post(
-            f"{self.base_url}/api/v1/userAccount/refresh/token",
-            headers=session_headers(refresh_token),
-            timeout=self.timeout,
-        )
+        resp = self.account.refresh_token(refresh_token)
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text}"
         )
@@ -557,10 +496,8 @@ class TestRefreshToken:
 
     def test_refresh_token_negative_tests(self) -> None:
         """No token, invalid Bearer — ErrorResponse; real refresh body ≠ resetPassword schema."""
-        refresh_url = f"{self.base_url}/api/v1/userAccount/refresh/token"
-
         # No Authorization — scopedTokenValidator → 401 No token provided + ErrorResponse
-        resp = requests.post(refresh_url, timeout=self.timeout)
+        resp = self.account.post("/refresh/token", auth=False)
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
         )
@@ -579,13 +516,13 @@ class TestRefreshToken:
             )
 
         # Malformed / unverifiable Bearer JWT — verifyScopedToken → 401 + ErrorResponse
-        resp = requests.post(
-            refresh_url,
+        resp = self.account.post(
+            "/refresh/token",
             headers={
                 "Authorization": "Bearer not-a-valid-jwt",
                 "Content-Type": "application/json",
             },
-            timeout=self.timeout,
+            auth=False,
         )
         assert resp.status_code == 401, (
             f"Expected 401, got {resp.status_code}: {resp.text}"
@@ -603,14 +540,8 @@ class TestRefreshToken:
 
         # Valid refresh token — 200 matches refreshToken; same payload must not match resetPassword
         email, password = require_test_user_credentials()
-        _, refresh_token = login_with_user(
-            self.base_url, email, password, self.timeout,
-        )
-        resp = requests.post(
-            refresh_url,
-            headers=session_headers(refresh_token),
-            timeout=self.timeout,
-        )
+        _, refresh_token = login_with_user(self.client, email, password)
+        resp = self.account.refresh_token(refresh_token)
         assert resp.status_code == 200, resp.text
         refresh_token_success_body = resp.json()
         assert_response_matches_openapi_operation(

@@ -20,6 +20,7 @@ on:
             - s3
             - confluence
             - jira
+            - linear
             - gcs
             - azure_blob
             - azure_files
@@ -50,7 +51,7 @@ on:
       message_broker:
         description: 'Message broker to use'
         required: true
-        default: 'kafka'
+        default: 'redis'
         type: choice
         options:
           - kafka
@@ -62,7 +63,7 @@ permissions:
 env:
   PIPESHUB_BASE_URL: http://localhost:3000
   GRAPH_DB: ${{ github.event.inputs.graph_db || 'neo4j' }}
-  MESSAGE_BROKER: ${{ github.event.inputs.message_broker || 'kafka' }}
+  MESSAGE_BROKER: ${{ github.event.inputs.message_broker || 'redis' }}
 
 jobs:
   integration-tests:
@@ -111,6 +112,8 @@ jobs:
       JIRA_TEST_BASE_URL: ${{ secrets.JIRA_TEST_BASE_URL }}
       JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
       JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}
+      LINEAR_TEST_API_TOKEN: ${{ secrets.LINEAR_TEST_API_TOKEN }}
+      LINEAR_TEST_TEAM_IDS: ${{ secrets.LINEAR_TEST_TEAM_IDS }}
 
     steps:
       - name: Checkout code

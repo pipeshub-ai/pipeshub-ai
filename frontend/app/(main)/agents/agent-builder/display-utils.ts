@@ -159,6 +159,12 @@ export function formattedProvider(provider: string): string {
       return 'Mistral';
     case 'openAICompatible':
       return 'OpenAI API Compatible';
+    case 'openRouter':
+      return 'OpenRouter';
+    case 'lmStudio':
+      return 'LM Studio';
+    case 'litellmProxy':
+      return 'LiteLLM Proxy';
     default:
       return provider || 'AI';
   }

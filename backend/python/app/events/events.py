@@ -25,6 +25,9 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     MimeTypes,
     ProgressStatus,
+    CODE_FILE_EXTENSION_VALUES,
+    CODE_FILE_MIME_TYPE_VALUES,
+    normalize_file_extension,
 )
 from app.events.processor import Processor
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
@@ -57,6 +60,11 @@ def _get_pdf_ocr_detection_pool() -> ProcessPoolExecutor:
     # the primary cleanup path; atexit is the safety net for unclean exits.
     atexit.register(pool.shutdown, wait=False, cancel_futures=True)
     return pool
+
+
+def _record_key(doc: dict[str, Any] | None) -> str | None:
+    """Record id from either Arango (_key) or generic graph (id) document format."""
+    return (doc.get("_key") or doc.get("id")) if doc is not None else None
 
 
 def shutdown_pdf_ocr_pool() -> bool:
@@ -123,7 +131,7 @@ class EventProcessor:
         Mark the record status to IN_PROGRESS
         """
         try:
-            record_id = doc.get("_key", "unknown")
+            record_id = _record_key(doc) or "unknown"
 
             doc.update(
                 {
@@ -133,16 +141,22 @@ class EventProcessor:
             )
 
             docs = [doc]
-            await self.graph_provider.batch_upsert_nodes(
+            success = await self.graph_provider.batch_update_nodes(
                 docs, CollectionNames.RECORDS.value
             )
+            if not success:
+                self.logger.warning(
+                    "⚠️ Failed to update record %s status to %s - record may not exist",
+                    record_id, status.value
+                )
+                return
 
-            self.logger.info(
+            self.logger.debug(
                 f"🔍 Record {record_id}: Successfully updated status to {status.value}"
             )
         except Exception as e:
             self.logger.error(
-                f"❌ Record {doc.get('_key', 'unknown')}: Failed to mark record status "
+                f"❌ Record {_record_key(doc) or 'unknown'}: Failed to mark record status "
                 f"to {status.value}: {repr(e)}"
             )
             if status == ProgressStatus.EMPTY:
@@ -234,15 +248,22 @@ class EventProcessor:
             md5_checksum = hashlib.md5(content_for_hash).hexdigest()
             if existing_md5_checksum != md5_checksum:
                 doc.update({"md5Checksum": md5_checksum})
-                await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+                success = await self.graph_provider.batch_update_nodes([doc], CollectionNames.RECORDS.value)
+                if not success:
+                    self.logger.warning(
+                        "⚠️ Failed to update MD5 checksum for record %s - record may not exist",
+                        _record_key(doc),
+                    )
+                    return True
 
-            self.logger.info("🚀 Calculated md5_checksum: %s for record type: %s", md5_checksum, record_type)
+            self.logger.debug("🚀 Calculated md5_checksum: %s for record type: %s", md5_checksum, record_type)
 
         if not md5_checksum:
             return False
 
+        rec_key = doc.get('_key') or doc.get('id')
         duplicate_records = await self.graph_provider.find_duplicate_records(
-            record_key=doc.get('_key'),
+            record_key=_record_key(doc),
             md5_checksum=md5_checksum,
             record_type=record_type,
             size_in_bytes=size_in_bytes
@@ -251,7 +272,9 @@ class EventProcessor:
         duplicate_records = [r for r in duplicate_records if r is not None]
 
         if not duplicate_records:
-            self.logger.info(f"🚀 No duplicate records found for record {doc.get('_key')}")
+            self.logger.info(
+                f"🚀 No duplicate records found for record {_record_key(doc)}"
+            )
             return False
 
         # Check for processed or in-progress duplicates
@@ -273,13 +296,23 @@ class EventProcessor:
                 "extractionStatus": processed_duplicate.get("extractionStatus"),
                 "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
             })
-            await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+            success = await self.graph_provider.batch_update_nodes([doc], CollectionNames.RECORDS.value)
+            if not success:
+                self.logger.warning(
+                    "⚠️ Failed to update duplicate record %s - record may have been deleted. Skipping relationship copy.",
+                    _record_key(doc),
+                )
+                # Don't proceed with copy_document_relationships if record doesn't exist
+                return True
+            
             # Copy all relationships from the processed duplicate to this document
             await self.graph_provider.copy_document_relationships(
-                processed_duplicate.get("_key") or processed_duplicate.get("id"),
-                doc.get("_key") or doc.get("id")
+                _record_key(processed_duplicate),
+                _record_key(doc),
             )
-            self.logger.info(f"✅ Duplicate record {processed_duplicate.get('_key')} returning TRUE")
+            self.logger.debug(
+                f"✅ Duplicate record {_record_key(processed_duplicate)} returning TRUE"
+            )
             return True  # Duplicate handled
 
         # Check if any duplicate is in progress
@@ -289,14 +322,24 @@ class EventProcessor:
         )
 
         if in_progress:
-            self.logger.info(f"🚀 Duplicate record {in_progress.get('_key')} is being processed, changing status to QUEUED.")
+            self.logger.info(
+                f"🚀 Duplicate record {_record_key(in_progress)} is being processed, "
+                "changing status to QUEUED."
+            )
             doc.update({
                 "indexingStatus": ProgressStatus.QUEUED.value,
             })
-            await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
-            return True  # Marked as queued
+            success = await self.graph_provider.batch_update_nodes([doc], CollectionNames.RECORDS.value)
+            if not success:
+                self.logger.warning(
+                    "⚠️ Failed to mark record %s as QUEUED - record may not exist",
+                    _record_key(doc),
+                )
+            return True  # Marked as queued (or record deleted — skip processing)
 
-        self.logger.info(f"🚀 No duplicate found, proceeding with processing for {doc.get('_key')}")
+        self.logger.info(
+            f"🚀 No duplicate found, proceeding with processing for {_record_key(doc)}"
+        )
         return False  # No duplicate found, proceed with processing
 
     async def on_event(self, event_data: dict[str, Any]) -> AsyncGenerator[dict[str, Any], None]:
@@ -778,6 +821,17 @@ class EventProcessor:
                     recordType=record_type,
                     connectorName=connector,
                     origin=origin,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+
+            elif mime_type in CODE_FILE_MIME_TYPE_VALUES or normalize_file_extension(extension) in CODE_FILE_EXTENSION_VALUES:
+                async for event in self.processor.process_md_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    md_binary=file_content,
+                    virtual_record_id=virtual_record_id,
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):

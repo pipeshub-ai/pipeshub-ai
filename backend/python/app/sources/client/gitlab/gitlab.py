@@ -288,7 +288,7 @@ class GitLabClient(IClient):
             default="https://gitlab.com",
             logger=logger,
         )
-        timeout = auth_config.get("timeout", 30)
+        timeout = auth_config.get("timeout", 60)
 
         # Let python-gitlab retry transient 5xx (500/502/503/504/52x) with
         # exponential backoff. Without this, every transient GitLab blip

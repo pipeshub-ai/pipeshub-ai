@@ -12,7 +12,7 @@
 	setup-frontend implode-setup-frontend frontend clean-env setup-all clean-all \
 	dev-docker-menu prod-docker-menu dev-docker-up dev-docker-down dev-docker-stop dev-docker-clean dev-docker-hard-clean \
 	prod-docker-up prod-docker-down prod-docker-stop prod-docker-clean prod-docker-hard-clean \
-	check-and-kill-ports \
+	check-and-kill-ports build-python-deps-base \
 	lint lint-python lint-python-ruff lint-python-pyright lint-nodejs \
 	test-nodejs test-nodejs-coverage \
 	test-python test-python-coverage \
@@ -54,6 +54,7 @@ help: ## Show this help message
 	@echo "$(GREEN)Docker Deployments:$(NC)"
 	@echo "  make dev-docker-menu      - Show development deployment commands"
 	@echo "  make prod-docker-menu     - Show production deployment commands"
+	@echo "  make build-python-deps-base - Build pre-built Python deps base image (speeds up dev rebuilds)"
 	@echo ""
 	@echo "$(GREEN)Individual Docker Containers (with etcd):$(NC)"
 	@echo "  make docker-all           - Start all Docker containers (includes etcd)"
@@ -823,6 +824,33 @@ lint-nodejs: ## Run ESLint on changed TypeScript files
 # ==============================================================================
 # Development Docker Deployment
 # ==============================================================================
+
+# PYTHON_DEPS_BASE_IMAGE — image name/tag used when building and referencing
+# the pre-built Python deps base.  Override on the CLI if you push to a registry:
+#   make build-python-deps-base PYTHON_DEPS_BASE_IMAGE=ghcr.io/pipeshub/python-deps:latest
+PYTHON_DEPS_BASE_IMAGE ?= pipeshub-python-deps:latest
+
+build-python-deps-base: ## Build (and optionally push) the pre-built Python deps base image
+	@echo "$(BLUE)Building Python deps base image: $(PYTHON_DEPS_BASE_IMAGE)$(NC)"
+	@echo "$(YELLOW)Run this whenever pyproject.toml gains new heavy dependencies.$(NC)"
+	@echo "$(YELLOW)Subsequent dev builds will pass PYTHON_DEPS_BASE=$(PYTHON_DEPS_BASE_IMAGE)$(NC)"
+	@echo "$(YELLOW)so that uv only installs the delta instead of everything from scratch.$(NC)"
+	@DOCKER_BUILDKIT=1 docker build \
+		--target python-deps \
+		--build-arg BUILDKIT_INLINE_CACHE=1 \
+		--build-arg PYTHON_DEPS_BASE=build-base \
+		-t $(PYTHON_DEPS_BASE_IMAGE) \
+		-f $(ROOT_DIR)/deployment/docker-compose/hot-reload/Dockerfile.dev \
+		$(ROOT_DIR)
+	@echo "$(GREEN)Python deps base image built: $(PYTHON_DEPS_BASE_IMAGE)$(NC)"
+	@echo "$(YELLOW)To use it for faster dev builds, set:$(NC)"
+	@echo "  export PYTHON_DEPS_BASE=$(PYTHON_DEPS_BASE_IMAGE)"
+	@echo "  make dev-docker-up   (or docker compose up --build)"
+	@if [ "$(PUSH)" = "1" ]; then \
+		echo "$(BLUE)Pushing $(PYTHON_DEPS_BASE_IMAGE)...$(NC)"; \
+		docker push $(PYTHON_DEPS_BASE_IMAGE); \
+		echo "$(GREEN)Pushed!$(NC)"; \
+	fi
 
 dev-docker-menu: ## Show development deployment commands
 	@echo "$(BLUE)===============================================$(NC)"

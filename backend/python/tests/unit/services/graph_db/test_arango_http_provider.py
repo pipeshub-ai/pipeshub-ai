@@ -2885,17 +2885,44 @@ class TestBatchUpdateNodes:
     async def test_no_updates(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = []
         result = await connected_provider.batch_update_nodes(
-            ["missing"], {"indexingStatus": "COMPLETED"}, "records"
+            [{"id": "missing", "indexingStatus": "COMPLETED"}], "records"
         )
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
+    async def test_partial_update_returns_false(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [
+            {"_key": "r1", "indexingStatus": "COMPLETED"},
+            None,
+        ]
         result = await connected_provider.batch_update_nodes(
-            ["r1"], {"status": "OK"}, "records"
+            [
+                {"id": "r1", "indexingStatus": "COMPLETED"},
+                {"id": "missing", "indexingStatus": "COMPLETED"},
+            ],
+            "records",
         )
         assert result is False
+        aql_query = connected_provider.http_client.execute_aql.call_args[0][0]
+        assert "ignoreErrors: true" in aql_query
+
+    @pytest.mark.asyncio
+    async def test_all_updates_succeed(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [
+            {"_key": "r1", "indexingStatus": "COMPLETED"},
+        ]
+        result = await connected_provider.batch_update_nodes(
+            [{"id": "r1", "indexingStatus": "COMPLETED"}], "records"
+        )
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_exception(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.batch_update_nodes(
+                [{"id": "r1", "status": "OK"}], "records"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -3910,7 +3937,7 @@ class TestUpdateQueuedDuplicatesStatus:
             [{"_key": "r2", "md5Checksum": "abc123"}],  # queued duplicate
         ]
         with patch.object(
-            connected_provider, "batch_upsert_nodes",
+            connected_provider, "batch_update_nodes",
             new_callable=AsyncMock, return_value=True
         ):
             result = await connected_provider.update_queued_duplicates_status(
@@ -3925,12 +3952,12 @@ class TestUpdateQueuedDuplicatesStatus:
             [{"_key": "r2", "md5Checksum": "abc123"}],
         ]
         with patch.object(
-            connected_provider, "batch_upsert_nodes",
+            connected_provider, "batch_update_nodes",
             new_callable=AsyncMock, return_value=True
-        ) as mock_upsert:
+        ) as mock_update:
             await connected_provider.update_queued_duplicates_status("r1", "EMPTY")
             # Verify extraction status is EMPTY
-            call_args = mock_upsert.call_args[0][0]
+            call_args = mock_update.call_args[0][0]
             assert call_args[0]["extractionStatus"] == "EMPTY"
 
     @pytest.mark.asyncio
@@ -10385,7 +10412,18 @@ class TestListUserKnowledgeBases:
     @pytest.mark.asyncio
     async def test_success_returns_kbs_and_count(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"id": "kb1", "name": "KB1", "userRole": "OWNER", "folders": []}],
+            [
+                {
+                    "id": "kb1",
+                    "name": "KB1",
+                    "connectorId": "knowledgeBase_org1",
+                    "createdAtTimestamp": 1,
+                    "updatedAtTimestamp": 2,
+                    "createdBy": "u1",
+                    "userRole": "OWNER",
+                    "folders": [],
+                }
+            ],
             [1],
             [{"OWNER": 1, "WRITER": 0, "READER": 0, "COMMENTER": 0}],
         ]
@@ -10393,6 +10431,7 @@ class TestListUserKnowledgeBases:
             "u1", "org1", skip=0, limit=10
         )
         assert len(kbs) == 1
+        assert kbs[0]["connectorId"] == "knowledgeBase_org1"
         assert total == 1
 
     @pytest.mark.asyncio
@@ -10411,7 +10450,18 @@ class TestListUserKnowledgeBases:
     @pytest.mark.asyncio
     async def test_with_search_filter(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"id": "kb1", "name": "Search Result"}],
+            [
+                {
+                    "id": "kb1",
+                    "name": "Search Result",
+                    "connectorId": "knowledgeBase_org1",
+                    "createdAtTimestamp": 1,
+                    "updatedAtTimestamp": 2,
+                    "createdBy": "u1",
+                    "userRole": "OWNER",
+                    "folders": [],
+                }
+            ],
             [1],
             [{"OWNER": 1}],
         ]
@@ -10423,7 +10473,18 @@ class TestListUserKnowledgeBases:
     @pytest.mark.asyncio
     async def test_with_permissions_filter(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [
-            [{"id": "kb1", "name": "KB1", "userRole": "OWNER"}],
+            [
+                {
+                    "id": "kb1",
+                    "name": "KB1",
+                    "connectorId": "knowledgeBase_org1",
+                    "createdAtTimestamp": 1,
+                    "updatedAtTimestamp": 2,
+                    "createdBy": "u1",
+                    "userRole": "OWNER",
+                    "folders": [],
+                }
+            ],
             [1],
             [{"OWNER": 1}],
         ]
@@ -11844,13 +11905,9 @@ class TestCheckRecordPermissionsExpanded:
 
 class TestBatchUpdateNodesExpanded:
     @pytest.mark.asyncio
-    async def test_empty_keys(self, connected_provider):
-        connected_provider.http_client.execute_aql.return_value = []
-        result = await connected_provider.batch_update_nodes(
-            [], {"status": "OK"}, "records"
-        )
-        # Empty keys may still execute query but return no updates
-        assert isinstance(result, bool)
+    async def test_empty_nodes(self, connected_provider):
+        result = await connected_provider.batch_update_nodes([], "records")
+        assert result is True
 
 
 # ---------------------------------------------------------------------------
@@ -12391,6 +12448,7 @@ class TestListUserKnowledgeBasesExtended:
         kb_item = {
             "id": "kb1",
             "name": "Test KB",
+            "connectorId": "knowledgeBase_org1",
             "createdAtTimestamp": 1000,
             "updatedAtTimestamp": 2000,
             "createdBy": "u1",
@@ -12406,6 +12464,7 @@ class TestListUserKnowledgeBasesExtended:
         )
         assert len(kbs) == 1
         assert kbs[0]["id"] == "kb1"
+        assert kbs[0]["connectorId"] == "knowledgeBase_org1"
         assert total == 1
         assert "permissions" in filters
 

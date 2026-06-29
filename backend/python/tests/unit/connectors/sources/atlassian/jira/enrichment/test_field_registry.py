@@ -32,3 +32,16 @@ class TestFieldRegistry:
     def test_build_search_field_list_includes_resolution(self):
         fields = build_search_field_list({})
         assert "resolution" in fields
+
+    def test_build_search_field_list_skips_excluded_and_duplicate_keys(self):
+        fields = build_search_field_list({
+            "sprint": "customfield_10110",
+            "story_points": "customfield_10110",
+            "comment": "comment",
+        })
+        assert fields.count("customfield_10110") == 1
+        assert "comment" not in fields
+
+    def test_system_field_label_unknown_key(self):
+        assert system_field_label("unknownField") == "unknownField"
+        assert system_field_label("labels") == "Labels"

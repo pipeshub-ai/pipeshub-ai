@@ -1839,10 +1839,10 @@
         },
         "sync": {
           "kind": "Sync",
-          "syncing": "Syncing",
-          "syncingTooltip": "A sync job is running for this instance.",
-          "fullSyncing": "Full sync",
-          "fullSyncingTooltip": "A full sync is running for this instance.",
+          "syncing": "Sync in progress",
+          "syncingTooltip": "This connector is syncing new and updated content.",
+          "fullSyncing": "Full sync in progress",
+          "fullSyncingTooltip": "This connector is running a full re-sync from the source.",
           "removing": "Removing",
           "removingTooltip": "This instance is being deleted."
         }
@@ -2190,7 +2190,9 @@
     "page": "Page {{number}}",
     "paragraph": "Paragraph {{number}}",
     "showMore": "Show more",
-    "showLess": "Show less"
+    "showLess": "Show less",
+    "lockZoom": "Lock zoom level",
+    "unlockZoom": "Unlock zoom level"
   },
   "agentBuilder": {
     "goBack": "Go back",

@@ -52,6 +52,7 @@ class BlockSubType(str, Enum):
     EQUATION = "equation"
     DIVIDER = "divider"
     LINK = "link"
+    MESSAGE = "message"  # Slack / messaging platform individual message block
     COMMIT = "commit"
 
 class DataFormat(str, Enum):
@@ -85,7 +86,7 @@ class BlockComment(BaseModel):
     weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the comment (e.g., direct link to comment in the source system)")
     created_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was created")
     updated_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was updated")
-    attachments: Optional[List[CommentAttachment]] = Field(default=None, description="List of attachments associated with the comment")
+    attachments: Optional[list[CommentAttachment]] = Field(default=None, description="List of attachments associated with the comment")
     quoted_text: Optional[str] = Field(default=None, description="Quoted text for inline comments")
 
 class CitationMetadata(BaseModel):
@@ -96,9 +97,9 @@ class CitationMetadata(BaseModel):
     # PDF specific
     page_number: Optional[int] = None
     has_more_pages: Optional[bool] = None
-    more_page_numbers: Optional[List[int]] = None
-    bounding_boxes: Optional[List[Point]] = None
-    more_page_bounding_boxes: Optional[List[List[Point]]] = None
+    more_page_numbers: Optional[list[int]] = None
+    bounding_boxes: Optional[list[Point]] = None
+    more_page_bounding_boxes: Optional[list[list[Point]]] = None
 
     # PDF/Word/Text specific
     line_number: Optional[int] = None
@@ -123,7 +124,7 @@ class CitationMetadata(BaseModel):
 
     @field_validator('bounding_boxes')
     @classmethod
-    def validate_bounding_boxes(cls, v: List[Point]) -> List[Point]:
+    def validate_bounding_boxes(cls, v: list[Point]) -> list[Point]:
         """Validate that the bounding boxes contain exactly 4 points"""
         COORDINATE_COUNT = 4
         if len(v) != COORDINATE_COUNT:
@@ -155,7 +156,7 @@ class TableRowMetadata(BaseModel):
     row_number: Optional[int] = None
     row_span: Optional[int] = None
     is_header: bool = False
-    children_records: Optional[List[ChildRecord]] = None
+    children_records: Optional[list[ChildRecord]] = None
 
 class TableMetadata(BaseModel):
     """Metadata specific to table blocks"""
@@ -163,21 +164,21 @@ class TableMetadata(BaseModel):
     num_of_cols: Optional[int] = None
     num_of_cells: Optional[int] = None
     has_header: bool = False
-    column_names: Optional[List[str]] = None
-    captions: Optional[List[str]] = Field(default_factory=list)
-    footnotes: Optional[List[str]] = Field(default_factory=list)
+    column_names: Optional[list[str]] = None
+    captions: Optional[list[str]] = Field(default_factory=list)
+    footnotes: Optional[list[str]] = Field(default_factory=list)
 
 class CodeMetadata(BaseModel):
     """Metadata specific to code blocks"""
     language: Optional[str] = None
     execution_context: Optional[str] = None
     is_executable: bool = False
-    dependencies: Optional[List[str]] = None
+    dependencies: Optional[list[str]] = None
 
 class MediaMetadata(BaseModel):
     """Metadata for media blocks (image, video, audio)"""
     duration_ms: Optional[int] = None  # For video/audio
-    dimensions: Optional[Dict[str, int]] = None  # {"width": 1920, "height": 1080}
+    dimensions: Optional[dict[str, int]] = None  # {"width": 1920, "height": 1080}
     file_size_bytes: Optional[int] = None
     mime_type: Optional[str] = None
     alt_text: Optional[str] = None
@@ -209,12 +210,12 @@ class ImageMetadata(BaseModel):
     """Metadata specific to image blocks"""
     image_type: Optional[Literal["image", "drawing"]] = None
     image_format: Optional[str] = None
-    image_size: Optional[Dict[str, int]] = None
-    image_resolution: Optional[Dict[str, int]] = None
+    image_size: Optional[dict[str, int]] = None
+    image_resolution: Optional[dict[str, int]] = None
     image_dpi: Optional[int] = None
-    captions: Optional[List[str]] = Field(default_factory=list)
-    footnotes: Optional[List[str]] = Field(default_factory=list)
-    annotations: Optional[List[str]] = Field(default_factory=list)
+    captions: Optional[list[str]] = Field(default_factory=list)
+    footnotes: Optional[list[str]] = Field(default_factory=list)
+    annotations: Optional[list[str]] = Field(default_factory=list)
 
 class Confidence(str, Enum):
     VERY_HIGH = "very_high"
@@ -235,6 +236,7 @@ class GroupType(str, Enum):
     ORDERED_LIST = "ordered_list"
     COLUMN = "column"
     COLUMN_LIST = "column_list"
+    CONVERSATION = "conversation"  # Slack / messaging platform conversation group
 
     VIEW = "view"
     # Do not use these types as currently not supported
@@ -257,26 +259,30 @@ class GroupSubType(str, Enum):
     QUOTE = "quote"
     SYNCED_BLOCK = "synced_block"
     NESTED_BLOCK = "nested_block"  # Generic wrapper for blocks with children
+    # Slack / messaging platform subtypes
+    BURST = "burst"              # A burst of consecutive messages from the same user
+    THREAD = "thread"            # A threaded conversation under a parent message
+    SINGLE_MESSAGE = "single_message"  # A standalone single message
     PR_FILE_CHANGE = "pr_file_change"
     SQL_TABLE = "sql_table" 
     SQL_VIEW = "sql_view"
 
 class SemanticMetadata(BaseModel):
-    entities: Optional[List[Dict[str, Any]]] = None
-    section_numbers: Optional[List[str]] = None
+    entities: Optional[list[dict[str, Any]]] = None
+    section_numbers: Optional[list[str]] = None
     summary: Optional[str] = None
-    keywords: Optional[List[str]] = None
-    departments: Optional[List[str]] = None
-    languages: Optional[List[str]] = None
-    topics: Optional[List[str]] = None
+    keywords: Optional[list[str]] = None
+    departments: Optional[list[str]] = None
+    languages: Optional[list[str]] = None
+    topics: Optional[list[str]] = None
     record_id: Optional[str] = None
-    categories: Optional[List[str]] = Field(default_factory=list)
+    categories: Optional[list[str]] = Field(default_factory=list)
     sub_category_level_1: Optional[str] = None
     sub_category_level_2: Optional[str] = None
     sub_category_level_3: Optional[str] = None
     confidence: Optional[Confidence] = None
 
-    def to_llm_context(self) -> List[str]:
+    def to_llm_context(self) -> list[str]:
         lines = []
         if self.summary:
             lines.append(f"Summary         : {self.summary}")
@@ -298,11 +304,15 @@ class Block(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     index: int = None
     parent_index: Optional[int] = Field(default=None, description="Index of the parent block group")
+    parent_block_index: Optional[int] = Field(
+        default=None,
+        description="Index of the container block when this block is a fragment split from a parent block that contained images",
+    )
     type: BlockType
     sub_type: Optional[BlockSubType] = None
     name: Optional[str] = None
     format: DataFormat = None
-    comments: List[List[BlockComment]] = Field(default_factory=list, description="2D list of comments grouped by thread_id, with each thread's comments in API order")
+    comments: list[list[BlockComment]] = Field(default_factory=list, description="2D list of comments grouped by thread_id, with each thread's comments in API order")
     source_creation_date: Optional[datetime] = None
     source_update_date: Optional[datetime] = None
     source_id: Optional[str] = None
@@ -310,7 +320,7 @@ class Block(BaseModel):
     source_type: Optional[str] = None
     # Content and links
     data: Optional[Any] = None
-    links: Optional[List[str]] = None
+    links: Optional[list[str]] = None
     weburl: Optional[HttpUrl] = None
     public_data_link: Optional[HttpUrl] = None
     public_data_link_expiration_epoch_time_in_ms: Optional[int] = None
@@ -329,7 +339,7 @@ class Block(BaseModel):
     
 
 class Blocks(BaseModel):
-    blocks: List[Block] = Field(default_factory=list)
+    blocks: list[Block] = Field(default_factory=list)
 
 class BlockContainerIndex(BaseModel):
     """Legacy model for backward compatibility - use BlockGroupChildren instead"""
@@ -343,8 +353,8 @@ class IndexRange(BaseModel):
 
 class BlockGroupChildren(BaseModel):
     """Container for child block and block group references using ranges"""
-    block_ranges: List[IndexRange] = Field(default_factory=list, description="Ranges of block indices")
-    block_group_ranges: List[IndexRange] = Field(default_factory=list, description="Ranges of block group indices")
+    block_ranges: list[IndexRange] = Field(default_factory=list, description="Ranges of block indices")
+    block_group_ranges: list[IndexRange] = Field(default_factory=list, description="Ranges of block group indices")
 
     def add_block_index(self, index: int) -> None:
         """Add a block index, merging into existing ranges if contiguous"""
@@ -391,10 +401,10 @@ class BlockGroupChildren(BaseModel):
         self.block_group_ranges.sort(key=lambda r: r.start)
 
     @staticmethod
-    def from_indices(block_indices: Optional[List[int]] = None,
-                     block_group_indices: Optional[List[int]] = None) -> 'BlockGroupChildren':
+    def from_indices(block_indices: Optional[list[int]] = None,
+                     block_group_indices: Optional[list[int]] = None) -> 'BlockGroupChildren':
         """Create BlockGroupChildren from lists of indices by grouping into ranges"""
-        def indices_to_ranges(indices: List[int]) -> List[IndexRange]:
+        def indices_to_ranges(indices: list[int]) -> list[IndexRange]:
             if not indices:
                 return []
 
@@ -486,12 +496,12 @@ class BlockGroup(BaseModel):
         return v
     format: Optional[DataFormat] = None
     weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the original source context (e.g., Linear project page). This will be used as primary webUrl in citations for all generated blocks")
-    comments: List[List[BlockComment]] = Field(default_factory=list, description="2D list of comments grouped by thread_id, with each thread's comments sorted by created_at")
+    comments: list[list[BlockComment]] = Field(default_factory=list, description="2D list of comments grouped by thread_id, with each thread's comments sorted by created_at")
     source_modified_date: Optional[datetime] = None
 
 class BlockGroups(BaseModel):
-    block_groups: List[BlockGroup] = Field(default_factory=list)
+    block_groups: list[BlockGroup] = Field(default_factory=list)
 
 class BlocksContainer(BaseModel):
-    block_groups: List[BlockGroup] = Field(default_factory=list)
-    blocks: List[Block] = Field(default_factory=list)
+    block_groups: list[BlockGroup] = Field(default_factory=list)
+    blocks: list[Block] = Field(default_factory=list)

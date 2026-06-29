@@ -13,6 +13,13 @@ import {
 } from '../types/messaging.types';
 import { REQUIRED_TOPICS } from './kafka-admin.service';
 import {
+  injectEnvelope,
+  runWithRequestContext,
+  ENVELOPE_REQUEST_ID,
+  newAnonRoot,
+  sanitizeRootId,
+} from '../context/request-context';
+import {
   MESSAGING_HEALTH_MESSAGE_KEY,
   MESSAGING_HEALTH_MESSAGE_TYPE,
   MESSAGING_HEALTH_TOPIC,
@@ -25,6 +32,24 @@ import {
 
 type RedisStreamEntry = [id: string, fields: string[]];
 type RedisXReadGroupResult = [stream: string, entries: RedisStreamEntry[]];
+
+/** Serialize a message value, stamping the trace id into the envelope. */
+function serializeValueWithTrace(value: unknown): string {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return JSON.stringify(injectEnvelope({ ...(value as Record<string, unknown>) }));
+  }
+  return JSON.stringify(value);
+}
+
+/** Rebuild trace context from a consumed message value (fresh root if absent). */
+function contextFromValue(value: unknown): { rootId: string } {
+  const env = (value ?? {}) as Record<string, unknown>;
+  return {
+    rootId:
+      sanitizeRootId(env[ENVELOPE_REQUEST_ID] as string | undefined) ??
+      newAnonRoot(),
+  };
+}
 
 function isRedisXReadGroupResult(
   value: unknown,
@@ -122,7 +147,7 @@ export abstract class BaseRedisStreamsProducerConnection
         REDIS_STREAM_FIELDS.key,
         message.key,
         REDIS_STREAM_FIELDS.value,
-        JSON.stringify(message.value),
+        serializeValueWithTrace(message.value),
       ];
 
       if (message.headers) {
@@ -167,7 +192,7 @@ export abstract class BaseRedisStreamsProducerConnection
         REDIS_STREAM_FIELDS.key,
         message.key,
         REDIS_STREAM_FIELDS.value,
-        JSON.stringify(message.value),
+        serializeValueWithTrace(message.value),
       ];
       if (message.headers) {
         fields.push(
@@ -412,7 +437,10 @@ export abstract class BaseRedisStreamsConsumerConnection
                 >;
               }
 
-              await handler(parsedMessage);
+              await runWithRequestContext(
+                contextFromValue(parsedMessage.value),
+                () => handler(parsedMessage),
+              );
               await this.ackRedis.xack(topic, this.groupId, entryId);
               this.logger.info('Recovered pending message', {
                 stream: topic,
@@ -521,7 +549,10 @@ export abstract class BaseRedisStreamsConsumerConnection
                 >;
               }
 
-              await handler(parsedMessage);
+              await runWithRequestContext(
+                contextFromValue(parsedMessage.value),
+                () => handler(parsedMessage),
+              );
 
               await this.ackRedis.xack(streamName, this.groupId, entryId);
             } catch (error) {

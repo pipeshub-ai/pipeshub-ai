@@ -130,6 +130,9 @@ class GraphTransactionStore(TransactionStore):
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         return await self.graph_provider.batch_upsert_nodes(nodes, collection, transaction=self.txn)
 
+    async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
+        return await self.graph_provider.batch_update_nodes(nodes, collection, transaction=self.txn)
+
     async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> Optional[Record]:
         return await self.graph_provider.get_record_by_path(connector_id, path, external_record_group_id, transaction=self.txn)
 
@@ -153,6 +156,17 @@ class GraphTransactionStore(TransactionStore):
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
         return await self.graph_provider.get_record_group_by_external_id(connector_id, external_id, transaction=self.txn)
+
+    async def find_slack_burst_record_by_ts(
+        self,
+        connector_id: str,
+        channel_id: str,
+        ts: str,
+    ) -> Optional[Record]:
+        """Find the Slack burst MessageRecord whose startTs <= ts <= endTs."""
+        return await self.graph_provider.find_slack_burst_record_by_ts(
+            connector_id, channel_id, ts, transaction=self.txn
+        )
 
     async def get_file_record_by_id(self, id: str) -> Optional[FileRecord]:
         return await self.graph_provider.get_file_record_by_id(id, transaction=self.txn)

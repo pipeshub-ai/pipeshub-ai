@@ -11,22 +11,22 @@ from __future__ import annotations
 import io
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from uuid import uuid4
 
 import pytest
 import requests
 
 _ROOT = Path(__file__).resolve().parents[3]
-_HELPER = _ROOT / "helper"
 _RV_HELPER = _ROOT / "response-validation" / "helper"
-for _p in (_ROOT, _HELPER, _RV_HELPER):
+for _p in (_ROOT, _RV_HELPER):
     s = str(_p)
     if s not in sys.path:
         sys.path.insert(0, s)
 
+from helper.clients.agents_client import AgentsClient
+from helper.clients.conversations_client import AgentConversationsClient
 from openapi_schema_validator import assert_response_matches_openapi_operation
-from pipeshub_client import PipeshubClient
 
 
 def _response_json(resp: requests.Response) -> dict[str, Any]:
@@ -54,29 +54,39 @@ def _build_agent_payload(reasoning_multimodal_llm_model: Any) -> dict[str, Any]:
     }
 
 
-@pytest.mark.integration
-class TestAgentAttachmentUpload:
+def _pdf_files(asana_pdf_blob: dict[str, Any]) -> list[tuple[str, tuple[str, io.BytesIO, str]]]:
+    return [
+        (
+            "files",
+            (
+                asana_pdf_blob["originalname"],
+                io.BytesIO(asana_pdf_blob["buffer"]),
+                asana_pdf_blob["mimetype"],
+            ),
+        ),
+    ]
+
+
+class AgentAttachmentTestBase:
+    """Shared agents + agent conversations clients."""
 
     @pytest.fixture(autouse=True)
     def _setup(
         self,
-        pipeshub_client: PipeshubClient,
+        agents_client: AgentsClient,
+        agent_conversations_client: AgentConversationsClient,
     ) -> None:
-        self.base_url = pipeshub_client.base_url
-        self.headers = pipeshub_client.auth_headers
-        self.timeout = pipeshub_client.timeout_seconds
+        self.agents = agents_client
+        self.conversations = agent_conversations_client
+        self.timeout = agents_client._client.timeout_seconds
 
     @pytest.fixture
     def created_agent_key(
         self,
-        pipeshub_client: PipeshubClient,
         reasoning_multimodal_llm_model: Any,
-    ):
-        resp = requests.post(
-            f"{pipeshub_client.base_url}/api/v1/agents/create",
-            headers=pipeshub_client.auth_headers,
-            json=_build_agent_payload(reasoning_multimodal_llm_model),
-            timeout=pipeshub_client.timeout_seconds,
+    ) -> Iterator[str]:
+        resp = self.agents.create_agent(
+            **_build_agent_payload(reasoning_multimodal_llm_model),
         )
         assert resp.status_code == 201, f"{resp.status_code}: {resp.text}"
 
@@ -92,53 +102,25 @@ class TestAgentAttachmentUpload:
             yield agent_key
         finally:
             try:
-                requests.delete(
-                    f"{pipeshub_client.base_url}/api/v1/agents/{agent_key}",
-                    headers=pipeshub_client.auth_headers,
-                    timeout=pipeshub_client.timeout_seconds,
-                )
+                self.agents.delete_agent(agent_key)
             except Exception:
                 pass
 
-    def _upload_url(self, agent_key: str) -> str:
-        return (
-            f"{self.base_url}/api/v1/agents/{agent_key}"
-            "/conversations/attachments/upload"
-        )
 
-    def _delete_url(self, agent_key: str, record_id: str) -> str:
-        return (
-            f"{self.base_url}/api/v1/agents/{agent_key}"
-            f"/conversations/attachments/{record_id}"
-        )
+@pytest.mark.integration
+class TestAgentAttachmentUpload(AgentAttachmentTestBase):
 
     def test_upload_pdf_matches_openapi_spec_and_returns_attachment_ref(
         self,
         asana_pdf_blob: dict[str, Any],
         created_agent_key: str,
     ) -> None:
-        multipart_headers = {
-            key: value
-            for key, value in self.headers.items()
-            if key.lower() != "content-type"
-        }
-        files = [
-            (
-                "files",
-                (
-                    asana_pdf_blob["originalname"],
-                    io.BytesIO(asana_pdf_blob["buffer"]),
-                    asana_pdf_blob["mimetype"],
-                ),
-            ),
-        ]
         cleanup_record_ids: list[str] = []
 
         try:
-            resp = requests.post(
-                self._upload_url(created_agent_key),
-                headers=multipart_headers,
-                files=files,
+            resp = self.conversations.upload_attachments(
+                created_agent_key,
+                files=_pdf_files(asana_pdf_blob),
                 timeout=self.timeout,
             )
             assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
@@ -176,12 +158,11 @@ class TestAgentAttachmentUpload:
             )
             assert isinstance(attachment.get("ocrMode"), str) and attachment["ocrMode"]
         finally:
-            # Best-effort cleanup; these uploads create graph/file records.
             for record_id in cleanup_record_ids:
                 try:
-                    requests.delete(
-                        self._delete_url(created_agent_key, record_id),
-                        headers=self.headers,
+                    self.conversations.delete_attachment(
+                        created_agent_key,
+                        record_id,
                         timeout=self.timeout,
                     )
                 except Exception:
@@ -192,29 +173,14 @@ class TestAgentAttachmentUpload:
         asana_pdf_blob: dict[str, Any],
         created_agent_key: str,
     ) -> None:
-        multipart_headers = {
-            key: value
-            for key, value in self.headers.items()
-            if key.lower() != "content-type"
-        }
-        files = [
-            (
-                "files",
-                (
-                    asana_pdf_blob["originalname"],
-                    io.BytesIO(asana_pdf_blob["buffer"]),
-                    asana_pdf_blob["mimetype"],
-                ),
-            ),
-        ]
-
-        upload_resp = requests.post(
-            self._upload_url(created_agent_key),
-            headers=multipart_headers,
-            files=files,
+        upload_resp = self.conversations.upload_attachments(
+            created_agent_key,
+            files=_pdf_files(asana_pdf_blob),
             timeout=self.timeout,
         )
-        assert upload_resp.status_code == 200, f"{upload_resp.status_code}: {upload_resp.text}"
+        assert upload_resp.status_code == 200, (
+            f"{upload_resp.status_code}: {upload_resp.text}"
+        )
 
         upload_body = _response_json(upload_resp)
         attachments = upload_body.get("attachments")
@@ -228,10 +194,12 @@ class TestAgentAttachmentUpload:
             f"upload response missing attachment recordId: {upload_body!r}"
         )
 
-        delete_resp = requests.delete(
-            self._delete_url(created_agent_key, record_id),
-            headers=self.headers,
+        delete_resp = self.conversations.delete_attachment(
+            created_agent_key,
+            record_id,
             timeout=self.timeout,
         )
-        assert delete_resp.status_code == 204, f"{delete_resp.status_code}: {delete_resp.text}"
+        assert delete_resp.status_code == 204, (
+            f"{delete_resp.status_code}: {delete_resp.text}"
+        )
         assert delete_resp.text == ""

@@ -9,6 +9,7 @@ import httpx
 from app.config.constants.http_status_code import HttpStatusCode
 from app.models.blocks import BlocksContainer
 from app.utils.logger import create_logger
+from app.utils.request_context import inject_request_headers
 
 
 class DoclingClient:
@@ -84,11 +85,11 @@ class DoclingClient:
                     response = await client.post(
                         f"{self.service_url}/process-pdf",
                         json=payload,
-                        headers={
+                        headers=inject_request_headers({
                             "Content-Type": "application/json",
                             "Connection": "keep-alive",
                             "Keep-Alive": "timeout=30"
-                        }
+                        })
                     )
 
                     if response.status_code == HttpStatusCode.SUCCESS.value:
@@ -240,11 +241,11 @@ class DoclingClient:
                     response = await client.post(
                         f"{self.service_url}/parse-pdf",
                         json=payload,
-                        headers={
+                        headers=inject_request_headers({
                             "Content-Type": "application/json",
                             "Connection": "keep-alive",
                             "Keep-Alive": "timeout=30"
-                        }
+                        })
                     )
 
                     if response.status_code == HttpStatusCode.SUCCESS.value:
@@ -329,11 +330,11 @@ class DoclingClient:
                     response = await client.post(
                         f"{self.service_url}/create-blocks",
                         json=payload,
-                        headers={
+                        headers=inject_request_headers({
                             "Content-Type": "application/json",
                             "Connection": "keep-alive",
                             "Keep-Alive": "timeout=30"
-                        }
+                        })
                     )
 
                     if response.status_code == HttpStatusCode.SUCCESS.value:

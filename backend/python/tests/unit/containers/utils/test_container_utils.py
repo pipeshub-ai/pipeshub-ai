@@ -133,7 +133,7 @@ class TestCreateParsers:
              patch("app.containers.utils.utils.ExcelParser"), \
              patch("app.containers.utils.utils.XLSParser"), \
              patch("app.containers.utils.utils.ImageParser"):
-            parsers = await cu.create_parsers(MagicMock())
+            parsers = await cu.create_parsers(MagicMock(), MagicMock())
             assert isinstance(parsers, dict)
             assert len(parsers) > 0
 

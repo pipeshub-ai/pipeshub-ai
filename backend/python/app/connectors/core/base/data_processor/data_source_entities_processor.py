@@ -27,6 +27,7 @@ from app.models.entities import (
     LinkPublicStatus,
     LinkRecord,
     MailRecord,
+    MessageRecord,
     Person,
     ProjectRecord,
     PullRequestRecord,
@@ -86,7 +87,8 @@ class DataSourceEntitiesProcessor:
         RecordType.TICKET,
         RecordType.DEAL,
         RecordType.CASE,
-        RecordType.TASK
+        RecordType.TASK,
+        RecordType.MESSAGE,
     ]
 
     # Record relation types that connectors create for related external records
@@ -598,6 +600,98 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.warning(f"Failed to create LEAD_BY edge for project {project.id}: {str(e)}")
 
+    async def _handle_message_entity_edges(self, message: MessageRecord, tx_store: TransactionStore) -> None:
+        """
+        Create MENTIONED_IN and INVOLVED_IN entity relation edges for message records.
+
+        - MENTIONED_IN: User → Record (for mentioned users) and RecordGroup → Record (for mentioned channels/groups)
+        - INVOLVED_IN: User → Record (for authors who participated in the message/burst)
+
+        Uses source IDs stored on the MessageRecord to resolve internal user/record-group IDs.
+        """
+        try:
+            await tx_store.delete_edges_to(
+                to_id=message.id,
+                to_collection=CollectionNames.RECORDS.value,
+                collection=CollectionNames.ENTITY_RELATIONS.value,
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to delete existing entity relation edges for message {message.id}: {str(e)}")
+
+        now = get_epoch_timestamp_in_ms()
+        edges_to_create: list[dict[str, Any]] = []
+
+        base_edge = {
+            "_to": f"{CollectionNames.RECORDS.value}/{message.id}",
+            "createdAtTimestamp": now,
+            "updatedAtTimestamp": now,
+        }
+        if message.source_created_at is not None:
+            base_edge["sourceTimestamp"] = message.source_created_at
+
+        # MENTIONED_IN edges for mentioned users
+        for source_uid in (message.mentioned_user_ids or []):
+            if not source_uid:
+                continue
+            try:
+                user = await tx_store.get_user_by_source_id(
+                    source_user_id=source_uid, connector_id=message.connector_id,
+                )
+                if user and user.id:
+                    edges_to_create.append({
+                        **base_edge,
+                        "_from": f"{CollectionNames.USERS.value}/{user.id}",
+                        "edgeType": EntityRelations.MENTIONED_IN.value,
+                    })
+            except Exception as e:
+                self.logger.warning(f"Failed to resolve mentioned user {source_uid}: {e}")
+
+        # MENTIONED_IN edges for mentioned channels/groups
+        for source_gid in (message.mentioned_group_ids or []):
+            if not source_gid:
+                continue
+            try:
+                rg = await tx_store.get_record_group_by_external_id(
+                    external_id=source_gid, connector_id=message.connector_id,
+                )
+                if rg and rg.id:
+                    edges_to_create.append({
+                        **base_edge,
+                        "_from": f"{CollectionNames.RECORD_GROUPS.value}/{rg.id}",
+                        "edgeType": EntityRelations.MENTIONED_IN.value,
+                    })
+            except Exception as e:
+                self.logger.warning(f"Failed to resolve mentioned group {source_gid}: {e}")
+
+        # INVOLVED_IN edges for participating authors
+        involved_ids = message.involved_user_source_ids or []
+        if not involved_ids and message.author_id:
+            involved_ids = [message.author_id]
+
+        seen_involved: set = set()
+        for source_uid in involved_ids:
+            if not source_uid or source_uid in seen_involved:
+                continue
+            seen_involved.add(source_uid)
+            try:
+                user = await tx_store.get_user_by_source_id(
+                    source_user_id=source_uid, connector_id=message.connector_id,
+                )
+                if user and user.id:
+                    edges_to_create.append({
+                        **base_edge,
+                        "_from": f"{CollectionNames.USERS.value}/{user.id}",
+                        "edgeType": EntityRelations.INVOLVED_IN.value,
+                    })
+            except Exception as e:
+                self.logger.warning(f"Failed to resolve involved user {source_uid}: {e}")
+
+        if edges_to_create:
+            await tx_store.batch_create_entity_relations(edges_to_create)
+            self.logger.info(
+                f"Created {len(edges_to_create)} entity relation edges for message {message.id}"
+            )
+
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         self.logger.debug("Upserting new record: %s", record.record_name)
         await tx_store.batch_upsert_records([record])
@@ -797,6 +891,9 @@ class DataSourceEntitiesProcessor:
             #       the new URL on every sync, and
             #   (b) leave a placeholder's empty `weburl=""` in place when
             #       the real parent record arrives to fill it in.
+            if existing_record.indexing_status == ProgressStatus.COMPLETED.value:
+                # If the existing record is completed, set the indexing status to not started so that it can be reindexed
+                record.indexing_status = ProgressStatus.NOT_STARTED.value
             if not record.weburl:
                 record.weburl = existing_record.weburl
             #check if revision Id is same as existing record
@@ -824,6 +921,10 @@ class DataSourceEntitiesProcessor:
         if isinstance(record, ProjectRecord):
             await self._handle_project_lead_edge(record, tx_store)
 
+        # Create message entity relation edges (MENTIONED_IN, INVOLVED_IN) if record is a MessageRecord
+        if isinstance(record, MessageRecord):
+            await self._handle_message_entity_edges(record, tx_store)
+
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 
         await self._handle_record_permissions(record, permissions, tx_store)
@@ -845,25 +946,19 @@ class DataSourceEntitiesProcessor:
         Only skips if status is already QUEUED.
         """
         try:
-            # Get the record
+            # Get the record — get_record_by_key delegates to get_document which returns a raw dict
             record = await tx_store.get_record_by_key(record_id)
             if not record:
                 self.logger.warning(f"Record {record_id} not found for status reset")
                 return
-
-            current_status = record.indexing_status
-
+            self.logger.debug(f"Record: {record}")
+            # The document uses camelCase keys (indexingStatus), not snake_case attributes
+            current_status = record.get("indexingStatus")
             if current_status == ProgressStatus.QUEUED.value:
                 self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
                 return
-
-            # Update indexing status to QUEUED
-            status_doc = {
-                "_key": record_id,
-                "indexingStatus": ProgressStatus.QUEUED.value,
-            }
-
-            await tx_store.batch_upsert_nodes([status_doc], CollectionNames.RECORDS.value)
+            record["indexingStatus"] = ProgressStatus.QUEUED.value
+            await tx_store.batch_upsert_nodes([record], CollectionNames.RECORDS.value)
             self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
         except Exception as e:
             # Log but don't fail the main operation if status update fails
@@ -942,8 +1037,142 @@ class DataSourceEntitiesProcessor:
                 await self._handle_updated_record(processed_record, existing_record, tx_store)
 
     @retry_on_deadlock()
+    async def on_records_moved(
+        self,
+        moves: list[tuple[str, Record, list[Permission]]],
+    ) -> None:
+        """Apply in-place rename / move for a batch of records.
+
+        Each element of *moves* is ``(old_external_id, new_record, permissions)``
+        where *old_external_id* is the ``external_record_id`` that was previously
+        stored for this record and *new_record* carries the updated path, name,
+        weburl and external_revision_id.
+
+        For each move the existing DB vertex is reused (same ``id``), avoiding a
+        delete-and-recreate cycle.  The parent-child edge is re-pointed to the new
+        parent.  A ``updateRecord`` Kafka event (triggering re-indexing) is emitted
+        **only** when the blob SHA changed; a pure rename without content change
+        produces no re-index event, which avoids redundant embedding work.
+
+        Falls back to a plain ``_process_record`` add when the old record is not
+        found in the DB (e.g. dotfile that was never stored, or first sync after a
+        force-push that cleared history).
+        """
+        if not moves:
+            return
+
+        records_to_reindex: list[Record] = []
+        new_records_to_publish: list[Record] = []
+
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                for old_external_id, new_record, permissions in moves:
+                    new_record.org_id = self.org_id
+
+                    old_record = await tx_store.get_record_by_external_id(
+                        connector_id=new_record.connector_id,
+                        external_id=old_external_id,
+                    )
+
+                    if old_record is None:
+                        # Old record was never stored (dotfile, skipped, etc.) — treat as add.
+                        processed = await self._process_record(new_record, permissions, tx_store)
+                        if processed:
+                            new_records_to_publish.append(processed)
+                        continue
+
+                    content_changed = (
+                        new_record.external_revision_id != old_record.external_revision_id
+                    )
+
+                    # Drop the stale parent-child edge so _handle_parent_record can
+                    # create the correct one pointing at the new parent folder.
+                    await tx_store.delete_parent_child_edge_to_record(old_record.id)
+
+                    # Reuse the existing DB vertex id so all downstream edges
+                    # (permissions, belongs-to, etc.) survive the path change.
+                    new_record.id = old_record.id
+                    
+                    if old_record.indexing_status == ProgressStatus.COMPLETED.value:
+                        if not content_changed:
+                            # If the old record is completed and content hasn't changed,
+                            # preserve the completed status for the new record
+                            new_record.indexing_status = ProgressStatus.COMPLETED.value
+                    record_group_id = await self._handle_record_group(new_record, tx_store)
+
+                    if content_changed:
+                        if new_record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
+                            new_record.indexing_status = ProgressStatus.QUEUED.value
+                        records_to_reindex.append(new_record)
+
+                    await tx_store.batch_upsert_records([new_record])
+
+                    if record_group_id:
+                        await self._link_record_to_group(new_record, record_group_id, tx_store, old_record)
+
+                    # existing_record=None forces _handle_parent_record to build a
+                    # fresh parent edge (the stale one was deleted above).
+                    await self._handle_parent_record(new_record, tx_store, existing_record=None)
+                    await self._handle_record_permissions(new_record, permissions, tx_store)
+
+
+            # Publish events outside the transaction.
+            for record in new_records_to_publish:
+                if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
+                    continue
+                if record.is_internal:
+                    continue
+                await self.messaging_producer.send_message(
+                    "record-events",
+                    {
+                        "eventType": "newRecord",
+                        "timestamp": get_epoch_timestamp_in_ms(),
+                        "payload": record.to_kafka_record(),
+                    },
+                    key=record.id,
+                )
+
+            for record in records_to_reindex:
+                self.logger.info(
+                    "Firing updateRecord event for moved record %s (id=%s): content changed",
+                    record.record_name,
+                    record.id,
+                )
+                if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
+                    continue
+                if record.is_internal:
+                    continue
+                await self.messaging_producer.send_message(
+                    "record-events",
+                    {
+                        "eventType": "updateRecord",
+                        "timestamp": get_epoch_timestamp_in_ms(),
+                        "payload": record.to_kafka_record(),
+                    },
+                    key=record.id,
+                )
+
+        except Exception as e:
+            self.logger.error(f"on_records_moved failed: {e}", exc_info=True)
+            raise
+
+    @retry_on_deadlock()
     async def on_record_deleted(self, record_id: str) -> None:
         async with self.data_store_provider.transaction() as tx_store:
+            await tx_store.delete_record_by_key(record_id)
+
+    @retry_on_deadlock()
+    async def on_folder_deleted(self, record_id: str) -> None:
+        """Delete a folder record and its incoming PARENT_CHILD edge atomically.
+
+        Plain ``on_record_deleted`` only removes the vertex; it leaves any
+        ``PARENT_CHILD`` edge from the parent folder pointing at the now-absent
+        node.  For the folder cascade cleanup we need to remove both together so
+        the parent folder's child-list is correct when we evaluate it on the
+        next iteration of the cascade loop.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            await tx_store.delete_parent_child_edge_to_record(record_id)
             await tx_store.delete_record_by_key(record_id)
 
     @retry_on_deadlock()
@@ -963,9 +1192,20 @@ class DataSourceEntitiesProcessor:
 
             skipped_records = 0
 
-            # Reset status to QUEUED for all records before reindexing
+            # Verify records exist in database before reindexing
+            existing_records: list[Record] = []
             async with self.data_store_provider.transaction() as tx_store:
                 for record in records:
+                    # Check if record exists in database
+                    existing = await tx_store.get_record_by_key(record.id)
+                    if not existing:
+                        self.logger.warning(
+                            f"Skipping reindex for record {record.id} ({record.record_name}): "
+                            f"record not found in database"
+                        )
+                        continue
+
+                    existing_records.append(record)
                     current_status = record.indexing_status if hasattr(record, 'indexing_status') else None
                     if current_status != ProgressStatus.QUEUED.value and not record.is_internal:
                         await self._reset_indexing_status_to_queued(record.id, tx_store)
@@ -1427,6 +1667,25 @@ class DataSourceEntitiesProcessor:
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
+
+    async def get_records_by_parent(
+        self,
+        connector_id: str,
+        parent_external_record_id: str,
+        record_type: str | None = None,
+    ) -> list[Record]:
+        """Return all child records whose parent_external_record_id matches.
+
+        Used to check whether a folder record is empty before deleting it.
+        Delegates to ``tx_store.get_records_by_parent`` which queries
+        ``PARENT_CHILD`` edges in ArangoDB.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_records_by_parent(
+                connector_id=connector_id,
+                parent_external_record_id=parent_external_record_id,
+                record_type=record_type,
+            )
 
     async def get_app_by_id(self, connector_id: str) -> AppMetadata | None:
         """

@@ -388,7 +388,7 @@ class TestTransformIssue:
 
         ticket = connector._transform_issue_to_ticket_record(issue, "team-1")
         assert isinstance(ticket, TicketRecord)
-        assert ticket.record_name == "Fix bug"
+        assert ticket.record_name == "[ENG-123] Fix bug"
         assert ticket.external_record_id == "issue-1"
         assert ticket.external_record_group_id == "team-1"
         assert ticket.version == 0

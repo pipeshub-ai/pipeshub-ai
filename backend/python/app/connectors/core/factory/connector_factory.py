@@ -13,7 +13,6 @@ from app.connectors.core.registry.connector import (
     DocsConnector,
     FormsConnector,
     MeetConnector,
-    SlackConnector,
     SlidesConnector,
     ZendeskConnector,
 )
@@ -73,10 +72,13 @@ from app.connectors.sources.notion.connector import NotionConnector
 from app.connectors.sources.rss.connector import RSSConnector
 from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
+from app.connectors.sources.slack.team.connector import SlackConnector
 from app.connectors.sources.web.connector import WebConnector
 from app.connectors.sources.zammad.connector import ZammadConnector
 from app.connectors.sources.zoom.connector import ZoomConnector
 from app.connectors.sources.salesforce.connector import SalesforceConnector
+from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
+from app.connectors.sources.slack.team.connector import SlackConnector
 
 from app.connectors.sources.gitlab.connector import GitLabConnector
 from app.connectors.sources.gitlab_personal.connector import GitLabPersonalConnector
@@ -130,19 +132,20 @@ class ConnectorFactory:
         "gitlab": GitLabConnector,
         "gitlabpersonal": GitLabPersonalConnector,
         "mariadb": MariaDBConnector,
+        "slackworkspace": SlackConnector,
+        # "slack": SlackIndividualConnector,
     }
 
     # Beta connector definitions - single source of truth
     # Maps registry key to connector class
     _beta_connector_definitions: dict[str, type[BaseConnector]] = {
-        "slack": SlackConnector,
-        "calendar": CalendarConnector,
-        "meet": MeetConnector,
-        "forms": FormsConnector,
-        "slides": SlidesConnector,
-        "docs": DocsConnector,
-        "zendesk": ZendeskConnector,
-        "airtable": AirtableConnector,
+        'calendar': CalendarConnector,
+        'meet': MeetConnector,
+        'forms': FormsConnector,
+        'slides': SlidesConnector,
+        'docs': DocsConnector,
+        'zendesk': ZendeskConnector,
+        'airtable': AirtableConnector,
     }
 
     @classmethod

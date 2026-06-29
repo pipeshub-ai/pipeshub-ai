@@ -84,8 +84,8 @@ describe('Request Context Middleware', () => {
 
       expect(req.context.requestId).to.be.a('string')
       expect(req.context.requestId.length).to.be.greaterThan(0)
-      // Generated format: timestamp-hex
-      expect(req.context.requestId).to.match(/^\d+-[a-f0-9]+$/)
+      // Backend fallback (mirrors Python new_anon_root): anon-<uuid hex>
+      expect(req.context.requestId).to.match(/^anon-[a-f0-9]{32}$/)
     })
 
     it('should use existing X-Request-ID header if provided', () => {
@@ -104,6 +104,38 @@ describe('Request Context Middleware', () => {
       requestContextMiddleware(req, res, next)
 
       expect(req.context.requestId).to.equal('custom-request-id')
+    })
+
+    it('should sanitize a forged X-Request-ID before it reaches the context', () => {
+      // CR/LF + a fake log line: the wiring must strip it, not store it verbatim.
+      const getStub = sinon.stub()
+      getStub.withArgs('user-agent').returns('test-agent')
+      getStub.withArgs('X-Correlation-ID').returns(undefined)
+      getStub.withArgs('X-Request-ID').returns('abc\r\nFAKE 500 error')
+      getStub.withArgs('origin').returns(undefined)
+      getStub.withArgs('referer').returns(undefined)
+      getStub.withArgs('accept-language').returns(undefined)
+
+      const req = createMockRequest({ get: getStub })
+      requestContextMiddleware(req, createMockResponse(), createMockNext())
+
+      expect(req.context.requestId).to.equal('abcFAKE500error')
+      expect(req.context.requestId).to.not.match(/[\r\n]/)
+    })
+
+    it('should regenerate when X-Request-ID is entirely unsafe', () => {
+      const getStub = sinon.stub()
+      getStub.withArgs('user-agent').returns('test-agent')
+      getStub.withArgs('X-Correlation-ID').returns(undefined)
+      getStub.withArgs('X-Request-ID').returns('@@@ ///')
+      getStub.withArgs('origin').returns(undefined)
+      getStub.withArgs('referer').returns(undefined)
+      getStub.withArgs('accept-language').returns(undefined)
+
+      const req = createMockRequest({ get: getStub })
+      requestContextMiddleware(req, createMockResponse(), createMockNext())
+
+      expect(req.context.requestId).to.match(/^anon-[a-f0-9]{32}$/)
     })
 
     it('should include correlationId from X-Correlation-ID header', () => {
@@ -265,41 +297,6 @@ describe('Request Context Middleware', () => {
       expect(req.context.meta.method).to.equal('POST')
       expect(req.context.meta.protocol).to.equal('https')
       expect(req.context.meta.originalUrl).to.equal('/api/v1/users?active=true')
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // X-Request-ID header in response
-  // -----------------------------------------------------------------------
-  describe('X-Request-ID response header', () => {
-    it('should set X-Request-ID in response when NEED_REQUEST_ID_HEADER is true', () => {
-      const originalEnv = process.env.NEED_REQUEST_ID_HEADER
-      process.env.NEED_REQUEST_ID_HEADER = 'true'
-
-      const req = createMockRequest()
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      requestContextMiddleware(req, res, next)
-
-      expect(res.setHeader.calledWith('X-Request-ID', req.context.requestId)).to.be.true
-
-      process.env.NEED_REQUEST_ID_HEADER = originalEnv
-    })
-
-    it('should NOT set X-Request-ID in response when NEED_REQUEST_ID_HEADER is not true', () => {
-      const originalEnv = process.env.NEED_REQUEST_ID_HEADER
-      delete process.env.NEED_REQUEST_ID_HEADER
-
-      const req = createMockRequest()
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      requestContextMiddleware(req, res, next)
-
-      expect(res.setHeader.calledWith('X-Request-ID', sinon.match.any)).to.be.false
-
-      process.env.NEED_REQUEST_ID_HEADER = originalEnv
     })
   })
 

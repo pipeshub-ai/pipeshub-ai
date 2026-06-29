@@ -181,7 +181,7 @@ class TestMarkRecordStatusEdgeCases:
     async def test_error_with_non_empty_status_does_not_raise(self):
         """Errors with non-EMPTY statuses are swallowed."""
         ep, logger, _, gp = _make_event_processor()
-        gp.batch_upsert_nodes.side_effect = Exception("fail")
+        gp.batch_update_nodes.side_effect = Exception("fail")
         doc = {"_key": "k6"}
 
         # FAILED is not EMPTY, so exception should be swallowed
@@ -192,7 +192,7 @@ class TestMarkRecordStatusEdgeCases:
     async def test_error_with_empty_status_raises(self):
         """Errors with EMPTY status are re-raised."""
         ep, _, _, gp = _make_event_processor()
-        gp.batch_upsert_nodes.side_effect = Exception("fail")
+        gp.batch_update_nodes.side_effect = Exception("fail")
         doc = {"_key": "k7"}
 
         with pytest.raises(Exception, match="Failed to mark record status to EMPTY"):
@@ -821,6 +821,44 @@ class TestOnEventExtensionDispatch:
         assert len(events) == 2
         processor.process_html_document.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_code_mime_routes_to_md_processor(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_md_document = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(
+                extension="exe",
+                mime_type="text/x-python",
+                record_name="main.py",
+            )
+            events = await _drain(ep.on_event(event_data))
+
+        assert len(events) == 2
+        processor.process_md_document.assert_called_once()
+        processor.process_txt_document.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_code_extension_routes_to_md_processor_when_mime_unknown(self):
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_md_document = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_txt_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock, return_value=False):
+            event_data = _make_event_payload(
+                extension="py",
+                mime_type="application/octet-stream",
+                record_name="main.py",
+            )
+            events = await _drain(ep.on_event(event_data))
+
+        assert len(events) == 2
+        processor.process_md_document.assert_called_once()
+        processor.process_txt_document.assert_not_called()
+
 
 # ===========================================================================
 # _check_duplicate_by_md5 - string content path
@@ -1186,7 +1224,7 @@ class TestOnEventDuplicate:
         gp.find_duplicate_records = AsyncMock(return_value=[
             {"_key": "dup-1", "indexingStatus": ProgressStatus.IN_PROGRESS.value}
         ])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock()
 
         doc = {"_key": "rec-1", "md5Checksum": "abc123", "recordType": "FILE", "sizeInBytes": 100}
         result = await ep._check_duplicate_by_md5(b"hello world", doc)
