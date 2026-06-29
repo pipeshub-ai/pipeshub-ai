@@ -35,6 +35,8 @@ from app.modules.qna.prompt_templates import (
     web_search_user_prompt,
 )
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.telemetry.event_buffer import record_event
+from app.telemetry.identity import domain_from_email
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
@@ -1612,6 +1614,17 @@ async def askAIStream(
         query_info = ChatQuery(**body)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
+
+
+    _chat_user = getattr(request.state, "user", {}) or {}
+    _chat_email = _chat_user.get("email")
+    record_event("chat_session_started", {
+        "orgId": _chat_user.get("orgId"),
+        "userId": _chat_user.get("userId"),
+        "email": _chat_email,
+        "domain": domain_from_email(_chat_email),
+        "mode": query_info.chatMode,
+    })
 
     if query_info.chatMode == "web_search":
         stream = _generate_web_search_stream(

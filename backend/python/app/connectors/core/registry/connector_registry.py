@@ -5,6 +5,8 @@ from typing import Any
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames, Connectors, ProgressStatus
+from app.telemetry.event_buffer import record_event
+from app.telemetry.identity import domain_from_email
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.containers.connector import ConnectorAppContainer
 from app.models.entities import RecordType
@@ -1284,7 +1286,7 @@ class ConnectorRegistry:
                 f"Connector type {connector_type} not found in registry"
             )
             return None
-        return await self._create_connector_instance(
+        instance = await self._create_connector_instance(
             connector_type,
             instance_name,
             self._connectors[connector_type],
@@ -1293,6 +1295,23 @@ class ConnectorRegistry:
             org_id,
             selected_auth_type=selected_auth_type
         )
+        if instance is not None:
+            email = None
+            try:
+                graph_provider = await self._get_graph_provider()
+                user_doc = await graph_provider.get_document(created_by, CollectionNames.USERS.value)
+                email = (user_doc or {}).get("email")
+            except Exception as e:
+                self.logger.debug(f"telemetry: could not resolve connector creator email: {e}")
+            record_event("connector_added", {
+                "orgId": org_id,
+                "userId": created_by,
+                "email": email,
+                "domain": domain_from_email(email),
+                "connector": connector_type,
+                "scope": scope,
+            })
+        return instance
 
     async def update_connector_instance(
         self,

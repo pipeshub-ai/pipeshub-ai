@@ -24,6 +24,8 @@ from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.capability_summary import fetch_connector_configs
+from app.telemetry import record_event
+from app.telemetry.identity import domain_from_email
 from app.utils.execute_query import has_sql_connector_configured
 from app.utils.fetch_slack_thread import has_slack_connector_configured
 from app.modules.agents.deep.graph import deep_agent_graph
@@ -205,6 +207,8 @@ def _get_user_context(request: Request) -> dict[str, Any]:
     return {
         "userId": user_id,
         "orgId": org_id,
+        "email": user.get("email"),
+        "domain": domain_from_email(user.get("email")),
         "isServiceAccount": bool(user.get("isServiceAccount", False)),
         "sendUserInfo": request.query_params.get("sendUserInfo", True),
     }
@@ -1509,6 +1513,14 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         config_service = services["config_service"]
         user_context = _get_user_context(request)
 
+        record_event("agent_run", {
+            "orgId": user_context.get("orgId"),
+            "userId": user_context.get("userId"),
+            "email": user_context.get("email"),
+            "domain": user_context.get("domain"),
+            "has_tools": bool(query_info.tools),
+        })
+
         # Check cache first
         cache = get_cache_manager()
         cache_context = {
@@ -1733,6 +1745,15 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
         config_service = services["config_service"]
         llm = services["llm"]
         user_context = _get_user_context(request)
+
+        record_event("agent_run", {
+            "orgId": user_context.get("orgId"),
+            "userId": user_context.get("userId"),
+            "email": user_context.get("email"),
+            "domain": user_context.get("domain"),
+            "has_tools": bool(query_info.tools),
+            "streaming": True,
+        })
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
         enriched_user_info = await _enrich_user_info(user_context, user_doc)
@@ -3275,6 +3296,15 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
 
+        record_event("agent_run", {
+            "orgId": user_context.get("orgId"),
+            "userId": user_context.get("userId"),
+            "email": user_context.get("email"),
+            "domain": user_context.get("domain"),
+            "has_tools": bool(getattr(chat_query, "tools", None)),
+            "streaming": False,
+        })
+
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
         agent = await services["graph_provider"].get_agent(agent_id, org_key)
@@ -3478,6 +3508,15 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         body = _parse_request_body(await request.body())
         chat_query = ChatQuery(**body)
+
+        record_event("agent_run", {
+            "orgId": user_context.get("orgId"),
+            "userId": user_context.get("userId"),
+            "email": user_context.get("email"),
+            "domain": user_context.get("domain"),
+            "has_tools": bool(chat_query.tools),
+            "streaming": True,
+        })
 
         _MAX_TOOLS = 128
         if chat_query.tools is not None and len(chat_query.tools) > _MAX_TOOLS:

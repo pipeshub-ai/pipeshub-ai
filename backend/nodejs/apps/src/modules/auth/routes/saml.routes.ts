@@ -18,6 +18,7 @@ import { SessionService } from '../services/session.service';
 import { SamlController } from '../controller/saml.controller';
 import { Logger } from '../../../libs/services/logger.service';
 import { generateAuthToken } from '../utils/generateAuthToken';
+import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
@@ -178,6 +179,14 @@ export function createSamlRouter(container: Container) {
         // Now 'user' is guaranteed to be available here
         const accessToken = await generateAuthToken(user, config.jwtSecret);
         const refreshToken = refreshTokenJwtGenerator(user._id, session.orgId, config.scopedJwtSecret);
+
+        recordEvent('login', {
+          orgId: session.orgId?.toString(),
+          userId: user._id?.toString(),
+          email: user.email,
+          first_login: !user.hasLoggedIn,
+          auth_method: 'saml',
+        });
 
         res.cookie("accessToken", accessToken, {
           secure: true,

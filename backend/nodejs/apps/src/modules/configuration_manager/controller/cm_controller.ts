@@ -28,6 +28,8 @@ import {
   storageTypes,
 } from '../constants/constants';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
+import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/modules/collection-metrics';
+import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
 import { loadConfigurationManagerConfig } from '../config/config';
 import { Org } from '../../user_management/schema/org.schema';
 
@@ -2325,29 +2327,74 @@ export const setConnectorPublicUrl =
     }
   };
 
+const getMetricsCollectionConfig = async (
+  keyValueStoreService: KeyValueStoreService,
+): Promise<Record<string, any>> => {
+  const configManagerConfig = loadConfigurationManagerConfig();
+  const encrypted = await keyValueStoreService.get<string>(
+    configPaths.metricsCollection,
+  );
+  if (!encrypted) {
+    return {};
+  }
+  try {
+    const decrypted = EncryptionService.getInstance(
+      configManagerConfig.algorithm,
+      configManagerConfig.secretKey,
+    ).decrypt(encrypted);
+    const parsed = JSON.parse(decrypted);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (error) {
+    logger.warn('Failed to parse metrics collection config, using empty config', {
+      error,
+    });
+    return {};
+  }
+};
+
+const setMetricsCollectionConfig = async (
+  keyValueStoreService: KeyValueStoreService,
+  config: Record<string, any>,
+): Promise<void> => {
+  const configManagerConfig = loadConfigurationManagerConfig();
+  const encrypted = EncryptionService.getInstance(
+    configManagerConfig.algorithm,
+    configManagerConfig.secretKey,
+  ).encrypt(JSON.stringify(config));
+  await keyValueStoreService.set<string>(
+    configPaths.metricsCollection,
+    encrypted,
+  );
+};
+
 export const toggleMetricsCollection =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { enableMetricCollection } = req.body;
-      const metricsCollection = JSON.parse(
-        (await keyValueStoreService.get<string>(
-          configPaths.metricsCollection,
-        )) || '{}',
+      const metricsCollection = await getMetricsCollectionConfig(
+        keyValueStoreService,
       );
+
+      const enabled = !(
+        enableMetricCollection === false || enableMetricCollection === 'false'
+      );
+      setMetricCollectionEnabled(req.user?.orgId || 'unknown', enabled);
+
+      if (!enabled) {
+        await TelemetryService.current()?.flush();
+      }
 
       if (enableMetricCollection !== metricsCollection.enableMetricCollection) {
         metricsCollection.enableMetricCollection = enableMetricCollection;
-        await keyValueStoreService.set<string>(
-          configPaths.metricsCollection,
-          JSON.stringify(metricsCollection),
-        );
+        await setMetricsCollectionConfig(keyValueStoreService, metricsCollection);
       }
+
       res
         .status(200)
         .json({ message: 'Metrics collection toggled successfully' });
     } catch (error: any) {
-      logger.error('Error toggling metrics collection', { error });
+      logger.warn('Error toggling metrics collection', { error });
       next(error);
     }
   };
@@ -2356,14 +2403,12 @@ export const getMetricsCollection =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const metricsCollection = JSON.parse(
-        (await keyValueStoreService.get<string>(
-          configPaths.metricsCollection,
-        )) || '{}',
+      const metricsCollection = await getMetricsCollectionConfig(
+        keyValueStoreService,
       );
       res.status(200).json(metricsCollection).end();
     } catch (error: any) {
-      logger.error('Error getting metrics collection', { error });
+      logger.warn('Error getting metrics collection', { error });
       next(error);
     }
   };
@@ -2374,24 +2419,19 @@ export const setMetricsCollectionPushInterval =
     try {
       const { pushIntervalMs } = req.body;
 
-      const metricsCollection = JSON.parse(
-        (await keyValueStoreService.get<string>(
-          configPaths.metricsCollection,
-        )) || '{}',
+      const metricsCollection = await getMetricsCollectionConfig(
+        keyValueStoreService,
       );
 
       if (pushIntervalMs !== metricsCollection.pushIntervalMs) {
         metricsCollection.pushIntervalMs = pushIntervalMs;
-        await keyValueStoreService.set<string>(
-          configPaths.metricsCollection,
-          JSON.stringify(metricsCollection),
-        );
+        await setMetricsCollectionConfig(keyValueStoreService, metricsCollection);
       }
       res
         .status(200)
         .json({ message: 'Metrics collection push interval set successfully' });
     } catch (error: any) {
-      logger.error('Error setting metrics collection push interval', { error });
+      logger.warn('Error setting metrics collection push interval', { error });
       next(error);
     }
   };
@@ -2401,23 +2441,18 @@ export const setMetricsCollectionRemoteServer =
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { serverUrl } = req.body;
-      const metricsCollection = JSON.parse(
-        (await keyValueStoreService.get<string>(
-          configPaths.metricsCollection,
-        )) || '{}',
+      const metricsCollection = await getMetricsCollectionConfig(
+        keyValueStoreService,
       );
       if (serverUrl !== metricsCollection.serverUrl) {
         metricsCollection.serverUrl = serverUrl;
-        await keyValueStoreService.set<string>(
-          configPaths.metricsCollection,
-          JSON.stringify(metricsCollection),
-        );
+        await setMetricsCollectionConfig(keyValueStoreService, metricsCollection);
       }
       res
         .status(200)
         .json({ message: 'Metrics collection remote server set successfully' });
     } catch (error: any) {
-      logger.error('Error setting metrics collection remote server', { error });
+      logger.warn('Error setting metrics collection remote server', { error });
       next(error);
     }
   };
