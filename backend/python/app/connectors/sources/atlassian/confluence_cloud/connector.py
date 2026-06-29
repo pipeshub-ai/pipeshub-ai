@@ -3721,11 +3721,10 @@ class ConfluenceConnector(BaseConnector):
         self,
         datasource: ConfluenceDataSource,
         attachment_id: str,
-        meta_cache: dict[str, dict[str, Any]],
+        meta_cache: dict[str, dict[str, Any] | None],
     ) -> dict[str, Any] | None:
-        cached = meta_cache.get(attachment_id)
-        if cached is not None:
-            return cached
+        if attachment_id in meta_cache:
+            return meta_cache[attachment_id]
 
         try:
             response = await datasource.get_attachment_by_id(id=attachment_id)
@@ -3733,8 +3732,10 @@ class ConfluenceConnector(BaseConnector):
                 meta = response.json()
                 meta_cache[attachment_id] = meta
                 return meta
+            meta_cache[attachment_id] = None
         except Exception as e:
             self.logger.debug(f"Attachment metadata lookup failed for {attachment_id}: {e}")
+            meta_cache[attachment_id] = None
         return None
 
     def _create_cloud_html_image_downloader(
@@ -3745,7 +3746,7 @@ class ConfluenceConnector(BaseConnector):
     ) -> Callable[[str, HtmlImageContext], Awaitable[tuple[bytes, str] | None]]:
         """Build per-image download callback scoped to the current page only."""
         captured_record_type = record_type
-        page_meta_cache: dict[str, dict[str, Any]] = {}
+        page_meta_cache: dict[str, dict[str, Any] | None] = {}
         page_attachments: list[dict[str, Any]] | None = None
 
         async def _ensure_page_attachments() -> list[dict[str, Any]]:

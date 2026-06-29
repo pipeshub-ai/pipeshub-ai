@@ -2688,7 +2688,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                 self.logger.warning(f"Content {page_id} has no body")
                 html_content = "<p>No content available</p>"
 
-            async def _download(url: str, image_context):
+            async def _download(url: str, _image_context):
                 return await datasource.fetch_authenticated_binary(url)
 
             html_content = await prepare_streaming_html(
@@ -2763,7 +2763,7 @@ class ConfluenceDataCenterPersonalConnector(BaseConnector):
                 self.logger.warning(f"Comment {comment_id} has no content")
                 html_content = "<p>No content available</p>"
 
-            async def _download(url: str, image_context):
+            async def _download(url: str, _image_context):
                 return await datasource.fetch_authenticated_binary(url)
 
             html_content = await prepare_streaming_html(

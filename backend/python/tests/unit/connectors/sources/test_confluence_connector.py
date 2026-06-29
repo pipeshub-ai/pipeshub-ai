@@ -8265,6 +8265,35 @@ class TestCloudHtmlAttachmentHelpers:
         assert c._find_attachment_in_list(attachments, filename="missing.png") is None
 
     @pytest.mark.asyncio
+    async def test_get_attachment_metadata_by_id_caches_negative_lookup(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_attachment_by_id = AsyncMock(return_value=_mk_resp(404, {}))
+        meta_cache: dict[str, dict[str, Any] | None] = {}
+
+        assert await c._get_attachment_metadata_by_id(ds, "att-missing", meta_cache) is None
+        assert await c._get_attachment_metadata_by_id(ds, "att-missing", meta_cache) is None
+        ds.get_attachment_by_id.assert_awaited_once_with(id="att-missing")
+        assert meta_cache == {"att-missing": None}
+
+    @pytest.mark.asyncio
+    async def test_cloud_html_image_downloader_dedupes_failed_metadata_lookup(self):
+        c = _mk_connector()
+        ds = MagicMock()
+        ds.get_attachment_by_id = AsyncMock(return_value=_mk_resp(404, {}))
+        download = c._create_cloud_html_image_downloader(
+            ds, "100", RecordType.CONFLUENCE_PAGE
+        )
+        url = "https://site.atlassian.net/wiki/download/thumbnails/100/photo.png"
+        image_context = HtmlImageContext(
+            linked_resource_id="999",
+            linked_resource_type="attachment",
+        )
+        assert await download(url, image_context) is None
+        assert await download(url, image_context) is None
+        ds.get_attachment_by_id.assert_awaited_once_with(id="att999")
+
+    @pytest.mark.asyncio
     async def test_cloud_html_image_downloader_linked_resource(self):
         c = _mk_connector()
         ds = MagicMock()
