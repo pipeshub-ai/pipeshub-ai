@@ -868,6 +868,20 @@ class TestImages:
         assert block.data == {"uri": "data:image/png;base64,abc"}
         assert block.format == DataFormat.BASE64
 
+    def test_duplicate_empty_alt_images_resolve_distinct_uris_on_markdown_path(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        html = (
+            "<p><strong>See</strong> "
+            '<img src="data:image/png;base64,AAAA" alt=""> '
+            '<img src="data:image/png;base64,BBBB" alt=""></p>'
+        )
+        container = converter.convert(html)
+        images = [block for block in container.blocks if block.type == BlockType.IMAGE]
+        assert len(images) == 2
+        assert images[0].data == {"uri": "data:image/png;base64,AAAA"}
+        assert images[1].data == {"uri": "data:image/png;base64,BBBB"}
+
     def test_malformed_srcset_does_not_crash(self, converter: HtmlToBlocksConverter) -> None:
         container = converter.convert('<img srcset="   " alt="broken">')
         images = [block for block in container.blocks if block.type == BlockType.IMAGE]
