@@ -1244,6 +1244,8 @@ class Processor:
                     # Add to parent's children
                     bg.children.add_block_group_index(new_bg.index)
 
+                bg.data = None
+
             elif original_index in existing_blocks_by_parent:
                 # Case 2: BlockGroup has existing blocks from connector - reassign indices
                 existing_blocks = existing_blocks_by_parent[original_index]
