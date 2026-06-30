@@ -259,6 +259,25 @@ def _has_block_descendant(node: LexborNode, depth: int = 0) -> bool:
     return False
 
 
+def _has_wrapped_block_descendant(node: LexborNode) -> bool:
+    """True when node has block-level descendants other than direct-child ``<img>``.
+
+    Direct-child ``<img>`` tags are excluded because ``_element_to_segments``
+    already handles them as image segments. Only block wrappers (``<figure>``,
+    ``<div>``, nested ``<p>``, ``<table>``, etc.) require ``_walk_children``
+    recursion to preserve structure.
+    """
+    for child in _direct_children(node):
+        tag = _tag_name(child)
+        if not tag or tag in _SKIP_TAGS or tag == "img":
+            continue
+        if tag in _BLOCK_TAGS:
+            return True
+        if tag in _CONTAINER_TAGS and _has_block_descendant(child):
+            return True
+    return False
+
+
 def _is_shallow_text_container(node: LexborNode) -> bool:
     """True when a container holds text but no nested block-level children.
 
@@ -428,9 +447,17 @@ def _element_to_segments(
         elif tag == "br":
             text_buf.append("\n")
         else:
-            rendered = _inline_text(child)
-            if rendered:
-                text_buf.append(rendered)
+            nested_imgs = child.css("img")
+            if nested_imgs:
+                flush_text()
+                for img in nested_imgs:
+                    alt = ((img.attributes or {}).get("alt") or "").strip()
+                    image_nodes.append(img)
+                    segments.append(_Segment(kind="image", alt_text=alt))
+            else:
+                rendered = _inline_text(child)
+                if rendered:
+                    text_buf.append(rendered)
 
     flush_text()
     return segments, DataFormat.MARKDOWN, "", image_nodes
@@ -1264,8 +1291,11 @@ class _DomWalker:
                 self._emit_text_block(node, BlockSubType.HEADING)
             return
 
-        if tag in {"p", "address", "dt", "dd", "figcaption"}:
-            self._emit_text_block(node, BlockSubType.PARAGRAPH)
+        if tag in _PARAGRAPH_LIKE_TAGS:
+            if _has_wrapped_block_descendant(node):
+                self._walk_children(node, depth + 1)
+            else:
+                self._emit_text_block(node, BlockSubType.PARAGRAPH)
             return
 
         if tag == "pre":
@@ -1570,13 +1600,15 @@ class _DomWalker:
 
         Scans *markdown_source* for ``![alt_text](uri)`` patterns (via
         ``_MD_IMAGE_RE``) and returns the URI when it starts with
-        ``data:image``. Used for images discovered on the markdown extraction
-        path where no live ``<img>`` node is available.
+        ``data:image``. Uses case-insensitive, whitespace-normalised comparison
+        so minor ``markdownify`` transformations don't cause mismatches.
+        Also handles empty alt text (``![](data:image/...)``).
         """
-        if not alt_text or not markdown_source:
+        if not markdown_source:
             return None
+        normalized_alt = (alt_text or "").strip().lower()
         for match in _MD_IMAGE_RE.finditer(markdown_source):
-            if match.group(1) == alt_text:
+            if match.group(1).strip().lower() == normalized_alt:
                 src = match.group(2).strip()
                 if src.startswith("data:image"):
                     return src
