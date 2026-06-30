@@ -3165,7 +3165,7 @@ class JiraDataCenterConnector(BaseConnector):
         This creates:
         - Description BlockGroup (index=0) with:
           - Issue description HTML (images converted to base64)
-          - children_records: standalone attachments not embedded in content
+          - children_records: non-image files linked inline in description HTML
         - Thread BlockGroups (index=1,2,...) for each comment thread
         - Comment BlockGroup objects (sub_type=COMMENT) for each comment
         """
@@ -3193,11 +3193,6 @@ class JiraDataCenterConnector(BaseConnector):
             mime_type = _attachment_mime_types.get(attachment_id, "")
             return mime_type.startswith("image/")
 
-        # Track attachment IDs used in comments (to exclude from description children)
-        comment_attachment_ids: set[str] = set()
-        # Track embedded images in description (already in content as base64)
-        description_image_ids: set[str] = set()
-
         # Get rendered HTML from renderedFields
         rendered = rendered_fields or {}
         rendered_description_html = rendered.get("description") or ""
@@ -3216,23 +3211,15 @@ class JiraDataCenterConnector(BaseConnector):
             if cid and body:
                 rendered_comment_body_by_id[cid] = body
 
-        # Pre-scan comment rendered HTML to identify attachments used in comments
         comments_data = issue_data.get("comments", [])
         if isinstance(comments_data, dict):
             comments_data = comments_data.get("comments", [])
-        for comment in comments_data:
-            comment_id = comment.get("id", "")
-            comment_html = comment.get("renderedBody") or rendered_comment_body_by_id.get(comment_id, "")
-            if comment_html:
-                refs = self._extract_attachment_ids_from_html_links(comment_html)
-                comment_attachment_ids.update(refs)
 
         # 1. Description BlockGroup (index=0) — rendered HTML
         if isinstance(rendered_description_html, str) and rendered_description_html.strip():
-            description_content, desc_inlined = await self._process_html_images_with_auth(
+            description_content, _desc_inlined = await self._process_html_images_with_auth(
                 rendered_description_html, issue_id, raw_attachments
             )
-            description_image_ids.update(desc_inlined)
         else:
             description_content = ""
 
@@ -3298,10 +3285,9 @@ class JiraDataCenterConnector(BaseConnector):
                         continue
 
                     # Process images in comment HTML
-                    comment_body, comment_inlined = await self._process_html_images_with_auth(
+                    comment_body, _comment_inlined = await self._process_html_images_with_auth(
                         comment_html, issue_id, raw_attachments
                     )
-                    comment_attachment_ids.update(comment_inlined)
 
                     if not comment_body:
                         continue
@@ -3324,7 +3310,6 @@ class JiraDataCenterConnector(BaseConnector):
                                 att_id in attachment_children_map
                                 and not is_image_attachment(att_id)
                             ):
-                                comment_attachment_ids.add(att_id)
                                 comment_children.append(attachment_children_map[att_id])
 
                     comment_block_group = BlockGroup(
@@ -3345,15 +3330,16 @@ class JiraDataCenterConnector(BaseConnector):
                     block_groups.append(comment_block_group)
                     block_group_index += 1
 
-        # Build description children: all attachments NOT used in comments and NOT embedded images
+        # Non-image files linked inline in description HTML only (not standalone attachments)
         description_children: list[ChildRecord] = []
-        if attachment_children_map:
-            for attachment_id, child_record in attachment_children_map.items():
-                if attachment_id in comment_attachment_ids:
-                    continue
-                if attachment_id in description_image_ids:
-                    continue
-                description_children.append(child_record)
+        if attachment_children_map and rendered_description_html:
+            link_ids = self._extract_attachment_ids_from_html_links(rendered_description_html)
+            for att_id in link_ids:
+                if (
+                    att_id in attachment_children_map
+                    and not is_image_attachment(att_id)
+                ):
+                    description_children.append(attachment_children_map[att_id])
 
         if description_children:
             description_block_group.children_records = description_children

@@ -3398,14 +3398,12 @@ async def test_parse_issue_to_blocks_bracket_attachment_in_comment():
     assert comment_bgs[0].children_records[0].child_name == "Ack p2.pdf"
     assert comment_bgs[1].children_records
     assert comment_bgs[1].children_records[0].child_name == "Certificate-1.pdf"
-    assert box.block_groups[0].children_records
-    assert len(box.block_groups[0].children_records) == 1
-    assert box.block_groups[0].children_records[0].child_name == "BlackBookAiReport.pdf"
+    assert not box.block_groups[0].children_records
 
 
 @pytest.mark.asyncio
 async def test_parse_issue_to_blocks_mixed_rendered_html_images_and_file_children():
-    """Description image, comment image, comment PDF, and standalone PDF route correctly."""
+    """Description/comment images base64; inline PDFs on matching block group only."""
     conn = _make_connector()
     conn.site_url = "https://jira.example"
     child_desc_img = ChildRecord(
@@ -3490,9 +3488,7 @@ async def test_parse_issue_to_blocks_mixed_rendered_html_images_and_file_childre
 
     desc_bg = box.block_groups[0]
     assert "data:image/png;base64,IMG_1" in desc_bg.data
-    assert desc_bg.children_records
-    assert len(desc_bg.children_records) == 1
-    assert desc_bg.children_records[0].child_name == "spec.pdf"
+    assert not desc_bg.children_records
 
     comment_bgs = [bg for bg in box.block_groups if bg.sub_type == GroupSubType.COMMENT]
     assert len(comment_bgs) == 1
@@ -3505,7 +3501,7 @@ async def test_parse_issue_to_blocks_mixed_rendered_html_images_and_file_childre
 
 
 @pytest.mark.asyncio
-async def test_parse_issue_to_blocks_description_child_for_standalone_pdf():
+async def test_parse_issue_to_blocks_standalone_pdf_not_in_description_children():
     conn = _make_connector()
     conn.site_url = "https://jira.example"
     child_pdf = ChildRecord(child_type=ChildType.RECORD, child_id="fid", child_name="readme.pdf")
@@ -3526,8 +3522,35 @@ async def test_parse_issue_to_blocks_description_child_for_standalone_pdf():
             attachment_children_map=att_map,
             attachment_mime_types=att_mimes,
         )
+    assert not box.block_groups[0].children_records
+
+
+@pytest.mark.asyncio
+async def test_parse_issue_to_blocks_description_child_for_inline_pdf():
+    conn = _make_connector()
+    conn.site_url = "https://jira.example"
+    child_pdf = ChildRecord(child_type=ChildType.RECORD, child_id="fid", child_name="spec.pdf")
+    att_map = {"4": child_pdf}
+    att_mimes = {"4": "application/pdf"}
+    rendered_description = (
+        '<p><a href="http://localhost/secure/attachment/4/spec.pdf">spec.pdf</a></p>'
+    )
+    issue_data = {
+        "id": "1",
+        "key": "K",
+        "fields": {"summary": "T"},
+        "comments": [],
+    }
+    box = await conn._parse_issue_to_blocks(
+        issue_data,
+        issue_key="K",
+        weburl="https://jira.example/browse/K",
+        attachment_children_map=att_map,
+        attachment_mime_types=att_mimes,
+        rendered_fields={"description": rendered_description},
+    )
     assert box.block_groups[0].children_records
-    assert box.block_groups[0].children_records[0].child_name == "readme.pdf"
+    assert box.block_groups[0].children_records[0].child_name == "spec.pdf"
 
 
 @pytest.mark.asyncio
