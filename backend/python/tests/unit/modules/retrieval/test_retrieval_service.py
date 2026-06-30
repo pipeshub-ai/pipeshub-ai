@@ -1673,3 +1673,113 @@ class TestSearchWithFiltersBranches:
             queries=["test"], user_id="u1", org_id="o1"
         )
         retrieval_service._create_virtual_to_record_mapping = original
+
+
+# ============================================================================
+# search_with_filters time_range forwarding
+# ============================================================================
+
+
+class TestSearchWithFiltersTimeRange:
+    @pytest.mark.asyncio
+    async def test_no_time_range_omits_kwarg(self, retrieval_service, mock_graph_provider):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {}
+        await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1"
+        )
+        assert (
+            mock_graph_provider.get_accessible_virtual_record_ids.call_args.kwargs.get(
+                "time_range"
+            )
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_time_range_forwarded_to_graph_provider(
+        self, retrieval_service, mock_graph_provider
+    ):
+        time_range = {
+            "source_created_after_ms": 1778742000000,
+            "source_created_before_ms": 1779346800000,
+        }
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {}
+        await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1", time_range=time_range
+        )
+        assert (
+            mock_graph_provider.get_accessible_virtual_record_ids.call_args.kwargs[
+                "time_range"
+            ]
+            == time_range
+        )
+
+    @pytest.mark.asyncio
+    async def test_only_after_bound_forwarded(self, retrieval_service, mock_graph_provider):
+        time_range = {"source_created_after_ms": 1000}
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {}
+        await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1", time_range=time_range
+        )
+        assert (
+            mock_graph_provider.get_accessible_virtual_record_ids.call_args.kwargs[
+                "time_range"
+            ]
+            == time_range
+        )
+
+    @pytest.mark.asyncio
+    async def test_only_before_bound_forwarded(self, retrieval_service, mock_graph_provider):
+        time_range = {"source_created_before_ms": 2000}
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {}
+        await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1", time_range=time_range
+        )
+        assert (
+            mock_graph_provider.get_accessible_virtual_record_ids.call_args.kwargs[
+                "time_range"
+            ]
+            == time_range
+        )
+
+    @pytest.mark.asyncio
+    async def test_time_range_does_not_pollute_filter_groups(
+        self, retrieval_service, mock_graph_provider, mock_vector_db_service
+    ):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {
+                "_key": "rec1",
+                "virtualRecordId": "vr1",
+                "origin": "google_drive",
+                "recordName": "Doc",
+                "mimeType": "text/plain",
+                "orgId": "o1",
+            }
+        ]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.9,
+                "content": "hello",
+                "citationType": "vectordb|document",
+                "metadata": {
+                    "virtualRecordId": "vr1",
+                    "orgId": "o1",
+                    "origin": "google_drive",
+                    "recordName": "Doc",
+                    "recordId": "rec1",
+                    "mimeType": "text/plain",
+                },
+            }
+        ])
+        result = await retrieval_service.search_with_filters(
+            queries=["test"],
+            user_id="u1",
+            org_id="o1",
+            filter_groups={"kb": ["kb-123"]},
+            time_range={"source_created_after_ms": 1000},
+        )
+        filters_passed = (
+            mock_graph_provider.get_accessible_virtual_record_ids.call_args.kwargs["filters"]
+        )
+        assert "time_range" not in filters_passed
+        assert result.get("appliedFilters") == {"kb": ["kb-123"], "kb_count": 1}

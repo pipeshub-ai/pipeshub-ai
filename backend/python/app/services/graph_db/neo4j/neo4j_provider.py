@@ -4258,7 +4258,8 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         user_id: str,
         org_id: str,
-        filters: dict[str, list[str]] | None = None
+        filters: dict[str, list[str]] | None = None,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
@@ -4281,12 +4282,19 @@ class Neo4jProvider(IGraphDBProvider):
                     'kb': [kb_ids],
                     'apps': [connector_ids]
                 }
+            time_range (dict[str, int] | None): Optional source-creation bounds (epoch ms).
+                Not yet implemented for Neo4j; when provided, results are not filtered by time.
 
         Returns:
             Dict[str, str]: Mapping of virtualRecordId -> recordId
         """
         start_time = time.time()
-        self.logger.debug(
+        if time_range:
+            self.logger.warning(
+                "time_range filtering on sourceCreatedAtTimestamp is not yet supported for Neo4j; "
+                "ignoring time_range and returning unfiltered accessible records"
+            )
+        self.logger.info(
             f"Getting accessible virtual record IDs for user {user_id} in org {org_id} with filters {filters}"
         )
 
