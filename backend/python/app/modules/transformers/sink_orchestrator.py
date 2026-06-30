@@ -69,7 +69,25 @@ class SinkOrchestrator(Transformer):
 
 
     async def apply(self, ctx: TransformContext) -> None:
+        """Legacy entry-point: runs both phases (index + enrich) sequentially.
 
+        Preserved for backward compatibility with code that has not been
+        migrated to the split ``index()`` / ``enrich()`` API.
+        """
+        await self.index(ctx)
+        await self.enrich(ctx)
+
+    # ------------------------------------------------------------------
+    # Phase 1: INDEX — vector store + blob.  Document becomes searchable.
+    # ------------------------------------------------------------------
+
+    async def index(self, ctx: TransformContext) -> None:
+        """Phase 1: write to BlobStorage and VectorStore.
+
+        After this method returns, the document is queryable via the vector
+        store and ``indexingStatus`` is set to ``COMPLETED``.  The graph
+        enrichment (``extractionStatus``) is left unchanged here.
+        """
         record = ctx.record
         full_block_containers = None
         skip_vector_store = bool(ctx.settings.get("skip_vector_store")) or bool(
@@ -94,21 +112,19 @@ class SinkOrchestrator(Transformer):
 
         record_id = record.id
         record_doc = await self.graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
+            record_id, CollectionNames.RECORDS.value
+        )
         if record_doc is None:
             self.logger.error(f"❌ Record {record_id} not found in database")
             raise Exception(f"Record {record_id} not found in database")
 
         if skip_vector_store:
-            timestamp = get_epoch_timestamp_in_ms()
             success = await self.graph_provider.batch_update_nodes(
                 [
                     {
                         "id": record_id,
                         "virtualRecordId": record.virtual_record_id,
-                        "indexingStatus": ProgressStatus.COMPLETED.value,
-                        "lastIndexTimestamp": timestamp,
+                        "indexingStatus": ProgressStatus.NOT_STARTED.value,
                         "isDirty": False,
                     }
                 ],
@@ -131,13 +147,48 @@ class SinkOrchestrator(Transformer):
             result = await self.vector_store.apply(ctx)
             if result is False:
                 return
-            self.logger.info(f"✅ Vector store indexing succeeded for record {record_id}")
-            self.logger.info(f"Saving reconciliation metadata for record {record_id}")
-            await self.graphdb.apply(ctx)
+            self.logger.info(
+                "✅ Vector store indexing succeeded for record %s", record_id
+            )
+            await self._update_indexing_status(ctx)
             await self._save_reconciliation_metadata(ctx)
 
+    async def _update_indexing_status(self, ctx: TransformContext) -> None:
+        """Mark indexingStatus=COMPLETED without touching extractionStatus."""
+        record = ctx.record
+        timestamp = get_epoch_timestamp_in_ms()
+        await self.graph_provider.batch_upsert_nodes(
+            [
+                {
+                    "id": record.id,
+                    "virtualRecordId": record.virtual_record_id,
+                    "indexingStatus": ProgressStatus.COMPLETED.value,
+                    "lastIndexTimestamp": timestamp,
+                    "isDirty": False,
+                }
+            ],
+            CollectionNames.RECORDS.value,
+        )
+        self.logger.info(
+            "✅ indexingStatus=COMPLETED recorded for %s", record.id
+        )
 
-        return
+    # ------------------------------------------------------------------
+    # Phase 2: ENRICH — graph DB taxonomy.  Can run later (deferred).
+    # ------------------------------------------------------------------
+
+    async def enrich(self, ctx: TransformContext) -> None:
+        """Phase 2: write classification metadata to the graph database.
+
+        Calls ``graphdb.apply()`` which already sets
+        ``extractionStatus=COMPLETED`` once it finishes.  Callers should
+        ensure ``ctx.record.semantic_metadata`` is populated before calling
+        this method.
+        """
+        await self.graphdb.apply(ctx)
+        self.logger.info(
+            "✅ Graph enrichment completed for record %s", ctx.record.id
+        )
 
     async def _save_reconciliation_metadata(self, ctx: TransformContext) -> None:
         if ctx.reconciliation_context and ctx.reconciliation_context.new_metadata:

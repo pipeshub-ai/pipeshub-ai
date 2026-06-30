@@ -119,16 +119,16 @@ class FileContentParser:
         self._config = config_service
 
         self._md_parser = MarkdownParser(logger=logger, config_service=config_service)
-        self._mdx_parser = MDXParser()
+        self._mdx_parser = MDXParser(self._md_parser    )
         self._html_parser = HTMLParser(logger=logger, config_service=config_service)
         self._doc_parser = DocParser()
-        self._xls_parser = XLSParser()
+        self._xls_parser = XLSParser(excel_parser=ExcelParser(logger=logger, config_service=config_service))
         self._ppt_parser = PPTParser()
         # Same as Processor: PNG parser used for fetching remote images in Markdown
         self._image_parser = ImageParser(logger)
 
-        self._csv_parser = CSVParser()
-        self._tsv_parser = CSVParser(delimiter="\t")
+        self._csv_parser = CSVParser(config_service=config_service)
+        self._tsv_parser = CSVParser(config_service=config_service, delimiter="\t")
 
     async def parse_raw_to_blocks(
         self,
@@ -298,7 +298,7 @@ class FileContentParser:
 
     async def handle_xlsx(self, raw: bytes, file_name: str) -> BlocksContainer:
         llm, _ = await get_llm_for_role(self._config, "indexing")
-        excel = ExcelParser(self._logger)
+        excel = ExcelParser(self._logger, self._config)
         excel.load_workbook_from_binary(raw)
         return await excel.create_blocks(llm)
 
@@ -384,7 +384,7 @@ class FileContentParser:
                 if base64_urls[i]:
                     caption_map[image["new_alt_text"]] = base64_urls[i]
 
-        return await self._html_parser.parse(
+        return await self._html_parser.parse_to_blocks(
             modified_html,
             caption_map=caption_map if caption_map else None,
         )

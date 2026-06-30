@@ -60,7 +60,8 @@ class StreamMessage(BaseModel):
 class PipelineEventData(BaseModel):
     """Data yielded alongside a pipeline event."""
 
-    record_id: str
+    record_id: Optional[str] = None
+    record_name: Optional[str] = None
     count: Optional[int] = None
 
 
@@ -68,7 +69,7 @@ class PipelineEvent(BaseModel):
     """Event yielded by the indexing pipeline handler."""
 
     event: IndexingEvent
-    data: PipelineEventData
+    data: Optional[PipelineEventData] = None
 
 
 # ---------------------------------------------------------------------------

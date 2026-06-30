@@ -304,30 +304,33 @@ class TestDoclingHtmlCleanHtml:
 class TestDoclingHtmlParse:
     @pytest.mark.asyncio
     async def test_parse_uses_docling_processor(self, parser):
-        expected = MagicMock()
+        from app.models.blocks import BlocksContainer
+        expected_blocks = BlocksContainer(blocks=[], block_groups=[])
         with patch(
             "app.modules.parsers.pdf.docling_processor.DoclingProcessor"
         ) as mock_processor_cls:
             instance = mock_processor_cls.return_value
             instance.parse_document = AsyncMock(return_value=MagicMock())
-            instance.create_blocks = AsyncMock(return_value=expected)
+            instance.create_blocks = AsyncMock(return_value=expected_blocks)
 
-            result = await parser.parse("<p>Hello</p>")
+            result = await parser.parse("<p>Hello</p>", "test.html")
 
-        assert result is expected
+        assert result.block_container is expected_blocks
+        assert result.metadata == {"record_name": "test.html"}
         instance.parse_document.assert_awaited_once()
         instance.create_blocks.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_parse_converts_to_markdown(self, parser):
-        expected = MagicMock()
+        from app.models.blocks import BlocksContainer
+        expected_blocks = BlocksContainer(blocks=[], block_groups=[])
         with patch("html_to_markdown.convert", return_value="# markdown") as mock_convert, \
              patch("app.modules.parsers.pdf.docling_processor.DoclingProcessor") as mock_processor_cls:
             instance = mock_processor_cls.return_value
             instance.parse_document = AsyncMock(return_value=MagicMock())
-            instance.create_blocks = AsyncMock(return_value=expected)
+            instance.create_blocks = AsyncMock(return_value=expected_blocks)
 
-            await parser.parse("<p>Hello</p>")
+            await parser.parse("<p>Hello</p>", "test.html")
 
         mock_convert.assert_called_once_with("<p>Hello</p>")
         instance.parse_document.assert_awaited_once()
@@ -340,7 +343,7 @@ class TestDoclingHtmlParse:
 # ---------------------------------------------------------------------------
 class TestHTMLParserShim:
     def test_html_parser_defaults_to_selectolax(self):
-        with patch.dict("os.environ", {"HTML_PARSER_BACKEND": "selectolax"}, clear=False):
+        with patch.dict("os.environ", {"PARSER_BACKEND": "selectolax"}, clear=False):
             import importlib
 
             import app.modules.parsers.html_parser.html_parser as html_parser_module
@@ -354,7 +357,7 @@ class TestHTMLParserShim:
         )
 
     def test_html_parser_can_select_docling_backend(self):
-        with patch.dict("os.environ", {"HTML_PARSER_BACKEND": "docling"}, clear=False):
+        with patch.dict("os.environ", {"PARSER_BACKEND": "docling"}, clear=False):
             with patch(
                 "app.modules.parsers.html_parser.docling_html_parser.DocumentConverter"
             ):

@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from enum import Enum
@@ -798,6 +799,23 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
         )
 
     raise ValueError(f"Unsupported provider type: {provider}")
+
+
+async def get_generator_model_async(
+    provider: str,
+    config: dict[str, Any],
+    model_name: str | None = None,
+) -> BaseChatModel:
+    """Async-safe wrapper around :func:`get_generator_model`.
+
+    Most providers construct their LangChain model object with no I/O, so they
+    run inline.  AWS Bedrock is the exception: ``_create_bedrock_client`` may
+    hit the EC2 IMDS or ECS task-role metadata endpoint to resolve credentials
+    when no explicit keys are supplied, which would block the event loop.
+    """
+    if provider == LLMProvider.AWS_BEDROCK.value:
+        return await asyncio.to_thread(get_generator_model, provider, config, model_name)
+    return get_generator_model(provider, config, model_name)
 
 
 # ---------------------------------------------------------------------------

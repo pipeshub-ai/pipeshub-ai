@@ -7,6 +7,9 @@ import re
 from datetime import datetime
 from typing import Any
 
+from app.services.parsing.interface import ParseResult
+from app.utils.llm import get_llm_for_role
+from app.config.configuration_service import ConfigurationService
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from openpyxl import load_workbook
@@ -338,8 +341,9 @@ def format_excel_datetime(dt_value: datetime | str | int | float | None, number_
 
 
 class ExcelParser:
-    def __init__(self, logger: logging.Logger) -> None:
+    def __init__(self, logger: logging.Logger,config_service: ConfigurationService) -> None:
         self.logger = logger
+        self.config_service = config_service
         self.workbook = None
         self.file_binary = None
 
@@ -352,6 +356,21 @@ class ExcelParser:
         self.max_retries = 3
         self.min_wait = 1  # seconds
         self.max_wait = 10  # seconds
+    
+    async def parse(
+        self,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None = None,
+    ) -> ParseResult:
+            llm, _ = await get_llm_for_role(self.config_service, "indexing")
+            self.load_workbook_from_binary(content)
+            blocks_containers = await self.create_blocks(llm)
+
+            return ParseResult(
+                block_container=blocks_containers,
+                metadata={"record_name": record_name},
+            )
 
     def load_workbook_from_binary(self, file_binary: bytes) -> None:
         """Load workbook from binary (no LLM calls).
@@ -380,6 +399,124 @@ class ExcelParser:
                 self.logger.info("Closing workbook")
                 self.workbook.close()
 
+    async def parse_workbook(self, content: bytes) -> BlocksContainer:
+        """Parse workbook from binary without LLM, for use by the Parsing Service.
+
+        Produces a basic SHEET → TABLE → TABLE_ROW block hierarchy using
+        ``generate_simple_row_text`` for row descriptions instead of LLM calls.
+        """
+        self.load_workbook_from_binary(content)
+        try:
+            return self._build_basic_block_container()
+        finally:
+            if self.workbook:
+                self.workbook.close()
+
+    def _build_basic_block_container(self) -> BlocksContainer:
+        """Build a BlocksContainer from the loaded workbook without LLM calls.
+
+        Mirrors the structure of ``get_blocks_from_workbook`` but treats each
+        sheet as a single flat table and uses ``generate_simple_row_text`` for
+        all row descriptions.
+        """
+        if not self.workbook:
+            return BlocksContainer(blocks=[], block_groups=[])
+
+        blocks: list[Block] = []
+        block_groups: list[BlockGroup] = []
+
+        for sheet_idx, sheet_name in enumerate(self.workbook.sheetnames, 1):
+            sheet_data = self._process_sheet(self.workbook[sheet_name])
+            headers: list = sheet_data.get("headers") or []
+            rows: list = sheet_data.get("data") or []
+
+            if not rows:
+                continue
+
+            col_names = [
+                str(h) if h is not None else f"col_{i}"
+                for i, h in enumerate(headers)
+            ]
+
+            # SHEET group
+            sg_idx = len(block_groups)
+            block_groups.append(
+                BlockGroup(
+                    index=sg_idx,
+                    name=sheet_name,
+                    type=GroupType.SHEET,
+                    parent_index=None,
+                    data={"sheet_name": sheet_name, "table_count": 1},
+                    format=DataFormat.JSON,
+                )
+            )
+
+            # TABLE group (one per sheet in the basic non-LLM path)
+            tg_idx = len(block_groups)
+            block_groups.append(
+                BlockGroup(
+                    index=tg_idx,
+                    name=None,
+                    type=GroupType.TABLE,
+                    parent_index=sg_idx,
+                    table_metadata=TableMetadata(
+                        num_of_rows=len(rows),
+                        num_of_cols=len(headers),
+                        num_of_cells=len(rows) * len(headers),
+                    ),
+                    data={
+                        "table_summary": "",
+                        "column_headers": col_names,
+                        "sheet_number": sheet_idx,
+                        "sheet_name": sheet_name,
+                    },
+                    format=DataFormat.JSON,
+                )
+            )
+
+            # TABLE_ROW blocks
+            row_indices: list[int] = []
+            for ri, row in enumerate(rows):
+                row_data = {
+                    (
+                        cell.get("header")
+                        or (col_names[ci] if ci < len(col_names) else f"col_{ci}")
+                    ): cell.get("value")
+                    for ci, cell in enumerate(row)
+                }
+                bi = len(blocks)
+                row_num = row[0].get("row", ri + 2) if row else ri + 2
+                blocks.append(
+                    Block(
+                        index=bi,
+                        type=BlockType.TABLE_ROW,
+                        format=DataFormat.JSON,
+                        data={
+                            "row_natural_language_text": generate_simple_row_text(row_data),
+                            "row_number": int(row_num),
+                            "row_end_number": int(row_num),
+                            "row_count": 1,
+                            "sheet_number": sheet_idx,
+                            "sheet_name": sheet_name,
+                        },
+                        parent_index=tg_idx,
+                    )
+                )
+                row_indices.append(bi)
+
+            block_groups[tg_idx].children = BlockGroupChildren.from_indices(
+                block_indices=row_indices
+            )
+            block_groups[sg_idx].children = BlockGroupChildren.from_indices(
+                block_group_indices=[tg_idx]
+            )
+
+        self.logger.info(
+            "Basic (no-LLM) workbook parsing complete: %d blocks, %d block groups",
+            len(blocks),
+            len(block_groups),
+        )
+        return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
     def _json_default(self, obj: object) -> str:
         if isinstance(obj, datetime):

@@ -298,7 +298,7 @@ class ExtensionTypes(Enum):
     SH = "sh"
     BASH = "bash"
     HTM = "htm"
-
+    BLOCKS = "blocks"
 
 class MimeTypes(Enum):
     PDF = "application/pdf"

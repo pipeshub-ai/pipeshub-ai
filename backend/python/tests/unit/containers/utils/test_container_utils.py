@@ -122,8 +122,7 @@ class TestCreateParsers:
     @pytest.mark.asyncio
     async def test_creates_all_parsers(self):
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.DocxParser"), \
-             patch("app.containers.utils.utils.DocParser"), \
+        with patch("app.containers.utils.utils.DocParser"), \
              patch("app.containers.utils.utils.PPTXParser"), \
              patch("app.containers.utils.utils.PPTParser"), \
              patch("app.containers.utils.utils.HTMLParser"), \

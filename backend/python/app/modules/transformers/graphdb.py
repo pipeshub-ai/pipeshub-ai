@@ -18,6 +18,14 @@ class GraphDBTransformer(Transformer):
         self.graph_data_store = GraphDataStore(logger, graph_provider)
 
     async def apply(self, ctx: TransformContext) -> None:
+        """Persist semantic metadata to the graph and update extractionStatus.
+
+        ``indexingStatus`` is intentionally **not** touched here — that is set
+        by :meth:`SinkOrchestrator.index` (via ``_update_indexing_status``)
+        *before* this method is called.  Keeping the two statuses independent
+        allows the index phase to complete and make the document searchable
+        before enrichment runs.
+        """
         record = ctx.record
         metadata = record.semantic_metadata
         virtual_record_id = record.virtual_record_id
@@ -26,20 +34,18 @@ class GraphDBTransformer(Transformer):
         if metadata is None:
             try:
                 async with self.graph_data_store.transaction() as tx_store:
-                    # Update extraction status for the record
                     timestamp = get_epoch_timestamp_in_ms()
-                    # Update indexing status for the record
+                    # Only update extractionStatus — indexingStatus was already
+                    # set to COMPLETED by SinkOrchestrator.index().
                     status_doc = {
                         "id": record_id,
                         "extractionStatus": "FAILED",
                         "lastExtractionTimestamp": timestamp,
-                        "indexingStatus": "COMPLETED",
                         "isDirty": False,
                         "virtualRecordId": virtual_record_id,
-                        "lastIndexTimestamp": timestamp,
                     }
                     self.logger.info(
-                        "🎯 Updating indexing status metadata for document"
+                        "🎯 Upserting extraction status for document"
                     )
                     # batch_update_nodes returns bool only (not updated docs): True if all
                     # nodes matched, False if any record was missing (see provider warning log).
@@ -324,23 +330,22 @@ class GraphDBTransformer(Transformer):
                     "🚀 Metadata saved successfully for document"
                 )
 
-                # Update extraction status for the record
+                # Update only extractionStatus — indexingStatus is managed
+                # independently by SinkOrchestrator.index().
                 timestamp = get_epoch_timestamp_in_ms()
                 status_doc = {
                     "id": record_id,
                     "extractionStatus": "COMPLETED",
                     "lastExtractionTimestamp": timestamp,
-                    "indexingStatus": "COMPLETED",
                     "isDirty": False,
                     "virtualRecordId": virtual_record_id,
-                    "lastIndexTimestamp": timestamp,
                 }
 
                 if is_vlm_ocr_processed:
                     status_doc["isVLMOcrProcessed"] = True
 
                 self.logger.info(
-                    "🎯 Updating extraction status metadata for document"
+                    "🎯 Upserting extraction status (COMPLETED) for document"
                 )
                 success = await tx_store.batch_update_nodes(
                     [status_doc], CollectionNames.RECORDS.value

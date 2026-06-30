@@ -46,7 +46,7 @@ class HTMLParserProtocol(Protocol):
         ...
 
 
-_BACKEND = os.getenv("HTML_PARSER_BACKEND", "selectolax").lower()
+_BACKEND = os.getenv("PARSER_BACKEND", "selectolax").lower()
 
 if _BACKEND == "docling":
     from app.modules.parsers.html_parser.docling_html_parser import (

@@ -135,8 +135,9 @@ class TestXLSParser:
     """Tests for app.modules.parsers.excel.xls_parser.XLSParser."""
 
     def _make_parser(self):
+        from unittest.mock import MagicMock
         from app.modules.parsers.excel.xls_parser import XLSParser
-        return XLSParser()
+        return XLSParser(excel_parser=MagicMock())
 
     @patch("app.modules.parsers.excel.xls_parser.subprocess.run")
     def test_convert_xls_to_xlsx_success(self, mock_run):
@@ -261,8 +262,9 @@ class TestMDXParser:
     """Tests for app.modules.parsers.markdown.mdx_parser.MDXParser."""
 
     def _make_parser(self):
+        from unittest.mock import MagicMock
         from app.modules.parsers.markdown.mdx_parser import MDXParser
-        return MDXParser()
+        return MDXParser(md_parser=MagicMock())
 
     def test_init(self):
         """MDXParser can be instantiated."""

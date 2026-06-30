@@ -172,7 +172,7 @@ class TestFetchSingleUrl:
         fake_png_b64 = base64.b64encode(b"fake-png").decode("utf-8")
         svg_data_url = "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="
 
-        with patch.object(parser, "svg_base64_to_png_base64", return_value=fake_png_b64) as mock_convert:
+        with patch.object(ImageParser, "svg_base64_to_png_base64", return_value=fake_png_b64) as mock_convert:
             result = await parser._fetch_single_url(session, svg_data_url)
             mock_convert.assert_called_once_with(svg_data_url)
             assert result == f"data:image/png;base64,{fake_png_b64}"
@@ -270,7 +270,7 @@ class TestFetchSingleUrl:
         fake_png_b64 = base64.b64encode(b"fake-png").decode("utf-8")
 
         with patch("app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype", return_value="svg"), \
-             patch.object(parser, "svg_base64_to_png_base64", return_value=fake_png_b64):
+             patch.object(ImageParser, "svg_base64_to_png_base64", return_value=fake_png_b64):
             result = await parser._fetch_single_url(session, "https://example.com/icon.svg")
 
         assert result == f"data:image/png;base64,{fake_png_b64}"
@@ -333,7 +333,7 @@ class TestUrlsToBase64:
     async def test_multiple_urls(self, parser):
         """Multiple URLs processed concurrently."""
         fake_b64 = "data:image/png;base64,abc"
-        with patch.object(parser, "_fetch_single_url", new_callable=AsyncMock, return_value=fake_b64):
+        with patch.object(ImageParser, "_fetch_single_url", new_callable=AsyncMock, return_value=fake_b64):
             result = await parser.urls_to_base64(["https://a.com/1.png", "https://b.com/2.png"])
         assert len(result) == 2
         assert all(r == fake_b64 for r in result)
@@ -343,13 +343,13 @@ class TestUrlsToBase64:
         """Mix of successful and failed URL fetches."""
         call_count = [0]
 
-        async def mock_fetch(session, url):
+        async def mock_fetch(session, url, logger=None):
             call_count[0] += 1
             if "fail" in url:
                 return None
             return "data:image/png;base64,abc"
 
-        with patch.object(parser, "_fetch_single_url", side_effect=mock_fetch):
+        with patch.object(ImageParser, "_fetch_single_url", side_effect=mock_fetch):
             result = await parser.urls_to_base64(["https://ok.com/1.png", "https://fail.com/2.png", "https://ok.com/3.png"])
         assert len(result) == 3
         assert result[0] == "data:image/png;base64,abc"
@@ -366,7 +366,7 @@ class TestUrlsToBase64:
     async def test_already_base64_url(self, parser):
         """Already-base64 URLs pass through."""
         data_url = "data:image/png;base64,iVBORw0KGgo="
-        with patch.object(parser, "_fetch_single_url", new_callable=AsyncMock, return_value=data_url):
+        with patch.object(ImageParser, "_fetch_single_url", new_callable=AsyncMock, return_value=data_url):
             result = await parser.urls_to_base64([data_url])
         assert result[0] == data_url
 

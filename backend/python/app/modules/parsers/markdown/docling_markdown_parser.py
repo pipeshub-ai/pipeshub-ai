@@ -15,9 +15,11 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import markdown as markdown_lib
+from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.services.parsing.interface import ParseResult
 from bs4 import BeautifulSoup
 from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
@@ -49,6 +51,44 @@ class DoclingMarkdownParser:
         self._logger = logger or logging.getLogger(__name__)
         self._config_service = config_service
 
+    async def parse(
+        self,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None = None,
+    ) -> ParseResult:
+        if isinstance(content, bytes):
+            md_content = content.decode("utf-8")
+        else:
+            md_content = content
+
+        markdown = md_content.strip()
+
+        modified_markdown, images = self.extract_and_replace_images(markdown)
+        caption_map = {}
+
+        # Collect all image URLs
+        urls_to_convert = [image["url"] for image in images]
+
+        # Convert URLs to base64 if there are any images
+        if urls_to_convert:
+            base64_urls = await ImageParser.urls_to_base64(urls_to_convert)
+
+            # Create caption map with base64 URLs
+            for i, image in enumerate(images):
+                if base64_urls[i]:
+                    caption_map[image["new_alt_text"]] = base64_urls[i]
+
+        block_containers = await self.parse_to_blocks(
+            modified_markdown,
+            caption_map=caption_map or None,
+            name=record_name,
+        )
+        
+        return ParseResult(
+            block_container=block_containers,
+            metadata={"record_name": record_name},
+        )
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -111,11 +151,12 @@ class DoclingMarkdownParser:
         """
         return _extract_and_replace_images(md_content)
 
-    async def parse(
+    async def parse_to_blocks(
         self,
         md_content: str,
         caption_map: Dict[str, str] | None = None,
         name: str | None = None,
+        page_number: int | None = None,
     ) -> BlocksContainer:
         """Parse Markdown to ``BlocksContainer`` via the Docling pipeline.
 
@@ -133,7 +174,7 @@ class DoclingMarkdownParser:
         processor = DoclingProcessor(logger=self._logger, config=self._config_service)
         filename = f"{Path(name).stem}.md" if name else "document.md"
         doc = await processor.parse_document(filename, html_bytes)
-        container = await processor.create_blocks(doc)
+        container = await processor.create_blocks(doc, page_number=page_number)
 
         if caption_map:
             _apply_caption_map(container, caption_map, self._logger)

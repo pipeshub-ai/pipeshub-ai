@@ -65,10 +65,11 @@ class OCRHandler:
         Initialize OCR handler with specified strategy
 
         Args:
-            strategy_type: Type of OCR strategy ("azure" or "vlm_ocr")
+            strategy_type: Type of OCR strategy ("vlm_ocr")
             **kwargs: Strategy-specific configuration parameters
         """
         self.logger = logger
+        self.provider = strategy_type
         self.logger.info("🛠️ Initializing OCR handler with strategy: %s", strategy_type)
         self.strategy = self._create_strategy(strategy_type, **kwargs)
 

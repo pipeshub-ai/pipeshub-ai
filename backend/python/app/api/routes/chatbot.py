@@ -40,7 +40,7 @@ from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import TransformContext
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.utils.aimodels import get_generator_model
+from app.utils.aimodels import get_generator_model_async
 from app.utils.cache_helpers import get_cached_user_info
 from app.utils.chat_helpers import (
     CitationRefMapper,
@@ -751,7 +751,7 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
             model_names = [name.strip() for name in model_string.split(",") if name.strip()]
             if (llm_config.get("modelKey") == model_key and model_name in model_names):
                 model_provider = llm_config.get("provider")
-                llm = await asyncio.to_thread(get_generator_model, model_provider, llm_config, model_name)
+                llm = await get_generator_model_async(model_provider, llm_config, model_name)
                 return llm, llm_config, ai_models_config
 
         # If user specified only provider, find first matching model
@@ -760,7 +760,7 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
             model_names = [name.strip() for name in model_string.split(",") if name.strip()]
             default_model_name = model_names[0]
             model_provider = llm_config.get("provider")
-            llm = await asyncio.to_thread(get_generator_model, model_provider, llm_config, default_model_name)
+            llm = await get_generator_model_async(model_provider, llm_config, default_model_name)
             return llm, llm_config, ai_models_config
 
         # Fallback to first available model
@@ -768,7 +768,7 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
         model_names = [name.strip() for name in model_string.split(",") if name.strip()]
         default_model_name = model_names[0]
         model_provider = llm_config.get("provider")
-        llm = await asyncio.to_thread(get_generator_model, model_provider, llm_config, default_model_name)
+        llm = await get_generator_model_async(model_provider, llm_config, default_model_name)
         return llm, llm_config, ai_models_config
     except Exception as e:
         raise ValueError(f"Failed to initialize LLM: {str(e)}")
@@ -1398,7 +1398,7 @@ async def upload_chat_attachments(
             record=record,
             settings={"sink_only": True, "skip_vector_store": True},
         )
-        await sink_orchestrator.apply(ctx)
+        await sink_orchestrator.index(ctx)
 
     return {
         "conversationId": payload.conversationId,

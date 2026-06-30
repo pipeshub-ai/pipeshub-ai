@@ -3,12 +3,23 @@ import subprocess
 import tempfile
 from io import BytesIO
 
+from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
+
 
 class DocParser:
     """Parser for Microsoft Word .doc and .docx files"""
 
-    def __init__(self) -> None:
-        pass
+    def __init__(self, docx_parser=None) -> None:
+        self.docx_parser = docx_parser
+
+    async def parse(self, content: bytes, record_name: str, config: dict[str, any] | None = None) -> ParseResult:
+        if self.docx_parser is None:
+            raise ParseError(
+                ParseErrorCode.PROVIDER_UNAVAILABLE,
+                "DOC parsing requires a docx_parser; none was configured",
+            )
+        doc_result = self.convert_doc_to_docx(content)
+        return await self.docx_parser.parse(doc_result, record_name, config)
 
     def convert_doc_to_docx(self, binary: bytes) -> BytesIO:
         """Convert .doc file to .docx using LibreOffice

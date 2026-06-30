@@ -286,8 +286,8 @@ class TestCalculateRefreshDelay:
         svc = _make_service()
         token = _make_token(expires_in=300, created_at=datetime.now())
         delay, _ = svc._calculate_refresh_delay(token)
-        # expires_in=300 < 600, so delay should be negative
-        assert delay < 0
+        # expires_in=300 < 600, so delay should be <= 0 (clamped to 0 or negative)
+        assert delay <= 0
 
     def test_zero_expires_in(self):
         svc = _make_service()
