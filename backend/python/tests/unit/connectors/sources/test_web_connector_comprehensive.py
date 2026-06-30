@@ -10,7 +10,7 @@ import pytest
 from bs4 import BeautifulSoup
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import Connectors, FILE_MIME_TYPES, MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import (
@@ -19,7 +19,6 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.web.connector import (
     DOCUMENT_MIME_TYPES,
-    FILE_MIME_TYPES,
     IMAGE_MIME_TYPES,
     MAX_RETRIES,
     RETRYABLE_STATUS_CODES,

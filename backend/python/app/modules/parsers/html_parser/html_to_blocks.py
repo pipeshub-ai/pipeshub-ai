@@ -101,7 +101,7 @@ _HEADING_TAGS = frozenset({f"h{i}" for i in range(1, 7)})
 
 _CONTAINER_TAGS = frozenset({
     "div", "section", "article", "main", "header", "footer",
-    "nav", "aside", "figure",
+    "nav", "aside", "figure", "details",
     "dl", "form", "fieldset", "body", "html", "span", "center",
 })
 

@@ -7,10 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import Connectors, FILE_MIME_TYPES, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.sources.web.connector import (
     DOCUMENT_MIME_TYPES,
-    FILE_MIME_TYPES,
     IMAGE_MIME_TYPES,
     MAX_RETRIES,
     RETRYABLE_STATUS_CODES,
@@ -45,7 +44,6 @@ import base64
 from bs4 import BeautifulSoup
 from app.connectors.sources.web.connector import (
     DOCUMENT_MIME_TYPES,
-    FILE_MIME_TYPES,
     IMAGE_MIME_TYPES,
     MAX_RETRIES,
     RETRYABLE_STATUS_CODES,
