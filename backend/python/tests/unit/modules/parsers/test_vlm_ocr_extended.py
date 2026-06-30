@@ -167,6 +167,55 @@ class TestCallLLMForMarkdown:
         with pytest.raises(Exception, match="LLM error"):
             await strategy._call_llm_for_markdown("data:image/png;base64,abc", 1)
 
+    @pytest.mark.asyncio
+    async def test_list_content_blocks_coerced_to_text(self):
+        """Gemini returns content as a list of blocks; it must not crash on .strip()."""
+        logger = logging.getLogger("test")
+        config = MagicMock()
+        strategy = VLMOCRStrategy(logger, config)
+
+        mock_response = MagicMock()
+        mock_response.content = [
+            {"type": "text", "text": "# Header\n"},
+            {"type": "text", "text": "Some content"},
+        ]
+
+        strategy.llm = AsyncMock()
+        strategy.llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        result = await strategy._call_llm_for_markdown("data:image/png;base64,abc", 1)
+        assert result == "# Header\nSome content"
+
+    @pytest.mark.asyncio
+    async def test_list_content_with_code_fence_coerced_and_stripped(self):
+        logger = logging.getLogger("test")
+        config = MagicMock()
+        strategy = VLMOCRStrategy(logger, config)
+
+        mock_response = MagicMock()
+        mock_response.content = ["```markdown\n# Title\n```"]
+
+        strategy.llm = AsyncMock()
+        strategy.llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        result = await strategy._call_llm_for_markdown("data:image/png;base64,abc", 1)
+        assert result == "# Title"
+
+    def test_coerce_content_to_text_variants(self):
+        assert VLMOCRStrategy._coerce_content_to_text("plain") == "plain"
+        assert VLMOCRStrategy._coerce_content_to_text(None) == ""
+        assert (
+            VLMOCRStrategy._coerce_content_to_text(["a", {"type": "text", "text": "b"}])
+            == "ab"
+        )
+        # Non-text blocks (e.g. image parts) are ignored, not stringified.
+        assert (
+            VLMOCRStrategy._coerce_content_to_text(
+                [{"type": "image_url", "image_url": {"url": "x"}}, {"type": "text", "text": "ok"}]
+            )
+            == "ok"
+        )
+
 
 # ============================================================================
 # _preprocess_document - retry and cancellation

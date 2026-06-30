@@ -30,6 +30,7 @@ from app.modules.parsers.excel.prompt_template import (
     row_text_prompt_for_csv,
     table_summary_prompt,
 )
+from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
 from app.utils.logger import create_logger
 from app.utils.streaming import (
@@ -631,9 +632,11 @@ class CSVParser:
             # Use getattr to safely access .content attribute
             content = getattr(response, 'content', None)  # type: ignore
             if content is not None:
-                if '</think>' in content:
-                    content = content.split('</think>')[-1]
-                return content
+                # Gemini and similar return content as a list of blocks, not a string.
+                summary = coerce_message_content_to_text(content)
+                if '</think>' in summary:
+                    summary = summary.split('</think>')[-1]
+                return summary
             elif isinstance(response, str):
                 if '</think>' in response:
                     return response.split('</think>')[-1]
