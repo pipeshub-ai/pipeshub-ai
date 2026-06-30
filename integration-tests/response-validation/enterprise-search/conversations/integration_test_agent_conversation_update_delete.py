@@ -44,7 +44,7 @@ _SSEEnvelope = dict[str, str]
 # because `Filters.apps` / `Filters.kb` use a oneOf that jsonschema rejects for
 # typical test ids (documented OpenAPI/schema quirk; live gateway still accepts them).
 _RICH_REGENERATE_REQUEST_OPENAPI_PAYLOAD: dict[str, Any] = {
-    "chatMode": "answer",
+    "chatMode": "auto",
     "modelKey": "model-key",
     "modelName": "model-name",
     "modelFriendlyName": "Model Friendly Name",
@@ -1221,7 +1221,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
                         "apps": ["123e4567-e89b-12d3-a456-426614174000"],
                         "kb": ["knowledgeBase_placeholder"],
                     },
-                    "chatMode": "answer",
+                    "chatMode": "auto",
                     "modelKey": "model-key",
                     "modelName": "model-name",
                     "modelFriendlyName": "Model Friendly Name",
@@ -1230,7 +1230,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
                     "tools": ["web_search", "calculator"],
                 },
             ),
-            ("chatMode only", {"chatMode": "answer"}),
+            ("chatMode only", {"chatMode": "auto"}),
             ("currentTime only", {"currentTime": "2026-05-27T10:30:00+05:30"}),
             ("tools only", {"tools": ["web_search"]}),
             (
@@ -1244,7 +1244,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
             ),
             (
                 "unknown extra keys",
-                {"chatMode": "answer", "ignoredField": "ignored-value"},
+                {"chatMode": "auto", "ignoredField": "ignored-value"},
             ),
         ],
     )

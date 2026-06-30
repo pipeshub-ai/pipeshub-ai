@@ -5778,6 +5778,16 @@ components:
             `POST /conversations/attachments/upload`).
           items:
             $ref: '#/components/schemas/ChatAttachmentRef'
+        tools:
+          type: array
+          description: Tool call results invoked during this message turn.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              toolName:
+                type: string
+              toolResult: {}
         createdAt:
           type: string
           format: date-time
@@ -9477,6 +9487,16 @@ components:
             `POST /agents/{agentKey}/conversations/attachments/upload`).
           items:
             $ref: '#/components/schemas/ChatAttachmentRef'
+        tools:
+          type: array
+          description: Tool call results invoked during this message turn.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              toolName:
+                type: string
+              toolResult: {}
         modelInfo:
           $ref: '#/components/schemas/ConversationModelInfo'
         appliedFilters:
