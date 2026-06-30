@@ -140,16 +140,23 @@ PipesHub can be run locally or deployed on any server using Docker Compose. The 
 
 ### ⚡ Quickstart (Recommended)
 
-Requires [Docker](https://docs.docker.com/get-docker/) with Compose v2.
+Requires [Docker](https://docs.docker.com/get-docker/) with Compose v2. One command:
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/pipeshub-ai/pipeshub-ai.git
-cd pipeshub-ai/deployment/docker-compose
-
-# 2. Run the interactive installer
-./install.sh
+curl -fsSL https://get.pipeshub.com/install | bash
 ```
+
+This downloads the deployment files for the latest release into `./pipeshub` and
+launches the interactive installer. Open **http://localhost:3000** once it
+finishes.
+
+> **Prefer to read before running?** Download and inspect the script first:
+>
+> ```bash
+> curl -fsSL https://get.pipeshub.com/install -o pipeshub-install.sh
+> less pipeshub-install.sh        # review it
+> bash pipeshub-install.sh
+> ```
 
 The installer will:
 - Check Docker, RAM, and disk prerequisites
@@ -157,9 +164,22 @@ The installer will:
 - Let you optionally customise the graph DB, message broker, and KV store
 - Generate randomised secrets and write a `.env` file
 - Pull images and start the stack
-- Wait for PipesHub to pass its health check and print the URL
+- Wait for PipesHub to become healthy, verify it is reachable, and print the URL
 
-Open **http://localhost:3000** once the installer completes.
+### 🛠️ From a cloned repository (developers)
+
+To build from source, contribute, or pin the installer to your checkout:
+
+```bash
+git clone https://github.com/pipeshub-ai/pipeshub-ai.git
+cd pipeshub-ai
+
+# Same installer, run from the repo root
+./install.sh
+```
+
+Building local images from source requires this cloned-repo path (`./install.sh --build`);
+the one-command installer above always uses prebuilt images.
 
 #### Installer options
 

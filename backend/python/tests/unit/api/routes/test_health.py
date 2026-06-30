@@ -383,6 +383,11 @@ class TestEmbeddingHealthCheck:
 
 
 class TestPerformLlmHealthCheck:
+    @pytest.fixture(autouse=True)
+    def _mock_outbound_probe(self):
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=True):
+            yield
+
     @pytest.mark.asyncio
     async def test_success_text(self):
         logger = MagicMock()
@@ -456,6 +461,37 @@ class TestPerformLlmHealthCheck:
         assert resp.status_code == 500
 
     @pytest.mark.asyncio
+    async def test_outbound_connectivity_blocks_cloud_provider(self):
+        logger = MagicMock()
+        config = {"provider": "gemini", "configuration": {"model": "gemini-pro"}}
+
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=False):
+            from app.api.routes.health import perform_llm_health_check
+            resp = await perform_llm_health_check(config, logger)
+
+        assert resp.status_code == 500
+        body = resp.body.decode()
+        assert "outbound_connectivity" in body
+
+    @pytest.mark.asyncio
+    async def test_outbound_probe_skipped_for_ollama(self):
+        logger = MagicMock()
+        config = {
+            "provider": "ollama",
+            "configuration": {"model": "llama3", "endpoint": "http://host.docker.internal:11434"},
+        }
+        mock_model = MagicMock()
+
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=False) as probe, \
+             patch(f"{MODULE}.get_generator_model", return_value=mock_model), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value="ok"):
+            from app.api.routes.health import perform_llm_health_check
+            resp = await perform_llm_health_check(config, logger)
+
+        probe.assert_not_called()
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
     async def test_timeout(self):
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "gpt-4"}}
@@ -469,6 +505,7 @@ class TestPerformLlmHealthCheck:
         assert resp.status_code == 500
         body = resp.body.decode()
         assert "timed out" in body
+        assert "health_check_timeout" in body
 
     @pytest.mark.asyncio
     async def test_http_exception(self):
@@ -1350,6 +1387,11 @@ class TestEmbeddingHealthCheckFullCoverage:
 
 
 class TestPerformLlmHealthCheckFullCoverage:
+    @pytest.fixture(autouse=True)
+    def _mock_outbound_probe(self):
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=True):
+            yield
+
     @pytest.mark.asyncio
     async def test_success_text(self):
         logger = MagicMock()
@@ -1423,6 +1465,37 @@ class TestPerformLlmHealthCheckFullCoverage:
         assert resp.status_code == 500
 
     @pytest.mark.asyncio
+    async def test_outbound_connectivity_blocks_cloud_provider(self):
+        logger = MagicMock()
+        config = {"provider": "gemini", "configuration": {"model": "gemini-pro"}}
+
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=False):
+            from app.api.routes.health import perform_llm_health_check
+            resp = await perform_llm_health_check(config, logger)
+
+        assert resp.status_code == 500
+        body = resp.body.decode()
+        assert "outbound_connectivity" in body
+
+    @pytest.mark.asyncio
+    async def test_outbound_probe_skipped_for_ollama(self):
+        logger = MagicMock()
+        config = {
+            "provider": "ollama",
+            "configuration": {"model": "llama3", "endpoint": "http://host.docker.internal:11434"},
+        }
+        mock_model = MagicMock()
+
+        with patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=False) as probe, \
+             patch(f"{MODULE}.get_generator_model", return_value=mock_model), \
+             patch("asyncio.wait_for", new_callable=AsyncMock, return_value="ok"):
+            from app.api.routes.health import perform_llm_health_check
+            resp = await perform_llm_health_check(config, logger)
+
+        probe.assert_not_called()
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
     async def test_timeout(self):
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "gpt-4"}}
@@ -1436,6 +1509,7 @@ class TestPerformLlmHealthCheckFullCoverage:
         assert resp.status_code == 500
         body = resp.body.decode()
         assert "timed out" in body
+        assert "health_check_timeout" in body
 
     @pytest.mark.asyncio
     async def test_http_exception(self):
