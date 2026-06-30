@@ -3879,12 +3879,12 @@ class JiraDataCenterConnector(BaseConnector):
             # so <img> becomes a direct child of the block element (p, td, li)
             parent = img_tag.parent
             if parent and parent.name == "a":
-                parent.replace_with(img_tag)
+                parent.unwrap()
                 parent = img_tag.parent
             if parent and parent.name == "span" and "image-wrap" in (
                 parent.get("class") or []
             ):
-                parent.replace_with(img_tag)
+                parent.unwrap()
 
         # Remove Jira UI icons (rendericon class) that aren't content images.
         for icon in soup.find_all("img", class_="rendericon"):

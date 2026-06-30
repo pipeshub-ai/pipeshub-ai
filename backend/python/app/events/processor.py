@@ -1043,10 +1043,10 @@ class Processor:
                     if base64_urls[i]:
                         caption_map[image["new_alt_text"]] = base64_urls[i]
 
-            self.logger.debug(
-                f"📷 Extracted {len(images)} images from HTML BlockGroup {block_group.index}, "
-                f"converted {len([u for u in base64_urls if u])} to base64"
-            )
+                self.logger.debug(
+                    f"📷 Extracted {len(images)} images from HTML BlockGroup {block_group.index}, "
+                    f"converted {len([u for u in base64_urls if u])} to base64"
+                )
 
         processed_blocks_container = await html_parser.parse(
             modified_html,
