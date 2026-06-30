@@ -129,6 +129,11 @@ DOCLING_PID=""
 INDEXING_PID=""
 CONNECTOR_PID=""
 QUERY_PID=""
+PARSING_PID=""
+EXTRACTION_PID=""
+
+PARSING_PORT=${PARSING_SERVICE_PORT:-8092}
+EXTRACTION_PORT=${EXTRACTION_SERVICE_PORT:-8093}
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
@@ -250,6 +255,58 @@ start_query() {
     log "Query started with PID: $QUERY_PID"
 }
 
+start_parsing() {
+    log "Starting Parsing service (port ${PARSING_PORT})..."
+    cd /app/python
+    PARSING_SERVICE_PORT=${PARSING_PORT} python -m app.parsing_main &
+    PARSING_PID=$!
+    log "Parsing service started with PID: $PARSING_PID"
+
+    log "Waiting for Parsing service health check..."
+    local MAX_RETRIES=60
+    local RETRY_COUNT=0
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        if curl -s -f "http://localhost:${PARSING_PORT}/health" > /dev/null 2>&1; then
+            log "Parsing service health check passed!"
+            break
+        fi
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        log "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 2 seconds..."
+        sleep 2
+    done
+
+    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+        log "ERROR: Parsing service health check failed after $MAX_RETRIES attempts"
+        return 1
+    fi
+}
+
+start_extraction() {
+    log "Starting Extraction service (port ${EXTRACTION_PORT})..."
+    cd /app/python
+    EXTRACTION_SERVICE_PORT=${EXTRACTION_PORT} python -m app.extraction_main &
+    EXTRACTION_PID=$!
+    log "Extraction service started with PID: $EXTRACTION_PID"
+
+    log "Waiting for Extraction service health check..."
+    local MAX_RETRIES=60
+    local RETRY_COUNT=0
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        if curl -s -f "http://localhost:${EXTRACTION_PORT}/health" > /dev/null 2>&1; then
+            log "Extraction service health check passed!"
+            break
+        fi
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        log "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 2 seconds..."
+        sleep 2
+    done
+
+    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+        log "ERROR: Extraction service health check failed after $MAX_RETRIES attempts"
+        return 1
+    fi
+}
+
 check_process() {
     local pid=$1
     local name=$2
@@ -271,6 +328,8 @@ cleanup() {
     [ -n "$INDEXING_PID" ] && kill "$INDEXING_PID" 2>/dev/null || true
     [ -n "$CONNECTOR_PID" ] && kill "$CONNECTOR_PID" 2>/dev/null || true
     [ -n "$QUERY_PID" ] && kill "$QUERY_PID" 2>/dev/null || true
+    [ -n "$PARSING_PID" ] && kill "$PARSING_PID" 2>/dev/null || true
+    [ -n "$EXTRACTION_PID" ] && kill "$EXTRACTION_PID" 2>/dev/null || true
     
     wait
     log "All services stopped."
@@ -287,6 +346,16 @@ start_connector
 start_indexing
 start_query
 start_docling
+
+# Conditionally start the standalone Parsing and Extraction services.
+# Set USE_PARSING_SERVICE=true in the environment to enable them.
+if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
+    log "USE_PARSING_SERVICE=true — starting Parsing and Extraction services"
+    start_parsing
+    start_extraction
+else
+    log "USE_PARSING_SERVICE not set — skipping Parsing and Extraction services"
+fi
 
 log "All services started. Beginning monitoring cycle (checking every ${CHECK_INTERVAL}s)..."
 
@@ -320,11 +389,20 @@ while true; do
     if ! check_process "$QUERY_PID" "Query"; then
         start_query
     fi
+
+    if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
+        if ! check_process "$PARSING_PID" "Parsing"; then
+            start_parsing
+        fi
+        if ! check_process "$EXTRACTION_PID" "Extraction"; then
+            start_extraction
+        fi
+    fi
 done
 EOF
 
 RUN chmod +x /app/process_monitor.sh
 
-EXPOSE 3000 8002
+EXPOSE 3000 8002 8092 8093
 
 CMD ["/app/process_monitor.sh"]

@@ -378,11 +378,11 @@ class TestCommonFormatWhitelist:
 # ExcelParser helpers — instantiation
 # ---------------------------------------------------------------------------
 def _make_excel_parser():
-    """Create an ExcelParser instance with a mock logger."""
+    """Create an ExcelParser instance with a mock logger and config_service."""
     from unittest.mock import MagicMock
 
     from app.modules.parsers.excel.excel_parser import ExcelParser
-    return ExcelParser(logger=MagicMock())
+    return ExcelParser(logger=MagicMock(), config_service=MagicMock())
 
 
 # ---------------------------------------------------------------------------

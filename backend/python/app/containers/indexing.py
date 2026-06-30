@@ -42,6 +42,7 @@ class IndexingAppContainer(BaseAppContainer):
         container_utils.get_vector_db_service,
         config_service=config_service,
     )
+
     indexing_pipeline = providers.Resource(
         container_utils.create_indexing_pipeline,
         logger=logger,
@@ -88,6 +89,8 @@ class IndexingAppContainer(BaseAppContainer):
         graph_provider=graph_provider,
     )
 
+
+
     # Parsers
     parsers = providers.Resource(
         container_utils.create_parsers,
@@ -107,12 +110,25 @@ class IndexingAppContainer(BaseAppContainer):
         sink_orchestrator=sink_orchestrator,
     )
 
+    # HTTP clients for the standalone Parsing and Extraction services.
+    # These are only used when USE_PARSING_SERVICE=true is set in the environment.
+    parsing_client = providers.Resource(
+        container_utils.create_parsing_client,
+    )
+
+    extraction_client = providers.Resource(
+        container_utils.create_extraction_client,
+    )
+
     event_processor = providers.Resource(
         container_utils.create_event_processor,
         logger=logger,
         processor=processor,
         graph_provider=graph_provider,
         config_service=config_service,
+        parsing_client=parsing_client,
+        extraction_client=extraction_client,
+        sink_orchestrator=sink_orchestrator,
     )
 
     # Indexing-specific wiring configuration

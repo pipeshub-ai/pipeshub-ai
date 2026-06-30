@@ -73,8 +73,7 @@ class TestCreateParsersExtended:
     async def test_all_expected_extensions(self):
         """Verify all file extension types have parsers."""
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.DocxParser"), \
-             patch("app.containers.utils.utils.DocParser"), \
+        with patch("app.containers.utils.utils.DocParser"), \
              patch("app.containers.utils.utils.PPTXParser"), \
              patch("app.containers.utils.utils.PPTParser"), \
              patch("app.containers.utils.utils.HTMLParser"), \
@@ -87,7 +86,7 @@ class TestCreateParsersExtended:
             parsers = await cu.create_parsers(MagicMock(), MagicMock())
 
             expected_keys = [
-                "docx", "doc", "pptx", "ppt", "html", "md", "mdx",
+                "doc", "pptx", "ppt", "html", "md", "mdx",
                 "csv", "tsv", "xlsx", "xls",
                 "png", "jpg", "jpeg", "webp", "svg", "heic", "heif",
             ]
@@ -98,8 +97,7 @@ class TestCreateParsersExtended:
     async def test_image_parsers_share_same_instance(self):
         """All image extensions should share the same ImageParser instance."""
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.DocxParser"), \
-             patch("app.containers.utils.utils.DocParser"), \
+        with patch("app.containers.utils.utils.DocParser"), \
              patch("app.containers.utils.utils.PPTXParser"), \
              patch("app.containers.utils.utils.PPTParser"), \
              patch("app.containers.utils.utils.HTMLParser"), \

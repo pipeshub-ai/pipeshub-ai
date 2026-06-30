@@ -1,9 +1,27 @@
 """Unit tests for Selectolax HTML parsing (converter + parser wrapper)."""
 
+import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, NonCallableMock, patch
 
 import pytest
+
+
+def _selectolax_really_installed() -> bool:
+    """Return True only when selectolax is a genuine installed package.
+
+    The test conftest may insert a MagicMock stub into sys.modules to allow
+    collection.  importlib.util.find_spec hits that stub and returns non-None,
+    so we need to distinguish the real module from the mock explicitly.
+    """
+    mod = sys.modules.get("selectolax")
+    return mod is not None and not isinstance(mod, NonCallableMock)
+
+
+pytestmark = pytest.mark.skipif(
+    not _selectolax_really_installed(),
+    reason="selectolax is not installed",
+)
 
 from app.models.blocks import (
     Block,

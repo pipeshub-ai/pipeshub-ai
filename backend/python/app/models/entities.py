@@ -35,20 +35,6 @@ class LlmTextContent(BaseModel):
 
     type: Literal["text"]
     text: str
-def _parse_json_field(value: Any, default: Any) -> Any:
-    """
-    Parse JSON string field to Python object, with fallback to default.
-    Handles both JSON strings and already-parsed objects for backward compatibility.
-    """
-    if value is None:
-        return default
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except (json.JSONDecodeError, TypeError):
-            return default
-    # Already parsed (backward compatibility)
-    return value
 
 
 class RecordGroupType(str, Enum):

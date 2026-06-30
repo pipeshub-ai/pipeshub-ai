@@ -7,7 +7,6 @@ from app.events.processor import Processor
 from app.modules.indexing.run import IndexingPipeline
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
-from app.modules.parsers.docx.docx_parser import DocxParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.xls_parser import XLSParser
 from app.modules.parsers.html_parser.html_parser import HTMLParser
@@ -71,7 +70,7 @@ class ContainerUtils:
         graph_provider: IGraphDBProvider,
         vector_db_service: IVectorDBService,
     ) -> IndexingPipeline:
-        """Async factory for IndexingPipeline"""
+        """Async factory for the legacy IndexingPipeline (collection mgmt, bulk deletes)."""
         pipeline = IndexingPipeline(
             logger=logger,
             config_service=config_service,
@@ -80,7 +79,6 @@ class ContainerUtils:
             vector_db_service=vector_db_service,
         )
         return pipeline
-
 
     async def create_vector_store(self, logger, graph_provider, config_service, vector_db_service, collection_name) -> VectorStore:
         """Async factory for VectorStore"""
@@ -114,7 +112,6 @@ class ContainerUtils:
         image_parser = ImageParser(logger)
 
         parsers = {
-            ExtensionTypes.DOCX.value: DocxParser(),
             ExtensionTypes.DOC.value: DocParser(),
             ExtensionTypes.PPT.value: PPTParser(),
             ExtensionTypes.PPTX.value: PPTXParser(),
@@ -124,11 +121,11 @@ class ContainerUtils:
             ExtensionTypes.MD.value: MarkdownParser(
                 logger=logger, config_service=config_service
             ),
-            ExtensionTypes.MDX.value: MDXParser(),
-            ExtensionTypes.CSV.value: CSVParser(),
-            ExtensionTypes.TSV.value: CSVParser(delimiter="\t"),
-            ExtensionTypes.XLSX.value: ExcelParser(logger),
-            ExtensionTypes.XLS.value: XLSParser(),
+            ExtensionTypes.MDX.value: MDXParser(MarkdownParser(logger=logger, config_service=config_service)),
+            ExtensionTypes.CSV.value: CSVParser(config_service=config_service),
+            ExtensionTypes.TSV.value: CSVParser(config_service=config_service, delimiter="\t"),
+            ExtensionTypes.XLSX.value: ExcelParser(logger, config_service),
+            ExtensionTypes.XLS.value: XLSParser(excel_parser=ExcelParser(logger, config_service)),
             ExtensionTypes.PNG.value: image_parser,
             ExtensionTypes.JPG.value: image_parser,
             ExtensionTypes.JPEG.value: image_parser,
@@ -170,13 +167,37 @@ class ContainerUtils:
         processor: Processor,
         graph_provider: IGraphDBProvider,
         config_service: ConfigurationService,
+        parsing_client=None,
+        extraction_client=None,
+        sink_orchestrator=None,
     ) -> EventProcessor:
-        """Async factory for EventProcessor"""
+        """Async factory for EventProcessor.
+
+        When *parsing_client* and *extraction_client* are provided (and
+        ``USE_PARSING_SERVICE=true`` in the environment) the event processor
+        routes through the standalone parsing / extraction services instead of
+        using the legacy inline dispatch.
+        """
         event_processor = EventProcessor(
-            logger=logger, processor=processor, graph_provider=graph_provider, config_service=config_service
+            logger=logger,
+            processor=processor,
+            graph_provider=graph_provider,
+            config_service=config_service,
+            parsing_client=parsing_client,
+            extraction_client=extraction_client,
+            sink_orchestrator=sink_orchestrator,
         )
-        # Add any necessary async initialization
         return event_processor
+
+    async def create_parsing_client(self) -> "ParsingClient":  # type: ignore[name-defined]
+        """Async factory for ParsingClient."""
+        from app.services.parsing.client import ParsingClient  # noqa: PLC0415
+        return ParsingClient()
+
+    async def create_extraction_client(self) -> "ExtractionClient":  # type: ignore[name-defined]
+        """Async factory for ExtractionClient."""
+        from app.services.extraction.client import ExtractionClient  # noqa: PLC0415
+        return ExtractionClient()
 
     async def create_retrieval_service(
         self,

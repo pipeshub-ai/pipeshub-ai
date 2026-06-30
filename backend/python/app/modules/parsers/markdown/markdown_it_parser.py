@@ -10,13 +10,15 @@ parsing), use :class:`DoclingMarkdownParser` instead.
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from app.models.blocks import BlocksContainer
 from app.modules.parsers.markdown.docling_markdown_parser import (
     _extract_and_replace_images,
 )
 from app.modules.parsers.markdown.markdown_to_blocks import MarkdownToBlocksConverter
+from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.services.parsing.interface import ParseResult
 
 
 class MarkdownItParser:
@@ -40,7 +42,7 @@ class MarkdownItParser:
     # Public API
     # ------------------------------------------------------------------
 
-    def parse_to_blocks(
+    async def parse_to_blocks(
         self,
         md_content: str,
         caption_map: Dict[str, str] | None = None,

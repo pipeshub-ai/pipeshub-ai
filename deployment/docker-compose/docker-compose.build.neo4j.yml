@@ -49,6 +49,9 @@ services:
       - CONNECTOR_BACKEND=http://localhost:8088
       - INDEXING_BACKEND=http://localhost:8091
       - EMBEDDING_SERVER_URL=http://localhost:8002
+      # Standalone parsing / extraction services (opt-in)
+      - PARSING_SERVICE_URL=http://localhost:8092
+      - EXTRACTION_SERVICE_URL=http://localhost:8093
 
       # Key-Value Store Configuration
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
@@ -146,6 +149,11 @@ services:
       # Production (docker-compose.prod.yml) pulls pipeshubai/pipeshub-sandbox:${IMAGE_TAG}
       # from the registry instead; build/push from deployment/sandbox alongside pipeshub-ai.
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
+
+      # Set to "true" to route indexing through the standalone parsing/extraction services
+      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-false}
+      # Set to "true" to defer graph enrichment until after vectordb indexing completes
+      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
     depends_on:
       qdrant:

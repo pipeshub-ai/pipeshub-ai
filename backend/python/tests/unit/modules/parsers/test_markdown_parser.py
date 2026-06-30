@@ -6,7 +6,7 @@ Covers:
 - ``markdown_parser`` shim:  MarkdownParser defaults to MarkdownItParser
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -303,7 +303,7 @@ class TestMarkdownItParserImageExtraction:
 
 class TestMarkdownParserShim:
     def test_markdown_parser_defaults_to_markdownit(self):
-        with patch.dict("os.environ", {"MARKDOWN_PARSER_BACKEND": "markdownit"}, clear=False):
+        with patch.dict("os.environ", {"PARSER_BACKEND": "markdownit"}, clear=False):
             import importlib
 
             import app.modules.parsers.markdown.markdown_parser as markdown_parser_module
@@ -317,7 +317,7 @@ class TestMarkdownParserShim:
         )
 
     def test_markdown_parser_can_select_docling_backend(self):
-        with patch.dict("os.environ", {"MARKDOWN_PARSER_BACKEND": "docling"}, clear=False):
+        with patch.dict("os.environ", {"PARSER_BACKEND": "docling"}, clear=False):
             with patch.dict("sys.modules", _DOCLING_MOCKS):
                 import importlib
 
@@ -333,6 +333,7 @@ class TestMarkdownParserShim:
 
     @pytest.mark.asyncio
     async def test_markdown_parser_has_parse(self):
+        from app.models.blocks import BlocksContainer
         parser = MarkdownItParser()
         with patch.object(
             parser,

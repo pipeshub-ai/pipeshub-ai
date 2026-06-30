@@ -19,7 +19,8 @@ class TestXLSParserCalledProcessErrorNoStderr:
     @patch("app.modules.parsers.excel.xls_parser.subprocess.run")
     def test_called_process_error_with_none_stderr(self, mock_run):
         """CalledProcessError with stderr=None skips the error details append."""
-        parser = XLSParser()
+        from unittest.mock import MagicMock
+        parser = XLSParser(excel_parser=MagicMock())
 
         error = subprocess.CalledProcessError(
             returncode=1,
@@ -39,7 +40,8 @@ class TestXLSParserCalledProcessErrorNoStderr:
     @patch("app.modules.parsers.excel.xls_parser.subprocess.run")
     def test_called_process_error_with_empty_bytes_stderr(self, mock_run):
         """CalledProcessError with stderr=b'' (falsy) skips the error details append."""
-        parser = XLSParser()
+        from unittest.mock import MagicMock
+        parser = XLSParser(excel_parser=MagicMock())
 
         error = subprocess.CalledProcessError(
             returncode=1,
@@ -59,7 +61,8 @@ class TestXLSParserCalledProcessErrorNoStderr:
     @patch("app.modules.parsers.excel.xls_parser.subprocess.run")
     def test_called_process_error_with_stderr_present(self, mock_run):
         """CalledProcessError with non-empty stderr includes error details."""
-        parser = XLSParser()
+        from unittest.mock import MagicMock
+        parser = XLSParser(excel_parser=MagicMock())
 
         error = subprocess.CalledProcessError(
             returncode=1,

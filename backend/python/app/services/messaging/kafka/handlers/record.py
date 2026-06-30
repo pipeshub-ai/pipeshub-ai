@@ -68,7 +68,6 @@ SUPPORTED_CODE_FILE_EXTENSIONS = {
     "md"
 }
 
-
 class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
                 config_service: ConfigurationService,

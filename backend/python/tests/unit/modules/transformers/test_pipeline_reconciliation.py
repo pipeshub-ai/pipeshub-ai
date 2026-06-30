@@ -1,4 +1,4 @@
-"""Unit tests for IndexingPipeline._build_reconciliation_context and other
+"""Unit tests for IndexingPipeline.build_reconciliation_context and other
 uncovered branches in app.modules.transformers.pipeline."""
 
 from unittest.mock import AsyncMock, MagicMock
@@ -45,6 +45,7 @@ def _ctx(record, *, event_type=None, prev_vrid=None, reconciliation_context=None
     ctx.event_type = event_type
     ctx.prev_virtual_record_id = prev_vrid
     ctx.reconciliation_context = reconciliation_context
+    ctx.settings = {}
     return ctx
 
 
@@ -73,7 +74,9 @@ class TestBuildReconciliationContextEmpty:
         record.block_containers = None
         ctx = _ctx(record)
 
-        result = await pipeline._build_reconciliation_context(ctx)
+        result = await IndexingPipeline.build_reconciliation_context(
+            ctx, pipeline.logger, pipeline.sink_orchestrator
+        )
         assert result is None
 
 
@@ -87,7 +90,9 @@ class TestBuildReconciliationContextNoReconciliation:
         record = _record(blocks=[block])
         ctx = _ctx(record, event_type="newRecord")
 
-        result = await pipeline._build_reconciliation_context(ctx)
+        result = await IndexingPipeline.build_reconciliation_context(
+            ctx, pipeline.logger, pipeline.sink_orchestrator
+        )
 
         assert isinstance(result, ReconciliationContext)
         assert "hash_to_block_ids" in result.new_metadata
@@ -105,7 +110,9 @@ class TestBuildReconciliationContextNoReconciliation:
             prev_vrid=None,
         )
 
-        result = await pipeline._build_reconciliation_context(ctx)
+        result = await IndexingPipeline.build_reconciliation_context(
+            ctx, pipeline.logger, pipeline.sink_orchestrator
+        )
         assert isinstance(result, ReconciliationContext)
         # get_reconciliation_metadata must not be called when prev_vrid is missing
         pipeline.sink_orchestrator.blob_storage.get_reconciliation_metadata.assert_not_awaited()
@@ -121,7 +128,9 @@ class TestBuildReconciliationContextNoReconciliation:
             prev_vrid="old-vr",
         )
 
-        result = await pipeline._build_reconciliation_context(ctx)
+        result = await IndexingPipeline.build_reconciliation_context(
+            ctx, pipeline.logger, pipeline.sink_orchestrator
+        )
         assert isinstance(result, ReconciliationContext)
         pipeline.sink_orchestrator.blob_storage.get_reconciliation_metadata.assert_not_awaited()
 
@@ -141,7 +150,9 @@ class TestBuildReconciliationContext1to1:
             prev_vrid="vr-1",
         )
 
-        result = await pipeline._build_reconciliation_context(ctx)
+        result = await IndexingPipeline.build_reconciliation_context(
+            ctx, pipeline.logger, pipeline.sink_orchestrator
+        )
         assert isinstance(result, ReconciliationContext)
         # Fall-through context: no diff results
         assert result.blocks_to_index_ids is None
@@ -169,7 +180,9 @@ class TestBuildReconciliationContext1to1:
         )
 
         # Must not raise
-        result = await pipeline._build_reconciliation_context(ctx)
+        result = await IndexingPipeline.build_reconciliation_context(
+            ctx, pipeline.logger, pipeline.sink_orchestrator
+        )
         assert isinstance(result, ReconciliationContext)
         assert result.blocks_to_index_ids is None
         assert result.block_ids_to_delete is None
@@ -190,7 +203,9 @@ class TestBuildReconciliationContext1to1:
             prev_vrid="old-vr",
         )
 
-        await pipeline._build_reconciliation_context(ctx)
+        await IndexingPipeline.build_reconciliation_context(
+            ctx, pipeline.logger, pipeline.sink_orchestrator
+        )
         pipeline.sink_orchestrator.vector_store.delete_embeddings.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -210,7 +225,9 @@ class TestBuildReconciliationContext1to1:
             prev_vrid="vr-1",
         )
 
-        await pipeline._build_reconciliation_context(ctx)
+        await IndexingPipeline.build_reconciliation_context(
+            ctx, pipeline.logger, pipeline.sink_orchestrator
+        )
         pipeline.sink_orchestrator.vector_store.delete_embeddings.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -229,7 +246,9 @@ class TestBuildReconciliationContext1to1:
             prev_vrid="vr-1",
         )
 
-        result = await pipeline._build_reconciliation_context(ctx)
+        result = await IndexingPipeline.build_reconciliation_context(
+            ctx, pipeline.logger, pipeline.sink_orchestrator
+        )
 
         assert isinstance(result, ReconciliationContext)
         # A new block exists, so something should be indexed
@@ -264,7 +283,9 @@ class TestBuildReconciliationContext1to1:
             prev_vrid="vr-1",
         )
 
-        result = await pipeline._build_reconciliation_context(ctx)
+        result = await IndexingPipeline.build_reconciliation_context(
+            ctx, pipeline.logger, pipeline.sink_orchestrator
+        )
 
         # The new block should have taken over the old id
         assert block.id == "old-id-xyz"
@@ -283,7 +304,9 @@ class TestBuildReconciliationContext1to1:
             prev_vrid="vr-1",
         )
 
-        result = await pipeline._build_reconciliation_context(ctx)
+        result = await IndexingPipeline.build_reconciliation_context(
+            ctx, pipeline.logger, pipeline.sink_orchestrator
+        )
         assert isinstance(result, ReconciliationContext)
         pipeline.sink_orchestrator.blob_storage.get_reconciliation_metadata.assert_awaited_once()
 
@@ -343,8 +366,9 @@ class TestApplyReconciliationContextBuildsWhenNone:
         # Reconciliation context should now be populated
         assert ctx.reconciliation_context is not None
         assert isinstance(ctx.reconciliation_context, ReconciliationContext)
+        pipeline.sink_orchestrator.index.assert_awaited_once_with(ctx)
         pipeline.document_extraction.apply.assert_awaited_once_with(ctx)
-        pipeline.sink_orchestrator.apply.assert_awaited_once_with(ctx)
+        pipeline.sink_orchestrator.enrich.assert_awaited_once_with(ctx)
 
     @pytest.mark.asyncio
     async def test_existing_reconciliation_context_not_rebuilt(self):

@@ -1,3 +1,4 @@
+import logging
 from typing import Optional
 
 from app.config.constants.arangodb import CollectionNames, EventTypes, ProgressStatus
@@ -11,18 +12,29 @@ from app.utils.logger import create_logger
 
 
 class IndexingPipeline:
-    def __init__(self, document_extraction: DocumentExtraction, sink_orchestrator: SinkOrchestrator) -> None:
+    def __init__(
+        self,
+        document_extraction: DocumentExtraction,
+        sink_orchestrator: SinkOrchestrator,
+        defer_extraction: bool = False,
+    ) -> None:
         self.document_extraction = document_extraction
         self.sink_orchestrator = sink_orchestrator
+        self.defer_extraction = defer_extraction
         self.logger = create_logger("indexing_pipeline")
 
-    async def _build_reconciliation_context(self, ctx: TransformContext) -> Optional[ReconciliationContext]:
+    @staticmethod
+    async def build_reconciliation_context(
+        ctx: TransformContext,
+        logger: logging.Logger,
+        sink_orchestrator: SinkOrchestrator,
+    ) -> Optional[ReconciliationContext]:
         """Build ReconciliationContext from ctx.record and add to ctx. Used when ctx.reconciliation_context is None."""
         record = ctx.record
         block_containers = record.block_containers
         if not block_containers:
             return None
-        reconciliation_service = ReconciliationService(self.logger)
+        reconciliation_service = ReconciliationService(logger)
         new_metadata = reconciliation_service.build_metadata(block_containers)
 
         if ctx.event_type in (EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value) and record.virtual_record_id and record.org_id:
@@ -30,7 +42,7 @@ class IndexingPipeline:
 
             if prev_vrid and prev_vrid == record.virtual_record_id:
                 # 1:1 case: same vrid, do diff-based reconciliation
-                old_metadata_dict = await self.sink_orchestrator.blob_storage.get_reconciliation_metadata(
+                old_metadata_dict = await sink_orchestrator.blob_storage.get_reconciliation_metadata(
                     record.virtual_record_id, record.org_id
                 )
                 if old_metadata_dict:
@@ -45,7 +57,7 @@ class IndexingPipeline:
                         )
                         new_metadata = reconciliation_service.build_metadata(block_containers)
 
-                    self.logger.info(
+                    logger.info(
                         f"📊 Reconciliation (1:1): {len(blocks_to_index_ids)} to index, "
                         f"{len(block_ids_to_delete)} to delete"
                     )
@@ -54,35 +66,43 @@ class IndexingPipeline:
                         blocks_to_index_ids=blocks_to_index_ids,
                         block_ids_to_delete=block_ids_to_delete,
                     )
-                self.logger.info(
+                logger.info(
                     f"📊 No previous metadata found for {record.virtual_record_id}, "
                     f"purging stale vectors and indexing all blocks (first reconciliation pass)"
                 )
                 try:
                     # backwa
-                    await self.sink_orchestrator.vector_store.delete_embeddings(
+                    await sink_orchestrator.vector_store.delete_embeddings(
                         record.virtual_record_id
                     )
                 except Exception as e:
-                    self.logger.warning(
+                    logger.warning(
                         f"⚠️ Failed to purge stale vectors during first reconciliation pass "
                         f"for {record.virtual_record_id}: {str(e)}"
                     )
             elif prev_vrid and prev_vrid != record.virtual_record_id:
                 # N:1 case: new vrid generated, index all blocks (no diff needed)
-                self.logger.info(
+                logger.info(
                     f"📊 Reconciliation (N:1): prev_vrid={prev_vrid}, new_vrid={record.virtual_record_id}. "
                     f"Indexing all blocks with new vrid."
                 )
             else:
                 # No prev_vrid available, index all blocks
-                self.logger.info(
+                logger.info(
                     f"📊 No prev_virtual_record_id, indexing all blocks for {record.virtual_record_id}"
                 )
 
         return ReconciliationContext(new_metadata=new_metadata.to_dict())
 
     async def apply(self, ctx: TransformContext) -> None:
+        """Full pipeline: validate → index (searchable) → enrich (graph taxonomy).
+
+        When ``ctx.settings["defer_extraction"]`` is truthy *or* the instance
+        was constructed with ``defer_extraction=True``, the enrich phase is
+        skipped here and callers are expected to trigger it later (e.g. via a
+        Kafka event).  The index phase always runs synchronously so the
+        document is immediately searchable.
+        """
         try:
             record = ctx.record
             block_containers = record.block_containers
@@ -136,7 +156,6 @@ class IndexingPipeline:
                         "indexingStatus": ProgressStatus.EMPTY.value,
                         "isDirty": False,
                         "extractionStatus": ProgressStatus.NOT_STARTED.value,
-                        "reason": "",
                     }
                 )
 
@@ -150,9 +169,46 @@ class IndexingPipeline:
                         record_id,
                     )
                 return
+
             if ctx.reconciliation_context is None:
-                ctx.reconciliation_context = await self._build_reconciliation_context(ctx)
-            await self.document_extraction.apply(ctx)
-            await self.sink_orchestrator.apply(ctx)
+                ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
+                    ctx, self.logger, self.sink_orchestrator
+                )
+
+            # Phase 1: Index (VectorStore + BlobStorage)
+            # Document becomes searchable after this call.
+            await self._index(ctx)
+
+            # Phase 2: Enrich (DocumentExtraction + GraphDB)
+            # May be deferred to a background process.
+            should_defer = self.defer_extraction or bool(ctx.settings.get("defer_extraction"))
+            if should_defer:
+                await self._publish_enrichment_event(ctx)
+            else:
+                await self._enrich(ctx)
+
         except Exception as e:
             raise e
+
+    async def _index(self, ctx: TransformContext) -> None:
+        """Phase 1: VectorStore + BlobStorage.  Sets indexingStatus=COMPLETED."""
+        await self.sink_orchestrator.index(ctx)
+
+    async def _enrich(self, ctx: TransformContext) -> None:
+        """Phase 2: DocumentExtraction + GraphDB.  Sets extractionStatus=COMPLETED."""
+        await self.document_extraction.apply(ctx)
+        await self.sink_orchestrator.enrich(ctx)
+
+    async def _publish_enrichment_event(self, ctx: TransformContext) -> None:
+        """Stub: publish an event for deferred enrichment via Kafka.
+
+        Future implementation should produce a message containing at minimum:
+        ``{record_id, virtual_record_id, org_id}`` to a dedicated enrichment
+        topic so a separate consumer can call ``_enrich()`` asynchronously.
+        """
+        self.logger.info(
+            "📨 Deferred enrichment requested for record %s — "
+            "Kafka publish not yet implemented, falling back to inline enrichment",
+            ctx.record.id,
+        )
+        await self._enrich(ctx)

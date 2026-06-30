@@ -708,6 +708,18 @@ class TestCitationMetadata:
         meta = CitationMetadata()
         assert meta.bounding_boxes is None
 
+    def test_explicit_none_bounding_boxes(self):
+        """Explicit None must survive validation (e.g. JSON round-trip)."""
+        meta = CitationMetadata(bounding_boxes=None)
+        assert meta.bounding_boxes is None
+
+    def test_bounding_boxes_json_round_trip_with_null(self):
+        """model_dump JSON with null bounding_boxes must rehydrate cleanly."""
+        meta = CitationMetadata(page_number=1, bounding_boxes=None)
+        restored = CitationMetadata(**meta.model_dump(mode="json"))
+        assert restored.page_number == 1
+        assert restored.bounding_boxes is None
+
     def test_all_optional_fields(self):
         meta = CitationMetadata(
             section_title="Introduction",

@@ -38,6 +38,13 @@ services:
       - CONNECTOR_BACKEND=http://localhost:8088
       - INDEXING_BACKEND=http://localhost:8091
       - EMBEDDING_SERVER_URL=http://localhost:8002
+      # Standalone parsing / extraction services (opt-in)
+      - PARSING_SERVICE_URL=http://localhost:8092
+      - EXTRACTION_SERVICE_URL=http://localhost:8093
+      # Set to "true" to route indexing through the standalone services
+      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-false}
+      # Set to "true" to defer graph enrichment after vectordb indexing
+      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
       # Key-Value Store Configuration
       - KV_STORE_TYPE=${KV_STORE_TYPE:-etcd}

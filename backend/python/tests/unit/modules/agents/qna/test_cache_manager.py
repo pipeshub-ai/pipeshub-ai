@@ -122,7 +122,9 @@ class TestLRUCacheWithTTL:
     def test_get_expired_returns_none(self):
         """Get expired entry returns None and removes it."""
         cache = LRUCacheWithTTL(max_size=10, default_ttl=1)
-        cache.set("key1", "value1", ttl=0)  # TTL=0 means expired immediately
+        cache.set("key1", "value1", ttl=0)
+        # is_expired uses strict `>`; backdate so elapsed time is positive
+        cache.cache["key1"].created_at = time.time() - 1
         result = cache.get("key1")
         assert result is None
         assert "key1" not in cache.cache

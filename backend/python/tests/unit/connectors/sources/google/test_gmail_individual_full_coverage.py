@@ -490,7 +490,7 @@ class TestConvertToPdf:
         with patch("asyncio.create_subprocess_exec", return_value=mock_process), \
              patch("os.path.exists", return_value=True):
             result = await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
-            assert result == "/tmp/test.pdf"
+            assert result == os.path.join("/tmp", "test.pdf")
 
     @pytest.mark.asyncio
     async def test_conversion_timeout(self, connector):

@@ -2,12 +2,23 @@ import os
 import subprocess
 import tempfile
 
+from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
+
 
 class PPTParser:
     """Parser for Microsoft PowerPoint .ppt files"""
 
-    def __init__(self) -> None:
-        pass
+    def __init__(self, pptx_parser=None) -> None:
+        self.pptx_parser = pptx_parser
+
+    async def parse(self, content: bytes, record_name: str, config: dict[str, any] | None = None) -> ParseResult:
+        if self.pptx_parser is None:
+            raise ParseError(
+                ParseErrorCode.PROVIDER_UNAVAILABLE,
+                "PPT parsing requires a pptx_parser; none was configured",
+            )
+        pptx_result = self.convert_ppt_to_pptx(content)
+        return await self.pptx_parser.parse(pptx_result, record_name, config)
 
     def convert_ppt_to_pptx(self, binary: bytes) -> bytes:
         """Convert .ppt file to .pptx using LibreOffice

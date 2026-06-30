@@ -1,6 +1,6 @@
 """Environment-driven Markdown parser backend.
 
-``MARKDOWN_PARSER_BACKEND`` selects which parser implementation is exported as
+``PARSER_BACKEND`` selects which parser implementation is exported as
 ``MarkdownParser``:
 
 - ``markdownit`` (default): Fast markdown-it-py parser, no ML models.
@@ -35,7 +35,7 @@ class MarkdownParserProtocol(Protocol):
         ...
 
 
-_BACKEND = os.getenv("MARKDOWN_PARSER_BACKEND", "markdownit").lower()
+_BACKEND = os.getenv("PARSER_BACKEND", "markdownit").lower()
 
 if _BACKEND == "docling":
     from app.modules.parsers.markdown.docling_markdown_parser import (

@@ -238,6 +238,25 @@ class VectorStore(Transformer):
         documents_to_embed.append(summary_doc)
         self.logger.info("✅ Added record summary document for embedding")
 
+    async def index_record_summary(
+        self,
+        record_id: str,
+        virtual_record_id: str,
+        org_id: str,
+        semantic_metadata: SemanticMetadata,
+    ) -> None:
+        """Embed the record-level summary after extraction completes."""
+        summary_doc = self._build_record_summary_document(
+            record_id, virtual_record_id, org_id, semantic_metadata
+        )
+        if summary_doc is None:
+            return
+
+        summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
+        await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id)
+        await self._process_document_chunks([summary_doc], record_id)
+        self.logger.info("✅ Indexed record summary for record %s", record_id)
+
     @Language.component("custom_sentence_boundary")
     def custom_sentence_boundary(doc) -> Doc:
         for token in doc[:-1]:  # Avoid out-of-bounds errors

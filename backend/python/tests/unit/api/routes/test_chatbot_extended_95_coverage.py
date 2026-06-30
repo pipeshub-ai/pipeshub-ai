@@ -858,7 +858,7 @@ async def test_upload_png_happy_mocked_sink():
 
     assert out["conversationId"] == "conv-z"
     assert len(out["attachments"]) == 1
-    orch.apply.assert_awaited()
+    orch.index.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -1677,7 +1677,7 @@ async def test_upload_pdf_regular_and_scan_cap():
     pym.parse_document.assert_awaited()
 
 
-    orch_ok.apply.assert_awaited()
+    orch_ok.index.assert_awaited()
 
 
 
@@ -2653,7 +2653,7 @@ async def test_upload_pdf_ocr_success_small_doc():
                                         await upload_chat_attachments(rr, gp, AsyncMock())
 
 
-    orch.apply.assert_awaited()
+    orch.index.assert_awaited()
 
 
 
