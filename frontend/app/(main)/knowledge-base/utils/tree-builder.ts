@@ -67,8 +67,7 @@ export function buildTreeFromNodes(
  * @param rootParentId - The parentId that identifies top-level nodes (null for root nodes, 'apps/<id>' for KB app children)
  */
 export function categorizeNodes(nodes: KnowledgeHubNode[], rootParentId: string | null = null): CategorizedNodes {
-  // Filter out app nodes early in the categorization process
-  const filteredNodes = nodes.filter((node) => node.nodeType !== 'app');
+  const filteredNodes = nodes;
 
   const nodesBySection: Record<SidebarSection, KnowledgeHubNode[]> = {
     shared: [],

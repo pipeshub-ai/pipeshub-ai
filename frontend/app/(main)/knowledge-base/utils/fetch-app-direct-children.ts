@@ -1,7 +1,7 @@
 import { KnowledgeHubApi } from '../api';
 import { SIDEBAR_PAGINATION_PAGE_SIZE } from '../constants';
 import { useKnowledgeBaseStore } from '../store';
-import { buildConnectorAppSidebarTree, categorizeNodes } from './tree-builder';
+import { buildConnectorAppSidebarTree } from './tree-builder';
 import { isKbCollectionsHubApp } from './all-records-transformer';
 
 /** expandedSections key for an app row in All Records sidebar */
@@ -20,8 +20,6 @@ async function runFetchAppDirectChildren(appId: string): Promise<void> {
     cacheAppChildren,
     setAppChildPagination,
     setAppLoading,
-    setNodes,
-    setCategorizedNodes,
     setConnectorAppTree,
     addNodes,
   } = useKnowledgeBaseStore.getState();
@@ -50,11 +48,7 @@ async function runFetchAppDirectChildren(appId: string): Promise<void> {
     );
 
     const isKbApp = isKbCollectionsHubApp(app);
-    if (isKbApp) {
-      setNodes(response.items);
-      const categorized = categorizeNodes(response.items, `apps/${appId}`);
-      setCategorizedNodes(categorized);
-    } else {
+    if (!isKbApp) {
       addNodes(response.items);
       setConnectorAppTree(appId, buildConnectorAppSidebarTree(appId, response.items));
     }

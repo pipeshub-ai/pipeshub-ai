@@ -193,7 +193,7 @@ export function AllRecordsMode({
             isLoading={loadingAppIds.has(app.id)}
             onFolderSelect={(nodeType, nodeId) => {
               // For KB root-level collections, also update the selection state
-              if (isKbApp && (nodeType === 'kb' || nodeType === 'recordGroup')) {
+              if (isKbApp && (nodeType === 'kb' || nodeType === 'app')) {
                 const namedNode =
                   categorizedTree?.find((n) => n.id === nodeId) ||
                   appChildren.find((c) => c.id === nodeId);

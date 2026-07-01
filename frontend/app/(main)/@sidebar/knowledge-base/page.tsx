@@ -252,7 +252,7 @@ function KnowledgeBaseSidebarSlotContent() {
 
   const handleAllRecordsSelectCollection = useCallback(
     (id: string) => {
-      router.push(buildNavUrl(isAllRecordsMode, { nodeType: 'recordGroup', nodeId: id }));
+      router.push(buildNavUrl(isAllRecordsMode, { nodeType: 'app', nodeId: id }));
       closeOnMobile();
     },
     [router, isAllRecordsMode, closeOnMobile]

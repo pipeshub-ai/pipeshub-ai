@@ -2,7 +2,9 @@ import uuid
 from typing import Dict, List, Optional, Union
 
 from app.config.constants.arangodb import (
+    AppGroups,
     CollectionNames,
+    ConnectorScopes,
     Connectors,
 )
 from app.connectors.services.kafka_service import KafkaService
@@ -177,11 +179,9 @@ class KnowledgeBaseService:
                 txn_id = await self.graph_provider.begin_transaction(
                     read=[],
                     write=[
-                        CollectionNames.RECORD_GROUPS.value,
-                        CollectionNames.RECORDS.value,
-                        CollectionNames.FILES.value,
-                        CollectionNames.IS_OF_TYPE.value,
-                        CollectionNames.BELONGS_TO.value,
+                        CollectionNames.APPS.value,
+                        CollectionNames.ORG_APP_RELATION.value,
+                        CollectionNames.USER_APP_RELATION.value,
                         CollectionNames.PERMISSION.value,
                     ],
                 )
@@ -194,15 +194,20 @@ class KnowledgeBaseService:
                     "reason": f"Transaction creation failed: {str(tx_error)}"
                 }
 
-            kb_connector_id = f"knowledgeBase_{org_id}"
             kb_data = {
                 "id": kb_key,
                 "createdBy": user_key,
                 "orgId": org_id,
-                "groupName": name,
-                "groupType": Connectors.KNOWLEDGE_BASE.value,
-                "connectorName": Connectors.KNOWLEDGE_BASE.value,
-                "connectorId": kb_connector_id,  # Link KB to the app
+                "name": name,
+                "type": Connectors.KNOWLEDGE_BASE.value,
+                "appGroup": AppGroups.LOCAL_STORAGE.value,
+                "authType": "NONE",
+                "scope": ConnectorScopes.PERSONAL.value,
+                "isActive": True,
+                "isAgentActive": True,
+                "isConfigured": True,
+                "isAuthenticated": True,
+                "hideConnector": True,  # Excluded from main connector management UI
                 "createdAtTimestamp": timestamp,
                 "updatedAtTimestamp": timestamp,
             }
@@ -211,7 +216,7 @@ class KnowledgeBaseService:
                 "from_id": user_key,
                 "from_collection": CollectionNames.USERS.value,
                 "to_id": kb_key,
-                "to_collection": CollectionNames.RECORD_GROUPS.value,
+                "to_collection": CollectionNames.APPS.value,
                 "externalPermissionId": "",
                 "type": "USER",
                 "role": "OWNER",
@@ -220,11 +225,20 @@ class KnowledgeBaseService:
                 "lastUpdatedTimestampAtSource": timestamp,
             }
 
-            # Create belongs_to edge from record group to app
-            belongs_to_edge = {
-                "from_id": kb_key,
-                "from_collection": CollectionNames.RECORD_GROUPS.value,
-                "to_id": kb_connector_id,
+            org_app_edge = {
+                "from_id": org_id,
+                "from_collection": CollectionNames.ORGS.value,
+                "to_id": kb_key,
+                "to_collection": CollectionNames.APPS.value,
+                "entityType": Connectors.KNOWLEDGE_BASE.value,
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+            }
+
+            user_app_edge = {
+                "from_id": user_key,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": kb_key,
                 "to_collection": CollectionNames.APPS.value,
                 "entityType": Connectors.KNOWLEDGE_BASE.value,
                 "createdAtTimestamp": timestamp,
@@ -235,7 +249,7 @@ class KnowledgeBaseService:
             self.logger.info("💾 Executing database operations...")
             await self.graph_provider.batch_upsert_nodes(
                 [kb_data],
-                CollectionNames.RECORD_GROUPS.value,
+                CollectionNames.APPS.value,
                 transaction=txn_id,
             )
             await self.graph_provider.batch_create_edges(
@@ -244,8 +258,13 @@ class KnowledgeBaseService:
                 transaction=txn_id,
             )
             await self.graph_provider.batch_create_edges(
-                [belongs_to_edge],
-                CollectionNames.BELONGS_TO.value,
+                [org_app_edge],
+                CollectionNames.ORG_APP_RELATION.value,
+                transaction=txn_id,
+            )
+            await self.graph_provider.batch_create_edges(
+                [user_app_edge],
+                CollectionNames.USER_APP_RELATION.value,
                 transaction=txn_id,
             )
             await self.graph_provider.commit_transaction(txn_id)
@@ -254,7 +273,7 @@ class KnowledgeBaseService:
             if result and result.get("success"):
                 response = {
                     "id": kb_data["id"],
-                    "name": kb_data["groupName"],
+                    "name": kb_data["name"],
                     "createdAtTimestamp": kb_data["createdAtTimestamp"],
                     "updatedAtTimestamp": kb_data["updatedAtTimestamp"],
                     "success": True,

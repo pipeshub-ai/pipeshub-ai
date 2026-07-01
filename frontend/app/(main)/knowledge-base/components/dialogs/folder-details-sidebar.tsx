@@ -4,6 +4,7 @@ import { Box, Flex, Text, IconButton, Dialog, VisuallyHidden } from '@radix-ui/t
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FolderIcon } from '@/app/components/ui';
 import type { KnowledgeHubApiResponse } from '../../types';
+import { isKbCollectionsHubApp } from '../../utils/all-records-transformer';
 
 interface FolderDetailsSidebarProps {
   open: boolean;
@@ -45,12 +46,12 @@ function DetailRow({ label, value }: DetailRowProps) {
   );
 }
 
-function formatNodeType(nodeType: string): string {
+function formatNodeType(nodeType: string, node?: { connector?: string; subType?: string } | null): string {
   switch (nodeType) {
     case 'kb': return 'Collection';
     case 'folder': return 'Folder';
     case 'recordGroup': return 'Record Group';
-    case 'app': return 'Connector';
+    case 'app': return node && isKbCollectionsHubApp(node) ? 'Collection' : 'Connector';
     default: return nodeType;
   }
 }
@@ -171,7 +172,7 @@ export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDe
 
                 <Flex direction="column" gap="2">
                   <DetailRow label="Name" value={currentNode.name} />
-                  <DetailRow label="Record Type" value={formatNodeType(currentNode.nodeType)} />
+                  <DetailRow label="Record Type" value={formatNodeType(currentNode.nodeType, currentNode)} />
                   <DetailRow label="Origin" value={originName} />
                   <DetailRow label="Indexing Status" value={currentNode.indexingStatus} />
                   <DetailRow label="Total items" value={totalItems} />

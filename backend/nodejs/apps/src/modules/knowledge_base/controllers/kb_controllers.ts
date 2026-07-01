@@ -702,6 +702,7 @@ const streamKbUpload = async (opts: {
   fileBuffers: FileBufferInfo[];
   rejectedFiles: RejectedFileInfo[];
   orgId: string;
+  kbId: string;
   isVersioned: boolean;
   keyValueStoreService: KeyValueStoreService;
   appConfig: AppConfig;
@@ -713,6 +714,7 @@ const streamKbUpload = async (opts: {
     fileBuffers,
     rejectedFiles,
     orgId,
+    kbId,
     isVersioned,
     keyValueStoreService,
     appConfig,
@@ -858,6 +860,7 @@ const streamKbUpload = async (opts: {
       const counts = await processUploadsInBackground(
         placeholderResults,
         orgId,
+        kbId,
         currentTime,
         pythonServiceUrl,
         req.headers as Record<string, string>,
@@ -1014,6 +1017,7 @@ export const uploadRecords =
         fileBuffers,
         rejectedFiles,
         orgId,
+        kbId,
         isVersioned,
         keyValueStoreService,
         appConfig,

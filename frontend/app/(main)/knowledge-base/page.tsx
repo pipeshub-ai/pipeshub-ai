@@ -85,14 +85,12 @@ import {
 } from './utils/reindex-label';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 import type { ReindexMenuLabelKey } from './utils/reindex-label';
-import { getCollectionsHubBootstrapFromToken } from './utils/collections-hub-app';
 import { fetchAppDirectChildren } from './utils/fetch-app-direct-children';
 import {
   resolveHubNodeNotFoundNavigation,
   resolvePostDeleteNavigation,
   shouldSilentlyRecoverHubNotFound,
 } from './utils/post-delete-navigation';
-import { useAuthStore } from '@/lib/store/auth-store';
 import { toast } from '@/lib/store/toast-store';
 import { FilePreviewSidebar, FilePreviewFullscreen } from '@/app/components/file-preview';
 import {
@@ -487,7 +485,6 @@ function KnowledgeBasePageContent() {
    * duplicate fetch from the pagination effect when page actually changes (e.g. 2 → 1).
    */
   const prevAllRecordsPageRef = useRef(allRecordsPagination.page);
-  const accessToken = useAuthStore((s) => s.accessToken);
 
   // Sync current folder from URL params (Collections mode only).
   // In All Records mode the active node is tracked via nodeId + auto-expansion
@@ -536,25 +533,36 @@ function KnowledgeBasePageContent() {
       }
     }
 
-    function bootstrapCollectionsHubFromToken() {
+    async function fetchAppNodesCollections() {
       try {
         setLoadingFlatCollections(true);
-        const boot = getCollectionsHubBootstrapFromToken(accessToken);
-        if (boot.ok === false) {
-          setAppNodes([]);
-          setAppRootListPagination(null);
-          if (boot.reason === 'missing_token') {
-            toast.error('Failed to load Collections', {
-              description: 'You are not signed in. Please log in again.',
-            });
-          } else {
-            toast.error('Failed to load Collections', {
-              description: 'Could not resolve your organization. Please refresh the page.',
-            });
-          }
-          return;
-        }
-        setAppNodes([boot.app]);
+        const response = await KnowledgeHubApi.getNavigationNodes({
+          page: 1,
+          limit: SIDEBAR_PAGINATION_PAGE_SIZE,
+          include: 'counts',
+          sortBy: 'updatedAt',
+          sortOrder: 'desc',
+        });
+        const appItems = response.items.filter((n) => n.nodeType === 'app');
+        const kbApps = appItems.filter((n) => isKbCollectionsHubApp(n));
+        const connectorApps = appItems.filter((n) => !isKbCollectionsHubApp(n));
+        setAppNodes([...kbApps, ...connectorApps]);
+
+        const p = response.pagination;
+        setAppRootListPagination(
+          p
+            ? {
+                hasNext: p.hasNext,
+                nextPage: p.hasNext ? p.page + 1 : p.page,
+              }
+            : null
+        );
+      } catch (error) {
+        console.error('Error fetching KB app nodes:', error);
+        toast.error('Failed to load Collections', {
+          description: 'Could not load collections. Please refresh the page.',
+        });
+        setAppNodes([]);
         setAppRootListPagination(null);
       } finally {
         setLoadingFlatCollections(false);
@@ -564,32 +572,26 @@ function KnowledgeBasePageContent() {
     if (isAllRecordsMode) {
       void fetchAppNodesAllRecords();
     } else {
-      bootstrapCollectionsHubFromToken();
+      void fetchAppNodesCollections();
     }
   }, [
     isAllRecordsMode,
-    accessToken,
     setAppNodes,
     setAppRootListPagination,
     setLoadingFlatCollections,
   ]);
 
-  // Collections mode: prefetch KB app children only. All Records loads per-app on expand.
+  // Collections mode: use KB apps themselves as the collections in the sidebar tree.
+  // Each KB is now a standalone root-level app (no hub/children model).
   useEffect(() => {
     if (appNodes.length === 0 || isAllRecordsMode) return;
 
-    appNodes.forEach(async (app) => {
-      const { appChildrenCache: freshCache } = useKnowledgeBaseStore.getState();
-      if (freshCache.has(app.id)) return;
-
-      if (!isKbCollectionsHubApp(app)) return;
-
-      try {
-        await fetchAppDirectChildren(app.id);
-      } catch {
-        // fetchAppDirectChildren logs errors
-      }
-    });
+    const { setNodes, setCategorizedNodes } = useKnowledgeBaseStore.getState();
+    const kbApps = appNodes.filter((n) => isKbCollectionsHubApp(n));
+    if (kbApps.length > 0) {
+      setNodes(kbApps);
+      setCategorizedNodes(categorizeNodes(kbApps, null));
+    }
   }, [appNodes, isAllRecordsMode]);
 
   // All Records mode: Fetch table data (reusable callback)
@@ -1119,7 +1121,7 @@ function KnowledgeBasePageContent() {
 
     // Navigate to collections mode (no view parameter = collections by default)
     const urlParams = new URLSearchParams();
-    urlParams.set('nodeType', 'recordGroup');
+    urlParams.set('nodeType', 'app');
     urlParams.set('nodeId', collectionId);
 
     router.push(`/knowledge-base?${urlParams.toString()}`);
@@ -1209,11 +1211,7 @@ function KnowledgeBasePageContent() {
             : { hasNext: false, nextPage: 1 }
         );
 
-        if (isKbCollectionsHubApp(selectedApp)) {
-          state.setNodes(response.items);
-          state.setCategorizedNodes(categorizeNodes(response.items, `apps/${selectedApp.id}`));
-          state.reMergeCachedChildrenIntoTree();
-        } else {
+        if (!isKbCollectionsHubApp(selectedApp)) {
           state.addNodes(response.items);
           state.setConnectorAppTree(
             selectedApp.id,
@@ -1375,36 +1373,39 @@ function KnowledgeBasePageContent() {
 
   // Handle create folder - context-aware
   const handleCreateFolder = useCallback(() => {
-    console.log('🔧 handleCreateFolder - tableData:', {
-      hasTableData: !!tableData,
-      breadcrumbs: tableData?.breadcrumbs,
-      currentNode: tableData?.currentNode,
-    });
+    const currentNode = tableData?.currentNode;
 
-    if (!tableData || !tableData.breadcrumbs || tableData.breadcrumbs.length < 2) {
-      // No KB context - create new collection
-      console.log('✨ Creating new collection (no KB context)');
-      setCreateFolderContext({ type: 'collection' });
-      setIsCreateFolderDialogOpen(true);
-    } else {
-      // Inside a KB/folder - create folder within it
-      const kbId = tableData.breadcrumbs[1].id;
-      const currentNode = tableData.currentNode;
-
-      // Determine parent ID:
-      // - If current node is a folder, use it as parent (nested folder)
-      // - If current node is the KB itself, parentId should be null (root folder)
-      const parentId = currentNode.nodeType === 'folder' ? currentNode.id : null;
-
-      const context = {
+    if (currentNode?.nodeType === 'app') {
+      // At KB app root level — create a root-level folder inside this KB
+      setCreateFolderContext({
         type: 'subfolder' as const,
-        kbId,
-        parentId,
+        kbId: currentNode.id,
+        parentId: null,
         parentName: currentNode.name,
-      };
-
-      console.log('📁 Creating folder with context:', context);
-      setCreateFolderContext(context);
+      });
+      setIsCreateFolderDialogOpen(true);
+    } else if (currentNode?.nodeType === 'folder') {
+      // Inside a folder — find the KB root from breadcrumbs (app or kb nodeType)
+      const kbBreadcrumb = tableData?.breadcrumbs?.find(
+        (b) => b.nodeType === 'app' || b.nodeType === 'kb'
+      );
+      const kbId = kbBreadcrumb?.id ?? tableData?.breadcrumbs?.[0]?.id;
+      if (kbId) {
+        setCreateFolderContext({
+          type: 'subfolder' as const,
+          kbId,
+          parentId: currentNode.id,
+          parentName: currentNode.name,
+        });
+        setIsCreateFolderDialogOpen(true);
+      } else {
+        // Fallback: no KB root found — create a new collection
+        setCreateFolderContext({ type: 'collection' });
+        setIsCreateFolderDialogOpen(true);
+      }
+    } else {
+      // No KB context (at root or no currentNode) — create new collection
+      setCreateFolderContext({ type: 'collection' });
       setIsCreateFolderDialogOpen(true);
     }
   }, [tableData]);
@@ -1461,7 +1462,7 @@ function KnowledgeBasePageContent() {
           }
 
           // Navigate to new collection
-          router.push(buildNavUrl({ nodeType: 'recordGroup', nodeId: newCollection.id }));
+          router.push(buildNavUrl({ nodeType: 'app', nodeId: newCollection.id }));
 
           // Close dialog and reset
           setIsCreateFolderDialogOpen(false);
@@ -1852,8 +1853,10 @@ function KnowledgeBasePageContent() {
   const shareAdapter = useMemo(() => {
     const nodeId = selectedNode?.nodeId;
     if (!nodeId) return null;
-    // Only share root KB collection nodes (recordGroup)
-    if (selectedNode?.nodeType !== 'recordGroup') return null;
+    // Only share root KB collection nodes (app with connector KB)
+    if (selectedNode?.nodeType !== 'app') return null;
+    const storeNode = useKnowledgeBaseStore.getState().nodes.find((n) => n.id === nodeId);
+    if (!storeNode || !isKbCollectionsHubApp(storeNode)) return null;
     return createKBShareAdapter(nodeId);
   }, [selectedNode?.nodeId, selectedNode?.nodeType]);
 
@@ -1867,7 +1870,7 @@ function KnowledgeBasePageContent() {
   // TODO - consider using a json map ds instead of an array for more efficient lookups as the number of nodes grows
   const isSelectedKbPrivate = useMemo(() => {
     const nodeId = selectedNode?.nodeId;
-    if (!nodeId || selectedNode?.nodeType !== 'recordGroup') return false;
+    if (!nodeId || selectedNode?.nodeType !== 'app') return false;
     return categorizedNodes?.private.some((n) => n.id === nodeId) ?? false;
   }, [selectedNode?.nodeId, selectedNode?.nodeType, categorizedNodes]);
 
@@ -2115,7 +2118,7 @@ function KnowledgeBasePageContent() {
 
       if (isHub) {
         const hubItem = item as KnowledgeHubNode;
-        if (hubItem.nodeType === 'folder' || hubItem.nodeType === 'recordGroup') {
+        if (hubItem.nodeType === 'folder' || hubItem.nodeType === 'recordGroup' || hubItem.nodeType === 'app') {
           if (!selectedKbId) throw new Error('No collection context for rename');
           await KnowledgeBaseApi.renameNode({
             nodeId: hubItem.id,
@@ -2158,7 +2161,7 @@ function KnowledgeBasePageContent() {
   ) => {
 
     try {
-      if (nodeType === 'folder' || nodeType === 'recordGroup') {
+      if (nodeType === 'folder' || nodeType === 'recordGroup' || nodeType === 'app') {
         if (!selectedKbId) throw new Error('No collection context for rename');
         await KnowledgeBaseApi.renameNode({
           nodeId,
@@ -2214,7 +2217,7 @@ function KnowledgeBasePageContent() {
       });
 
       try {
-        if (hubItem.nodeType === 'recordGroup') {
+        if (hubItem.nodeType === 'recordGroup' || hubItem.nodeType === 'app') {
           await KnowledgeBaseApi.reindexRecordGroup(item.id, depth, statusFilters);
         } else {
           await KnowledgeBaseApi.reindexItem(item.id, depth, statusFilters);
@@ -2565,7 +2568,7 @@ function KnowledgeBasePageContent() {
         if (isKnowledgeHubNodeItem) {
           const hubNode = item as KnowledgeHubNode;
           if (hubNode.nodeType === 'kb') nodeType = 'kb';
-          else if (['folder', 'recordGroup'].includes(hubNode.nodeType)) nodeType = 'folder';
+          else if (['folder', 'recordGroup', 'app'].includes(hubNode.nodeType)) nodeType = 'folder';
         } else if ('type' in item && (item as KnowledgeBaseItem).type === 'folder') {
           nodeType = 'folder';
         }

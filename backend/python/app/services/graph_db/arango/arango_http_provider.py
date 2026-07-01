@@ -9414,7 +9414,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Check direct and team permissions, return highest role (OWNER > WRITER > READER > COMMENTER)
             query = """
             LET user_from = CONCAT('users/', @user_id)
-            LET kb_to = CONCAT('recordGroups/', @kb_id)
+            LET kb_to = CONCAT('apps/', @kb_id)
 
             // Direct user permission (with priority)
             LET direct_perm = FIRST(
@@ -9502,7 +9502,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Build filter conditions
             filter_conditions = []
             if search:
-                filter_conditions.append("LIKE(LOWER(kb.groupName), LOWER(@search_term))")
+                filter_conditions.append("LIKE(LOWER(kb.name), LOWER(@search_term))")
             permission_filter = ""
             if permissions:
                 permission_filter = "FILTER final_role IN @permissions"
@@ -9511,12 +9511,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 additional_filters = "AND " + " AND ".join(filter_conditions)
 
             sort_field_map = {
-                "name": "kb.groupName",
+                "name": "kb.name",
                 "createdAtTimestamp": "kb.createdAtTimestamp",
                 "updatedAtTimestamp": "kb.updatedAtTimestamp",
                 "userRole": "final_role"
             }
-            sort_field = sort_field_map.get(sort_by, "kb.groupName")
+            sort_field = sort_field_map.get(sort_by, "kb.name")
             sort_direction = sort_order.upper()
             role_priority_map = {
                 "OWNER": 4,
@@ -9530,12 +9530,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR perm IN @@permissions_collection
                     FILTER perm._from == @user_from
                     FILTER perm.type == "USER"
-                    FILTER STARTS_WITH(perm._to, "recordGroups/")
+                    FILTER STARTS_WITH(perm._to, "apps/")
                     LET kb = DOCUMENT(perm._to)
                     FILTER kb != null
                     FILTER kb.orgId == @org_id
-                    FILTER kb.groupType == @kb_type
-                    FILTER kb.connectorName == @kb_connector
+                    FILTER kb.type == @kb_type
                     {additional_filters}
                     RETURN {{
                         kb_id: kb._key,
@@ -9563,12 +9562,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FOR kb_team_perm IN @@permissions_collection
                         FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
                         FILTER kb_team_perm.type == "TEAM"
-                        FILTER STARTS_WITH(kb_team_perm._to, "recordGroups/")
+                        FILTER STARTS_WITH(kb_team_perm._to, "apps/")
                         LET kb = DOCUMENT(kb_team_perm._to)
                         FILTER kb != null
                         FILTER kb.orgId == @org_id
-                        FILTER kb.groupType == @kb_type
-                        FILTER kb.connectorName == @kb_connector
+                        FILTER kb.type == @kb_type
                         {additional_filters}
                         RETURN {{
                             kb_id: kb._key,
@@ -9604,14 +9602,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR edge IN @@belongs_to_kb
                     FILTER edge._to IN kb_ids
                     LET folder = DOCUMENT(edge._from)
-                    FILTER folder != null && folder.isFile == false
+                    FILTER folder != null && folder.mimeType == "application/vnd.folder"
                     RETURN {{
                         kb_id: edge._to,
                         folder: {{
                             id: folder._key,
-                            name: folder.name,
-                            createdAtTimestamp: edge.createdAtTimestamp,
-                            path: folder.path,
+                            name: folder.recordName,
+                            createdAtTimestamp: folder.createdAtTimestamp,
                             webUrl: folder.webUrl
                         }}
                     }}
@@ -9624,8 +9621,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 LIMIT @skip, @limit
                 RETURN {{
                     id: kb._key,
-                    name: kb.groupName,
-                    connectorId: kb.connectorId,
+                    name: kb.name,
+                    description: kb.description,
                     createdAtTimestamp: kb.createdAtTimestamp,
                     updatedAtTimestamp: kb.updatedAtTimestamp,
                     createdBy: kb.createdBy,
@@ -9639,12 +9636,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR perm IN @@count_permissions_collection
                     FILTER perm._from == @count_user_from
                     FILTER perm.type == "USER"
-                    FILTER STARTS_WITH(perm._to, "recordGroups/")
+                    FILTER STARTS_WITH(perm._to, "apps/")
                     LET kb = DOCUMENT(perm._to)
                     FILTER kb != null
                     FILTER kb.orgId == @count_org_id
-                    FILTER kb.groupType == @count_kb_type
-                    FILTER kb.connectorName == @count_kb_connector
+                    FILTER kb.type == @count_kb_type
                     {additional_filters.replace('@search_term', '@count_search_term') if additional_filters else ''}
                     RETURN {{
                         kb_id: kb._key,
@@ -9671,12 +9667,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FOR kb_team_perm IN @@count_permissions_collection
                         FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
                         FILTER kb_team_perm.type == "TEAM"
-                        FILTER STARTS_WITH(kb_team_perm._to, "recordGroups/")
+                        FILTER STARTS_WITH(kb_team_perm._to, "apps/")
                         LET kb = DOCUMENT(kb_team_perm._to)
                         FILTER kb != null
                         FILTER kb.orgId == @count_org_id
-                        FILTER kb.groupType == @count_kb_type
-                        FILTER kb.connectorName == @count_kb_connector
+                        FILTER kb.type == @count_kb_type
                         {additional_filters.replace('@search_term', '@count_search_term') if additional_filters else ''}
                         RETURN {{
                             kb_id: kb._key,
@@ -9710,16 +9705,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR perm IN @@filters_permissions_collection
                     FILTER perm._from == @filters_user_from
                     FILTER perm.type == "USER"
-                    FILTER STARTS_WITH(perm._to, "recordGroups/")
+                    FILTER STARTS_WITH(perm._to, "apps/")
                     LET kb = DOCUMENT(perm._to)
                     FILTER kb != null
                     FILTER kb.orgId == @filters_org_id
-                    FILTER kb.groupType == @filters_kb_type
-                    FILTER kb.connectorName == @filters_kb_connector
+                    FILTER kb.type == @filters_kb_type
                     RETURN {
                         kb_id: kb._key,
                         permission: perm.role,
-                        kb_name: kb.groupName,
+                        kb_name: kb.name,
                         priority: @filters_role_priority[perm.role] || 0,
                         is_direct: true
                     }
@@ -9742,16 +9736,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FOR kb_team_perm IN @@filters_permissions_collection
                         FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
                         FILTER kb_team_perm.type == "TEAM"
-                        FILTER STARTS_WITH(kb_team_perm._to, "recordGroups/")
+                        FILTER STARTS_WITH(kb_team_perm._to, "apps/")
                         LET kb = DOCUMENT(kb_team_perm._to)
                         FILTER kb != null
                         FILTER kb.orgId == @filters_org_id
-                        FILTER kb.groupType == @filters_kb_type
-                        FILTER kb.connectorName == @filters_kb_connector
+                        FILTER kb.type == @filters_kb_type
                         RETURN {
                             kb_id: kb._key,
                             permission: team_info.role,
-                            kb_name: kb.groupName,
+                            kb_name: kb.name,
                             priority: team_info.priority,
                             is_direct: false
                         }
@@ -9777,7 +9770,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "user_from": f"users/{user_id}",
                 "org_id": org_id,
                 "kb_type": Connectors.KNOWLEDGE_BASE.value,
-                "kb_connector": Connectors.KNOWLEDGE_BASE.value,
                 "skip": skip,
                 "limit": limit,
                 "role_priority": role_priority_map,
@@ -9793,7 +9785,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "count_user_from": f"users/{user_id}",
                 "count_org_id": org_id,
                 "count_kb_type": Connectors.KNOWLEDGE_BASE.value,
-                "count_kb_connector": Connectors.KNOWLEDGE_BASE.value,
                 "count_role_priority": role_priority_map,
                 "@count_permissions_collection": CollectionNames.PERMISSION.value,
             }
@@ -9806,7 +9797,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "filters_user_from": f"users/{user_id}",
                 "filters_org_id": org_id,
                 "filters_kb_type": Connectors.KNOWLEDGE_BASE.value,
-                "filters_kb_connector": Connectors.KNOWLEDGE_BASE.value,
                 "filters_role_priority": role_priority_map,
                 "@filters_permissions_collection": CollectionNames.PERMISSION.value,
             }
@@ -9909,8 +9899,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             sort_direction = sort_order.upper()
 
             main_query = f"""
-            LET kb = DOCUMENT("recordGroups", @kb_id)
-            FILTER kb != null
+            LET kb = DOCUMENT("apps", @kb_id)
+            FILTER kb != null AND kb.type == @kb_connector_type
             LET allImmediateChildren = (
                 FOR belongsEdge IN @@belongs_to
                     FILTER belongsEdge._to == kb._id
@@ -10450,7 +10440,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "@files_collection": CollectionNames.FILES.value,
                 }
             else:
-                parent_from = f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}"
+                parent_from = f"{CollectionNames.APPS.value}/{kb_id}"
                 query = """
                 FOR edge IN @@belongs_to
                     FILTER edge._to == @parent_from
@@ -10487,7 +10477,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return set()
 
     async def kb_exists(self, kb_id: str) -> bool:
-        """Return True if a KB document with this id exists, regardless of permissions.
+        """Return True if a KB app document with this id exists, regardless of permissions.
 
         DB exceptions are intentionally NOT caught here — they must propagate
         so callers return 500, not a misleading 404, during infrastructure failures.
@@ -10495,6 +10485,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         query = """
         FOR kb IN @@collection
             FILTER kb._key == @kb_id
+            FILTER kb.type == @kb_type
             LIMIT 1
             RETURN 1
         """
@@ -10502,7 +10493,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             query,
             bind_vars={
                 "kb_id": kb_id,
-                "@collection": CollectionNames.RECORD_GROUPS.value,
+                "kb_type": Connectors.KNOWLEDGE_BASE.value,
+                "@collection": CollectionNames.APPS.value,
             },
         )
         return bool(result)
@@ -10517,8 +10509,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             user_role = await self.get_user_kb_permission(kb_id, user_id, transaction=transaction)
             query = """
-            FOR kb IN @@recordGroups_collection
+            FOR kb IN @@apps_collection
                 FILTER kb._key == @kb_id
+                FILTER kb.type == @kb_type
                 LET user_role = @user_role
                 LET folders = (
                     FOR edge IN @@kb_to_folder_edges
@@ -10526,28 +10519,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER STARTS_WITH(edge._from, 'records/')
                         LET folder_record = DOCUMENT(edge._from)
                         FILTER folder_record != null
-                        LET folder_file = FIRST(
-                            FOR isEdge IN @@is_of_type
-                                FILTER isEdge._from == folder_record._id
-                                LET f = DOCUMENT(isEdge._to)
-                                FILTER f != null AND f.isFile == false
-                                RETURN f
-                        )
-                        FILTER folder_file != null
+                        FILTER folder_record.mimeType == "application/vnd.folder"
                         RETURN {
                             id: folder_record._key,
                             name: folder_record.recordName,
                             createdAtTimestamp: folder_record.createdAtTimestamp,
                             updatedAtTimestamp: folder_record.updatedAtTimestamp,
-                            path: folder_file.path,
                             webUrl: folder_record.webUrl,
-                            mimeType: folder_record.mimeType,
-                            sizeInBytes: folder_file.sizeInBytes
+                            mimeType: folder_record.mimeType
                         }
                 )
                 RETURN {
                     id: kb._key,
-                    name: kb.groupName,
+                    name: kb.name,
+                    description: kb.description,
                     createdAtTimestamp: kb.createdAtTimestamp,
                     updatedAtTimestamp: kb.updatedAtTimestamp,
                     createdBy: kb.createdBy,
@@ -10559,10 +10544,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 query,
                 bind_vars={
                     "kb_id": kb_id,
+                    "kb_type": Connectors.KNOWLEDGE_BASE.value,
                     "user_role": user_role,
-                    "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value,
+                    "@apps_collection": CollectionNames.APPS.value,
                     "@kb_to_folder_edges": CollectionNames.BELONGS_TO.value,
-                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 },
                 transaction=transaction,
             )
@@ -10596,7 +10581,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars={
                     "kb_id": kb_id,
                     "updates": updates,
-                    "@kb_collection": CollectionNames.RECORD_GROUPS.value,
+                    "@kb_collection": CollectionNames.APPS.value,
                 },
                 transaction=transaction,
             )
@@ -10632,13 +10617,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     transaction = await self.begin_transaction(
                         read=[],
                         write=[
-                            CollectionNames.RECORD_GROUPS.value,
+                            CollectionNames.APPS.value,
                             CollectionNames.FILES.value,
                             CollectionNames.RECORDS.value,
                             CollectionNames.RECORD_RELATIONS.value,
                             CollectionNames.BELONGS_TO.value,
                             CollectionNames.IS_OF_TYPE.value,
                             CollectionNames.PERMISSION.value,
+                            CollectionNames.ORG_APP_RELATION.value,
+                            CollectionNames.USER_APP_RELATION.value,
                         ],
                     )
                     self.logger.info(f"🔄 Transaction created for complete KB {kb_id} deletion")
@@ -10650,9 +10637,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 # Step 1: Get complete inventory of what we're deleting using graph traversal
                 # This collects ALL records/folders at any depth and FILES documents BEFORE edge deletion
                 inventory_query = """
-                LET kb = DOCUMENT("recordGroups", @kb_id)
-                FILTER kb != null
-                LET kb_id_full = CONCAT('recordGroups/', @kb_id)
+                LET kb = DOCUMENT("apps", @kb_id)
+                FILTER kb != null AND kb.type == @kb_type
+                LET kb_id_full = CONCAT('apps/', @kb_id)
                 LET all_records_and_folders = (
                     FOR edge IN @@belongs_to_kb
                         FILTER edge._to == kb_id_full
@@ -10704,6 +10691,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     inventory_query,
                     bind_vars={
                         "kb_id": kb_id,
+                        "kb_type": Connectors.KNOWLEDGE_BASE.value,
                         "@records_collection": CollectionNames.RECORDS.value,
                         "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
                         "@is_of_type": CollectionNames.IS_OF_TYPE.value,
@@ -10766,7 +10754,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     self.logger.debug(f"✅ Deleted is_of_type edges for {len(all_record_keys)} records")
 
                 btk_delete = """
-                LET kb_id_full = CONCAT('recordGroups/', @kb_id)
+                LET kb_id_full = CONCAT('apps/', @kb_id)
                 
                 // Collect all edge keys FIRST (before any modifications)
                 LET record_kb_edges = (
@@ -10799,7 +10787,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.debug(f"✅ Deleted belongs_to edges for KB {kb_id}")
 
                 perm_delete = """
-                LET kb_id_full = CONCAT('recordGroups/', @kb_id)
+                LET kb_id_full = CONCAT('apps/', @kb_id)
                 
                 // Collect all permission edge keys FIRST (before any modifications)
                 LET record_perm_edges = (
@@ -10844,24 +10832,55 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     await self.delete_nodes(all_record_keys, CollectionNames.RECORDS.value, transaction=transaction)
                     self.logger.debug(f"✅ Deleted {len(all_record_keys)} RECORDS documents")
 
-                # Step 5: Delete the KB document itself
-                self.logger.debug(f"🗑️ Step 5: Deleting KB document {kb_id}...")
+                # Step 5: Delete orgAppRelation and userAppRelation edges for this KB app
+                self.logger.debug(f"🗑️ Step 5: Deleting org/user app relation edges for KB {kb_id}...")
+                org_user_rel_delete = """
+                LET kb_id_full = CONCAT('apps/', @kb_id)
+                LET org_edges = (
+                    FOR edge IN @@org_app_relation
+                        FILTER edge._to == kb_id_full
+                        RETURN edge._key
+                )
+                LET user_edges = (
+                    FOR edge IN @@user_app_relation
+                        FILTER edge._to == kb_id_full
+                        RETURN edge._key
+                )
+                FOR edge_key IN org_edges
+                    REMOVE edge_key IN @@org_app_relation OPTIONS { ignoreErrors: true }
+                FOR edge_key IN user_edges
+                    REMOVE edge_key IN @@user_app_relation OPTIONS { ignoreErrors: true }
+                RETURN { org_deleted: LENGTH(org_edges), user_deleted: LENGTH(user_edges) }
+                """
                 await self.execute_query(
-                    "REMOVE @kb_id IN @@recordGroups_collection OPTIONS { ignoreErrors: true } RETURN OLD",
+                    org_user_rel_delete,
                     bind_vars={
                         "kb_id": kb_id,
-                        "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value
+                        "@org_app_relation": CollectionNames.ORG_APP_RELATION.value,
+                        "@user_app_relation": CollectionNames.USER_APP_RELATION.value,
+                    },
+                    transaction=transaction,
+                )
+                self.logger.debug(f"✅ Deleted org/user app relation edges for KB {kb_id}")
+
+                # Step 6: Delete the KB app document itself
+                self.logger.debug(f"🗑️ Step 6: Deleting KB app document {kb_id}...")
+                await self.execute_query(
+                    "REMOVE @kb_id IN @@apps_collection OPTIONS { ignoreErrors: true } RETURN OLD",
+                    bind_vars={
+                        "kb_id": kb_id,
+                        "@apps_collection": CollectionNames.APPS.value
                     },
                     transaction=transaction,
                 )
 
-                # Step 6: Commit transaction
+                # Step 7: Commit transaction
                 if should_commit:
                     self.logger.debug("💾 Committing complete deletion transaction...")
                     await self.commit_transaction(transaction)
                     self.logger.debug("✅ Transaction committed successfully!")
 
-                # Step 7: Prepare event data for all deleted records (router will publish)
+                # Step 8: Prepare event data for all deleted records (router will publish)
                 event_payloads = []
                 try:
                     for record_data in records_with_details:
@@ -11125,11 +11144,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Find a folder by name within a specific parent (KB root or folder)."""
         try:
             name_variants = self._normalized_name_variants_lower(folder_name)
-            parent_from = f"records/{parent_folder_id}" if parent_folder_id else f"recordGroups/{kb_id}"
+            parent_from = f"records/{parent_folder_id}" if parent_folder_id else f"apps/{kb_id}"
             if parent_folder_id is None:
                 query = """
                 FOR edge IN @@belongs_to
-                    FILTER edge._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER edge._to == CONCAT('apps/', @kb_id)
                     FILTER edge.entityType == @entity_type
                     LET folder_record = DOCUMENT(edge._from)
                     FILTER folder_record != null
@@ -11251,7 +11270,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars={
                     "folder_id": folder_id,
                     "folder_from": f"records/{folder_id}",
-                    "kb_to": f"recordGroups/{kb_id}",
+                    "kb_to": f"apps/{kb_id}",
                     "entity_type": Connectors.KNOWLEDGE_BASE.value,
                     "@records_collection": CollectionNames.RECORDS.value,
                     "@belongs_to_collection": CollectionNames.BELONGS_TO.value,
@@ -11310,13 +11329,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "success": True,
                     }
                 external_parent_id = parent_folder_id if parent_folder_id else None
-                kb_connector_id = f"knowledgeBase_{org_id}"
                 record_data = {
                     "_key": folder_id,
                     "orgId": org_id,
                     "recordName": folder_name,
                     "externalRecordId": f"kb_folder_{folder_id}",
-                    "connectorId": kb_connector_id,
+                    "connectorId": kb_id,
                     "externalGroupId": kb_id,
                     "externalParentId": external_parent_id,
                     "externalRootGroupId": kb_id,
@@ -11361,20 +11379,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "from_id": folder_id,
                     "from_collection": CollectionNames.RECORDS.value,
                     "to_id": kb_id,
-                    "to_collection": CollectionNames.RECORD_GROUPS.value,
+                    "to_collection": CollectionNames.APPS.value,
                     "entityType": Connectors.KNOWLEDGE_BASE.value,
                     "createdAtTimestamp": timestamp,
                     "updatedAtTimestamp": timestamp,
                 }
                 await self.batch_create_edges([kb_relationship_edge], CollectionNames.BELONGS_TO.value, transaction=txn_id)
 
-                # Create inheritPermission edge (RECORDS -> KB)
-                # KB folders inherit permissions from KB by default
+                # Create inheritPermission edge (RECORDS -> KB app)
+                # KB folders inherit permissions from KB app by default
                 inherit_permission_edge = {
                     "from_id": folder_id,
                     "from_collection": CollectionNames.RECORDS.value,
                     "to_id": kb_id,
-                    "to_collection": CollectionNames.RECORD_GROUPS.value,
+                    "to_collection": CollectionNames.APPS.value,
                     "createdAtTimestamp": timestamp,
                     "updatedAtTimestamp": timestamp,
                 }
@@ -11458,7 +11476,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars={
                     "folder_id": folder_id,
                     "folder_from": f"records/{folder_id}",
-                    "kb_to": f"recordGroups/{kb_id}",
+                    "kb_to": f"apps/{kb_id}",
                     "entity_type": Connectors.KNOWLEDGE_BASE.value,
                     "@records_collection": CollectionNames.RECORDS.value,
                     "@belongs_to_collection": CollectionNames.BELONGS_TO.value,
@@ -11507,7 +11525,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars={
                     "folder_id": folder_id,
                     "folder_from": f"records/{folder_id}",
-                    "kb_to": f"recordGroups/{kb_id}",
+                    "kb_to": f"apps/{kb_id}",
                     "entity_type": Connectors.KNOWLEDGE_BASE.value,
                     "@records_collection": CollectionNames.RECORDS.value,
                     "@belongs_to_collection": CollectionNames.BELONGS_TO.value,
@@ -11840,7 +11858,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         LET record = DOCUMENT("records", rid)
                         LET record_exists = record != null
                         LET record_not_deleted = record_exists ? record.isDeleted != true : false
-                        LET kb_relationship = record_exists ? FIRST(FOR edge IN @@belongs_to_kb FILTER edge._from == CONCAT('records/', rid) FILTER edge._to == CONCAT('recordGroups/', @kb_id) RETURN edge) : null
+                        LET kb_relationship = record_exists ? FIRST(FOR edge IN @@belongs_to_kb FILTER edge._from == CONCAT('records/', rid) FILTER edge._to == CONCAT('apps/', @kb_id) RETURN edge) : null
                         LET folder_relationship = @folder_id ? (record_exists ? FIRST(FOR edge_rel IN @@record_relations FILTER edge_rel._to == CONCAT('records/', rid) FILTER edge_rel._from == CONCAT('records/', @folder_id) FILTER edge_rel.relationshipType == "PARENT_CHILD" RETURN edge_rel) : null) : true
                         LET file_record = record_exists ? FIRST(FOR isEdge IN @@is_of_type FILTER isEdge._from == CONCAT('records/', rid) LET fileRec = DOCUMENT(isEdge._to) FILTER fileRec != null RETURN fileRec) : null
                         LET is_valid = record_exists AND record_not_deleted AND kb_relationship != null AND folder_relationship != null
@@ -11934,16 +11952,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER user.userId == @requester_id
                 FOR perm IN @@permissions_collection
                     FILTER perm._from == CONCAT('users/', user._key)
-                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER perm._to == CONCAT('apps/', @kb_id)
                     FILTER perm.type == "USER"
                     FILTER perm.role == "OWNER"
                 RETURN { user_key: user._key, is_owner: true }
             )
-            LET kb_exists = LENGTH(FOR kb IN @@recordGroups_collection FILTER kb._key == @kb_id LIMIT 1 RETURN 1) > 0
+            LET kb_exists = LENGTH(FOR kb IN @@apps_collection FILTER kb._key == @kb_id AND kb.type == @kb_type LIMIT 1 RETURN 1) > 0
             LET user_operations = (
                 FOR user_id IN @user_ids
                     LET user = FIRST(FOR u IN @@users_collection FILTER u._key == user_id RETURN u)
-                    LET current_perm = user ? FIRST(FOR perm IN @@permissions_collection FILTER perm._from == CONCAT('users/', user._key) FILTER perm._to == CONCAT('recordGroups/', @kb_id) FILTER perm.type == "USER" RETURN perm) : null
+                    LET current_perm = user ? FIRST(FOR perm IN @@permissions_collection FILTER perm._from == CONCAT('users/', user._key) FILTER perm._to == CONCAT('apps/', @kb_id) FILTER perm.type == "USER" RETURN perm) : null
                     FILTER user != null
                     LET operation = current_perm == null ? "insert" : (current_perm.role != @role ? "update" : "skip")
                     RETURN { user_id: user_id, user_key: user._key, userId: user.userId, name: user.fullName, operation: operation, current_role: current_perm ? current_perm.role : null, perm_key: current_perm ? current_perm._key : null }
@@ -11951,7 +11969,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET team_operations = (
                 FOR team_id IN @team_ids
                     LET team = FIRST(FOR t IN @@teams_collection FILTER t._key == team_id RETURN t)
-                    LET current_perm = team ? FIRST(FOR perm IN @@permissions_collection FILTER perm._from == CONCAT('teams/', team._key) FILTER perm._to == CONCAT('recordGroups/', @kb_id) FILTER perm.type == "TEAM" RETURN perm) : null
+                    LET current_perm = team ? FIRST(FOR perm IN @@permissions_collection FILTER perm._from == CONCAT('teams/', team._key) FILTER perm._to == CONCAT('apps/', @kb_id) FILTER perm.type == "TEAM" RETURN perm) : null
                     FILTER team != null
                     LET operation = current_perm == null ? "insert" : "skip"
                     RETURN { team_id: team_id, team_key: team._key, name: team.name, operation: operation, perm_key: current_perm ? current_perm._key : null }
@@ -11970,6 +11988,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 main_query,
                 bind_vars={
                     "kb_id": kb_id,
+                    "kb_type": Connectors.KNOWLEDGE_BASE.value,
                     "requester_id": requester_id,
                     "user_ids": user_ids,
                     "team_ids": team_ids,
@@ -11977,7 +11996,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "@users_collection": CollectionNames.USERS.value,
                     "@teams_collection": CollectionNames.TEAMS.value,
                     "@permissions_collection": CollectionNames.PERMISSION.value,
-                    "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value,
+                    "@apps_collection": CollectionNames.APPS.value,
                 },
             )
             result = results[0] if results else {}
@@ -11993,7 +12012,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "from_id": u["user_key"],
                     "from_collection": CollectionNames.USERS.value,
                     "to_id": kb_id,
-                    "to_collection": CollectionNames.RECORD_GROUPS.value,
+                    "to_collection": CollectionNames.APPS.value,
                     "externalPermissionId": "",
                     "type": "USER",
                     "role": role,
@@ -12008,7 +12027,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "from_id": t["team_key"],
                     "from_collection": CollectionNames.TEAMS.value,
                     "to_id": kb_id,
-                    "to_collection": CollectionNames.RECORD_GROUPS.value,
+                    "to_collection": CollectionNames.APPS.value,
                     "externalPermissionId": "",
                     "type": "TEAM",
                     "createdAtTimestamp": timestamp,
@@ -12042,7 +12061,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             query = """
             FOR perm IN @@permissions_collection
-                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                FILTER perm._to == CONCAT('apps/', @kb_id)
                 FILTER perm.role == 'OWNER'
                 COLLECT WITH COUNT INTO owner_count
                 RETURN owner_count
@@ -12084,7 +12103,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return False
             query = f"""
             FOR perm IN @@permissions_collection
-                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                FILTER perm._to == CONCAT('apps/', @kb_id)
                 FILTER ({' OR '.join(conditions)})
                 REMOVE perm IN @@permissions_collection
                 RETURN OLD._key
@@ -12123,7 +12142,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return {"users": {}, "teams": {}}
             query = f"""
             FOR perm IN @@permissions_collection
-                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                FILTER perm._to == CONCAT('apps/', @kb_id)
                 FILTER ({' OR '.join(conditions)})
                 RETURN {{
                     id: SPLIT(perm._from, '/')[1],
@@ -12194,14 +12213,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET requester_perm = FIRST(
                 FOR perm IN @@permissions_collection
                     FILTER perm._from == CONCAT('users/', @requester_id)
-                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER perm._to == CONCAT('apps/', @kb_id)
                     FILTER perm.type == 'USER'
                     RETURN perm.role
             )
 
             LET current_perms = (
                 FOR perm IN @@permissions_collection
-                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER perm._to == CONCAT('apps/', @kb_id)
                     FILTER ({' OR '.join(target_conditions)})
                     RETURN {{
                         _key: perm._key,
@@ -12220,7 +12239,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET updated_perms = (
                 validation_result == null ? (
                     FOR perm IN @@permissions_collection
-                        FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                        FILTER perm._to == CONCAT('apps/', @kb_id)
                         FILTER ({' OR '.join(target_conditions)})
                         UPDATE perm WITH {{
                             role: @new_role,
@@ -12341,7 +12360,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             """
             results = await self.execute_query(
                 query,
-                bind_vars={"kb_to": f"recordGroups/{kb_id}", "@permissions_collection": CollectionNames.PERMISSION.value},
+                bind_vars={"kb_to": f"apps/{kb_id}", "@permissions_collection": CollectionNames.PERMISSION.value},
                 transaction=transaction,
             )
             return results or []
@@ -12411,22 +12430,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER kbEdge.type == "USER"
                     FILTER kbEdge.role IN @kb_permissions
                     LET kb = DOCUMENT(kbEdge._to)
-                    FILTER kb != null AND kb.orgId == org_id
+                    FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB"
                     RETURN {{ kb_id: kb._key, kb_doc: kb, role: kbEdge.role }}
             )
             LET teamKbAccess = (
                 FOR teamKbPerm IN @@permission
                     FILTER teamKbPerm.type == "TEAM"
-                    FILTER STARTS_WITH(teamKbPerm._to, "recordGroups/")
+                    FILTER STARTS_WITH(teamKbPerm._to, "apps/")
                     LET kb = DOCUMENT(teamKbPerm._to)
-                    FILTER kb != null AND kb.orgId == org_id
+                    FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB"
                     LET team_id = SPLIT(teamKbPerm._from, '/')[1]
                     LET user_team_perm = FIRST(FOR userTeamPerm IN @@permission FILTER userTeamPerm._from == user_from FILTER userTeamPerm._to == CONCAT('teams/', team_id) FILTER userTeamPerm.type == "USER" RETURN userTeamPerm.role)
                     FILTER user_team_perm != null
                     RETURN {{ kb_id: kb._key, kb_doc: kb, role: user_team_perm }}
             )
             LET allKbAccess = APPEND(directKbAccess, (FOR t IN teamKbAccess FILTER LENGTH(FOR d IN directKbAccess FILTER d.kb_id == t.kb_id RETURN 1) == 0 RETURN t))
-            LET kbRecords = {'(FOR access IN directKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" ' + ('FILTER record.isFile != false ' if include_kb else '') + record_filter + ' RETURN { record: record, permission: { role: access.role, type: "USER" }, kb_id: kb._key, kb_name: kb.groupName })' if include_kb else '[]'}
+            LET kbRecords = {'(FOR access IN directKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" ' + ('FILTER record.isFile != false ' if include_kb else '') + record_filter + ' RETURN { record: record, permission: { role: access.role, type: "USER" }, kb_id: kb._key, kb_name: kb.name })' if include_kb else '[]'}
             LET connectorRecords = {'(FOR permissionEdge IN @@permission FILTER permissionEdge._from == user_from FILTER permissionEdge.type == "USER" ' + perm_filter + ' LET record = DOCUMENT(permissionEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "CONNECTOR" ' + record_filter + ' RETURN { record: record, permission: { role: permissionEdge.role, type: permissionEdge.type } })' if include_connector else '[]'}
             LET allRecords = APPEND(kbRecords, connectorRecords)
             FOR item IN allRecords
@@ -12453,8 +12472,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             count_query = """
             LET user_from = @user_from
             LET org_id = @org_id
-            LET directKbAccess = (FOR kbEdge IN @@permission FILTER kbEdge._from == user_from FILTER kbEdge.type == "USER" FILTER kbEdge.role IN @kb_permissions LET kb = DOCUMENT(kbEdge._to) FILTER kb != null AND kb.orgId == org_id RETURN { kb_doc: kb })
-            LET teamKbAccess = (FOR teamKbPerm IN @@permission FILTER teamKbPerm.type == "TEAM" FILTER STARTS_WITH(teamKbPerm._to, "recordGroups/") LET kb = DOCUMENT(teamKbPerm._to) FILTER kb != null AND kb.orgId == org_id LET team_id = SPLIT(teamKbPerm._from, '/')[1] LET user_team_perm = FIRST(FOR userTeamPerm IN @@permission FILTER userTeamPerm._from == user_from FILTER userTeamPerm._to == CONCAT('teams/', team_id) FILTER userTeamPerm.type == "USER" RETURN 1) FILTER user_team_perm != null RETURN { kb_doc: kb })
+            LET directKbAccess = (FOR kbEdge IN @@permission FILTER kbEdge._from == user_from FILTER kbEdge.type == "USER" FILTER kbEdge.role IN @kb_permissions LET kb = DOCUMENT(kbEdge._to) FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" RETURN { kb_doc: kb })
+            LET teamKbAccess = (FOR teamKbPerm IN @@permission FILTER teamKbPerm.type == "TEAM" FILTER STARTS_WITH(teamKbPerm._to, "apps/") LET kb = DOCUMENT(teamKbPerm._to) FILTER kb != null AND kb.orgId == org_id AND kb.type == "KB" LET team_id = SPLIT(teamKbPerm._from, '/')[1] LET user_team_perm = FIRST(FOR userTeamPerm IN @@permission FILTER userTeamPerm._from == user_from FILTER userTeamPerm._to == CONCAT('teams/', team_id) FILTER userTeamPerm.type == "USER" RETURN 1) FILTER user_team_perm != null RETURN { kb_doc: kb })
             LET allKbAccess = APPEND(directKbAccess, (FOR t IN teamKbAccess FILTER LENGTH(FOR d IN directKbAccess FILTER d.kb_doc._key == t.kb_doc._key RETURN 1) == 0 RETURN t))
             LET kbCount = LENGTH(FOR access IN allKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" RETURN 1)
             LET connectorCount = LENGTH(FOR permissionEdge IN @@permission FILTER permissionEdge._from == user_from FILTER permissionEdge.type == "USER" LET record = DOCUMENT(permissionEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "CONNECTOR" RETURN 1)
@@ -12571,17 +12590,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if folder_id:
                 filter_bind["folder_id"] = folder_id
             main_query = f"""
-            LET kb = DOCUMENT("recordGroups", @kb_id)
-            FILTER kb != null
+            LET kb = DOCUMENT("apps", @kb_id)
+            FILTER kb != null AND kb.type == "KB"
             LET kbFolders = (
                 FOR belongsEdge IN @@belongs_to_kb
                     FILTER belongsEdge._to == kb._id
                     LET folder_record = DOCUMENT(belongsEdge._from)
                     FILTER folder_record != null
-                    LET folder_file = FIRST(FOR isEdge IN @@is_of_type FILTER isEdge._from == folder_record._id LET f = DOCUMENT(isEdge._to) FILTER f != null AND f.isFile == false RETURN f)
-                    FILTER folder_file != null
+                    FILTER folder_record.mimeType == "application/vnd.folder"
                     {folder_filter}
-                    RETURN {{ folder: folder_record, folder_id: folder_record._key, folder_name: folder_file.name }}
+                    RETURN {{ folder: folder_record, folder_id: folder_record._key, folder_name: folder_record.recordName }}
             )
             LET folder_ids = kbFolders[*].folder._id
             LET all_records_data = (
@@ -12608,15 +12626,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
             """
             records = await self.execute_query(main_query, bind_vars=filter_bind)
             count_query = f"""
-            LET kb = DOCUMENT("recordGroups", @kb_id)
-            FILTER kb != null
+            LET kb = DOCUMENT("apps", @kb_id)
+            FILTER kb != null AND kb.type == "KB"
             LET folder_ids = (
                 FOR belongsEdge IN @@belongs_to_kb
                     FILTER belongsEdge._to == kb._id
                     LET folder_record = DOCUMENT(belongsEdge._from)
                     FILTER folder_record != null
-                    LET folder_file = FIRST(FOR isEdge IN @@is_of_type FILTER isEdge._from == folder_record._id LET f = DOCUMENT(isEdge._to) FILTER f != null AND f.isFile == false RETURN 1)
-                    FILTER folder_file != null
+                    FILTER folder_record.mimeType == "application/vnd.folder"
                     {folder_filter}
                     RETURN belongsEdge._from
             )
@@ -12626,20 +12643,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
             count_results = await self.execute_query(count_query, bind_vars=filter_bind)
             total = count_results[0] if count_results else 0
             folders_query = """
-            LET kb = DOCUMENT("recordGroups", @kb_id)
-            FILTER kb != null
+            LET kb = DOCUMENT("apps", @kb_id)
+            FILTER kb != null AND kb.type == "KB"
             LET folder_list = (
                 FOR belongsEdge IN @@belongs_to_kb
                     FILTER belongsEdge._to == kb._id
                     LET folder_record = DOCUMENT(belongsEdge._from)
                     FILTER folder_record != null
-                    LET folder_file = FIRST(FOR isEdge IN @@is_of_type FILTER isEdge._from == folder_record._id LET f = DOCUMENT(isEdge._to) FILTER f != null AND f.isFile == false RETURN f)
-                    FILTER folder_file != null
-                    RETURN { id: folder_record._key, name: folder_file.name }
+                    FILTER folder_record.mimeType == "application/vnd.folder"
+                    RETURN { id: folder_record._key, name: folder_record.recordName }
             )
             RETURN folder_list
             """
-            folders_result = await self.execute_query(folders_query, bind_vars={"kb_id": kb_id, "@belongs_to_kb": CollectionNames.BELONGS_TO.value, "@is_of_type": CollectionNames.IS_OF_TYPE.value})
+            folders_result = await self.execute_query(folders_query, bind_vars={"kb_id": kb_id, "@belongs_to_kb": CollectionNames.BELONGS_TO.value})
             folder_list = folders_result[0] if folders_result and isinstance(folders_result[0], list) else []
             available = {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [user_perm] if user_perm else [], "folders": folder_list}
             return records or [], total, available
@@ -12655,8 +12671,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Fetch just the KB display name for use in error messages. Returns None on any failure."""
         try:
             results = await self.execute_query(
-                "FOR kb IN @@col FILTER kb._key == @id RETURN kb.groupName",
-                bind_vars={"@col": CollectionNames.RECORD_GROUPS.value, "id": kb_id},
+                "FOR kb IN @@col FILTER kb._key == @id RETURN kb.name",
+                bind_vars={"@col": CollectionNames.APPS.value, "id": kb_id},
             )
             return results[0] if results else None
         except Exception:
@@ -12984,26 +13000,26 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "from_id": record_id,
                 "from_collection": CollectionNames.RECORDS.value,
                 "to_id": kb_id,
-                "to_collection": CollectionNames.RECORD_GROUPS.value,
+                "to_collection": CollectionNames.APPS.value,
                 "entityType": Connectors.KNOWLEDGE_BASE.value,
                 "createdAtTimestamp": timestamp,
                 "updatedAtTimestamp": timestamp,
             })
-            # Record -> KB inheritPermission edge
-            # KB records inherit permissions from KB by default
+            # Record -> KB app inheritPermission edge
+            # KB records inherit permissions from KB app by default
             edges_to_create.append({
                 "from_id": record_id,
                 "from_collection": CollectionNames.RECORDS.value,
                 "to_id": kb_id,
-                "to_collection": CollectionNames.RECORD_GROUPS.value,
+                "to_collection": CollectionNames.APPS.value,
                 "createdAtTimestamp": timestamp,
                 "updatedAtTimestamp": timestamp,
             })
 
         parent_child = [e for e in edges_to_create if e.get("relationshipType") == "PARENT_CHILD"]
         is_of_type = [e for e in edges_to_create if e.get("to_collection") == CollectionNames.FILES.value]
-        belongs_to = [e for e in edges_to_create if e.get("to_collection") == CollectionNames.RECORD_GROUPS.value and e.get("entityType")]
-        inherit_permission = [e for e in edges_to_create if e.get("to_collection") == CollectionNames.RECORD_GROUPS.value and not e.get("entityType")]
+        belongs_to = [e for e in edges_to_create if e.get("to_collection") == CollectionNames.APPS.value and e.get("entityType")]
+        inherit_permission = [e for e in edges_to_create if e.get("to_collection") == CollectionNames.APPS.value and not e.get("entityType") and not e.get("relationshipType")]
         if parent_child:
             await self.batch_create_edges(parent_child, CollectionNames.RECORD_RELATIONS.value, transaction=transaction)
         if is_of_type:
@@ -13864,20 +13880,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET apps = (
             FOR app IN apps
                 FILTER app._key IN @user_app_ids
-                LET has_children = (LENGTH(
+                // KB apps have records pointing directly to them via belongsTo;
+                // external connector apps have recordGroups pointing to them.
+                LET has_children = app.type == "KB" ? (LENGTH(
+                    FOR edge IN belongsTo
+                        FILTER edge._to == app._id
+                        AND STARTS_WITH(edge._from, "records/")
+                        LIMIT 1
+                        RETURN 1
+                ) > 0) : (LENGTH(
                     FOR rg IN recordGroups
                         FILTER rg.connectorId == app._key
+                        LIMIT 1
                         RETURN 1
                 ) > 0)
 
                 LET sharingStatus = app.scope != null ? app.scope : "personal"
+                LET origin = app.type == "KB" ? "COLLECTION" : "CONNECTOR"
 
                 RETURN {
                     id: app._key,
                     name: app.name,
                     nodeType: "app",
                     parentId: null,
-                    origin: "CONNECTOR",
+                    origin: origin,
                     connector: app.type,
                     createdAt: app.createdAtTimestamp || 0,
                     updatedAt: app.updatedAtTimestamp || 0,
@@ -14786,7 +14812,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if parent_id:
             if parent_type in ("kb", "recordGroup", "record", "folder"):
                 # Children-first approach: only need parent_doc_id
-                parent_doc_id = f"recordGroups/{parent_id}" if parent_type in ("kb", "recordGroup") else f"records/{parent_id}"
+                # KB parent_type maps to apps collection; recordGroup stays as recordGroups
+                parent_doc_id = f"apps/{parent_id}" if parent_type == "kb" else (f"recordGroups/{parent_id}" if parent_type == "recordGroup" else f"records/{parent_id}")
                 bind_vars["parent_doc_id"] = parent_doc_id
             elif parent_type == "app":
                 # App-level scope: use parent_id for scope filters
@@ -15942,15 +15969,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
     def _get_app_children_subquery(self, app_id: str, org_id: str, user_key: str) -> tuple[str, dict[str, Any]]:
-        """Generate AQL sub-query to fetch RecordGroups for an App.
+        """Generate AQL sub-query to fetch children for an App.
 
-        Simplified unified approach:
-        - Gets ALL recordGroups connected to app via belongsTo edge (KB and Connector unified)
-        - Uses _get_permission_role_aql for comprehensive permission checking (all 10 paths)
-        - Returns only recordGroups where user has permission
-        - Includes userRole field in results
+        For KB apps (type == "KB"):
+        - Returns root-level records/folders directly linked via belongsTo edges
+        - Root-level = records with no incoming PARENT_CHILD edge within this KB
+
+        For external connector apps:
+        - Returns recordGroups connected to app via belongsTo edges
         """
-        # Get the permission role AQL for recordGroup permission checking
         permission_role_aql = self._get_permission_role_aql("recordGroup", "node", "u")
 
         sub_query = f"""
@@ -15960,90 +15987,103 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET u = DOCUMENT("users", @user_key)
         FILTER u != null
 
-        // Get all recordGroups connected to app via belongsTo edge
-        LET all_rgs = (
+        LET raw_children = app.type == "KB" ? (
+            // KB app: return root-level records/folders (no incoming PARENT_CHILD edge)
             FOR edge IN belongsTo
                 FILTER edge._to == app._id
-                AND STARTS_WITH(edge._from, "recordGroups/")
-                AND edge.isDeleted != true
-                LET rg = DOCUMENT(edge._from)
-                FILTER rg != null AND rg.isDeleted != true
-                RETURN rg
-        )
-
-        LET raw_children = (
+                AND STARTS_WITH(edge._from, "records/")
+                LET record = DOCUMENT(edge._from)
+                FILTER record != null AND record.isDeleted != true
+                // Root-level: no parent record within this KB
+                LET has_parent = LENGTH(
+                    FOR rel IN recordRelations
+                        FILTER rel._to == record._id
+                        AND rel.relationshipType == "PARENT_CHILD"
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
+                FILTER has_parent == false
+                LET is_folder = record.mimeType == "application/vnd.folder"
+                LET has_children = is_folder ? (LENGTH(
+                    FOR rel IN recordRelations
+                        FILTER rel._from == record._id
+                        AND rel.relationshipType == "PARENT_CHILD"
+                        LIMIT 1
+                        RETURN 1
+                ) > 0) : false
+                RETURN {{
+                    id: record._key,
+                    name: record.recordName,
+                    nodeType: is_folder ? "folder" : "record",
+                    parentId: CONCAT("apps/", @app_id),
+                    origin: "COLLECTION",
+                    connector: "KB",
+                    recordType: record.recordType,
+                    recordGroupType: null,
+                    indexingStatus: record.indexingStatus,
+                    createdAt: record.createdAtTimestamp != null ? record.createdAtTimestamp : 0,
+                    updatedAt: record.updatedAtTimestamp != null ? record.updatedAtTimestamp : 0,
+                    sizeInBytes: record.sizeInBytes,
+                    mimeType: record.mimeType,
+                    extension: record.extension,
+                    webUrl: record.webUrl,
+                    hasChildren: has_children,
+                    userRole: null,
+                    sharingStatus: null,
+                    isInternal: false
+                }}
+        ) : (
+            // External connector app: return recordGroups connected via belongsTo
+            LET all_rgs = (
+                FOR rg_edge IN belongsTo
+                    FILTER rg_edge._to == app._id
+                    AND STARTS_WITH(rg_edge._from, "recordGroups/")
+                    AND rg_edge.isDeleted != true
+                    LET rg = DOCUMENT(rg_edge._from)
+                    FILTER rg != null AND rg.isDeleted != true
+                    RETURN rg
+            )
             FOR node IN all_rgs
-                // Calculate user's permission role on this recordGroup using helper
                 {permission_role_aql}
-
-                // Normalize permission_role: handle both array and string cases
                 LET normalized_role = IS_ARRAY(permission_role)
                     ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
                     : permission_role
-
-                // Only include recordGroups where user has permission
                 FILTER normalized_role != null AND normalized_role != ""
-
-                // Check if recordGroup has children for hasChildren flag
                 LET has_child_rgs = (LENGTH(
-                    FOR edge IN belongsTo
-                        FILTER edge._to == node._id
-                        AND STARTS_WITH(edge._from, "recordGroups/")
-                        AND edge.isDeleted != true
+                    FOR c_edge IN belongsTo
+                        FILTER c_edge._to == node._id
+                        AND STARTS_WITH(c_edge._from, "recordGroups/")
+                        AND c_edge.isDeleted != true
                         LIMIT 1
                         RETURN 1
                 ) > 0)
-
                 LET has_records = (LENGTH(
-                    FOR edge IN belongsTo
-                        FILTER edge._to == node._id
-                        AND STARTS_WITH(edge._from, "records/")
-                        AND edge.isDeleted != true
+                    FOR r_edge IN belongsTo
+                        FILTER r_edge._to == node._id
+                        AND STARTS_WITH(r_edge._from, "records/")
+                        AND r_edge.isDeleted != true
                         LIMIT 1
                         RETURN 1
                 ) > 0)
-
-                // Compute sharingStatus for KB recordGroups only
-                LET sharingStatus = node.connectorName == "KB" ? (
-                    LET user_perm_count = LENGTH(
-                        FOR perm IN permission
-                            FILTER perm._to == node._id
-                            FILTER perm.type == "USER"
-                            RETURN 1
-                    )
-                    LET team_perm_count = LENGTH(
-                        FOR perm IN permission
-                            FILTER perm._to == node._id
-                            FILTER perm.type == "TEAM"
-                            RETURN 1
-                    )
-                    LET has_multiple_access = (user_perm_count > 1 OR team_perm_count > 0)
-                    RETURN (has_multiple_access ? "shared" : "private")
-                )[0] : null
-
                 RETURN MERGE(node, {{
                     id: node._key,
                     name: node.groupName,
                     nodeType: "recordGroup",
                     parentId: CONCAT("apps/", @app_id),
-                    origin: node.connectorName == "KB" ? "COLLECTION" : "CONNECTOR",
+                    origin: "CONNECTOR",
                     connector: node.connectorName,
                     recordType: null,
                     recordGroupType: node.groupType,
                     indexingStatus: null,
-                    createdAt: node.connectorName == "KB"
-                        ? (node.createdAtTimestamp != null ? node.createdAtTimestamp : 0)
-                        : (node.sourceCreatedAtTimestamp != null ? node.sourceCreatedAtTimestamp : 0),
-                    updatedAt: node.connectorName == "KB"
-                        ? (node.updatedAtTimestamp != null ? node.updatedAtTimestamp : 0)
-                        : (node.sourceLastModifiedTimestamp != null ? node.sourceLastModifiedTimestamp : 0),
+                    createdAt: node.sourceCreatedAtTimestamp != null ? node.sourceCreatedAtTimestamp : (node.createdAtTimestamp != null ? node.createdAtTimestamp : 0),
+                    updatedAt: node.sourceLastModifiedTimestamp != null ? node.sourceLastModifiedTimestamp : (node.updatedAtTimestamp != null ? node.updatedAtTimestamp : 0),
                     sizeInBytes: null,
                     mimeType: null,
                     extension: null,
                     webUrl: node.webUrl,
                     hasChildren: has_child_rgs OR has_records,
                     userRole: normalized_role,
-                    sharingStatus: sharingStatus,
+                    sharingStatus: null,
                     isInternal: node.isInternal ? true : false
                 }})
         )
@@ -17250,7 +17290,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 OR LENGTH(
                     FOR ip IN inheritPermissions
                         FILTER ip._from == record._id
-                        FILTER ip._to == CONCAT('recordGroups/', @parent_id)
+                        FILTER ip._to == CONCAT('apps/', @parent_id)
                         RETURN 1
                 ) > 0
             )
@@ -17263,7 +17303,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 OR LENGTH(
                     FOR ip IN inheritPermissions
                         FILTER ip._from == inherited_node._id
-                        FILTER ip._to == CONCAT('recordGroups/', @parent_id)
+                        FILTER ip._to == CONCAT('apps/', @parent_id)
                         RETURN 1
                 ) > 0
             )""" + (f" AND {record_ids_inline}" if record_ids_inline else "")
@@ -17521,13 +17561,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Args:
             parent_id: The parent key (folder or KB)
             child_id: The child key (record being moved)
-            parent_is_kb: True if parent is a KB (recordGroups), False if folder (records)
+            parent_is_kb: True if parent is a KB app (apps), False if folder (records)
             transaction: Optional transaction ID
 
         Returns:
             bool: True if edge created successfully
         """
-        parent_collection = "recordGroups" if parent_is_kb else "records"
+        parent_collection = "apps" if parent_is_kb else "records"
         timestamp = get_epoch_timestamp_in_ms()
 
         query = """
@@ -18225,7 +18265,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             LET directKbRecords = (
                 FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                    FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                    FILTER IS_SAME_COLLECTION("apps", kb)
+                    FILTER kb.type == @kb_type
                     {kb_filter_clause}
                 FOR record IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                     FILTER IS_SAME_COLLECTION("records", record)
@@ -18240,7 +18281,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER IS_SAME_COLLECTION("teams", team)
                     FILTER userTeamEdge.type == "USER"
                 FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
-                    FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                    FILTER IS_SAME_COLLECTION("apps", kb)
+                    FILTER kb.type == @kb_type
                     FILTER teamKbEdge.type == "TEAM"
                     {kb_filter_clause}
                 FOR record IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
@@ -18262,6 +18304,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             bind_vars = {
                 "userId": user_id,
+                "kb_type": Connectors.KNOWLEDGE_BASE.value,
                 "completedStatus": ProgressStatus.COMPLETED.value,
                 "@users": CollectionNames.USERS.value,
             }
@@ -18359,14 +18402,33 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             tasks = []
 
+            # Fetch app types once to distinguish KB apps (type == "KB") from connector apps
+            kb_app_ids: set[str] = set()
+            if user_apps_ids:
+                type_query = """
+                FOR app IN @@apps
+                    FILTER app._key IN @app_ids AND app.type == @kb_type
+                    RETURN app._key
+                """
+                try:
+                    kb_app_keys = await self.http_client.execute_aql(
+                        type_query,
+                        bind_vars={
+                            "app_ids": list(user_apps_ids),
+                            "kb_type": Connectors.KNOWLEDGE_BASE.value,
+                            "@apps": CollectionNames.APPS.value,
+                        },
+                    )
+                    kb_app_ids = set(kb_app_keys or [])
+                except Exception:
+                    pass
+
             if has_app_filter and has_kb_filter:
                 connectors_to_query = [
                     cid for cid in user_apps_ids
-                    if cid in connector_ids_filter
+                    if cid in connector_ids_filter and cid not in kb_app_ids
                 ]
                 for connector_id in connectors_to_query:
-                    if connector_id.startswith("knowledgeBase_"):
-                        continue
                     tasks.append(
                         self._get_virtual_ids_for_connector(user_id, org_id, connector_id, metadata_filters)
                     )
@@ -18377,7 +18439,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             elif not has_app_filter and not has_kb_filter:
                 for connector_id in user_apps_ids:
-                    if connector_id.startswith("knowledgeBase_"):
+                    if connector_id in kb_app_ids:
                         continue
                     tasks.append(
                         self._get_virtual_ids_for_connector(user_id, org_id, connector_id, metadata_filters)
@@ -18387,11 +18449,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             else:  # has_app_filter and not has_kb_filter
                 connectors_to_query = [
                     cid for cid in user_apps_ids
-                    if cid in connector_ids_filter
+                    if cid in connector_ids_filter and cid not in kb_app_ids
                 ]
                 for connector_id in connectors_to_query:
-                    if connector_id.startswith("knowledgeBase_"):
-                        continue
                     tasks.append(
                         self._get_virtual_ids_for_connector(user_id, org_id, connector_id, metadata_filters)
                     )
@@ -19329,23 +19389,32 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     LET filters_parsed = TYPENAME(knowledge.filters) == "string" ?
                         JSON_PARSE(knowledge.filters) : knowledge.filters
                     LET record_groups = filters_parsed.recordGroups || []
-                    LET is_kb = LENGTH(record_groups) > 0
 
-                    LET kb_info = is_kb && LENGTH(record_groups) > 0 ? (
-                        LET first_kb_id = record_groups[0]
-                        LET kb_doc = DOCUMENT(CONCAT('{CollectionNames.RECORD_GROUPS.value}/', first_kb_id))
-                        FILTER kb_doc != null
-                        FILTER kb_doc.groupType == @kb_type
+                    // KB apps are now in the apps collection; try connectorId as a KB app first
+                    LET connector_instance = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                    LET is_kb = connector_instance != null AND connector_instance.type == "KB"
+                    LET is_kb_by_rg = !is_kb AND LENGTH(record_groups) > 0
+
+                    LET kb_info = is_kb ? (
                         RETURN {{
-                            name: kb_doc.groupName,
+                            name: connector_instance.name,
                             type: "KB",
-                            displayName: kb_doc.groupName,
-                            connectorId: kb_doc.connectorId || knowledge.connectorId
+                            displayName: connector_instance.name,
+                            connectorId: knowledge.connectorId
                         }}
-                    ) : []
+                    ) : (is_kb_by_rg ? (
+                        LET first_kb_id = record_groups[0]
+                        LET kb_doc = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', first_kb_id))
+                        FILTER kb_doc != null AND kb_doc.type == "KB"
+                        RETURN {{
+                            name: kb_doc.name,
+                            type: "KB",
+                            displayName: kb_doc.name,
+                            connectorId: kb_doc._key
+                        }}
+                    ) : [])
 
-                    LET app_info = !is_kb ? (
-                        LET connector_instance = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                    LET app_info = (!is_kb AND !is_kb_by_rg) ? (
                         FILTER connector_instance != null
                         RETURN {{
                             name: connector_instance.name,
@@ -19879,28 +19948,37 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             LET filters_parsed = TYPENAME(knowledge.filters) == "string" ?
                                 JSON_PARSE(knowledge.filters) : knowledge.filters
                             LET record_groups = filters_parsed.recordGroups || []
-                            LET is_kb = LENGTH(record_groups) > 0
 
-                            LET kb_info = is_kb && LENGTH(record_groups) > 0 ? (
-                                LET first_kb_id = record_groups[0]
-                                LET kb_doc = DOCUMENT(CONCAT('{CollectionNames.RECORD_GROUPS.value}/', first_kb_id))
-                                FILTER kb_doc != null
-                                FILTER kb_doc.groupType == @kb_type
+                            // KB apps are now in apps collection; check connectorId as KB app first
+                            LET connector_instance2 = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                            LET is_kb2 = connector_instance2 != null AND connector_instance2.type == "KB"
+                            LET is_kb_by_rg2 = !is_kb2 AND LENGTH(record_groups) > 0
+
+                            LET kb_info = is_kb2 ? (
                                 RETURN {{
-                                    name: kb_doc.groupName,
+                                    name: connector_instance2.name,
                                     type: "KB",
-                                    displayName: kb_doc.groupName,
-                                    connectorId: kb_doc.connectorId || knowledge.connectorId
+                                    displayName: connector_instance2.name,
+                                    connectorId: knowledge.connectorId
                                 }}
-                            ) : []
-
-                            LET app_info = !is_kb ? (
-                                LET connector_instance = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
-                                FILTER connector_instance != null
+                            ) : (is_kb_by_rg2 ? (
+                                LET first_kb_id = record_groups[0]
+                                LET kb_doc = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', first_kb_id))
+                                FILTER kb_doc != null AND kb_doc.type == "KB"
                                 RETURN {{
-                                    name: connector_instance.name,
-                                    type: connector_instance.type || "APP",
-                                    displayName: connector_instance.name
+                                    name: kb_doc.name,
+                                    type: "KB",
+                                    displayName: kb_doc.name,
+                                    connectorId: kb_doc._key
+                                }}
+                            ) : [])
+
+                            LET app_info = (!is_kb2 AND !is_kb_by_rg2) ? (
+                                FILTER connector_instance2 != null
+                                RETURN {{
+                                    name: connector_instance2.name,
+                                    type: connector_instance2.type || "APP",
+                                    displayName: connector_instance2.name
                                 }}
                             ) : []
 
