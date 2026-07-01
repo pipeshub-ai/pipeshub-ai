@@ -12,8 +12,6 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import ListOperator, SyncFilterKey
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
-    build_jira_attachment_filename_lookup,
-    jira_storage_text_to_markdown_with_images,
 )
 from app.models.entities import AppUser, RecordGroupType, RecordType, TicketRecord
 from app.models.permission import EntityType, PermissionType
@@ -60,59 +58,6 @@ def _tx_ctx(store: Any) -> Any:
         yield store
 
     return _cm()
-
-
-class TestWikiAndAttachmentHelpers:
-    def test_build_lookup_skips_non_dict_attachments_and_populates_mime(self):
-        mime: dict[str, str] = {}
-        lookup = build_jira_attachment_filename_lookup(
-            mime,
-            raw_attachments=[
-                "bad",
-                {"id": "10", "filename": "doc.pdf", "mimeType": "application/pdf"},
-                {"id": "11"},
-            ],
-        )
-        assert lookup["doc.pdf"] == "10"
-        assert mime["10"] == "application/pdf"
-
-    @pytest.mark.asyncio
-    async def test_storage_text_non_string_returns_empty(self):
-        md, embedded = await jira_storage_text_to_markdown_with_images(
-            None, AsyncMock(), {}, {},
-        )
-        assert md == ""
-        assert embedded == set()
-
-    @pytest.mark.asyncio
-    async def test_storage_text_fetch_failure_keeps_wiki_marker(self):
-        mime = {"5": "image/png"}
-        lookup = {"shot.png": "5", "shot.png".lower(): "5"}
-
-        async def boom(_aid: str, _name: str) -> None:
-            raise RuntimeError("fetch failed")
-
-        wiki = "!shot.png|width=100!"
-        md, embedded = await jira_storage_text_to_markdown_with_images(
-            wiki, boom, lookup, mime,
-        )
-        assert "!shot.png" in md
-        assert embedded == set()
-
-    @pytest.mark.asyncio
-    async def test_storage_text_non_image_attachment_left_unchanged(self):
-        mime = {"9": "application/pdf"}
-        lookup = {"doc.pdf": "9"}
-
-        async def fetcher(_aid: str, _name: str) -> str:
-            return "data:application/pdf;base64,QUJD"
-
-        wiki = "[^doc.pdf]"
-        md, embedded = await jira_storage_text_to_markdown_with_images(
-            wiki, fetcher, lookup, mime,
-        )
-        assert "[^doc.pdf]" in md
-        assert embedded == set()
 
 
 class TestRunSyncAndInitGaps:

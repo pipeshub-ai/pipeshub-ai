@@ -1600,7 +1600,7 @@ class TestRecordToMessageContent:
         record["block_containers"]["block_groups"] = [table_group]
         result = record_to_message_content(record)
         text = _all_text(result)
-        assert "Sales table" in text
+        assert "* Block Group Type: table" in text
         assert "Row 0" in text
         assert "Row 1" in text
 
@@ -1614,7 +1614,7 @@ class TestRecordToMessageContent:
         record["block_containers"]["block_groups"] = [table_group]
         result = record_to_message_content(record)
         text = _all_text(result)
-        assert text.count("My table") == 1
+        assert text.count("* Block Group Type: table") == 1
 
     def test_text_block_with_parent_index_renders_group(self):
         block = _make_text_block(index=0, data="Item in list", parent_index=0)
@@ -3318,7 +3318,7 @@ class TestRecordToMessageContentEdgeCases:
         assert "raw string row data" in text
 
     def test_table_with_table_summary_as_string_data(self):
-        """Table group with string data should use str()."""
+        """Table group with string data still renders rows via record_to_message_content."""
         row = _make_table_row_block(index=0, row_text="R0", parent_index=0)
         table_group = {
             "index": 0,
@@ -3332,7 +3332,8 @@ class TestRecordToMessageContentEdgeCases:
         record["block_containers"]["block_groups"] = [table_group]
         result = record_to_message_content(record)
         text = _all_text(result)
-        assert "plain summary string" in text
+        assert "R0" in text
+        assert "* Block Group Type: table" in text
 
     def test_block_group_dedup_for_parent_index_blocks(self):
         """Multiple blocks with same parent_index should only render group once."""

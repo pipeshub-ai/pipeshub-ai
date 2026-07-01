@@ -282,10 +282,11 @@ class IssuesSync:
             children_records=child_records,
         )
         block_groups.append(bg_0)
+        block_group_number += 1
 
         if self._comments_indexing_enabled():
             comments_bg, remaining_records = await c.comments.build_comment_blocks(
-                issue_url=record.weburl, parent_index=block_group_number, record=record
+                issue_url=record.weburl, parent_index=bg_0.index, record=record
             )
             block_groups.extend(comments_bg)
             block_group_number += len(comments_bg)

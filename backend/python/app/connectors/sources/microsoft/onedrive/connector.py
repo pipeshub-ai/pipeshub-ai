@@ -3,16 +3,20 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple, Any
 
 from aiolimiter import AsyncLimiter
 from azure.identity.aio import ClientSecretCredential
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
+from kiota_abstractions.base_request_configuration import RequestConfiguration
 from msgraph import GraphServiceClient
+from msgraph.generated.groups.groups_request_builder import GroupsRequestBuilder
 from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.group import Group
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.models.subscription import Subscription
+from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
@@ -64,9 +68,29 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import NotificationType, NotificationSeverity
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+def get_azure_error_payload(error: Exception) -> Dict[str, Any]:
+    """Return Azure error payload JSON when present."""
+    response = getattr(error, "response", None)
+    if response is None:
+        return {}
+    try:
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def sanitize_azure_error(error: Exception) -> str:
+    """Extract Azure `error_description` if available, else return full error."""
+    payload = get_azure_error_payload(error)
+    description = payload.get("error_description")
+    if isinstance(description, str) and description.strip():
+        return description.strip()
+    return str(error).strip()
 
 @dataclass
 class OneDriveCredentials:
@@ -175,6 +199,7 @@ class OneDriveConnector(BaseConnector):
         # Batch processing configuration
         self.batch_size = 100
         self.max_concurrent_batches = 1 # set to 1 for now to avoid write write conflicts for small number of records
+        self.onedrive_users_synced = 0
 
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
         self.sync_filters: FilterCollection = FilterCollection()
@@ -221,7 +246,21 @@ class OneDriveConnector(BaseConnector):
             self.logger.info("✅ Credential initialized and HTTP session established")
         except Exception as token_error:
             self.logger.error(f"❌ Failed to initialize credential: {token_error}")
-            raise ValueError(f"Failed to initialize OneDrive credential: {token_error}")
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="OneDrive authentication failed",
+                message=(
+                    "Unable to authenticate using current credentials. Please verify the connector authentication credentials."
+                ),
+                payload={
+                    "connector_id": self.connector_id,
+                    "connector_name": self.connector_name.value,
+                    "connector_scope": self.scope,
+                },
+                recipient_user_ids=[self.created_by],
+            )
+            raise ValueError(f"Failed to initialize OneDrive credential: {sanitize_azure_error(token_error)}")
 
         self.client = GraphServiceClient(self.credential, scopes=["https://graph.microsoft.com/.default"])
         self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
@@ -746,6 +785,23 @@ class OneDriveConnector(BaseConnector):
                 self.logger.info("Sync point found, performing incremental delta sync...")
                 await self._perform_delta_sync(delta_link, sync_point_key)
 
+        except ODataError as e:
+            self.logger.error(f"❌ Error in user group sync: {e}", exc_info=True)
+            error_code = (e.error.code or "") if e.error else ""
+            if error_code == "Authorization_RequestDenied" or e.response_status_code == 403:
+                await self.notify(
+                    type=NotificationType.CONNECTOR_AUTH_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title="User group sync failed",
+                    message="Please check your authentication credentials are correct and has Group.Read.All API permission.",
+                    payload={
+                        "connector_id": self.connector_id,
+                        "connector_name": self.connector_name.value,
+                        "connector_scope": self.scope,
+                    },
+                    recipient_user_ids=[self.created_by],
+                )
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error in user group sync: {e}", exc_info=True)
             raise
@@ -1222,6 +1278,30 @@ class OneDriveConnector(BaseConnector):
             users: List of users to process
         """
         try:
+            # Probe for Files.Read.All API permission
+            try:
+                await self._probe_drives_scope()
+            except ODataError as e:
+                self.logger.error(f"❌ Error in files sync: {e}", exc_info=True)
+                error_code = (e.error.code or "") if e.error else ""
+                if error_code == "Authorization_RequestDenied" or e.response_status_code == 403:
+                    await self.notify(
+                        type=NotificationType.CONNECTOR_AUTH_ERROR,
+                        severity=NotificationSeverity.ERROR,
+                        title="Files sync failed",
+                        message="Please check your authentication credentials are correct and has Files.Read.All API permission.",
+                        payload={
+                            "connector_id": self.connector_id,
+                            "connector_name": self.connector_name.value,
+                            "connector_scope": self.scope,
+                        },
+                        recipient_user_ids=[self.created_by],
+                    )
+                raise
+            except Exception as e:
+                self.logger.error(f"❌ Error in files sync: {e}", exc_info=True)
+                raise
+
             all_active_users = await self.data_entities_processor.get_all_active_users()
             active_user_emails = {active_user.email.lower() for active_user in all_active_users}
 
@@ -1242,6 +1322,20 @@ class OneDriveConnector(BaseConnector):
                     self.logger.info(f"Skipping user {user.email}: No OneDrive license or drive not provisioned")
 
             self.logger.info(f"Processing {len(users_to_sync)} users with OneDrive out of {len(active_users)} active users")
+            self.onedrive_users_synced = len(users_to_sync)
+            if len(users_to_sync) == 0:
+                await self.notify(
+                    type=NotificationType.CONNECTOR_RECORD_SYNC_ERROR,
+                    severity=NotificationSeverity.WARNING,
+                    title="No users with OneDrive found",
+                    message="Ensure that your OneDrive users are invited to Pipeshub, and verify that your application has Files.Read.All API permission with admin consent.",
+                    recipient_user_ids=[self.created_by],
+                    payload={
+                        "connector_id": self.connector_id,
+                        "connector_name": self.connector_name.value,
+                        "connector_scope": self.scope,
+                    },
+                )
 
             # Process users in concurrent batches
             for i in range(0, len(users_to_sync), self.max_concurrent_batches):
@@ -1290,26 +1384,38 @@ class OneDriveConnector(BaseConnector):
             ]):
                 return False
             raise
-
-    async def _detect_and_handle_permission_changes(self) -> None:
+    
+    async def _sync_users(self) -> List[AppUser]:
         """
-        Detect and handle permission changes for existing records.
-        This should be run periodically to catch permission-only changes.
+        Syncs OneDrive users.
         """
         try:
-            self.logger.info("Starting permission change detection")
-
-            # Get all records for the organization
-            # This would need to be implemented in the data processor
-            # For now, we'll check permissions during regular sync
-
-            # This is handled in the _process_delta_item method
-            # where we compare old and new permissions
-
-            self.logger.info("Completed permission change detection")
-
+            users = await self.msgraph_client.get_all_users()
+            await self.data_entities_processor.on_new_app_users(users)
+            self.logger.info(f"✅ Successfully synced {len(users)} users")
+            return users
+        except ODataError as e:
+            self.logger.error(f"❌ Error syncing OneDrive users: {e}", exc_info=True)
+            error_code = (e.error.code or "") if e.error else ""
+            if error_code == "Authorization_RequestDenied" or e.response_status_code == 403:
+                await self.notify(
+                    type=NotificationType.CONNECTOR_USER_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title="OneDrive users sync failed",
+                    message=(
+                        "Please check your authentication credentials are correct and has User.Read.All API permission."
+                    ),
+                    recipient_user_ids=[self.created_by],
+                    payload={
+                        "connector_id": self.connector_id,
+                        "connector_name": self.connector_name.value,
+                        "connector_scope": self.scope,
+                    },
+                )
+            raise
         except Exception as e:
-            self.logger.error(f"❌ Error detecting permission changes: {e}")
+            self.logger.error(f"❌ Error syncing OneDrive users: {e}", exc_info=True)
+            raise
 
     async def _handle_reindex_event(self, record_id: str) -> None:
         """
@@ -1405,6 +1511,7 @@ class OneDriveConnector(BaseConnector):
             # This is necessary because the connector instance may be reused across multiple
             # scheduled runs that are days apart, causing the HTTP session to timeout
             await self._reinitialize_credential_if_needed()
+            self.onedrive_users_synced = 0
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "onedrive", self.connector_id, self.logger
@@ -1412,8 +1519,7 @@ class OneDriveConnector(BaseConnector):
 
             # Step 1: Sync users
             self.logger.info("Syncing users...")
-            users = await self.msgraph_client.get_all_users()
-            await self.data_entities_processor.on_new_app_users(users)
+            users = await self._sync_users()
 
             # Step 2: Sync user groups and their members
             self.logger.info("Syncing user groups...")
@@ -1423,11 +1529,20 @@ class OneDriveConnector(BaseConnector):
             self.logger.info("Syncing user drives...")
             await self._process_users_in_batches(users)
 
-            # Step 4: Detect and handle permission changes
-            self.logger.info("Checking for permission changes...")
-            await self._detect_and_handle_permission_changes()
-
             self.logger.info("OneDrive connector sync completed successfully")
+            if self.onedrive_users_synced > 0:
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SUCCESS,
+                    severity=NotificationSeverity.INFO,
+                    title="OneDrive sync complete",
+                    message="OneDrive sync completed successfully",
+                    recipient_user_ids=[self.created_by],
+                    payload={
+                        "connector_id": self.connector_id,
+                        "connector_name": self.connector_name.value,
+                        "connector_scope": self.scope,
+                    },
+                )
 
         except Exception as e:
             self.logger.error(f"❌ Error in OneDrive connector run: {e}")
@@ -1443,44 +1558,64 @@ class OneDriveConnector(BaseConnector):
             # Test if the credential is still valid by attempting to get a token
             await self.credential.get_token("https://graph.microsoft.com/.default")
             self.logger.debug("✅ Credential is valid and active")
+            return
         except Exception as e:
             self.logger.warning(f"⚠️ Credential needs reinitialization: {e}")
 
-            # Close old credential if it exists
-            if hasattr(self, 'credential') and self.credential:
-                try:
-                    await self.credential.close()
-                except Exception:
-                    pass
+        # Close old credential if it exists
+        if hasattr(self, 'credential') and self.credential:
+            try:
+                await self.credential.close()
+            except Exception:
+                pass
 
-            # Get credentials from config
-            config = self.config.get("credentials", {})
-            auth_config = config.get("auth", {})
-            tenant_id = auth_config.get("tenantId")
-            client_id = auth_config.get("clientId")
-            client_secret = auth_config.get("clientSecret")
+        # Get credentials from config
+        config = self.config.get("credentials", {})
+        auth_config = config.get("auth", {})
+        tenant_id = auth_config.get("tenantId")
+        client_id = auth_config.get("clientId")
+        client_secret = auth_config.get("clientSecret")
 
-            if not all((tenant_id, client_id, client_secret)):
-                raise ValueError("Cannot reinitialize: credentials not found in config")
+        if not all((tenant_id, client_id, client_secret)):
+            raise ValueError("Cannot reinitialize: credentials not found in config")
 
-            # Create new credential
-            self.credential = ClientSecretCredential(
-                tenant_id=tenant_id,
-                client_id=client_id,
-                client_secret=client_secret,
-            )
+        # Create new credential
+        self.credential = ClientSecretCredential(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
 
+        try:
             # Pre-initialize to establish HTTP session
             await self.credential.get_token("https://graph.microsoft.com/.default")
-
-            # Recreate Graph client with new credential
-            self.client = GraphServiceClient(
-                self.credential,
-                scopes=["https://graph.microsoft.com/.default"]
+        except Exception as reinit_error:
+            self.logger.error(f"❌ Failed to reinitialize OneDrive credential: {reinit_error}")
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="OneDrive authentication failed",
+                message=(
+                    "Unable to re-authenticate the OneDrive connector. "
+                    "The client secret may have expired. Please update the connector credentials."
+                ),
+                payload={
+                    "connector_id": self.connector_id,
+                    "connector_name": self.connector_name.value,
+                    "connector_scope": self.scope,
+                },
+                recipient_user_ids=[self.created_by],
             )
-            self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
+            raise
 
-            self.logger.info("✅ Credential successfully reinitialized")
+        # Recreate Graph client with new credential
+        self.client = GraphServiceClient(
+            self.credential,
+            scopes=["https://graph.microsoft.com/.default"]
+        )
+        self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
+
+        self.logger.info("✅ Credential successfully reinitialized")
 
     async def run_incremental_sync(self) -> None:
         """
@@ -1674,13 +1809,113 @@ class OneDriveConnector(BaseConnector):
             return None
 
     async def test_connection_and_access(self) -> bool:
-        """Test connection and access to OneDrive."""
-        try:
-            self.logger.info("Testing connection and access to OneDrive")
-            return True
-        except Exception as e:
-            self.logger.error(f"❌ Error testing connection and access to OneDrive: {e}")
-            return False
+        """
+        Probe all three required Microsoft Graph application permissions:
+          - User.Read.All  → GET /users?$top=1&$select=id
+          - Group.Read.All → GET /groups?$top=1&$select=id
+          - Files.Read.All → GET /drives?$top=1&$select=id
+
+        Returns True only when all three probes succeed.
+        """
+        self.logger.info("Testing connection and access to OneDrive")
+
+        scope_probes = [
+            ("User.Read.All",  self._probe_users_scope),
+            ("Group.Read.All", self._probe_groups_scope),
+            ("Files.Read.All", self._probe_drives_scope),
+        ]
+
+        all_passed = True
+        missing_scopes: List[str] = []
+        for scope_name, probe in scope_probes:
+            try:
+                await probe()
+                self.logger.info(f"✅ Permission verified: {scope_name}")
+            except ODataError as e:
+                all_passed = False
+                error_code = (e.error.code or "") if e.error else ""
+                if error_code == "Authorization_RequestDenied" or e.response_status_code == 403:
+                    # permission not granted — actionable by the user.
+                    missing_scopes.append(scope_name)
+                    self.logger.error(
+                        f"❌ Missing required Microsoft Graph permission: {scope_name} "
+                        f"(Azure error code: {error_code})"
+                    )
+                else:
+                    # Transient error (429 TooManyRequests, 503 ServiceUnavailable,
+                    # 500 InternalServerError, …) — log only, no notification.
+                    self.logger.error(
+                        f"❌ Unexpected Graph API error while probing {scope_name} "
+                        f"(code={error_code}): {e}"
+                    )
+            except Exception as e:
+                all_passed = False
+                self.logger.error(f"❌ Error testing {scope_name} permission: {e}")
+
+        if missing_scopes:
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="OneDrive: missing API permissions",
+                message=(
+                    f"OneDrive is missing the following Microsoft Graph permissions: "
+                    f"{', '.join(missing_scopes)}. "
+                    "Please grant these application permissions in Azure AD and provide admin consent."
+                ),
+                recipient_user_ids=[self.created_by],
+                payload={
+                    "connector_id": self.connector_id,
+                    "connector_name": self.connector_name.value,
+                    "connector_scope": self.scope,
+                },
+            )
+
+        return all_passed
+
+    async def _probe_users_scope(self) -> None:
+        """Probe User.Read.All via GET /users?$top=1&$select=id."""
+        await self.client.users.get(
+            RequestConfiguration(
+                query_parameters=UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
+                    top=1, select=["id"]
+                )
+            )
+        )
+
+    async def _probe_groups_scope(self) -> None:
+        """Probe Group.Read.All via GET /groups?$top=1&$select=id."""
+        await self.client.groups.get(
+            RequestConfiguration(
+                query_parameters=GroupsRequestBuilder.GroupsRequestBuilderGetQueryParameters(
+                    top=1, select=["id"]
+                )
+            )
+        )
+
+    async def _probe_drives_scope(self) -> None:
+        """
+        Probe Files.Read.All via GET /users/{first_user_id}/drives.
+
+        The global GET /drives endpoint is scoped to user/group/site and cannot
+        be called tenant-wide. Instead we fetch the first available user, then
+        list that user's drives:
+          - 200 + empty list  → user has no OneDrive yet, but Files.Read.All IS present.
+          - 403               → Files.Read.All scope is not granted.
+        """
+        users_response = await self.client.users.get(
+            RequestConfiguration(
+                query_parameters=UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
+                    top=1, select=["id", "displayName"]
+                )
+            )
+        )
+
+        if not (users_response and users_response.value):
+            self.logger.debug("No users found; skipping Files.Read.All drive probe")
+            return
+
+        user = users_response.value[0]
+        await self.client.users.by_user_id(user.id).drives.get()
 
     @classmethod
     async def create_connector(cls, logger: Logger,

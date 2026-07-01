@@ -62,6 +62,7 @@ export abstract class BaseCommand<T> implements ICommand<T> {
       'x-is-admin',
       'x-oauth-user-id',
       HEADER_REQUEST_ID,
+      'client-name'
     ]);
     // Ensure content-type is set to application/json if not present
     if (!headers['content-type'] && !headers['Content-Type']) {

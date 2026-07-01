@@ -12,6 +12,7 @@ import { UserGroups } from '../../../../src/modules/user_management/schema/userG
 describe('Connector Routes', () => {
   let container: Container
   let mockCrawlingContainer: any
+  let mockConnectorContainer: any
   let mockAuthMiddleware: any
   let mockConfig: any
   let mockEventService: any
@@ -31,6 +32,7 @@ describe('Connector Routes', () => {
       scopedJwtSecret: 'test-secret',
       cmBackend: 'http://localhost:3004',
       connectorBackend: 'http://localhost:8088',
+      storage: { endpoint: 'http://localhost:3003' },
     }
 
     mockEventService = {
@@ -49,9 +51,29 @@ describe('Connector Routes', () => {
       get: sinon.stub().returns(mockScheduler),
     }
 
+    mockConnectorContainer = {
+      get: sinon.stub().callsFake((token: string) => {
+        if (token === 'RecordsEventProducer') {
+          return { start: sinon.stub().resolves(), publishEvent: sinon.stub().resolves() }
+        }
+        if (token === 'SyncEventProducer') {
+          return { start: sinon.stub().resolves(), publishEvent: sinon.stub().resolves() }
+        }
+        throw new Error(`Unexpected connector token: ${token}`)
+      }),
+    }
+
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind<any>('AppConfig').toConstantValue(mockConfig)
     container.bind<any>('EntitiesEventProducer').toConstantValue(mockEventService)
+    container.bind<any>('RecordsEventProducer').toConstantValue({
+      start: sinon.stub().resolves(),
+      publishEvent: sinon.stub().resolves(),
+    })
+    container.bind<any>('SyncEventProducer').toConstantValue({
+      start: sinon.stub().resolves(),
+      publishEvent: sinon.stub().resolves(),
+    })
 
     const mockPrometheusService = {
       recordActivity: sinon.stub(),
@@ -72,19 +94,19 @@ describe('Connector Routes', () => {
   })
 
   it('should create a router successfully', () => {
-    const router = createConnectorRouter(container, mockCrawlingContainer)
+    const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
     expect(router).to.be.a('function')
   })
 
   it('should have route handlers registered', () => {
-    const router = createConnectorRouter(container, mockCrawlingContainer)
+    const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
     const routes = (router as any).stack || []
     expect(routes.length).to.be.greaterThan(0)
   })
 
   describe('registry routes', () => {
     it('should register GET /registry route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const registryRoute = routes.find(
@@ -97,7 +119,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register GET /registry/:connectorType/schema route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const schemaRoute = routes.find(
@@ -112,7 +134,7 @@ describe('Connector Routes', () => {
 
   describe('instance management routes', () => {
     it('should register GET / route for listing instances', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const getRoute = routes.find(
@@ -125,7 +147,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register POST / route for creating instance', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const postRoute = routes.find(
@@ -138,7 +160,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register GET /active route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const activeRoute = routes.find(
@@ -151,7 +173,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register GET /inactive route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const inactiveRoute = routes.find(
@@ -164,7 +186,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register GET /agents/active route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const agentsRoute = routes.find(
@@ -177,7 +199,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register GET /configured route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const configuredRoute = routes.find(
@@ -190,7 +212,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register GET /:connectorId route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const getByIdRoute = routes.find(
@@ -203,7 +225,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register DELETE /:connectorId route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const deleteRoute = routes.find(
@@ -218,7 +240,7 @@ describe('Connector Routes', () => {
 
   describe('configuration routes', () => {
     it('should register GET /:connectorId/config route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const configRoute = routes.find(
@@ -231,7 +253,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register PUT /:connectorId/config route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const updateConfigRoute = routes.find(
@@ -244,7 +266,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register PUT /:connectorId/config/auth route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const authConfigRoute = routes.find(
@@ -257,7 +279,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register PUT /:connectorId/config/filters-sync route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const filtersSyncRoute = routes.find(
@@ -270,7 +292,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register PUT /:connectorId/name route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const nameRoute = routes.find(
@@ -285,7 +307,7 @@ describe('Connector Routes', () => {
 
   describe('OAuth routes', () => {
     it('should register GET /:connectorId/oauth/authorize route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const authorizeRoute = routes.find(
@@ -298,7 +320,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register GET /oauth/callback route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const callbackRoute = routes.find(
@@ -313,7 +335,7 @@ describe('Connector Routes', () => {
 
   describe('filter routes', () => {
     it('should register GET /:connectorId/filters route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const filtersRoute = routes.find(
@@ -326,7 +348,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register POST /:connectorId/filters route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const saveFiltersRoute = routes.find(
@@ -339,7 +361,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register GET /:connectorId/filters/:filterKey/options route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const filterOptionsRoute = routes.find(
@@ -354,7 +376,7 @@ describe('Connector Routes', () => {
 
   describe('toggle route', () => {
     it('should register POST /:connectorId/toggle route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const toggleRoute = routes.find(
@@ -369,7 +391,7 @@ describe('Connector Routes', () => {
 
   describe('Local FS file-events routes', () => {
     it('should register POST /:connectorId/file-events route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const route = routes.find(
@@ -382,7 +404,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register POST /:connectorId/file-events/upload route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const route = routes.find(
@@ -397,7 +419,7 @@ describe('Connector Routes', () => {
 
   describe('legacy routes', () => {
     it('should register POST /getTokenFromCode route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const tokenRoute = routes.find(
@@ -410,7 +432,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register POST /internal/refreshIndividualConnectorToken route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const refreshRoute = routes.find(
@@ -423,7 +445,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register POST /updateAppConfig route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack
 
       const updateConfigRoute = routes.find(
@@ -438,7 +460,7 @@ describe('Connector Routes', () => {
 
   describe('route count', () => {
     it('should register all expected routes', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       // Verify we have a significant number of routes
@@ -449,7 +471,7 @@ describe('Connector Routes', () => {
 
   describe('middleware chains', () => {
     it('should include multiple middleware handlers on each route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       for (const routeLayer of routes) {
@@ -461,7 +483,7 @@ describe('Connector Routes', () => {
     })
 
     it('should have auth middleware on authenticated routes', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       // All routes should have multiple middleware layers (auth + handler at minimum)
@@ -476,7 +498,7 @@ describe('Connector Routes', () => {
 
   describe('route handler count per endpoint', () => {
     it('POST /getTokenFromCode should have auth + userAdminCheck + handler', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const tokenRoute = routes.find(
@@ -489,7 +511,7 @@ describe('Connector Routes', () => {
     })
 
     it('POST /internal/refreshIndividualConnectorToken should have scoped auth + handler', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const refreshRoute = routes.find(
@@ -503,7 +525,7 @@ describe('Connector Routes', () => {
     })
 
     it('POST /updateAppConfig should have scoped auth + handler', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const updateConfigRoute = routes.find(
@@ -525,7 +547,7 @@ describe('Connector Routes', () => {
     }
 
     async function runThroughChain(req: any, res: any, next: sinon.SinonStub) {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const handlers = findAllHandlers(router, '/', 'get')
       for (const handler of handlers) {
         if (next.called) break
@@ -764,15 +786,15 @@ describe('Connector Routes', () => {
 
   describe('router configuration', () => {
     it('should create different router instances on each call', () => {
-      const router1 = createConnectorRouter(container, mockCrawlingContainer)
-      const router2 = createConnectorRouter(container, mockCrawlingContainer)
+      const router1 = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router2 = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
 
       expect(router1).to.not.equal(router2)
     })
 
     it('should have consistent route count across calls', () => {
-      const router1 = createConnectorRouter(container, mockCrawlingContainer)
-      const router2 = createConnectorRouter(container, mockCrawlingContainer)
+      const router1 = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const router2 = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
 
       const routes1 = (router1 as any).stack.filter((layer: any) => layer.route)
       const routes2 = (router2 as any).stack.filter((layer: any) => layer.route)
@@ -783,7 +805,7 @@ describe('Connector Routes', () => {
 
   describe('route methods', () => {
     it('GET routes should only accept GET method', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const registryRoute = routes.find(
@@ -794,7 +816,7 @@ describe('Connector Routes', () => {
     })
 
     it('POST routes should only accept POST method', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const createRoute = routes.find(
@@ -805,7 +827,7 @@ describe('Connector Routes', () => {
     })
 
     it('PUT routes should only accept PUT method', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const configRoute = routes.find(
@@ -816,7 +838,7 @@ describe('Connector Routes', () => {
     })
 
     it('DELETE routes should only accept DELETE method', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const deleteRoute = routes.find(
@@ -829,7 +851,7 @@ describe('Connector Routes', () => {
 
   describe('parameterized routes', () => {
     it('should register routes with connectorId param', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const paramRoutes = routes.filter(
@@ -840,7 +862,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register routes with connectorType param', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const typeRoutes = routes.filter(
@@ -850,7 +872,7 @@ describe('Connector Routes', () => {
     })
 
     it('should register routes with filterKey param', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
       const filterRoutes = routes.filter(
@@ -895,7 +917,7 @@ describe('Connector Routes', () => {
       const loadAppConfigModule = await import('../../../../src/modules/tokens_manager/config/config')
       const loadStub = sinon.stub(loadAppConfigModule, 'loadAppConfig').resolves(mockConfig as any)
 
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const handler = findRouteHandler(router, '/updateAppConfig', 'post')
       expect(handler).to.not.be.undefined
 
@@ -914,7 +936,7 @@ describe('Connector Routes', () => {
       const loadAppConfigModule = await import('../../../../src/modules/tokens_manager/config/config')
       const loadStub = sinon.stub(loadAppConfigModule, 'loadAppConfig').rejects(new Error('Config load failed'))
 
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const handler = findRouteHandler(router, '/updateAppConfig', 'post')
       expect(handler).to.not.be.undefined
 
@@ -928,7 +950,7 @@ describe('Connector Routes', () => {
     })
 
     it('POST /getTokenFromCode handler should call next when user is missing', async () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const handler = findRouteHandler(router, '/getTokenFromCode', 'post')
       expect(handler).to.not.be.undefined
 
@@ -940,7 +962,7 @@ describe('Connector Routes', () => {
     })
 
     it('POST /internal/refreshIndividualConnectorToken handler should call next on error', async () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
       const handler = findRouteHandler(router, '/internal/refreshIndividualConnectorToken', 'post')
       expect(handler).to.not.be.undefined
 

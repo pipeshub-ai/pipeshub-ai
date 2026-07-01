@@ -145,7 +145,19 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
                     "setup"
                 )
             ]
-        )
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            AuthField(
+                name="apiToken",
+                display_name="API Token",
+                placeholder="Enter your Linear personal API key",
+                description="Personal API key from Linear",
+                field_type="PASSWORD",
+                required=True,
+                max_length=2000,
+                is_secret=True,
+            ),
+        ])
     ])\
     .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
     .configure(lambda builder: builder
@@ -154,6 +166,11 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
         .add_documentation_link(DocumentationLink(
             "Linear OAuth Setup",
             "https://linear.app/developers/oauth-2-0-authentication",
+            "setup"
+        ))
+        .add_documentation_link(DocumentationLink(
+            "Linear API Key Setup",
+            "https://linear.app/settings/api",
             "setup"
         ))
         .add_documentation_link(DocumentationLink(
@@ -2486,8 +2503,10 @@ class LinearConnector(BaseConnector):
         identifier = issue_data.get("identifier", "")
         title = issue_data.get("title", "")
 
+        # Build record name with issue identifier in square brackets at start for better searchability
+        # Matches Jira pattern: "[ENG-30] Issue Title"
         if identifier and title:
-            record_name = title
+            record_name = f"[{identifier}] {title}"
         elif identifier:
             record_name = identifier
         else:
@@ -4050,13 +4069,27 @@ class LinearConnector(BaseConnector):
         if not weburl:
             raise ValueError("weburl is required when creating docling BlockGroup for issues")
 
+        # Build issue name with identifier in square brackets (matches record_name pattern)
+        # e.g., "[ENG-30] My Issue Title" - identifier always in brackets when present
+        if issue_identifier and issue_title:
+            issue_name = f"[{issue_identifier}] {issue_title}"
+        elif issue_identifier:
+            issue_name = f"[{issue_identifier}]"
+        elif issue_title:
+            issue_name = issue_title
+        else:
+            issue_name = f"Issue {issue_id}"
+
         block_groups: List[BlockGroup] = []
         blocks: List[Block] = []
         block_group_index = 0
 
         # 1. Description BlockGroup (index=0)
-        # Use description if available, otherwise create minimal content with title
-        description_content = issue_description if issue_description else f"# {issue_title}" if issue_title else f"# Issue {issue_identifier or issue_id}"
+        # Always prepend heading with issue_name (includes identifier in brackets)
+        if issue_description:
+            description_content = f"# {issue_name}\n\n{issue_description}"
+        else:
+            description_content = f"# {issue_name}"
 
         # Convert images in description to base64
         description_content = await self._convert_images_to_base64_in_markdown(description_content)
@@ -4064,7 +4097,7 @@ class LinearConnector(BaseConnector):
         description_block_group = BlockGroup(
             id=str(uuid4()),
             index=block_group_index,
-            name=issue_title if issue_title else (f"{issue_identifier} - Description" if issue_identifier else "Issue Description"),
+            name=issue_name,
             type=GroupType.TEXT_SECTION,
             sub_type=GroupSubType.CONTENT,
             description=f"Description for issue {issue_identifier}" if issue_identifier else "Issue description",

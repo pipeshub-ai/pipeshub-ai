@@ -14,7 +14,8 @@ Block / group mapping (mirrors markdown_to_blocks.MarkdownToBlocksConverter):
     p / address /
     dt / dd /
     figcaption       → Block(TEXT, PARAGRAPH, TXT|MARKDOWN)
-                         + Block(IMAGE) for each embedded <img>
+                         When images are present: empty container block plus
+                         ordered TEXT/IMAGE children (parent_block_index).
                          TXT when no inline formatting tags; MARKDOWN otherwise
 
     pre              → if <code> children: walk children (each <code> → CODE group;
@@ -34,7 +35,9 @@ Block / group mapping (mirrors markdown_to_blocks.MarkdownToBlocksConverter):
     table            → BlockGroup(TABLE)  + TableMetadata (column_names, captions, …)
                          └─ Block(TABLE_ROW, JSON)  per collapsed body row
                             (colspan/rowspan merged into logical columns; nested <table>
-                             in a cell → inner rows JSON-stringified and appended to cell text)
+                             in a cell → markdown pipe table appended to cell text)
+                         Rows with images split into empty TABLE_ROW container plus
+                         TEXT/IMAGE children (same as markdown_to_blocks).
                          <caption> text stored in table_metadata.captions
 
     details          → <summary> → Block(TEXT, HEADING); other children processed normally
@@ -51,9 +54,9 @@ Block / group mapping (mirrors markdown_to_blocks.MarkdownToBlocksConverter):
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import Iterator
 from urllib.parse import urljoin
 from uuid import uuid4
@@ -61,6 +64,15 @@ from uuid import uuid4
 from selectolax.lexbor import LexborHTMLParser, LexborNode
 from markdownify import markdownify
 
+from app.modules.parsers.markdown.markdown_to_blocks import (
+    _HTML_IMG_ALT_RE,
+    _MD_IMAGE_RE,
+    _Segment,
+    _TableCell,
+    _split_cell_into_segments,
+    _split_raw_markdown_into_segments,
+    _strip_inline_images_from_markdown,
+)
 from app.models.blocks import (
     Block,
     BlockGroup,
@@ -75,6 +87,7 @@ from app.models.blocks import (
     ImageMetadata,
     TableMetadata,
 )
+from app.modules.parsers.text_splitting import split_long_text
 
 # ---------------------------------------------------------------------------
 # Tag classification
@@ -89,7 +102,7 @@ _HEADING_TAGS = frozenset({f"h{i}" for i in range(1, 7)})
 
 _CONTAINER_TAGS = frozenset({
     "div", "section", "article", "main", "header", "footer",
-    "nav", "aside", "figure",
+    "nav", "aside", "figure", "details",
     "dl", "form", "fieldset", "body", "html", "span", "center",
 })
 
@@ -247,6 +260,25 @@ def _has_block_descendant(node: LexborNode, depth: int = 0) -> bool:
     return False
 
 
+def _has_wrapped_block_descendant(node: LexborNode) -> bool:
+    """True when node has block-level descendants other than direct-child ``<img>``.
+
+    Direct-child ``<img>`` tags are excluded because ``_element_to_segments``
+    already handles them as image segments. Only block wrappers (``<figure>``,
+    ``<div>``, nested ``<p>``, ``<table>``, etc.) require ``_walk_children``
+    recursion to preserve structure.
+    """
+    for child in _direct_children(node):
+        tag = _tag_name(child)
+        if not tag or tag in _SKIP_TAGS or tag == "img":
+            continue
+        if tag in _BLOCK_TAGS:
+            return True
+        if tag in _CONTAINER_TAGS and _has_block_descendant(child):
+            return True
+    return False
+
+
 def _is_shallow_text_container(node: LexborNode) -> bool:
     """True when a container holds text but no nested block-level children.
 
@@ -276,10 +308,10 @@ def _is_paragraph_like(tag: str | None, node: LexborNode) -> bool:
 def _has_inline_formatting(node: LexborNode, depth: int = 0) -> bool:
     """Check whether a DOM subtree contains inline formatting tags (bold, links, etc.).
 
-    Decides the storage format for block content: ``DataFormat.MARKDOWN`` when
-    formatting is present (to preserve bold, links, inline code), or
-    ``DataFormat.TXT`` when plain text suffices (cheaper for indexing).
-    Block/container descendants are skipped — they have their own emitters.
+    Decides whether the element's ``inner_html`` must be rendered to markdown
+    (formatting tags present) or can be walked as plain text while still
+    stored with ``DataFormat.MARKDOWN``. Block/container descendants are
+    skipped — they have their own emitters.
     Depth is capped at ``_MAX_DOM_PROBE_DEPTH`` to prevent stack overflows.
     """
     if depth > _MAX_DOM_PROBE_DEPTH:
@@ -303,7 +335,7 @@ def _inline_text(node: LexborNode) -> str:
 
     Special cases: ``<br>`` → newline, ``<img>`` → empty (images are extracted
     separately as ``BlockType.IMAGE`` blocks), bare text nodes → verbatim.
-    Used by ``_split_element_content`` on the plain-text path to assemble
+    Used by ``_element_to_segments`` on the plain-text path to assemble
     paragraph text one child at a time.
     """
     tag = _tag_name(node)
@@ -316,48 +348,7 @@ def _inline_text(node: LexborNode) -> str:
     return node.text(deep=True, separator="").strip()
 
 
-def _split_element_content(
-    node: LexborNode,
-) -> tuple[str, list[LexborNode], DataFormat]:
-    """Extract text and embedded images from a block element (``<p>``, ``<h1>``, etc.).
-
-    Images are collected separately so callers can emit standalone
-    ``BlockType.IMAGE`` blocks (required by downstream indexing). Text is
-    rendered as markdown when inline formatting is present, or as plain text
-    otherwise — the chosen ``DataFormat`` is returned so the caller stores it
-    correctly.
-
-    Returns:
-        ``(text_content, image_nodes, data_format)`` 3-tuple.
-    """
-    image_nodes: list[LexborNode] = []
-    for child in _direct_children(node):
-        if _tag_name(child) == "img":
-            image_nodes.append(child)
-
-    if _has_inline_formatting(node):
-        return (
-            _html_to_markdown(node.inner_html.strip()),
-            image_nodes,
-            DataFormat.MARKDOWN,
-        )
-
-    text_parts: list[str] = []
-    for child in _direct_children(node):
-        tag = _tag_name(child)
-        if tag == "img":
-            continue
-        if tag is None:
-            fragment = child.text(deep=False, strip=False)
-            if fragment:
-                text_parts.append(fragment)
-        elif tag == "br":
-            text_parts.append("\n")
-        else:
-            rendered = _inline_text(child)
-            if rendered:
-                text_parts.append(rendered)
-    return "".join(text_parts).strip(), image_nodes, DataFormat.TXT
+_TABLE_TAG_RE = re.compile(r"<table\b", re.IGNORECASE)
 
 
 def _html_to_markdown(html: str) -> str:
@@ -367,10 +358,191 @@ def _html_to_markdown(html: str) -> str:
     formatting must be preserved (paragraphs, list items, blockquotes, etc.).
     Relative ``<a href>`` values must already be absolutised on the main DOM
     tree (see ``_resolve_relative_links_on_tree``) before this runs.
+
+    Fragments that contain ``<table>`` render tables through
+    ``HtmlTableNormalizer`` so ``<img>`` cells keep ``![alt](uri)`` syntax;
+    ``markdownify`` alone would reduce table images to plain alt text.
     """
     if not html:
         return ""
-    return markdownify(html, heading_style="ATX").strip()
+    if not _TABLE_TAG_RE.search(html):
+        return markdownify(html, heading_style="ATX").strip()
+    parser = LexborHTMLParser(f"<ph-pipes-table-root>{html}</ph-pipes-table-root>")
+    root = parser.css_first("ph-pipes-table-root")
+    if root is None:
+        return markdownify(html, heading_style="ATX").strip()
+    return _lexbor_subtree_to_markdown(root).strip()
+
+
+def _html_fragment_to_segments(
+    html: str,
+) -> tuple[list[_Segment], DataFormat, str]:
+    """Convert an HTML fragment to ordered text/image segments.
+
+    Renders *html* to markdown via ``_html_to_markdown``, then splits on
+    ``![alt](uri)`` boundaries using the same rules as
+    ``markdown_to_blocks._split_raw_markdown_into_segments``.
+
+    Returns:
+        ``(segments, DataFormat.MARKDOWN, markdown_source)`` where
+        *markdown_source* is the rendered markdown string (used later for
+        inline ``data:image`` URI lookup when *caption_map* has no entry).
+    """
+    if not html.strip():
+        return [], DataFormat.MARKDOWN, ""
+    markdown = _html_to_markdown(html)
+    return _split_raw_markdown_into_segments(markdown), DataFormat.MARKDOWN, markdown
+
+
+def _walk_inline_subtree(
+    node: LexborNode,
+    text_buf: list[str],
+    segments: list[_Segment],
+    image_nodes: list[LexborNode],
+    flush_text: Callable[[], None],
+    depth: int = 0,
+) -> None:
+    """Recursively walk *node*'s children, interleaving text and image segments.
+
+    Unlike the flat loop in ``_element_to_segments``, this handles wrapper
+    elements (``<span>``, ``<picture>``, ``<figure>``, etc.) that contain both
+    text and ``<img>`` tags at arbitrary depth.  Depth is capped at
+    ``_MAX_DOM_PROBE_DEPTH`` to avoid stack overflow on pathological markup.
+    """
+    if depth > _MAX_DOM_PROBE_DEPTH:
+        return
+    for child in _direct_children(node):
+        tag = _tag_name(child)
+        if tag == "img":
+            flush_text()
+            alt = ((child.attributes or {}).get("alt") or "").strip()
+            image_nodes.append(child)
+            segments.append(_Segment(kind="image", alt_text=alt))
+        elif tag is None:
+            fragment = child.text(deep=False, strip=False)
+            if fragment:
+                text_buf.append(fragment)
+        elif tag == "br":
+            text_buf.append("\n")
+        else:
+            if child.css("img"):
+                _walk_inline_subtree(child, text_buf, segments, image_nodes,
+                                     flush_text, depth + 1)
+            else:
+                rendered = _inline_text(child)
+                if rendered:
+                    text_buf.append(rendered)
+
+
+def _element_to_segments(
+    node: LexborNode,
+) -> tuple[list[_Segment], DataFormat, str, list[LexborNode]]:
+    """Split a block-level DOM element into ordered text/image segments.
+
+    Two extraction paths; both emit ``DataFormat.MARKDOWN``:
+
+    * **Markdown render path** — inline formatting tags are present; the
+      element's ``inner_html`` is rendered to markdown and split on image syntax.
+    * **Plain walk path** — direct children are walked in document order; text
+      nodes and ``<br>`` accumulate into text segments and each direct-child
+      ``<img>`` becomes an image segment.
+
+    Returns:
+        ``(segments, data_format, markdown_source, image_nodes)`` where
+        *markdown_source* supports ``data:image`` lookup on the render path,
+        and *image_nodes* aligns one-to-one with image segments on the plain
+        walk path (empty on the render path).
+    """
+    if _has_inline_formatting(node):
+        markdown = _html_to_markdown(node.inner_html.strip())
+        return (
+            _split_raw_markdown_into_segments(markdown),
+            DataFormat.MARKDOWN,
+            markdown,
+            [],
+        )
+
+    segments: list[_Segment] = []
+    image_nodes: list[LexborNode] = []
+    text_buf: list[str] = []
+
+    def flush_text() -> None:
+        if not text_buf:
+            return
+        text = "".join(text_buf)
+        if text.strip():
+            segments.append(_Segment(kind="text", text=text))
+        text_buf.clear()
+
+    for child in _direct_children(node):
+        tag = _tag_name(child)
+        if tag == "img":
+            flush_text()
+            alt = ((child.attributes or {}).get("alt") or "").strip()
+            image_nodes.append(child)
+            segments.append(_Segment(kind="image", alt_text=alt))
+        elif tag is None:
+            fragment = child.text(deep=False, strip=False)
+            if fragment:
+                text_buf.append(fragment)
+        elif tag == "br":
+            text_buf.append("\n")
+        else:
+            if child.css("img"):
+                _walk_inline_subtree(child, text_buf, segments, image_nodes,
+                                     flush_text)
+            else:
+                rendered = _inline_text(child)
+                if rendered:
+                    text_buf.append(rendered)
+
+    flush_text()
+    return segments, DataFormat.MARKDOWN, "", image_nodes
+
+
+def _merge_heading_content_segments(
+    level: int,
+    heading_segments: list[_Segment],
+    content_segments: list[_Segment],
+) -> list[_Segment]:
+    """Merge heading and paragraph-like segments with a markdown heading prefix.
+
+    Prepends ``#`` * level to the first heading text segment (or inserts a bare
+    prefix segment when the heading has no leading text), then joins the first
+    content text segment onto the last heading text segment with a newline when
+    both are text. Image segments from either side are preserved in order.
+
+    Args:
+        level: Heading level (1–6) derived from the HTML tag name.
+        heading_segments: Segments extracted from the ``<hN>`` node.
+        content_segments: Segments extracted from the following paragraph-like node.
+
+    Returns:
+        Combined segment list ready for ``_emit_with_image_splits``.
+    """
+    merged: list[_Segment] = []
+    if heading_segments and heading_segments[0].kind == "text":
+        merged.append(
+            _Segment(kind="text", text="#" * level + " " + heading_segments[0].text)
+        )
+        merged.extend(heading_segments[1:])
+    elif level > 0:
+        merged.append(_Segment(kind="text", text="#" * level + " "))
+        merged.extend(heading_segments)
+    else:
+        merged.extend(heading_segments)
+
+    if merged and content_segments:
+        last = merged[-1]
+        first_content = content_segments[0]
+        if last.kind == "text" and first_content.kind == "text":
+            last.text = last.text + "\n" + first_content.text
+            merged.extend(content_segments[1:])
+        else:
+            merged.extend(content_segments)
+    else:
+        merged.extend(content_segments)
+    return merged
 
 
 def _resolve_relative_links_on_tree(root: LexborNode, base_url: str) -> None:
@@ -747,36 +919,11 @@ def _render_table_markdown(table: NormalizedTable) -> str:
     return "\n".join(lines)
 
 
-def _stringify_nested_table_rows(table: NormalizedTable) -> str:
-    """Serialize a nested table as a JSON array of row arrays for parent cell embedding.
-
-    Nested ``<table>`` elements can't become their own ``BlockGroup(TABLE)`` —
-    their rows are JSON-stringified and appended to the parent cell's text
-    instead. Format: ``[[header…], [row1…], ...]``. Trailing empty cells in
-    body rows are trimmed to reduce payload size.
-    """
-    rows: list[list[str]] = []
-    if table.column_headers:
-        rows.append(table.column_headers)
-    for body_row in table.body_rows:
-        trimmed = list(body_row)
-        while trimmed and not trimmed[-1].strip():
-            trimmed.pop()
-        rows.append(trimmed)
-    if not rows:
-        return ""
-    return json.dumps(rows, ensure_ascii=False)
-
-
-# ---------------------------------------------------------------------------
-# Table normalizer
-# ---------------------------------------------------------------------------
-
 class HtmlTableNormalizer:
     """Collapse an HTML table into logical column rows for block emission.
 
-    Nested ``<table>`` elements are normalized recursively and their collapsed
-    row arrays are JSON-stringified into the parent cell text.
+    Nested ``<table>`` elements are normalized recursively and rendered as
+    markdown pipe tables inside the parent cell text.
     Inline / block markup inside cells is converted to markdown.
     """
 
@@ -879,29 +1026,36 @@ class HtmlTableNormalizer:
         attrs = cell_node.attributes or {}
         tag = _tag_name(cell_node)
         return NormalizedCell(
-            text=self._cell_content(cell_node),
+            text=self._cell_content(cell_node, is_header=is_header),
             rowspan=_span_int(attrs, "rowspan"),
             colspan=_span_int(attrs, "colspan"),
             is_header=is_header or tag == "th",
         )
 
-    def _cell_content(self, cell_node: LexborNode) -> str:
-        """Build cell text from child nodes; nested ``<table>`` values are JSON-stringified rows.
+    def _cell_content(self, cell_node: LexborNode, *, is_header: bool = False) -> str:
+        """Build cell text from child nodes; nested ``<table>`` values are markdown tables.
+
         Inline/block markup is converted to markdown; plain text nodes are appended as-is.
+        Images inside header cells are skipped so column labels stay text-only.
         """
         parts: list[str] = []
         for child in _direct_children(cell_node):
             tag = _tag_name(child)
             if tag == "table":
-                serialized = _stringify_nested_table_rows(self.normalize(child))
+                nested = self.normalize(child)
+                serialized = normalized_table_to_markdown(nested)
                 if serialized:
                     parts.append(serialized)
+            elif tag == "img" and is_header:
+                continue
             elif tag is None:
                 text = child.text(deep=False, strip=False).strip()
                 if text:
                     parts.append(text)
             else:
                 markdown = _html_to_markdown(child.html)
+                if is_header:
+                    markdown = _strip_inline_images_from_markdown(markdown)
                 if markdown:
                     parts.append(markdown)
         return "\n".join(parts).strip()
@@ -928,6 +1082,49 @@ def normalized_table_to_markdown(
     if caption.strip():
         return f"{caption.strip()}\n\n{table_md}"
     return table_md
+
+
+def _lexbor_subtree_to_markdown(node: LexborNode) -> str:
+    """Render a DOM subtree to markdown, normalizing ``<table>`` nodes in-place.
+
+    Walks children recursively whenever a ``<table>`` appears anywhere in the
+    subtree so surrounding text and inline markup still pass through
+    ``markdownify`` while each table is rendered with ``HtmlTableNormalizer``
+    (preserving ``![alt](uri)`` in cells). Subtrees with no table at any depth
+    short-circuit through a single ``markdownify`` call.
+    """
+    tag = _tag_name(node)
+    if tag == "table":
+        return normalized_table_to_markdown(normalize_html_table(node))
+
+    children = list(_direct_children(node))
+    if not children:
+        if tag is None:
+            return node.text(deep=False, strip=False).strip()
+        inner = node.inner_html.strip()
+        if not inner:
+            return ""
+        return markdownify(inner, heading_style="ATX").strip()
+
+    # Only short-circuit when *no* descendant is a table. Checking only direct
+    # children would route subtrees like ``<ul><li><table>...</table></li></ul>``
+    # through ``markdownify`` for the whole fragment, which strips ``<img>`` in
+    # ``<td>`` down to bare alt text.
+    if not _TABLE_TAG_RE.search(node.html):
+        return markdownify(node.html, heading_style="ATX").strip()
+
+    parts: list[str] = []
+    for child in children:
+        child_tag = _tag_name(child)
+        if child_tag == "table":
+            piece = normalized_table_to_markdown(normalize_html_table(child))
+        elif child_tag is None:
+            piece = child.text(deep=False, strip=False).strip()
+        else:
+            piece = _lexbor_subtree_to_markdown(child)
+        if piece:
+            parts.append(piece)
+    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -1072,35 +1269,47 @@ class _DomWalker:
 
         The heading text is prepended as a markdown heading prefix
         (``## Title\\nParagraph text``) so the content block carries its
-        section context. Heading-level images are emitted separately before
-        the merged block; content-level images after.
+        section context. Images split into container plus TEXT/IMAGE children.
         """
         level = int(heading_tag[1])
+        heading_segments, _, heading_md, heading_images = _element_to_segments(
+            heading_node
+        )
+        content_segments, content_fmt, content_md, content_images = _element_to_segments(
+            content_node
+        )
 
-        heading_text, heading_images, _ = _split_element_content(heading_node)
-        for img in heading_images:
-            self._emit_image(img)
-
-        if not heading_text:
-            self._emit_text_block(content_node, BlockSubType.PARAGRAPH)
+        if not heading_segments and not content_segments:
             return
 
-        md_heading = "#" * level + " " + heading_text
+        if not heading_segments:
+            self._emit_with_image_splits(
+                block_type=BlockType.TEXT,
+                sub_type=BlockSubType.PARAGRAPH,
+                format=content_fmt,
+                segments=content_segments,
+                markdown_source=content_md,
+                image_nodes=content_images,
+            )
+            return
 
-        content_text, content_images, _ = _split_element_content(content_node)
+        segments = _merge_heading_content_segments(
+            level, heading_segments, content_segments
+        )
+        markdown_source = heading_md
+        if heading_md and content_md:
+            markdown_source = heading_md + "\n" + content_md
+        elif content_md:
+            markdown_source = content_md
 
-        merged = md_heading + "\n" + content_text if content_text else md_heading
-
-        self._add_block(Block(
-            id=str(uuid4()),
-            type=BlockType.TEXT,
+        self._emit_with_image_splits(
+            block_type=BlockType.TEXT,
             sub_type=BlockSubType.PARAGRAPH,
             format=DataFormat.MARKDOWN,
-            data=merged,
-            parent_index=self._current_parent_index(),
-        ))
-        for img in content_images:
-            self._emit_image(img)
+            segments=segments,
+            markdown_source=markdown_source,
+            image_nodes=heading_images + content_images,
+        )
 
     def _process_node(self, node: LexborNode, depth: int = 0) -> None:  # noqa: C901
         """Route one DOM node to the correct block emitter based on its HTML tag.
@@ -1119,8 +1328,11 @@ class _DomWalker:
                 self._emit_text_block(node, BlockSubType.HEADING)
             return
 
-        if tag in {"p", "address", "dt", "dd", "figcaption"}:
-            self._emit_text_block(node, BlockSubType.PARAGRAPH)
+        if tag in _PARAGRAPH_LIKE_TAGS:
+            if _has_wrapped_block_descendant(node):
+                self._walk_children(node, depth + 1)
+            else:
+                self._emit_text_block(node, BlockSubType.PARAGRAPH)
             return
 
         if tag == "pre":
@@ -1283,39 +1495,58 @@ class _DomWalker:
         tag = _tag_name(node)
         if tag is None:
             data = node.text(deep=False, strip=False).strip()
-        else:
-            html = (node.html or "").strip()
-            if not html:
+            if not data:
                 return
-            data = _html_to_markdown(html)
-        if not data:
+            self._emit_with_image_splits(
+                block_type=BlockType.TEXT,
+                sub_type=BlockSubType.PARAGRAPH,
+                format=DataFormat.MARKDOWN,
+                segments=[_Segment(kind="text", text=data)],
+            )
             return
-        self._add_block(Block(
-            id=str(uuid4()),
-            type=BlockType.TEXT,
+
+        html = (node.html or "").strip()
+        if not html:
+            return
+        segments, data_format, markdown_source = _html_fragment_to_segments(html)
+        self._emit_with_image_splits(
+            block_type=BlockType.TEXT,
             sub_type=BlockSubType.PARAGRAPH,
-            format=DataFormat.MARKDOWN,
-            data=data,
-            parent_index=self._current_parent_index(),
-        ))
+            format=data_format,
+            segments=segments,
+            markdown_source=markdown_source,
+        )
 
     def _process_list_item(self, li_node: LexborNode) -> None:
         """Emit one LIST_ITEM block with the ``<li>`` inner HTML as markdown.
 
         Stores the full inner HTML (not just text) so nested lists, links, and
         inline formatting inside the item survive for display and re-export.
+        When the ``<li>`` body is exactly one image, the IMAGE block stands in
+        for the list item itself (no empty container, no fragmentation).
         """
         html = li_node.inner_html.strip()
         if not html:
             return
-        self._add_block(Block(
-            id=str(uuid4()),
-            type=BlockType.TEXT,
+        segments, data_format, markdown_source = _html_fragment_to_segments(html)
+        if (
+            len(segments) == 1
+            and segments[0].kind == "image"
+        ):
+            if image_block := self._build_image_block(
+                segments[0].alt_text,
+                markdown_source=markdown_source,
+                sub_type=BlockSubType.LIST_ITEM,
+            ):
+                self._add_block(image_block)
+            return
+        self._emit_with_image_splits(
+            block_type=BlockType.TEXT,
             sub_type=BlockSubType.LIST_ITEM,
-            format=DataFormat.MARKDOWN,
-            data=_html_to_markdown(html),
-            parent_index=self._current_parent_index(),
-        ))
+            format=data_format,
+            segments=segments,
+            markdown_source=markdown_source,
+        )
 
     # ------------------------------------------------------------------ code
 
@@ -1350,14 +1581,14 @@ class _DomWalker:
         self._open_group(GroupType.TEXT_SECTION, GroupSubType.QUOTE)
         html = node.inner_html.strip()
         if html:
-            self._add_block(Block(
-                id=str(uuid4()),
-                type=BlockType.TEXT,
+            segments, data_format, markdown_source = _html_fragment_to_segments(html)
+            self._emit_with_image_splits(
+                block_type=BlockType.TEXT,
                 sub_type=BlockSubType.QUOTE,
-                format=DataFormat.MARKDOWN,
-                data=_html_to_markdown(html),
-                parent_index=self._current_parent_index(),
-            ))
+                format=data_format,
+                segments=segments,
+                markdown_source=markdown_source,
+            )
         self._close_group()
 
     def _process_details(self, node: LexborNode, depth: int) -> None:
@@ -1375,26 +1606,506 @@ class _DomWalker:
             if _tag_name(child) != "summary":
                 self._process_node(child, depth + 1)
 
+    # ------------------------------------------------------------------ image splits
+
+    def _uri_from_img_node(self, node: LexborNode) -> str | None:
+        """Resolve a base64 image URI from a live ``<img>`` DOM node.
+
+        Checks ``caption_map`` by alt text first, then ``src`` / the first
+        entry in ``srcset``. Only ``data:image`` URIs are returned; HTTP(S)
+        URLs are ignored so behaviour matches standalone ``_emit_image``.
+        """
+        attrs = node.attributes or {}
+        alt_text = (attrs.get("alt") or "").strip()
+        if alt_text and alt_text in self.caption_map:
+            caption_uri = (self.caption_map[alt_text] or "").strip()
+            if caption_uri.startswith("data:image"):
+                return caption_uri
+        src = (attrs.get("src") or "").strip()
+        if not src and attrs.get("srcset"):
+            srcset_parts = attrs["srcset"].split(",")
+            if srcset_parts:
+                first_part = srcset_parts[0].split()
+                if first_part:
+                    src = first_part[0].strip()
+        if src.startswith("data:image"):
+            return src
+        return None
+
+    def _uri_from_markdown(
+        self,
+        alt_text: str,
+        markdown_source: str,
+        skip: int = 0,
+    ) -> str | None:
+        """Extract an inline ``data:image`` URI for *alt_text* from rendered markdown.
+
+        Scans *markdown_source* for ``![alt_text](uri)`` patterns (via
+        ``_MD_IMAGE_RE``) and returns the URI when it starts with
+        ``data:image``. Uses case-insensitive, whitespace-normalised comparison
+        so minor ``markdownify`` transformations don't cause mismatches.
+        Also handles empty alt text (``![](data:image/...)``).
+        *skip* selects the Nth matching image when duplicate alts appear in
+        the same markdown source.
+        """
+        if not markdown_source:
+            return None
+        normalized_alt = (alt_text or "").strip().lower()
+        matched = 0
+        for match in _MD_IMAGE_RE.finditer(markdown_source):
+            if match.group(1).strip().lower() == normalized_alt:
+                src = match.group(2).strip()
+                if src.startswith("data:image"):
+                    if matched == skip:
+                        return src
+                    matched += 1
+        return None
+
+    def _resolve_image_uri(
+        self,
+        alt_text: str,
+        *,
+        img_node: LexborNode | None = None,
+        markdown_source: str = "",
+        md_skip: int = 0,
+    ) -> str | None:
+        """Resolve a storable base64 URI for an image alt, trying all HTML sources.
+
+        Resolution order: ``caption_map`` lookup, live ``<img>`` node attributes,
+        then ``data:image`` URI embedded in *markdown_source*. Returns ``None``
+        when no ``data:image`` URI can be found (HTTP-only images are skipped).
+        """
+        if alt_text and alt_text in self.caption_map:
+            uri = (self.caption_map[alt_text] or "").strip()
+            if uri.startswith("data:image"):
+                return uri
+        if img_node is not None:
+            uri = self._uri_from_img_node(img_node)
+            if uri:
+                return uri
+        return self._uri_from_markdown(alt_text, markdown_source, skip=md_skip)
+
+    def _build_image_block(
+        self,
+        alt_text: str,
+        *,
+        parent_block_index: int | None = None,
+        img_node: LexborNode | None = None,
+        markdown_source: str = "",
+        md_skip: int = 0,
+        sub_type: BlockSubType | None = None,
+    ) -> Block | None:
+        """Build an ``BlockType.IMAGE`` block when a resolvable URI exists.
+
+        Args:
+            alt_text: Image alt text used for ``caption_map`` lookup and metadata.
+            parent_block_index: Container block index when this image is a split
+                child; ``None`` for standalone top-level images.
+            img_node: Optional live ``<img>`` node for URI resolution on the TXT path.
+            markdown_source: Rendered markdown for URI resolution on the markdown path.
+            sub_type: Optional ``BlockSubType`` to attach (e.g. ``LIST_ITEM`` when
+                this image *is* the list item itself rather than a split child).
+
+        Returns:
+            A populated ``Block``, or ``None`` when no ``data:image`` URI resolves.
+        """
+        uri = self._resolve_image_uri(
+            alt_text,
+            img_node=img_node,
+            markdown_source=markdown_source,
+            md_skip=md_skip,
+        )
+        if not uri:
+            return None
+
+        image_fmt = None
+        if uri.startswith("data:"):
+            header = uri.split(",", 1)[0]
+            mime = header.replace("data:", "").split(";")[0]
+            parts = mime.split("/")
+            image_fmt = parts[1] if len(parts) > 1 else None
+
+        return Block(
+            id=str(uuid4()),
+            type=BlockType.IMAGE,
+            sub_type=sub_type,
+            format=DataFormat.BASE64,
+            data={"uri": uri},
+            parent_index=(
+                None
+                if parent_block_index is not None
+                else self._current_parent_index()
+            ),
+            parent_block_index=parent_block_index,
+            image_metadata=ImageMetadata(
+                captions=[alt_text] if alt_text else [],
+                image_format=image_fmt,
+            ),
+        )
+
+    def _append_block_only(self, block: Block) -> Block:
+        """Append a block to ``self.blocks`` without registering it as a group child.
+
+        Used for image-split fragments and IMAGE siblings that are linked to
+        their container via ``parent_block_index`` instead of ``BlockGroup.children``.
+        """
+        block.index = len(self.blocks)
+        self.blocks.append(block)
+        return block
+
+    def _append_fragment_block(self, block: Block, parent_block_index: int) -> Block:
+        """Append a TEXT fragment block parented to a split container."""
+        block.parent_block_index = parent_block_index
+        return self._append_block_only(block)
+
+    def _emit_text_chunks(
+        self,
+        *,
+        text: str,
+        block_type: BlockType,
+        sub_type: BlockSubType | None,
+        format: DataFormat,
+        parent_block_index: int | None = None,
+    ) -> Block | None:
+        """Emit one or more TEXT blocks, splitting oversized content at parse time."""
+        if not text or not text.strip():
+            return None
+
+        chunks = split_long_text(text)
+        if parent_block_index is not None:
+            last: Block | None = None
+            for chunk in chunks:
+                last = self._append_fragment_block(
+                    Block(
+                        id=str(uuid4()),
+                        type=BlockType.TEXT,
+                        format=format,
+                        data=chunk,
+                    ),
+                    parent_block_index,
+                )
+            return last
+
+        if len(chunks) == 1:
+            return self._add_block(
+                Block(
+                    id=str(uuid4()),
+                    type=block_type,
+                    sub_type=sub_type,
+                    format=format,
+                    data=chunks[0],
+                    parent_index=self._current_parent_index(),
+                )
+            )
+
+        if self._uses_image_split_container():
+            container = self._add_block(
+                Block(
+                    id=str(uuid4()),
+                    type=block_type,
+                    sub_type=sub_type,
+                    format=format,
+                    data="",
+                    parent_index=self._current_parent_index(),
+                )
+            )
+            for chunk in chunks:
+                self._append_fragment_block(
+                    Block(
+                        id=str(uuid4()),
+                        type=BlockType.TEXT,
+                        format=format,
+                        data=chunk,
+                    ),
+                    container.index,
+                )
+            return container
+
+        last = None
+        for chunk in chunks:
+            last = self._add_block(
+                Block(
+                    id=str(uuid4()),
+                    type=block_type,
+                    sub_type=sub_type,
+                    format=format,
+                    data=chunk,
+                    parent_index=self._current_parent_index(),
+                )
+            )
+        return last
+
+    def _uses_image_split_container(self) -> bool:
+        """Return True when inline images should use an empty container block.
+
+        Container + ``parent_block_index`` children apply inside list and
+        blockquote groups. Top-level paragraphs emit flat sibling blocks instead.
+        """
+        if not self.group_stack:
+            return False
+        group = self.block_groups[self.group_stack[-1].index]
+        if group.type in (GroupType.LIST, GroupType.ORDERED_LIST):
+            return True
+        if group.type == GroupType.TEXT_SECTION and group.sub_type == GroupSubType.QUOTE:
+            return True
+        return False
+
+    def _emit_with_image_splits(
+        self,
+        *,
+        block_type: BlockType,
+        sub_type: BlockSubType | None,
+        format: DataFormat,
+        segments: list[_Segment],
+        container_data: str = "",
+        markdown_source: str = "",
+        image_nodes: list[LexborNode] | None = None,
+    ) -> None:
+        """Emit blocks from text/image segments.
+
+        Without images: one block with joined text. With images inside a list or
+        quote group: empty container plus TEXT/IMAGE children linked via
+        ``parent_block_index``. Fragment children omit ``sub_type``; only the
+        container carries the parent semantic type (e.g. ``LIST_ITEM``).
+
+        Args:
+            block_type: Block type for unsplit content or the empty container.
+            sub_type: Sub-type (e.g. ``PARAGRAPH``, ``LIST_ITEM``).
+            format: ``DataFormat`` for TEXT blocks.
+            segments: Ordered text/image segments.
+            container_data: Payload for an empty container block (defaults to ``""``).
+            markdown_source: Rendered markdown for ``data:image`` URI lookup.
+            image_nodes: ``<img>`` nodes aligned with image segments on the TXT path.
+        """
+        image_node_iter = iter(image_nodes or [])
+        has_images = any(seg.kind == "image" for seg in segments)
+        if not has_images:
+            full_text = "".join(seg.text for seg in segments if seg.kind == "text").strip()
+            if not full_text and not container_data:
+                return
+            data = container_data or full_text
+            if isinstance(data, str) and not data.strip():
+                return
+            self._emit_text_chunks(
+                text=data,
+                block_type=block_type,
+                sub_type=sub_type,
+                format=format,
+            )
+            return
+
+        md_img_skip: dict[str, int] = {}
+
+        if not self._uses_image_split_container():
+            for seg in segments:
+                if seg.kind == "text":
+                    if not seg.text.strip():
+                        continue
+                    self._emit_text_chunks(
+                        text=seg.text,
+                        block_type=BlockType.TEXT,
+                        sub_type=sub_type,
+                        format=format,
+                    )
+                elif seg.kind == "image":
+                    img_node = next(image_node_iter, None)
+                    norm_alt = (seg.alt_text or "").strip().lower()
+                    skip = md_img_skip.get(norm_alt, 0)
+                    if image_block := self._build_image_block(
+                        seg.alt_text,
+                        img_node=img_node,
+                        markdown_source=markdown_source,
+                        md_skip=skip,
+                    ):
+                        self._add_block(image_block)
+                    md_img_skip[norm_alt] = skip + 1
+            return
+
+        container = self._add_block(
+            Block(
+                id=str(uuid4()),
+                type=block_type,
+                sub_type=sub_type,
+                format=format,
+                data=container_data,
+                parent_index=self._current_parent_index(),
+            )
+        )
+        container_index = container.index
+
+        for seg in segments:
+            if seg.kind == "text":
+                if not seg.text.strip():
+                    continue
+                self._emit_text_chunks(
+                    text=seg.text,
+                    block_type=BlockType.TEXT,
+                    sub_type=None,
+                    format=format,
+                    parent_block_index=container_index,
+                )
+            elif seg.kind == "image":
+                img_node = next(image_node_iter, None)
+                norm_alt = (seg.alt_text or "").strip().lower()
+                skip = md_img_skip.get(norm_alt, 0)
+                if image_block := self._build_image_block(
+                    seg.alt_text,
+                    parent_block_index=container_index,
+                    img_node=img_node,
+                    markdown_source=markdown_source,
+                    md_skip=skip,
+                ):
+                    self._append_block_only(image_block)
+                md_img_skip[norm_alt] = skip + 1
+
+    def _row_has_images(self, row_cells: list[_TableCell]) -> bool:
+        """Return ``True`` when any cell in *row_cells* contains an inline image.
+
+        Detects markdown ``![alt](uri)`` syntax and raw ``<img alt=…>`` HTML left
+        in cell text after normalization.
+        """
+        return any(
+            cell.images
+            or _MD_IMAGE_RE.search(cell.markdown)
+            or _HTML_IMG_ALT_RE.search(cell.markdown)
+            for cell in row_cells
+        )
+
+    def _split_table_row_into_segments(
+        self,
+        headers: list[str],
+        row_cells: list[_TableCell],
+    ) -> list[_Segment]:
+        """Split one table row into alternating TEXT and IMAGE segments.
+
+        Walks logical columns left-to-right, accumulating ``header: value`` pairs
+        into partial ``row_natural_language_text`` fragments. When a cell contains
+        an image, flushes the accumulated text as a TEXT segment, emits the IMAGE
+        segment, then resumes accumulation. Mirrors
+        ``markdown_to_blocks.MarkdownToBlocksConverter._split_table_row_into_segments``.
+        """
+        pending_pairs: list[tuple[str, str]] = []
+        fragments: list[_Segment] = []
+
+        def flush_text_fragment() -> None:
+            if not pending_pairs:
+                return
+            hdrs = [pair[0] for pair in pending_pairs]
+            vals = [pair[1] for pair in pending_pairs]
+            text = _format_table_row(hdrs, vals)
+            if text.strip():
+                fragments.append(_Segment(kind="text", text=text))
+            pending_pairs.clear()
+
+        for col_idx, cell in enumerate(row_cells):
+            header = (
+                headers[col_idx]
+                if col_idx < len(headers)
+                else f"Column {col_idx + 1}"
+            )
+            cell_segments = _split_cell_into_segments(cell)
+            if not any(seg.kind == "image" for seg in cell_segments):
+                value = ""
+                if cell_segments and cell_segments[0].kind == "text":
+                    value = cell_segments[0].text.strip()
+                elif cell.plain:
+                    value = cell.plain.strip()
+                if value:
+                    pending_pairs.append((header, value))
+                continue
+
+            for seg in cell_segments:
+                if seg.kind == "text":
+                    value = seg.text.strip()
+                    if value:
+                        pending_pairs.append((header, value))
+                else:
+                    flush_text_fragment()
+                    fragments.append(seg)
+
+        flush_text_fragment()
+        return fragments
+
+    def _emit_table_row_with_image_splits(
+        self,
+        *,
+        group_index: int,
+        row_number: int,
+        headers: list[str],
+        row_cells: list[_TableCell],
+        row_block_indices: list[int],
+        row_markdown: str,
+    ) -> None:
+        """Emit an empty ``TABLE_ROW`` container plus TEXT/IMAGE row children.
+
+        The container carries only ``{"row_number": row_number}``; TEXT children
+        hold partial ``row_natural_language_text`` fragments and IMAGE children
+        are linked via ``parent_block_index``. Only the container index is
+        appended to *row_block_indices* for ``BlockGroup.children``.
+
+        Args:
+            group_index: Parent table ``BlockGroup`` index.
+            row_number: 1-based row number stored on the container.
+            headers: Collapsed column header labels for fragment formatting.
+            row_cells: Per-column cell content (plain and markdown are identical).
+            row_block_indices: Mutable list; receives the container block index.
+            row_markdown: Joined cell markdown used for ``data:image`` URI lookup.
+        """
+        segments = self._split_table_row_into_segments(headers, row_cells)
+        container = Block(
+            id=str(uuid4()),
+            index=len(self.blocks),
+            type=BlockType.TABLE_ROW,
+            format=DataFormat.JSON,
+            parent_index=group_index,
+            data={"row_number": row_number},
+        )
+        self.blocks.append(container)
+        row_block_indices.append(container.index)
+        container_index = container.index
+        md_img_skip: dict[str, int] = {}
+
+        for seg in segments:
+            if seg.kind == "text":
+                if not seg.text.strip():
+                    continue
+                self._emit_text_chunks(
+                    text=seg.text,
+                    block_type=BlockType.TEXT,
+                    sub_type=None,
+                    format=DataFormat.MARKDOWN,
+                    parent_block_index=container_index,
+                )
+            elif seg.kind == "image":
+                norm_alt = (seg.alt_text or "").strip().lower()
+                skip = md_img_skip.get(norm_alt, 0)
+                if image_block := self._build_image_block(
+                    seg.alt_text,
+                    parent_block_index=container_index,
+                    markdown_source=row_markdown,
+                    md_skip=skip,
+                ):
+                    self._append_block_only(image_block)
+                md_img_skip[norm_alt] = skip + 1
+
     # ------------------------------------------------------------------ text
 
     def _emit_text_block(self, node: LexborNode, sub_type: BlockSubType) -> None:
-        """Emit a TEXT block (heading, paragraph, etc.) plus embedded ``<img>`` children.
+        """Emit a TEXT block, splitting embedded images into child blocks when present.
 
-        Text and images are split so images become separate ``BlockType.IMAGE``
-        entries. Format is MARKDOWN when inline markup must be preserved, else TXT.
+        Delegates to ``_element_to_segments`` and ``_emit_with_image_splits`` so
+        paragraphs, headings, and similar block elements follow the same
+        container / fragment / IMAGE structure as the markdown parser.
         """
-        text, image_nodes, data_format = _split_element_content(node)
-        if text:
-            self._add_block(Block(
-                id=str(uuid4()),
-                type=BlockType.TEXT,
-                sub_type=sub_type,
-                format=data_format,
-                data=text,
-                parent_index=self._current_parent_index(),
-            ))
-        for img in image_nodes:
-            self._emit_image(img)
+        segments, data_format, markdown_source, image_nodes = _element_to_segments(node)
+        self._emit_with_image_splits(
+            block_type=BlockType.TEXT,
+            sub_type=sub_type,
+            format=data_format,
+            segments=segments,
+            markdown_source=markdown_source,
+            image_nodes=image_nodes,
+        )
 
     def _emit_inline_block(self, node: LexborNode) -> None:
         """Emit a standalone paragraph for orphaned inline elements.
@@ -1405,62 +2116,41 @@ class _DomWalker:
         html = node.html.strip()
         if not html:
             return
-        text = _html_to_markdown(html)
-        if not text:
+        segments, data_format, markdown_source = _html_fragment_to_segments(html)
+        if not segments:
             return
-        self._add_block(Block(
-            id=str(uuid4()),
-            type=BlockType.TEXT,
+        self._emit_with_image_splits(
+            block_type=BlockType.TEXT,
             sub_type=BlockSubType.PARAGRAPH,
-            format=DataFormat.MARKDOWN,
-            data=text,
-            parent_index=self._current_parent_index(),
-        ))
+            format=data_format,
+            segments=segments,
+            markdown_source=markdown_source,
+        )
 
     # ------------------------------------------------------------------ image
 
     def _emit_image(self, node: LexborNode) -> None:
-        """Emit an IMAGE block when a base64 ``data:image`` URI is available.
+        """Emit a standalone IMAGE block when a base64 ``data:image`` URI is available.
 
-        Prefers ``caption_map`` lookup by alt text (pre-fetched base64 assets).
-        Otherwise accepts an inline ``src``/``srcset`` value that already starts
-        with ``data:image``. HTTP(S) URLs are not stored on the block.
+        Used for top-level ``<img>`` tags outside a text container. Split children
+        inside paragraphs, lists, and tables are emitted via ``_build_image_block``
+        from ``_emit_with_image_splits`` instead.
         """
-        attrs = node.attributes or {}
-        alt_text = (attrs.get("alt") or "").strip()
-
-        uri: str | None = None
-        if alt_text and alt_text in self.caption_map:
-            caption_uri = (self.caption_map[alt_text] or "").strip()
-            if caption_uri.startswith("data:image"):
-                uri = caption_uri
-        if uri is None:
-            src = (attrs.get("src") or "").strip()
-            if not src and attrs.get("srcset"):
-                srcset_parts = attrs["srcset"].split(",")
-                if srcset_parts:
-                    first_part = srcset_parts[0].split()
-                    if first_part:
-                        src = first_part[0].strip()
-            if src.startswith("data:image"):
-                uri = src
-
-        if not uri:
-            return
-
-        self._add_block(Block(
-            id=str(uuid4()),
-            type=BlockType.IMAGE,
-            format=DataFormat.BASE64,
-            data={"uri": uri},
-            parent_index=self._current_parent_index(),
-            image_metadata=ImageMetadata(captions=[alt_text] if alt_text else []),
-        ))
+        if image_block := self._build_image_block(
+            (node.attributes or {}).get("alt", "").strip(),
+            img_node=node,
+        ):
+            self._add_block(image_block)
 
     # ------------------------------------------------------------------ table
 
     def _process_table(self, table_node: LexborNode) -> None:
         """Normalize a ``<table>`` and emit TABLE_ROW blocks with metadata.
+
+        Rows without images become single ``TABLE_ROW`` blocks with full
+        ``row_natural_language_text`` and ``cells`` data. Rows containing inline
+        images are split into an empty container ``TABLE_ROW`` plus TEXT/IMAGE
+        children (see ``_emit_table_row_with_image_splits``).
 
         Rows are appended directly to ``self.blocks`` (not via ``_add_block``)
         because the table group wires row indices in ``group.children`` and
@@ -1471,12 +2161,30 @@ class _DomWalker:
         group = self.block_groups[open_group.index]
 
         normalized = HtmlTableNormalizer().normalize(table_node)
-        headers = normalized.column_headers
+        headers = [
+            _strip_inline_images_from_markdown(header)
+            for header in normalized.column_headers
+        ]
         caption = _table_caption(table_node)
         body_rows = normalized.body_rows
 
         row_block_indices: list[int] = []
         for row_number, row_cells in enumerate(body_rows, start=1):
+            table_cells = [
+                _TableCell(plain=cell, markdown=cell) for cell in row_cells
+            ]
+            row_markdown = " ".join(row_cells)
+            if self._row_has_images(table_cells):
+                self._emit_table_row_with_image_splits(
+                    group_index=group.index,
+                    row_number=row_number,
+                    headers=headers,
+                    row_cells=table_cells,
+                    row_block_indices=row_block_indices,
+                    row_markdown=row_markdown,
+                )
+                continue
+
             block = Block(
                 id=str(uuid4()),
                 index=len(self.blocks),
@@ -1501,6 +2209,7 @@ class _DomWalker:
             column_names=headers or None,
             captions=[caption] if caption else [],
         )
+        group.data = {"table_summary": caption, "column_headers": headers}
         group.children = BlockGroupChildren.from_indices(
             block_indices=row_block_indices,
             block_group_indices=open_group.child_group_indices,

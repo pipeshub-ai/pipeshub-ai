@@ -44,6 +44,7 @@ class MarkdownItParser:
         self,
         md_content: str,
         caption_map: Dict[str, str] | None = None,
+        page_number: int | None = None,
     ) -> BlocksContainer:
         """Convert Markdown directly to a ``BlocksContainer``.
 
@@ -62,16 +63,25 @@ class MarkdownItParser:
         Returns:
             Populated ``BlocksContainer``.
         """
-        return self._converter.convert(md_content, caption_map=caption_map)
+        return self._converter.convert(
+            md_content,
+            caption_map=caption_map,
+            page_number=page_number,
+        )
 
     async def parse(
         self,
         md_content: str,
         caption_map: Dict[str, str] | None = None,
         name: str | None = None,
+        page_number: int | None = None,
     ) -> BlocksContainer:
         """Async wrapper around ``parse_to_blocks`` for protocol conformance."""
-        return self.parse_to_blocks(md_content, caption_map)
+        return self.parse_to_blocks(
+            md_content,
+            caption_map,
+            page_number=page_number,
+        )
 
     def extract_and_replace_images(
         self, md_content: str

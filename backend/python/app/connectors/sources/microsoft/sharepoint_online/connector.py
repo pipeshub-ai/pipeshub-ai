@@ -20,6 +20,10 @@ from urllib.parse import quote, unquote, urlparse
 import aiohttp
 import httpx
 from aiolimiter import AsyncLimiter
+from azure.core.exceptions import (
+    ClientAuthenticationError,
+)
+from azure.identity import CredentialUnavailableError
 from azure.identity.aio import CertificateCredential, ClientSecretCredential
 from bs4 import BeautifulSoup, Comment
 from fastapi import HTTPException
@@ -82,7 +86,11 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     RecordUpdate,
     map_msgraph_role_to_permission_type,
 )
-from app.connectors.sources.microsoft.sharepoint_online.utils import clean_html_output
+from app.connectors.sources.microsoft.sharepoint_online.utils import (
+    clean_html_output,
+    get_sharepoint_auth_notification,
+    sanitize_azure_error,
+)
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -95,6 +103,7 @@ from app.models.entities import (
     SharePointListRecord,
     SharePointPageRecord,
 )
+from app.services.notification.types import NotificationSeverity, NotificationType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -710,14 +719,25 @@ class SharePointConnector(BaseConnector):
             await self.credential.get_token("https://graph.microsoft.com/.default")
             self.logger.info("✅ Credential initialized and HTTP session established")
         except Exception as token_error:
-            self.logger.error(f"❌ Failed to initialize credential: {token_error}")
+            sanitized_error = sanitize_azure_error(token_error)
+            self.logger.error(f"❌ Failed to initialize credential: {sanitized_error}")
             # Clean up temp certificate file if it was created
             if self.temp_cert_file:
                 try:
                     os.unlink(self.temp_cert_file.name)
                 except OSError:
                     pass
-            raise ValueError(f"Failed to initialize SharePoint credential: {token_error}")
+            raise ValueError(
+                f"Failed to initialize SharePoint credential: {sanitized_error}"
+            )
+        
+        sharepoint_token = await self._get_sharepoint_access_token()
+        if not sharepoint_token:
+            self.logger.error("❌ Failed to obtain SharePoint access token during initialization")
+            raise ValueError(
+                "Unable to acquire a SharePoint access token. Please verify "
+                "SharePoint host URL and authentication settings."
+            )
 
         # Initialize Graph Client
         self.client = GraphServiceClient(
@@ -2334,7 +2354,7 @@ class SharePointConnector(BaseConnector):
 
         return modified_after, modified_before, created_after, created_before
 
-    async def _get_sharepoint_access_token(self) -> Optional[str]:
+    async def _get_sharepoint_access_token(self, resource_host: str = None) -> Optional[str]:
         """Get access token for SharePoint REST API."""
         from azure.identity.aio import CertificateCredential, ClientSecretCredential
 
@@ -2351,7 +2371,12 @@ class SharePointConnector(BaseConnector):
                     self.logger.debug("Using CertificateCredential for SharePoint REST API")
 
                     # Parse domain to ensure correct format
-                    parsed = urllib.parse.urlparse(self.sharepoint_domain)
+                    parsed = None
+                    if resource_host:
+                        parsed = urllib.parse.urlparse(resource_host)
+                    else:
+                        parsed = urllib.parse.urlparse(self.sharepoint_domain)
+
                     if parsed.hostname:
                         resource_host = parsed.hostname
                     else:
@@ -2362,7 +2387,7 @@ class SharePointConnector(BaseConnector):
 
                     self.logger.debug(f"Requesting SharePoint token for resource: {resource}/.default")
 
-                    # Request token specifically for SharePoint (NOT Graph API)
+                    # Request token specifically for SharePoint API (NOT Graph API)
                     token = await credential.get_token(f"{resource}/.default")
 
                     self.logger.info("✅ Successfully obtained SharePoint access token")
@@ -2379,7 +2404,12 @@ class SharePointConnector(BaseConnector):
                     self.logger.debug("Using ClientSecretCredential for SharePoint REST API")
 
                     # Parse domain to ensure correct format
-                    parsed = urllib.parse.urlparse(self.sharepoint_domain)
+                    parsed = None
+                    if resource_host:
+                        parsed = urllib.parse.urlparse(resource_host)
+                    else:
+                        parsed = urllib.parse.urlparse(self.sharepoint_domain)
+
                     if parsed.hostname:
                         resource_host = parsed.hostname
                     else:
@@ -2400,10 +2430,57 @@ class SharePointConnector(BaseConnector):
                 self.logger.error("❌ No valid authentication method available (neither certificate nor client secret)")
                 return None
 
+        except CredentialUnavailableError as credential_error:
+            sanitized_error = sanitize_azure_error(credential_error)
+            self.logger.error(
+                f"❌ SharePoint credential unavailable for token request: {sanitized_error}"
+            )
+            self.logger.error(
+                f"   Resource URL: {resource if 'resource' in locals() else 'N/A'}"
+            )
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="SharePoint authentication failed",
+                message=(
+                    "Unable to authenticate using current credentials. Please verify the connector authentication credentials."
+                ),
+                recipient_user_ids=[self.created_by],
+            )
+            return None
+        except ClientAuthenticationError as auth_error:
+            sanitized_error = sanitize_azure_error(auth_error)
+            title, message = get_sharepoint_auth_notification(auth_error)
+            self.logger.error(f"❌ Error getting SharePoint token: {sanitized_error}")
+            self.logger.error(
+                f"   Resource URL: {resource if 'resource' in locals() else 'N/A'}"
+            )
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=title,
+                message=message,
+                recipient_user_ids=[self.created_by],
+            )
+            return None
         except Exception as e:
-            self.logger.error(f"❌ Error getting SharePoint token: {e}")
-            self.logger.error("   Make sure your app has SharePoint permissions (Sites.Read.All)")
-            self.logger.error(f"   Resource URL: {resource if 'resource' in locals() else 'N/A'}")
+            sanitized_error = sanitize_azure_error(e)
+            self.logger.error(
+                f"❌ Unexpected error getting SharePoint token: {sanitized_error}"
+            )
+            self.logger.error(
+                f"   Resource URL: {resource if 'resource' in locals() else 'N/A'}"
+            )
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="SharePoint authentication Failed",
+                message=(
+                    "Unable to acquire a SharePoint access token. Please verify SharePoint host URL "
+                    "and connector authentication credentials."
+                ),
+                recipient_user_ids=[self.created_by],
+            )
             return None
 
     async def _get_site_permissions(self, site_id: str) -> List[Permission]:
@@ -3032,8 +3109,7 @@ class SharePointConnector(BaseConnector):
                                 sharepoint_resource = f"https://{parsed_url.netloc}"
 
                                 # Reuse credential to get a specific token for this site
-                                token_response = await credential.get_token(f"{sharepoint_resource}/.default")
-                                access_token = token_response.token
+                                access_token = await self._get_sharepoint_access_token(resource_host=sharepoint_resource)
 
                                 headers = {
                                     'Authorization': f'Bearer {access_token}',
@@ -3170,9 +3246,14 @@ class SharePointConnector(BaseConnector):
                                 else:
                                     self.logger.info(f" Error: {response.status_code}")
 
-
-                            except Exception:
-                                self.logger.info(f" Error processing site {site_name}: {traceback.format_exc()}")
+                            except Exception as site_error:
+                                self.logger.error(
+                                    f"❌ Error processing site {site_name}: "
+                                    f"{sanitize_azure_error(site_error)}"
+                                )
+                                self.logger.debug(
+                                    f"Traceback processing site {site_name}: {traceback.format_exc()}"
+                                )
                                 continue
 
                     # Process all SharePoint site groups
@@ -3575,6 +3656,28 @@ class SharePointConnector(BaseConnector):
         else:
             return PermissionType.READ
 
+    async def _sync_users(self) -> None:
+        """
+        Syncs SharePoint users.
+        """
+        try:
+            users = await self.msgraph_client.get_all_users()
+            await self.data_entities_processor.on_new_app_users(users)
+            self.logger.info(f"✅ Successfully synced {len(users)} users")
+        except Exception as user_error:
+            self.logger.error(f"❌ Error syncing users: {user_error}")
+            await self.notify(
+                type=NotificationType.CONNECTOR_USER_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="Unable to sync SharePoint users",
+                message=(
+                    "Cannot sync SharePoint users. Please check your authentication credentials and try again."
+                ),
+                recipient_user_ids=[self.created_by],
+            )
+            raise 
+        
+
     # Record update handling
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
         """Handle different types of record updates."""
@@ -3682,12 +3785,7 @@ class SharePointConnector(BaseConnector):
 
             # Step 1: Sync users
             self.logger.info("Syncing users...")
-            try:
-                users = await self.msgraph_client.get_all_users()
-                await self.data_entities_processor.on_new_app_users(users)
-                self.logger.info(f"✅ Successfully synced {len(users)} users")
-            except Exception as user_error:
-                self.logger.error(f"❌ Error syncing users: {user_error}")
+            await self._sync_users()
 
             # Step 2: Sync user groups
             self.logger.info("Syncing SharePoint groups...")
@@ -3764,6 +3862,16 @@ class SharePointConnector(BaseConnector):
             duration = datetime.now() - start_time
             self.logger.info(f"🎉 SharePoint connector sync completed in {duration}")
             self.logger.info(f"📈 Statistics: {self.stats}")
+
+            await self.notify(
+                type=NotificationType.CONNECTOR_SUCCESS,
+                severity=NotificationSeverity.SUCCESS,
+                title="SharePoint connector sync complete",
+                message=(
+                    "SharePoint connector sync completed successfully. "
+                ),
+                recipient_user_ids=[self.created_by],
+            )
 
         except Exception as e:
             duration = datetime.now() - start_time

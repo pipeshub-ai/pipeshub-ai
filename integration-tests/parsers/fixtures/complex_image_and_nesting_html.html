@@ -1,0 +1,400 @@
+# HTML Parser Test Cases
+
+Test 1: Image as a List Item
+
+
+<ol>
+  <li>Slack connector configured successfully.</li>
+  <li>Gmail connector configured successfully.</li>
+  <li>
+    <img
+      src="https://i.ibb.co/Wp7ZyN2s/Screenshot-2026-06-15-171126.png"
+      alt="Connectors Screenshot"
+    />
+  </li>
+  <li>Microsoft Teams connector pending approval.</li>
+</ol>
+
+
+
+
+Test 2: List Item with Text and Image
+
+
+<ul>
+  <li>Slack connector configured successfully.</li>
+  <li>Gmail connector configured successfully.</li>
+  <li>
+    Connector configuration screenshot:
+    <img
+      src="https://i.ibb.co/Wp7ZyN2s/Screenshot-2026-06-15-171126.png"
+      alt="Connectors Screenshot"
+    />
+  </li>
+  <li>Microsoft Teams connector pending approval.</li>
+</ul>
+
+
+
+
+Test 3: Nested List with Image
+
+
+<ul>
+  <li>
+    Messaging Platforms
+    <ul>
+      <li>Slack</li>
+      <li>Microsoft Teams</li>
+      <li>
+        Screenshot
+        <img
+          src="https://i.ibb.co/Wp7ZyN2s/Screenshot-2026-06-15-171126.png"
+          alt="Connectors Screenshot"
+        />
+      </li>
+    </ul>
+  </li>
+  <li>
+    Email Platforms
+    <ul>
+      <li>Gmail</li>
+      <li>Outlook</li>
+    </ul>
+  </li>
+</ul>
+
+
+
+
+Test 4: Image Between Paragraphs
+
+
+<p>
+  This is the first paragraph describing the connector setup process.
+  Users can configure multiple integrations and manage them from a
+  single dashboard.
+</p>
+
+<img
+  src="https://i.ibb.co/Wp7ZyN2s/Screenshot-2026-06-15-171126.png"
+  alt="Connectors Screenshot"
+/>
+
+<p>
+  This is the second paragraph explaining the screenshot above.
+  It shows the available connectors and their current configuration
+  status.
+</p>
+
+
+
+
+Test 5: Inline Image Inside a Paragraph
+
+
+<p>
+  This is the first part of a paragraph.
+
+  <img
+    src="https://i.ibb.co/Wp7ZyN2s/Screenshot-2026-06-15-171126.png"
+    alt="Connectors Screenshot"
+  />
+
+  This is the continuation of the content after the image.
+</p>
+
+
+
+
+Test 6: Table with Image
+
+
+<table>
+  <thead>
+    <tr>
+      <th>Connector</th>
+      <th>Status</th>
+      <th>Screenshot</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Slack</td>
+      <td>Active</td>
+      <td>
+        <img
+          src="https://i.ibb.co/Wp7ZyN2s/Screenshot-2026-06-15-171126.png"
+          alt="Connectors Screenshot"
+          width="300"
+        />
+      </td>
+    </tr>
+    <tr>
+      <td>Gmail</td>
+      <td>Active</td>
+      <td>-</td>
+    </tr>
+    <tr>
+      <td>Teams</td>
+      <td>Pending</td>
+      <td>-</td>
+    </tr>
+  </tbody>
+</table>
+
+
+
+
+Test 7: Complex Table with Image
+
+
+<table>
+  <tr>
+    <th>ID</th>
+    <th>Description</th>
+    <th>Preview</th>
+  </tr>
+  <tr>
+    <td>1</td>
+    <td>Connector dashboard showing available integrations.</td>
+    <td>
+      <img
+        src="https://i.ibb.co/Wp7ZyN2s/Screenshot-2026-06-15-171126.png"
+        alt="Connectors Screenshot"
+        width="300"
+      />
+    </td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>Email connector configuration screen.</td>
+    <td>N/A</td>
+  </tr>
+</table>
+
+
+
+
+Test 8: Nested Table
+
+
+<table border="1">
+  <tr>
+    <th>Connector</th>
+    <th>Details</th>
+  </tr>
+  <tr>
+    <td>Slack</td>
+    <td>
+      <table border="1">
+        <tr>
+          <th>Property</th>
+          <th>Value</th>
+        </tr>
+        <tr>
+          <td>Status</td>
+          <td>Active</td>
+        </tr>
+        <tr>
+          <td>Workspace</td>
+          <td>Engineering</td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+
+
+
+
+Test 9: Nested Table with Image
+
+
+<table border="1">
+  <tr>
+    <th>Connector</th>
+    <th>Details</th>
+  </tr>
+  <tr>
+    <td>Slack</td>
+    <td>
+      <table border="1">
+        <tr>
+          <th>Property</th>
+          <th>Value</th>
+        </tr>
+        <tr>
+          <td>Status</td>
+          <td>Active</td>
+        </tr>
+        <tr>
+          <td>Screenshot</td>
+          <td>
+            <img
+              src="https://i.ibb.co/Wp7ZyN2s/Screenshot-2026-06-15-171126.png"
+              alt="Connectors Screenshot"
+              width="250"
+            />
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+
+
+
+
+Test 10: Deeply Nested Table
+
+
+<table border="1">
+  <tr>
+    <th>Level 1</th>
+    <th>Content</th>
+  </tr>
+  <tr>
+    <td>Main</td>
+    <td>
+      <table border="1">
+        <tr>
+          <th>Level 2</th>
+          <th>Content</th>
+        </tr>
+        <tr>
+          <td>Nested</td>
+          <td>
+            <table border="1">
+              <tr>
+                <th>Level 3</th>
+                <th>Value</th>
+              </tr>
+              <tr>
+                <td>Deep Nested</td>
+                <td>Example Data</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+
+
+
+
+Test 11: Deeply Nested Table with Image
+
+
+<table border="1">
+  <tr>
+    <th>Level 1</th>
+    <th>Content</th>
+  </tr>
+  <tr>
+    <td>Main</td>
+    <td>
+      <table border="1">
+        <tr>
+          <th>Level 2</th>
+          <th>Content</th>
+        </tr>
+        <tr>
+          <td>Nested</td>
+          <td>
+            <table border="1">
+              <tr>
+                <th>Level 3</th>
+                <th>Value</th>
+              </tr>
+              <tr>
+                <td>Screenshot</td>
+                <td>
+                  <img
+                    src="https://i.ibb.co/Wp7ZyN2s/Screenshot-2026-06-15-171126.png"
+                    alt="Connectors Screenshot"
+                    width="200"
+                  />
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+
+
+
+
+Test 12: List Item Containing a Table with an Image
+
+
+<ul>
+  <li>
+    Connector Details
+
+    <table border="1">
+      <tr>
+        <th>Connector</th>
+        <th>Status</th>
+        <th>Screenshot</th>
+      </tr>
+      <tr>
+        <td>Slack</td>
+        <td>Active</td>
+        <td>
+          <img
+            src="https://i.ibb.co/Wp7ZyN2s/Screenshot-2026-06-15-171126.png"
+            alt="Connectors Screenshot"
+            width="250"
+          />
+        </td>
+      </tr>
+    </table>
+  </li>
+
+  <li>Another list item</li>
+</ul>
+
+
+
+
+Test 13: Nested List → Table → Image
+
+
+<ul>
+  <li>
+    Messaging Connectors
+    <ul>
+      <li>
+        Configuration Summary
+
+        <table border="1">
+          <tr>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Preview</th>
+          </tr>
+          <tr>
+            <td>Slack</td>
+            <td>Active</td>
+            <td>
+              <img
+                src="https://i.ibb.co/Wp7ZyN2s/Screenshot-2026-06-15-171126.png"
+                alt="Connectors Screenshot"
+                width="200"
+              />
+            </td>
+          </tr>
+        </table>
+      </li>
+    </ul>
+  </li>
+
+  <li>Email Connectors</li>
+</ul>
+

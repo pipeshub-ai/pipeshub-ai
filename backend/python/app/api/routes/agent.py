@@ -1640,6 +1640,7 @@ async def stream_response(
     modelName: str = None,
     modelKey: str = None,
     is_multimodal_llm: bool = False,
+    client_name: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response"""
     try:
@@ -1693,9 +1694,15 @@ async def stream_response(
                 has_sql_connector=has_sql_connector,
                 is_multimodal_llm=is_multimodal_llm,
                 has_slack_connector=has_slack_connector,
+                client_name=client_name,
             )
 
-        config = {"recursion_limit": 50}
+        config = {
+            "recursion_limit": 50,
+            "configurable": {
+                "client_name": client_name,
+            },
+        }
         chunk_count = 0
 
         graph_to_use = selected_graph
@@ -1731,6 +1738,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
         enriched_user_info = await _enrich_user_info(user_context, user_doc)
         org_info = await _get_org_info(user_context, services["graph_provider"], services["logger"])
 
+        client_name = request.headers.get("Client-Name")
         return StreamingResponse(
             stream_response(
                 query_info.model_dump(),
@@ -1744,6 +1752,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
                 org_info,
                 query_info.modelName,
                 query_info.modelKey,
+                client_name=client_name,
             ),
             media_type="text/event-stream",
             headers={
@@ -3807,6 +3816,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "attachments": chat_query.attachments,
         }
 
+        client_name = request.headers.get("client-name")
+
         return StreamingResponse(
             stream_response(
                 query_info,
@@ -3821,6 +3832,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 modelName=model_name,
                 modelKey=model_key,
                 is_multimodal_llm=is_multimodal_llm,
+                client_name=client_name,
             ),
             media_type="text/event-stream",
             headers={

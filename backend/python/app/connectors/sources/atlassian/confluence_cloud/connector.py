@@ -78,6 +78,12 @@ from app.connectors.sources.atlassian.confluence_cloud.block_parser import (
     ConfluenceBlockParser,
 )
 from app.connectors.sources.atlassian.core.apps import ConfluenceApp
+from app.connectors.sources.atlassian.core.confluence_html import (
+    HtmlImageContext,
+    extract_attachment_filename_from_download_url,
+    is_cloud_attachment_download_url,
+    prepare_streaming_html,
+)
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.blocks import (
@@ -2792,7 +2798,7 @@ class ConfluenceConnector(BaseConnector):
                 parent_external_record_id=parent_external_record_id,
                 parent_record_type=parent_record_type,
                 weburl=web_url,
-                mime_type=MimeTypes.BLOCKS.value,
+                mime_type=MimeTypes.HTML.value,
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
                 is_dependent_node=False,  # Pages are root nodes
@@ -3447,7 +3453,7 @@ class ConfluenceConnector(BaseConnector):
             if record.record_type in [RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST]:
                 # Check if this is a legacy record with HTML mime type
                 if record.mime_type == MimeTypes.HTML.value:
-                    # Fetch and stream HTML content for legacy records
+                    # Fetch styled_view HTML with inlined images and title
                     html_content = await self._fetch_page_content(record.external_record_id, record.record_type)
                     
                     return StreamingResponse(
@@ -3572,14 +3578,16 @@ class ConfluenceConnector(BaseConnector):
 
     async def _fetch_page_content(self, page_id: str, record_type: RecordType) -> str:
         """
-        Fetch page or blogpost HTML content from Confluence using v2 API.
+        Fetch page or blogpost styled_view HTML from Confluence using v2 API.
+
+        Resolves URLs, inlines same-origin images as base64, and injects the title as H1.
 
         Args:
             page_id: The page or blogpost ID
             record_type: RecordType.CONFLUENCE_PAGE or RecordType.CONFLUENCE_BLOGPOST
 
         Returns:
-            str: HTML content of the page/blogpost
+            str: Processed HTML content of the page/blogpost
 
         Raises:
             HTTPException: If content not found or fetch fails
@@ -3589,16 +3597,15 @@ class ConfluenceConnector(BaseConnector):
 
             datasource = await self._get_fresh_datasource()
 
-            # Call appropriate API based on record type
             if record_type == RecordType.CONFLUENCE_PAGE:
                 response = await datasource.get_page_content_v2(
                     page_id=page_id,
-                    body_format="export_view"
+                    body_format="styled_view"
                 )
             elif record_type == RecordType.CONFLUENCE_BLOGPOST:
                 response = await datasource.get_blogpost_content_v2(
                     blogpost_id=page_id,
-                    body_format="export_view"
+                    body_format="styled_view"
                 )
             else:
                 raise HTTPException(
@@ -3606,7 +3613,6 @@ class ConfluenceConnector(BaseConnector):
                     detail=f"Unsupported record type: {record_type}"
                 )
 
-            # Check response
             if not response or response.status != HttpStatusCode.SUCCESS.value:
                 raise HTTPException(
                     status_code=404,
@@ -3615,14 +3621,24 @@ class ConfluenceConnector(BaseConnector):
 
             response_data = response.json()
 
-            # Extract HTML content from body.export_view.value
             body = response_data.get("body", {})
-            export_view = body.get("export_view", {})
-            html_content = export_view.get("value", "")
+            styled_view = body.get("styled_view", {})
+            html_content = str(styled_view.get("value") or "")
 
             if not html_content:
                 self.logger.warning(f"Content {page_id} has no body")
                 html_content = "<p>No content available</p>"
+
+            _download = self._create_cloud_html_image_downloader(
+                datasource, page_id, record_type
+            )
+
+            html_content = await prepare_streaming_html(
+                html_content,
+                response_data,
+                _download,
+                logger=self.logger,
+            )
 
             self.logger.debug(f"✅ Fetched {len(html_content)} bytes of HTML for {page_id}")
             return html_content
@@ -3635,6 +3651,205 @@ class ConfluenceConnector(BaseConnector):
                 status_code=500,
                 detail=f"Failed to fetch content: {str(e)}"
             ) from e
+
+    @staticmethod
+    def _rest_attachment_id_from_linked_resource(linked_resource_id: str) -> str:
+        """Convert styled_view data-linked-resource-id to v1/v2 attachment id."""
+        value = str(linked_resource_id).strip()
+        if not value:
+            return ""
+        if value.lower().startswith("att"):
+            return value
+        return f"att{value}"
+
+    async def _fetch_page_attachments_list(
+        self,
+        page_id: str,
+        record_type: RecordType,
+        *,
+        datasource: ConfluenceDataSource | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Fetch current attachments for one page/blogpost."""
+        try:
+            ds = datasource or await self._get_fresh_datasource()
+            page_id_int = int(page_id) if isinstance(page_id, str) else page_id
+            list_kwargs: dict[str, Any] = {
+                "id": page_id_int,
+                "status": ["current"],
+                "limit": limit,
+            }
+            if record_type == RecordType.CONFLUENCE_BLOGPOST:
+                response = await ds.get_blogpost_attachments(**list_kwargs)
+            else:
+                response = await ds.get_page_attachments(**list_kwargs)
+
+            if response and response.status == HttpStatusCode.SUCCESS.value:
+                return list(response.json().get("results", []) or [])
+        except Exception as e:
+            self.logger.debug(f"Failed to list attachments for page {page_id}: {e}")
+        return []
+
+    def _find_attachment_in_list(
+        self,
+        attachments: list[dict[str, Any]],
+        *,
+        file_id: str | None = None,
+        filename: str | None = None,
+    ) -> dict[str, Any] | None:
+        if file_id:
+            for attachment in attachments:
+                if attachment.get("fileId") == file_id:
+                    return attachment
+
+        if filename:
+            name = str(filename).strip()
+            if not name:
+                return None
+            name_lower = name.lower()
+            for attachment in attachments:
+                title = attachment.get("title")
+                if title and str(title).strip() == name:
+                    return attachment
+            for attachment in attachments:
+                title = attachment.get("title")
+                if title and str(title).lower().strip() == name_lower:
+                    return attachment
+        return None
+
+    async def _get_attachment_metadata_by_id(
+        self,
+        datasource: ConfluenceDataSource,
+        attachment_id: str,
+        meta_cache: dict[str, dict[str, Any] | None],
+    ) -> dict[str, Any] | None:
+        if attachment_id in meta_cache:
+            return meta_cache[attachment_id]
+
+        try:
+            response = await datasource.get_attachment_by_id(id=attachment_id)
+            if response and response.status == HttpStatusCode.SUCCESS.value:
+                meta = response.json()
+                meta_cache[attachment_id] = meta
+                return meta
+            meta_cache[attachment_id] = None
+        except Exception as e:
+            self.logger.debug(f"Attachment metadata lookup failed for {attachment_id}: {e}")
+            meta_cache[attachment_id] = None
+        return None
+
+    def _create_cloud_html_image_downloader(
+        self,
+        datasource: ConfluenceDataSource,
+        page_id: str,
+        record_type: RecordType,
+    ) -> Callable[[str, HtmlImageContext], Awaitable[tuple[bytes, str] | None]]:
+        """Build per-image download callback scoped to the current page only."""
+        captured_record_type = record_type
+        page_meta_cache: dict[str, dict[str, Any] | None] = {}
+        page_attachments: list[dict[str, Any]] | None = None
+
+        async def _ensure_page_attachments() -> list[dict[str, Any]]:
+            nonlocal page_attachments
+            if page_attachments is None:
+                page_attachments = await self._fetch_page_attachments_list(
+                    page_id,
+                    captured_record_type,
+                    datasource=datasource,
+                )
+            return page_attachments
+
+        async def _resolve_attachment_for_html_image(
+            image_context: HtmlImageContext,
+            url_filename: str | None,
+        ) -> dict[str, Any] | None:
+            linked_type = (image_context.linked_resource_type or "").lower()
+            if linked_type == "attachment" and image_context.linked_resource_id:
+                att_id = self._rest_attachment_id_from_linked_resource(
+                    image_context.linked_resource_id
+                )
+                if att_id:
+                    meta = await self._get_attachment_metadata_by_id(
+                        datasource, att_id, page_meta_cache
+                    )
+                    if meta:
+                        return meta
+
+            if image_context.media_id:
+                attachments = await _ensure_page_attachments()
+                match = self._find_attachment_in_list(
+                    attachments, file_id=image_context.media_id
+                )
+                if match:
+                    att_id = match.get("id")
+                    if att_id:
+                        page_meta_cache[str(att_id)] = match
+                    return match
+
+            seen: set[str] = set()
+            for candidate in (
+                image_context.default_alias,
+                image_context.alt_text,
+                url_filename,
+            ):
+                if not candidate or not str(candidate).strip():
+                    continue
+                key = str(candidate).lower().strip()
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                attachments = await _ensure_page_attachments()
+                match = self._find_attachment_in_list(
+                    attachments, filename=str(candidate).strip()
+                )
+                if match:
+                    att_id = match.get("id")
+                    if att_id:
+                        page_meta_cache[str(att_id)] = match
+                    return match
+            return None
+
+        async def _download(
+            url: str,
+            image_context: HtmlImageContext,
+        ) -> tuple[bytes, str] | None:
+            if not is_cloud_attachment_download_url(url):
+                return None
+
+            url_filename = extract_attachment_filename_from_download_url(url)
+            attachment = await _resolve_attachment_for_html_image(
+                image_context,
+                url_filename,
+            )
+            if not attachment:
+                return None
+
+            mime_type = attachment.get("mediaType") or ""
+            if not mime_type.startswith("image/"):
+                return None
+
+            attachment_id = attachment.get("id")
+            if not attachment_id:
+                return None
+
+            try:
+                content_bytes = b""
+                async for chunk in datasource.download_attachment(
+                    parent_page_id=page_id,
+                    attachment_id=str(attachment_id),
+                ):
+                    content_bytes += chunk
+                if not content_bytes:
+                    return None
+                return content_bytes, mime_type
+            except Exception as e:
+                self.logger.debug(
+                    f"REST attachment download failed for {attachment_id} on page {page_id}: {e}"
+                )
+                return None
+
+        return _download
 
     def _resolve_confluence_attachment_id(
         self,
@@ -3680,24 +3895,40 @@ class ConfluenceConnector(BaseConnector):
     def _create_confluence_media_fetcher(
         self,
         page_id: str,
-        content_type: str = "page"
+        content_type: str = "page",
+        attachments_data: list[dict[str, Any]] | None = None,
     ) -> Callable[[str, str], Awaitable[str | None]]:
         """
         Create a media fetcher callback bound to a specific Confluence page.
 
-        Args:
-            page_id: The page ID to bind to the fetcher
-            content_type: "page" or "blogpost" to determine which API to use
-
-        Returns:
-            Async function that takes (media_id, alt_text) and returns base64 data URI
+        Attachment metadata is loaded at most once per page and discarded when
+        streaming for that page completes.
         """
-        # Capture page_id and content_type in this scope
         captured_page_id = page_id
         captured_content_type = content_type
+        page_attachments: list[dict[str, Any]] | None = (
+            list(attachments_data) if attachments_data else None
+        )
 
         async def fetcher(media_id: str, alt_text: str) -> str | None:
-            return await self._fetch_confluence_media_as_base64(captured_page_id, media_id, alt_text, captured_content_type)
+            nonlocal page_attachments
+            record_type = (
+                RecordType.CONFLUENCE_BLOGPOST
+                if captured_content_type == "blogpost"
+                else RecordType.CONFLUENCE_PAGE
+            )
+            if page_attachments is None:
+                page_attachments = await self._fetch_page_attachments_list(
+                    captured_page_id,
+                    record_type,
+                )
+            return await self._fetch_confluence_media_as_base64(
+                captured_page_id,
+                media_id,
+                alt_text,
+                captured_content_type,
+                attachments=page_attachments,
+            )
 
         return fetcher
 
@@ -3706,7 +3937,8 @@ class ConfluenceConnector(BaseConnector):
         page_id: str,
         media_id: str,
         media_alt: str,
-        content_type: str = "page"
+        content_type: str = "page",
+        attachments: list[dict[str, Any]] | None = None,
     ) -> str | None:
         """
         Fetch Confluence attachment content and return as base64 data URI.
@@ -3716,76 +3948,71 @@ class ConfluenceConnector(BaseConnector):
             media_id: The media ID from ADF (UUID token)
             media_alt: The alt text/filename for matching
             content_type: "page" or "blogpost" to determine which API to use
+            attachments: Current-page attachment metadata (loaded once per page)
 
         Returns:
             Base64 data URI string or None
         """
         try:
-            # Fetch attachments using v2 API (page or blogpost specific)
             datasource = await self._get_fresh_datasource()
-            # Convert page_id to int if it's a string
-            page_id_int = int(page_id) if isinstance(page_id, str) else page_id
-
-            # Use correct API based on content type
-            if content_type == "blogpost":
-                response = await datasource.get_blogpost_attachments(
-                    id=page_id_int,
-                    status=["current"],  # Only fetch current version attachments
-                    limit=100
-                )
-            else:
-                response = await datasource.get_page_attachments(
-                    id=page_id_int,
-                    status=["current"],  # Only fetch current version attachments
-                    limit=100
+            record_type = (
+                RecordType.CONFLUENCE_BLOGPOST
+                if content_type == "blogpost"
+                else RecordType.CONFLUENCE_PAGE
+            )
+            page_attachments = attachments
+            if page_attachments is None:
+                page_attachments = await self._fetch_page_attachments_list(
+                    page_id, record_type, datasource=datasource
                 )
 
-            if response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.debug(f"No attachments found for page {page_id}")
+            attachment_id = self._resolve_confluence_attachment_id(
+                {
+                    "id": media_id,
+                    "filename": media_alt,
+                    "alt": media_alt,
+                },
+                page_attachments,
+            )
+            if not attachment_id:
+                self.logger.debug(
+                    f"No attachment found matching media id '{media_id}' / '{media_alt}' on page {page_id}"
+                )
                 return None
 
-            attachments_data = response.json()
-            attachments = attachments_data.get("results", [])  # v2 API uses "results"
-
-            # Find attachment by filename (alt text)
-            target_attachment = None
-            if media_alt:
-                for attachment in attachments:
-                    filename = attachment.get("title") or attachment.get("metadata", {}).get("mediaType", "")
-                    if filename == media_alt or filename.lower() == media_alt.lower():
-                        target_attachment = attachment
-                        break
-
+            target_attachment = next(
+                (att for att in page_attachments if att.get("id") == attachment_id),
+                None,
+            )
             if not target_attachment:
-                self.logger.debug(f"No attachment found matching '{media_alt}' in page {page_id}")
+                self.logger.debug(
+                    f"Attachment metadata missing for {attachment_id} on page {page_id}"
+                )
                 return None
 
-            # Download attachment content
-            attachment_id = target_attachment.get("id")
-
-            # Extract MIME type - check top level first, then metadata object as fallback
             mime_type = target_attachment.get("mediaType") or "image/png"
 
-            # Only process image types - return None for non-images (PDFs, videos, etc.)
             if not mime_type.startswith("image/"):
                 self.logger.debug(f"Skipping non-image media type: {mime_type} for {media_alt}")
                 return None
 
-            # Stream attachment content
             content_bytes = b""
             async for chunk in datasource.download_attachment(
                 parent_page_id=page_id,
-                attachment_id=attachment_id
+                attachment_id=str(attachment_id),
             ):
                 content_bytes += chunk
 
-            # Convert to base64
-            base64_data = base64.b64encode(content_bytes).decode('utf-8')
+            if not content_bytes:
+                return None
+
+            base64_data = base64.b64encode(content_bytes).decode("utf-8")
             return f"data:{mime_type};base64,{base64_data}"
 
-
         except Exception as e:
-            self.logger.warning(f"Error fetching media (id='{media_id}', alt='{media_alt}') for page {page_id}: {e}")
+            self.logger.warning(
+                f"Error fetching media (id='{media_id}', alt='{media_alt}') for page {page_id}: {e}"
+            )
             return None
 
     async def _fetch_page_comments_recursive(
@@ -4019,29 +4246,19 @@ class ConfluenceConnector(BaseConnector):
     def _create_comment_media_fetcher(
         self,
         page_id: str,
-        content_type: str = "page"
+        content_type: str = "page",
+        attachments_data: list[dict[str, Any]] | None = None,
     ) -> Callable[[str, str], Awaitable[str | None]]:
         """
         Create a media fetcher callback for comments.
         Comments use collection "comment-container-{pageId}" but attachments
         are still accessible via page attachments API.
-
-        Args:
-            page_id: The page ID containing the comment
-            content_type: "page" or "blogpost" to determine which API to use
-
-        Returns:
-            Async function that takes (media_id, alt_text) and returns base64 data URI
         """
-        captured_page_id = page_id
-        captured_content_type = content_type
-
-        async def fetcher(media_id: str, alt_text: str) -> str | None:
-            # For comments, media might be in comment-container collection
-            # but we can still try to fetch from page attachments
-            return await self._fetch_confluence_media_as_base64(captured_page_id, media_id, alt_text, captured_content_type)
-
-        return fetcher
+        return self._create_confluence_media_fetcher(
+            page_id,
+            content_type,
+            attachments_data=attachments_data,
+        )
 
     async def _parse_confluence_page_to_blocks(
         self,
@@ -4101,7 +4318,9 @@ class ConfluenceConnector(BaseConnector):
         page_title_str = str(page_title).strip() if page_title and str(page_title).strip() else None
         blocks, block_groups = await parser.parse_adf(
             adf_content=adf_dict if adf_dict else {},
-            media_fetcher=self._create_confluence_media_fetcher(page_id, content_type)
+            media_fetcher=self._create_confluence_media_fetcher(
+                page_id, content_type, attachments_data=attachments_data
+            )
             if adf_dict
             else None,
             parent_page_url=weburl,
@@ -4187,7 +4406,9 @@ class ConfluenceConnector(BaseConnector):
             await parser.attach_inline_comments_to_blocks(
                 blocks=blocks,
                 inline_comments=inline_comments,
-                media_fetcher=self._create_comment_media_fetcher(page_id, content_type),
+                media_fetcher=self._create_comment_media_fetcher(
+                    page_id, content_type, attachments_data=attachments_data
+                ),
                 parent_page_url=weburl,
                 user_display_names=user_display_names,
             )
@@ -4242,7 +4463,9 @@ class ConfluenceConnector(BaseConnector):
                     # Parse comment ADF directly to Blocks
                     comment_blocks, comment_block_groups = await parser.parse_adf(
                         adf_content=comment_body_adf,
-                        media_fetcher=self._create_comment_media_fetcher(page_id, content_type),
+                        media_fetcher=self._create_comment_media_fetcher(
+                    page_id, content_type, attachments_data=attachments_data
+                ),
                         parent_page_url=weburl,
                         page_id=page_id,
                         page_title=None  # Don't add title for comments
@@ -4640,18 +4863,20 @@ class ConfluenceConnector(BaseConnector):
 
                 self.logger.info(f"Published update events for {len(updated_records)} records that changed at source")
 
-            # Fix legacy mime types for pages/blogposts before reindexing
+            # Reindex non-updated records (preserving existing mime types)
             if non_updated_records:
-                fixed_records, ok_records = await self._fix_legacy_mime_types(non_updated_records)
+                # DISABLED: Don't convert HTML to BLOCKS anymore to support HTML format for new records
+                # while preserving existing BLOCKS records
+                # fixed_records, ok_records = await self._fix_legacy_mime_types(non_updated_records)
+                # TODO: Uncomment this when we want to convert HTML to BLOCKS again
+                # all_reindex_records = fixed_records + ok_records
                 
-                all_reindex_records = fixed_records + ok_records
+                # Use records as-is (preserves existing BLOCKS, new ones are HTML)
+                all_reindex_records = non_updated_records
                 
                 if all_reindex_records:
                     await self.data_entities_processor.reindex_existing_records(all_reindex_records)
-                    self.logger.info(
-                        f"Published reindex events for {len(all_reindex_records)} non-updated records "
-                        f"({len(fixed_records)} mime type fixes, {len(ok_records)} unchanged)"
-                    )
+                    self.logger.info(f"Published reindex events for {len(all_reindex_records)} non-updated records")
         except Exception as e:
             self.logger.error(f"Error during Confluence reindex: {e}", exc_info=True)
             raise

@@ -53,7 +53,13 @@ import {
   submitConnectorFileEventUploads,
   getConnectorSchema,
   getActiveAgentInstances,
+  getConnectorStats,
+  reindexFailedRecords,
+  resyncConnectorRecords,
 } from '../controllers/connector.controllers';
+import { RecordRelationService } from '../../knowledge_base/services/kb.relation.service';
+import { RecordsEventProducer } from '../../knowledge_base/services/records_events.service';
+import { SyncEventProducer } from '../../knowledge_base/services/sync_events.service';
 import { ConnectorsConfig } from '../../configuration_manager/schema/connectors.schema';
 import { GoogleWorkspaceApp, scopeToAppMap } from '../types/connector.types';
 import {
@@ -320,6 +326,36 @@ const connectorListSchema = z.object({
   }),
 });
 
+
+/**
+ * Schema for resyncing connector records
+ */
+const resyncConnectorSchema = z.object({
+  params: z.object({ connectorId: z.string().min(1) }),
+  body: z.object({
+    connectorName: z.string().min(1),
+    fullSync: z.boolean().optional(),
+  }),
+});
+
+/**
+ * Schema for reindexing failed records
+ */
+const reindexFailedRecordSchema = z.object({
+  params: z.object({ connectorId: z.string().min(1) }),
+  body: z.object({
+    app: z.string().min(1),
+    statusFilters: z.array(z.string()).optional(),
+  }),
+});
+
+/**
+ * Schema for getting connector stats
+ */
+const getConnectorStatsSchema = z.object({
+  params: z.object({ connectorId: z.string().min(1) }),
+});
+
 // ============================================================================
 // Router Factory
 // ============================================================================
@@ -327,12 +363,9 @@ const connectorListSchema = z.object({
 /**
  * Create and configure the connector router.
  *
- * @param container - Tokens-manager DI container (auth, app config, events)
- * @param crawlingContainer - Crawling-manager DI container. Passed whole
- *   (not as individual services) so future crawling-side dependencies
- *   needed by connector routes can be resolved here without changing the
- *   factory signature or the call site in `app.ts`. Mirrors the
- *   `createXRouter(container)` pattern used by every other module.
+ * @param container - Tokens-manager DI container for existing connector route
+ *   dependencies: auth, app config, entity events, metrics, and storage.
+ * @param crawlingContainer - Crawling-manager DI container for the scheduler.
  * @returns Configured Express router
  */
 export function createConnectorRouter(
@@ -348,6 +381,16 @@ export function createConnectorRouter(
   );
   const localFsUploadMiddleware = createLocalFsConnectorFileEventsUploadMiddleware(
     container.get<KeyValueStoreService>('KeyValueStoreService'),
+  );
+  const recordsEventProducer = container.get<RecordsEventProducer>(
+    'RecordsEventProducer',
+  );
+  const syncEventProducer =
+    container.get<SyncEventProducer>('SyncEventProducer');
+  const recordRelationService = new RecordRelationService(
+    recordsEventProducer,
+    syncEventProducer,
+    config.storage,
   );
 
   // ============================================================================
@@ -483,6 +526,49 @@ export function createConnectorRouter(
     metricsMiddleware(container),
     ValidationMiddleware.validate(connectorIdParamSchema),
     deleteConnectorInstance(config, scheduler)
+  );
+
+  // ============================================================================
+  // Stats & Sync Routes
+  // ============================================================================
+
+  /**
+   * GET /:connectorId/stats
+   * Get indexing stats for a connector instance
+   */
+  router.get(
+    '/:connectorId/stats',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_READ, OAuthScopeNames.KB_READ),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(getConnectorStatsSchema),
+    getConnectorStats(config),
+  );
+
+  /**
+   * POST /:connectorId/reindex-failed
+   * Reindex failed (and optionally filtered) records for a connector
+   */
+  router.post(
+    '/:connectorId/reindex-failed',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE, OAuthScopeNames.KB_WRITE),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(reindexFailedRecordSchema),
+    reindexFailedRecords(recordRelationService, config),
+  );
+
+  /**
+   * POST /:connectorId/resync
+   * Resync connector records
+   */
+  router.post(
+    '/:connectorId/resync',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE, OAuthScopeNames.KB_WRITE),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(resyncConnectorSchema),
+    resyncConnectorRecords(recordRelationService, config),
   );
 
   // ============================================================================

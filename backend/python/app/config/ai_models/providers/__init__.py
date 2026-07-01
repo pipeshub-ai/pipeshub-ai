@@ -14,11 +14,14 @@ from .embedding_only import (
     VoyageProvider,
 )
 from .gemini import GeminiProvider
+from .litellm_proxy import LiteLLMProxyProvider
 from .llm_only import FireworksProvider, GroqProvider, MiniMaxProvider, XAIProvider
+from .lm_studio import LMStudioProvider
 from .mistral import MistralProvider
 from .ollama import OllamaProvider
 from .openai import OpenAIProvider
 from .openai_compatible import OpenAICompatibleProvider
+from .openrouter import OpenRouterProvider
 from .together import TogetherProvider
 from .vertex_ai import VertexAIProvider
 from .whisper import WhisperProvider
@@ -29,10 +32,13 @@ ALL_PROVIDER_CLASSES: list[type] = [
     GeminiProvider,
     AnthropicProvider,
     OpenAICompatibleProvider,
+    OpenRouterProvider,
     AzureAIProvider,
     AzureOpenAIProvider,
     BedrockProvider,
     OllamaProvider,
+    LMStudioProvider,
+    LiteLLMProxyProvider,
     VertexAIProvider,
     CohereProvider,
     TogetherProvider,

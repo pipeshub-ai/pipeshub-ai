@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import base64
 import html as html_module
+import re
 from logging import Logger
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -137,6 +139,37 @@ def is_same_origin(url: str, base_url: str) -> bool:
         return False
 
 
+_CLOUD_ATTACHMENT_DOWNLOAD_RE = re.compile(
+    r"/download/(?:thumbnails|attachments)/\d+/(.+)$",
+    re.IGNORECASE,
+)
+
+
+def extract_attachment_filename_from_download_url(url: str) -> str | None:
+    """Extract attachment filename from Confluence Cloud download/thumbnail URLs.
+
+    Matches paths like ``/download/thumbnails/{pageId}/{file}`` and
+    ``/download/attachments/{pageId}/{file}``. Returns None for emoticons,
+    external URLs, and other non-attachment paths.
+    """
+    if not url or not str(url).strip():
+        return None
+    try:
+        path = urlparse(url).path
+        match = _CLOUD_ATTACHMENT_DOWNLOAD_RE.search(path)
+        if not match:
+            return None
+        filename = unquote(match.group(1)).strip()
+        return filename or None
+    except Exception:
+        return None
+
+
+def is_cloud_attachment_download_url(url: str) -> bool:
+    """True when URL is a Confluence Cloud page attachment download/thumbnail path."""
+    return extract_attachment_filename_from_download_url(url) is not None
+
+
 def is_image_content_type(content_type: str) -> bool:
     """Check if content-type indicates an image."""
     if not content_type:
@@ -191,10 +224,44 @@ def bytes_to_data_uri(
     return f"data:image/{extension};base64,{image_base64}"
 
 
+@dataclass(frozen=True)
+class HtmlImageContext:
+    """Per-<img> metadata from Confluence styled_view HTML."""
+
+    alt_text: str | None = None
+    linked_resource_id: str | None = None
+    linked_resource_type: str | None = None
+    media_id: str | None = None
+    default_alias: str | None = None
+
+
+HtmlImageDownload = Callable[[str, HtmlImageContext], Awaitable[tuple[bytes, str] | None]]
+
+
+def _html_image_context_from_tag(img: Any) -> HtmlImageContext:
+    alt_raw = img.get("alt")
+    alt_text = alt_raw.strip() if isinstance(alt_raw, str) and alt_raw.strip() else None
+
+    def _attr(name: str) -> str | None:
+        raw = img.get(name)
+        if raw is None:
+            return None
+        text = str(raw).strip()
+        return text or None
+
+    return HtmlImageContext(
+        alt_text=alt_text,
+        linked_resource_id=_attr("data-linked-resource-id"),
+        linked_resource_type=_attr("data-linked-resource-type"),
+        media_id=_attr("data-media-id"),
+        default_alias=_attr("data-linked-resource-default-alias"),
+    )
+
+
 async def inline_authenticated_images_in_html(
     html: str,
     base_url: str,
-    download: Callable[[str], Awaitable[tuple[bytes, str] | None]],
+    download: HtmlImageDownload,
     *,
     logger: Logger | None = None,
 ) -> str:
@@ -206,7 +273,7 @@ async def inline_authenticated_images_in_html(
     Args:
         html: HTML content to process
         base_url: Confluence instance base URL (for origin checking)
-        download: Async callable that takes a URL and returns (bytes, content_type) or None
+        download: Async callable (url, image_context) -> (bytes, content_type) or None
         logger: Optional logger for warnings
         
     Returns:
@@ -232,10 +299,10 @@ async def inline_authenticated_images_in_html(
         
         # Resolve to absolute URL
         absolute_src = urljoin(base_url, src)
-        
-        # Download with authentication
+        image_context = _html_image_context_from_tag(img)
+
         try:
-            result = await download(absolute_src)
+            result = await download(absolute_src, image_context)
             if result is None:
                 # Download failed, leave src unchanged
                 if logger:
@@ -269,17 +336,28 @@ async def inline_authenticated_images_in_html(
 
 
 def prepend_title_to_html(html: str, title: str | None) -> str:
-    """Prepend document title as H1 so indexing includes it in searchable content."""
+    """Inject document title as H1 so indexing includes it in searchable content.
+
+    For full HTML documents (styled_view), inserts H1 as the first child of body.
+    For fragments (export_view, comments), prepends H1 before the content.
+    """
     if not title or not str(title).strip():
         return html
     safe_title = html_module.escape(str(title).strip())
+    soup = BeautifulSoup(html, "html.parser")
+    body = soup.body
+    if body is not None:
+        h1 = soup.new_tag("h1")
+        h1.string = str(title).strip()
+        body.insert(0, h1)
+        return str(soup)
     return f"<h1>{safe_title}</h1>\n{html}"
 
 
 async def prepare_streaming_html(
     html: str,
     response_data: dict[str, Any],
-    download: Callable[[str], Awaitable[tuple[bytes, str] | None]],
+    download: HtmlImageDownload,
     *,
     title: str | None = None,
     logger: Logger | None = None,
@@ -290,10 +368,10 @@ async def prepare_streaming_html(
     1. Extract base URL from Confluence API response
     2. Resolve relative URLs to absolute
     3. Inline same-origin images via authenticated downloads (SVGs passed through as-is)
-    4. Prepend page/blogpost/comment title as H1 (export_view omits title)
+    4. Inject page/blogpost/comment title as H1 (styled_view/export_view omit visible title)
     
     Args:
-        html: Raw HTML from Confluence body.export_view
+        html: Raw HTML from Confluence body.styled_view or body.export_view
         response_data: Full API response JSON (for extracting base URL and title)
         download: Async callable for authenticated image downloads
         title: Optional title override (e.g. record.record_name for comments)

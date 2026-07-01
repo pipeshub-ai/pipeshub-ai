@@ -8,9 +8,6 @@ import {
   getRecordBuffer,
   reindexRecord,
   reindexRecordGroup,
-  getConnectorStats,
-  reindexFailedRecords,
-  resyncConnectorRecords,
   createKnowledgeBase,
   listKnowledgeBases,
   getKnowledgeBase,
@@ -22,12 +19,8 @@ import {
   listKBPermissions,
   updateFolder,
   deleteFolder,
-  getKBContent,
-  getFolderContents,
-  getAllRecords,
   uploadRecords,
-  createNestedFolder,
-  createRootFolder,
+  createFolder,
   getKnowledgeHubNodes,
   moveRecord,
 } from '../controllers/kb_controllers';
@@ -38,36 +31,27 @@ import {
   updateRecordSchema,
   deleteRecordSchema,
   reindexRecordGroupSchema,
-  reindexFailedRecordSchema,
-  resyncConnectorSchema,
   createKBSchema,
   getKBSchema,
   updateKBSchema,
   deleteKBSchema,
   createFolderSchema,
   kbPermissionSchema,
-  getFolderSchema,
   getPermissionsSchema,
   updatePermissionsSchema,
   deletePermissionsSchema,
   updateFolderSchema,
   deleteFolderSchema,
-  getAllRecordsSchema,
-  getAllKBRecordsSchema,
   uploadRecordsSchema,
   listKnowledgeBasesSchema,
   reindexRecordSchema,
-  getConnectorStatsSchema,
   moveRecordSchema,
 } from '../validators/validators';
 // Clean up unused commented import
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 import { extensionToMimeType, getMimeType } from '../../storage/mimetypes/mimetypes';
-import { RecordRelationService } from '../services/kb.relation.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
-import { RecordsEventProducer } from '../services/records_events.service';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { SyncEventProducer } from '../services/sync_events.service';
 import { FileProcessorService } from '../../../libs/middlewares/file_processor/fp.service';
 import { KB_UPLOAD_LIMITS } from '../constants/kb.constants';
 import { getPlatformSettingsFromStore } from '../../configuration_manager/utils/util';
@@ -87,17 +71,6 @@ export function createKnowledgeBaseRouter(
 ): Router {
   const router = Router();
   const appConfig = container.get<AppConfig>('AppConfig');
-  const recordsEventProducer = container.get<RecordsEventProducer>(
-    'RecordsEventProducer',
-  );
-  const syncEventProducer =
-    container.get<SyncEventProducer>('SyncEventProducer');
-
-  const recordRelationService = new RecordRelationService(
-    recordsEventProducer,
-    syncEventProducer,
-    appConfig.storage,
-  );
   const keyValueStoreService = container.get<KeyValueStoreService>(
     'KeyValueStoreService',
   );
@@ -209,16 +182,6 @@ export function createKnowledgeBaseRouter(
     listKnowledgeBases(appConfig),
   );
 
-  // Get all records (new)
-  router.get(
-    '/records',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(getAllRecordsSchema),
-    getAllRecords(appConfig),
-  );
-
   // Knowledge Hub unified browse API - Root
   router.get(
     '/knowledge-hub/nodes',
@@ -306,36 +269,6 @@ export function createKnowledgeBaseRouter(
     reindexRecordGroup(appConfig),
   );
 
-  // connector stats
-  router.get(
-    '/stats/:connectorId',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(getConnectorStatsSchema),
-    getConnectorStats(appConfig),
-  );
-
-  // reindex all failed records per connector
-  router.post(
-    '/reindex-failed/connector',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(reindexFailedRecordSchema),
-    reindexFailedRecords(recordRelationService, appConfig),
-  );
-
-  // resync connector records
-  router.post(
-    '/resync/connector',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(resyncConnectorSchema),
-    resyncConnectorRecords(recordRelationService, appConfig),
-  );
-
   // Limits endpoint for clients to discover constraints
   router.get(
     '/limits',
@@ -392,26 +325,6 @@ export function createKnowledgeBaseRouter(
     deleteKnowledgeBase(appConfig),
   );
 
-  // Get records for a specific KB
-  router.get(
-    '/:kbId/records',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(getAllKBRecordsSchema),
-    getKBContent(appConfig),
-  );
-
-  // Get KB children (folders and records) - alias for records endpoint
-  router.get(
-    '/:kbId/children',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(getAllKBRecordsSchema),
-    getKBContent(appConfig),
-  );
-
   // Upload records to KB root or folder (?folderId= optional)
   router.post(
     '/:kbId/upload',
@@ -441,44 +354,14 @@ export function createKnowledgeBaseRouter(
     uploadRecords(keyValueStoreService, appConfig),
   );
 
-  // Create a root folder
+  // Create folder (root or nested via optional folderId query param)
   router.post(
     '/:kbId/folder',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(createFolderSchema),
-    createRootFolder(appConfig),
-  );
-
-  // create a nested subfolder
-  router.post(
-    '/:kbId/folder/:folderId/subfolder',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(createFolderSchema),
-    createNestedFolder(appConfig),
-  );
-
-  // Get folder contents
-  router.get(
-    '/:kbId/folder/:folderId',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(getFolderSchema),
-    getFolderContents(appConfig),
-  );
-
-  // Get folder children - alias for folder contents
-  router.get(
-    '/:kbId/folder/:folderId/children',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
-    ValidationMiddleware.validate(getFolderSchema),
-    getFolderContents(appConfig),
+    createFolder(appConfig),
   );
 
   // update folder

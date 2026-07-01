@@ -32,6 +32,7 @@ export const apiClient = axios.create({
   timeout: API_TIMEOUT,
   headers: {
     'Content-Type': 'application/json',
+    'client-name': 'pipeshub-ai',
   },
   withCredentials: true,
 });

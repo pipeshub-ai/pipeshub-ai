@@ -8909,6 +8909,7 @@ class Neo4jProvider(IGraphDBProvider):
             RETURN {{
                 id: kb.id,
                 name: COALESCE(kb.groupName, 'Untitled'),
+                connectorId: kb.connectorId,
                 createdAtTimestamp: kb.createdAtTimestamp,
                 updatedAtTimestamp: kb.updatedAtTimestamp,
                 createdBy: kb.createdBy,

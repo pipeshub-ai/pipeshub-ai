@@ -46,7 +46,18 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Subject / Teacher",
+          "Term 1",
+          "Term 2",
+          "Annual Exam",
+          "Total %",
+          "Grade",
+          "Position"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -95,7 +106,15 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Month",
+          "Working Days",
+          "Present",
+          "%"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -143,7 +162,14 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Leave Type",
+          "Days Taken",
+          "Authorised"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -193,7 +219,16 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Activity",
+          "Category",
+          "Achievements & Participation",
+          "Discipline",
+          "Grade"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -204,17 +239,18 @@
     {
       "index": 0,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "🏫\n    Greenfield Academy\n      Est. 1987 · Bengaluru\n      \n        24 Sadashivanagar Main Road, Bengaluru — 560080\n        +91 80 4412 7700 · info@greenfieldacademy.edu.in\n    Progress Report Card\n      Academic Year 2025 – 26\n      Term 2 · Annual Examination\n      Affiliated to CBSE · School Code: 930124",
+      "data": "🏫\nGreenfield Academy\nEst. 1987 · Bengaluru\n\n        24 Sadashivanagar Main Road, Bengaluru — 560080\n        +91 80 4412 7700 · info@greenfieldacademy.edu.in\nProgress Report Card\nAcademic Year 2025 – 26\nTerm 2 · Annual Examination\nAffiliated to CBSE · School Code: 930124",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -235,17 +271,18 @@
     {
       "index": 1,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "Student NameArjun Krishnamurthy\n    Class & SectionIX — B\n    Roll No.09B-14\n    Date of Birth14 Mar 2011\n    Admission No.GFA-2019-1421",
+      "data": "Student NameArjun Krishnamurthy\nClass & SectionIX — B\nRoll No.09B-14\nDate of Birth14 Mar 2011\nAdmission No.GFA-2019-1421",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -266,10 +303,11 @@
     {
       "index": 2,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -297,6 +335,7 @@
     {
       "index": 3,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -340,6 +379,7 @@
     {
       "index": 4,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -351,10 +391,10 @@
       "source_name": null,
       "source_type": null,
       "data": {
-        "row_natural_language_text": "Subject / Teacher: English (Core)\nMs. Leela Mathew\n[[\"Reading Comprehension\", \"24/25\"], [\"Writing / Grammar\", \"28/30\"], [\"Literature\", \"36/40\"], [\"Speaking Assessment\", \"4.5/5\"]], Term 1: 86, Term 2: 89, Annual Exam: 91, Total %: 88%, Grade: A2, Position: 4th",
+        "row_natural_language_text": "Subject / Teacher: English (Core)\nMs. Leela Mathew\n| Column 1 | Column 2 |\n| --- | --- |\n| Reading Comprehension | 24/25 |\n| Writing / Grammar | 28/30 |\n| Literature | 36/40 |\n| Speaking Assessment | 4.5/5 |, Term 1: 86, Term 2: 89, Annual Exam: 91, Total %: 88%, Grade: A2, Position: 4th",
         "row_number": 2,
         "cells": [
-          "English (Core)\nMs. Leela Mathew\n[[\"Reading Comprehension\", \"24/25\"], [\"Writing / Grammar\", \"28/30\"], [\"Literature\", \"36/40\"], [\"Speaking Assessment\", \"4.5/5\"]]",
+          "English (Core)\nMs. Leela Mathew\n| Column 1 | Column 2 |\n| --- | --- |\n| Reading Comprehension | 24/25 |\n| Writing / Grammar | 28/30 |\n| Literature | 36/40 |\n| Speaking Assessment | 4.5/5 |",
           "86",
           "89",
           "91",
@@ -383,6 +423,7 @@
     {
       "index": 5,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -394,10 +435,10 @@
       "source_name": null,
       "source_type": null,
       "data": {
-        "row_natural_language_text": "Subject / Teacher: Hindi (Second Language)\nMr. Ravi Shankar\n[[\"Prose & Poetry\", \"38/40\"], [\"Grammar & Composition\", \"32/35\"], [\"Oral Expression\", \"20/25\"]], Term 1: 82, Term 2: 88, Annual Exam: 90, Total %: 87%, Grade: A2, Position: 6th",
+        "row_natural_language_text": "Subject / Teacher: Hindi (Second Language)\nMr. Ravi Shankar\n| Column 1 | Column 2 |\n| --- | --- |\n| Prose & Poetry | 38/40 |\n| Grammar & Composition | 32/35 |\n| Oral Expression | 20/25 |, Term 1: 82, Term 2: 88, Annual Exam: 90, Total %: 87%, Grade: A2, Position: 6th",
         "row_number": 3,
         "cells": [
-          "Hindi (Second Language)\nMr. Ravi Shankar\n[[\"Prose & Poetry\", \"38/40\"], [\"Grammar & Composition\", \"32/35\"], [\"Oral Expression\", \"20/25\"]]",
+          "Hindi (Second Language)\nMr. Ravi Shankar\n| Column 1 | Column 2 |\n| --- | --- |\n| Prose & Poetry | 38/40 |\n| Grammar & Composition | 32/35 |\n| Oral Expression | 20/25 |",
           "82",
           "88",
           "90",
@@ -426,6 +467,7 @@
     {
       "index": 6,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -469,6 +511,7 @@
     {
       "index": 7,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -480,10 +523,10 @@
       "source_name": null,
       "source_type": null,
       "data": {
-        "row_natural_language_text": "Subject / Teacher: Mathematics\nMrs. Deepa Rao\n[[\"Algebra & Polynomials\", \"29/30\"], [\"Geometry & Constructions\", \"27/30\"], [\"Statistics & Probability\", \"23/25\"], [\"Number Systems\", \"15/15\"]], Term 1: 94, Term 2: 96, Annual Exam: 98, Total %: 96%, Grade: A1, Position: 1st 🏆",
+        "row_natural_language_text": "Subject / Teacher: Mathematics\nMrs. Deepa Rao\n| Column 1 | Column 2 |\n| --- | --- |\n| Algebra & Polynomials | 29/30 |\n| Geometry & Constructions | 27/30 |\n| Statistics & Probability | 23/25 |\n| Number Systems | 15/15 |, Term 1: 94, Term 2: 96, Annual Exam: 98, Total %: 96%, Grade: A1, Position: 1st 🏆",
         "row_number": 5,
         "cells": [
-          "Mathematics\nMrs. Deepa Rao\n[[\"Algebra & Polynomials\", \"29/30\"], [\"Geometry & Constructions\", \"27/30\"], [\"Statistics & Probability\", \"23/25\"], [\"Number Systems\", \"15/15\"]]",
+          "Mathematics\nMrs. Deepa Rao\n| Column 1 | Column 2 |\n| --- | --- |\n| Algebra & Polynomials | 29/30 |\n| Geometry & Constructions | 27/30 |\n| Statistics & Probability | 23/25 |\n| Number Systems | 15/15 |",
           "94",
           "96",
           "98",
@@ -512,6 +555,7 @@
     {
       "index": 8,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -523,10 +567,10 @@
       "source_name": null,
       "source_type": null,
       "data": {
-        "row_natural_language_text": "Subject / Teacher: Science\nDr. Priya Subramanian\n[[\"Physics (Matter & Motion)\", \"28/30\"], [\"Chemistry (Atoms & Reactions)\", \"30/35\"], [\"Biology (Life Processes)\", \"27/30\"], [\"Practical / Lab Work\", \"4/5\"]], Term 1: 88, Term 2: 91, Annual Exam: 89, Total %: 89%, Grade: A2, Position: 3rd",
+        "row_natural_language_text": "Subject / Teacher: Science\nDr. Priya Subramanian\n| Column 1 | Column 2 |\n| --- | --- |\n| Physics (Matter & Motion) | 28/30 |\n| Chemistry (Atoms & Reactions) | 30/35 |\n| Biology (Life Processes) | 27/30 |\n| Practical / Lab Work | 4/5 |, Term 1: 88, Term 2: 91, Annual Exam: 89, Total %: 89%, Grade: A2, Position: 3rd",
         "row_number": 6,
         "cells": [
-          "Science\nDr. Priya Subramanian\n[[\"Physics (Matter & Motion)\", \"28/30\"], [\"Chemistry (Atoms & Reactions)\", \"30/35\"], [\"Biology (Life Processes)\", \"27/30\"], [\"Practical / Lab Work\", \"4/5\"]]",
+          "Science\nDr. Priya Subramanian\n| Column 1 | Column 2 |\n| --- | --- |\n| Physics (Matter & Motion) | 28/30 |\n| Chemistry (Atoms & Reactions) | 30/35 |\n| Biology (Life Processes) | 27/30 |\n| Practical / Lab Work | 4/5 |",
           "88",
           "91",
           "89",
@@ -555,6 +599,7 @@
     {
       "index": 9,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -598,6 +643,7 @@
     {
       "index": 10,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -609,10 +655,10 @@
       "source_name": null,
       "source_type": null,
       "data": {
-        "row_natural_language_text": "Subject / Teacher: Social Science\nMr. Harish Kumar\n[[\"History (Contemporary India)\", \"22/25\"], [\"Geography\", \"19/25\"], [\"Civics & Economics\", \"28/35\"], [\"Map Work\", \"13/15\"]], Term 1: 74, Term 2: 78, Annual Exam: 82, Total %: 78%, Grade: B1, Position: 11th",
+        "row_natural_language_text": "Subject / Teacher: Social Science\nMr. Harish Kumar\n| Column 1 | Column 2 |\n| --- | --- |\n| History (Contemporary India) | 22/25 |\n| Geography | 19/25 |\n| Civics & Economics | 28/35 |\n| Map Work | 13/15 |, Term 1: 74, Term 2: 78, Annual Exam: 82, Total %: 78%, Grade: B1, Position: 11th",
         "row_number": 8,
         "cells": [
-          "Social Science\nMr. Harish Kumar\n[[\"History (Contemporary India)\", \"22/25\"], [\"Geography\", \"19/25\"], [\"Civics & Economics\", \"28/35\"], [\"Map Work\", \"13/15\"]]",
+          "Social Science\nMr. Harish Kumar\n| Column 1 | Column 2 |\n| --- | --- |\n| History (Contemporary India) | 22/25 |\n| Geography | 19/25 |\n| Civics & Economics | 28/35 |\n| Map Work | 13/15 |",
           "74",
           "78",
           "82",
@@ -641,6 +687,7 @@
     {
       "index": 11,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -684,10 +731,11 @@
     {
       "index": 12,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -715,6 +763,7 @@
     {
       "index": 13,
       "parent_index": 1,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -726,10 +775,10 @@
       "source_name": null,
       "source_type": null,
       "data": {
-        "row_natural_language_text": "Month: Term 1 (Jun–Oct)\n[[\"June–July\", \"44 / 46\"], [\"Aug–Sept\", \"40 / 42\"], [\"October\", \"18 / 20\"]], Working Days: 108, Present: 102, %: 94.4%",
+        "row_natural_language_text": "Month: Term 1 (Jun–Oct)\n| Column 1 | Column 2 |\n| --- | --- |\n| June–July | 44 / 46 |\n| Aug–Sept | 40 / 42 |\n| October | 18 / 20 |, Working Days: 108, Present: 102, %: 94.4%",
         "row_number": 1,
         "cells": [
-          "Term 1 (Jun–Oct)\n[[\"June–July\", \"44 / 46\"], [\"Aug–Sept\", \"40 / 42\"], [\"October\", \"18 / 20\"]]",
+          "Term 1 (Jun–Oct)\n| Column 1 | Column 2 |\n| --- | --- |\n| June–July | 44 / 46 |\n| Aug–Sept | 40 / 42 |\n| October | 18 / 20 |",
           "108",
           "102",
           "94.4%"
@@ -755,6 +804,7 @@
     {
       "index": 14,
       "parent_index": 1,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -766,10 +816,10 @@
       "source_name": null,
       "source_type": null,
       "data": {
-        "row_natural_language_text": "Month: Term 2 (Nov–Mar)\n[[\"Nov–Dec\", \"38 / 40\"], [\"Jan–Feb\", \"40 / 44\"], [\"March (Exams)\", \"18 / 18\"]], Working Days: 102, Present: 96, %: 94.1%",
+        "row_natural_language_text": "Month: Term 2 (Nov–Mar)\n| Column 1 | Column 2 |\n| --- | --- |\n| Nov–Dec | 38 / 40 |\n| Jan–Feb | 40 / 44 |\n| March (Exams) | 18 / 18 |, Working Days: 102, Present: 96, %: 94.1%",
         "row_number": 2,
         "cells": [
-          "Term 2 (Nov–Mar)\n[[\"Nov–Dec\", \"38 / 40\"], [\"Jan–Feb\", \"40 / 44\"], [\"March (Exams)\", \"18 / 18\"]]",
+          "Term 2 (Nov–Mar)\n| Column 1 | Column 2 |\n| --- | --- |\n| Nov–Dec | 38 / 40 |\n| Jan–Feb | 40 / 44 |\n| March (Exams) | 18 / 18 |",
           "102",
           "96",
           "94.1%"
@@ -795,6 +845,7 @@
     {
       "index": 15,
       "parent_index": 1,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -835,6 +886,7 @@
     {
       "index": 16,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -874,6 +926,7 @@
     {
       "index": 17,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -913,6 +966,7 @@
     {
       "index": 18,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -952,6 +1006,7 @@
     {
       "index": 19,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -983,10 +1038,11 @@
     {
       "index": 20,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -1014,6 +1070,7 @@
     {
       "index": 21,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -1055,6 +1112,7 @@
     {
       "index": 22,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -1096,6 +1154,7 @@
     {
       "index": 23,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -1137,6 +1196,7 @@
     {
       "index": 24,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -1178,10 +1238,11 @@
     {
       "index": 25,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -1209,6 +1270,7 @@
     {
       "index": 26,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1240,6 +1302,7 @@
     {
       "index": 27,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1271,17 +1334,18 @@
     {
       "index": 28,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "Class TeacherMrs. Deepa Rao\n      PrincipalDr. Anitha Srinivasan\n      Parent / GuardianSignature & Date",
+      "data": "Class TeacherMrs. Deepa Rao\nPrincipalDr. Anitha Srinivasan\nParent / GuardianSignature & Date",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1302,10 +1366,11 @@
     {
       "index": 29,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,

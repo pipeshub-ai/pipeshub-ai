@@ -2202,7 +2202,7 @@ class TestTransformIssueToTicketRecord:
         connector = _make_connector()
         issue_data = _make_issue_data()
         ticket = connector._transform_issue_to_ticket_record(issue_data, "team-1")
-        assert ticket.record_name == "Test Issue"
+        assert ticket.record_name == "[ENG-1] Test Issue"
         assert ticket.external_record_id == "issue-1"
         assert ticket.record_type == RecordType.TICKET
         assert ticket.version == 0

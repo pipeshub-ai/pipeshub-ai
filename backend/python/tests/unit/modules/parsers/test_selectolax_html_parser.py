@@ -6,8 +6,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.models.blocks import (
+    Block,
     BlockSubType,
     BlockType,
+    BlocksContainer,
     DataFormat,
     GroupSubType,
     GroupType,
@@ -15,8 +17,11 @@ from app.models.blocks import (
 from app.modules.parsers.html_parser.html_to_blocks import (
     HtmlToBlocksConverter,
     _MAX_DOM_PROBE_DEPTH,
+    _merge_heading_content_segments,
 )
+from app.modules.parsers.markdown.markdown_to_blocks import _Segment
 from app.modules.parsers.html_parser.selectolax_html_parser import SelectolaxHtmlParser
+from app.modules.transformers.block_container_validator import BlockContainerValidator
 
 _COMPLEX_HTML = Path(__file__).resolve().parents[6] / "complex-html.html"
 
@@ -47,6 +52,168 @@ def _child_group_indices(group) -> list[int]:
     return indices
 
 
+def _blocks_by_type(container, block_type: BlockType) -> list[Block]:
+    return [block for block in container.blocks if block.type == block_type]
+
+
+def _is_empty_split_container(block: Block) -> bool:
+    if block.parent_block_index is not None:
+        return False
+    data = block.data
+    if isinstance(data, str) and not data.strip():
+        return True
+    if isinstance(data, dict):
+        if not data:
+            return True
+        if block.type == BlockType.TABLE_ROW:
+            return not data.get("row_natural_language_text") and not data.get("cells")
+    return False
+
+
+def _assert_all_blocks_have_data(container: BlocksContainer) -> None:
+    for block in container.blocks:
+        assert block.data is not None, (
+            f"block index={block.index} type={block.type} "
+            f"sub_type={block.sub_type} has data=None"
+        )
+
+
+def _assert_empty_text_split_container(block: Block) -> None:
+    assert block.data == ""
+    assert _is_empty_split_container(block)
+
+
+def _fragment_blocks(container, container_index: int) -> list[Block]:
+    return [
+        block
+        for block in container.blocks
+        if block.parent_block_index == container_index
+    ]
+
+
+def _split_container_blocks(container, sub_type: BlockSubType) -> list[Block]:
+    return [
+        block
+        for block in container.blocks
+        if block.sub_type == sub_type and _is_empty_split_container(block)
+    ]
+
+
+class TestHeadingMergesIntoParagraph:
+    """Heading followed by paragraph-like content merges into one PARAGRAPH block."""
+
+    def test_heading_merges_with_following_paragraph(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        container = converter.convert("<h2>Section</h2><p>Some text.</p>")
+        assert len(container.blocks) == 1
+        block = container.blocks[0]
+        assert block.sub_type == BlockSubType.PARAGRAPH
+        assert block.data == "## Section\nSome text."
+        assert block.format == DataFormat.MARKDOWN
+
+    def test_all_heading_levels_merge(self, converter: HtmlToBlocksConverter) -> None:
+        for level in range(1, 7):
+            container = converter.convert(
+                f"<h{level}>Heading</h{level}><p>Body.</p>"
+            )
+            assert len(container.blocks) == 1
+            assert container.blocks[0].data == f"{'#' * level} Heading\nBody."
+            assert container.blocks[0].sub_type == BlockSubType.PARAGRAPH
+
+    def test_heading_before_list_stays_standalone(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        container = converter.convert("<h3>Items</h3><ul><li>one</li><li>two</li></ul>")
+        headings = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
+        list_items = [b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM]
+        assert len(headings) == 1
+        assert headings[0].data == "Items"
+        assert len(list_items) == 2
+
+    def test_heading_before_table_stays_standalone(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        container = converter.convert(
+            "<h2>Data</h2><table><tr><td>1</td></tr></table>"
+        )
+        headings = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
+        assert len(headings) == 1
+        assert headings[0].data == "Data"
+
+    def test_heading_before_blockquote_stays_standalone(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        container = converter.convert("<h1>Title</h1><blockquote><p>quoted</p></blockquote>")
+        headings = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
+        assert len(headings) == 1
+        assert headings[0].data == "Title"
+
+    def test_heading_before_code_stays_standalone(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        container = converter.convert(
+            "<h2>Example</h2><pre><code class=\"language-python\">x = 1</code></pre>"
+        )
+        headings = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
+        assert len(headings) == 1
+        assert headings[0].data == "Example"
+
+    def test_heading_before_another_heading_stays_standalone(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        container = converter.convert("<h1>H1</h1><h2>H2</h2>")
+        headings = [b for b in container.blocks if b.sub_type == BlockSubType.HEADING]
+        assert len(headings) == 2
+        assert headings[0].data == "H1"
+        assert headings[1].data == "H2"
+
+    def test_heading_before_shallow_div_merges(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        container = converter.convert("<h2>Section</h2><div>Shallow div text.</div>")
+        assert len(container.blocks) == 1
+        assert container.blocks[0].data == "## Section\nShallow div text."
+
+    def test_heading_merges_preserves_inline_formatting(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        container = converter.convert(
+            "<h2>Title</h2><p>Hello <strong>bold</strong> world.</p>"
+        )
+        assert len(container.blocks) == 1
+        block = container.blocks[0]
+        assert block.data == "## Title\nHello **bold** world."
+        assert block.format == DataFormat.MARKDOWN
+
+    def test_merge_heading_content_segments_joins_text(self) -> None:
+        merged = _merge_heading_content_segments(
+            2,
+            [_Segment(kind="text", text="Title")],
+            [_Segment(kind="text", text="Body.")],
+        )
+        assert [(s.kind, s.text) for s in merged] == [
+            ("text", "## Title\nBody."),
+        ]
+
+    def test_merge_heading_content_segments_preserves_image_first_heading(
+        self,
+    ) -> None:
+        merged = _merge_heading_content_segments(
+            2,
+            [
+                _Segment(kind="image", alt_text="logo"),
+                _Segment(kind="text", text=" Release notes"),
+            ],
+            [_Segment(kind="text", text="We shipped v2.")],
+        )
+        assert [(s.kind, s.text if s.kind == "text" else s.alt_text) for s in merged] == [
+            ("text", "## "),
+            ("image", "logo"),
+            ("text", " Release notes\nWe shipped v2."),
+        ]
+
+
 class TestHeadings:
     def test_heading_produces_text_block(self, converter: HtmlToBlocksConverter) -> None:
         container = converter.convert("<h1>Title</h1><h2>Subtitle</h2>")
@@ -56,7 +223,7 @@ class TestHeadings:
         ]
         assert len(headings) == 2
         assert headings[0].data == "Title"
-        assert headings[0].format == DataFormat.TXT
+        assert headings[0].format == DataFormat.MARKDOWN
         assert headings[1].data == "Subtitle"
 
     def test_heading_with_inline_formatting_uses_markdown(self, converter: HtmlToBlocksConverter) -> None:
@@ -86,7 +253,7 @@ class TestParagraphs:
         container = converter.convert("<p>Plain paragraph.</p>")
         block = container.blocks[0]
         assert block.data == "Plain paragraph."
-        assert block.format == DataFormat.TXT
+        assert block.format == DataFormat.MARKDOWN
 
     def test_relative_link_resolved_with_base_url(self, converter: HtmlToBlocksConverter) -> None:
         container = converter.convert(
@@ -358,7 +525,10 @@ class TestTables:
             "Q2\nRevenue | Units",
             "YTD Total",
         ]
-        assert table_group.data is None
+        assert table_group.data == {
+            "table_summary": "",
+            "column_headers": table_group.table_metadata.column_names,
+        }
         row_blocks = [
             block for block in container.blocks
             if block.type == BlockType.TABLE_ROW
@@ -400,7 +570,10 @@ class TestTables:
         table_group = container.block_groups[0]
         assert table_group.table_metadata is not None
         assert table_group.table_metadata.captions == ["Quarterly Revenue Report"]
-        assert table_group.data is None
+        assert table_group.data == {
+            "table_summary": "Quarterly Revenue Report",
+            "column_headers": ["Quarter", "Revenue"],
+        }
         row_blocks = [
             block for block in container.blocks
             if block.type == BlockType.TABLE_ROW
@@ -441,6 +614,241 @@ class TestImages:
         )
         images = [block for block in container.blocks if block.type == BlockType.IMAGE]
         assert len(images) == 0
+        text_blocks = [
+            block for block in container.blocks
+            if block.type == BlockType.TEXT and block.sub_type == BlockSubType.PARAGRAPH
+        ]
+        assert len(text_blocks) == 1
+        assert text_blocks[0].data == "Text "
+        assert text_blocks[0].parent_block_index is None
+
+    def test_paragraph_with_text_and_image_splits_blocks(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        container = converter.convert(
+            '<p>See <img alt="Image_1" src="https://example.com/a.png"> here</p>',
+            caption_map={"Image_1": "data:image/png;base64,abc"},
+        )
+        assert len(container.blocks) == 3
+        assert container.blocks[0].type == BlockType.TEXT
+        assert container.blocks[0].data == "See "
+        assert container.blocks[0].parent_block_index is None
+        assert container.blocks[1].type == BlockType.IMAGE
+        assert container.blocks[1].format == DataFormat.BASE64
+        assert container.blocks[1].parent_block_index is None
+        assert container.blocks[2].type == BlockType.TEXT
+        assert container.blocks[2].data == " here"
+        assert container.blocks[2].parent_block_index is None
+
+    def test_list_item_with_image_splits_blocks(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        container = converter.convert(
+            '<ul><li>Item with <img alt="Image_1" src="x"></li></ul>',
+            caption_map={"Image_1": "data:image/png;base64,LISTIMG"},
+        )
+        list_group = container.block_groups[0]
+        list_containers = _split_container_blocks(container, BlockSubType.LIST_ITEM)
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+
+        assert len(list_containers) == 1
+        _assert_empty_text_split_container(list_containers[0])
+        fragments = _fragment_blocks(container, list_containers[0].index)
+        assert fragments[0].data == "Item with "
+        assert fragments[0].sub_type is None
+        assert len(image_blocks) == 1
+        assert image_blocks[0].parent_block_index == list_containers[0].index
+        assert image_blocks[0].sub_type is None
+        assert image_blocks[0].parent_index is None
+        assert _child_block_indices(list_group) == [list_containers[0].index]
+
+    def test_list_item_with_nested_table_image_splits_blocks(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        html = """
+        <ul>
+          <li>
+            Connector Details
+            <table>
+              <tr><th>Connector</th><th>Status</th><th>Screenshot</th></tr>
+              <tr>
+                <td>Slack</td><td>Active</td>
+                <td><img alt="Image_1" src="https://example.com/screenshot.png"></td>
+              </tr>
+              <tr><td>Gmail</td><td>Active</td><td>N/A</td></tr>
+            </table>
+          </li>
+        </ul>
+        """
+        container = converter.convert(
+            html,
+            caption_map={"Image_1": "data:image/png;base64,LISTTABLEIMG"},
+        )
+        list_containers = _split_container_blocks(container, BlockSubType.LIST_ITEM)
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+        fragments = _fragment_blocks(container, list_containers[0].index)
+
+        assert len(list_containers) == 1
+        _assert_empty_text_split_container(list_containers[0])
+        assert len(image_blocks) == 1
+        assert image_blocks[0].format == DataFormat.BASE64
+        assert image_blocks[0].parent_block_index == list_containers[0].index
+        assert fragments[0].data is not None
+        assert fragments[0].sub_type is None
+        assert "Slack | Active |" in fragments[0].data
+        assert image_blocks[0].sub_type is None
+        assert image_blocks[0].image_metadata.captions == ["Image_1"]
+
+    def test_blockquote_with_image_splits_blocks(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        container = converter.convert(
+            '<blockquote><p>Quote <img alt="Image_1" src="x"></p></blockquote>',
+            caption_map={"Image_1": "data:image/png;base64,QUOTEIMG"},
+        )
+        quote_group = container.block_groups[0]
+        quote_containers = _split_container_blocks(container, BlockSubType.QUOTE)
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+
+        assert len(quote_containers) == 1
+        _assert_empty_text_split_container(quote_containers[0])
+        fragments = _fragment_blocks(container, quote_containers[0].index)
+        assert fragments[0].data == "Quote "
+        assert len(image_blocks) == 1
+        assert image_blocks[0].parent_block_index == quote_containers[0].index
+        assert _child_block_indices(quote_group) == [quote_containers[0].index]
+
+    def test_table_row_with_image_splits_blocks(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        html = """
+        <table>
+          <tr><th>Name</th><th>Icon</th></tr>
+          <tr><td>Connectors</td><td><img alt="Image_1" src="x"></td></tr>
+        </table>
+        """
+        container = converter.convert(
+            html,
+            caption_map={"Image_1": "data:image/png;base64,TABLEIMG"},
+        )
+        table_group = container.block_groups[0]
+        row_containers = _blocks_by_type(container, BlockType.TABLE_ROW)
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+
+        assert len(row_containers) == 1
+        assert row_containers[0].data is not None
+        assert _is_empty_split_container(row_containers[0])
+        assert len(image_blocks) == 1
+        assert image_blocks[0].parent_index is None
+        assert image_blocks[0].parent_block_index == row_containers[0].index
+        fragments = _fragment_blocks(container, row_containers[0].index)
+        assert fragments[0].type == BlockType.TEXT
+        assert fragments[0].data == "Name: Connectors"
+        assert _child_block_indices(table_group) == [row_containers[0].index]
+
+    def test_table_header_image_is_skipped(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        html = """
+        <table>
+          <tr><th>Label</th><th><img alt="Image_1" src="x"></th></tr>
+          <tr><td>Value</td><td>cell</td></tr>
+        </table>
+        """
+        container = converter.convert(
+            html,
+            caption_map={"Image_1": "data:image/png;base64,HEADERIMG"},
+        )
+        table_group = container.block_groups[0]
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+
+        assert table_group.data["column_headers"] == ["Label", ""]
+        assert len(image_blocks) == 0
+
+    def test_table_mid_cell_image_splits_row_text_fragments(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        html = """
+        <table>
+          <tr><th>col1</th><th>col2</th><th>col3</th></tr>
+          <tr>
+            <td>text1</td>
+            <td>Text2 <img alt="Image_1" src="x"> Text3</td>
+            <td>text4</td>
+          </tr>
+        </table>
+        """
+        container = converter.convert(
+            html,
+            caption_map={"Image_1": "data:image/png;base64,IMG"},
+        )
+        row_container = _blocks_by_type(container, BlockType.TABLE_ROW)[0]
+        fragments = _fragment_blocks(container, row_container.index)
+        text_fragments = [b for b in fragments if b.type == BlockType.TEXT]
+        image_blocks = [b for b in fragments if b.type == BlockType.IMAGE]
+
+        assert row_container.data is not None
+        assert _is_empty_split_container(row_container)
+        assert len(text_fragments) == 2
+        assert text_fragments[0].data == "col1: text1, col2: Text2"
+        assert text_fragments[1].data == "col2: Text3, col3: text4"
+        assert len(image_blocks) == 1
+        assert image_blocks[0].parent_block_index == row_container.index
+
+    def test_nested_table_in_cell_renders_as_markdown(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        html = """
+        <table>
+          <tr><th>Data</th></tr>
+          <tr>
+            <td>
+              <table>
+                <tr><th>Inner</th></tr>
+                <tr><td>value</td></tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+        """
+        container = converter.convert(html)
+        row = _blocks_by_type(container, BlockType.TABLE_ROW)[0]
+        assert row.data is not None
+        cells = row.data["cells"]
+        assert "| Inner |" in cells[0]
+        assert "| value |" in cells[0]
+        assert not cells[0].strip().startswith("[")
+
+    def test_nested_table_and_image_in_cell_splits_row(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        html = """
+        <table>
+          <tr><th>Content</th></tr>
+          <tr>
+            <td>
+              Before
+              <table><tr><td>nested</td></tr></table>
+              <img alt="fig" src="data:image/png;base64,NESTED">
+              After
+            </td>
+          </tr>
+        </table>
+        """
+        container = converter.convert(html)
+        row_container = _blocks_by_type(container, BlockType.TABLE_ROW)[0]
+        fragments = _fragment_blocks(container, row_container.index)
+        text_fragments = [b for b in fragments if b.type == BlockType.TEXT]
+        image_blocks = [b for b in fragments if b.type == BlockType.IMAGE]
+
+        assert row_container.data is not None
+        assert _is_empty_split_container(row_container)
+        assert len(text_fragments) == 2
+        assert "Before" in text_fragments[0].data
+        assert "| nested |" in text_fragments[0].data
+        assert text_fragments[1].data == "Content: After"
+        assert len(image_blocks) == 1
+        assert image_blocks[0].data == {"uri": "data:image/png;base64,NESTED"}
 
     def test_image_block_inline_data_uri(self, converter: HtmlToBlocksConverter) -> None:
         container = converter.convert(
@@ -460,10 +868,92 @@ class TestImages:
         assert block.data == {"uri": "data:image/png;base64,abc"}
         assert block.format == DataFormat.BASE64
 
+    def test_duplicate_empty_alt_images_resolve_distinct_uris_on_markdown_path(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        html = (
+            "<p><strong>See</strong> "
+            '<img src="data:image/png;base64,AAAA" alt=""> '
+            '<img src="data:image/png;base64,BBBB" alt=""></p>'
+        )
+        container = converter.convert(html)
+        images = [block for block in container.blocks if block.type == BlockType.IMAGE]
+        assert len(images) == 2
+        assert images[0].data == {"uri": "data:image/png;base64,AAAA"}
+        assert images[1].data == {"uri": "data:image/png;base64,BBBB"}
+
     def test_malformed_srcset_does_not_crash(self, converter: HtmlToBlocksConverter) -> None:
         container = converter.convert('<img srcset="   " alt="broken">')
         images = [block for block in container.blocks if block.type == BlockType.IMAGE]
         assert len(images) == 0
+
+    def test_standalone_image_between_paragraphs(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        html = (
+            "<p>First paragraph.</p>"
+            '<img src="data:image/png;base64,abc" alt="fig">'
+            "<p>Second paragraph.</p>"
+        )
+        container = converter.convert(html)
+        assert [block.type for block in container.blocks] == [
+            BlockType.TEXT,
+            BlockType.IMAGE,
+            BlockType.TEXT,
+        ]
+        assert container.blocks[0].data == "First paragraph."
+        assert container.blocks[1].data == {"uri": "data:image/png;base64,abc"}
+        assert container.blocks[2].data == "Second paragraph."
+
+    def test_image_split_table_row_container_carries_only_row_number(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        html = """
+        <table>
+          <tr><th>Name</th><th>Icon</th></tr>
+          <tr><td>Connectors</td><td><img alt="Image_1" src="x"></td></tr>
+        </table>
+        """
+        container = converter.convert(
+            html,
+            caption_map={"Image_1": "data:image/png;base64,TABLEIMG"},
+        )
+        row_container = _blocks_by_type(container, BlockType.TABLE_ROW)[0]
+        assert row_container.data == {"row_number": 1}
+        assert row_container.data is not None
+        assert _is_empty_split_container(row_container)
+
+    def test_deeply_nested_table_with_image_emits_image_block(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        html = """
+        <table>
+          <tr><th>Level 1</th><th>Content</th></tr>
+          <tr>
+            <td>Main</td>
+            <td>
+              <table>
+                <tr><th>Level 2</th><th>Content</th></tr>
+                <tr>
+                  <td>Screenshot</td>
+                  <td><img alt="Image_1" src="x"></td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+        """
+        container = converter.convert(
+            html,
+            caption_map={"Image_1": "data:image/png;base64,NESTED"},
+        )
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+        row_container = _blocks_by_type(container, BlockType.TABLE_ROW)[0]
+
+        assert len(image_blocks) == 1
+        assert image_blocks[0].data == {"uri": "data:image/png;base64,NESTED"}
+        assert image_blocks[0].parent_block_index == row_container.index
+        assert row_container.data == {"row_number": 1}
 
 
 class TestBlockquote:
@@ -494,13 +984,17 @@ class TestComplexHtmlFixture:
     ) -> None:
         container = converter.convert(_COMPLEX_HTML.read_text(encoding="utf-8"))
 
+        _assert_all_blocks_have_data(container)
         table_group = next(
             group for group in container.block_groups
             if group.type == GroupType.TABLE
         )
         assert table_group.table_metadata is not None
         assert table_group.table_metadata.captions == ["Quarterly Revenue Report"]
-        assert table_group.data is None
+        assert table_group.data == {
+            "table_summary": "Quarterly Revenue Report",
+            "column_headers": ["Quarter", "Revenue"],
+        }
         row_blocks = [
             block for block in container.blocks
             if block.type == BlockType.TABLE_ROW
@@ -520,12 +1014,118 @@ class TestComplexHtmlFixture:
         assert any("pip install my-package" in block.data for block in code_blocks)
 
 
+class TestBlockDataNeverNone:
+    """Emitted blocks must always carry data; empty text containers use ""."""
+
+    @pytest.mark.parametrize(
+        ("html", "caption_map"),
+        [
+            (
+                '<ul><li>item <img alt="Image_1" src="x"> tail</li></ul>',
+                {"Image_1": "data:image/png;base64,IMG"},
+            ),
+            (
+                '<blockquote><p>quote <img alt="Image_1" src="x"></p></blockquote>',
+                {"Image_1": "data:image/png;base64,IMG"},
+            ),
+            (
+                """
+                <table>
+                  <tr><th>A</th><th>B</th></tr>
+                  <tr><td>x</td><td><img alt="Image_1" src="x"></td></tr>
+                </table>
+                """,
+                {"Image_1": "data:image/png;base64,IMG"},
+            ),
+            (
+                '<ul><li><img alt="Image_1" src="https://example.com/a.png"></li></ul>',
+                {},
+            ),
+        ],
+    )
+    def test_image_split_outputs_never_have_none_data(
+        self,
+        converter: HtmlToBlocksConverter,
+        html: str,
+        caption_map: dict[str, str],
+    ) -> None:
+        container = converter.convert(html, caption_map=caption_map)
+        _assert_all_blocks_have_data(container)
+        for block in container.blocks:
+            if _is_empty_split_container(block) and block.type == BlockType.TEXT:
+                assert block.data == ""
+
+    def test_unsplit_document_never_has_none_data(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        html = (
+            "<h1>Report</h1>"
+            "<p>Plain paragraph.</p>"
+            "<table><tr><th>Metric</th><th>Value</th></tr>"
+            "<tr><td>Users</td><td>10</td></tr></table>"
+            "<ul><li>action item</li></ul>"
+        )
+        container = converter.convert(html)
+        _assert_all_blocks_have_data(container)
+
+
+class TestBlockContainerValidation:
+    """HTML table output must pass BlockContainerValidator checks."""
+
+    @pytest.mark.parametrize(
+        "html",
+        [
+            "<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>",
+            """
+            <table>
+              <caption>Revenue</caption>
+              <tr><th>Quarter</th><th>Amount</th></tr>
+              <tr><td>Q1</td><td>$10</td></tr>
+            </table>
+            """,
+            """
+            <table>
+              <tr><th>Label</th><th><img alt="Image_1" src="x"></th></tr>
+              <tr><td>Value</td><td>cell</td></tr>
+            </table>
+            """,
+            """
+            <table>
+              <tr><th>col1</th><th>col2</th></tr>
+              <tr><td>text</td><td>Text2 <img alt="Image_1" src="x"> Text3</td></tr>
+            </table>
+            """,
+        ],
+    )
+    def test_table_html_passes_block_container_validation(
+        self,
+        converter: HtmlToBlocksConverter,
+        html: str,
+    ) -> None:
+        container = converter.convert(
+            html,
+            caption_map={"Image_1": "data:image/png;base64,IMG"},
+        )
+        table_groups = [
+            group for group in container.block_groups
+            if group.type == GroupType.TABLE
+        ]
+        for group in table_groups:
+            assert group.data is not None
+            assert isinstance(group.data.get("column_headers"), list)
+            assert group.table_metadata is not None
+            assert group.table_metadata.num_of_cells is not None
+
+        BlockContainerValidator().validate(container)
+
+
 class TestSelectolaxHtmlParser:
     def test_parse_to_blocks_delegates_to_converter(
         self,
         parser: SelectolaxHtmlParser,
     ) -> None:
         container = parser.parse_to_blocks("<h1>Title</h1>")
+        _assert_all_blocks_have_data(container)
         assert container.blocks[0].sub_type == BlockSubType.HEADING
         assert container.blocks[0].data == "Title"
 
@@ -538,6 +1138,7 @@ class TestSelectolaxHtmlParser:
             base_url="https://example.com",
             caption_map={"fig1": "data:image/png;base64,abc"},
         )
+        _assert_all_blocks_have_data(container)
         assert container.blocks[0].data == {"uri": "data:image/png;base64,abc"}
 
     def test_replace_relative_image_urls_delegates_to_html_parser(

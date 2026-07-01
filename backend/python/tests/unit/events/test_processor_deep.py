@@ -117,7 +117,9 @@ class TestProcessHtmlDocument:
                 proc.process_html_document("test.html", "r1", "1", "web", "org1", "<p>Hello</p>", "vr1")
             )
 
-        html_parser.parse.assert_awaited_once_with("<p>Hello</p>", caption_map=None)
+        html_parser.parse.assert_awaited_once_with(
+            "<p>Hello</p>", caption_map=None, name="test.html"
+        )
         assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio

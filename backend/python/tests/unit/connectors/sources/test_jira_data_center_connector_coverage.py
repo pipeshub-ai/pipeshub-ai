@@ -1,5 +1,5 @@
 """
-Broad unit tests for jira_data_center.connector: wiki parsing utilities,
+Broad unit tests for jira_data_center.connector: rendered HTML block parsing,
 issue extraction, filter option error paths, and smaller public/async paths that
 were previously uncovered without standing up Jira DC.
 """
@@ -19,9 +19,6 @@ from app.models.blocks import ChildRecord, ChildType, GroupSubType
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
     _normalize_jira_dc_group_row,
-    build_jira_attachment_filename_lookup,
-    extract_jira_wiki_attachment_filenames,
-    jira_storage_text_to_markdown_with_images,
 )
 from app.models.entities import (
     AppUser,
@@ -1488,120 +1485,60 @@ def test_organize_issue_comments_to_threads_sorts():
 async def test_parse_issue_to_blocks_minimal_description():
     conn = _make_connector()
     conn.site_url = "https://jira.example"
-    with patch.object(conn, "_create_media_fetcher", return_value=AsyncMock(return_value=None)):
-        container = await conn._parse_issue_to_blocks(
-            {"id": "99", "key": "K-1", "fields": {"summary": "Title"}},
-            issue_key="K-1",
-            weburl="https://jira.example/browse/K-1",
-        )
-    assert container.block_groups[0].data.startswith("# [K-1] Title")
+    container = await conn._parse_issue_to_blocks(
+        {"id": "99", "key": "K-1", "fields": {"summary": "Title"}},
+        issue_key="K-1",
+        weburl="https://jira.example/browse/K-1",
+    )
+    assert container.block_groups[0].data.startswith("<h1>[K-1] Title</h1>")
     assert container.block_groups[0].name == "[K-1] Title"
 
 
 @pytest.mark.asyncio
-async def test_parse_issue_to_blocks_plain_string_description():
-    """Legacy DC returns description as wiki/plain string, not ADF."""
+async def test_parse_issue_to_blocks_rendered_html_description():
     conn = _make_connector()
     conn.site_url = "https://jira.example"
-    body = "h1. Overview\n\nConnector syncs issues from Jira Data Center."
-    with patch.object(conn, "_create_media_fetcher", return_value=AsyncMock(return_value=None)):
-        container = await conn._parse_issue_to_blocks(
-            {
-                "id": "99",
-                "key": "PA-1203",
-                "fields": {"summary": "Jira Data Center Connector", "description": body},
-            },
-            issue_key="PA-1203",
-            weburl="https://jira.example/browse/PA-1203",
-        )
-    assert container.block_groups[0].data.startswith("# [PA-1203] Jira Data Center Connector\n\n")
+    body = "<p>Connector syncs issues from Jira Data Center.</p>"
+    container = await conn._parse_issue_to_blocks(
+        {
+            "id": "99",
+            "key": "PA-1203",
+            "fields": {"summary": "Jira Data Center Connector"},
+        },
+        issue_key="PA-1203",
+        weburl="https://jira.example/browse/PA-1203",
+        rendered_fields={"description": body},
+    )
+    assert container.block_groups[0].data.startswith(
+        "<h1>[PA-1203] Jira Data Center Connector</h1>"
+    )
     assert body in container.block_groups[0].data
     assert container.block_groups[0].name == "[PA-1203] Jira Data Center Connector"
 
 
-def test_extract_jira_wiki_attachment_filenames():
-    text = 'Guide\n!image-20260516-133226.png|width=983,alt="image-20260516-133226.png"!'
-    assert extract_jira_wiki_attachment_filenames(text) == ["image-20260516-133226.png"]
-
-
-def test_extract_jira_wiki_attachment_filenames_bracket_syntax():
-    text = "[^Ack p2.pdf]Root cause fixed.\r\n[^Certificate-1.pdf]Next steps."
-    assert extract_jira_wiki_attachment_filenames(text) == [
-        "Ack p2.pdf",
-        "Certificate-1.pdf",
-    ]
-
-
-def test_extract_jira_wiki_attachment_filenames_mixed_syntax_dedupes():
-    text = "!doc.pdf|width=100! and [^doc.pdf] again"
-    assert extract_jira_wiki_attachment_filenames(text) == ["doc.pdf"]
-
-
 @pytest.mark.asyncio
-async def test_jira_storage_text_to_markdown_with_images_inlines_png():
-    mime = {"13352": "image/png"}
-    lookup = build_jira_attachment_filename_lookup(
-        mime,
-        None,
-        [{"id": "13352", "filename": "image-20260516-133226.png", "mimeType": "image/png"}],
-    )
-
-    async def fetcher(att_id: str, filename: str) -> str:
-        assert att_id == "13352"
-        return "data:image/png;base64,QUJD"
-
-    wiki = 'Title\n!image-20260516-133226.png|width=983,alt="x"!'
-    md, embedded = await jira_storage_text_to_markdown_with_images(
-        wiki, fetcher, lookup, mime
-    )
-    assert "data:image/png;base64,QUJD" in md
-    assert "!image-20260516" not in md
-    assert embedded == {"13352"}
-
-
-@pytest.mark.asyncio
-async def test_jira_storage_text_to_markdown_bracket_syntax_inlines_png():
-    mime = {"10014": "image/png"}
-    lookup = build_jira_attachment_filename_lookup(
-        mime,
-        None,
-        [{"id": "10014", "filename": "dk.png", "mimeType": "image/png"}],
-    )
-
-    async def fetcher(att_id: str, filename: str) -> str:
-        assert att_id == "10014"
-        assert filename == "dk.png"
-        return "data:image/png;base64,QUJD"
-
-    wiki = "[^dk.png]Screenshot attached."
-    md, embedded = await jira_storage_text_to_markdown_with_images(
-        wiki, fetcher, lookup, mime
-    )
-    assert "data:image/png;base64,QUJD" in md
-    assert "[^dk.png]" not in md
-    assert embedded == {"10014"}
-
-
-@pytest.mark.asyncio
-async def test_parse_issue_to_blocks_wiki_image_in_description():
+async def test_parse_issue_to_blocks_rendered_html_image_in_description():
     conn = _make_connector()
     conn.site_url = "https://jira.example"
-    wiki_body = (
-        "Jira data center connector email guide\n\n\n"
-        '!image-20260516-133226.png|width=983,alt="image-20260516-133226.png"!'
+    rendered_html = (
+        '<p><span class="image-wrap">'
+        '<img src="http://localhost/secure/attachment/13352/shot.png" />'
+        "</span></p>"
     )
 
-    async def fetcher(att_id: str, filename: str) -> str:
-        return "data:image/png;base64,EMBED"
+    async def fake_process(html, issue_id, attachments):
+        return (
+            '<p><img alt="Image_1" src="data:image/png;base64,EMBED" /></p>',
+            {"13352"},
+        )
 
-    with patch.object(conn, "_create_media_fetcher", return_value=fetcher):
+    with patch.object(conn, "_process_html_images_with_auth", side_effect=fake_process):
         container = await conn._parse_issue_to_blocks(
             {
                 "id": "99",
                 "key": "PST-15",
                 "fields": {
                     "summary": "jira email visibilty guide",
-                    "description": wiki_body,
                     "attachment": [
                         {
                             "id": "13352",
@@ -1613,25 +1550,11 @@ async def test_parse_issue_to_blocks_wiki_image_in_description():
             },
             issue_key="PST-15",
             weburl="https://jira.example/browse/PST-15",
+            rendered_fields={"description": rendered_html},
         )
     data = container.block_groups[0].data
     assert "data:image/png;base64,EMBED" in data
-    assert "!image-20260516-133226.png" not in data
     assert not container.block_groups[0].children_records
-
-
-@pytest.mark.asyncio
-async def test_create_media_fetcher_delegates_to_fetch_media():
-    conn = _make_connector()
-
-    async def fake_fetch(issue_id: str, media_id: str, alt: str):
-        assert issue_id == "iss"
-        return f"data:image/png;base64,{media_id}"
-
-    with patch.object(conn, "_fetch_media_as_base64", new_callable=AsyncMock, side_effect=fake_fetch):
-        fetcher = conn._create_media_fetcher("iss")
-        out = await fetcher("mid", "a")
-    assert "base64" in out
 
 
 @pytest.mark.asyncio
@@ -1698,6 +1621,41 @@ def test_create_attachment_file_record_sets_auto_index_off_for_attachments_filte
         weburl=None,
     )
     assert fr.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+
+def test_create_attachment_file_record_resolves_mime_from_extension():
+    conn = _make_connector()
+    fr = conn._create_attachment_file_record(
+        attachment_id="2",
+        filename="sheet.xlsx",
+        mime_type="application/octet-stream",
+        file_size=10,
+        created_at=1000,
+        parent_issue_id="p",
+        parent_node_id=None,
+        project_id="proj",
+        weburl=None,
+    )
+    assert fr.extension == "xlsx"
+    assert fr.mime_type == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+
+def test_create_attachment_file_record_falls_back_for_unmapped_extension():
+    conn = _make_connector()
+    fr = conn._create_attachment_file_record(
+        attachment_id="3",
+        filename="blob.unknownext",
+        mime_type="application/custom",
+        file_size=10,
+        created_at=1000,
+        parent_issue_id="p",
+        parent_node_id=None,
+        project_id="proj",
+        weburl=None,
+    )
+    assert fr.mime_type == "application/custom"
 
 
 @pytest.mark.asyncio
@@ -2494,8 +2452,7 @@ async def test_parse_issue_to_blocks_plain_string_comment_body():
             ],
         },
     }
-    with patch.object(conn, "_create_media_fetcher", return_value=AsyncMock(return_value=None)):
-        box = await conn._parse_issue_to_blocks(issue_data, issue_key="K-1", weburl="https://jira.example/browse/K-1")
+    box = await conn._parse_issue_to_blocks(issue_data, issue_key="K-1", weburl="https://jira.example/browse/K-1")
     assert len(box.block_groups) >= 2
 
 
@@ -3380,13 +3337,16 @@ async def test_parse_issue_to_blocks_rich_comments_and_attachments():
                     "author": {"displayName": "Ann"},
                     "created": "2024-01-01T00:00:00.000+0000",
                     "body": "[^doc.pdf]See attached.",
+                    "renderedBody": (
+                        '<p><a href="http://localhost/secure/attachment/10/doc.pdf">'
+                        "doc.pdf</a> See attached.</p>"
+                    ),
                 },
             ],
         },
     }
 
-    with patch.object(conn, "_create_media_fetcher", return_value=AsyncMock(return_value=None)):
-        box = await conn._parse_issue_to_blocks(
+    box = await conn._parse_issue_to_blocks(
             issue_data,
             issue_key="KF",
             weburl="https://jira.example/browse/KF",
@@ -3441,18 +3401,25 @@ async def test_parse_issue_to_blocks_bracket_attachment_in_comment():
                 "author": {"displayName": "Darshan"},
                 "created": "2026-06-10T18:20:30.927+0000",
                 "body": "[^Ack p2.pdf]Root cause identified and fixed.",
+                "renderedBody": (
+                    '<p><a href="http://localhost/secure/attachment/10013/Ack.pdf">'
+                    "Ack p2.pdf</a> Root cause identified and fixed.</p>"
+                ),
             },
             {
                 "id": "10001",
                 "author": {"displayName": "Darshan"},
                 "created": "2026-06-10T18:21:30.118+0000",
                 "body": "[^Certificate-1.pdf]Initial investigation completed.",
+                "renderedBody": (
+                    '<p><a href="http://localhost/secure/attachment/10010/cert.pdf">'
+                    "Certificate-1.pdf</a> Initial investigation completed.</p>"
+                ),
             },
         ],
     }
 
-    with patch.object(conn, "_create_media_fetcher", return_value=AsyncMock(return_value=None)):
-        box = await conn._parse_issue_to_blocks(
+    box = await conn._parse_issue_to_blocks(
             issue_data,
             issue_key="TEST-1",
             weburl="https://jira.example/browse/TEST-1",
@@ -3466,14 +3433,12 @@ async def test_parse_issue_to_blocks_bracket_attachment_in_comment():
     assert comment_bgs[0].children_records[0].child_name == "Ack p2.pdf"
     assert comment_bgs[1].children_records
     assert comment_bgs[1].children_records[0].child_name == "Certificate-1.pdf"
-    assert box.block_groups[0].children_records
-    assert len(box.block_groups[0].children_records) == 1
-    assert box.block_groups[0].children_records[0].child_name == "BlackBookAiReport.pdf"
+    assert not box.block_groups[0].children_records
 
 
 @pytest.mark.asyncio
-async def test_parse_issue_to_blocks_mixed_wiki_images_and_file_children():
-    """Description image, comment image, comment PDF, and standalone PDF route correctly."""
+async def test_parse_issue_to_blocks_mixed_rendered_html_images_and_file_children():
+    """Description/comment images base64; inline PDFs on matching block group only."""
     conn = _make_connector()
     conn.site_url = "https://jira.example"
     child_desc_img = ChildRecord(
@@ -3500,12 +3465,18 @@ async def test_parse_issue_to_blocks_mixed_wiki_images_and_file_children():
         "3": "application/pdf",
         "4": "application/pdf",
     }
+    rendered_description = (
+        '<p>Overview</p><p><img src="http://localhost/secure/attachment/1/desc.png" /></p>'
+    )
+    rendered_comment = (
+        '<p><img src="http://localhost/secure/attachment/2/comment.png" /> '
+        '<a href="http://localhost/secure/attachment/3/report.pdf">report.pdf</a></p>'
+    )
     issue_data = {
         "id": "100",
         "key": "MIX-1",
         "fields": {
             "summary": "Mixed attachments",
-            "description": "Overview\n!desc-screenshot.png!",
             "attachment": [
                 {"id": "1", "filename": "desc-screenshot.png", "mimeType": "image/png"},
                 {"id": "2", "filename": "comment-shot.png", "mimeType": "image/png"},
@@ -3519,44 +3490,53 @@ async def test_parse_issue_to_blocks_mixed_wiki_images_and_file_children():
                     "id": "c1",
                     "author": {"displayName": "Dev"},
                     "created": "2024-01-01T00:00:00.000+0000",
-                    "body": "See !comment-shot.png! and [^report.pdf]",
+                    "body": "See image and report.pdf",
+                    "renderedBody": rendered_comment,
                 },
             ],
         },
     }
 
-    async def fetcher(att_id: str, filename: str) -> str:
-        return f"data:image/png;base64,IMG_{att_id}"
+    async def fake_process(html, issue_id, attachments):
+        if "attachment/1/" in html:
+            return (
+                '<p>Overview</p><p><img alt="Image_1" src="data:image/png;base64,IMG_1" /></p>',
+                {"1"},
+            )
+        if "attachment/2/" in html:
+            return (
+                '<p><img alt="Image_1" src="data:image/png;base64,IMG_2" /> '
+                '<a href="http://localhost/secure/attachment/3/report.pdf">report.pdf</a></p>',
+                {"2"},
+            )
+        return html, set()
 
-    with patch.object(conn, "_create_media_fetcher", return_value=fetcher):
+    with patch.object(conn, "_process_html_images_with_auth", side_effect=fake_process):
         box = await conn._parse_issue_to_blocks(
             issue_data,
             issue_key="MIX-1",
             weburl="https://jira.example/browse/MIX-1",
             attachment_children_map=att_map,
             attachment_mime_types=att_mimes,
+            rendered_fields={"description": rendered_description},
         )
 
     desc_bg = box.block_groups[0]
     assert "data:image/png;base64,IMG_1" in desc_bg.data
-    assert "!desc-screenshot.png!" not in desc_bg.data
-    assert desc_bg.children_records
-    assert len(desc_bg.children_records) == 1
-    assert desc_bg.children_records[0].child_name == "spec.pdf"
+    assert not desc_bg.children_records
 
     comment_bgs = [bg for bg in box.block_groups if bg.sub_type == GroupSubType.COMMENT]
     assert len(comment_bgs) == 1
     comment_bg = comment_bgs[0]
     assert "data:image/png;base64,IMG_2" in comment_bg.data
-    assert "!comment-shot.png!" not in comment_bg.data
-    assert "[^report.pdf]" in comment_bg.data
+    assert "report.pdf" in comment_bg.data
     assert comment_bg.children_records
     assert len(comment_bg.children_records) == 1
     assert comment_bg.children_records[0].child_name == "report.pdf"
 
 
 @pytest.mark.asyncio
-async def test_parse_issue_to_blocks_description_child_for_standalone_pdf():
+async def test_parse_issue_to_blocks_standalone_pdf_not_in_description_children():
     conn = _make_connector()
     conn.site_url = "https://jira.example"
     child_pdf = ChildRecord(child_type=ChildType.RECORD, child_id="fid", child_name="readme.pdf")
@@ -3567,20 +3547,45 @@ async def test_parse_issue_to_blocks_description_child_for_standalone_pdf():
         "key": "K",
         "fields": {
             "summary": "T",
-            "description": "see file",
         },
         "comments": [],
     }
-    with patch.object(conn, "_create_media_fetcher", return_value=AsyncMock(return_value=None)):
-        box = await conn._parse_issue_to_blocks(
+    box = await conn._parse_issue_to_blocks(
             issue_data,
             issue_key="K",
             weburl="https://jira.example/browse/K",
             attachment_children_map=att_map,
             attachment_mime_types=att_mimes,
         )
+    assert not box.block_groups[0].children_records
+
+
+@pytest.mark.asyncio
+async def test_parse_issue_to_blocks_description_child_for_inline_pdf():
+    conn = _make_connector()
+    conn.site_url = "https://jira.example"
+    child_pdf = ChildRecord(child_type=ChildType.RECORD, child_id="fid", child_name="spec.pdf")
+    att_map = {"4": child_pdf}
+    att_mimes = {"4": "application/pdf"}
+    rendered_description = (
+        '<p><a href="http://localhost/secure/attachment/4/spec.pdf">spec.pdf</a></p>'
+    )
+    issue_data = {
+        "id": "1",
+        "key": "K",
+        "fields": {"summary": "T"},
+        "comments": [],
+    }
+    box = await conn._parse_issue_to_blocks(
+        issue_data,
+        issue_key="K",
+        weburl="https://jira.example/browse/K",
+        attachment_children_map=att_map,
+        attachment_mime_types=att_mimes,
+        rendered_fields={"description": rendered_description},
+    )
     assert box.block_groups[0].children_records
-    assert box.block_groups[0].children_records[0].child_name == "readme.pdf"
+    assert box.block_groups[0].children_records[0].child_name == "spec.pdf"
 
 
 @pytest.mark.asyncio

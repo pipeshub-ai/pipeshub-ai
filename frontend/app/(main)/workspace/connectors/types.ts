@@ -485,7 +485,7 @@ export interface RecordTypeStats {
   indexingStatus: IndexingStatus;
 }
 
-/** Response from GET /api/v1/knowledgeBase/stats/{connectorId} */
+/** Response from GET /api/v1/connectors/{connectorId}/stats */
 export interface ConnectorStatsResponse {
   success: boolean;
   data: {

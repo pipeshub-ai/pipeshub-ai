@@ -172,6 +172,35 @@ def operation_response_json_pointer(operation_id: str, status_code: str) -> str:
     raise KeyError(f"operationId not found: {operation_id!r}")
 
 
+def _operation_responses(operation_id: str) -> dict[str, object]:
+    doc = load_openapi_document()
+    paths = doc.get("paths") or {}
+    for path_item in paths.values():
+        if not isinstance(path_item, dict):
+            continue
+        for method in _HTTP_METHODS:
+            op = path_item.get(method)
+            if isinstance(op, dict) and op.get("operationId") == operation_id:
+                responses = op.get("responses")
+                if isinstance(responses, dict):
+                    return responses
+    raise KeyError(f"operationId not found: {operation_id!r}")
+
+
+def assert_operation_documents_response(operation_id: str, status_code: str) -> None:
+    """Assert the OpenAPI spec lists ``status_code`` for ``operation_id``."""
+    want_status = _normalize_status(status_code)
+    try:
+        responses = _operation_responses(operation_id)
+    except KeyError as e:
+        raise AssertionError(str(e)) from e
+    if want_status not in responses:
+        raise AssertionError(
+            f"OpenAPI spec for operationId={operation_id!r} "
+            f"does not document response {want_status!r}"
+        )
+
+
 def operation_request_body_json_pointer(operation_id: str) -> str:
     """
     Build a JSON Pointer into the OpenAPI document for the ``application/json``

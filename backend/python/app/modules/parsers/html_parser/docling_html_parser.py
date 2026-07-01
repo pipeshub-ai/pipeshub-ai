@@ -12,6 +12,7 @@ without ML overhead, use :class:`SelectolaxHtmlParser` instead.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 from bs4 import BeautifulSoup
@@ -180,6 +181,7 @@ class DoclingHtmlParser:
         html_content: str,
         caption_map: Dict[str, str] | None = None,
         base_url: str | None = None,
+        name: str | None = None,
     ) -> BlocksContainer:
         """Parse preprocessed HTML to ``BlocksContainer`` via the Docling pipeline.
 
@@ -189,6 +191,7 @@ class DoclingHtmlParser:
             html_content: Preprocessed HTML source string.
             caption_map: Optional mapping of image alt-text to base-64 data URIs.
             base_url: Unused; kept for protocol signature compatibility.
+            name: Optional source filename or record name used for Docling ingestion.
 
         Returns:
             Populated ``BlocksContainer``.
@@ -201,7 +204,8 @@ class DoclingHtmlParser:
         md_bytes = markdown.encode("utf-8")
 
         processor = DoclingProcessor(logger=self._logger, config=self._config_service)
-        doc = await processor.parse_document("document.md", md_bytes)
+        filename = f"{Path(name).stem}.md" if name else "document.md"
+        doc = await processor.parse_document(filename, md_bytes)
         container = await processor.create_blocks(doc)
 
         if caption_map:

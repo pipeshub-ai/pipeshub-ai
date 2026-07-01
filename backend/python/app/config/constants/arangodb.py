@@ -403,12 +403,56 @@ CODE_FILE_EXTENSION_VALUES = frozenset({
     ExtensionTypes.BASH.value,
 })
 
+# MIME type mapping for common file extensions
+FILE_MIME_TYPES = {
+    '.pdf': MimeTypes.PDF,
+    '.doc': MimeTypes.DOC,
+    '.docx': MimeTypes.DOCX,
+    '.xls': MimeTypes.XLS,
+    '.xlsx': MimeTypes.XLSX,
+    '.ppt': MimeTypes.PPT,
+    '.pptx': MimeTypes.PPTX,
+    '.txt': MimeTypes.PLAIN_TEXT,
+    '.csv': MimeTypes.CSV,
+    '.tsv': MimeTypes.TSV,
+    '.json': MimeTypes.JSON,
+    '.xml': MimeTypes.XML,
+    '.zip': MimeTypes.ZIP,
+    '.jpg': MimeTypes.JPEG,
+    '.jpeg': MimeTypes.JPEG,
+    '.png': MimeTypes.PNG,
+    '.gif': MimeTypes.GIF,
+    '.svg': MimeTypes.SVG,
+    '.webp': MimeTypes.WEBP,
+    '.heic': MimeTypes.HEIC,
+    '.heif': MimeTypes.HEIF,
+    '.html': MimeTypes.HTML,
+    '.htm': MimeTypes.HTML,
+    '.md': MimeTypes.MARKDOWN,
+    '.mdx': MimeTypes.MDX,
+}
+
 
 def normalize_file_extension(extension: str | None) -> str:
     """Lower-case extension without a leading dot."""
     if not extension:
         return ""
     return extension.lower().lstrip(".")
+
+
+def get_mime_type_for_extension(
+    extension: str | None,
+    *,
+    fallback: str | None = None,
+) -> str | None:
+    """Resolve a MIME type string from a file extension using ``FILE_MIME_TYPES``."""
+    normalized = normalize_file_extension(extension)
+    if not normalized:
+        return fallback
+    mapped = FILE_MIME_TYPES.get(f".{normalized}")
+    if mapped is None:
+        return fallback
+    return mapped.value
 
 
 RECONCILIATION_ENABLED_MIME_TYPES = {

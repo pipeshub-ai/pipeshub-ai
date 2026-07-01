@@ -2679,5 +2679,26 @@
     "title": "Verbindung zum Server nicht möglich",
     "description": "Der Server ist derzeit nicht erreichbar. Möglicherweise wird er gerade gestartet oder gewartet. Wir versuchen, die Verbindung wiederherzustellen.",
     "contactAdmin": "Falls das Problem weiterhin besteht, wenden Sie sich bitte an Ihren PipesHub-Administrator."
+  },
+  "askUserQuestion": {
+    "questionsHeadingSingular": "Frage :",
+    "questionsHeadingPlural": "Fragen :",
+    "answered": "Beantwortet",
+    "showLess": "Weniger anzeigen",
+    "showMore": "Mehr anzeigen",
+    "noPreference": "[Keine Präferenz]",
+    "somethingElse": "Etwas anderes",
+    "questionAskedSingular": "Gestellte Frage:",
+    "questionAskedPlural": "Gestellte Fragen:",
+    "quickQuestionSingular": "Kurze Frage :",
+    "quickQuestionPlural": "Kurze Fragen :",
+    "stepOf": "Schritt {{step}} von {{total}}",
+    "selectedCount": "{{count}} ausgewählt",
+    "describeYourAnswer": "Beschreiben Sie Ihre Antwort…",
+    "typeYourAnswer": "Geben Sie Ihre Antwort ein…",
+    "back": "Zurück",
+    "skip": "Überspringen",
+    "next": "Weiter",
+    "submit": "Absenden"
   }
 }

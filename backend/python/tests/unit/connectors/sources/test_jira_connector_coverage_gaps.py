@@ -19,12 +19,7 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
     _application_role_groups_from_dc_role,
-    build_jira_attachment_filename_lookup,
-    extract_jira_wiki_attachment_filenames,
-    resolve_jira_attachment_id_by_filename,
 )
-from app.models.blocks import ChildRecord, ChildType
-
 
 def _make_cloud_connector() -> JiraConnector:
     logger = logging.getLogger("test.jira.gaps.cloud")
@@ -332,32 +327,6 @@ class TestDcModuleHelperGaps:
         assert _application_role_groups_from_dc_role(role) == [
             {"groupId": "valid", "name": "valid"},
         ]
-
-    def test_extract_jira_wiki_attachment_filenames_empty_and_blank(self):
-        assert extract_jira_wiki_attachment_filenames("") == []
-        assert extract_jira_wiki_attachment_filenames("!|width=100!") == []
-
-    def test_build_jira_attachment_filename_lookup_skips_empty(self):
-        mime: dict[str, str] = {}
-        lookup = build_jira_attachment_filename_lookup(
-            mime,
-            attachment_children_map={
-                "1": ChildRecord(
-                    child_type=ChildType.RECORD,
-                    child_id="1",
-                    child_name="",
-                ),
-            },
-            raw_attachments=[{"id": "", "filename": ""}, {"id": "2"}],
-        )
-        assert lookup == {}
-
-    def test_resolve_jira_attachment_id_by_filename(self):
-        lookup = {"Doc.PDF": "100", "doc.pdf": "100"}
-        assert resolve_jira_attachment_id_by_filename("Doc.PDF", lookup) == "100"
-        assert resolve_jira_attachment_id_by_filename("doc.pdf", lookup) == "100"
-        assert resolve_jira_attachment_id_by_filename("", lookup) is None
-        assert resolve_jira_attachment_id_by_filename("missing.pdf", lookup) is None
 
 
 class TestDcInitAndAuditGaps:

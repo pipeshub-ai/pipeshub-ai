@@ -139,6 +139,56 @@ class TestJiraDataCenterAttachmentIndexingFilter:
         conn.indexing_filters.is_enabled.assert_called_with(IndexingFilterKey.ISSUE_ATTACHMENTS)
 
 
+class TestJiraDataCenterAttachmentMimeResolution:
+    def test_resolves_mime_type_from_extension_map(self) -> None:
+        conn = _make_connector()
+        record = conn._create_attachment_file_record(
+            attachment_id="100",
+            filename="report.pdf",
+            mime_type="application/octet-stream",
+            file_size=1024,
+            created_at=1_700_000_000_000,
+            parent_issue_id="10001",
+            parent_node_id=None,
+            project_id="PROJ",
+            weburl=None,
+        )
+        assert record.extension == "pdf"
+        assert record.mime_type == "application/pdf"
+
+    def test_falls_back_to_api_mime_for_unmapped_extension(self) -> None:
+        conn = _make_connector()
+        record = conn._create_attachment_file_record(
+            attachment_id="101",
+            filename="archive.xyz",
+            mime_type="application/custom",
+            file_size=100,
+            created_at=1_700_000_000_000,
+            parent_issue_id="10001",
+            parent_node_id=None,
+            project_id="PROJ",
+            weburl=None,
+        )
+        assert record.extension == "xyz"
+        assert record.mime_type == "application/custom"
+
+    def test_no_extension_keeps_api_mime_type(self) -> None:
+        conn = _make_connector()
+        record = conn._create_attachment_file_record(
+            attachment_id="102",
+            filename="Makefile",
+            mime_type="text/plain",
+            file_size=50,
+            created_at=1_700_000_000_000,
+            parent_issue_id="10001",
+            parent_node_id=None,
+            project_id="PROJ",
+            weburl=None,
+        )
+        assert record.extension is None
+        assert record.mime_type == "text/plain"
+
+
 # -----------------------------------------------------------------------------
 # init()
 # -----------------------------------------------------------------------------

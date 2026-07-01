@@ -1172,7 +1172,7 @@ class TestFetchPageContent:
         c = _conn()
         mock_ds = MagicMock()
         mock_ds.get_page_content_v2 = AsyncMock(return_value=_resp(200, {
-            "body": {"export_view": {"value": "<h1>Content</h1>"}},
+            "body": {"styled_view": {"value": "<h1>Content</h1>"}},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         result = await c._fetch_page_content("p1", RecordType.CONFLUENCE_PAGE)
@@ -1183,7 +1183,7 @@ class TestFetchPageContent:
         c = _conn()
         mock_ds = MagicMock()
         mock_ds.get_blogpost_content_v2 = AsyncMock(return_value=_resp(200, {
-            "body": {"export_view": {"value": "<p>Blog</p>"}},
+            "body": {"styled_view": {"value": "<p>Blog</p>"}},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         result = await c._fetch_page_content("b1", RecordType.CONFLUENCE_BLOGPOST)

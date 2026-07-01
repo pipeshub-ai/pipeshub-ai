@@ -908,6 +908,30 @@ async def perform_image_generation_health_check(
                 client.aio.models.get(model=model_name),
                 timeout=30.0,
             )
+        elif provider == ImageGenerationProvider.OPENROUTER.value:
+            from app.config.constants.ai_models import OPENROUTER_BASE_URL
+
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                resp = await http_client.get(
+                    f"{OPENROUTER_BASE_URL}/auth/key",
+                    headers={"Authorization": f"Bearer {configuration['apiKey']}"},
+                )
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"OpenRouter credential check returned HTTP {resp.status_code}"
+                    )
+        elif provider == ImageGenerationProvider.LITELLM_PROXY.value:
+            endpoint = configuration.get("endpoint", "").rstrip("/")
+            headers: dict[str, str] = {}
+            api_key = configuration.get("apiKey")
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                resp = await http_client.get(f"{endpoint}/health", headers=headers)
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"LiteLLM Proxy health check returned HTTP {resp.status_code}"
+                    )
         else:
             return JSONResponse(
                 status_code=400,
@@ -1005,6 +1029,32 @@ async def perform_tts_health_check(
                 await asyncio.wait_for(client.models.list(), timeout=30.0)
             finally:
                 await client.close()
+        elif provider == TTSProvider.GEMINI.value:
+            pass  # Gemini TTS uses a REST endpoint; no dedicated health probe needed.
+        elif provider == TTSProvider.OPENROUTER.value:
+            from app.config.constants.ai_models import OPENROUTER_BASE_URL
+
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                resp = await http_client.get(
+                    f"{OPENROUTER_BASE_URL}/auth/key",
+                    headers={"Authorization": f"Bearer {configuration['apiKey']}"},
+                )
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"OpenRouter credential check returned HTTP {resp.status_code}"
+                    )
+        elif provider == TTSProvider.LITELLM_PROXY.value:
+            endpoint = configuration.get("endpoint", "").rstrip("/")
+            headers = {}
+            api_key = configuration.get("apiKey")
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                resp = await http_client.get(f"{endpoint}/health", headers=headers)
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"LiteLLM Proxy health check returned HTTP {resp.status_code}"
+                    )
         else:
             return JSONResponse(
                 status_code=400,
@@ -1153,6 +1203,30 @@ async def perform_stt_health_check(
                         "details": {"provider": provider, "model": model_name},
                     },
                 )
+        elif provider == STTProvider.OPENROUTER.value:
+            from app.config.constants.ai_models import OPENROUTER_BASE_URL
+
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                resp = await http_client.get(
+                    f"{OPENROUTER_BASE_URL}/auth/key",
+                    headers={"Authorization": f"Bearer {configuration['apiKey']}"},
+                )
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"OpenRouter credential check returned HTTP {resp.status_code}"
+                    )
+        elif provider == STTProvider.LITELLM_PROXY.value:
+            endpoint = configuration.get("endpoint", "").rstrip("/")
+            headers = {}
+            api_key = configuration.get("apiKey")
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                resp = await http_client.get(f"{endpoint}/health", headers=headers)
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"LiteLLM Proxy health check returned HTTP {resp.status_code}"
+                    )
         else:
             return JSONResponse(
                 status_code=400,

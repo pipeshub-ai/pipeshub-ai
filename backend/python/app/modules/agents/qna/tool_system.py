@@ -17,6 +17,8 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Optional
 
+from pydantic import BaseModel
+
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
     from app.agents.tools.models import Tool
@@ -268,6 +270,16 @@ _CODE_EXECUTION_APPS: frozenset[str] = frozenset({
     "database_sandbox",
 })
 
+# Tools that require an interactive UI client (client-name header present).
+# Without one the tool cannot deliver its output to the user. More critically,
+# the mandatory llm_description on these tools instructs the LLM to NEVER answer
+# in text and to ONLY use this tool — which silences the LLM in simple text-mode
+# paths (like _generate_direct_response) where no tools are bound to the LLM call.
+_UI_ONLY_INTERNAL_TOOLS: frozenset[str] = frozenset({
+    "internaltools.ask_user_question",
+    "internaltools_ask_user_question",
+})
+
 
 def _code_execution_enabled(state: ChatState) -> bool:
     """Return whether this deployment/caller has access to code-execution tools.
@@ -396,6 +408,19 @@ def _load_all_tools(state: ChatState, blocked_tools: dict[str, int]) -> list[Reg
             # Check if internal (always included)
             is_internal = _is_internal_tool(full_name, registry_tool)
 
+            # Gate UI-only internal tools: without a UI client (client-name header)
+            # the tool cannot deliver its output. More critically, its mandatory
+            # llm_description tells the LLM to NEVER answer in text — causing empty
+            # answers in text-mode paths like _generate_direct_response where no
+            # tools are actually bound to the LLM call.
+            if is_internal and full_name in _UI_ONLY_INTERNAL_TOOLS:
+                if not state.get("has_ui_client"):
+                    if state_logger:
+                        state_logger.debug(
+                            f"Skipping tool {full_name} - no client (client-name header absent)"
+                        )
+                    continue
+
             # Retrieval tools are internal when knowledge is available
             if is_retrieval and has_knowledge:
                 is_internal = True
@@ -523,6 +548,7 @@ def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
             'coding_sandbox',
             'database_sandbox',
             'image_generator',
+            'internaltools',  # ToolsetBuilder @Toolset(...).as_internal() — must match tool app_name
         ]:
             return True
 
@@ -532,6 +558,7 @@ def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
         "fetch_url",
         "get_current_datetime",
         "image_generator.",
+        "internaltools.",
         "web_search",
     ]
 
@@ -710,6 +737,10 @@ def get_tool_results_summary(state: ChatState) -> str:
 # Modern Tool System with Pydantic Schemas (for ReAct Agent)
 # ============================================================================
 
+class _EmptyInput(BaseModel):
+    """Schema for tools that accept no arguments."""
+    pass
+
 def get_agent_tools_with_schemas(state: ChatState) -> list:
     """
     Convert registry tools to StructuredTools with Pydantic schemas.
@@ -803,13 +834,21 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
                         coroutine=async_tool_func,  # Explicitly pass the coroutine
                     )
                 else:
-                    # Fallback: no schema (for legacy tools without Pydantic schemas)
-                    structured_tool = StructuredTool.from_function(
-                        func=async_tool_func,
-                        name=sanitized_tool_name,
-                        description=tool_wrapper.description,
-                        coroutine=async_tool_func,  # Explicitly pass the coroutine
-                    )
+                    # No Pydantic schema. For truly no-arg tools, use
+                    # _EmptyInput so LangChain doesn't auto-infer a "kwargs"
+                    # parameter from the wrapper's **kwargs signature (which
+                    # causes LLMs to send spurious {"kwargs": {}} arguments).
+                    has_params = bool(getattr(registry_tool, 'parameters', None))
+                    fallback_schema = None if has_params else _EmptyInput
+                    tool_kwargs: dict[str, Any] = {
+                        "func": async_tool_func,
+                        "name": sanitized_tool_name,
+                        "description": tool_wrapper.description,
+                        "coroutine": async_tool_func,
+                    }
+                    if fallback_schema:
+                        tool_kwargs["args_schema"] = fallback_schema
+                    structured_tool = StructuredTool.from_function(**tool_kwargs)
 
                 # Store original name and wrapper reference for backward compatibility
                 setattr(structured_tool, '_original_name', original_tool_name)

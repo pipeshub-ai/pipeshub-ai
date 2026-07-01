@@ -641,7 +641,7 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
         agent_key = self.agent_session["primary_agent"]
         conversation_id = self._create_agent_conversation_id(
             agent_key,
-            query=f"stream-create for chatMode={chat_mode}",
+            query=SEARCH_QUERY,
         )
 
         answer, saw_complete = self._stream_add_message(
@@ -686,7 +686,7 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
         agent_key = self.agent_session["primary_agent"]
         conversation_id = self._create_agent_conversation_id(
             agent_key,
-            query=f"stream-create for optional body: {label}",
+            query=SEARCH_QUERY,
         )
         body = dict(json_body)
         if label == "filters kb":
@@ -848,7 +848,7 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
         agent_key = self.agent_session["primary_agent"]
         conversation_id = self._create_agent_conversation_id(
             agent_key,
-            query=f"stream-create for invalid body: {label}",
+            query=SEARCH_QUERY,
         )
 
         resp = self.conversations.stream_message(

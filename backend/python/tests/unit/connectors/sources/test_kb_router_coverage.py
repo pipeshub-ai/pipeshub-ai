@@ -186,6 +186,7 @@ class TestCreateKnowledgeBase:
             "id": "kb-1", "name": "Test KB",
             "createdAtTimestamp": 1700000000000,
             "updatedAtTimestamp": 1700000000000,
+            "userRole": "OWNER",
         }
         request = _make_request(body={"name": "Test KB"})
         result = await create_knowledge_base(request=request, kb_service=kb_svc)
@@ -200,6 +201,7 @@ class TestCreateKnowledgeBase:
             "id": "kb-2", "name": "Test KB",
             "createdAtTimestamp": 1700000000000,
             "updatedAtTimestamp": 1700000000000,
+            "userRole": "OWNER",
         }
         request = _make_request(body={"kbName": "Test KB"})
         result = await create_knowledge_base(request=request, kb_service=kb_svc)

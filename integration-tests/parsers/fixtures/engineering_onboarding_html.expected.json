@@ -24,8 +24,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 4,
-            "end": 9
+            "start": 1,
+            "end": 6
           }
         ],
         "block_group_ranges": []
@@ -60,8 +60,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 14,
-            "end": 17
+            "start": 11,
+            "end": 14
           }
         ],
         "block_group_ranges": []
@@ -96,8 +96,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 19,
-            "end": 21
+            "start": 16,
+            "end": 18
           }
         ],
         "block_group_ranges": []
@@ -132,8 +132,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 23,
-            "end": 24
+            "start": 20,
+            "end": 21
           }
         ],
         "block_group_ranges": []
@@ -168,8 +168,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 27,
-            "end": 30
+            "start": 24,
+            "end": 27
           }
         ],
         "block_group_ranges": []
@@ -204,8 +204,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 32,
-            "end": 35
+            "start": 29,
+            "end": 32
           }
         ],
         "block_group_ranges": []
@@ -253,13 +253,21 @@
       "children": {
         "block_ranges": [
           {
-            "start": 38,
-            "end": 41
+            "start": 35,
+            "end": 38
           }
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Cadence",
+          "Event",
+          "Format",
+          "Length"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -289,8 +297,8 @@
       "children": {
         "block_ranges": [
           {
-            "start": 43,
-            "end": 47
+            "start": 40,
+            "end": 44
           }
         ],
         "block_group_ranges": []
@@ -337,13 +345,20 @@
       "children": {
         "block_ranges": [
           {
-            "start": 51,
-            "end": 57
+            "start": 48,
+            "end": 54
           }
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Topic",
+          "Person",
+          "Slack handle"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -354,103 +369,11 @@
     {
       "index": 0,
       "parent_index": null,
-      "type": "text",
-      "sub_type": "paragraph",
-      "name": null,
-      "format": "txt",
-      "comments": [],
-      "source_creation_date": null,
-      "source_update_date": null,
-      "source_id": null,
-      "source_name": null,
-      "source_type": null,
-      "data": "PipesHub Engineering",
-      "links": null,
-      "weburl": null,
-      "public_data_link": null,
-      "public_data_link_expiration_epoch_time_in_ms": null,
-      "citation_metadata": null,
-      "list_metadata": null,
-      "table_row_metadata": null,
-      "table_cell_metadata": null,
-      "code_metadata": null,
-      "media_metadata": null,
-      "file_metadata": null,
-      "link_metadata": null,
-      "image_metadata": null,
-      "semantic_metadata": null,
-      "children_records": null,
-      "content_hash": null
-    },
-    {
-      "index": 1,
-      "parent_index": null,
-      "type": "text",
-      "sub_type": "paragraph",
-      "name": null,
-      "format": "markdown",
-      "comments": [],
-      "source_creation_date": null,
-      "source_update_date": null,
-      "source_id": null,
-      "source_name": null,
-      "source_type": null,
-      "data": "# Welcome aboard! 👋\nThis guide gets you from zero to your first PR in about two days. Read it top to bottom once, then use it as a reference. If something's wrong, fix it — keeping this doc accurate is everyone's job.",
-      "links": null,
-      "weburl": null,
-      "public_data_link": null,
-      "public_data_link_expiration_epoch_time_in_ms": null,
-      "citation_metadata": null,
-      "list_metadata": null,
-      "table_row_metadata": null,
-      "table_cell_metadata": null,
-      "code_metadata": null,
-      "media_metadata": null,
-      "file_metadata": null,
-      "link_metadata": null,
-      "image_metadata": null,
-      "semantic_metadata": null,
-      "children_records": null,
-      "content_hash": null
-    },
-    {
-      "index": 2,
-      "parent_index": null,
-      "type": "text",
-      "sub_type": "paragraph",
-      "name": null,
-      "format": "markdown",
-      "comments": [],
-      "source_creation_date": null,
-      "source_update_date": null,
-      "source_id": null,
-      "source_name": null,
-      "source_type": null,
-      "data": "Your buddy for week 1–2: **Rajat N.** (@rajat on Slack) · Manager: **Rahul D.** (@rahul)",
-      "links": null,
-      "weburl": null,
-      "public_data_link": null,
-      "public_data_link_expiration_epoch_time_in_ms": null,
-      "citation_metadata": null,
-      "list_metadata": null,
-      "table_row_metadata": null,
-      "table_cell_metadata": null,
-      "code_metadata": null,
-      "media_metadata": null,
-      "file_metadata": null,
-      "link_metadata": null,
-      "image_metadata": null,
-      "semantic_metadata": null,
-      "children_records": null,
-      "content_hash": null
-    },
-    {
-      "index": 3,
-      "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -476,8 +399,9 @@
       "content_hash": null
     },
     {
-      "index": 4,
+      "index": 1,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -507,8 +431,9 @@
       "content_hash": null
     },
     {
-      "index": 5,
+      "index": 2,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -538,8 +463,9 @@
       "content_hash": null
     },
     {
-      "index": 6,
+      "index": 3,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -569,8 +495,9 @@
       "content_hash": null
     },
     {
-      "index": 7,
+      "index": 4,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -600,8 +527,9 @@
       "content_hash": null
     },
     {
-      "index": 8,
+      "index": 5,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -631,8 +559,9 @@
       "content_hash": null
     },
     {
-      "index": 9,
+      "index": 6,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -662,8 +591,9 @@
       "content_hash": null
     },
     {
-      "index": 10,
+      "index": 7,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -693,8 +623,9 @@
       "content_hash": null
     },
     {
-      "index": 11,
+      "index": 8,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -724,8 +655,9 @@
       "content_hash": null
     },
     {
-      "index": 12,
+      "index": 9,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -755,12 +687,13 @@
       "content_hash": null
     },
     {
-      "index": 13,
+      "index": 10,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -786,8 +719,9 @@
       "content_hash": null
     },
     {
-      "index": 14,
+      "index": 11,
       "parent_index": 1,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -817,8 +751,9 @@
       "content_hash": null
     },
     {
-      "index": 15,
+      "index": 12,
       "parent_index": 1,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -848,8 +783,9 @@
       "content_hash": null
     },
     {
-      "index": 16,
+      "index": 13,
       "parent_index": 1,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -879,8 +815,9 @@
       "content_hash": null
     },
     {
-      "index": 17,
+      "index": 14,
       "parent_index": 1,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -910,12 +847,13 @@
       "content_hash": null
     },
     {
-      "index": 18,
+      "index": 15,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -941,8 +879,9 @@
       "content_hash": null
     },
     {
-      "index": 19,
+      "index": 16,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -972,8 +911,9 @@
       "content_hash": null
     },
     {
-      "index": 20,
+      "index": 17,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1003,8 +943,9 @@
       "content_hash": null
     },
     {
-      "index": 21,
+      "index": 18,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1034,12 +975,13 @@
       "content_hash": null
     },
     {
-      "index": 22,
+      "index": 19,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -1065,8 +1007,9 @@
       "content_hash": null
     },
     {
-      "index": 23,
+      "index": 20,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1096,8 +1039,9 @@
       "content_hash": null
     },
     {
-      "index": 24,
+      "index": 21,
       "parent_index": 3,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1127,12 +1071,13 @@
       "content_hash": null
     },
     {
-      "index": 25,
+      "index": 22,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -1158,8 +1103,9 @@
       "content_hash": null
     },
     {
-      "index": 26,
+      "index": 23,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1189,8 +1135,9 @@
       "content_hash": null
     },
     {
-      "index": 27,
+      "index": 24,
       "parent_index": 4,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1220,8 +1167,9 @@
       "content_hash": null
     },
     {
-      "index": 28,
+      "index": 25,
       "parent_index": 4,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1251,8 +1199,9 @@
       "content_hash": null
     },
     {
-      "index": 29,
+      "index": 26,
       "parent_index": 4,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1282,8 +1231,9 @@
       "content_hash": null
     },
     {
-      "index": 30,
+      "index": 27,
       "parent_index": 4,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1313,12 +1263,13 @@
       "content_hash": null
     },
     {
-      "index": 31,
+      "index": 28,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -1344,8 +1295,9 @@
       "content_hash": null
     },
     {
-      "index": 32,
+      "index": 29,
       "parent_index": 5,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1375,8 +1327,9 @@
       "content_hash": null
     },
     {
-      "index": 33,
+      "index": 30,
       "parent_index": 5,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1406,8 +1359,9 @@
       "content_hash": null
     },
     {
-      "index": 34,
+      "index": 31,
       "parent_index": 5,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1437,8 +1391,9 @@
       "content_hash": null
     },
     {
-      "index": 35,
+      "index": 32,
       "parent_index": 5,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1468,12 +1423,13 @@
       "content_hash": null
     },
     {
-      "index": 36,
+      "index": 33,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -1499,12 +1455,13 @@
       "content_hash": null
     },
     {
-      "index": 37,
+      "index": 34,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -1530,8 +1487,9 @@
       "content_hash": null
     },
     {
-      "index": 38,
+      "index": 35,
       "parent_index": 6,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -1570,8 +1528,9 @@
       "content_hash": null
     },
     {
-      "index": 39,
+      "index": 36,
       "parent_index": 6,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -1610,8 +1569,9 @@
       "content_hash": null
     },
     {
-      "index": 40,
+      "index": 37,
       "parent_index": 6,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -1650,8 +1610,9 @@
       "content_hash": null
     },
     {
-      "index": 41,
+      "index": 38,
       "parent_index": 6,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -1690,12 +1651,13 @@
       "content_hash": null
     },
     {
-      "index": 42,
+      "index": 39,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -1721,8 +1683,9 @@
       "content_hash": null
     },
     {
-      "index": 43,
+      "index": 40,
       "parent_index": 7,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1752,8 +1715,9 @@
       "content_hash": null
     },
     {
-      "index": 44,
+      "index": 41,
       "parent_index": 7,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1783,8 +1747,9 @@
       "content_hash": null
     },
     {
-      "index": 45,
+      "index": 42,
       "parent_index": 7,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1814,8 +1779,9 @@
       "content_hash": null
     },
     {
-      "index": 46,
+      "index": 43,
       "parent_index": 7,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1845,8 +1811,9 @@
       "content_hash": null
     },
     {
-      "index": 47,
+      "index": 44,
       "parent_index": 7,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -1876,8 +1843,9 @@
       "content_hash": null
     },
     {
-      "index": 48,
+      "index": 45,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1888,7 +1856,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "## 🗂️ Codebase Orientation\npipeshub-ai/\n├── src/                  # TypeScript/Node.js backend\n│   ├── controllers/      # Express route handlers\n│   ├── services/         # Business logic\n│   ├── connectors/       # Third-party API clients\n│   └── webhooks/         # Inbound webhook handlers\n├── services/             # Python async service layer\n│   ├── agents/           # LangChain/LangGraph agent definitions\n│   ├── connectors/       # Salesforce, Zoom, etc.\n│   └── schemas/          # Pydantic models\n├── tests/                # TypeScript tests\n└── docs/                 # Architecture docs, ADRs",
+      "data": "## 🗂️ Codebase Orientation\n\npipeshub-ai/\n├── src/ # TypeScript/Node.js backend\n│   ├── controllers/ # Express route handlers\n│   ├── services/ # Business logic\n│   ├── connectors/ # Third-party API clients\n│   └── webhooks/ # Inbound webhook handlers\n├── services/ # Python async service layer\n│   ├── agents/ # LangChain/LangGraph agent definitions\n│   ├── connectors/ # Salesforce, Zoom, etc.\n│   └── schemas/ # Pydantic models\n├── tests/ # TypeScript tests\n└── docs/ # Architecture docs, ADRs",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -1907,8 +1875,9 @@
       "content_hash": null
     },
     {
-      "index": 49,
+      "index": 46,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -1938,12 +1907,13 @@
       "content_hash": null
     },
     {
-      "index": 50,
+      "index": 47,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -1969,8 +1939,9 @@
       "content_hash": null
     },
     {
-      "index": 51,
+      "index": 48,
       "parent_index": 8,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -2008,8 +1979,9 @@
       "content_hash": null
     },
     {
-      "index": 52,
+      "index": 49,
       "parent_index": 8,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -2047,8 +2019,9 @@
       "content_hash": null
     },
     {
-      "index": 53,
+      "index": 50,
       "parent_index": 8,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -2086,8 +2059,9 @@
       "content_hash": null
     },
     {
-      "index": 54,
+      "index": 51,
       "parent_index": 8,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -2125,8 +2099,9 @@
       "content_hash": null
     },
     {
-      "index": 55,
+      "index": 52,
       "parent_index": 8,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -2164,8 +2139,9 @@
       "content_hash": null
     },
     {
-      "index": 56,
+      "index": 53,
       "parent_index": 8,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -2203,8 +2179,9 @@
       "content_hash": null
     },
     {
-      "index": 57,
+      "index": 54,
       "parent_index": 8,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -2242,8 +2219,9 @@
       "content_hash": null
     },
     {
-      "index": 58,
+      "index": 55,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,

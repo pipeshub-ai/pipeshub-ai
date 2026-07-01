@@ -2689,5 +2689,26 @@
     "title": "Unable to Connect to Server",
     "description": "The server is currently unreachable. It may be starting up or undergoing maintenance. We're trying to reconnect.",
     "contactAdmin": "If this persists, please contact your PipesHub administrator."
+  },
+  "askUserQuestion": {
+    "questionsHeadingSingular": "Question :",
+    "questionsHeadingPlural": "Questions :",
+    "answered": "Answered",
+    "showLess": "Show less",
+    "showMore": "Show more",
+    "noPreference": "[No preference]",
+    "somethingElse": "Something else",
+    "questionAskedSingular": "Question asked:",
+    "questionAskedPlural": "Questions asked:",
+    "quickQuestionSingular": "Quick question :",
+    "quickQuestionPlural": "Quick questions :",
+    "stepOf": "Step {{step}} of {{total}}",
+    "selectedCount": "{{count}} selected",
+    "describeYourAnswer": "Describe your answer…",
+    "typeYourAnswer": "Type your answer…",
+    "back": "Back",
+    "skip": "Skip",
+    "next": "Next",
+    "submit": "Submit"
   }
 }

@@ -293,10 +293,22 @@ class TestBlock:
         )
         assert block.index == 0
         assert block.parent_index == 1
+        assert block.parent_block_index is None
         assert block.sub_type == BlockSubType.PARAGRAPH
         assert block.name == "Test Block"
         assert block.format == DataFormat.MARKDOWN
         assert block.data == "Hello world"
+
+    def test_parent_block_index_for_split_fragments(self):
+        block = Block(
+            index=3,
+            type=BlockType.TEXT,
+            parent_index=1,
+            parent_block_index=0,
+            data="fragment text",
+        )
+        assert block.parent_block_index == 0
+        assert block.parent_index == 1
 
     def test_unique_id_generation(self):
         block1 = Block(type=BlockType.TEXT)

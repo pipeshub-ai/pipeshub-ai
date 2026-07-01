@@ -5,7 +5,7 @@ import asyncio
 import base64
 import re
 from collections import defaultdict
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from logging import Logger
 from typing import Any, Optional
@@ -13,6 +13,7 @@ from urllib.parse import quote
 from uuid import uuid4
 
 import httpx  # type: ignore
+from bs4 import BeautifulSoup
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -22,6 +23,8 @@ from app.config.constants.arangodb import (
     Connectors,
     ProgressStatus,
     RecordRelations,
+    get_mime_type_for_extension,
+    normalize_file_extension,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -128,125 +131,6 @@ def _application_role_groups_from_dc_role(role: dict[str, Any]) -> list[dict[str
         name = group_name.strip()
         normalized.append({"groupId": name, "name": name})
     return normalized
-
-
-
-# Jira wiki attachments: !filename.png|width=100! or [^filename.pdf]
-_JIRA_WIKI_ATTACHMENT_RE = re.compile(r"!([^!]+)!|\[\^([^\]]+)\]")
-
-
-def _wiki_match_filename(match: re.Match[str]) -> str:
-    """Extract filename from a combined wiki attachment regex match."""
-    if match.group(1) is not None:
-        return match.group(1).split("|", 1)[0].strip()
-    return (match.group(2) or "").strip()
-
-
-def extract_jira_wiki_attachment_filenames(text: str) -> list[str]:
-    """Return filenames from Jira wiki ``!file.ext|...!`` and ``[^file.ext]`` markers."""
-    if not text:
-        return []
-    filenames: list[str] = []
-    seen: set[str] = set()
-    for match in _JIRA_WIKI_ATTACHMENT_RE.finditer(text):
-        filename = _wiki_match_filename(match)
-        if not filename:
-            continue
-        key = filename.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        filenames.append(filename)
-    return filenames
-
-
-def build_jira_attachment_filename_lookup(
-    attachment_mime_types: dict[str, str],
-    attachment_children_map: Optional[dict[str, ChildRecord]] = None,
-    raw_attachments: Optional[list[dict[str, Any]]] = None,
-) -> dict[str, str]:
-    """Map attachment filename (exact and lowercased) to attachment id string."""
-    lookup: dict[str, str] = {}
-
-    def _add(filename: str, attachment_id: str) -> None:
-        if not filename or not attachment_id:
-            return
-        lookup[filename] = attachment_id
-        lookup[filename.lower().strip()] = attachment_id
-
-    for attachment in raw_attachments or []:
-        if not isinstance(attachment, dict):
-            continue
-        att_id = str(attachment.get("id", "") or "")
-        filename = attachment.get("filename")
-        if filename:
-            _add(str(filename), att_id)
-        if att_id and att_id not in attachment_mime_types:
-            mime = attachment.get("mimeType")
-            if mime:
-                attachment_mime_types[att_id] = str(mime)
-
-    for att_id, child_record in (attachment_children_map or {}).items():
-        child_name = child_record.child_name
-        if child_name:
-            _add(child_name, str(att_id))
-
-    return lookup
-
-
-def resolve_jira_attachment_id_by_filename(
-    filename: str,
-    filename_to_attachment_id: dict[str, str],
-) -> Optional[str]:
-    if not filename:
-        return None
-    attachment_id = filename_to_attachment_id.get(filename)
-    if attachment_id:
-        return attachment_id
-    return filename_to_attachment_id.get(filename.lower().strip())
-
-
-async def jira_storage_text_to_markdown_with_images(
-    text: str,
-    media_fetcher: Callable[[str, str], Awaitable[Optional[str]]],
-    filename_to_attachment_id: dict[str, str],
-    attachment_mime_types: dict[str, str],
-) -> tuple[str, set[str]]:
-    """
-    Convert Jira wiki/plain storage text to markdown, inlining image attachments as base64.
-
-    Handles ``!filename.png|width=...!`` and ``[^filename.pdf]`` markers (Server/DC wiki).
-    Returns (markdown_text, attachment_ids_inlined_as_images).
-    """
-    embedded_image_ids: set[str] = set()
-    if not text or not isinstance(text, str):
-        return "", embedded_image_ids
-
-    parts: list[str] = []
-    last_end = 0
-    for match in _JIRA_WIKI_ATTACHMENT_RE.finditer(text):
-        parts.append(text[last_end:match.start()])
-        filename = _wiki_match_filename(match)
-        replaced = False
-        if filename:
-            attachment_id = resolve_jira_attachment_id_by_filename(
-                filename, filename_to_attachment_id
-            )
-            mime_type = attachment_mime_types.get(attachment_id or "", "")
-            if attachment_id and mime_type.startswith("image/"):
-                try:
-                    data_uri = await media_fetcher(attachment_id, filename)
-                except Exception:
-                    data_uri = None
-                if data_uri:
-                    parts.append(f"![{filename}]({data_uri})")
-                    embedded_image_ids.add(attachment_id)
-                    replaced = True
-        if not replaced:
-            parts.append(match.group(0))
-        last_end = match.end()
-    parts.append(text[last_end:])
-    return "".join(parts), embedded_image_ids
 
 
 @(
@@ -3271,31 +3155,21 @@ class JiraDataCenterConnector(BaseConnector):
         weburl: Optional[str] = None,
         attachment_children_map: Optional[dict[str, ChildRecord]] = None,
         attachment_mime_types: Optional[dict[str, str]] = None,
+        rendered_fields: Optional[dict[str, Any]] = None,
     ) -> BlocksContainer:
         """
         Parse Jira issue data into BlocksContainer with BlockGroups and Blocks.
 
+        Uses rendered HTML from ``renderedFields`` (via ``?expand=renderedFields``)
+        for description and comments. Images are fetched via authenticated API and
+        inlined as base64 data URIs before storing.
+
         This creates:
         - Description BlockGroup (index=0) with:
-          - Issue description markdown (images converted to base64)
-          - children_records:
-            - Embedded files from description (PDFs, docs, etc.)
-            - Standalone attachments (not used in comments and not embedded images)
-            - Excludes: embedded images (already in content as base64) and attachments used in comments
-        - Thread BlockGroups (index=1,2,...) for each comment thread with:
-          - parent_index=0 (pointing to Description BlockGroup)
-        - Comment BlockGroup objects (sub_type=COMMENT) for each comment with:
-          - parent_index pointing to thread BlockGroup index
-          - children_records: attachments used in that specific comment (assigned to comment's BlockGroup)
-          - requires_processing=True (comments need further processing through docling)
-
-        Attachment assignment logic:
-        - Attachments used in comments → assigned to that comment's children
-        - Embedded images in description → excluded from children (already in content as base64)
-        - Standalone attachments → included in description children
-
-        DC issue text is wiki/plain string; attachments are matched by filename markers
-        (``!file.png!`` / ``[^file.pdf]``) in description and comment bodies.
+          - Issue description HTML (images converted to base64)
+          - children_records: non-image files linked inline in description HTML
+        - Thread BlockGroups (index=1,2,...) for each comment thread
+        - Comment BlockGroup objects (sub_type=COMMENT) for each comment
         """
         issue_id = issue_data.get("id", "")
         fields = issue_data.get("fields", {})
@@ -3304,7 +3178,6 @@ class JiraDataCenterConnector(BaseConnector):
         issue_name = (
             f"[{resolved_issue_key}] {issue_summary}" if resolved_issue_key else issue_summary
         )
-        issue_description = fields.get("description")
 
         if not weburl:
             raise ValueError("weburl is required when creating BlockGroup for issues")
@@ -3318,55 +3191,45 @@ class JiraDataCenterConnector(BaseConnector):
         if not isinstance(raw_attachments, list):
             raw_attachments = []
 
-        filename_to_attachment_id = build_jira_attachment_filename_lookup(
-            _attachment_mime_types,
-            attachment_children_map,
-            raw_attachments,
-        )
-        media_fetcher = self._create_media_fetcher(issue_id)
-
         def is_image_attachment(attachment_id: str) -> bool:
-            """Check if attachment is an image based on MIME type."""
             mime_type = _attachment_mime_types.get(attachment_id, "")
             return mime_type.startswith("image/")
 
-        # Track attachment IDs used in comments (to exclude from description children)
-        comment_attachment_ids: set[str] = set()
-        # Track embedded images in description (already in content as base64, exclude from children)
-        description_image_ids: set[str] = set()
+        # Get rendered HTML from renderedFields
+        rendered = rendered_fields or {}
+        rendered_description_html = rendered.get("description") or ""
 
-        # Pre-scan comments to identify which attachments are used in comments
+        # Build rendered comments lookup by comment ID
+        rendered_comments_field = rendered.get("comment", {})
+        rendered_comments_list: list[dict[str, Any]] = []
+        if isinstance(rendered_comments_field, dict):
+            rendered_comments_list = rendered_comments_field.get("comments", []) or []
+        elif isinstance(rendered_comments_field, list):
+            rendered_comments_list = rendered_comments_field
+        rendered_comment_body_by_id: dict[str, str] = {}
+        for rc in rendered_comments_list:
+            cid = rc.get("id", "")
+            body = rc.get("body", "")
+            if cid and body:
+                rendered_comment_body_by_id[cid] = body
+
         comments_data = issue_data.get("comments", [])
         if isinstance(comments_data, dict):
             comments_data = comments_data.get("comments", [])
-        for comment in comments_data:
-            comment_body_raw = comment.get("body")
-            if isinstance(comment_body_raw, str) and comment_body_raw.strip():
-                for wiki_filename in extract_jira_wiki_attachment_filenames(comment_body_raw):
-                    attachment_id = resolve_jira_attachment_id_by_filename(
-                        wiki_filename, filename_to_attachment_id
-                    )
-                    if attachment_id:
-                        comment_attachment_ids.add(attachment_id)
 
-        # 1. Description BlockGroup (index=0) — wiki/plain string on DC
-        if isinstance(issue_description, str) and issue_description.strip():
-            description_content, wiki_desc_images = await jira_storage_text_to_markdown_with_images(
-                issue_description,
-                media_fetcher,
-                filename_to_attachment_id,
-                _attachment_mime_types,
+        # 1. Description BlockGroup (index=0) — rendered HTML
+        if isinstance(rendered_description_html, str) and rendered_description_html.strip():
+            description_content, _desc_inlined = await self._process_html_images_with_auth(
+                rendered_description_html, issue_id, raw_attachments
             )
-            description_image_ids.update(wiki_desc_images)
         else:
             description_content = ""
 
         if not description_content:
-            description_content = f"# {issue_name}"
+            description_content = f"<h1>{issue_name}</h1>"
         else:
-            description_content = f"# {issue_name}\n\n{description_content}"
+            description_content = f"<h1>{issue_name}</h1>\n{description_content}"
 
-        # Create description BlockGroup (children will be set after processing comments)
         description_block_group = BlockGroup(
             id=str(uuid4()),
             index=block_group_index,
@@ -3376,7 +3239,7 @@ class JiraDataCenterConnector(BaseConnector):
             description=f"Description for issue {issue_key}" if issue_key else "Issue description",
             source_group_id=f"{issue_id}_description",
             data=description_content,
-            format=DataFormat.MARKDOWN,
+            format=DataFormat.HTML,
             weburl=weburl,
             requires_processing=True,
         )
@@ -3384,12 +3247,6 @@ class JiraDataCenterConnector(BaseConnector):
         block_group_index += 1
 
         # 2. Comment Thread BlockGroups (index=1,2,...) and Comment Blocks
-        # Get comments from the issue data (fetched via expand=comments or separate API call)
-        comments_data = issue_data.get("comments", [])
-        # Handle both formats: direct list or nested structure
-        if isinstance(comments_data, dict):
-            comments_data = comments_data.get("comments", [])
-
         if comments_data:
             sorted_threads = self._organize_issue_comments_to_threads(comments_data)
 
@@ -3397,13 +3254,11 @@ class JiraDataCenterConnector(BaseConnector):
                 if not thread_comments:
                     continue
 
-                # Get thread ID from first comment (either its ID if top-level, or parent ID if reply)
                 first_comment = thread_comments[0]
                 parent = first_comment.get("parent", {})
                 first_comment_id = first_comment.get("id", "")
                 thread_id = parent.get("id") if parent and parent.get("id") else first_comment_id
 
-                # Create thread BlockGroup with parent_index=0 (Description BlockGroup)
                 thread_block_group_index = block_group_index
                 thread_block_group = BlockGroup(
                     id=str(uuid4()),
@@ -3414,29 +3269,27 @@ class JiraDataCenterConnector(BaseConnector):
                     sub_type=GroupSubType.COMMENT_THREAD,
                     description=f"Comment thread for issue {issue_key}" if issue_key else "Comment thread",
                     source_group_id=f"{issue_id}_thread_{thread_id}" if thread_id else f"{issue_id}_thread_{thread_block_group_index}",
-                    weburl=weburl,  # Use issue weburl as base
+                    weburl=weburl,
                     requires_processing=False,
                 )
                 block_groups.append(thread_block_group)
                 block_group_index += 1
 
-                # Create BlockGroup objects for each comment in the thread
                 for comment in thread_comments:
                     comment_id = comment.get("id", "")
-                    comment_body_raw = comment.get("body")
 
-                    if not comment_body_raw or not isinstance(comment_body_raw, str):
+                    # Use rendered HTML: prefer renderedBody (from paginated fetch), then lookup
+                    comment_html = (
+                        comment.get("renderedBody")
+                        or rendered_comment_body_by_id.get(comment_id, "")
+                    )
+                    if not comment_html or not isinstance(comment_html, str) or not comment_html.strip():
                         continue
 
-                    comment_body, wiki_comment_images = (
-                        await jira_storage_text_to_markdown_with_images(
-                            comment_body_raw,
-                            media_fetcher,
-                            filename_to_attachment_id,
-                            _attachment_mime_types,
-                        )
+                    # Process images in comment HTML
+                    comment_body, _comment_inlined = await self._process_html_images_with_auth(
+                        comment_html, issue_id, raw_attachments
                     )
-                    comment_attachment_ids.update(wiki_comment_images)
 
                     if not comment_body:
                         continue
@@ -3447,40 +3300,31 @@ class JiraDataCenterConnector(BaseConnector):
                     else:
                         comment_weburl = weburl
 
-                    # Get author info
                     author = comment.get("author", {})
                     author_name = author.get("displayName", "Unknown")
 
+                    # Detect non-image attachment links in this comment's HTML
                     comment_children: list[ChildRecord] = []
                     if attachment_children_map:
-                        for wiki_filename in extract_jira_wiki_attachment_filenames(
-                            comment_body_raw
-                        ):
-                            attachment_id = resolve_jira_attachment_id_by_filename(
-                                wiki_filename, filename_to_attachment_id
-                            )
+                        link_ids = self._extract_attachment_ids_from_html_links(comment_html)
+                        for att_id in link_ids:
                             if (
-                                attachment_id
-                                and attachment_id in attachment_children_map
-                                and not is_image_attachment(attachment_id)
+                                att_id in attachment_children_map
+                                and not is_image_attachment(att_id)
                             ):
-                                comment_attachment_ids.add(attachment_id)
-                                comment_children.append(
-                                    attachment_children_map[attachment_id]
-                                )
+                                comment_children.append(attachment_children_map[att_id])
 
-                    # Create BlockGroup with sub_type=COMMENT
                     comment_block_group = BlockGroup(
                         id=str(uuid4()),
                         index=block_group_index,
-                        parent_index=thread_block_group_index,  # Points to thread BlockGroup
+                        parent_index=thread_block_group_index,
                         type=GroupType.TEXT_SECTION,
                         sub_type=GroupSubType.COMMENT,
                         name=f"Comment by {author_name}",
                         description=f"Comment by {author_name}",
                         source_group_id=comment_id,
                         data=comment_body,
-                        format=DataFormat.MARKDOWN,
+                        format=DataFormat.HTML,
                         weburl=comment_weburl,
                         requires_processing=True,
                         children_records=comment_children if comment_children else None,
@@ -3488,49 +3332,42 @@ class JiraDataCenterConnector(BaseConnector):
                     block_groups.append(comment_block_group)
                     block_group_index += 1
 
-        # Build description children: all attachments NOT used in comments and NOT embedded images
+        # Non-image files linked inline in description HTML only (not standalone attachments)
         description_children: list[ChildRecord] = []
-        if attachment_children_map:
-            for attachment_id, child_record in attachment_children_map.items():
-                if attachment_id in comment_attachment_ids:
-                    continue  # Used in comment - belongs to that comment's BlockGroup
-                if attachment_id in description_image_ids:
-                    continue  # Embedded image in description - already in content as base64
-                description_children.append(child_record)
+        if attachment_children_map and rendered_description_html:
+            link_ids = self._extract_attachment_ids_from_html_links(rendered_description_html)
+            for att_id in link_ids:
+                if (
+                    att_id in attachment_children_map
+                    and not is_image_attachment(att_id)
+                ):
+                    description_children.append(attachment_children_map[att_id])
 
-        # Set description BlockGroup children
         if description_children:
             description_block_group.children_records = description_children
 
         # Populate children arrays for BlockGroups
-        # Build a map of parent_index -> list of child indices
         blockgroup_children_map: dict[int, list[int]] = defaultdict(list)
         block_children_map: dict[int, list[int]] = defaultdict(list)
 
-        # Collect all BlockGroup children (thread groups and comment groups that are children of their parents)
         for bg in block_groups:
             if bg.parent_index is not None:
                 blockgroup_children_map[bg.parent_index].append(bg.index)
 
-        # Collect all Block children (if any blocks exist with parent_index)
         for b in blocks:
             if b.parent_index is not None:
                 block_children_map[b.parent_index].append(b.index)
 
-        # Now populate the children arrays using range-based structure
         for bg in block_groups:
             child_block_indices = []
             child_bg_indices = []
 
-            # Add child BlockGroups
             if bg.index in blockgroup_children_map:
                 child_bg_indices = sorted(blockgroup_children_map[bg.index])
 
-            # Add child Blocks
             if bg.index in block_children_map:
                 child_block_indices = sorted(block_children_map[bg.index])
 
-            # Set children if we have any
             if child_block_indices or child_bg_indices:
                 bg.children = BlockGroupChildren.from_indices(
                     block_indices=child_block_indices,
@@ -3680,6 +3517,7 @@ class JiraDataCenterConnector(BaseConnector):
         self,
         issue_id: str,
         fields: list[str],
+        expand: list[str] | None = None,
         max_attempts: int = 3,
     ) -> Any:
         """Fetch a Jira issue, retrying on transient httpx transport errors.
@@ -3698,6 +3536,7 @@ class JiraDataCenterConnector(BaseConnector):
                 return await datasource.get_issue_v2(
                     issueIdOrKey=issue_id,
                     fields=fields,
+                    expand=expand,
                 )
             except (
                 httpx.RemoteProtocolError,
@@ -3763,6 +3602,7 @@ class JiraDataCenterConnector(BaseConnector):
         response = await self._get_issue_with_retry(
             issue_id=issue_id,
             fields=["summary", "description", "attachment", "comment", "project"],
+            expand=["renderedFields"],
         )
         if response.status != HttpStatusCode.OK.value:
             raise Exception(f"Failed to fetch issue content: {response.text()}")
@@ -3772,6 +3612,7 @@ class JiraDataCenterConnector(BaseConnector):
             raise Exception(f"No issue data found for ID: {issue_id}")
 
         fields = issue_data.get("fields", {})
+        rendered_fields = issue_data.get("renderedFields", {})
 
         # Get issue key from API response
         issue_key = issue_data.get("key", "")
@@ -3840,7 +3681,7 @@ class JiraDataCenterConnector(BaseConnector):
         # Add comments to issue_data for parsing
         issue_data["comments"] = comments_data
 
-        # Parse issue to BlocksContainer
+        # Parse issue to BlocksContainer using rendered HTML
         # attachment_children_map maps attachment_id -> ChildRecord
         # attachment_mime_types maps attachment_id -> mimeType (for image detection)
         # This allows proper mapping: comment attachments -> comment block, others -> description
@@ -3850,6 +3691,7 @@ class JiraDataCenterConnector(BaseConnector):
             weburl=issue_weburl,
             attachment_children_map=attachment_children_map if attachment_children_map else None,
             attachment_mime_types=attachment_mime_types if attachment_mime_types else None,
+            rendered_fields=rendered_fields,
         )
 
         # Serialize BlocksContainer to JSON bytes
@@ -3859,30 +3701,6 @@ class JiraDataCenterConnector(BaseConnector):
     # ============================================================================
     # Media & Streaming
     # ============================================================================
-
-    def _create_media_fetcher(
-        self,
-        issue_id: str
-    ) -> Callable[[str, str], Awaitable[Optional[str]]]:
-        """
-        Create a media fetcher callback bound to a specific issue.
-
-        This factory method avoids closure issues when creating fetchers inside loops.
-        Each call returns a new async function with the issue_id properly captured.
-
-        Args:
-            issue_id: The issue ID to bind to the fetcher
-
-        Returns:
-            Async function that takes (media_id, alt_text) and returns base64 data URI
-        """
-        # Capture issue_id in this scope
-        captured_issue_id = issue_id
-
-        async def fetcher(media_id: str, alt_text: str) -> Optional[str]:
-            return await self._fetch_media_as_base64(captured_issue_id, media_id, alt_text)
-
-        return fetcher
 
     async def _get_issue_attachments_cached(self, issue_id: str) -> list[dict[str, Any]]:
         """
@@ -3917,8 +3735,7 @@ class JiraDataCenterConnector(BaseConnector):
         """
         Fetch attachment content and return as base64 data URI.
 
-        Used for wiki inline images (``!filename.png!``) in description/comments.
-        Tries attachment id match first, then filename from the wiki marker.
+        Matches by attachment id first, then by filename (exact and partial).
         """
         try:
             # Get issue attachments (cached per issue to avoid repeated calls)
@@ -4002,6 +3819,93 @@ class JiraDataCenterConnector(BaseConnector):
             self.logger.warning(f"⚠️ Error fetching media (id='{media_id}', alt='{media_alt}') for issue {issue_id}: {e}")
             return None
 
+    # Regex to extract attachment IDs from Jira rendered HTML img/a URLs
+    _RENDERED_ATTACHMENT_URL_RE = re.compile(
+        r'/secure/(?:attachment|thumbnail)/(\d+)/'
+    )
+
+    async def _process_html_images_with_auth(
+        self,
+        html_content: str,
+        issue_id: str,
+        attachments_data: list[dict[str, Any]],
+    ) -> tuple[str, set[str]]:
+        """Replace Jira attachment image URLs with base64 data URIs.
+
+        For each ``<img>`` pointing to a Jira attachment/thumbnail URL:
+        1. Fetches the binary via authenticated API → base64 data URI
+        2. Sets ``alt="Image_N"`` so the HTML parser can resolve it
+        3. Unwraps Jira's ``<span class="image-wrap">`` / ``<a>`` wrappers
+           so the ``<img>`` becomes a direct child of the block element
+
+        Returns:
+            Tuple of (modified_html, set_of_inlined_attachment_ids).
+        """
+        inlined_ids: set[str] = set()
+        if not html_content:
+            return html_content, inlined_ids
+
+        attachment_by_id: dict[str, dict[str, Any]] = {}
+        for att in attachments_data:
+            att_id = str(att.get("id", ""))
+            if att_id:
+                attachment_by_id[att_id] = att
+
+        soup = BeautifulSoup(html_content, "html.parser")
+        image_counter = 1
+
+        for img_tag in soup.find_all("img"):
+            src = img_tag.get("src", "")
+            match = self._RENDERED_ATTACHMENT_URL_RE.search(src)
+            if not match:
+                continue
+            attachment_id = match.group(1)
+            if attachment_id not in attachment_by_id:
+                continue
+            att_meta = attachment_by_id[attachment_id]
+            if not att_meta.get("mimeType", "").startswith("image/"):
+                continue
+
+            data_uri = await self._fetch_media_as_base64(
+                issue_id, attachment_id, att_meta.get("filename", "")
+            )
+            if not data_uri:
+                continue
+
+            img_tag["src"] = data_uri
+            img_tag["alt"] = f"Image_{image_counter}"
+            image_counter += 1
+            inlined_ids.add(attachment_id)
+
+            # Unwrap Jira wrappers: <span class="image-wrap"><a>…</a></span>
+            # so <img> becomes a direct child of the block element (p, td, li)
+            parent = img_tag.parent
+            if parent and parent.name == "a":
+                parent.unwrap()
+                parent = img_tag.parent
+            if parent and parent.name == "span" and "image-wrap" in (
+                parent.get("class") or []
+            ):
+                parent.unwrap()
+
+        # Remove Jira UI icons (rendericon class) that aren't content images.
+        for icon in soup.find_all("img", class_="rendericon"):
+            icon.decompose()
+
+        return str(soup), inlined_ids
+
+    def _extract_attachment_ids_from_html_links(self, html_content: str) -> set[str]:
+        """Extract attachment IDs referenced in <a href="..."> links in rendered HTML.
+
+        Used to detect non-image attachments (PDFs, docs) embedded in comment/description HTML.
+        """
+        if not html_content:
+            return set()
+        ids: set[str] = set()
+        for match in self._RENDERED_ATTACHMENT_URL_RE.finditer(html_content):
+            ids.add(match.group(1))
+        return ids
+
     def _create_attachment_file_record(
         self,
         attachment_id: str,
@@ -4031,10 +3935,14 @@ class JiraDataCenterConnector(BaseConnector):
         Returns:
             FileRecord with consistent field settings
         """
-        # Extract extension from filename
-        extension = None
-        if '.' in filename:
-            extension = filename.split('.')[-1].lower()
+        # Extract extension from filename and resolve MIME type
+        extension = normalize_file_extension(
+            filename.rsplit(".", 1)[-1] if "." in filename else None
+        )
+        resolved_mime_type = get_mime_type_for_extension(
+            extension,
+            fallback=mime_type or MimeTypes.UNKNOWN.value,
+        )
 
         # Build external_record_id
         external_record_id = f"{external_id_prefix}{attachment_id}"
@@ -4052,8 +3960,8 @@ class JiraDataCenterConnector(BaseConnector):
             connector_id=self.connector_id,
             origin=OriginTypes.CONNECTOR,
             version=version,
-            mime_type=mime_type,
-            extension=extension,
+            mime_type=resolved_mime_type,
+            extension=extension or None,
             size_in_bytes=file_size,
             record_group_type=RecordGroupType.PROJECT,
             external_record_group_id=project_id,
@@ -4164,6 +4072,7 @@ class JiraDataCenterConnector(BaseConnector):
                 issueIdOrKey=issue_id_or_key,
                 startAt=start_at,
                 maxResults=page_size,
+                expand="renderedBody",
             )
             if response.status != HttpStatusCode.OK.value:
                 self.logger.warning(

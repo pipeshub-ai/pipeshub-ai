@@ -3,6 +3,7 @@ import base64
 import logging
 import re
 from collections import defaultdict
+from itertools import groupby
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 from uuid import uuid4
@@ -697,10 +698,6 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             fk_count,
         )
 
-
-
-
-
 async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: Optional[IGraphDBProvider] = None) -> List[Dict[str, Any]]:
     flattened_results = []
     image_index = 0
@@ -710,6 +707,8 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     old_type_results = []
     # Cache for reconciliation metadata per virtual_record_id (block_id -> index mapping)
     virtual_record_id_to_recon_metadata: Dict[str, Optional[Dict[str, Any]]] = {}
+    # Cache for fragment maps per virtual_record_id (container_index → fragment children)
+    fragment_maps: Dict[str, Dict[int, list]] = {}
     if from_retrieval_service:
         new_type_results = result_set
     else:
@@ -867,6 +866,53 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
         block_type = block.get("type")
         result["block_type"] = block_type
+
+        # Fragment block: split from a container due to inline images inside a group.
+        # Route through the container's parent group rather than treating as standalone.
+        parent_block_idx = block.get("parent_block_index")
+        if parent_block_idx is not None:
+            if parent_block_idx >= len(blocks):
+                continue
+            container = blocks[parent_block_idx]
+            container_parent_index = container.get("parent_index")
+            if container_parent_index is None:
+                continue
+            if container.get("type") == BlockType.TABLE_ROW.value:
+                # Fragment of a split table row → add the container to rows_to_be_included.
+                container_chunk_id = f"{virtual_record_id}-{parent_block_idx}"
+                if container_chunk_id not in seen_chunks:
+                    seen_chunks.add(container_chunk_id)
+                    rows_to_be_included[f"{virtual_record_id}_{container_parent_index}"].append(
+                        (parent_block_idx, float(result.get("score", 0.0)), None)
+                    )
+            else:
+                target_index = container_parent_index
+                group_chunk_id = f"{virtual_record_id}-{target_index}-block_group"
+                if group_chunk_id in seen_chunks:
+                    continue
+                fmap = fragment_maps.setdefault(virtual_record_id, _build_fragment_map(blocks))
+                group_text_result = get_group_label_n_first_child(block_groups, target_index)
+                group_blocks = (
+                    build_group_blocks(
+                        block_groups, blocks, target_index, virtual_record_id, record, result,
+                        is_multimodal_llm=is_multimodal_llm, fragment_map=fmap,
+                    )
+                    if group_text_result else None
+                )
+
+                if not group_text_result or not group_blocks:
+                    continue
+                seen_chunks.add(group_chunk_id)
+                label, first_child_block_index = group_text_result
+                result["content"] = ("", group_blocks)
+                result["block_type"] = label
+                result["virtual_record_id"] = virtual_record_id
+                result["block_index"] = first_child_block_index
+                result["block_group_index"] = target_index
+                result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
+                flattened_results.append(result)
+            continue
+
         if block_type == BlockType.TEXT.value and block.get("parent_index") is None:
             result["content"] = block.get("data","")
             adjacent_chunks[virtual_record_id].append(index-1)
@@ -950,10 +996,8 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                         if child_block_index < len(blocks):
                             child_block = blocks[child_block_index]
                             row_text = child_block.get("data", {}).get("row_natural_language_text", "")
-
-                            # Create a result for the table row
                             if row_text:
-                                child_result = {
+                                child_results.append({
                                     "content": row_text,
                                     "block_type": BlockType.TABLE_ROW.value,
                                     "virtual_record_id": virtual_record_id,
@@ -961,8 +1005,39 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                                     "metadata": get_enhanced_metadata(record, child_block, meta),
                                     "score": float(result.get("score",0.0)),
                                     "citationType": "vectordb|document",
-                                }
-                                child_results.append(child_result)
+                                })
+                            else:
+                                # Container TABLE_ROW with image-split fragments:
+                                # emit each fragment in reading order under the container's block_index.
+                                fmap = fragment_maps.setdefault(virtual_record_id, _build_fragment_map(blocks))
+                                container_idx = child_block.get("index")
+                                if container_idx is not None and container_idx in fmap:
+                                    for frag in sorted(fmap[container_idx], key=lambda b: b.get("index", 0)):
+                                        frag_type = frag.get("type")
+                                        if frag_type == BlockType.TEXT.value:
+                                            frag_data = frag.get("data", "")
+                                            if frag_data:
+                                                child_results.append({
+                                                    "content": _safe_stringify_content(frag_data),
+                                                    "block_type": BlockType.TEXT.value,
+                                                    "virtual_record_id": virtual_record_id,
+                                                    "block_index": child_block_index,
+                                                    "metadata": get_enhanced_metadata(record, child_block, meta),
+                                                    "score": float(result.get("score", 0.0)),
+                                                    "citationType": "vectordb|document",
+                                                })
+                                        elif frag_type == BlockType.IMAGE.value and is_multimodal_llm:
+                                            uri = (frag.get("data") or {}).get("uri")
+                                            if uri:
+                                                child_results.append({
+                                                    "content": uri,
+                                                    "block_type": BlockType.IMAGE.value,
+                                                    "virtual_record_id": virtual_record_id,
+                                                    "block_index": child_block_index,
+                                                    "metadata": get_enhanced_metadata(record, child_block, meta),
+                                                    "score": float(result.get("score", 0.0)),
+                                                    "citationType": "vectordb|document",
+                                                })
 
                     table_result = {
                         "content":(table_summary,child_results),
@@ -981,18 +1056,29 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 continue
         elif block.get("parent_index") is not None:
             parent_index = block.get("parent_index")
-            group_text_result = get_group_label_n_first_child(block_groups, parent_index)
-            if group_text_result is None:
+
+            target_index = parent_index
+
+            fmap = fragment_maps.setdefault(virtual_record_id, _build_fragment_map(blocks))
+            group_text_result = get_group_label_n_first_child(block_groups, target_index)
+            group_blocks = (
+                build_group_blocks(
+                    block_groups, blocks, target_index, virtual_record_id, record, result,
+                    is_multimodal_llm=is_multimodal_llm, fragment_map=fmap,
+                )
+                if group_text_result
+                else None
+            )
+
+            if not group_text_result or not group_blocks:
                 continue
-            group_blocks = build_group_blocks(block_groups, blocks, parent_index,virtual_record_id,record,result)
-            if not group_blocks:
-                continue
+
             label, first_child_block_index = group_text_result
-            result["content"] = ("",group_blocks)
+            result["content"] = ("", group_blocks)
             result["block_type"] = label
             result["virtual_record_id"] = virtual_record_id
             result["block_index"] = first_child_block_index
-            result["block_group_index"] = parent_index
+            result["block_group_index"] = target_index
             result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
             flattened_results.append(result)
             continue
@@ -1040,6 +1126,39 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                             "citationType": "vectordb|document",
                             "score": row_score,
                         })
+                    else:
+                        # Container TABLE_ROW with image-split fragments:
+                        # emit each fragment in reading order under the container's block_index.
+                        fmap = fragment_maps.setdefault(virtual_record_id, _build_fragment_map(blocks))
+                        container_idx = block.get("index")
+                        if container_idx is not None and container_idx in fmap:
+                            enhanced_metadata = get_enhanced_metadata(record, block, {})
+                            for frag in sorted(fmap[container_idx], key=lambda b: b.get("index", 0)):
+                                frag_type = frag.get("type")
+                                if frag_type == BlockType.TEXT.value:
+                                    frag_data = frag.get("data", "")
+                                    if frag_data:
+                                        child_results.append({
+                                            "content": _safe_stringify_content(frag_data),
+                                            "block_type": BlockType.TEXT.value,
+                                            "metadata": enhanced_metadata,
+                                            "virtual_record_id": virtual_record_id,
+                                            "block_index": row_index,
+                                            "citationType": "vectordb|document",
+                                            "score": row_score,
+                                        })
+                                elif frag_type == BlockType.IMAGE.value and is_multimodal_llm:
+                                    uri = (frag.get("data") or {}).get("uri")
+                                    if uri:
+                                        child_results.append({
+                                            "content": uri,
+                                            "block_type": BlockType.IMAGE.value,
+                                            "metadata": enhanced_metadata,
+                                            "virtual_record_id": virtual_record_id,
+                                            "block_index": row_index,
+                                            "citationType": "vectordb|document",
+                                            "score": row_score,
+                                        })
             elif qdrant_content:
                 # Block not in blob (SQL row limit) — use Qdrant page_content
                 logger.debug(f"Using Qdrant page_content for row {row_index} of virtual record {virtual_record_id}")
@@ -1670,7 +1789,70 @@ def get_group_label_n_first_child(block_groups: list[dict[str, Any]], parent_ind
     return label, first_child_block_index
 
 
-def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str, Any]], parent_index: int, virtual_record_id: str = None, record: dict[str, Any] = None, result: dict[str, Any] = None) -> list[dict[str, Any]]:
+def _build_fragment_map(blocks: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    """Build a reverse map: container block index → its image-split fragment children.
+
+    Fragment blocks have ``parent_block_index`` set to the index of the container
+    block they were split from (due to inline images inside a list or table row).
+    This map lets callers expand a container without a second O(n) scan.
+    """
+    fmap: dict[int, list[dict[str, Any]]] = {}
+    for block in blocks:
+        pbi = block.get("parent_block_index")
+        if pbi is not None:
+            fmap.setdefault(pbi, []).append(block)
+    return fmap
+
+
+def _render_blocks_with_images(
+    blocks_list: list[dict[str, Any]],
+    is_multimodal_llm: bool,
+) -> list[dict[str, Any]]:
+    """Render a list of block entries (with possible IMAGE types) into LLM content entries.
+
+    Groups consecutive entries sharing the same block_index so that the
+    Block Index / Citation ID header is emitted only once per container,
+    with all fragment content listed underneath it.
+    """
+    content: list[dict[str, Any]] = []
+    for _block_idx, group_iter in groupby(blocks_list, key=lambda b: b.get("block_index")):
+        group = list(group_iter)
+        first = group[0]
+        block_idx = first.get("block_index")
+        citation_ref = first.get("citation_ref", "")
+
+        has_images_in_group = any(
+            g.get("block_type") == BlockType.IMAGE.value for g in group
+        )
+
+        if len(group) == 1 and not has_images_in_group:
+            content.append({
+                "type": "text",
+                "text": f"  - Block Index: {block_idx}\n  - Citation ID: {citation_ref}\n  - Block Content: {first.get('content')}\n",
+            })
+        else:
+            content.append({
+                "type": "text",
+                "text": f"  - Block Index: {block_idx}\n  - Citation ID: {citation_ref}\n  - Block Content:\n",
+            })
+            for item in group:
+                if item.get("block_type") == BlockType.IMAGE.value:
+                    if is_multimodal_llm:
+                        img_uri = item.get("content", "")
+                        if img_uri and is_base64_image(img_uri):
+                            content.append({
+                                "type": "image_url",
+                                "image_url": {"url": img_uri}
+                            })
+                    continue
+                content.append({
+                    "type": "text",
+                    "text": f"    {item.get('content')}\n",
+                })
+    return content
+
+
+def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str, Any]], parent_index: int, virtual_record_id: str = None, record: dict[str, Any] = None, result: dict[str, Any] = None, is_multimodal_llm: bool = False, fragment_map: dict[int, list[dict[str, Any]]] | None = None) -> list[dict[str, Any]]:
     if parent_index < 0 or parent_index >= len(block_groups):
         return None
     parent_block = block_groups[parent_index]
@@ -1709,6 +1891,37 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
         if data:
             data = _safe_stringify_content(data)
         if not data:
+            # Container block (image-split): emit each fragment child in reading order.
+            # All fragments share the container's block_index → single citation ID downstream.
+            if fragment_map is not None:
+                container_block_index = block.get("index")
+                if container_block_index is not None and container_block_index in fragment_map:
+                    for frag in sorted(fragment_map[container_block_index], key=lambda b: b.get("index", 0)):
+                        frag_type = frag.get("type")
+                        if frag_type == BlockType.TEXT.value:
+                            frag_data = frag.get("data", "")
+                            if frag_data:
+                                child_results.append({
+                                    "content": _safe_stringify_content(frag_data),
+                                    "block_type": BlockType.TEXT.value,
+                                    "virtual_record_id": virtual_record_id,
+                                    "block_index": container_block_index,
+                                    "metadata": get_enhanced_metadata(record, block, meta),
+                                    "score": float(result.get("score", 0.0)),
+                                    "citationType": "vectordb|document",
+                                })
+                        elif frag_type == BlockType.IMAGE.value and is_multimodal_llm:
+                            uri = (frag.get("data") or {}).get("uri")
+                            if uri:
+                                child_results.append({
+                                    "content": uri,
+                                    "block_type": BlockType.IMAGE.value,
+                                    "virtual_record_id": virtual_record_id,
+                                    "block_index": container_block_index,
+                                    "metadata": get_enhanced_metadata(record, block, meta),
+                                    "score": float(result.get("score", 0.0)),
+                                    "citationType": "vectordb|document",
+                                })
             continue
         child_results.append({
             "content": data,
@@ -1749,6 +1962,7 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
         block_containers = record.get("block_containers", {})
         blocks = block_containers.get("blocks", [])
         block_groups = block_containers.get("block_groups", [])
+        fragment_map = _build_fragment_map(blocks)
 
         seen_block_groups = set()
         rec_frontend_url = record.get("frontend_url", "")
@@ -1758,6 +1972,10 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
         for block in blocks:
             block_index = block.get("index", 0)
             block_type = block.get("type")
+
+            # Skip fragment blocks — they are rendered via their container's group expansion.
+            if block.get("parent_block_index") is not None:
+                continue
 
             block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, block_index)
             ref = ref_mapper.get_or_create_ref(block_web_url)
@@ -1807,6 +2025,7 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
                                 rows_to_be_included_list = [child.get("block_index") for child in children if child.get("block_index") is not None]
 
                         child_results = []
+                        has_row_images = False
                         for row_index in rows_to_be_included_list:
                             if row_index < len(blocks):
                                 block = blocks[row_index]
@@ -1819,28 +2038,62 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
                                     child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
                                     child_results.append({
                                         "content": row_text,
+                                        "block_type": BlockType.TABLE_ROW.value,
                                         "block_index": row_index,
                                         "block_web_url": child_block_web_url,
                                         "citation_ref": ref_mapper.get_or_create_ref(child_block_web_url),
                                     })
-
-                        if isinstance(data, dict):
-                            table_summary = data.get("table_summary", "Not Available")
-                        else:
-                            table_summary = str(data or "Not Available")
+                                else:
+                                    # Container TABLE_ROW with image-split fragments:
+                                    # emit each fragment in reading order under the container's block_index.
+                                    container_idx = block.get("index")
+                                    if container_idx is not None and container_idx in fragment_map:
+                                        child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
+                                        child_citation_ref = ref_mapper.get_or_create_ref(child_block_web_url)
+                                        for frag in sorted(fragment_map[container_idx], key=lambda b: b.get("index", 0)):
+                                            frag_type = frag.get("type")
+                                            if frag_type == BlockType.TEXT.value:
+                                                frag_data = frag.get("data", "")
+                                                if frag_data:
+                                                    child_results.append({
+                                                        "content": _safe_stringify_content(frag_data),
+                                                        "block_type": BlockType.TEXT.value,
+                                                        "block_index": row_index,
+                                                        "block_web_url": child_block_web_url,
+                                                        "citation_ref": child_citation_ref,
+                                                    })
+                                            elif frag_type == BlockType.IMAGE.value and is_multimodal_llm:
+                                                uri = (frag.get("data") or {}).get("uri")
+                                                if uri:
+                                                    has_row_images = True
+                                                    child_results.append({
+                                                        "content": uri,
+                                                        "block_type": BlockType.IMAGE.value,
+                                                        "block_index": row_index,
+                                                        "block_web_url": child_block_web_url,
+                                                        "citation_ref": child_citation_ref,
+                                                    })
 
                         if child_results:
-                            template = Template(table_prompt)
-                            rendered_form = template.render(
-                                block_group_index=block_group_index,
-                                block_group_web_url="",
-                                table_summary=table_summary,
-                                table_rows=child_results,
-                            )
-                            content.append({
-                                "type": "text",
-                                "text": f"{rendered_form}\n\n"
-                            })
+                            if not has_row_images:
+                                template = Template(table_prompt)
+                                rendered_form = template.render(
+                                    block_group_index=block_group_index,
+                                    block_group_web_url="",
+                                    table_summary="",
+                                    table_rows=child_results,
+                                )
+                                content.append({
+                                    "type": "text",
+                                    "text": f"{rendered_form}\n\n"
+                                })
+                            else:
+                                header = f"* Block Group Index: {block_group_index}\n* Block Group Type: table\n* Table Rows/Blocks:\n"
+                                content.append({
+                                    "type": "text",
+                                    "text": header,
+                                })
+                                content.extend(_render_blocks_with_images(child_results, is_multimodal_llm))
             elif(block.get("parent_index") is not None):
                 parent_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
@@ -1855,24 +2108,34 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
                     continue
 
                 virtual_record_id = record.get("virtual_record_id", "")
-                group_blocks = build_group_blocks(block_groups, blocks, parent_index,virtual_record_id,record,{})
+                group_blocks = build_group_blocks(block_groups, blocks, parent_index, virtual_record_id, record, {}, is_multimodal_llm=is_multimodal_llm, fragment_map=fragment_map)
 
                 if not group_blocks:
                     continue
                 seen_block_groups.add(block_group_id)
+                has_images = any(gb.get("block_type") == BlockType.IMAGE.value for gb in group_blocks)
                 for gb in group_blocks:
                     gb["block_web_url"] = build_block_web_url(rec_frontend_url, rec_record_id, gb.get("block_index", 0))
                     gb["citation_ref"] = ref_mapper.get_or_create_ref(gb["block_web_url"])
-                rendered_form = template.render(
-                    block_group_index=parent_index,
-                    block_group_web_url="",
-                    label=block_group.get("type"),
-                    blocks=group_blocks,
-                )
-                content.append({
-                    "type": "text",
-                    "text": f"{rendered_form}\n\n"
-                })
+
+                if not has_images:
+                    rendered_form = template.render(
+                        block_group_index=parent_index,
+                        block_group_web_url="",
+                        label=block_group.get("type"),
+                        blocks=group_blocks,
+                    )
+                    content.append({
+                        "type": "text",
+                        "text": f"{rendered_form}\n\n"
+                    })
+                else:
+                    header = f"* Block Group Index: {parent_index}\n* Block Group Type: {block_group.get('type')}\n* Block Group Content/Blocks:\n"
+                    content.append({
+                        "type": "text",
+                        "text": header,
+                    })
+                    content.extend(_render_blocks_with_images(group_blocks, is_multimodal_llm))
             else:
                 continue
 
@@ -2169,21 +2432,30 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                 fk_info = build_fk_info(result)
                 if not child_results:
                     child_results = []
+                has_row_images = any(cr.get("block_type") == BlockType.IMAGE.value for cr in child_results)
                 for child in child_results:
                     child["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, child.get("block_index", 0))
                     child["citation_ref"] = ref_mapper.get_or_create_ref(child["block_web_url"])
-                template = Template(table_prompt)
-                rendered_form = template.render(
-                    block_group_index=block_group_index,
-                    block_group_web_url="",
-                    table_summary=table_summary,
-                    table_rows=child_results,
-                )
                 current_record_has_blocks = True
-                content.append({
-                    "type": "text",
-                    "text": prepend_record_blocks_sorted_header(f"{rendered_form}{fk_info}\n\n"),
-                })
+                if not has_row_images:
+                    template = Template(table_prompt)
+                    rendered_form = template.render(
+                        block_group_index=block_group_index,
+                        block_group_web_url="",
+                        table_summary=table_summary,
+                        table_rows=child_results,
+                    )
+                    content.append({
+                        "type": "text",
+                        "text": prepend_record_blocks_sorted_header(f"{rendered_form}{fk_info}\n\n"),
+                    })
+                else:
+                    header = f"* Block Group Index: {block_group_index}\n* Block Group Type: table\n* Table Summary: {table_summary}\n* Table Rows/Blocks:\n"
+                    content.append({
+                        "type": "text",
+                        "text": prepend_record_blocks_sorted_header(f"{header}{fk_info}"),
+                    })
+                    content.extend(_render_blocks_with_images(child_results, is_multimodal_llm))
             elif block_type == BlockType.TEXT.value:
                 current_record_has_blocks = True
                 content.append({
@@ -2197,21 +2469,33 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                 group_blocks = result.get("content")[1] if isinstance(result.get("content"), tuple) else []
                 if not group_blocks:
                     continue
+                has_images = any(gb.get("block_type") == BlockType.IMAGE.value for gb in group_blocks)
                 for gb in group_blocks:
                     gb["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, gb.get("block_index", 0))
                     gb["citation_ref"] = ref_mapper.get_or_create_ref(gb["block_web_url"])
-                template = Template(block_group_prompt)
-                rendered_form = template.render(
-                    block_group_index=block_group_index,
-                    block_group_web_url="",
-                    label=block_type,
-                    blocks=group_blocks,
-                )
-                current_record_has_blocks = True
-                content.append({
-                    "type": "text",
-                    "text": prepend_record_blocks_sorted_header(f"{rendered_form}\n\n"),
-                })
+
+                if not has_images:
+                    template = Template(block_group_prompt)
+                    rendered_form = template.render(
+                        block_group_index=block_group_index,
+                        block_group_web_url="",
+                        label=block_type,
+                        blocks=group_blocks,
+                    )
+                    current_record_has_blocks = True
+                    content.append({
+                        "type": "text",
+                        "text": prepend_record_blocks_sorted_header(f"{rendered_form}\n\n"),
+                    })
+                else:
+                    # Emit blocks in reading order to preserve text/image interleaving.
+                    header = f"* Block Group Index: {block_group_index}\n* Block Group Type: {block_type}\n* Block Group Content/Blocks:\n"
+                    current_record_has_blocks = True
+                    content.append({
+                        "type": "text",
+                        "text": prepend_record_blocks_sorted_header(header),
+                    })
+                    content.extend(_render_blocks_with_images(group_blocks, is_multimodal_llm))
             else:
                 continue
         else:
