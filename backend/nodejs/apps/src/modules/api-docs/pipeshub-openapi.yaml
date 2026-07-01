@@ -7873,7 +7873,7 @@ components:
             type: string
           description: Individual record ids in scope.
 
-    AgentToolset:
+    Toolset:
       type: object
       additionalProperties: false
       description: |
@@ -8059,7 +8059,7 @@ components:
             Multiple instances of the same integration type are distinguished by `instanceId`
             and optional `instanceName`.
           items:
-            $ref: '#/components/schemas/AgentToolset'
+            $ref: '#/components/schemas/Toolset'
         knowledge:
           type: array
           description: Knowledge connectors and indexed scopes linked to the agent
@@ -8260,7 +8260,7 @@ components:
             `GET /agents/{agentKey}`; the backend builds it from the graph edges
             for each agent on the returned page.
           items:
-            $ref: '#/components/schemas/AgentToolset'
+            $ref: '#/components/schemas/Toolset'
         knowledge:
           type: array
           description: |
