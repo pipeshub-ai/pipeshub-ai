@@ -1,0 +1,4437 @@
+"""
+Comprehensive Graph Database Provider Interface
+
+This interface defines all database operations needed by the application,
+abstracting away the specific database implementation (ArangoDB, Neo4j, etc.).
+
+All methods support optional transaction parameter for atomic operations.
+"""
+
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Any, Optional
+import uuid
+
+from app.models.entities import Person, Record
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.config.constants.arangodb import CollectionNames
+from app.config.constants.open_cypher import collection_to_label, edge_collection_to_relationship, parse_node_id
+
+if TYPE_CHECKING:
+    from fastapi import Request
+
+    from app.models.entities import (
+        AppRole,
+        AppUser,
+        AppUserGroup,
+        FileRecord,
+        RecordGroup,
+        User,
+    )
+
+
+class OpenCypherProvider(IGraphDBProvider):
+    """
+    Comprehensive interface for graph database operations.
+
+    This interface abstracts all database operations used throughout the application,
+    allowing for multiple database implementations (ArangoDB, Neo4j, etc.) to be
+    swapped via configuration.
+
+    Design Principles:
+    - All methods are database-agnostic (generic terms like 'document', 'collection', 'edge')
+    - Transaction support is optional but consistent across all operations
+    - Methods return Python native types (Dict, List) not database-specific objects
+    - Error handling returns None/False rather than raising exceptions (where appropriate)
+
+    Data Format Specifications:
+
+    1. Node/Document Format:
+       Nodes use a generic 'id' field for identification (not database-specific like '_key').
+       Example:
+       {
+           "id": "user123",              # Generic node identifier
+           "orgId": "org456",
+           "email": "user@example.com",
+           # ... other node properties
+       }
+
+       Implementation Note: Providers translate 'id' to their native field:
+       - ArangoDB: 'id' → '_key'
+       - Neo4j: 'id' → 'id' (native)
+
+    2. Edge/Relationship Format:
+       Edges use a generic format with separate fields for source/target nodes:
+       {
+           "from_id": "user123",           # Source node ID (without collection prefix)
+           "from_collection": "users",     # Source collection/label name
+           "to_id": "record456",           # Target node ID (without collection prefix)
+           "to_collection": "records",     # Target collection/label name
+           "role": "READER",               # Edge property example
+           "type": "PERMISSION",           # Edge property example
+           "createdAtTimestamp": 1234567890,
+           # ... other edge properties
+       }
+
+       Implementation Note: Providers translate to their native format:
+       - ArangoDB: Combines into '_from': "users/user123", '_to': "records/record456"
+       - Neo4j: Creates relationship with startNode and endNode references
+
+    3. Collection/Label Names:
+       Collection names are database-agnostic strings (e.g., "users", "records", "permissions").
+       Providers map these to their native concepts (collections in Arango, labels in Neo4j).
+
+    4. Backward Compatibility:
+       During transition, providers should handle both old format (with _key, _from, _to)
+       and new generic format to ensure smooth migration.
+    """
+
+    @abstractmethod
+    async def connect(self) -> bool:
+        """
+        Connect to the database and initialize collections/tables.
+
+        Returns:
+            bool: True if connection successful, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def disconnect(self) -> bool:
+        """
+        Disconnect from the database and clean up resources.
+
+        Returns:
+            bool: True if disconnection successful, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    def _extract_node_data(self, record: Any, label: str, index: int) -> dict:
+        pass
+    # should return None if not found
+
+    @abstractmethod
+    def _extract_node_properties(self, record: Any, label: str, index: int) -> dict:
+        pass
+
+    def _to_arango_node(self, node: dict, collection: str) -> dict:
+        arango_node = node.copy()
+
+        # Convert id to _key
+        if "id" in arango_node:
+            arango_node["_key"] = arango_node["id"]
+            # Also create _id for compatibility
+            arango_node["_id"] = f"{collection}/{arango_node['id']}"
+
+        return arango_node
+
+    def _to_native_node(self, arango_node: dict, collection: str) -> dict:
+        """
+        Convert ArangoDB node format to Neo4j format.
+
+        Args:
+            arango_node: Node from ArangoDB (may have _key, _id)
+            collection: Collection name
+
+        Returns:
+            Node in Neo4j format (with id, label)
+        """
+        falkor_node = arango_node.copy()
+
+        # Convert _key to id
+        if "_key" in falkor_node:
+            falkor_node["id"] = falkor_node.pop("_key")
+
+        # Remove _id if present (we'll reconstruct it if needed)
+        falkor_node.pop("_id", None)
+
+        return falkor_node
+
+    def _parse_arango_id(self, node_id: str) -> tuple[str, str]:
+        """Parse ArangoDB node ID (collection/key) to (collection, key)"""
+        return parse_node_id(node_id)
+    
+    @abstractmethod
+    def _create_typed_record(self, record_dict: dict, type_doc: dict) -> Record:
+        pass
+
+
+    @abstractmethod
+    async def ensure_schema(self) -> bool:
+        """
+        Ensure database schema is initialized (collections, graphs, and any
+        required seed data). Should be called only from the connector service
+        during startup when schema init is enabled.
+
+        Returns:
+            bool: True if schema was ensured successfully, False otherwise
+        """
+        pass
+
+    # ==================== Transaction Management ====================
+
+    @abstractmethod
+    def begin_transaction(self, read: list[str], write: list[str]) -> str:
+        """
+        Begin a database transaction.
+
+        Args:
+            read (List[str]): Collections/tables to read from
+            write (List[str]): Collections/tables to write to
+
+        Returns:
+            str: Transaction ID
+        """
+        pass
+
+    @abstractmethod
+    async def commit_transaction(self, transaction: str) -> None:
+        """Commit a database transaction."""
+        pass
+
+    @abstractmethod
+    async def rollback_transaction(self, transaction: str) -> None:
+        """Roll back a database transaction."""
+        pass
+
+    # ==================== Document Operations ====================
+
+    async def get_document(
+        self,
+        document_key: str,
+        collection: str,
+        transaction: str | None = None
+    ) -> dict | None:
+        """
+        Get a document by its key from a collection.
+
+        Args:
+            document_key: Document key (id)
+            collection: Collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[Dict]: Document data if found, None otherwise
+        """
+        try:
+            label = collection_to_label(collection)
+
+            query = f"""
+            MATCH (n:{label} {{id: $key}})
+            RETURN n
+            LIMIT 1
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"key": document_key},
+                txn_id=transaction
+            )
+
+            if results:
+                node_data = self._extract_node_data(results[0], "n", 0)
+                # you need to write the specific neo4j_to_arango function here instead
+                return self._to_arango_node(node_data, collection)
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Get document failed: {str(e)}")
+            return None
+
+    async def get_record_by_id(
+        self,
+        record_id: str,
+        transaction: str | None = None
+    ) -> dict | None:
+        """
+        Get a record by its internal ID with associated type document (file/mail/etc.).
+
+        Args:
+            record_id (str): The internal record ID to look up
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[Record]: Typed Record instance (FileRecord, MailRecord, etc.) or None
+        """
+        try:
+            self.logger.debug(f"🚀 Retrieving record for id {record_id}")
+
+            query = """
+            MATCH (record:Record {id: $record_id})
+            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
+            RETURN record, typeDoc
+            LIMIT 1
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_id": record_id},
+                txn_id=transaction
+            )
+
+            if results and len(results) > 0:
+                result = results[0]
+                # typed_record = self.convert_to_typed_record(result)
+                # record_dict = dict(result["record"])
+                record_dict = self._extract_node_data(result, "record", 0)
+                record_dict = self._to_arango_node(record_dict, CollectionNames.RECORDS.value)
+
+                # type_doc = dict(result["typeDoc"]) if result.get("typeDoc") else None
+                type_doc = self._extract_node_data(result, "type_doc", 1)
+                if type_doc:
+                    type_doc = self._to_arango_node(type_doc, "")
+
+                typed_record = self._create_typed_record(record_dict, type_doc)
+                
+                self.logger.debug(f"✅ Successfully retrieved record for id {record_id}")
+                return typed_record
+            else:
+                self.logger.warning(f"⚠️ No record found for id {record_id}")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to retrieve record for id {record_id}: {str(e)}")
+            return None
+
+    async def get_all_documents(
+        self,
+        collection: str,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Get all documents from a collection.
+
+        Args:
+            collection: Collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Dict]: List of all documents in the collection
+        """
+        try:
+            self.logger.debug(f"🚀 Getting all documents from collection: {collection}")
+            label = collection_to_label(collection)
+
+            query = f"""
+            MATCH (n:{label})
+            RETURN n
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={},
+                txn_id=transaction
+            )
+
+
+            if results:
+                documents = []
+                for record in results:
+                    node_dict = self._extract_node_data(record, "n", 0)
+                    documents.append(self._to_arango_node(node_dict, collection))
+                return documents
+
+            return []
+
+        except Exception as e:
+            self.logger.error(f"❌ Get all documents failed for collection {collection}: {str(e)}")
+            return []
+
+    @abstractmethod
+    async def get_documents_paginated(
+        self,
+        collection: str,
+        skip: int = 0,
+        limit: int = 50,
+        filters: dict[str, Any] | None = None,
+        sort_field: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """
+        Fetch a single page of documents from a collection using database-level
+        pagination, so memory usage stays proportional to `limit` regardless of
+        total collection size.
+
+        Args:
+            collection:   Collection / label name.
+            skip:         Number of documents to skip (offset).
+            limit:        Maximum number of documents to return.
+            filters:      Optional equality filters applied as AND conditions.
+                          Keys are field names, values are the expected values.
+            sort_field:   Optional field to sort by (ascending). When None the
+                          database's natural order is used (stable per query but
+                          not guaranteed across restarts).
+            transaction:  Optional transaction ID.
+
+        Returns:
+            List of document dicts for the requested page (may be shorter than
+            `limit` or empty when the collection is exhausted).
+        """
+        pass
+
+    async def batch_upsert_nodes(
+        self,
+        nodes: list[dict],
+        collection: str,
+        transaction: str | None = None
+    ) -> bool | None:
+        """
+        Batch upsert nodes.
+
+        Args:
+            nodes: List of node documents (must have id or _key)
+            collection: Collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[bool]: True if successful
+        """
+        try:
+            if not nodes:
+                return True
+
+            label = collection_to_label(collection)
+
+            # Convert nodes to Neo4j format
+            native_nodes = []
+            for node in nodes:
+                native_node = self._to_native_node(node, collection)
+                # Ensure id exists
+                if "id" not in native_node:
+                    if "_key" in native_node:
+                        native_node["id"] = native_node.pop("_key")
+                    else:
+                        native_node["id"] = str(uuid.uuid4())
+                # Validate nodes before writing
+                self.validator.validate_node_update(collection, native_node)
+                native_nodes.append(native_node)
+
+            # Use UNWIND for batch upsert
+            query = f"""
+            UNWIND $nodes AS node
+            MERGE (n:{label} {{id: node.id}})
+            SET n += node
+            RETURN n.id
+            """
+
+            await self.client.execute_query(
+                query,
+                parameters={"nodes": native_nodes},
+                txn_id=transaction
+            )
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Batch upsert nodes failed: {str(e)}")
+            raise
+
+    @abstractmethod
+    async def delete_nodes(
+        self,
+        keys: list[str],
+        collection: str,
+        transaction: str | None = None
+    ) -> bool:
+        """
+        Delete multiple nodes/documents by their keys.
+
+        Args:
+            keys (List[str]): List of document keys to delete
+            collection (str): Collection/table name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def update_node(
+        self,
+        key: str,
+        collection: str,
+        node_updates: dict,
+        transaction: str | None = None
+    ) -> bool:
+        """
+        Update a single node/document.
+
+        Args:
+            key (str): Document key to update
+            collection (str): Collection/table name
+            node_updates (Dict): Fields to update
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        pass
+
+    # ==================== Edge/Relationship Operations ====================
+
+    async def batch_create_edges(
+        self,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None
+    ) -> bool:
+        """
+        Batch create edges/relationships.
+
+        Args:
+            edges: List of edges with _from and _to fields
+            collection: Edge collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            if not edges:
+                return True
+
+            relationship_type = edge_collection_to_relationship(collection)
+
+            # Process edges - support both ArangoDB format (_from, _to) and generic format (from_id, to_id)
+            edge_data = []
+            for edge in edges:
+                # Try ArangoDB format first (_from, _to)
+                if "_from" in edge and "_to" in edge:
+                    from_collection, from_key = self._parse_arango_id(edge["_from"])
+                    to_collection, to_key = self._parse_arango_id(edge["_to"])
+                # Fallback to generic format
+                elif "from_id" in edge and "to_id" in edge:
+                    from_key = edge["from_id"]
+                    to_key = edge["to_id"]
+                    from_collection = edge.get("from_collection", "")
+                    to_collection = edge.get("to_collection", "")
+                else:
+                    self.logger.warning(f"Skipping invalid edge (missing _from/_to or from_id/to_id): {edge}")
+                    continue
+
+                if not from_key or not to_key or not from_collection or not to_collection:
+                    self.logger.warning(f"Skipping invalid edge (missing required fields): {edge}")
+                    continue
+
+                from_label = collection_to_label(from_collection)
+                to_label = collection_to_label(to_collection)
+
+                # Extract edge properties (excluding format-specific fields)
+                props = {k: v for k, v in edge.items() if k not in [
+                    "_from", "_to", "from_id", "to_id", "from_collection", "to_collection"
+                ]}
+
+                edge_data.append({
+                    "from_key": from_key,
+                    "to_key": to_key,
+                    "from_label": from_label,
+                    "to_label": to_label,
+                    "props": props
+                })
+
+            if not edge_data:
+                return True
+
+            # Group edges by label combination for efficient batch processing
+            from collections import defaultdict
+            grouped_edges = defaultdict(list)
+            for edge in edge_data:
+                key = (edge["from_label"], edge["to_label"])
+                grouped_edges[key].append(edge)
+
+            # Process each group separately
+            for (from_label, to_label), group_edges in grouped_edges.items():
+                query = f"""
+                UNWIND $edges AS edge
+                MATCH (from:{from_label} {{id: edge.from_key}})
+                MATCH (to:{to_label} {{id: edge.to_key}})
+                MERGE (from)-[r:{relationship_type}]->(to)
+                SET r = edge.props
+                RETURN count(r) AS created
+                """
+
+                await self.client.execute_query(
+                    query,
+                    parameters={"edges": group_edges},
+                    txn_id=transaction
+                )
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Batch create edges failed: {str(e)}")
+            raise
+
+    async def get_edge(
+        self,
+        from_id: str,
+        from_collection: str,
+        to_id: str,
+        to_collection: str,
+        collection: str,
+        transaction: str | None = None
+    ) -> dict | None:
+        """
+        Get an edge between two nodes.
+
+        Args:
+            from_id: Source node ID
+            from_collection: Source node collection name
+            to_id: Target node ID
+            to_collection: Target node collection name
+            collection: Edge collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[Dict]: Edge data in generic format if found, None otherwise
+        """
+        try:
+            relationship_type = edge_collection_to_relationship(collection)
+
+            from_label = collection_to_label(from_collection)
+            to_label = collection_to_label(to_collection)
+
+            query = f"""
+            MATCH (from:{from_label} {{id: $from_id}})-[r:{relationship_type}]->(to:{to_label} {{id: $to_id}})
+            RETURN properties(r) AS r
+            LIMIT 1
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"from_id": from_id, "to_id": to_id},
+                txn_id=transaction
+            )
+
+
+            if results:
+                # properties(r) returns a dict directly, so we can use it as-is
+                # edge_data = results[0].get("r", {})
+                edge_data = self._extract_node_properties(results[0], "r", 0)
+                if not isinstance(edge_data, dict):
+                    edge_data = {}
+                # Return in generic format
+                edge_data["from_id"] = from_id
+                edge_data["from_collection"] = from_collection
+                edge_data["to_id"] = to_id
+                edge_data["to_collection"] = to_collection
+                return edge_data
+
+            return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Get edge failed: {str(e)}")
+            return None
+
+    @abstractmethod
+    async def delete_edge(
+        self,
+        from_id: str,
+        from_collection: str,
+        to_id: str,
+        to_collection: str,
+        collection: str,
+        transaction: str | None = None
+    ) -> bool:
+        """
+        Delete an edge/relationship between two nodes.
+
+        Args:
+            from_id (str): Source node ID
+            from_collection (str): Source node collection name
+            to_id (str): Target node ID
+            to_collection (str): Target node collection name
+            collection (str): Edge collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def batch_delete_edges(
+        self,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None
+    ) -> int:
+        """
+        Batch delete edges/relationships between nodes.
+
+        Args:
+            edges (List[Dict]): List of edges in generic format:
+                {
+                    "from_id": "user123",           # Source node ID
+                    "from_collection": "users",     # Source collection
+                    "to_id": "record456",           # Target node ID
+                    "to_collection": "records",     # Target collection
+                }
+            collection (str): Edge collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            int: Number of edges deleted
+        """
+        pass
+
+    @abstractmethod
+    async def delete_edges_from(
+        self,
+        from_id: str,
+        from_collection: str,
+        collection: str,
+        transaction: str | None = None
+    ) -> int:
+        """
+        Delete all edges originating from a node.
+
+        Args:
+            from_id (str): Source node ID
+            from_collection (str): Source node collection name
+            collection (str): Edge collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            int: Number of edges deleted
+        """
+        pass
+
+    @abstractmethod
+    async def delete_edges_by_relationship_types(
+        self,
+        from_id: str,
+        from_collection: str,
+        collection: str,
+        relationship_types: list[str],
+        transaction: str | None = None
+    ) -> int:
+        """
+        Delete edges from a node by relationship types.
+
+        Args:
+            from_id (str): Source node ID
+            from_collection (str): Source node collection name
+            collection (str): Edge collection name
+            relationship_types (List[str]): List of relationship type values to delete
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            int: Number of edges deleted
+        """
+        pass
+
+    @abstractmethod
+    async def delete_edges_to(
+        self,
+        to_id: str,
+        to_collection: str,
+        collection: str,
+        transaction: str | None = None
+    ) -> int:
+        """
+        Delete all edges pointing to a node.
+
+        Args:
+            to_id (str): Target node ID
+            to_collection (str): Target node collection name
+            collection (str): Edge collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            int: Number of edges deleted
+        """
+        pass
+
+    @abstractmethod
+    async def delete_edges_to_groups(
+        self,
+        from_id: str,
+        from_collection: str,
+        collection: str,
+        transaction: str | None = None
+    ) -> int:
+        """
+        Delete edges from a node to group nodes.
+
+        Args:
+            from_id (str): Source node ID
+            from_collection (str): Source node collection name
+            collection (str): Edge collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            int: Number of edges deleted
+        """
+        pass
+
+    @abstractmethod
+    async def delete_edges_between_collections(
+        self,
+        from_id: str,
+        from_collection: str,
+        edge_collection: str,
+        to_collection: str,
+        transaction: str | None = None
+    ) -> int:
+        """
+        Delete edges between a node and nodes in a specific collection.
+
+        Args:
+            from_id (str): Source node ID
+            from_collection (str): Source node collection name
+            edge_collection (str): Edge collection name
+            to_collection (str): Target collection name
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def delete_nodes_and_edges(
+        self,
+        keys: list[str],
+        collection: str,
+        graph_name: str = "knowledgeGraph",
+        transaction: str | None = None
+    ) -> None:
+        """
+        Delete nodes and all their connected edges.
+
+        Args:
+            keys (List[str]): List of node keys to delete
+            collection (str): Collection name
+            graph_name (str): Graph name (default: "knowledgeGraph")
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def update_edge(
+        self,
+        from_key: str,
+        to_key: str,
+        edge_updates: dict,
+        collection: str,
+        transaction: str | None = None
+    ) -> bool:
+        """
+        Update an edge/relationship.
+
+        Args:
+            from_key (str): Source node key
+            to_key (str): Target node key
+            edge_updates (Dict): Fields to update
+            collection (str): Edge collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        pass
+
+    # ==================== Generic Filter Operations ====================
+
+    @abstractmethod
+    async def remove_nodes_by_field(
+        self,
+        collection: str,
+        field_name: str,
+        *,
+        field_value: str,
+        transaction: str | None = None,
+    ) -> int:
+        """
+        Remove nodes from a collection matching a field value.
+
+        Generic method that can be used for any collection and field.
+
+        Args:
+            collection (str): Collection name
+            field_name (str): Field name to filter on
+            field_value (str): Field value to match
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            int: Number of nodes removed
+
+        Example:
+            # Remove 'anyone' permissions for a file
+            await provider.remove_nodes_by_field("anyone", "file_key", field_value=file_key)
+        """
+        pass
+
+    @abstractmethod
+    async def get_edges_to_node(
+        self,
+        node_id: str,
+        edge_collection: str,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Get all edges pointing to a specific node.
+
+        Generic method that works with any edge collection.
+
+        Args:
+            node_id (str): Full node ID (e.g., "records/123")
+            edge_collection (str): Edge collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of edge documents
+        """
+        pass
+
+    @abstractmethod
+    async def get_edges_from_node(
+        self,
+        node_id: str,
+        edge_collection: str,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Get all edges originating from a specific node.
+
+        Generic method that works with any edge collection.
+
+        Args:
+            node_id (str): Source node ID (e.g., "groups/123")
+            edge_collection (str): Edge collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of edge documents
+        """
+        pass
+
+    @abstractmethod
+    async def get_edges_from_node_with_target_name(
+        self,
+        node_id: str,
+        edge_collection: str,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Get all edges originating from a node with target node names.
+
+        Generic method that works with any edge collection.
+
+        Args:
+            node_id (str): Source node ID (e.g., "groups/123")
+            edge_collection (str): Edge collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of edge documents enriched with target name
+        """
+        pass
+
+    @abstractmethod
+    async def get_related_nodes(
+        self,
+        node_id: str,
+        edge_collection: str,
+        target_collection: str,
+        direction: str = "inbound",
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Get related nodes through an edge collection.
+
+        Generic traversal method for any edge/node combination.
+
+        Args:
+            node_id (str): Full node ID to start from
+            edge_collection (str): Edge collection to traverse
+            target_collection (str): Target node collection
+            direction (str): "inbound" or "outbound"
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of related node documents
+        """
+        pass
+
+    @abstractmethod
+    async def get_related_node_field(
+        self,
+        node_id: str,
+        edge_collection: str,
+        target_collection: str,
+        field_name: str,
+        direction: str = "inbound",
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Get a specific field from related nodes.
+
+        Generic method to get specific fields from related nodes.
+
+        Args:
+            node_id (str): Full node ID to start from
+            edge_collection (str): Edge collection to traverse
+            target_collection (str): Target node collection
+            field_name (str): Field to extract from related nodes
+            direction (str): "inbound" or "outbound"
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[Any]: List of field values from related nodes
+        """
+        pass
+
+    # ==================== Query Operations ====================
+
+    async def execute_query(
+        self,
+        query: str,
+        bind_vars: dict | None = None,
+        transaction: str | None = None
+    ) -> list[dict] | None:
+        """
+        Execute a Cypher query.
+
+        Args:
+            query: Cypher query string
+            bind_vars: Query parameters
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[List[Dict]]: Query results
+        """
+        try:
+            return await self.client.execute_query(
+                query,
+                parameters=bind_vars or {},
+                txn_id=transaction
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Query execution failed: {str(e)}")
+            raise
+
+
+    async def get_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any],
+        return_fields: list[str] | None = None,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """Get nodes by field filters"""
+        try:
+            label = collection_to_label(collection)
+
+            # Build filter conditions - handle NULL values specially in Cypher
+            if filters:
+                filter_conditions = []
+                parameters = {}
+
+                for field, value in filters.items():
+                    if value is None:
+                        # Use IS NULL for None values in Cypher
+                        filter_conditions.append(f"n.{field} IS NULL")
+                    else:
+                        # Use parameterized query for non-null values
+                        filter_conditions.append(f"n.{field} = ${field}")
+                        parameters[field] = value
+
+                where_clause = f"WHERE {' AND '.join(filter_conditions)}"
+            else:
+                where_clause = ""
+                parameters = {}
+
+            # Build return clause
+            if return_fields:
+                return_expr = ", ".join([f"n.{field} AS {field}" for field in return_fields])
+            else:
+                return_expr = "n"
+
+            if where_clause:
+                query = f"""
+                MATCH (n:{label})
+                {where_clause}
+                RETURN {return_expr}
+                """
+            else:
+                query = f"""
+                MATCH (n:{label})
+                RETURN {return_expr}
+                """
+
+            results = await self.client.execute_query(
+                query,
+                parameters=parameters,
+                txn_id=transaction
+            )
+
+            # Convert results
+            nodes = []
+            for record in results:
+                if return_fields:
+                    node = {field: record.get(field) for field in return_fields}
+                else:
+                    node = self._extract_node_data(record, "n", 0)
+                nodes.append(self._to_arango_node(node, collection))
+
+            return nodes
+
+        except Exception as e:
+            self.logger.error(f"❌ Get nodes by filters failed: {str(e)}")
+            return []
+
+    @abstractmethod
+    async def get_nodes_by_field_in(
+        self,
+        collection: str,
+        field_name: str,
+        field_values: list[Any],
+        return_fields: list[str] | None = None,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Get nodes from a collection where a field value is in a list.
+
+        Generic method for IN queries.
+
+        Args:
+            collection (str): Collection name
+            field_name (str): Field name to filter on
+            field_values (List[Any]): List of values to match
+            return_fields (Optional[List[str]]): Optional list of fields to return
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of matching node documents
+        """
+        pass
+
+
+    @abstractmethod
+    async def get_child_record_ids_by_relation_type(
+        self,
+        record_id: str,
+        relation_type: str,
+        transaction: Optional[str] = None
+    ) -> list[dict[str, Any]]:
+        """
+        Get record _keys of all records that have an edge pointing TO this record
+        with the given relation type (e.g. child tables that reference this table via FOREIGN_KEY).
+
+        Args:
+            record_id (str): Record _key (vertex id)
+            relation_type (str): Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict[str, Any]]: List of dicts with record_id and FK metadata (childTable, sourceColumn, targetColumn).
+        """
+        pass
+
+    @abstractmethod
+    async def get_parent_record_ids_by_relation_type(
+        self,
+        record_id: str,
+        relation_type: str,
+        transaction: Optional[str] = None
+    ) -> list[dict[str, Any]]:
+        """
+        Get record _keys of all records that this record has an edge pointing TO
+        with the given relation type (e.g. parent tables that this table references via FOREIGN_KEY).
+
+        Args:
+            record_id (str): Record _key (vertex id)
+            relation_type (str): Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict[str, Any]]: List of dicts with record_id and FK metadata (parentTable, sourceColumn, targetColumn).
+        """
+        pass
+
+    @abstractmethod
+    async def get_virtual_record_ids_for_record_ids(
+        self,
+        record_ids: list[str],
+        transaction: Optional[str] = None
+    ) -> dict[str, str]:
+        """
+        Resolve record _keys to virtualRecordIds (e.g. to fetch blob for child records).
+
+        Args:
+            record_ids (List[str]): List of record _keys
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Dict[str, str]: Mapping record_id -> virtual_record_id
+        """
+        pass
+
+    # ==================== Record Operations ====================
+    @abstractmethod
+    async def get_record_by_path(
+        self,
+        connector_id: str,
+        path: list[str],
+        external_record_group_id: str,
+        transaction: str | None = None
+    ) -> dict | None:
+        """
+        Get a record by its file path.
+
+        Args:
+            connector_id (str): Connector ID
+            path (list[str]): File/record path in array format
+            external_record_group_id (str): External Record group ID
+            transaction (str | None): Optional transaction context
+
+        Returns:
+            dict | None: Record data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_by_external_id(
+        self,
+        connector_id: str,
+        external_id: str,
+        transaction: str | None = None
+    ) -> Optional['Record']:
+        """
+        Get a record by its external ID from the source system.
+
+        Args:
+            connector_id (str): Connector ID
+            external_id (str): External record ID
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Dict]: Record data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_by_external_revision_id(
+        self,
+        connector_id: str,
+        external_revision_id: str,
+        transaction: str | None = None
+    ) -> Optional['Record']:
+        """
+        Get a record by its external revision ID (e.g., etag for S3).
+
+        Args:
+            connector_id (str): Connector ID
+            external_revision_id (str): External revision ID (e.g., etag)
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Record]: Record data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_key_by_external_id(
+        self,
+        external_id: str,
+        connector_id: str,
+        transaction: str | None = None
+    ) -> str | None:
+        """
+        Get a record's internal key by its external ID.
+
+        Args:
+            external_id (str): External record ID
+            connector_id (str): Connector ID
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[str]: Record key if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_by_status(
+        self,
+        org_id: str,
+        connector_id: str,
+        status_filters: list[str],
+        limit: int | None = None,
+        offset: int = 0,
+        transaction: str | None = None
+    ) -> list['Record']:
+        """
+        Get records by their indexing status.
+
+        Args:
+            org_id (str): Organization ID
+            connector_id (str): Connector ID
+            status_filters (List[str]): List of status values to filter by
+            limit (Optional[int]): Maximum number of records to return
+            offset (int): Number of records to skip
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of records matching the status filters
+        """
+        pass
+
+    @abstractmethod
+    async def get_records(
+        self,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: str | None,
+        record_types: list[str] | None,
+        origins: list[str] | None,
+        connectors: list[str] | None,
+        indexing_status: list[str] | None,
+        permissions: list[str] | None,
+        date_from: int | None,
+        date_to: int | None,
+        sort_by: str,
+        sort_order: str,
+        source: str,
+    ) -> tuple[list[dict], int, dict]:
+        """
+        List all records the user can access.
+
+        Args:
+            user_id: External user ID
+            org_id: Organization ID
+            skip: Number of records to skip (pagination)
+            limit: Maximum records to return
+            search: Optional search string
+            record_types: Optional list of record types to filter
+            origins: Optional list of origins to filter
+            connectors: Optional list of connector IDs to filter
+            indexing_status: Optional list of indexing statuses to filter
+            permissions: Optional list of permission roles to filter
+            date_from: Optional start timestamp
+            date_to: Optional end timestamp
+            sort_by: Field to sort by
+            sort_order: Sort order (ASC/DESC)
+            source: Data source filter ('all', 'local', 'connector')
+
+        Returns:
+            Tuple of (records list, total count, available_filters dict)
+        """
+        pass
+
+    @abstractmethod
+    async def reindex_single_record(
+        self,
+        record_id: str,
+        user_id: str,
+        org_id: str,
+        request: Optional["Request"] = None,
+        depth: int = 0,
+        status_filters: list[str] | None = None,
+    ) -> dict:
+        """
+        Validate and prepare reindex for a single record (permission checks, reset status).
+        Does NOT publish events; caller should publish after success.
+
+        Args:
+            record_id: Record ID to reindex
+            user_id: External user ID
+            org_id: Organization ID
+            request: Optional request (for signature compatibility)
+            depth: Depth for children (0 = only this record)
+            status_filters: Optional indexingStatus values; included in sync-events payload
+                        for the consumer to filter matched records (parent/children queries).
+
+        Returns:
+            Dict: success, recordId, recordName, connector, userRole; or error code/reason
+        """
+        pass
+
+    @abstractmethod
+    async def reindex_record_group_records(
+        self,
+        record_group_id: str,
+        depth: int,
+        user_id: str,
+        org_id: str,
+    ) -> dict:
+        """
+        Validate record group and user permissions for reindexing.
+        Does NOT publish events; caller should publish.
+
+        Args:
+            record_group_id: Record group ID
+            depth: Depth for traversing children
+            user_id: External user ID
+            org_id: Organization ID
+
+        Returns:
+            Dict: success, connectorId, connectorName, depth, recordGroupId; or error code/reason
+        """
+        pass
+
+    @abstractmethod
+    async def reset_indexing_status_to_queued_for_record_ids(
+        self, record_ids: list[str]
+    ) -> None:
+        """
+        Set indexingStatus to QUEUED for each id (deduplicated) if not already QUEUED.
+        Skips records with isInternal true. Non-string ids are ignored. Pass a one-element list
+        for a single record. Used before reindex (API and batched sync). Skips missing records;
+        logs errors without raising.
+        """
+        pass
+
+    @abstractmethod
+    async def get_documents_by_status(
+        self,
+        collection: str,
+        status: str,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Get all documents with a specific indexing status.
+
+        Args:
+            collection (str): Collection name
+            status (str): Status to filter by
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of matching documents
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_by_conversation_index(
+        self,
+        connector_id: str,
+        conversation_index: str,
+        thread_id: str,
+        org_id: str,
+        user_id: str,
+        transaction: str | None = None
+    ) -> Optional['Record']:
+        """
+        Get a record by conversation index (for email/chat connectors).
+
+        Args:
+            connector_id (str): Connector ID
+            conversation_index (str): Conversation index
+            thread_id (str): Thread ID
+            org_id (str): Organization ID
+            user_id (str): User ID
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Dict]: Record data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_by_issue_key(
+        self,
+        connector_id: str,
+        issue_key: str,
+        transaction: str | None = None
+    ) -> Optional['Record']:
+        """
+        Get record by Jira issue key (e.g., PROJ-123) by searching weburl pattern.
+
+        Args:
+            connector_id: Connector ID
+            issue_key: Jira issue key (e.g., "PROJ-123")
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[Record]: Record if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_by_weburl(
+        self,
+        weburl: str,
+        org_id: str | None = None,
+        transaction: str | None = None
+    ) -> Optional['Record']:
+        """
+        Get record by weburl (exact match).
+
+        Args:
+            weburl: Web URL to search for
+            org_id: Optional organization ID to filter by
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[Record]: Record if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_by_parent(
+        self,
+        connector_id: str,
+        parent_external_record_id: str,
+        record_type: str | None = None,
+        transaction: str | None = None
+    ) -> list['Record']:
+        """
+        Get all child records for a parent record by parent_external_record_id.
+        Optionally filter by record_type.
+
+        Args:
+            connector_id (str): Connector ID
+            parent_external_record_id (str): Parent record's external ID
+            record_type (Optional[str]): Optional filter by record type (e.g., "COMMENT", "FILE", "TICKET")
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of child records
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_by_record_group(
+        self,
+        record_group_id: str,
+        connector_id: str,
+        org_id: str,
+        depth: int,
+        user_key: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        transaction: str | None = None,
+        status_filters: list[str] | None = None,
+    ) -> list['Record']:
+        """
+        Get all records belonging to a record group up to a specified depth.
+        Uses belongsTo edges for nested record group traversal and optional
+        permission checks via the knowledge hub permission model.
+
+        Includes:
+        - Records directly in the group (via belongsTo edges)
+        - Records in nested record groups up to depth levels (via belongsTo edges)
+
+        Args:
+            record_group_id (str): Record group ID
+            connector_id (str): Connector ID filter (records matching this connectorId are returned)
+            org_id (str): Organization ID (for security filtering)
+            depth (int): Depth for traversing children and nested record groups
+                        (-1 = unlimited, 0 = only direct records, 1 = direct + 1 level nested, etc.)
+            user_key (Optional[str]): User key for permission filtering. When provided,
+                        only records the user has permission to access are returned.
+                        Uses the same permission model as knowledge hub (10 permission paths).
+            limit (Optional[int]): Maximum number of records to return (for pagination)
+            offset (int): Number of records to skip (for pagination)
+            transaction (Optional[str]): Optional transaction ID
+            status_filters (Optional[List[str]]): When set, only records with
+                        indexingStatus in this list are returned.
+
+        Returns:
+            List[Record]: List of properly typed Record instances. Origin is not
+                        hard-filtered here; both CONNECTOR and UPLOAD records may
+                        be returned when they match connectorId/org/permission constraints.
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_by_parent_record(
+        self,
+        parent_record_id: str,
+        connector_id: str,
+        org_id: str,
+        depth: int,
+        user_key: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        transaction: str | None = None,
+        status_filters: list[str] | None = None,
+    ) -> list['Record']:
+        """
+        Get all child records of a parent record (folder) up to a specified depth.
+        Uses graph traversal on record relations. Parent record is always included.
+
+        Args:
+            parent_record_id (str): Record ID of the parent (folder)
+            connector_id (str): Connector ID (all records should be from same connector)
+            org_id (str): Organization ID (for security filtering)
+            depth (int): Depth for traversing children
+                        (-1 = unlimited, 0 = only parent, 1 = direct children,
+                         2 = children + grandchildren, etc.)
+            user_key (Optional[str]): User key for permission filtering. When provided,
+                        only records the user has permission to access are returned.
+                        Uses the same permission model as knowledge hub (10 permission paths).
+            limit (Optional[int]): Maximum number of records to return (for pagination)
+            offset (int): Number of records to skip (for pagination)
+            transaction (Optional[str]): Optional transaction ID
+            status_filters (Optional[List[str]]): When set, only records with
+                        indexingStatus in this list are returned.
+
+        Returns:
+            List[Record]: List of properly typed Record instances
+        """
+        pass
+
+    # ==================== Record Group Operations ====================
+
+    @abstractmethod
+    async def get_record_group_by_external_id(
+        self,
+        connector_id: str,
+        external_id: str,
+        transaction: str | None = None
+    ) -> Optional['RecordGroup']:
+        """
+        Get a record group by its external ID.
+
+        Args:
+            connector_id (str): Connector ID
+            external_id (str): External record group ID
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Dict]: Record group data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_group_by_id(
+        self,
+        record_group_id: str,
+        transaction: str | None = None
+    ) -> dict | None:
+        """
+        Get a record group by its internal ID.
+
+        Args:
+            record_group_id: Internal record group ID
+            transaction: Optional transaction context
+
+        Returns:
+            Optional[Dict]: Record group data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_file_record_by_id(
+        self,
+        record_id: str,
+        transaction: str | None = None
+    ) -> Optional['FileRecord']:
+        """
+        Get a file record by its internal ID.
+
+        Args:
+            record_id: Internal file record ID
+            transaction: Optional transaction context
+
+        Returns:
+            Optional[Dict]: File record data if found, None otherwise
+        """
+        pass
+
+    # ==================== User Operations ====================
+
+    @abstractmethod
+    async def get_user_by_email(
+        self,
+        email: str,
+        transaction: str | None = None
+    ) -> Optional['User']:
+        """
+        Get a user by email address.
+
+        Args:
+            email (str): User email
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Dict]: User data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_user_by_source_id(
+        self,
+        source_user_id: str,
+        connector_id: str,
+        transaction: str | None = None
+    ) -> Optional['User']:
+        """
+        Get a user by their source system ID.
+
+        Args:
+            source_user_id (str): User ID in source system
+            connector_id (str): Connector ID
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Dict]: User data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_user_by_user_id(
+        self,
+        user_id: str
+    ) -> dict | None:
+        """
+        Get a user by their internal user ID.
+
+        Args:
+            user_id (str): Internal user ID
+
+        Returns:
+            Optional[Dict]: User data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_graph_user_keys_by_mongo_user_ids(
+        self,
+        user_ids: list[str],
+        org_id: str | None = None,
+        *,
+        chunk_size: int,
+    ) -> dict[str, str]:
+        """
+        Look up graph user document keys for Mongo user IDs.
+
+        Args:
+            user_ids: Mongo user IDs (user.userId)
+            org_id: Optional organization ID to scope results
+            chunk_size: Max IDs per graph query batch
+
+        Returns:
+            Mapping of Mongo userId -> graph _key
+
+        Raises:
+            ValueError: If any user_id was not found in the graph for org_id
+        """
+        pass
+
+    @abstractmethod
+    async def get_account_type(
+        self,
+        org_id: str,
+        is_external: bool = False,
+        transaction: str | None = None,
+    ) -> str | None:
+        """
+        Get account type for an organization.
+
+        Args:
+            org_id: Organization ID
+            is_external (bool): Filter by external flag (default False)
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[str]: Account type ('individual' or 'business'), or None
+        """
+        pass
+
+    @abstractmethod
+    async def get_connector_stats(
+        self,
+        org_id: str,
+        connector_id: str,
+    ) -> dict:
+        """
+        Get connector statistics for a specific connector.
+
+        Args:
+            org_id: Organization ID
+            connector_id: Connector (app) ID
+
+        Returns:
+            Dict: success, message, data (stats and byRecordType)
+        """
+        pass
+
+    @abstractmethod
+    async def get_users(
+        self,
+        org_id: str,
+        *,
+        active: bool = True,
+    ) -> list[dict]:
+        """
+        Get all users in an organization.
+
+        Args:
+            org_id (str): Organization ID
+            active (bool): Filter by active status
+
+        Returns:
+            List[Dict]: List of users
+        """
+        pass
+
+    @abstractmethod
+    async def get_app_user_by_email(
+        self,
+        email: str,
+        connector_id: str,
+        transaction: str | None = None
+    ) -> Optional['AppUser']:
+        """
+        Get an app-specific user by email.
+
+        Args:
+            email (str): User email
+            connector_id (str): Connector ID
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Dict]: App user data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_app_users(
+        self,
+        org_id: str,
+        connector_id: str
+    ) -> list[dict]:
+        """
+        Get all users for a specific connector in an organization.
+
+        Args:
+            org_id (str): Organization ID
+            connector_id (str): Connector ID
+
+        Returns:
+            List[Dict]: List of app users
+        """
+        pass
+
+    @abstractmethod
+    async def list_user_knowledge_bases(
+        self,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: str | None = None,
+        permissions: list[str] | None = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: str | None = None,
+    ) -> tuple[list[dict], int, dict]:
+        """
+        List knowledge bases with pagination, search, and filtering.
+        Includes both direct user permissions and team-based permissions.
+
+        Args:
+            user_id: User ID
+            org_id: Organization ID
+            skip: Pagination skip
+            limit: Pagination limit
+            search: Optional search term for KB name
+            permissions: Optional filter by permission roles
+            sort_by: Sort field (name, createdAtTimestamp, updatedAtTimestamp, userRole)
+            sort_order: Sort direction (asc, desc)
+            transaction: Optional transaction ID
+
+        Returns:
+            Tuple of (list of KB dicts, total count, available_filters dict)
+        """
+        pass
+
+    @abstractmethod
+    async def get_kb_children(
+        self,
+        kb_id: str,
+        skip: int,
+        limit: int,
+        level: int = 1,
+        search: str | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connectors: list[str] | None = None,
+        indexing_status: list[str] | None = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: str | None = None,
+    ) -> dict:
+        """
+        Get KB root contents with folders_first pagination.
+
+        Returns:
+            Dict with success, container, folders, records, totalCount, counts,
+            availableFilters, paginationMode; or { success: False, reason: str }.
+        """
+        pass
+
+    @abstractmethod
+    async def get_folder_children(
+        self,
+        kb_id: str,
+        folder_id: str,
+        skip: int,
+        limit: int,
+        level: int = 1,
+        search: str | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connectors: list[str] | None = None,
+        indexing_status: list[str] | None = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: str | None = None,
+    ) -> dict:
+        """
+        Get folder contents with folders_first pagination.
+
+        Returns:
+            Dict with success, container, folders, records, totalCount, counts,
+            availableFilters, paginationMode; or { success: False, reason: str }.
+        """
+        pass
+
+    @abstractmethod
+    async def kb_exists(self, kb_id: str) -> bool:
+        """Return True if a KB document with this id exists, regardless of permissions."""
+        pass
+
+    @abstractmethod
+    async def get_knowledge_base(
+        self,
+        kb_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """Get knowledge base with user permissions."""
+        pass
+
+    @abstractmethod
+    async def update_knowledge_base(
+        self,
+        kb_id: str,
+        updates: dict,
+        transaction: str | None = None,
+    ) -> bool:
+        """Update knowledge base."""
+        pass
+
+    @abstractmethod
+    async def delete_knowledge_base(
+        self,
+        kb_id: str,
+        transaction: str | None = None,
+    ) -> bool:
+        """Delete a knowledge base and all nested content."""
+        pass
+
+    @abstractmethod
+    async def _validate_folder_creation(self, kb_id: str, user_id: str) -> dict:
+        """Shared validation logic for folder creation."""
+        pass
+
+    @abstractmethod
+    async def find_folder_by_name_in_parent(
+        self,
+        kb_id: str,
+        folder_name: str,
+        parent_folder_id: str | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """Find a folder by name within a specific parent (KB root or folder)."""
+        pass
+
+    @abstractmethod
+    async def create_folder(
+        self,
+        kb_id: str,
+        folder_name: str,
+        org_id: str,
+        parent_folder_id: str | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """Create folder with proper RECORDS document and edges."""
+        pass
+
+    @abstractmethod
+    async def get_folder_contents(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """Get folder contents (container, folders, records)."""
+        pass
+
+    @abstractmethod
+    async def validate_folder_in_kb(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: str | None = None,
+    ) -> bool:
+        """Validate that a folder exists and belongs to the KB."""
+        pass
+
+    @abstractmethod
+    async def update_folder(
+        self,
+        folder_id: str,
+        updates: dict,
+        transaction: str | None = None,
+    ) -> bool:
+        """Update folder."""
+        pass
+
+    @abstractmethod
+    async def delete_folder(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """Delete a folder and all nested content."""
+        pass
+
+    @abstractmethod
+    async def update_record(
+        self,
+        record_id: str,
+        user_id: str,
+        updates: dict,
+        file_metadata: dict | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """Update a record by ID with automatic KB and permission detection."""
+        pass
+
+    @abstractmethod
+    async def delete_records(
+        self,
+        record_ids: list[str],
+        kb_id: str,
+        folder_id: str | None = None,
+        transaction: str | None = None,
+    ) -> dict:
+        """Delete multiple records and publish delete events."""
+        pass
+
+    @abstractmethod
+    async def create_kb_permissions(
+        self,
+        kb_id: str,
+        requester_id: str,
+        user_ids: list[str],
+        team_ids: list[str],
+        role: str,
+    ) -> dict:
+        """Create KB permissions for users and teams."""
+        pass
+
+    @abstractmethod
+    async def count_kb_owners(
+        self,
+        kb_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Count the number of owners for a knowledge base."""
+        pass
+
+    @abstractmethod
+    async def remove_kb_permission(
+        self,
+        kb_id: str,
+        user_ids: list[str],
+        team_ids: list[str],
+        transaction: str | None = None,
+    ) -> bool:
+        """Remove permissions for multiple users and teams from a KB."""
+        pass
+
+    @abstractmethod
+    async def get_user_kb_permission(
+        self,
+        kb_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> str | None:
+        """Get user's permission role on a KB (direct or via team)."""
+        pass
+
+    @abstractmethod
+    async def upload_records(
+        self,
+        kb_id: str,
+        user_id: str,
+        org_id: str,
+        files: list[dict],
+        parent_folder_id: str | None = None,
+    ) -> dict:
+        """Upload records to KB root or a folder."""
+        pass
+
+    @abstractmethod
+    async def is_record_folder(self, record_id: str, transaction: str | None = None) -> bool:
+        """Return True if the record is a folder (has FILES doc with isFile false)."""
+        pass
+
+    @abstractmethod
+    async def get_record_parent_info(
+        self,
+        record_id: str,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """Get parent folder/kb info for a record."""
+        pass
+
+    @abstractmethod
+    async def is_record_descendant_of(
+        self,
+        record_id: str,
+        ancestor_id: str,
+        transaction: str | None = None,
+    ) -> bool:
+        """Return True if record is a descendant of ancestor (folder)."""
+        pass
+
+    @abstractmethod
+    async def delete_parent_child_edge_to_record(
+        self,
+        record_id: str,
+        transaction: str | None = None,
+    ) -> bool:
+        """Delete the incoming PARENT_CHILD edge to a record."""
+        pass
+
+    @abstractmethod
+    async def create_parent_child_edge(
+        self,
+        parent_id: str,
+        child_id: str,
+        transaction: str | None = None,
+    ) -> bool:
+        """Create PARENT_CHILD edge from parent to child record."""
+        pass
+
+    @abstractmethod
+    async def update_record_external_parent_id(
+        self,
+        record_id: str,
+        new_parent_id: str,
+        transaction: str | None = None,
+    ) -> bool:
+        """Update record's externalParentId."""
+        pass
+
+    @abstractmethod
+    async def get_kb_permissions(
+        self,
+        kb_id: str,
+        user_ids: list[str] | None = None,
+        team_ids: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, dict[str, str]]:
+        """Get current roles for users and teams on a KB."""
+        pass
+
+    @abstractmethod
+    async def update_kb_permission(
+        self,
+        kb_id: str,
+        requester_id: str,
+        user_ids: list[str],
+        team_ids: list[str],
+        new_role: str,
+    ) -> dict | None:
+        """Update permissions for users/teams on a KB."""
+        pass
+
+    @abstractmethod
+    async def list_kb_permissions(
+        self,
+        kb_id: str,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """List all permissions for a KB with entity details."""
+        pass
+
+    @abstractmethod
+    async def list_all_records(
+        self,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: str | None,
+        record_types: list[str] | None,
+        origins: list[str] | None,
+        connectors: list[str] | None,
+        indexing_status: list[str] | None,
+        permissions: list[str] | None,
+        date_from: int | None,
+        date_to: int | None,
+        sort_by: str,
+        sort_order: str,
+        source: str,
+    ) -> tuple[list[dict], int, dict]:
+        """List all records the user can access. Returns (records, total_count, available_filters)."""
+        pass
+
+    @abstractmethod
+    async def list_kb_records(
+        self,
+        kb_id: str,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: str | None,
+        record_types: list[str] | None,
+        origins: list[str] | None,
+        connectors: list[str] | None,
+        indexing_status: list[str] | None,
+        date_from: int | None,
+        date_to: int | None,
+        sort_by: str,
+        sort_order: str,
+        folder_id: str | None = None,
+    ) -> tuple[list[dict], int, dict]:
+        """List records in a KB. Returns (records, total_count, available_filters)."""
+        pass
+
+    # ==================== Group Operations ====================
+
+    @abstractmethod
+    async def get_user_group_by_external_id(
+        self,
+        connector_id: str,
+        external_id: str,
+        transaction: str | None = None
+    ) -> Optional['AppUserGroup']:
+        """
+        Get a user group by external ID.
+
+        Args:
+            connector_id (str): Connector ID
+            external_id (str): External group ID
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Dict]: Group data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_user_groups(
+        self,
+        connector_id: str,
+        org_id: str,
+        transaction: str | None = None
+    ) -> list['AppUserGroup']:
+        """
+        Get all user groups for a connector in an organization.
+
+        Args:
+            connector_id (str): Connector ID
+            org_id (str): Organization ID
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of user groups
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_people(
+        self,
+        people: list[Person],
+        transaction: str | None = None
+    ) -> None:
+        """
+        Upsert people to PEOPLE collection.
+
+        Args:
+            people (List[Person]): List of Person entities
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            None
+        """
+        pass
+
+    @abstractmethod
+    async def get_app_role_by_external_id(
+        self,
+        connector_id: str,
+        external_id: str,
+        transaction: str | None = None
+    ) -> Optional['AppRole']:
+        """
+        Get an app role by external ID.
+
+        Args:
+            connector_id (str): Connector ID
+            external_id (str): External role ID
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Dict]: Role data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_app_creator_user(
+        self,
+        connector_id: str,
+        transaction:str | None=None
+    )->Optional['User']:
+        """
+        Resolve the creator of an App/Connector by connectorId, using the
+        `createdBy` field on the app document to fetch the user from `users`.
+
+        Args:
+            connector_id: Connector/App id (_key)
+            transaction: Optional transaction context
+
+        Returns:
+            User if found, otherwise None
+        """
+        pass
+    # ==================== Organization Operations ====================
+
+    @abstractmethod
+    async def get_all_orgs(
+        self,
+        *,
+        active: bool = True,
+        is_external: bool = False,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """
+        Get all organizations.
+
+        Args:
+            active (bool): Filter by active status
+            is_external (bool): Filter by external flag (default False)
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[Dict]: List of organizations
+        """
+        pass
+
+    @abstractmethod
+    async def get_departments(
+        self,
+        org_id: str | None = None,
+        transaction: str | None = None
+    ) -> list[str]:
+        """
+        Get all departments that either have no org_id or match the given org_id.
+
+        Args:
+            org_id (Optional[str]): Organization ID to filter departments
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[str]: List of department names
+        """
+        pass
+
+    @abstractmethod
+    async def get_org_apps(
+        self,
+        org_id: str
+    ) -> list[dict]:
+        """
+        Get all apps for an organization.
+
+        Args:
+            org_id (str): Organization ID
+
+        Returns:
+            List[Dict]: List of apps
+        """
+        pass
+
+    @abstractmethod
+    async def find_duplicate_records(
+        self,
+        record_key: str,
+        md5_checksum: str,
+        record_type: str | None = None,
+        size_in_bytes: int | None = None,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Find duplicate records based on MD5 checksum.
+        This method queries the RECORDS collection and works for all record types.
+
+        Args:
+            record_key (str): The key of the current record to exclude from results
+            md5_checksum (str): MD5 checksum of the record content
+            record_type (Optional[str]): Optional record type to filter by
+            size_in_bytes (Optional[int]): Optional file size in bytes to filter by
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[Dict]: List of duplicate records that match the criteria
+        """
+        pass
+
+    @abstractmethod
+    async def find_next_queued_duplicate(
+        self,
+        record_id: str,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """
+        Find the next QUEUED duplicate record with the same md5 hash.
+        Works with all record types by querying the RECORDS collection directly.
+
+        Args:
+            record_id (str): The record ID to use as reference for finding duplicates
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[Dict]: The next queued record if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def update_queued_duplicates_status(
+        self,
+        record_id: str,
+        new_indexing_status: str,
+        virtual_record_id: str | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        """
+        Find all QUEUED duplicate records with the same md5 hash and update their status.
+
+        Args:
+            record_id (str): The record ID to use as reference for finding duplicates
+            new_indexing_status (str): The new indexing status to set
+            virtual_record_id (Optional[str]): Optional virtual record ID to set
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            int: Number of records updated
+        """
+        pass
+
+    @abstractmethod
+    async def copy_document_relationships(
+        self,
+        source_key: str,
+        target_key: str,
+        transaction: str | None = None
+    ) -> bool:
+        """
+        Copy all relationships (edges) from source document to target document.
+        This includes departments, categories, subcategories, languages, and topics.
+
+        Args:
+            source_key (str): Key/ID of the source document
+            target_key (str): Key/ID of the target document
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        pass
+
+    # ==================== Permission Operations ====================
+
+    @abstractmethod
+    async def batch_upsert_records(
+        self,
+        records: list,
+        transaction: str | None = None
+    ) -> None:
+        """
+        Batch upsert records (base record + specific type + IS_OF_TYPE edge).
+
+        High-level method that handles:
+        1. Upserting base record to records collection
+        2. Upserting specific type (files, mails, etc.)
+        3. Creating IS_OF_TYPE edges
+
+        Args:
+            records (List[Record]): List of Record objects
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def create_record_relation(
+        self,
+        from_record_id: str,
+        to_record_id: str,
+        relation_type: str,
+        transaction: str | None = None
+    ) -> None:
+        """
+        Create a relation edge between two records.
+
+        Args:
+            from_record_id (str): Source record ID
+            to_record_id (str): Target record ID
+            relation_type (str): Type of relation (e.g., "PARENT_CHILD", "ATTACHMENT", "SIBLING", "BLOCKS", etc.)
+            transaction (Optional[str]): Optional transaction ID
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_record_groups(
+        self,
+        record_groups: list,
+        transaction: str | None = None
+    ) -> None:
+        """
+        Batch upsert record groups (folders/spaces/categories).
+
+        Args:
+            record_groups (List[RecordGroup]): List of RecordGroup objects
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def create_record_group_relation(
+        self,
+        record_id: str,
+        record_group_id: str,
+        transaction: str | None = None
+    ) -> None:
+        """
+        Create BELONGS_TO edge from record to record group.
+
+        Args:
+            record_id (str): Record ID
+            record_group_id (str): Record group ID
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def create_record_groups_relation(
+        self,
+        child_id: str,
+        parent_id: str,
+        transaction: str | None = None
+    ) -> None:
+        """
+        Create BELONGS_TO edge from child record group to parent record group.
+
+        Args:
+            child_id (str): Child record group ID
+            parent_id (str): Parent record group ID
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def create_inherit_permissions_relation_record_group(
+        self,
+        record_id: str,
+        record_group_id: str,
+        transaction: str | None = None
+    ) -> None:
+        """
+        Create INHERIT_PERMISSIONS edge from record to record group.
+
+        Args:
+            record_id (str): Record ID
+            record_group_id (str): Record group ID
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def get_accessible_virtual_record_ids(
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]] | None = None
+    ) -> dict[str, str]:
+        """
+        Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
+
+        Each virtualRecordId maps to the specific recordId (the record's key/id) that the user
+        has permission to access. This prevents cross-connector leakage where multiple connectors
+        share the same virtualRecordId but only one is accessible to the user.
+
+        Args:
+            user_id (str): The userId field value in users collection
+            org_id (str): The org_id to filter anyone collection
+            filters (Optional[Dict[str, List[str]]]): Optional filters for departments, categories, languages, topics etc.
+                Format: {
+                    'departments': [dept_ids],
+                    'categories': [cat_ids],
+                    'subcategories1': [subcat1_ids],
+                    'subcategories2': [subcat2_ids],
+                    'subcategories3': [subcat3_ids],
+                    'languages': [language_ids],
+                    'topics': [topic_ids],
+                    'kb': [kb_ids],
+                    'apps': [connector_ids]
+                }
+
+        Returns:
+            Dict[str, str]: Mapping of virtualRecordId -> recordId
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_by_record_ids(
+        self,
+        record_ids: list[str],
+        org_id: str
+    ) -> list[dict[str, Any]]:
+        """
+        Batch fetch full record documents by their record IDs (_key in Arango / id in Neo4j).
+
+        This is used after Qdrant search to fetch the specific permission-verified records
+        using the recordIds from the accessible virtual ID map, preventing cross-connector
+        leakage.
+
+        Args:
+            record_ids: List of record key/id values to fetch
+            org_id: Organization ID for additional filtering
+
+        Returns:
+            List[Dict[str, Any]]: List of full record dictionaries
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_record_permissions(
+        self,
+        record_id: str,
+        permissions: list[dict],
+        transaction: str | None = None
+    ) -> None:
+        """
+        Batch upsert permissions for a record.
+
+        Args:
+            record_id (str): Record ID
+            permissions (List[Dict]): List of permission data
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def get_file_permissions(
+        self,
+        file_key: str,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Get all permissions for a file.
+
+        Args:
+            file_key (str): File key
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of permissions
+        """
+        pass
+
+    @abstractmethod
+    async def get_first_user_with_permission_to_node(
+        self,
+        node_id: str,
+        node_collection: str,
+        transaction: str | None = None
+    ) -> Optional['User']:
+        """
+        Get the first user with permission to a node.
+
+        Args:
+            node_id (str): Node ID
+            node_collection (str): Node collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[User]: User object if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_users_with_permission_to_node(
+        self,
+        node_id: str,
+        node_collection: str,
+        transaction: str | None = None
+    ) -> list['User']:
+        """
+        Get all users with permission to a node.
+
+        Args:
+            node_id (str): Node ID
+            node_collection (str): Node collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[User]: List of user objects
+        """
+        pass
+
+    @abstractmethod
+    async def check_record_access_with_details(
+        self,
+        user_id: str,
+        org_id: str,
+        record_id: str,
+    ) -> dict | None:
+        """
+        Check record access and return record details if accessible.
+
+        Args:
+            user_id: The userId field value in users collection
+            org_id: The organization ID
+            record_id: The record ID to check access for
+
+        Returns:
+            Dict with record, knowledgeBase, folder, metadata, permissions if accessible;
+            None if not.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_owner_source_user_email(
+        self,
+        record_id: str,
+        transaction: str | None = None
+    ) -> str | None:
+        """
+        Get the owner's source email for a record.
+
+        Args:
+            record_id (str): Record ID
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[str]: Owner email if found, None otherwise
+        """
+        pass
+
+    # ==================== File/Parent Operations ====================
+
+    @abstractmethod
+    async def get_file_parents(
+        self,
+        file_key: str,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Get all parent IDs for a file.
+
+        Args:
+            file_key (str): File key
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of parent files
+        """
+        pass
+
+    # ==================== Sync Point Operations ====================
+
+    @abstractmethod
+    async def get_sync_point(
+        self,
+        key: str,
+        collection: str,
+        transaction: str | None = None
+    ) -> dict | None:
+        """
+        Get a sync point by key.
+
+        Args:
+            key (str): Sync point key
+            collection (str): Collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Dict]: Sync point data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def upsert_sync_point(
+        self,
+        sync_point_key: str,
+        sync_point_data: dict,
+        collection: str,
+        transaction: str | None = None
+    ) -> bool:
+        """
+        Upsert a sync point.
+
+        Args:
+            sync_point_key (str): Sync point key
+            sync_point_data (Dict): Sync point data
+            collection (str): Collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def remove_sync_point(
+        self,
+        key: str,
+        collection: str,
+        transaction: str | None = None
+    ) -> None:
+        """
+        Remove sync point by syncPointKey field.
+
+        Args:
+            key (str): Sync point key
+            collection (str): Collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def delete_sync_points_by_connector_id(
+        self,
+        connector_id: str,
+        transaction: str | None = None
+    ) -> tuple[int, bool]:
+        """
+        Delete all sync points for a given connector.
+
+        Args:
+            connector_id (str): The connector ID to delete sync points for
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Tuple[int, bool]: Tuple of (deleted_count, success_flag)
+        """
+        pass
+
+    @abstractmethod
+    async def delete_connector_sync_edges(
+        self,
+        connector_id: str,
+        transaction: str | None = None
+    ) -> tuple[int, bool]:
+        """
+        Delete only sync-created edges for a connector (belongsTo, recordRelations,
+        permission, inheritPermissions, userAppRelation). Does not delete nodes or
+        isOfType/indexing data. Used for full sync reset.
+
+        Args:
+            connector_id: The connector ID (app _key).
+            transaction: Optional transaction context.
+
+        Returns:
+            Tuple of (total_deleted_edges_count, success_flag).
+        """
+        pass
+
+    # ==================== Batch/Bulk Operations ====================
+
+    @abstractmethod
+    async def batch_upsert_app_users(
+        self,
+        users: list,
+        transaction: str | None = None
+    ) -> None:
+        """
+        Batch upsert app users with org and app relations.
+
+        Creates users if they don't exist, creates org relation and user-app relation.
+
+        Args:
+            users (List[AppUser]): List of AppUser objects
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def ensure_team_app_edge(
+        self,
+        connector_id: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Ensure the org's "All" team has an edge to the app in userAppRelation.
+        Idempotent: creates teams/all_{org_id} -> apps/{connector_id} if not present.
+        Used by TEAM-scope connectors so all org members get app access via the team.
+
+        The All team and user PERMISSION edges are created by migration and user-added
+        events (see ensure_all_team_with_users); this method only creates the team->app edge.
+        """
+        pass
+
+    @abstractmethod
+    async def ensure_all_team_with_users(self, org_id: str) -> None:
+        """
+        Ensure the org's 'All' team exists and every active org user has a PERMISSION edge.
+
+        Creates team node with id=all_{org_id} if missing, fetches all active users,
+        and adds PERMISSION edges for users not already in the team.
+        Oldest user (by createdAtTimestamp) gets OWNER; subsequent users get READER.
+
+        Idempotent, runs without transaction, safe to call multiple times.
+
+        Args:
+            org_id: Organization ID
+        """
+        pass
+
+    @abstractmethod
+    async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
+        """
+        Add a specific user to the org's 'All' team with a PERMISSION edge.
+
+        Ensures All team exists, checks if user already has PERMISSION edge,
+        and adds it if missing. First user in team gets OWNER, subsequent get READER.
+
+        Idempotent, safe to call multiple times for same user.
+
+        Args:
+            org_id: Organization ID
+            user_key: User node ID (graph key)
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_user_groups(
+        self,
+        user_groups: list,
+        transaction: str | None = None
+    ) -> None:
+        """
+        Batch upsert user groups.
+
+        Args:
+            user_groups (List[AppUserGroup]): List of AppUserGroup objects
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_app_roles(
+        self,
+        app_roles: list,
+        transaction: str | None = None
+    ) -> None:
+        """
+        Batch upsert app roles.
+
+        Args:
+            app_roles (List[AppRole]): List of AppRole objects
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_orgs(
+        self,
+        orgs: list[dict],
+        transaction: str | None = None
+    ) -> None:
+        """
+        Batch upsert organizations.
+
+        Args:
+            orgs (List[Dict]): List of organization data
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_domains(
+        self,
+        domains: list[dict],
+        transaction: str | None = None
+    ) -> None:
+        """
+        Batch upsert domains.
+
+        Args:
+            domains (List[Dict]): List of domain data
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_anyone(
+        self,
+        anyone: list[dict],
+        transaction: str | None = None
+    ) -> None:
+        """
+        Batch upsert 'anyone' permission entities.
+
+        Args:
+            anyone (List[Dict]): List of anyone entities
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_anyone_with_link(
+        self,
+        anyone_with_link: list[dict],
+        transaction: str | None = None
+    ) -> None:
+        """
+        Batch upsert 'anyone with link' permission entities.
+
+        Args:
+            anyone_with_link (List[Dict]): List of anyone with link entities
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_anyone_same_org(
+        self,
+        anyone_same_org: list[dict],
+        transaction: str | None = None
+    ) -> None:
+        """
+        Batch upsert 'anyone same org' permission entities.
+
+        Args:
+            anyone_same_org (List[Dict]): List of anyone same org entities
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def batch_create_user_app_edges(
+        self,
+        edges: list[dict]
+    ) -> int:
+        """
+        Batch create user-app relationship edges.
+
+        Args:
+            edges (List[Dict]): List of edge data
+
+        Returns:
+            int: Number of edges created
+        """
+        pass
+
+    # ==================== Entity ID Operations ====================
+
+    @abstractmethod
+    async def get_entity_id_by_email(
+        self,
+        email: str,
+        transaction: str | None = None
+    ) -> str | None:
+        """
+        Get entity ID (user or group) by email.
+
+        Args:
+            email (str): Email address
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[str]: Entity ID if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def bulk_get_entity_ids_by_email(
+        self,
+        emails: list[str],
+        transaction: str | None = None
+    ) -> dict[str, tuple[str, str, str]]:
+        """
+        Bulk get entity IDs for multiple emails.
+
+        Args:
+            emails (List[str]): List of email addresses
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Dict[str, Tuple[str, str, str]]: Map of email to (entity_id, collection, type)
+        """
+        pass
+
+    # ==================== Connector-Specific Operations ====================
+
+    @abstractmethod
+    async def process_file_permissions(
+        self,
+        org_id: str,
+        file_key: str,
+        permissions: list[dict],
+        transaction: str | None = None
+    ) -> None:
+        """
+        Process and upsert file permissions.
+
+        Args:
+            org_id (str): Organization ID
+            file_key (str): File key
+            permissions (List[Dict]): List of permission data
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def delete_records_and_relations(
+        self,
+        record_key: str,
+        *,
+        hard_delete: bool = False,
+        transaction: str | None = None,
+    ) -> None:
+        """
+        Delete a record and all its relations.
+
+        Args:
+            record_key (str): Record key to delete
+            hard_delete (bool): Whether to permanently delete or mark as deleted
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def delete_record(
+        self,
+        record_id: str,
+        user_id: str,
+        transaction: str | None = None
+    ) -> dict:
+        """
+        Main entry point for record deletion - routes to connector-specific methods.
+
+        Args:
+            record_id (str): Record ID to delete
+            user_id (str): User ID performing the deletion
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Dict: Result with success status and reason
+        """
+        pass
+
+    @abstractmethod
+    async def delete_record_by_external_id(
+        self,
+        connector_id: str,
+        external_id: str,
+        user_id: str,
+        transaction: str | None = None
+    ) -> None:
+        """
+        Delete a record by external ID.
+
+        Args:
+            connector_id (str): Connector ID
+            external_id (str): External record ID
+            user_id (str): User ID performing the deletion
+            transaction (Optional[str]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def remove_user_access_to_record(
+        self,
+        connector_id: str,
+        external_id: str,
+        user_id: str,
+        transaction: str | None = None
+    ) -> None:
+        """
+        Remove a user's access to a record (for inbox-based deletions).
+
+        Args:
+            connector_id (str): Connector ID
+            external_id (str): External record ID
+            user_id (str): User ID to remove access from
+            transaction (Optional[str]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def delete_connector_instance(
+        self,
+        connector_id: str,
+        org_id: str,
+        transaction: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Delete a connector instance and all its related data.
+
+        This method performs a comprehensive deletion of:
+        - All records associated with the connector
+        - All record groups, roles, groups, drives
+        - All edges (permissions, relations, classifications)
+        - The connector app node itself
+        - Org-app relation edges
+
+        Classification nodes (departments, categories, topics, languages) are NOT deleted
+        as they are shared resources across connectors.
+        Users are NOT deleted - only userAppRelation edges are removed.
+
+        Args:
+            connector_id (str): The connector instance ID
+            org_id (str): The organization ID for validation
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Dict[str, Any]: Dictionary containing:
+                - success (bool): Whether deletion was successful
+                - virtual_record_ids (List[str]): List of virtual record IDs for Qdrant cleanup
+                - deleted_records_count (int): Number of records deleted
+                - deleted_record_groups_count (int): Number of record groups deleted
+                - deleted_roles_count (int): Number of roles deleted
+                - deleted_groups_count (int): Number of groups deleted
+                - deleted_drives_count (int): Number of drives deleted
+                - error (str, optional): Error message if deletion failed
+        """
+        pass
+
+    @abstractmethod
+    async def get_key_by_external_file_id(
+        self,
+        external_file_id: str
+    ) -> str | None:
+        """
+        Get internal key by external file ID.
+
+        Args:
+            external_file_id (str): External file ID
+
+        Returns:
+            Optional[str]: Internal key if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def organization_exists(
+        self,
+        organization_name: str,
+        is_external: bool = False,
+    ) -> bool:
+        """
+        Check if an organization exists.
+
+        Args:
+            organization_name (str): Organization name
+            is_external (bool): Filter by external flag (default False)
+
+        Returns:
+            bool: True if exists, False otherwise
+        """
+        pass
+
+
+    @abstractmethod
+    async def get_user_sync_state(
+        self,
+        user_email: str,
+        service_type: str,
+        transaction: str | None = None
+    ) -> dict | None:
+        """
+        Get user's sync state for a specific service.
+
+        Args:
+            user_email (str): User email
+            service_type (str): Service/connector type
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Dict]: Sync state relation document if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def update_user_sync_state(
+        self,
+        user_email: str,
+        state: str,
+        service_type: str,
+        transaction: str | None = None
+    ) -> dict | None:
+        """
+        Update user's sync state for a specific service.
+
+        Args:
+            user_email (str): User email
+            state (str): Sync state (NOT_STARTED, RUNNING, PAUSED, COMPLETED)
+            service_type (str): Service/connector type
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Dict]: Updated relation document if successful, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_drive_sync_state(
+        self,
+        drive_id: str,
+        transaction: str | None = None
+    ) -> dict | None:
+        """
+        Get drive's sync state.
+
+        Args:
+            drive_id (str): Drive ID
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Dict]: Drive document with sync state if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def update_drive_sync_state(
+        self,
+        drive_id: str,
+        state: str,
+        transaction: str | None = None
+    ) -> dict | None:
+        """
+        Update drive's sync state.
+
+        Args:
+            drive_id (str): Drive ID
+            state (str): Sync state (NOT_STARTED, RUNNING, PAUSED, COMPLETED)
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Dict]: Updated drive document if successful, None otherwise
+        """
+        pass
+
+    # ==================== Page Token Operations ====================
+
+    # ==================== Connector Registry Operations ====================
+
+    @abstractmethod
+    async def check_connector_name_exists(
+        self,
+        collection: str,
+        instance_name: str,
+        scope: str,
+        org_id: str | None = None,
+        user_id: str | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        """
+        Check if a connector instance name already exists for the given scope.
+
+        Args:
+            collection: Collection name (e.g., "apps")
+            instance_name: Name to check (will be normalized: lowercase, trimmed)
+            scope: Connector scope ("personal" or "team")
+            org_id: Organization ID (required for team scope)
+            user_id: User ID (required for personal scope)
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if name exists, False if available
+        """
+        pass
+
+    @abstractmethod
+    async def batch_update_connector_status(
+        self,
+        connector_ids: list[str],
+        *,
+        is_active: bool,
+        transaction: str | None = None,
+    ) -> int:
+        """Batch update connector status."""
+        try:
+            query = """
+            UNWIND $connector_ids AS connector_id
+            MATCH (app:App {id: connector_id})
+            SET app.isActive = $is_active
+            RETURN count(app) as updated_count
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"connector_ids": connector_ids, "is_active": is_active},
+                txn_id=transaction
+            )
+            return results[0].get("updated_count", 0) if results else 0
+        except Exception as e:
+            self.logger.error(f"❌ Batch update connector status failed: {str(e)}")
+            return 0
+
+    @abstractmethod
+    async def get_user_connector_instances(
+        self,
+        collection: str,
+        user_id: str,
+        org_id: str,
+        team_scope: str,
+        personal_scope: str,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """
+        Get all connector instances accessible to a user (personal + team).
+
+        Args:
+            collection: Collection name (e.g., "apps")
+            user_id: User ID
+            org_id: Organization ID
+            team_scope: Team scope value (e.g., "team")
+            personal_scope: Personal scope value (e.g., "personal")
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Dict]: List of connector instance documents
+        """
+        pass
+
+    @abstractmethod
+    async def get_filtered_connector_instances(
+        self,
+        collection: str,
+        edge_collection: str,
+        org_id: str,
+        user_id: str,
+        scope: str | None = None,
+        search: str | None = None,
+        skip: int = 0,
+        limit: int = 20,
+        *,
+        exclude_kb: bool = True,
+        kb_connector_type: str | None = None,
+        is_admin: bool = False,
+        is_authenticated: bool | None = None,
+        is_active: bool | None = None,
+        connector_type_filter: str | None = None,
+        transaction: str | None = None,
+    ) -> tuple[list[dict], int]:
+        """
+        Get filtered connector instances with pagination.
+
+        Args:
+            collection: Collection name (e.g., "apps")
+            edge_collection: Edge collection for org-app relation
+            org_id: Organization ID
+            user_id: User ID
+            scope: Optional scope filter ("personal" or "team")
+            search: Optional search query (searches name, type, appGroup)
+            skip: Number of items to skip
+            limit: Maximum number of items to return
+            exclude_kb: Whether to exclude KB connector
+            kb_connector_type: KB connector type to exclude
+            is_admin: When True the caller sees all team-scoped connectors in the
+                org regardless of edge membership.  When False only connectors
+                reachable via the user's ``userAppRelation`` edge (direct or
+                through team ``PERMISSION`` edges) are returned.
+            is_authenticated: Optional filter on isAuthenticated field
+            is_active: Optional filter on isActive field
+            connector_type_filter: Optional exact match on connector type field
+            transaction: Optional transaction ID
+
+        Returns:
+            Tuple of (documents, total_count):
+                - List of connector documents
+                - Total count of matching documents
+        """
+        pass
+
+    @abstractmethod
+    async def store_page_token(
+        self,
+        channel_id: str,
+        resource_id: str,
+        user_email: str,
+        token: str,
+        expiration: str | None = None,
+        transaction: str | None = None
+    ) -> dict | None:
+        """
+        Store page token for a channel/resource.
+
+        Args:
+            channel_id (str): Channel ID
+            resource_id (str): Resource ID
+            user_email (str): User email
+            token (str): Page token
+            expiration (Optional[str]): Token expiration
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Dict]: Stored token document if successful, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_page_token_db(
+        self,
+        channel_id: str | None = None,
+        resource_id: str | None = None,
+        user_email: str | None = None,
+        transaction: str | None = None
+    ) -> dict | None:
+        """
+        Get page token for specific channel/resource/user.
+
+        Args:
+            channel_id (Optional[str]): Channel ID filter
+            resource_id (Optional[str]): Resource ID filter
+            user_email (Optional[str]): User email filter
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            Optional[Dict]: Token document if found, None otherwise
+        """
+        pass
+
+    # ==================== Utility Operations ====================
+
+    @abstractmethod
+    async def check_collection_has_document(
+        self,
+        collection_name: str,
+        document_id: str,
+        transaction: str | None = None
+    ) -> bool:
+        """
+        Check if a document exists in a collection.
+
+        Args:
+            collection_name (str): Collection name
+            document_id (str): Document ID/key
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            bool: True if document exists, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def check_edge_exists(
+        self,
+        from_key: str,
+        to_key: str,
+        edge_collection: str,
+        transaction: str | None = None
+    ) -> bool:
+        """
+        Check if an edge exists between two nodes.
+
+        Args:
+            from_key (str): Source node key
+            to_key (str): Target node key
+            edge_collection (str): Edge collection name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            bool: True if edge exists, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_failed_records_with_active_users(
+        self,
+        org_id: str,
+        connector_id: str
+    ) -> list[dict]:
+        """
+        Get failed records along with their active users who have permissions.
+
+        Generic method for getting records with indexing status FAILED and their permitted active users.
+
+        Args:
+            org_id (str): Organization ID
+            connector_id (str): Connector ID
+
+        Returns:
+            List[Dict]: List of dictionaries with 'record' and 'users' keys
+        """
+        pass
+
+    @abstractmethod
+    async def get_failed_records_by_org(
+        self,
+        org_id: str,
+        connector_id: str
+    ) -> list[dict]:
+        """
+        Get all failed records for an organization and connector.
+
+        Generic method for getting records with indexing status FAILED.
+
+        Args:
+            org_id (str): Organization ID
+            connector_id (str): Connector ID
+
+        Returns:
+            List[Dict]: List of failed record documents
+        """
+        pass
+
+    @abstractmethod
+    async def check_toolset_instance_in_use(
+        self,
+        instance_id: str,
+        transaction: str | None = None
+    ) -> list[str]:
+        """
+        Check if a toolset instance is currently in use by any active agents.
+
+        This method finds all toolset nodes with the given instanceId and checks
+        if any non-deleted agents are using them.
+
+        Args:
+            instance_id (str): Toolset instance ID to check
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[str]: List of agent names that are using the toolset instance.
+                      Empty list if not in use.
+        """
+        pass
+
+    @abstractmethod
+    async def check_connector_in_use(
+        self,
+        connector_id: str,
+        transaction: str | None = None
+    ) -> list[str]:
+        """
+        Check if a connector is currently in use by any active agents.
+
+        Finds all agentKnowledge nodes referencing the given connectorId and
+        returns the names of non-deleted agents linked to them via
+        agentHasKnowledge edges.
+
+        Args:
+            connector_id (str): Connector ID to check.
+            transaction (Optional[str]): Optional transaction ID.
+
+        Returns:
+            List[str]: Agent names using the connector. Empty list if not in use.
+        """
+        pass
+
+    # ==================== Knowledge Hub Operations ====================
+
+    @abstractmethod
+    async def get_knowledge_hub_root_nodes(
+        self,
+        user_key: str,
+        org_id: str,
+        user_app_ids: list[str],
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        *,
+        only_containers: bool,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get root level nodes (Apps) for Knowledge Hub.
+
+        Args:
+            user_key: User's internal key
+            org_id: Organization ID
+            user_app_ids: List of app IDs user has access to
+            skip: Number of items to skip
+            limit: Maximum items to return
+            sort_field: Field to sort by
+            sort_dir: Sort direction (ASC/DESC)
+            only_containers: Only return nodes with children
+            transaction: Optional transaction context
+
+        Returns:
+            Dict with 'nodes' list and 'total' count
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_children(
+        self,
+        parent_id: str,
+        parent_type: str,
+        org_id: str,
+        user_key: str,
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        *,
+        only_containers: bool = False,
+        record_group_ids: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get direct children of a parent node for tree navigation (browse mode).
+
+        For filtered/searched results, use get_knowledge_hub_search with parent_id instead.
+
+        Provider-agnostic: Each provider converts these parameters to its query language.
+
+        Args:
+            parent_id: The ID of the parent node
+            parent_type: The type of parent: 'app', 'recordGroup', 'folder', 'record'
+            org_id: The organization ID
+            user_key: The user's key for permission filtering
+            skip: Number of items to skip for pagination
+            limit: Maximum number of items to return
+            sort_field: Field to sort by
+            sort_dir: Sort direction ('ASC' or 'DESC')
+            only_containers: If True, only return nodes that can have children
+            record_group_ids: Optional list of record group IDs to restrict visibility.
+                When set, only recordGroup nodes whose IDs are in this list are returned;
+                non-recordGroup nodes (folders, records, apps) pass through unfiltered.
+            transaction: Optional transaction ID
+
+        Returns:
+            Dict with 'nodes' list and 'total' count
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_search(
+        self,
+        org_id: str,
+        user_key: str,
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        search_query: str | None = None,
+        node_types: list[str] | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connector_ids: list[str] | None = None,
+        indexing_status: list[str] | None = None,
+        created_at: dict[str, int | None] | None = None,
+        updated_at: dict[str, int | None] | None = None,
+        size: dict[str, int | None] | None = None,
+        *,
+        only_containers: bool = False,
+        parent_id: str | None = None,
+        parent_type: str | None = None,
+        record_group_ids: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Unified search for knowledge hub nodes with permission-first traversal.
+
+        Supports both:
+        - Global search (parent_id=None): Search across all accessible nodes
+        - Scoped search (parent_id set): Search within a specific parent's hierarchy
+
+        Includes:
+        - RecordGroups with direct permissions
+        - Nested recordGroups via inheritPermissions edges (recursive)
+        - Records via inheritPermissions from accessible recordGroups
+        - Direct user/group/org permissions on records
+
+        Provider-agnostic: Each provider converts these parameters to its query language.
+
+        Args:
+            org_id: The organization ID
+            user_key: The user's key for permission filtering
+            skip: Number of items to skip for pagination
+            limit: Maximum number of items to return
+            sort_field: Field to sort by
+            sort_dir: Sort direction ('ASC' or 'DESC')
+            search_query: Optional search query to filter by name
+            node_types: Optional list of node types to filter by
+            record_types: Optional list of record types to filter by
+            origins: Optional list of origins to filter by (KB/CONNECTOR)
+            connector_ids: Optional list of connector IDs to filter by
+            indexing_status: Optional list of indexing statuses to filter by
+            created_at: Optional date range filter for creation date
+            updated_at: Optional date range filter for update date
+            size: Optional size range filter
+            only_containers: If True, only return nodes that can have children
+            parent_id: Optional parent node ID for scoped search
+            parent_type: Optional type of parent: 'app', 'recordGroup', 'folder', 'record'
+            record_group_ids: Optional list of record group IDs to restrict visibility.
+                When set, only recordGroup nodes whose IDs are in this list are returned;
+                non-recordGroup nodes (folders, records, apps) pass through unfiltered.
+            transaction: Optional transaction ID
+
+        Returns:
+            Dict with 'nodes' list and 'total' count
+        """
+        pass
+
+    # ==================== Knowledge Base Operations ====================
+
+    @abstractmethod
+    async def get_knowledge_hub_breadcrumbs(
+        self,
+        node_id: str,
+        transaction: str | None = None
+    ) -> list[dict[str, Any]]:
+        """
+        Get breadcrumb trail for a node.
+
+        Args:
+            node_id: Node ID to get breadcrumbs for
+            transaction: Optional transaction context
+
+        Returns:
+            List of breadcrumb items from root to current node
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_context_permissions(
+        self,
+        user_key: str,
+        org_id: str,
+        parent_id: str | None,
+        transaction: str | None = None,
+        parent_type: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get user's context-level permissions (for upload, create folder, etc.).
+
+        Args:
+            user_key: User's internal key
+            org_id: Organization ID
+            parent_id: Parent node ID (None for root)
+            transaction: Optional transaction context
+
+        Returns:
+            Dict with role and capability flags
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_filter_options(
+        self,
+        user_key: str,
+        org_id: str,
+        transaction: str | None = None
+    ) -> dict[str, list[dict[str, Any]]]:
+        """
+        Get available filter options (KBs and Apps) for a user.
+
+        Args:
+            user_key: User's internal key
+            org_id: Organization ID
+            transaction: Optional transaction context
+
+        Returns:
+            Dict with 'kbs' and 'apps' lists containing {id, name}
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_node_info(
+        self,
+        node_id: str,
+        folder_mime_types: list[str],
+        transaction: str | None = None
+    ) -> dict[str, Any] | None:
+        """
+        Get node information including type and subtype.
+
+        Args:
+            node_id: Node ID
+            folder_mime_types: List of MIME types that indicate folders
+            transaction: Optional transaction context
+
+        Returns:
+            Dict with id, name, nodeType, subType or None if not found
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_parent_node(
+        self,
+        node_id: str,
+        folder_mime_types: list[str],
+        transaction: str | None = None
+    ) -> dict[str, Any] | None:
+        """
+        Get the parent node of a given node.
+
+        Args:
+            node_id: Node ID
+            folder_mime_types: List of MIME types that indicate folders
+            transaction: Optional transaction context
+
+        Returns:
+            Dict with parent node info or None if at root
+        """
+        pass
+
+    @abstractmethod
+    async def validate_folder_exists_in_kb(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: str | None = None
+    ) -> bool:
+        """
+        Validate that a folder exists in a knowledge base.
+
+        Args:
+            kb_id (str): Knowledge base ID
+            folder_id (str): Folder ID
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            bool: True if folder exists in KB, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def _validate_folder_creation(
+        self,
+        kb_id: str,
+        user_id: str
+    ) -> dict:
+        """
+        Validate user permissions for folder creation.
+
+        Args:
+            kb_id (str): Knowledge base ID
+            user_id (str): User ID (internal key)
+
+        Returns:
+            Dict: Validation result with 'valid' key and user info
+        """
+        pass
+
+    @abstractmethod
+    async def get_key_by_external_message_id(
+        self,
+        external_message_id: str,
+        transaction: str | None = None
+    ) -> str | None:
+        """
+        Get internal key by external message ID.
+
+        Args:
+            external_message_id (str): External message ID
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[str]: Internal key if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_related_records_by_relation_type(
+        self,
+        record_id: str,
+        relation_type: str,
+        edge_collection: str,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Get related records connected via a specific relation type.
+
+        Args:
+            record_id (str): Source record ID
+            relation_type (str): Relation type to filter by (e.g., "ATTACHMENT")
+            edge_collection (str): Edge collection name
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[Dict]: List of related records with messageId, id/key, and relationshipType
+        """
+        pass
+
+    @abstractmethod
+    async def get_message_id_header_by_key(
+        self,
+        record_key: str,
+        collection: str,
+        transaction: str | None = None
+    ) -> str | None:
+        """
+        Get messageIdHeader field from a mail record by its key.
+
+        Args:
+            record_key (str): Record key (_key or id)
+            collection (str): Collection name (e.g., "records" or "mails")
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[str]: messageIdHeader value if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_related_mails_by_message_id_header(
+        self,
+        message_id_header: str,
+        exclude_key: str,
+        collection: str,
+        transaction: str | None = None
+    ) -> list[str]:
+        """
+        Find all mail records with the same messageIdHeader, excluding a specific key.
+
+        Args:
+            message_id_header (str): messageIdHeader value to search for
+            exclude_key (str): Record key to exclude from results
+            collection (str): Collection name (e.g., "records" or "mails")
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[str]: List of record keys (_key or id) matching the criteria
+        """
+        pass
+
+    @abstractmethod
+    async def check_connector_name_uniqueness(
+        self,
+        instance_name: str,
+        scope: str,
+        org_id: str,
+        user_id: str,
+        collection: str,
+        edge_collection: str | None = None,
+        transaction: str | None = None
+    ) -> bool:
+        """
+        Check if connector instance name is unique based on scope.
+
+        Args:
+            instance_name (str): Name to check
+            scope (str): Connector scope (personal/team)
+            org_id (str): Organization ID
+            user_id (str): User ID (for personal scope)
+            collection (str): Collection name for connector instances
+            edge_collection (Optional[str]): Edge collection for org-connector relationship (for team scope)
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            bool: True if name is unique, False if already exists
+        """
+        pass
+
+    @abstractmethod
+    async def batch_update_nodes(
+        self,
+        node_ids: list[str],
+        updates: dict[str, Any],
+        collection: str,
+        transaction: str | None = None
+    ) -> bool:
+        """
+        Batch update multiple nodes with the same updates.
+
+        Args:
+            node_ids (List[str]): List of node IDs to update
+            updates (Dict[str, Any]): Dictionary of fields to update
+            collection (str): Collection name
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_connector_instances_with_filters(
+        self,
+        collection: str,
+        scope: str | None = None,
+        user_id: str | None = None,
+        *,
+        is_admin: bool = False,
+        search: str | None = None,
+        page: int = 1,
+        limit: int = 20,
+        transaction: str | None = None,
+    ) -> tuple[list[dict], int]:
+        """
+        Get connector instances with filters, pagination, and access control.
+
+        Args:
+            collection (str): Collection name
+            scope (Optional[str]): Scope filter (personal/team)
+            user_id (Optional[str]): User ID for access control
+            is_admin (bool): Whether the user is an admin
+            search (Optional[str]): Search query
+            page (int): Page number (1-indexed)
+            limit (int): Number of items per page
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Tuple[List[Dict], int]: (List of connector instances, total count)
+        """
+        pass
+
+    @abstractmethod
+    async def count_connector_instances_by_scope(
+        self,
+        collection: str,
+        scope: str,
+        user_id: str | None = None,
+        *,
+        is_admin: bool = False,
+        transaction: str | None = None,
+    ) -> int:
+        """
+        Count connector instances by scope with access control.
+
+        Args:
+            collection (str): Collection name
+            scope (str): Scope filter (personal/team)
+            user_id (Optional[str]): User ID for access control
+            is_admin (bool): Whether the user is an admin
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            int: Count of connector instances
+        """
+        pass
+
+    # ==================== Team Operations ====================
+
+    @abstractmethod
+    async def get_team_with_users(
+        self,
+        team_id: str,
+        user_key: str,
+        transaction: str | None = None
+    ) -> dict | None:
+        """
+        Get a single team with its members and permissions.
+
+        Args:
+            team_id (str): Team ID
+            user_key (str): Current user's key (for permission checking)
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[Dict]: Team data with members and permissions, None if not found
+        """
+        pass
+
+    @abstractmethod
+    async def get_user_teams(
+        self,
+        user_key: str,
+        search: str | None = None,
+        page: int = 1,
+        limit: int = 100,
+        created_by: str | None = None,
+        created_after: int | None = None,
+        created_before: int | None = None,
+        transaction: str | None = None
+    ) -> tuple[list[dict], int]:
+        """
+        Get all teams that a user is a member of.
+
+        Args:
+            user_key (str): User's key
+            search (Optional[str]): Search query for team name or description
+            page (int): Page number (1-indexed)
+            limit (int): Number of items per page
+            created_by (Optional[str]): Filter by creator user key
+            created_after (Optional[int]): Filter teams created after this timestamp (ms)
+            created_before (Optional[int]): Filter teams created before this timestamp (ms)
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Tuple[List[Dict], int]: (List of teams with members and permissions, total count)
+        """
+        pass
+
+    @abstractmethod
+    async def get_team_users(
+        self,
+        team_id: str,
+        org_id: str,
+        user_key: str,
+        search: str | None = None,
+        page: int = 1,
+        limit: int = 100,
+        transaction: str | None = None
+    ) -> dict | None:
+        """
+        Get all users in a specific team.
+
+        Args:
+            team_id (str): Team ID
+            org_id (str): Organization ID
+            user_key (str): Current user's key (for permission checking)
+            search (Optional[str]): Search query for member name or email
+            page (int): Page number (1-indexed)
+            limit (int): Number of members per page
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[Dict]: Team data with paginated members, None if not found
+        """
+        pass
+
+    @abstractmethod
+    async def delete_team_member_edges(
+        self,
+        team_id: str,
+        user_ids: list[str],
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Delete edges to remove team members.
+
+        Args:
+            team_id (str): Team ID
+            user_ids (List[str]): List of user IDs to remove from team
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[Dict]: List of deleted permission edges (OLD values)
+        """
+        pass
+
+    @abstractmethod
+    async def batch_update_team_member_roles(
+        self,
+        team_id: str,
+        user_roles: list[dict[str, str]],
+        timestamp: int,
+        transaction: str | None = None
+    ) -> list[dict]:
+        """
+        Batch update user roles in a team.
+
+        Args:
+            team_id (str): Team ID
+            user_roles (List[Dict[str, str]]): List of {userId: str, role: str} dictionaries
+            timestamp (int): Timestamp for updatedAtTimestamp field
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[Dict]: List of updated permission edges
+        """
+        pass
+
+    @abstractmethod
+    async def delete_all_team_permissions(
+        self,
+        team_id: str,
+        transaction: str | None = None
+    ) -> None:
+        """
+        Delete all permissions for a team.
+
+        Args:
+            team_id (str): Team ID
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            None
+        """
+        pass
+
+    @abstractmethod
+    async def get_team_owner_removal_info(
+        self,
+        team_id: str,
+        user_ids: list[str],
+        transaction: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Get information about owners being removed and total owner count for a team.
+
+        Args:
+            team_id (str): Team ID
+            user_ids (List[str]): List of user IDs to check
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Dict with keys:
+                - owners_being_removed (List[str]): User IDs of owners being removed
+                - total_owner_count (int): Total number of owners in the team
+        """
+        pass
+
+    @abstractmethod
+    async def get_team_permissions_and_owner_count(
+        self,
+        team_id: str,
+        user_ids: list[str],
+        transaction: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Get team info, current permissions for specific users, and total owner count.
+
+        Args:
+            team_id (str): Team ID
+            user_ids (List[str]): List of user IDs to get permissions for
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Dict with keys:
+                - team (Dict): Team document
+                - permissions (Dict[str, str]): Map of user_id -> role
+                - owner_count (int): Total number of owners in the team
+        """
+        pass
+
+    # ==================== User Operations ====================
+
+    @abstractmethod
+    async def get_organization_users(
+        self,
+        org_id: str,
+        search: str | None = None,
+        page: int = 1,
+        limit: int = 100,
+        transaction: str | None = None
+    ) -> tuple[list[dict], int]:
+        """
+        Get users in an organization with pagination and search.
+
+        Args:
+            org_id (str): Organization ID
+            search (Optional[str]): Search query for user name or email
+            page (int): Page number (1-indexed)
+            limit (int): Number of items per page
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Tuple[List[Dict], int]: (List of users, total count)
+        """
+        pass
+
+    @abstractmethod
+    async def get_agent(
+        self, agent_id: str, org_id: str | None = None, transaction: str | None = None
+    ) -> dict | None:
+        """
+        Fetch the complete agent document with linked graph data.
+
+        Does NOT perform any permission check — callers must invoke
+        ``check_agent_permission`` separately before calling this method.
+
+        Args:
+            agent_id:    The agent key / ID.
+            org_id:      The organisation key (optional).  When provided,
+                         ``shareWithOrg`` is resolved against that specific
+                         org's permission edge.  When omitted, ``shareWithOrg``
+                         is ``True`` if *any* ORG permission edge exists on the
+                         agent, ensuring the flag is never incorrectly ``False``
+                         when the caller does not carry an org scope token.
+            transaction: Optional transaction ID.
+
+        Returns:
+            Dict containing the agent document merged with ``toolsets``,
+            ``knowledge``, and ``shareWithOrg``, or ``None`` if the agent does
+            not exist or is deleted.
+        """
+        pass
+
+    @abstractmethod
+    async def check_agent_permission(
+        self, agent_id: str, user_id: str, org_id: str
+    ) -> dict | None:
+        """
+        Lightweight permission check: returns the caller's access rights on an
+        agent without fetching toolsets or knowledge.
+
+        This method skips the expensive toolset/knowledge joins and is suitable
+        for endpoints that only need to verify access (e.g. middleware guards,
+        pre-flight checks).
+
+        Returns None if the agent does not exist, is deleted, or the user has
+        no access (individual, team, or org).
+
+        Args:
+            agent_id: The agent key / ID.
+            user_id:  The internal user key (_key in ArangoDB, id in Neo4j).
+            org_id:   The organisation key.
+
+        Returns:
+            Dict with keys ``{user_role, can_edit, can_delete, can_share,
+            can_view, access_type}`` on success, or ``None`` if the user has
+            no access.
+        """
+        pass
+
+    @abstractmethod
+    async def get_agents_by_web_search_provider(
+        self, org_id: str, provider: str
+    ) -> list[dict]:
+        """
+        Find all agents in the organisation that use a specific web search provider.
+
+        Scoped via ORG-type permission edges (i.e. agents shared with the org).
+
+        Args:
+            org_id:   The organisation key.
+            provider: The web search provider type (e.g. ``"serper"``, ``"tavily"``, ``"exa"``).
+
+        Returns:
+            List of dicts with ``{name, _key, creatorName}`` for each matching
+            agent.  Returns an empty list when no agents match.
+        """
+        pass
+
+    @abstractmethod
+    async def get_agents_by_model_key(
+        self, org_id: str, model_key: str
+    ) -> list[dict]:
+        """
+        Find all agents in the organisation that use a specific AI model.
+
+        Agents store models in a ``models`` array as either ``"{modelKey}"`` or
+        ``"{modelKey}_{modelName}"``; both forms are matched.
+
+        Scoped to the organisation via the same BELONGS_TO + permission edge
+        skeleton used by ``get_agents_by_web_search_provider``.
+
+        Args:
+            org_id:    The organisation key.
+            model_key: The model key to match (e.g. a UUID assigned at create time).
+
+        Returns:
+            List of dicts with ``{name, _key, creatorName}`` for each matching
+            agent.  Returns an empty list when no agents match.
+        """
+        pass
+
+    @abstractmethod
+    async def validate_folder_for_upload(
+        self,
+        kb_id: str,
+        folder_id: str,
+        user_id: str,
+        org_id: str,
+    ) -> dict:
+        """
+        Validate that a folder exists and belongs to the KB, and that the user
+        has write access, before accepting an upload request.
+
+        Args:
+            kb_id:     Knowledge base ID.
+            folder_id: Folder ID to validate.
+            user_id:   Requesting user's external ID.
+            org_id:    Organization ID.
+
+        Returns:
+            Dict with ``valid: True`` and context on success, or
+            ``valid: False, success: False, code: <4xx|5xx>, reason: <str>``
+            on failure.
+        """
+        pass

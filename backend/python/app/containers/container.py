@@ -34,9 +34,9 @@ class BaseAppContainer(containers.DeclarativeContainer):
         """
         data_store = os.getenv("DATA_STORE", "arangodb").lower()
 
-        if data_store == "neo4j":
+        if data_store != "arangodb":
             logger = create_logger("base_service")
-            logger.info("⏭️  Skipping ArangoDB client initialization (DATA_STORE=neo4j)")
+            logger.info(f"⏭️  Skipping ArangoDB client initialization (DATA_STORE={data_store})")
             return None
 
         arangodb_config = await config_service.get_config(

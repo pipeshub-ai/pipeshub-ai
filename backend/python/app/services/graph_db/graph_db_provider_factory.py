@@ -18,6 +18,7 @@ from app.config.configuration_service import ConfigurationService
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from app.services.graph_db.falkor.falkor_provider import FalkorProvider
 
 
 class GraphDBProviderFactory:
@@ -90,6 +91,14 @@ class GraphDBProviderFactory:
             # Neo4j support
             elif provider_type == "neo4j":
                 provider = await GraphDBProviderFactory._create_neo4j_provider(
+                    logger=logger,
+                    config_service=config_service,
+                )
+                return provider
+
+            #FalkorDB support
+            elif provider_type == "falkordb":
+                provider = await GraphDBProviderFactory._create_falkor_provider(
                     logger=logger,
                     config_service=config_service,
                 )
@@ -173,6 +182,47 @@ class GraphDBProviderFactory:
 
             if not connected:
                 raise ConnectionError("Failed to connect Neo4j provider to database")
+
+            logger.info("✅ Neo4j provider created and connected successfully")
+            return provider
+
+        except Exception as e:
+            logger.error(f"❌ Failed to create Neo4j provider: {str(e)}")
+            raise
+
+    @staticmethod
+    async def _create_falkor_provider(
+        logger: Logger,
+        config_service: ConfigurationService,
+    ):
+        """
+        Create and connect a Neo4j provider.
+
+        Args:
+            logger: Logger instance
+            config_service: Configuration service
+        Returns:
+            Neo4jProvider: Connected Neo4j provider
+
+        Raises:
+            ConnectionError: If unable to connect to Neo4j
+        """
+        try:
+            logger.debug("🔧 Creating Neo4j provider...")
+
+            # Create provider instance
+            provider = FalkorProvider(
+                logger=logger,
+                config_service=config_service,
+            )
+
+            logger.debug("🔌 Connecting Neo4j provider...")
+
+            # Connect to database
+            connected = await provider.connect()
+
+            if not connected:
+                raise ConnectionError("Failed to connect FalkorDB provider to database")
 
             logger.info("✅ Neo4j provider created and connected successfully")
             return provider
