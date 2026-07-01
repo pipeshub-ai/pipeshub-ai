@@ -2554,6 +2554,16 @@ Examples of retrieval queries:
 - "Find X" → retrieval
 - "Show me X" (where X is a concept/document/topic) → retrieval
 
+## ENTITY-AWARE SEARCH (Automatic)
+
+`search_internal_knowledge` **automatically** resolves knowledge-graph entities (categories, topics, departments, people, specific records/documents, record groups/folders) from the query and applies them as filters. You do NOT need to call `resolve_entity_filters` separately — entity filtering happens transparently within `search_internal_knowledge`.
+
+If auto-resolved entity filters produce 0 results, the tool automatically retries without filters. No additional planner action is required for entity filtering.
+
+**Optional explicit control:** If you need fine-grained control over which entities to filter by, call `resolve_entity_filters` first, then pass the returned entity **names** (not entityId) to `search_internal_knowledge` via `category_ids`, `topic_ids`, `department_ids`, `people_ids`, `record_names`, or `record_group_names`. This overrides auto-resolution.
+
+**Do not combine filter types.** `category_ids`, `topic_ids`, `department_ids`, `people_ids`, `record_names`, and `record_group_names` are combined with AND semantics — passing more than one type in the same call intersects the constraints and can collapse results to zero even when each type alone would match. Pass filters from a single type per call. Topics in particular should not be combined with department/category filters — if a topic is relevant, call `search_internal_knowledge` with `topic_ids` alone (optionally as an additional PARALLEL call alongside an unfiltered or differently-filtered search), never stacked with department/category in the same call. `record_names`/`record_group_names` identify an exact document or folder by name — use alone when the query clearly names a specific document/container.
+
 ## Tool Selection Principles
 
 **Read tool descriptions carefully** - Each tool has a description, parameters, and usage examples. Use these to determine if a tool matches the user's intent.
@@ -4010,6 +4020,7 @@ REFLECT_PROMPT = """Analyze tool execution results and decide next action.
 - "Space ID type error" → Call `confluence.get_spaces` to get numeric ID
 - "Used slack.search_all for conversation history" → Use `slack.get_channel_history` instead
 - "Told user to call a tool" → Continue with the tool yourself (continue_with_more_tools)
+- "retrieval returned 0 results with entity filters (category_ids/topic_ids/department_ids/people_ids/record_names/record_group_names set)" → **continue_with_more_tools** — retry `retrieval.search_internal_knowledge` WITHOUT any entity filter parameters (drop category_ids, topic_ids, department_ids, people_ids, record_names, record_group_names from the call)
 
 ## Handling Empty/Null Results
 
@@ -6109,6 +6120,57 @@ async def reflect_node(
         log.info(f"🔗 EMPTY CASCADE SOURCE: {[r.get('tool_name') for r in empty_cascade_sources]}")
         # Don't hard-fail — mark state so downstream reflection knows
         state["_cascade_source_empty"] = True
+
+    # ========================================================================
+    # ENTITY FILTER FALLBACK: Detect zero-result filtered retrieval and retry
+    # without entity filters when this was the only search attempted.
+    # ========================================================================
+
+    if iteration_count < max_iterations:
+        for r in tool_results:
+            tool_name = r.get("tool_name", "").lower()
+            result = r.get("result", "")
+            if "search_internal_knowledge" not in tool_name and "retrieval" not in tool_name:
+                continue
+            # Check if this search had entity filters AND returned 0 results
+            args = r.get("args", {}) or {}
+            had_entity_filters = any(
+                args.get(k) for k in (
+                    "category_ids", "topic_ids", "department_ids", "people_ids",
+                    "record_names", "record_group_names",
+                )
+            )
+            result_str = str(result).lower()
+            zero_results = (
+                '"result_count": 0' in result_str
+                or "no results found" in result_str
+                or "retrieved 0 knowledge blocks" in result_str
+            )
+            if had_entity_filters and zero_results:
+                log.info(
+                    "🔎 Entity-filtered retrieval returned 0 results — "
+                    "suggesting retry without entity filters"
+                )
+                state["reflection_decision"] = "continue_with_more_tools"
+                state["reflection"] = {
+                    "decision": "continue_with_more_tools",
+                    "reasoning": (
+                        "search_internal_knowledge returned 0 results with entity filters applied. "
+                        "Retry search_internal_knowledge WITHOUT category_ids, topic_ids, "
+                        "department_ids, people_ids, record_names, and record_group_names to "
+                        "broaden the search universe."
+                    ),
+                    "fix_instruction": (
+                        "Call search_internal_knowledge again using the same query string "
+                        "but omit all entity filter parameters "
+                        "(category_ids, topic_ids, department_ids, people_ids, record_names, "
+                        "record_group_names)."
+                    ),
+                    "task_complete": False,
+                }
+                duration_ms = (time.perf_counter() - start_time) * 1000
+                log.info(f"⚡ Reflect: continue (entity-filter fallback) - {duration_ms:.0f}ms")
+                return state
 
     # ========================================================================
     # DECISION 1: Partial Success (some succeeded, some failed)
@@ -8695,7 +8757,27 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
    - "update"/"modify"/"change"/"extend"/"reschedule" → UPDATE tools
    - "delete"/"remove"/"cancel" → DELETE tools
 
-3. **Topic Discovery — Hybrid Search** (HIGHEST PRIORITY):
+3. **Entity-Aware Search (Automatic):**
+
+   `retrieval_search_internal_knowledge` automatically resolves knowledge-graph entities
+   (categories, topics, departments, people, specific records/documents, record groups/
+   folders) from the query and applies them as filters. No separate call to
+   `retrieval_resolve_entity_filters` is needed — entity filtering is transparent. If
+   auto-resolved filters yield 0 results, the tool retries without them.
+
+   **Optional explicit override:** Call `retrieval_resolve_entity_filters` only if you need
+   fine-grained control. Pass the returned entity **names** (not entityId) via `category_ids`,
+   `topic_ids`, `department_ids`, `people_ids`, `record_names`, `record_group_names`.
+
+   **Do not combine filter types.** These parameters are ANDed together — combining
+   multiple types (e.g. a department AND a topic) intersects the constraints and can return
+   zero results even when each alone would match. Pass filters from a single type per call.
+   Topics should not be combined with department/category filters — try a topic-only call,
+   optionally as a separate parallel `retrieval_search_internal_knowledge` call, not stacked
+   with other entity filters. `record_names`/`record_group_names` identify an exact document
+   or folder by name — use them alone when the query clearly names a specific document/container.
+
+4. **Topic Discovery — Hybrid Search** (HIGHEST PRIORITY):
    When the user query contains a topic/keyword and asks to discover related items
    (list, find, show, search, browse), call ALL available search dimensions in parallel:
    - `knowledgehub.list_files` → finds items by name/metadata in the index

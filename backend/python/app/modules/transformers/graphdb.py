@@ -1,11 +1,12 @@
 import uuid
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from app.config.constants.arangodb import (
     CollectionNames,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.blocks import SemanticMetadata
+from app.models.entities import EntityRecord, EntityType
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -17,8 +18,13 @@ class GraphDBTransformer(Transformer):
         self.logger = logger
         self.graph_data_store = GraphDataStore(logger, graph_provider)
 
-    async def apply(self, ctx: TransformContext) -> None:
+    async def apply(self, ctx: TransformContext) -> List[EntityRecord]:
         """Persist semantic metadata to the graph and update extractionStatus.
+
+        Returns a list of :class:`EntityRecord` objects for every entity that
+        was referenced (created or reused) during this run.  The caller
+        (:meth:`SinkOrchestrator.enrich`) uses these to sync entities to the
+        vector store.
 
         ``indexingStatus`` is intentionally **not** touched here — that is set
         by :meth:`SinkOrchestrator.index` (via ``_update_indexing_status``)
@@ -57,13 +63,14 @@ class GraphDBTransformer(Transformer):
                             "⚠️ Failed to update indexing status for record %s - record may not exist",
                             record_id,
                         )
-                        return
+                        return []
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
                 raise
+            return []
         else:
             is_vlm_ocr_processed = getattr(record, 'is_vlm_ocr_processed', False)
-            await self.save_metadata_to_db(record_id, metadata, virtual_record_id, is_vlm_ocr_processed)
+            return await self.save_metadata_to_db(record_id, metadata, virtual_record_id, is_vlm_ocr_processed)
 
     # ------------------------------------------------------------------
     # helpers
@@ -183,11 +190,19 @@ class GraphDBTransformer(Transformer):
 
     async def save_metadata_to_db(
         self, record_id: str, metadata: SemanticMetadata, virtual_record_id: str, is_vlm_ocr_processed: bool = False
-    ) -> None:
+    ) -> List[EntityRecord]:
         """
         Extract metadata from a document and create department relationships.
         Uses reconciliation logic: fetch existing edges, compare with new, create new ones, delete stale ones.
+
+        Returns a list of :class:`EntityRecord` objects representing all
+        entity nodes referenced during this call (newly created or reused).
+        The caller uses these to sync entities to the vector store.
         """
+        touched_entities: List[EntityRecord] = []
+        # Derive org_id from the record if available; fall back to empty string.
+        # The caller (SinkOrchestrator) will fill in org_id via ctx.record.org_id.
+        org_id_placeholder = ""
 
         self.logger.info("🚀 Saving metadata to graph database")
         async with self.graph_data_store.transaction() as tx_store:
@@ -200,6 +215,9 @@ class GraphDBTransformer(Transformer):
                 if record is None:
                     self.logger.error(f"❌ Record {record_id} not found in database")
                     raise Exception(f"Record {record_id} not found in database")
+
+                # Use orgId stored on the record node for entity metadata
+                org_id_placeholder = record.get("orgId", "")
 
                 record_from = f"{CollectionNames.RECORDS.value}/{record_id}"
 
@@ -215,6 +233,13 @@ class GraphDBTransformer(Transformer):
                             dept_key = self._node_key(results[0])
                             dept_to = f"{CollectionNames.DEPARTMENTS.value}/{dept_key}"
                             new_dept_tos[dept_to] = department
+                            touched_entities.append(EntityRecord(
+                                entity_id=dept_key,
+                                entity_type=EntityType.DEPARTMENT,
+                                name=department,
+                                org_id=org_id_placeholder,
+                                extraction_sources=["llm"],
+                            ))
                         else:
                             self.logger.warning(f"⚠️ No department found for: {department}")
                     except Exception as e:
@@ -235,6 +260,13 @@ class GraphDBTransformer(Transformer):
                 )
                 cat_to = f"{CollectionNames.CATEGORIES.value}/{category_key}"
                 new_cat_tos[cat_to] = metadata.categories[0]
+                touched_entities.append(EntityRecord(
+                    entity_id=category_key,
+                    entity_type=EntityType.CATEGORY,
+                    name=metadata.categories[0],
+                    org_id=org_id_placeholder,
+                    extraction_sources=["llm"],
+                ))
 
                 # Handle subcategories
                 async def handle_subcategory(
@@ -245,6 +277,15 @@ class GraphDBTransformer(Transformer):
 
                     sub_to = f"{collection_name}/{key}"
                     new_cat_tos[sub_to] = name
+                    touched_entities.append(EntityRecord(
+                        entity_id=key,
+                        entity_type=EntityType.SUBCATEGORY,
+                        name=name,
+                        org_id=org_id_placeholder,
+                        parent_entity_id=parent_key,
+                        parent_entity_type=EntityType.CATEGORY if level == "1" else EntityType.SUBCATEGORY,
+                        extraction_sources=["llm"],
+                    ))
 
                     # Create hierarchy relationship (inter-category) only when it does
                     # not already exist.  Skipping the write for existing edges avoids
@@ -304,6 +345,13 @@ class GraphDBTransformer(Transformer):
                     )
                     lang_to = f"{CollectionNames.LANGUAGES.value}/{lang_key}"
                     new_lang_tos[lang_to] = language
+                    touched_entities.append(EntityRecord(
+                        entity_id=lang_key,
+                        entity_type=EntityType.LANGUAGE,
+                        name=language,
+                        org_id=org_id_placeholder,
+                        extraction_sources=["llm"],
+                    ))
 
                 await self._reconcile_edges(
                     tx_store, record_id, record_from,
@@ -319,6 +367,13 @@ class GraphDBTransformer(Transformer):
                     )
                     topic_to = f"{CollectionNames.TOPICS.value}/{topic_key}"
                     new_topic_tos[topic_to] = topic
+                    touched_entities.append(EntityRecord(
+                        entity_id=topic_key,
+                        entity_type=EntityType.TOPIC,
+                        name=topic,
+                        org_id=org_id_placeholder,
+                        extraction_sources=["llm"],
+                    ))
 
                 await self._reconcile_edges(
                     tx_store, record_id, record_from,
@@ -355,9 +410,11 @@ class GraphDBTransformer(Transformer):
                         "⚠️ Failed to update extraction status for record %s - record may not exist",
                         record_id,
                     )
-                    return
+                    return touched_entities
 
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
                 raise
+
+        return touched_entities
 

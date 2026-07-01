@@ -185,6 +185,14 @@ async def get_services(request: Request) -> dict[str, Any]:
         if llm is None:
             raise LLMInitializationError()
 
+    # Entity vector store is optional — graceful fallback if not provisioned
+    entity_vector_store = None
+    if hasattr(container, "entity_vector_store"):
+        try:
+            entity_vector_store = await container.entity_vector_store()
+        except Exception:
+            logger.debug("entity_vector_store not available; entity filtering disabled")
+
     return {
         "retrieval_service": retrieval_service,
         "graph_provider": graph_provider,
@@ -192,6 +200,7 @@ async def get_services(request: Request) -> dict[str, Any]:
         "config_service": config_service,
         "logger": logger,
         "llm": llm,
+        "entity_vector_store": entity_vector_store,
     }
 
 
@@ -1557,6 +1566,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
                 graph_type,
                 has_sql_connector=has_sql_connector,
                 has_slack_connector=has_slack_connector,
+                entity_vector_store=services.get("entity_vector_store"),
             )
 
         graph_to_use = selected_graph
@@ -1626,6 +1636,7 @@ async def stream_response(
     modelKey: str = None,
     is_multimodal_llm: bool = False,
     client_name: str | None = None,
+    entity_vector_store: Any = None,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response"""
     try:
@@ -1680,6 +1691,7 @@ async def stream_response(
                 is_multimodal_llm=is_multimodal_llm,
                 has_slack_connector=has_slack_connector,
                 client_name=client_name,
+                entity_vector_store=entity_vector_store,
             )
 
         config = {
@@ -1747,6 +1759,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
                 query_info.modelName,
                 query_info.modelKey,
                 client_name=client_name,
+                entity_vector_store=services.get("entity_vector_store"),
             ),
             media_type="text/event-stream",
             headers={
@@ -3416,6 +3429,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
                 graph_type,
                 has_sql_connector=has_sql_connector,
                 has_slack_connector=has_slack_connector,
+                entity_vector_store=services.get("entity_vector_store"),
             )
 
         graph_to_use = selected_graph
@@ -3802,6 +3816,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 modelKey=model_key,
                 is_multimodal_llm=is_multimodal_llm,
                 client_name=client_name,
+                entity_vector_store=services.get("entity_vector_store"),
             ),
             media_type="text/event-stream",
             headers={

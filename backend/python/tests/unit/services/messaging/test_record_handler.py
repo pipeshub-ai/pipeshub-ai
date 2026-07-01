@@ -22,7 +22,7 @@ from app.services.messaging.config import IndexingEvent, PipelineEvent, Pipeline
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_handler(logger=None, config_service=None, event_processor=None):
+def _make_handler(logger=None, config_service=None, event_processor=None, entity_vector_store=None):
     """Create a RecordEventHandler with mock dependencies."""
     from app.services.messaging.kafka.handlers.record import RecordEventHandler
 
@@ -43,6 +43,7 @@ def _make_handler(logger=None, config_service=None, event_processor=None):
         logger=logger,
         config_service=config_service,
         event_processor=event_processor,
+        entity_vector_store=entity_vector_store,
     )
 
 
@@ -161,6 +162,81 @@ class TestDeleteRecordEvent:
 
         assert len(events) == 2
         pipeline.bulk_delete_embeddings.assert_awaited_once_with([None])
+
+
+# ===================================================================
+# Delete record -> record-name entity vector cleanup
+# ===================================================================
+
+class TestDeleteRecordEntityCleanup:
+    """Tests for _delete_record_name_entity invoked from the DELETE_RECORD branch."""
+
+    @pytest.mark.asyncio
+    async def test_delete_record_removes_entity_point(self):
+        """DELETE_RECORD must remove the record-name entity via entity_vector_store."""
+        mock_evs = MagicMock()
+        mock_evs.delete_entity = AsyncMock()
+        handler = _make_handler(entity_vector_store=mock_evs)
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "orgId": "org1", "virtualRecordId": "vr1"})
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock(return_value={"virtual_record_ids_processed": 1})
+
+        payload = {"recordId": "r1", "virtualRecordId": "vr1"}
+        events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
+
+        assert len(events) == 2
+        mock_evs.delete_entity.assert_awaited_once_with(
+            org_id="org1", entity_type="record", entity_id="r1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_record_noop_when_entity_vector_store_not_configured(self):
+        """When entity_vector_store is None, deletion still succeeds without cleanup."""
+        handler = _make_handler(entity_vector_store=None)
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "orgId": "org1"})
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock(return_value={"virtual_record_ids_processed": 1})
+
+        payload = {"recordId": "r1", "virtualRecordId": "vr1"}
+        events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
+
+        assert len(events) == 2
+
+    @pytest.mark.asyncio
+    async def test_delete_record_entity_cleanup_failure_is_non_fatal(self):
+        """A failure in entity_vector_store.delete_entity must not block the delete pipeline."""
+        mock_evs = MagicMock()
+        mock_evs.delete_entity = AsyncMock(side_effect=RuntimeError("vector db unreachable"))
+        handler = _make_handler(entity_vector_store=mock_evs)
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "orgId": "org1"})
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock(return_value={"virtual_record_ids_processed": 1})
+
+        payload = {"recordId": "r1", "virtualRecordId": "vr1"}
+        # Must not raise
+        events = await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
+
+        assert len(events) == 2
+        mock_evs.delete_entity.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_record_no_org_id_skips_cleanup(self):
+        """When the record document has no orgId, entity cleanup is skipped safely."""
+        mock_evs = MagicMock()
+        mock_evs.delete_entity = AsyncMock()
+        handler = _make_handler(entity_vector_store=mock_evs)
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={"_key": "r1"})
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock(return_value={"virtual_record_ids_processed": 1})
+
+        payload = {"recordId": "r1", "virtualRecordId": "vr1"}
+        await _collect_events(handler, EventTypes.DELETE_RECORD.value, payload)
+
+        mock_evs.delete_entity.assert_not_awaited()
 
 
 # ===================================================================

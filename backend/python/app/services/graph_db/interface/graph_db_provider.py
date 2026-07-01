@@ -2428,7 +2428,8 @@ class IGraphDBProvider(ABC):
         self,
         user_id: str,
         org_id: str,
-        filters: dict[str, list[str]] | None = None
+        filters: dict[str, list[str]] | None = None,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
@@ -2452,6 +2453,9 @@ class IGraphDBProvider(ABC):
                     'kb': [kb_ids],
                     'apps': [connector_ids]
                 }
+            time_range (Optional[Dict[str, int]]): Optional source-creation time bounds in epoch ms.
+                Keys: 'source_created_after_ms' (inclusive lower), 'source_created_before_ms' (inclusive upper).
+                Filters on record.sourceCreatedAtTimestamp.
 
         Returns:
             Dict[str, str]: Mapping of virtualRecordId -> recordId
@@ -4308,5 +4312,62 @@ class IGraphDBProvider(ABC):
             Dict with ``valid: True`` and context on success, or
             ``valid: False, success: False, code: <4xx|5xx>, reason: <str>``
             on failure.
+        """
+        pass
+
+    # ==================== Entity Vector Sync ====================
+
+    @abstractmethod
+    async def get_entities_for_sync(
+        self,
+        org_id: str,
+        entity_types: list[str] | None = None,
+        since_timestamp: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Retrieve entity nodes that should be synced to the vector store.
+
+        Used for initial bulk migration and incremental sync.  Each returned
+        dict must contain at minimum:
+            {
+                "entityId":   str,   # node key / id
+                "entityType": str,   # one of EntityType values
+                "name":       str,   # display name
+                "orgId":      str,
+            }
+        Additional fields (description, parentEntityId, etc.) are returned
+        when present in the underlying graph node.
+
+        Args:
+            org_id:          Organisation scope.
+            entity_types:    Optional list of EntityType value strings to limit
+                             the query (e.g. ["category", "topic"]).  Pass None
+                             to fetch all supported types.
+            since_timestamp: Optional epoch-ms lower bound on a creation or
+                             update timestamp.  Providers that don't support
+                             incremental queries may ignore this.
+
+        Returns:
+            List of entity dicts ready to be converted into EntityRecord objects.
+        """
+        pass
+
+    @abstractmethod
+    async def get_entity_record_count(
+        self, entity_id: str, entity_type: str, org_id: str
+    ) -> int:
+        """
+        Count the number of records currently linked to an entity.
+
+        Used to populate ``entityCount`` in the vector store metadata so that
+        safe-delete logic can determine whether an entity is truly orphaned.
+
+        Args:
+            entity_id:   Graph DB node key / id of the entity.
+            entity_type: EntityType value string (e.g. "category").
+            org_id:      Organisation scope.
+
+        Returns:
+            Non-negative integer count of linked records.
         """
         pass

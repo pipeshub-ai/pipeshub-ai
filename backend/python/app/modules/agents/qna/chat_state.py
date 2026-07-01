@@ -37,6 +37,7 @@ class ChatState(TypedDict):
     graph_provider: IGraphDBProvider
     reranker_service: RerankerService
     config_service: ConfigurationService
+    entity_vector_store: Any | None  # EntityVectorStore, optional for graceful degradation
 
     model_name: str | None
     model_key: str | None
@@ -388,7 +389,7 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
 
 def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
-                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, client_name: str | None = None) -> ChatState:
+                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, entity_vector_store: Any = None) -> ChatState:
     """
     Build the initial state from the chat query and user info.
 
@@ -488,6 +489,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "graph_provider": graph_provider,
         "reranker_service": reranker_service,
         "config_service": config_service,
+        "entity_vector_store": entity_vector_store,
         "model_name": model_name,
         "model_key": model_key,
 

@@ -2986,6 +2986,100 @@ class MeetingRecord(Record):
         }
 
 
+# ---------------------------------------------------------------------------
+# Entity Vector Store models (for knowledge graph entity embedding)
+# ---------------------------------------------------------------------------
+
+class EntityType(str, Enum):
+    """Types of knowledge graph entities that are synced to the vector store."""
+    CATEGORY = "category"
+    SUBCATEGORY = "subcategory"
+    TOPIC = "topic"
+    DEPARTMENT = "department"
+    PERSON = "person"
+    RECORD = "record"
+    RECORD_GROUP = "record_group"
+    CONNECTOR = "connector"
+    LANGUAGE = "language"
+    RELATIONSHIP = "relationship"
+    CUSTOM = "custom"
+
+
+class EntityRecord(BaseModel):
+    """
+    A knowledge graph entity to be synced to the vector store.
+
+    The `page_content` embedded by EntityVectorStore is built from:
+        ``name`` (+ aliases if present + description if present)
+
+    Provenance fields (sourceConnectors, extractionSources) track cross-connector
+    sharing so entities are not deleted when only one connector disconnects.
+    """
+
+    entity_id: str = Field(description="Graph DB node key (_key in Arango, id in Neo4j)")
+    entity_type: EntityType = Field(description="Type of the entity")
+    name: str = Field(description="Display name (used as the primary embedding text)")
+    org_id: str = Field(default="", description="Organization ID for multi-tenant isolation")
+
+    # Optional semantic enrichment
+    description: str = Field(default="", description="Optional context appended to name for richer embedding")
+    aliases: list[str] = Field(default_factory=list, description="Alternative names for better recall")
+
+    # Hierarchy support (categories -> subcategories)
+    parent_entity_id: str | None = Field(default=None, description="Graph DB key of parent entity (for hierarchical types)")
+    parent_entity_type: EntityType | None = Field(default=None, description="Entity type of the parent")
+
+    # Scoping
+    value_type: str = Field(default="string", description="Groups semantically similar types (e.g. category + subcategory share 'string')")
+    connector_id: str | None = Field(default=None, description="Set when entity is scoped to a specific connector instance")
+
+    # Reference counting and provenance (Graphiti-inspired)
+    entity_count: int = Field(default=0, description="Number of records currently linked to this entity across all connectors")
+    source_connectors: list[str] = Field(default_factory=list, description="Connector IDs that reference this entity; entity is kept while this list is non-empty")
+    extraction_sources: list[str] = Field(default_factory=list, description="How this entity was discovered: 'system'|'connector'|'llm'|'ner'|'ontology'")
+    first_seen_timestamp: int = Field(default=0, description="Epoch ms when entity was first synced")
+    last_confirmed_timestamp: int = Field(default=0, description="Epoch ms of the last time a record was linked to this entity")
+
+    # Future extensibility
+    domain: str | None = Field(default=None, description="Domain-specific scope (e.g. 'legal', 'finance') for future domain-aware extraction")
+    tags: list[str] = Field(default_factory=list, description="Free-form tags for ontology/domain grouping")
+    summary: str = Field(default="", description="Aggregated context from linked records; evolved by background job (Phase 6.1)")
+    last_summary_update: int = Field(default=0, description="Epoch ms of last summary re-embedding")
+
+    @property
+    def embedding_text(self) -> str:
+        """Build the text that gets embedded for this entity."""
+        parts = [self.name.strip()]
+        if self.aliases:
+            parts.append(" | ".join(self.aliases))
+        if self.summary:
+            parts.append(self.summary.strip())
+        elif self.description:
+            parts.append(self.description.strip())
+        return " ".join(parts)
+
+    def to_vector_payload(self) -> dict:
+        """Serialise to the flat metadata dict stored on each vector point."""
+        return {
+            "entityId": self.entity_id,
+            "entityType": self.entity_type.value,
+            "orgId": self.org_id,
+            "name": self.name,
+            "valueType": self.value_type,
+            "parentEntityId": self.parent_entity_id,
+            "parentEntityType": self.parent_entity_type.value if self.parent_entity_type else None,
+            "aliases": self.aliases,
+            "connectorId": self.connector_id,
+            "entityCount": self.entity_count,
+            "sourceConnectors": self.source_connectors,
+            "extractionSources": self.extraction_sources,
+            "firstSeenTimestamp": self.first_seen_timestamp,
+            "lastConfirmedTimestamp": self.last_confirmed_timestamp,
+            "domain": self.domain,
+            "tags": self.tags,
+        }
+
+
 # Rebuild models to resolve forward references after all imports are complete
 # Call rebuild function after all models are defined to avoid circular import issues
 rebuild_all_models()

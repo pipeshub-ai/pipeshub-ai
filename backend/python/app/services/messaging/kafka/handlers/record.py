@@ -3,6 +3,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from io import BytesIO
 from logging import Logger
+from typing import TYPE_CHECKING, Optional
 
 import aiohttp  # type: ignore
 
@@ -29,6 +30,9 @@ from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
+
+if TYPE_CHECKING:
+    from app.modules.transformers.entity_vectorstore import EntityVectorStore
 
 
 SUPPORTED_CODE_FILE_EXTENSIONS = {
@@ -72,12 +76,37 @@ class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
                 config_service: ConfigurationService,
                 event_processor: EventProcessor,
+                entity_vector_store: Optional["EntityVectorStore"] = None,
                 ) -> None:
 
         self.logger = logger
         self.config_service = config_service
 
         self.event_processor : EventProcessor = event_processor
+        self.entity_vector_store: Optional["EntityVectorStore"] = entity_vector_store
+
+    async def _delete_record_name_entity(self, record_id: str, record: dict | None) -> None:
+        """Remove the record-name entity point when its source record is deleted.
+
+        Best-effort: the record's document is already gone from the vector
+        store via bulk_delete_embeddings; failing to also drop the entity
+        point must not block the delete pipeline.
+        """
+        if not self.entity_vector_store or not record:
+            return
+        org_id = record.get("orgId", "")
+        if not org_id:
+            return
+        try:
+            await self.entity_vector_store.delete_entity(
+                org_id=org_id, entity_type="record", entity_id=record_id
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "Record name entity deletion failed for record %s (non-fatal): %s",
+                record_id,
+                exc,
+            )
 
     async def _propagate_primary_failure_to_queued_duplicates(
         self,
@@ -222,6 +251,7 @@ class RecordEventHandler(BaseEventService):
             # Handle delete event - no parsing/indexing phases
             if event_type == EventTypes.DELETE_RECORD.value:
                 await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings([ virtual_record_id])
+                await self._delete_record_name_entity(record_id, record)
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))

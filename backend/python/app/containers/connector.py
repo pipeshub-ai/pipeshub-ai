@@ -19,6 +19,7 @@ from app.migrations.all_team_migration import run_all_team_migration
 from app.migrations.kb_apps_migration import run_kb_apps_migration
 from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.vector_db.const.const import VECTOR_DB_ENTITIES_COLLECTION_NAME
 from app.utils.logger import create_logger
 
 
@@ -100,6 +101,21 @@ class ConnectorAppContainer(BaseAppContainer):
     )
 
     feature_flag_service = providers.Singleton(container_utils.create_feature_flag_service, config_service=config_service)
+
+    # Vector DB service — used by EntityVectorStore for connector entity sync
+    vector_db_service = providers.Resource(
+        container_utils.get_vector_db_service,
+        config_service=config_service,
+    )
+
+    # EntityVectorStore — connector service uses this to sync People and RecordGroups
+    entity_vector_store = providers.Resource(
+        container_utils.create_entity_vector_store,
+        logger=logger,
+        config_service=config_service,
+        vector_db_service=vector_db_service,
+        collection_name=VECTOR_DB_ENTITIES_COLLECTION_NAME,
+    )
 
     # Connector-specific wiring configuration
     wiring_config = containers.WiringConfiguration(
