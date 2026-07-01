@@ -1694,6 +1694,7 @@ async def stream_response(
                 has_sql_connector=has_sql_connector,
                 is_multimodal_llm=is_multimodal_llm,
                 has_slack_connector=has_slack_connector,
+                client_name=client_name,
             )
 
         config = {

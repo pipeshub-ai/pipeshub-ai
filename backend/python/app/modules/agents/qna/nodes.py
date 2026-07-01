@@ -7386,6 +7386,16 @@ async def _generate_direct_response(
         }, config)
 
     answer = answer_text.strip() or "I'm here to help! How can I assist you today?"
+
+    # If the LLM produced no text the first complete event above had answer="".
+    # Re-emit with the fallback so Node.js validation passes. respond_node already
+    # does this; _generate_direct_response must be consistent.
+    if not answer_text.strip():
+        safe_stream_write(writer, {
+            "event": "complete",
+            "data": {"answer": answer, "citations": [], "confidence": "Low"},
+        }, config)
+
     state["response"] = answer
     state["completion_data"] = {
         "answer": answer,
