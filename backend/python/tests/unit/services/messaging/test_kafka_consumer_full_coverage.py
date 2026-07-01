@@ -130,7 +130,7 @@ class TestConsumeLoop:
 
     @pytest.mark.asyncio
     async def test_failed_message_does_not_commit(self, consumer):
-        """Failed processing logs warning and does not commit."""
+        """Failed processing with retry manager does not commit."""
         msg = _make_message(
             value=json.dumps({"eventType": "test", "payload": {"key": "val"}}).encode("utf-8"), offset=20
         )
@@ -153,6 +153,11 @@ class TestConsumeLoop:
         consumer.consumer = mock_aio
         consumer.running = True
         consumer.message_handler = AsyncMock(return_value=False)
+
+        mock_retry_manager = AsyncMock()
+        mock_retry_manager.clear = AsyncMock()
+        mock_retry_manager.increment_and_check = AsyncMock(return_value=(1, False))
+        consumer.retry_manager = mock_retry_manager
 
         await consumer._KafkaMessagingConsumer__consume_loop()
 
@@ -378,18 +383,15 @@ class TestProcessMessageOuterException:
         consumer.message_handler = AsyncMock(return_value=True)
 
         result = await consumer._KafkaMessagingConsumer__process_message(msg)
-        assert result is False
+        assert result[0] is False
 
     @pytest.mark.asyncio
     async def test_unexpected_exception_after_message_id(self, consumer):
-        """When exception occurs after message_id is set, finally marks it processed."""
+        """When exception occurs after message_id is set, message is not auto-marked processed."""
         msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"a": 1}}).encode("utf-8"), offset=99)
 
-        # Make message_handler a non-coroutine to trigger a different type of error
-        # Actually, let's trigger an unexpected error in the handler path
         consumer.message_handler = AsyncMock(return_value=True)
 
-        # Force __is_message_processed to raise after message_id is set
         with patch.object(
             consumer,
             '_KafkaMessagingConsumer__is_message_processed',
@@ -397,9 +399,8 @@ class TestProcessMessageOuterException:
         ):
             result = await consumer._KafkaMessagingConsumer__process_message(msg)
 
-        assert result is False
-        # message_id was set, so __mark_message_processed should have been called in finally
-        assert consumer._KafkaMessagingConsumer__is_message_processed("test-topic-0-99") is True
+        assert result[0] is False
+        assert consumer._KafkaMessagingConsumer__is_message_processed("test-topic-0-99") is False
 
     @pytest.mark.asyncio
     async def test_finally_when_message_id_is_none(self, consumer):
@@ -413,7 +414,7 @@ class TestProcessMessageOuterException:
         consumer.message_handler = AsyncMock()
 
         result = await consumer._KafkaMessagingConsumer__process_message(msg)
-        assert result is False
+        assert result[0] is False
         # processed_messages should still be empty
         assert consumer.processed_messages == {}
 
@@ -424,7 +425,7 @@ class TestProcessMessageOuterException:
         msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"a": 1}}).encode("utf-8"), offset=55)
 
         result = await consumer._KafkaMessagingConsumer__process_message(msg)
-        assert result is False
+        assert result[0] is False
 
     @pytest.mark.asyncio
     async def test_parsed_message_none_handler_present(self, consumer):
@@ -434,125 +435,7 @@ class TestProcessMessageOuterException:
         # Invalid JSON results in parsed_message being None (returns False before handler check)
         msg = _make_message(value=b"not-json!!!", offset=56)
         result = await consumer._KafkaMessagingConsumer__process_message(msg)
-        assert result is False
-
-
-# ===================================================================
-# __process_message_wrapper -- exception in commit
-# ===================================================================
-
-
-class TestProcessMessageWrapperException:
-    """Test exception path in __process_message_wrapper (lines 292-293)."""
-
-    @pytest.mark.asyncio
-    async def test_commit_exception_caught(self, consumer):
-        """When consumer.commit raises, the wrapper catches it and releases semaphore."""
-        consumer.message_handler = AsyncMock(return_value=True)
-        mock_aio = AsyncMock()
-        mock_aio.commit = AsyncMock(side_effect=Exception("commit error"))
-        consumer.consumer = mock_aio
-
-        msg = _make_message(
-            value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"), offset=70
-        )
-        tp = _make_topic_partition()
-
-        initial_semaphore_value = consumer.semaphore._value
-
-        await consumer._KafkaMessagingConsumer__process_message_wrapper(msg, tp)
-
-        # Semaphore should be released (incremented)
-        assert consumer.semaphore._value == initial_semaphore_value + 1
-
-    @pytest.mark.asyncio
-    async def test_process_returns_false_in_wrapper(self, consumer):
-        """When __process_message returns False, wrapper logs warning."""
-        consumer.message_handler = AsyncMock(return_value=False)
-        mock_aio = AsyncMock()
-        consumer.consumer = mock_aio
-
-        msg = _make_message(
-            value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"), offset=71
-        )
-        tp = _make_topic_partition()
-
-        await consumer._KafkaMessagingConsumer__process_message_wrapper(msg, tp)
-
-        # commit should NOT be called
-        mock_aio.commit.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_wrapper_releases_semaphore_on_success(self, consumer):
-        """Semaphore is released even on successful path."""
-        consumer.message_handler = AsyncMock(return_value=True)
-        mock_aio = AsyncMock()
-        consumer.consumer = mock_aio
-
-        msg = _make_message(
-            value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"), offset=72
-        )
-        tp = _make_topic_partition()
-
-        initial_value = consumer.semaphore._value
-        await consumer._KafkaMessagingConsumer__process_message_wrapper(msg, tp)
-
-        assert consumer.semaphore._value == initial_value + 1
-
-    @pytest.mark.asyncio
-    async def test_wrapper_outer_exception(self, consumer):
-        """Unexpected exception in wrapper is caught and semaphore released."""
-        # Make __process_message raise an unexpected error by making the entire
-        # method fail
-        msg = MagicMock()
-        msg.topic = "test"
-        msg.partition = 0
-        msg.offset = 73
-        # Make value access work but handler raise
-        msg.value = json.dumps({"k": 1}).encode("utf-8")
-
-        consumer.message_handler = AsyncMock(return_value=True)
-        consumer.consumer = AsyncMock()
-        # Make commit raise
-        consumer.consumer.commit = AsyncMock(side_effect=RuntimeError("boom"))
-
-        tp = _make_topic_partition()
-
-        await consumer._KafkaMessagingConsumer__process_message_wrapper(msg, tp)
-
-        # Should not raise; semaphore released
-        assert consumer.semaphore._value > 0
-
-
-# ===================================================================
-# __cleanup_completed_tasks -- task.exception() returning None vs value
-# ===================================================================
-
-
-class TestCleanupCompletedTasksNone:
-    """Ensure exception() returning None (no exception) path is covered."""
-
-    def test_done_task_no_exception(self, consumer):
-        """Done task with no exception is removed silently."""
-        task = MagicMock()
-        task.done.return_value = True
-        task.exception.return_value = None
-
-        consumer.active_tasks = {task}
-        consumer._KafkaMessagingConsumer__cleanup_completed_tasks()
-
-        assert len(consumer.active_tasks) == 0
-
-    def test_done_task_with_exception_logged(self, consumer, logger):
-        """Done task with exception triggers logger.error."""
-        task = MagicMock()
-        task.done.return_value = True
-        task.exception.return_value = ValueError("task failed")
-
-        consumer.active_tasks = {task}
-        consumer._KafkaMessagingConsumer__cleanup_completed_tasks()
-
-        assert len(consumer.active_tasks) == 0
+        assert result[0] is False
 
 
 # ===================================================================

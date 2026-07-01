@@ -252,7 +252,7 @@ class TestProcessMessageWrapperExtended:
         msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
 
         result = await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
-        assert result is True
+        assert result is False
 
         # Semaphores released in finally
         assert consumer.parsing_semaphore._value == 1

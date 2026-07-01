@@ -309,10 +309,10 @@ describe('MessageBrokerFactory', () => {
       expect(config.maxLen).to.equal(5000);
     });
 
-    it('should default maxLen to 10000', () => {
+    it('should default maxLen to 500000', () => {
       delete process.env.REDIS_STREAMS_MAXLEN;
       const config = buildRedisBrokerConfig({ host: 'localhost', port: 6379 });
-      expect(config.maxLen).to.equal(10000);
+      expect(config.maxLen).to.equal(500000);
     });
 
     it('should use REDIS_STREAMS_PREFIX env var for keyPrefix', () => {

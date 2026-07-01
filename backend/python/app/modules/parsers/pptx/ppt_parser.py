@@ -2,6 +2,8 @@ import os
 import subprocess
 import tempfile
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+
 
 class PPTParser:
     """Parser for Microsoft PowerPoint .ppt files"""
@@ -77,8 +79,12 @@ class PPTParser:
                     e.returncode, e.cmd, output=e.output, stderr=error_msg.encode()
                 )
             except subprocess.TimeoutExpired as e:
-                raise Exception(
-                    "LibreOffice conversion timed out after 30 seconds"
+                raise DocumentProcessingError(
+                    "LibreOffice conversion timed out after 60 seconds",
+                    details={"timeout": "60s"},
                 ) from e
             except Exception as e:
-                raise Exception(f"Error converting .ppt to .pptx: {str(e)}") from e
+                raise DocumentProcessingError(
+                    f"Error converting .ppt to .pptx: {str(e)}",
+                    details={"error": str(e)},
+                ) from e

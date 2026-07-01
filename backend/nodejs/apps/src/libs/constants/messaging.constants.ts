@@ -6,7 +6,7 @@ export const ENV_REDIS_STREAMS_MAXLEN = 'REDIS_STREAMS_MAXLEN';
 export const ENV_REDIS_STREAMS_PREFIX = 'REDIS_STREAMS_PREFIX';
 
 export const DEFAULT_MESSAGE_BROKER = MessageBrokerType.KAFKA;
-export const DEFAULT_REDIS_STREAMS_MAXLEN = 10000;
+export const DEFAULT_REDIS_STREAMS_MAXLEN = 500000;
 export const DEFAULT_REDIS_STREAMS_PREFIX = '';
 
 /** Kafka client id used for admin / topic bootstrap operations. */
@@ -44,7 +44,7 @@ export const MESSAGING_HEALTH_MESSAGE_TYPE = 'HEALTH_CHECK';
 
 /** Redis Streams consumer/producer tuning */
 export const REDIS_STREAMS_DEFAULTS = {
-  maxLen: 10000,
+  maxLen: 500000,
   blockMs: 2000,
   count: 10,
   maxRetryTime: 30000,

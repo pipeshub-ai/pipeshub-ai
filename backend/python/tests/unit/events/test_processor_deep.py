@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 
 log = logging.getLogger("test")
@@ -134,7 +135,7 @@ class TestProcessHtmlDocument:
         html_parser.parse = AsyncMock(side_effect=RuntimeError("parse failure"))
         proc.parsers = {"html": html_parser}
 
-        with pytest.raises(RuntimeError, match="parse failure"):
+        with pytest.raises(DocumentProcessingError, match="parse failure"):
             await _collect_events(
                 proc.process_html_document("t.html", "r1", "1", "w", "o1", b"<p>Hi</p>", "vr1")
             )
@@ -235,7 +236,7 @@ class TestProcessTxtDocument:
         bad_binary = MagicMock()
         bad_binary.decode = MagicMock(side_effect=UnicodeDecodeError("codec", b"", 0, 1, "bad"))
 
-        with pytest.raises(ValueError, match="Unable to decode"):
+        with pytest.raises(DocumentProcessingError, match="Unable to decode"):
             await _collect_events(
                 proc.process_txt_document(
                     "test.txt", "r1", "1", "src", "o1",
@@ -370,7 +371,7 @@ class TestProcessPptxDocument:
         mock_processor.parse_document = AsyncMock(side_effect=RuntimeError("corrupt pptx"))
 
         with patch("app.events.processor.DoclingProcessor", return_value=mock_processor):
-            with pytest.raises(RuntimeError, match="corrupt pptx"):
+            with pytest.raises(DocumentProcessingError, match="corrupt pptx"):
                 await _collect_events(
                     proc.process_pptx_document("test.pptx", "r1", "1", "s", "o1", b"bad", "vr1")
                 )
@@ -435,7 +436,7 @@ class TestProcessDocxDocument:
         mock_processor.parse_document = AsyncMock(side_effect=RuntimeError("corrupt"))
 
         with patch("app.events.processor.DoclingProcessor", return_value=mock_processor):
-            with pytest.raises(RuntimeError, match="corrupt"):
+            with pytest.raises(DocumentProcessingError, match="corrupt"):
                 await _collect_events(
                     proc.process_docx_document("t.docx", "r1", "1", "s", "o1", b"bad", "vr1")
                 )
@@ -500,7 +501,7 @@ class TestProcessImage:
         """No image data raises an exception."""
         proc = _make_processor()
 
-        with pytest.raises(Exception, match="No image data"):
+        with pytest.raises(DocumentProcessingError, match="No image data"):
             await _collect_events(proc.process_image("r1", None, "vr1"))
 
     @pytest.mark.asyncio
@@ -674,7 +675,7 @@ class TestProcessPdfWithPymupdf:
         mock_processor.parse_document = AsyncMock(side_effect=RuntimeError("bad pdf"))
 
         with patch("app.events.processor.PDFPlumberOpenCVProcessor", return_value=mock_processor):
-            with pytest.raises(RuntimeError, match="bad pdf"):
+            with pytest.raises(DocumentProcessingError, match="bad pdf"):
                 await _collect_events(
                     proc.process_pdf_with_pdf_plumber("test.pdf", "r1", b"bad", "vr1")
                 )
@@ -747,7 +748,7 @@ class TestProcessPdfWithDocling:
         proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
         proc.docling_client.create_blocks = AsyncMock(return_value=None)
 
-        with pytest.raises(Exception, match="failed to create blocks"):
+        with pytest.raises(DocumentProcessingError, match="failed to create blocks"):
             await _collect_events(
                 proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
             )
@@ -827,7 +828,7 @@ class TestProcessXlsDocument:
         xls_parser.convert_xls_to_xlsx.side_effect = RuntimeError("bad xls")
         proc = _make_processor(parsers={"xls": xls_parser})
 
-        with pytest.raises(RuntimeError, match="bad xls"):
+        with pytest.raises(DocumentProcessingError, match="bad xls"):
             await _collect_events(
                 proc.process_xls_document("t.xls", "r1", "1", "s", "o1", b"bad", "vr1")
             )
@@ -1019,7 +1020,6 @@ class TestMarkRecord:
     async def test_record_not_found_raises(self):
         """_mark_record raises when record is missing."""
         from app.config.constants.arangodb import ProgressStatus
-        from app.exceptions.indexing_exceptions import DocumentProcessingError
         proc = _make_processor()
 
         proc.graph_provider.get_document = AsyncMock(return_value=None)
@@ -1298,7 +1298,7 @@ class TestProcessPdfDocumentWithOcr:
                 "llm": [],
             })
 
-            with pytest.raises(RuntimeError, match="Azure failed"):
+            with pytest.raises(DocumentProcessingError, match="Azure failed"):
                 await _collect_events(
                     proc.process_pdf_document_with_ocr(
                         "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
@@ -1412,7 +1412,7 @@ class TestRunIndexingPipeline:
                 side_effect=RuntimeError("pipeline error")
             )
 
-            with pytest.raises(RuntimeError, match="pipeline error"):
+            with pytest.raises(DocumentProcessingError, match="pipeline error"):
                 await _collect_events(
                     proc.process_md_document("test.md", "r1", b"# Hello", "vr1")
                 )
@@ -1439,7 +1439,7 @@ class TestProcessPdfWithDoclingAdditional:
                 side_effect=RuntimeError("pipeline boom")
             )
 
-            with pytest.raises(RuntimeError, match="pipeline boom"):
+            with pytest.raises(DocumentProcessingError, match="pipeline boom"):
                 await _collect_events(
                     proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
                 )
@@ -1513,7 +1513,7 @@ class TestProcessImageAdditional:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
             mock_emb.return_value = {"isMultimodal": False}
 
-            with pytest.raises(Exception, match="No mime type"):
+            with pytest.raises(DocumentProcessingError, match="No mime type"):
                 await _collect_events(proc.process_image("r1", b"imgdata", "vr1"))
 
     @pytest.mark.asyncio
@@ -1531,7 +1531,7 @@ class TestProcessImageAdditional:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": True})
             mock_emb.return_value = {"isMultimodal": False}
 
-            with pytest.raises(Exception, match="Unsupported extension"):
+            with pytest.raises(DocumentProcessingError, match="Unsupported extension"):
                 await _collect_events(proc.process_image("r1", b"data", "vr1"))
 
 
@@ -1634,7 +1634,7 @@ class TestProcessPdfDocumentWithOcrAdditional:
                 "llm": [],
             })
 
-            with pytest.raises(RuntimeError, match="VLM failed"):
+            with pytest.raises(DocumentProcessingError, match="VLM failed"):
                 await _collect_events(
                     proc.process_pdf_document_with_ocr(
                         "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
@@ -1662,7 +1662,7 @@ class TestProcessPdfDocumentWithOcrAdditional:
                 "llm": [],
             })
 
-            with pytest.raises(RuntimeError, match="OCR failed"):
+            with pytest.raises(DocumentProcessingError, match="OCR failed"):
                 await _collect_events(
                     proc.process_pdf_document_with_ocr(
                         "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
@@ -1908,7 +1908,7 @@ class TestRunIndexingPipelineAdditional:
                 side_effect=RuntimeError("docx pipeline error")
             )
 
-            with pytest.raises(RuntimeError, match="docx pipeline error"):
+            with pytest.raises(DocumentProcessingError, match="docx pipeline error"):
                 await _collect_events(
                     proc.process_docx_document(
                         "test.docx", "r1", "1", "src", "o1", b"docx", "vr1"
@@ -1937,7 +1937,7 @@ class TestRunIndexingPipelineAdditional:
                 side_effect=RuntimeError("pptx pipeline error")
             )
 
-            with pytest.raises(RuntimeError, match="pptx pipeline error"):
+            with pytest.raises(DocumentProcessingError, match="pptx pipeline error"):
                 await _collect_events(
                     proc.process_pptx_document(
                         "test.pptx", "r1", "1", "src", "o1", b"pptx", "vr1"
@@ -2188,7 +2188,7 @@ class TestProcessExcelDocumentAdditional:
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
-            with pytest.raises(RuntimeError, match="corrupt excel"):
+            with pytest.raises(DocumentProcessingError, match="corrupt excel"):
                 await _collect_events(
                     proc.process_excel_document("bad.xlsx", "r1", "1", "src", "o1", b"data", "vr1")
                 )
@@ -2231,7 +2231,7 @@ class TestProcessImageAdditional:
         """Empty bytes for image raises exception."""
         proc = _make_processor()
 
-        with pytest.raises(Exception, match="No image data"):
+        with pytest.raises(DocumentProcessingError, match="No image data"):
             await _collect_events(proc.process_image("r1", b"", "vr1"))
 
 

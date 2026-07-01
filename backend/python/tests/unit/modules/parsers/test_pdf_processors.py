@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import numpy as np
 import pytest
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+
 from app.modules.parsers.pdf.opencv_layout_analyzer import (
     LayoutRegion,
     LayoutRegionType,
@@ -788,7 +790,7 @@ class TestVLMOCRStrategy:
     async def test_get_multimodal_llm_no_configs(self):
         strategy = self._make_strategy()
         strategy.config.get_config = AsyncMock(return_value={"llm": []})
-        with pytest.raises(ValueError, match="No LLM configurations"):
+        with pytest.raises(DocumentProcessingError, match="No LLM configurations"):
             await strategy._get_multimodal_llm()
 
     @pytest.mark.asyncio
@@ -798,7 +800,7 @@ class TestVLMOCRStrategy:
             "llm": [{"provider": "openai", "isDefault": True, "configuration": {"model": "gpt-3.5"}}]
         })
         with patch("app.modules.parsers.pdf.vlm_ocr_strategy.is_multimodal_llm", return_value=False):
-            with pytest.raises(ValueError, match="No multimodal LLM found"):
+            with pytest.raises(DocumentProcessingError, match="No multimodal LLM found"):
                 await strategy._get_multimodal_llm()
 
     @pytest.mark.asyncio

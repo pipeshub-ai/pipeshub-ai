@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.modules.parsers.image_parser.image_parser import ImageParser
 
 
@@ -63,7 +64,7 @@ class TestParseImageSVG:
 
     def test_svg_conversion_failure_raises(self, parser):
         with patch.object(parser, "svg_base64_to_png_base64", side_effect=Exception("conversion failed")):
-            with pytest.raises(ValueError, match="Failed to convert SVG to PNG"):
+            with pytest.raises(DocumentProcessingError, match="Failed to convert SVG to PNG"):
                 parser.parse_image(b"<svg></svg>", "svg")
 
     def test_svg_case_insensitive(self, parser):
@@ -396,23 +397,36 @@ class TestSvgBase64ToPngBase64:
         assert result == base64.b64encode(b"fake-png").decode()
 
     def test_invalid_base64_raises(self, parser):
-        """Invalid base64 raises ValueError."""
-        with pytest.raises(ValueError, match="Invalid base64"):
+        """Invalid base64 raises DocumentProcessingError."""
+        with pytest.raises(DocumentProcessingError, match="Invalid base64"):
             ImageParser.svg_base64_to_png_base64("not-valid-base64!!!")
 
     def test_non_svg_content_raises(self, parser):
-        """Non-SVG content raises Exception."""
+        """Non-SVG content raises DocumentProcessingError."""
         non_svg = base64.b64encode(b"this is not SVG content").decode()
-        with pytest.raises(Exception, match="not appear to be valid SVG"):
+        with pytest.raises(DocumentProcessingError, match="not appear to be valid SVG"):
             ImageParser.svg_base64_to_png_base64(non_svg)
 
     def test_svg2png_none_raises(self, parser):
-        """When cairosvg is not available, raises Exception."""
+        """When cairosvg is not available, raises DocumentProcessingError with dependency message."""
         svg_content = '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
         svg_b64 = base64.b64encode(svg_content.encode()).decode()
 
         with patch("app.modules.parsers.image_parser.image_parser.svg2png", None):
-            with pytest.raises(Exception, match="cairosvg"):
+            with pytest.raises(DocumentProcessingError) as exc_info:
+                ImageParser.svg_base64_to_png_base64(svg_b64)
+            # Verify the message mentions cairosvg dependency
+            assert "cairosvg" in str(exc_info.value).lower()
+            assert "dependency" in str(exc_info.value).lower()
+
+    def test_svg_conversion_error_raises_document_processing_error(self, parser):
+        """SVG conversion errors are wrapped in DocumentProcessingError."""
+        svg_content = '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+        svg_b64 = base64.b64encode(svg_content.encode()).decode()
+
+        # Mock svg2png to raise an error
+        with patch("app.modules.parsers.image_parser.image_parser.svg2png", side_effect=RuntimeError("SVG rendering failed")):
+            with pytest.raises(DocumentProcessingError, match="SVG to PNG conversion failed"):
                 ImageParser.svg_base64_to_png_base64(svg_b64)
 
     def test_custom_dimensions(self, parser):

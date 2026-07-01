@@ -22,6 +22,7 @@ from bs4 import BeautifulSoup
 from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlockType, BlocksContainer
 
 
@@ -82,7 +83,10 @@ class DoclingMarkdownParser:
         """
         result = self.converter.convert(file_path)
         if result.status.value != "success":
-            raise ValueError(f"Failed to parse Markdown: {result.status}")
+            raise DocumentProcessingError(
+                f"Failed to parse Markdown: {result.status}",
+                details={"status": str(result.status)},
+            )
         return result.document
 
     def extract_and_replace_images(

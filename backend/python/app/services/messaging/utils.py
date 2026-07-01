@@ -49,17 +49,30 @@ class MessagingUtils:
         client_id: str,
         group_id: str,
         topics: list[str],
+        batch_size: int | None = None,
     ) -> RedisStreamsConfig:
-        return RedisStreamsConfig(
-            host=redis_config.host,
-            port=redis_config.port,
-            password=redis_config.password,
-            db=redis_config.db,
-            max_len=messaging_env.redis_streams_maxlen,
-            client_id=client_id,
-            group_id=group_id,
-            topics=topics,
-        )
+        """Build RedisStreamsConfig with optional batch_size override.
+        
+        Args:
+            redis_config: Base Redis connection config
+            client_id: Consumer client ID
+            group_id: Consumer group ID
+            topics: List of topics/streams to consume
+            batch_size: Optional batch size override (defaults to config default)
+        """
+        config_dict = {
+            "host": redis_config.host,
+            "port": redis_config.port,
+            "password": redis_config.password,
+            "db": redis_config.db,
+            "max_len": messaging_env.redis_streams_maxlen,
+            "client_id": client_id,
+            "group_id": group_id,
+            "topics": topics,
+        }
+        if batch_size is not None:
+            config_dict["batch_size"] = batch_size
+        return RedisStreamsConfig(**config_dict)
 
     @staticmethod
     async def _create_kafka_consumer_config(
@@ -83,7 +96,7 @@ class MessagingUtils:
             client_id=client_id,
             group_id=group_id,
             auto_offset_reset="earliest",
-            enable_auto_commit=True,
+            enable_auto_commit=False,
             bootstrap_servers=brokers,
             topics=topics,
             ssl=kafka_config.get("ssl", False),
@@ -96,8 +109,17 @@ class MessagingUtils:
         client_id: str,
         group_id: str,
         topics: list[str],
+        is_indexing: bool = False,
     ) -> KafkaConsumerConfig | RedisStreamsConfig:
-        """Create consumer config based on the configured broker type."""
+        """Create consumer config based on the configured broker type.
+        
+        Args:
+            app_container: Application container
+            client_id: Consumer client ID
+            group_id: Consumer group ID
+            topics: List of topics to consume
+            is_indexing: Whether this is an indexing consumer (affects batch size)
+        """
         broker_type = get_message_broker_type()
         if broker_type == MessageBrokerType.KAFKA:
             return await MessagingUtils._create_kafka_consumer_config(
@@ -105,8 +127,13 @@ class MessagingUtils:
             )
         else:
             redis_config = await MessagingUtils._get_redis_config(app_container)
+            batch_size = (
+                messaging_env.message_batch_size_indexing
+                if is_indexing
+                else messaging_env.message_batch_size_simple
+            )
             return MessagingUtils._build_redis_streams_config(
-                redis_config, client_id, group_id, topics
+                redis_config, client_id, group_id, topics, batch_size=batch_size
             )
 
     @staticmethod
@@ -203,6 +230,7 @@ class MessagingUtils:
             "records_consumer_client",
             "records_consumer_group",
             [Topic.RECORD_EVENTS.value],
+            is_indexing=True,  # Use indexing batch size
         )
 
     @staticmethod

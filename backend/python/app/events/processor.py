@@ -201,9 +201,15 @@ class Processor:
 
             self.logger.info("✅ Image processing completed successfully")
             return
+        except IndexingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error processing image: {str(e)}")
-            raise
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=record_id,
+                details={"error": str(e)},
+            ) from e
 
 
 
@@ -277,9 +283,15 @@ class Processor:
 
             self.logger.info(f"✅ PDF processing completed for record: {recordName}, using PdfPlumber+OpenCV processor")
             return
+        except IndexingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error processing PDF document with PdfPlumber+OpenCV: {str(e)}")
-            raise
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=recordId,
+                details={"error": str(e)},
+            ) from e
 
     async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Process PDF with Docling, yielding phase completion events."""
@@ -329,9 +341,15 @@ class Processor:
 
             self.logger.info(f"✅ PDF processing completed for record: {recordName}, using external Docling service")
             return
+        except IndexingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error processing PDF document with external Docling service: {str(e)}")
-            raise
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=recordId,
+                details={"error": str(e)},
+            ) from e
 
     async def process_pdf_document_with_ocr(
         self, recordName, recordId, version, source, orgId, pdf_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
@@ -581,9 +599,15 @@ class Processor:
             self.logger.info("✅ PDF processing completed successfully")
             return
 
+        except IndexingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error processing PDF document: {str(e)}")
-            raise
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=recordId,
+                details={"error": str(e)},
+            ) from e
 
     async def process_doc_document(
         self, recordName, recordId, version, source, orgId, doc_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
@@ -656,9 +680,15 @@ class Processor:
 
             self.logger.info("✅ Docx/Doc processing completed successfully using docling")
 
+        except IndexingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error processing DOCX document: {str(e)}")
-            raise
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=recordId,
+                details={"error": str(e)},
+            ) from e
 
     async def _enhance_tables_with_llm(self, block_containers: BlocksContainer) -> None:
         """
@@ -1437,9 +1467,15 @@ class Processor:
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             self.logger.info("✅ Excel processing completed successfully.")
+        except IndexingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error processing Excel document: {str(e)}")
-            raise
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=recordId,
+                details={"error": str(e)},
+            ) from e
 
     async def process_xls_document(
         self, recordName, recordId, version, source, orgId, xls_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
@@ -1461,9 +1497,15 @@ class Processor:
                 yield event
             self.logger.debug("📑 XLS document processed successfully")
 
+        except IndexingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error processing XLS document: {str(e)}")
-            raise
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=recordId,
+                details={"error": str(e)},
+            ) from e
 
     async def process_delimited_document(
         self, recordName, recordId, file_binary, virtual_record_id, extension=None, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
@@ -1565,9 +1607,15 @@ class Processor:
 
             self.logger.info("✅ Delimited file processing completed successfully")
 
+        except IndexingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error processing delimited document: {str(e)}")
-            raise
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=recordId,
+                details={"error": str(e)},
+            ) from e
 
 
 
@@ -1692,9 +1740,15 @@ class Processor:
 
             self.logger.info("✅ HTML processing completed successfully.")
 
+        except IndexingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error processing HTML document: {str(e)}")
-            raise
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=recordId,
+                details={"error": str(e)},
+            ) from e
 
     async def process_mdx_document(
         self, recordName: str, recordId: str, version: str, source: str, orgId: str, mdx_content: str, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
@@ -1806,9 +1860,15 @@ class Processor:
 
             self.logger.info("✅ MD processing completed successfully")
             return
+        except IndexingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error processing Markdown document: {str(e)}")
-            raise
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=recordId,
+                details={"error": str(e)},
+            ) from e
 
     async def process_txt_document(
         self, recordName, recordId, version, source, orgId, txt_binary, virtual_record_id, recordType, connectorName, origin, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
@@ -1849,9 +1909,15 @@ class Processor:
                 yield event
             self.logger.info("✅ TXT processing completed successfully")
             return
+        except IndexingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error processing TXT document: {str(e)}")
-            raise
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=recordId,
+                details={"error": str(e)},
+            ) from e
 
     async def process_pptx_document(
         self, recordName, recordId, version, source, orgId, pptx_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
@@ -1907,9 +1973,15 @@ class Processor:
 
             self.logger.info("✅ PPTX processing completed successfully using docling")
             return
+        except IndexingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error processing PPTX document: {str(e)}")
-            raise
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=recordId,
+                details={"error": str(e)},
+            ) from e
 
     async def process_ppt_document(
         self, recordName, recordId, version, source, orgId, ppt_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
@@ -2021,7 +2093,13 @@ class Processor:
             
             self.logger.info(f"✅ {record_type} processing completed successfully for: {recordName} ({len(block_containers.block_groups)} block group(s), {len(block_containers.blocks)} block(s))")
             
+        except IndexingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error processing {record_type} document: {str(e)}")
-            raise
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=recordId,
+                details={"error": str(e)},
+            ) from e
 

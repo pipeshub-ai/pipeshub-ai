@@ -1,5 +1,7 @@
 import re
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+
 
 class MDXParser:
     """Parser for MDX files to convert them to regular Markdown"""
@@ -59,4 +61,7 @@ class MDXParser:
             return content.strip().encode('utf-8')
 
         except Exception as e:
-            raise Exception(f"Error converting MDX to Markdown: {str(e)}") from e
+            raise DocumentProcessingError(
+                f"Error converting MDX to Markdown: {str(e)}",
+                details={"error": str(e)},
+            ) from e
