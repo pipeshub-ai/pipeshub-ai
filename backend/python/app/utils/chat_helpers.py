@@ -57,6 +57,8 @@ valid_group_labels = [
         GroupType.CONVERSATION.value
     ]
 
+MAX_IMAGES_IN_MESSAGE = 25
+
 def _safe_stringify_content(value: Any) -> str:
     """Convert citation content to string without raising."""
     try:
@@ -927,6 +929,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     if is_multimodal_llm:
                         image_uri = data.get("uri")
                         if image_uri:
+                            existing = result.get("content", "")
+                            if existing and not is_base64_image(existing):
+                                result["image_description"] = existing
                             result["content"] = image_uri
                         else:
                             continue
@@ -1807,6 +1812,7 @@ def _build_fragment_map(blocks: list[dict[str, Any]]) -> dict[int, list[dict[str
 def _render_blocks_with_images(
     blocks_list: list[dict[str, Any]],
     is_multimodal_llm: bool,
+    image_count: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     """Render a list of block entries (with possible IMAGE types) into LLM content entries.
 
@@ -1840,10 +1846,13 @@ def _render_blocks_with_images(
                     if is_multimodal_llm:
                         img_uri = item.get("content", "")
                         if img_uri and is_base64_image(img_uri):
-                            content.append({
-                                "type": "image_url",
-                                "image_url": {"url": img_uri}
-                            })
+                            if image_count is None or image_count[0] < MAX_IMAGES_IN_MESSAGE:
+                                content.append({
+                                    "type": "image_url",
+                                    "image_url": {"url": img_uri}
+                                })
+                                if image_count is not None:
+                                    image_count[0] += 1
                     continue
                 content.append({
                     "type": "text",
@@ -2334,6 +2343,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
     record_page_url_for_summary: str | None = None
     summary_citation_insert_index: int | None = None
     current_record_has_blocks = False
+    image_count = [0]
 
     def insert_summary_citation_if_needed() -> None:
         nonlocal record_page_url_for_summary, summary_citation_insert_index, current_record_has_blocks
@@ -2406,16 +2416,25 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
             if block_type == BlockType.IMAGE.value:
                 if is_base64_image(result.get("content")) and is_multimodal_llm and not from_tool:
                     current_record_has_blocks = True
-                    content.append({
-                        "type": "text",
-                        "text": prepend_record_blocks_sorted_header(
-                            f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content:"
-                        ),
-                    })
-                    content.append({
-                        "type": "image_url",
-                        "image_url": {"url": result.get("content")}
-                    })
+                    if image_count[0] < MAX_IMAGES_IN_MESSAGE:
+                        content.append({
+                            "type": "text",
+                            "text": prepend_record_blocks_sorted_header(
+                                f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content:"
+                            ),
+                        })
+                        content.append({
+                            "type": "image_url",
+                            "image_url": {"url": result.get("content")}
+                        })
+                        image_count[0] += 1
+                    elif result.get("image_description"):
+                        content.append({
+                            "type": "text",
+                            "text": prepend_record_blocks_sorted_header(
+                                f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: image description\n* Block Content: {result.get('image_description')}\n\n"
+                            ),
+                        })
                 else:
                     if is_base64_image(result.get("content")):
                         continue
@@ -2455,7 +2474,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         "type": "text",
                         "text": prepend_record_blocks_sorted_header(f"{header}{fk_info}"),
                     })
-                    content.extend(_render_blocks_with_images(child_results, is_multimodal_llm))
+                    content.extend(_render_blocks_with_images(child_results, is_multimodal_llm, image_count))
             elif block_type == BlockType.TEXT.value:
                 current_record_has_blocks = True
                 content.append({
@@ -2495,7 +2514,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                         "type": "text",
                         "text": prepend_record_blocks_sorted_header(header),
                     })
-                    content.extend(_render_blocks_with_images(group_blocks, is_multimodal_llm))
+                    content.extend(_render_blocks_with_images(group_blocks, is_multimodal_llm, image_count))
             else:
                 continue
         else:
