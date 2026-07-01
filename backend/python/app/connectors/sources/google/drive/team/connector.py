@@ -144,6 +144,14 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
             'https://docs.pipeshub.com/connectors/google-workspace/drive/drive',
             'pipeshub'
         ))
+        .add_filter_field(FilterField(
+            name=SyncFilterKey.DRIVE_IDS,
+            display_name="Shared Drives",
+            filter_type=FilterType.MULTISELECT,
+            category=FilterCategory.SYNC,
+            description="Restrict sync to specific shared drives. Leave empty to sync all.",
+            option_source_type=OptionSourceType.DYNAMIC,
+        ))
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
@@ -977,6 +985,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                     raise
 
             self.logger.info(f"Fetched {len(all_drives)} total shared drives")
+
+            all_drives = [d for d in all_drives if self._pass_drive_ids_filter(d.get("id", ""))]
+            self.logger.info(f"Processing {len(all_drives)} shared drives after DRIVE_IDS filter")
 
             # Process each shared drive
             for drive in all_drives:
@@ -1971,6 +1982,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                     if should_break:
                         break
 
+            all_user_drives = [d for d in all_user_drives if self._pass_drive_ids_filter(d.get("id", ""))]
+
             if not all_user_drives:
                 self.logger.info(f"No shared drives found for user {user.email}")
             else:
@@ -2823,18 +2836,17 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.error(f"Error checking Google Drive enterprise record {record.id} at source: {e}")
             return None
 
-
-
     async def get_filter_options(
         self,
         filter_key: str,
         page: int = 1,
         limit: int = 20,
         search: Optional[str] = None,
-        cursor: Optional[str] = None
+        cursor: Optional[str] = None,
     ) -> FilterOptionsResponse:
-        """Google Drive enterprise connector does not support dynamic filter options."""
-        raise NotImplementedError("Google Drive enterprise connector does not support dynamic filter options")
+        if filter_key == SyncFilterKey.DRIVE_IDS:
+            return await self._get_shared_drive_options(page, limit, search, cursor)
+        raise ValueError(f"Unsupported filter key: {filter_key}")
 
     async def cleanup(self) -> None:
         """Cleanup resources when shutting down the connector."""
@@ -2862,6 +2874,74 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error during cleanup: {e}")
+    
+    def _pass_drive_ids_filter(self, drive_id: str) -> bool:
+        """Return True if drive_id passes the configured DRIVE_IDS filter.
+
+        Mirrors SharePoint's `_pass_site_ids_filters`: IN keeps only listed drives,
+        NOT_IN excludes listed drives, empty filter allows all.
+        """
+        drive_ids_filter = self.sync_filters.get(SyncFilterKey.DRIVE_IDS)
+        if drive_ids_filter is None or drive_ids_filter.is_empty():
+            return True
+
+        filter_drive_ids = drive_ids_filter.value
+        if not isinstance(filter_drive_ids, list):
+            return True
+
+        if not drive_id:
+            self.logger.warning("Drive ID is empty or None, skipping")
+            return False
+
+        operator = drive_ids_filter.get_operator()
+        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+
+        if operator_str == FilterOperator.IN:
+            return drive_id in filter_drive_ids
+        if operator_str == FilterOperator.NOT_IN:
+            return drive_id not in filter_drive_ids
+
+        self.logger.warning(f"Unknown filter operator '{operator_str}' for DRIVE_IDS filter, allowing drive")
+        return True
+
+    async def _get_shared_drive_options(
+        self,
+        page: int,
+        limit: int,
+        search: Optional[str],
+        cursor: Optional[str] = None,
+    ) -> FilterOptionsResponse:
+        if not self.drive_data_source:
+            return FilterOptionsResponse(
+                success=False, options=[], page=page, limit=limit,
+                has_more=False, message="Drive data source not initialized",
+            )
+        # Single quotes inside the term would break the Drive query syntax, so escape them.
+        escaped_search = search.strip().replace("'", "\\'") if search else ""
+        q = f"name contains '{escaped_search}'" if escaped_search else None
+        try:
+            result = await self.drive_data_source.drives_list(
+                pageSize=limit,
+                pageToken=cursor or None,
+                q=q,
+                useDomainAdminAccess=True,
+            )
+        except Exception as e:
+            self.logger.error(f"Error fetching shared drive filter options: {e}")
+            return FilterOptionsResponse(
+                success=False, options=[], page=page,
+                limit=limit, has_more=False, message=str(e),
+            )
+        drives = result.get("drives", [])
+        next_token = result.get("nextPageToken")
+        options = [
+            FilterOption(id=d["id"], label=d.get("name") or d["id"])
+            for d in drives if d.get("id")
+        ]
+        return FilterOptionsResponse(
+            success=True, options=options, page=page,
+            limit=limit, has_more=bool(next_token), cursor=next_token or None,
+        )
 
     @classmethod
     async def create_connector(
