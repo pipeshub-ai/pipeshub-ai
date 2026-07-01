@@ -16,13 +16,7 @@ const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
 const objectId = (label: string) =>
   z.string().regex(OBJECT_ID_REGEX, { message: `Invalid ${label} format` });
 
-/** Allow UUID or Collection app ID: knowledgeBase_<orgId> */
-const appOrKbIdSchema = z.string().refine(
-  (val) =>
-    z.string().uuid().safeParse(val).success ||
-    /^knowledgeBase_[a-zA-Z0-9_-]+$/.test(val),
-  { message: 'Must be a valid UUID or knowledgeBase_<orgId> format' },
-);
+const appOrKbIdSchema = z.string().uuid({ message: 'Must be a valid UUID' });
 
 /** Common pagination preprocessor: coerce string -> number with bounds. */
 const pageSchema = z.preprocess(

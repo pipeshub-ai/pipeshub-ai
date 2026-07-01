@@ -185,18 +185,10 @@ function KBSidebarContent({
     void loadMoreAppChildPage(appId);
   }, []);
 
-  const kbCollectionsHubAppId = useMemo(
-    () => appNodes.find((n) => isKbCollectionsHubApp(n))?.id,
-    [appNodes]
-  );
-  const collectionsRootLoadMoreHasNext =
-    kbCollectionsHubAppId != null &&
-    appChildrenPagination.get(kbCollectionsHubAppId)?.hasNext === true;
+  const collectionsRootLoadMoreHasNext = appRootListPagination?.hasNext === true;
   const handleCollectionsRootLoadMore = useCallback(() => {
-    if (kbCollectionsHubAppId) {
-      void loadMoreAppChildPage(kbCollectionsHubAppId);
-    }
-  }, [kbCollectionsHubAppId]);
+    void loadMoreRootAppList();
+  }, []);
 
   // Local state for secondary panel (replaces store-based MoreCollections)
   const [isSecondaryPanelOpen, setIsSecondaryPanelOpen] = useState(false);
@@ -517,9 +509,7 @@ function KBSidebarContent({
           onDelete={onSidebarDelete}
           collectionsRootLoadMoreHasNext={collectionsRootLoadMoreHasNext}
           onCollectionsRootLoadMore={handleCollectionsRootLoadMore}
-          collectionsRootLoadMoreLoading={
-            kbCollectionsHubAppId != null && loadingAppIds.has(kbCollectionsHubAppId)
-          }
+          collectionsRootLoadMoreLoading={loadingRootAppListMore}
         />
       ) : (
         <AllRecordsMode

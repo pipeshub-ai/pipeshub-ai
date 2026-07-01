@@ -565,7 +565,7 @@ export const KnowledgeBaseApi = {
     rootKbId?: string;
   }) {
     const { nodeId, newName, nodeType, rootKbId } = args;
-    const isFolderLike = nodeType === 'folder' || nodeType === 'recordGroup';
+    const isFolderLike = nodeType === 'folder' || nodeType === 'recordGroup' || nodeType === 'app';
     if (isFolderLike && rootKbId && rootKbId !== nodeId) {
       return this.renameFolder(rootKbId, nodeId, newName);
     }
@@ -724,7 +724,7 @@ export const KnowledgeBaseApi = {
   async bulkReindex(items: Array<{ id: string; nodeType?: string }>) {
     const results = await Promise.allSettled(
       items.map(item => {
-        if (item.nodeType === 'recordGroup') {
+        if (item.nodeType === 'recordGroup' || item.nodeType === 'app') {
           return this.reindexRecordGroup(item.id);
         }
         return this.reindexItem(item.id, FOLDER_REINDEX_DEPTH);

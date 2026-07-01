@@ -255,7 +255,7 @@ export function extractAgentKnowledgeDefaults(
 
     if (recordGroups.length > 0) {
       kb.push(...recordGroups);
-    } else if (!connectorId.startsWith('knowledgeBase_')) {
+    } else {
       apps.push(connectorId);
     }
   }
@@ -278,7 +278,7 @@ export function extractAgentKnowledgeConnectors(
   for (const entry of raw) {
     if (!isKnowledgeGraphEntry(entry)) continue;
     const connectorId = typeof entry.connectorId === 'string' ? entry.connectorId.trim() : '';
-    if (!connectorId || connectorId.startsWith('knowledgeBase_')) continue;
+    if (!connectorId) continue;
 
     const recordGroups = normalizedRecordGroupIds(parseKnowledgeFiltersRecord(entry));
     if (recordGroups.length > 0) continue;
@@ -338,9 +338,7 @@ export function extractAgentKnowledgeCollectionRows(
     const sourceType =
       typeof entry.type === 'string' && entry.type.trim()
         ? entry.type.trim()
-        : connectorId.startsWith('knowledgeBase_')
-          ? 'KB'
-          : undefined;
+        : undefined;
 
     let ordinal = 0;
     for (const rgId of recordGroups) {
@@ -665,9 +663,7 @@ export const AgentsApi = {
       { params: query }
     );
 
-    const items = (data?.items ?? []).filter(
-      (node) => node?.id && !node.id.startsWith('knowledgeBase_')
-    );
+    const items = (data?.items ?? []).filter((node) => node?.id);
 
     return {
       nodes: items,
@@ -676,7 +672,7 @@ export const AgentsApi = {
   },
 
   /**
-   * Paginate through all knowledge-hub root nodes (excluding knowledgeBase_ items).
+   * Paginate through all knowledge-hub root nodes.
    * Used by the agent builder to populate the apps palette.
    */
   async getAllKnowledgeHubAppNodes(): Promise<KnowledgeHubAppNode[]> {

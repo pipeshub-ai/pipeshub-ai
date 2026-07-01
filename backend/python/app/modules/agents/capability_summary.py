@@ -32,11 +32,11 @@ async def fetch_connector_configs(
 
     Returns:
         {connector_id: {"sync": {...}, "indexing": {...}}}
-    Skips knowledgeBase_* pseudo-IDs. Per-connector errors yield {}.
+    Per-connector errors yield {}.
     """
     ids = [
         c for c in (connector_ids or [])
-        if c and isinstance(c, str) and not c.startswith("knowledgeBase_")
+        if c and isinstance(c, str)
     ]
     if not ids or not config_service:
         return {}

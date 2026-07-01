@@ -80,16 +80,9 @@ def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
         )
     return items if items else None
 
-# Collection app ID format: knowledgeBase_<orgId> (allowed for parent_id when parent_type is app)
-_KNOWLEDGE_BASE_APP_ID_PATTERN = re.compile(r'^knowledgeBase_[a-zA-Z0-9_-]+$')
-
-
 def _validate_uuid_format(value: Optional[str], field_name: str) -> None:
-    """Validate UUID format for IDs, or knowledgeBase_<orgId> for Collection app."""
+    """Validate UUID format for IDs."""
     if not value:
-        return
-
-    if _KNOWLEDGE_BASE_APP_ID_PATTERN.match(value):
         return
 
     uuid_pattern = re.compile(r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$', re.IGNORECASE)

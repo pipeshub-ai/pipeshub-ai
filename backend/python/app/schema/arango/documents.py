@@ -161,6 +161,10 @@ app_schema = {
             "updatedAtTimestamp": {"type": "number"},
             "status": {"type": ["string", "null"]},
             "isLocked": {"type": ["boolean", "null"]},
+            # KB-specific optional fields
+            "orgId": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]},
+            "hideConnector": {"type": ["boolean", "null"]},
         },
         "required": [
             "name",

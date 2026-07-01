@@ -286,7 +286,6 @@ def _extract_knowledge_connector_ids(knowledge: list[dict[str, Any]]) -> list[st
             if (
                 connector_id
                 and isinstance(connector_id, str)
-                and not connector_id.startswith("knowledgeBase_")
                 and connector_id not in seen
             ):
                 seen.add(connector_id)
