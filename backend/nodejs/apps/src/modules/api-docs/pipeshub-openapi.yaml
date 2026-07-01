@@ -8004,6 +8004,7 @@ components:
           description: System instructions that define agent behavior
         createdBy:
           type: string
+          format: objectId
           description: MongoDB user ID of the agent creator
         startMessage:
           type: string
