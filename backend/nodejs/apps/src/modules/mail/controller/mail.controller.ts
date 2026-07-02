@@ -95,16 +95,16 @@ export class MailController {
         secure: false,
         ...(smtpConfig.password
           ? {
-              auth: {
-                user: smtpConfig.username,
-                pass: smtpConfig.password, // Included only if password exists
-              },
-            }
+            auth: {
+              user: smtpConfig.username,
+              pass: smtpConfig.password, // Included only if password exists
+            },
+          }
           : {
-              auth: {
-                user: smtpConfig.username, // Include only the username
-              },
-            }),
+            auth: {
+              user: smtpConfig.username, // Include only the username
+            },
+          }),
       });
 
       await transporter.sendMail({
@@ -131,8 +131,8 @@ export class MailController {
       this.logger.error('Mail send error', { error });
       return {
         status: false,
-        error: 'Failed to send email',
-      }; // Return a response instead of throwing
+        data: error instanceof Error ? error.message : 'Failed to send email',
+      };
     }
   }
 }
