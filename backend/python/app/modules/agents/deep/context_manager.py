@@ -88,8 +88,8 @@ def _user_plain_summary_line(conv: Dict[str, Any], text_max: int) -> Optional[st
     attachment_parts = []
     if n_img:
         attachment_parts.append(f"{n_img} image(s)")
-    if n_pdf:
-        attachment_parts.append(f"{n_pdf} PDF(s)")
+    if n_doc:
+        attachment_parts.append(f"{n_doc} document(s)")
     suffix = f" [{', '.join(attachment_parts)} attached]" if attachment_parts else ""
     return f"User: {short}{suffix}"
 

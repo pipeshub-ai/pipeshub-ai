@@ -237,10 +237,10 @@ class TestExtractImageBlocks:
 
 
 # ---------------------------------------------------------------------------
-# resolve_pdf_blocks_simple
+# resolve_attachment_blocks_simple
 # ---------------------------------------------------------------------------
 
-class TestResolvePdfBlocksSimple:
+class TestResolveAttachmentBlocksSimple:
     def _record(self, blocks: list) -> dict:
         return {"block_containers": {"blocks": blocks}}
 
@@ -333,7 +333,7 @@ class TestResolveAttachments:
         assert result == []
 
     async def test_unsupported_mime_type_skipped(self, logger):
-        att = {"mimeType": "text/plain", "recordName": "file.txt", "virtualRecordId": "vrid1"}
+        att = {"mimeType": "application/octet-stream", "recordName": "file.bin", "virtualRecordId": "vrid1"}
         result = await resolve_attachments([att], None, "org1", True, logger)
         assert result == []
 
@@ -387,7 +387,7 @@ class TestResolveAttachments:
         result = await resolve_attachments([att], None, "org1", True, logger)
         assert len(result) == 1
         assert result[0]["type"] == "text"
-        assert "doc.pdf" in result[0]["text"]
+        assert "Document attached by user: doc.pdf" in result[0]["text"]
 
     async def test_pdf_blob_returns_none_skipped(self, logger):
         blob = AsyncMock()
@@ -463,6 +463,38 @@ class TestResolveAttachments:
         att = {"mimeType": "application/pdf", "recordName": "doc.pdf", "virtualRecordId": "vrid1"}
         result = await resolve_attachments([att], blob, "org1", True, logger)
         assert result == []
+
+    async def test_text_plain_blob_returns_record(self, logger):
+        text_record = {"block_containers": {"blocks": [{"type": "text", "data": "hello from txt"}]}}
+        blob = AsyncMock()
+        blob.get_record_from_storage.return_value = text_record
+        att = {"mimeType": "text/plain", "recordName": "notes.txt", "virtualRecordId": "vrid1"}
+        text_blocks = [{"type": "text", "text": "hello from txt"}]
+        with patch(
+            "app.utils.chat_helpers.record_to_message_content",
+            return_value=(text_blocks, None),
+        ):
+            result = await resolve_attachments([att], blob, "org1", False, logger)
+        assert result == text_blocks
+
+    async def test_text_markdown_no_blob_store_returns_text_hint(self, logger):
+        att = {"mimeType": "text/markdown", "recordName": "readme.md", "virtualRecordId": "vrid1"}
+        result = await resolve_attachments([att], None, "org1", True, logger)
+        assert len(result) == 1
+        assert "Document attached by user: readme.md" in result[0]["text"]
+
+    async def test_text_mdx_blob_returns_record(self, logger):
+        mdx_record = {"block_containers": {"blocks": [{"type": "text", "data": "# Title"}]}}
+        blob = AsyncMock()
+        blob.get_record_from_storage.return_value = mdx_record
+        att = {"mimeType": "text/mdx", "recordName": "page.mdx", "virtualRecordId": "vrid1"}
+        mdx_blocks = [{"type": "text", "text": "# Title"}]
+        with patch(
+            "app.utils.chat_helpers.record_to_message_content",
+            return_value=(mdx_blocks, None),
+        ):
+            result = await resolve_attachments([att], blob, "org1", False, logger)
+        assert result == mdx_blocks
 
     async def test_multiple_attachments_processed(self, logger):
         blob = AsyncMock()

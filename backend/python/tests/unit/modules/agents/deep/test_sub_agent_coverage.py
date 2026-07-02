@@ -1998,11 +1998,11 @@ class TestResolveSubAgentAttachments:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_skip_non_image_non_pdf(self):
+    async def test_skip_unsupported_mime_type(self):
         """Line 99-100 — skip unsupported mime types."""
         from app.modules.agents.deep.sub_agent import _resolve_sub_agent_attachments
         state = _mock_state(attachments=[
-            {"mimeType": "text/plain", "recordName": "doc.txt", "virtualRecordId": "vr1"},
+            {"mimeType": "application/octet-stream", "recordName": "doc.bin", "virtualRecordId": "vr1"},
         ])
         result = await _resolve_sub_agent_attachments(state)
         assert result == []
@@ -2038,14 +2038,14 @@ class TestResolveSubAgentAttachments:
 
     @pytest.mark.asyncio
     async def test_pdf_record_resolved(self):
-        """Lines 127-128 — PDF resolves via resolve_pdf_blocks_simple."""
+        """Lines 127-128 — document resolves via resolve_attachment_blocks_simple."""
         from app.modules.agents.deep.sub_agent import _resolve_sub_agent_attachments
         mock_record = {"content": b"pdf_data"}
         state = _mock_state(
             attachments=[{"mimeType": "application/pdf", "recordName": "doc.pdf", "virtualRecordId": "vr1"}],
             virtual_record_id_to_result={"vr1": mock_record},
         )
-        with patch("app.utils.attachment_utils.resolve_pdf_blocks_simple", return_value=[{"type": "text", "text": "pdf content"}]):
+        with patch("app.utils.attachment_utils.resolve_attachment_blocks_simple", return_value=[{"type": "text", "text": "pdf content"}]):
             result = await _resolve_sub_agent_attachments(state)
         assert len(result) == 1
         assert "pdf content" in result[0]["text"]
@@ -2079,7 +2079,7 @@ class TestResolveSubAgentAttachments:
         )
         result = await _resolve_sub_agent_attachments(state)
         assert len(result) == 1
-        assert "[PDF attached by user: doc.pdf]" in result[0]["text"]
+        assert "[Document attached by user: doc.pdf]" in result[0]["text"]
 
     @pytest.mark.asyncio
     async def test_missing_record_image_non_multimodal_placeholder(self):

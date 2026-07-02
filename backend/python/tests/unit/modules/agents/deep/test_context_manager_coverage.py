@@ -3,7 +3,7 @@ Additional coverage tests for app.modules.agents.deep.context_manager
 
 Targets functions and branches not covered by the main test file:
 - _image_attachment_count
-- _pdf_attachment_count
+- _doc_attachment_count
 - _user_plain_summary_line
 - ensure_blob_store
 - build_conversation_messages (various branches)
@@ -23,11 +23,10 @@ from langchain_core.messages import AIMessage, HumanMessage
 from app.modules.agents.deep.context_manager import (
     _format_reference_data,
     _image_attachment_count,
-    _pdf_attachment_count,
+    _doc_attachment_count,
     _user_plain_summary_line,
     build_conversation_messages,
     build_respond_conversation_context,
-    compact_conversation_history,
     compact_conversation_history_async,
     ensure_blob_store,
     _summarize_conversations_sync,
@@ -86,37 +85,45 @@ class TestImageAttachmentCount:
 
 
 # ---------------------------------------------------------------------------
-# _pdf_attachment_count
+# _doc_attachment_count
 # ---------------------------------------------------------------------------
 
-class TestPdfAttachmentCount:
+class TestDocAttachmentCount:
     def test_no_attachments(self):
-        assert _pdf_attachment_count({}) == 0
+        assert _doc_attachment_count({}) == 0
 
     def test_none_attachments(self):
-        assert _pdf_attachment_count({"attachments": None}) == 0
+        assert _doc_attachment_count({"attachments": None}) == 0
 
     def test_single_pdf(self):
         conv = {"attachments": [{"mimeType": "application/pdf"}]}
-        assert _pdf_attachment_count(conv) == 1
+        assert _doc_attachment_count(conv) == 1
 
     def test_case_insensitive(self):
         conv = {"attachments": [{"mimeType": "Application/PDF"}]}
-        assert _pdf_attachment_count(conv) == 1
+        assert _doc_attachment_count(conv) == 1
 
-    def test_non_pdf_excluded(self):
+    def test_text_attachments_counted(self):
+        conv = {"attachments": [
+            {"mimeType": "text/plain"},
+            {"mimeType": "text/markdown"},
+            {"mimeType": "text/mdx"},
+        ]}
+        assert _doc_attachment_count(conv) == 3
+
+    def test_non_doc_excluded(self):
         conv = {"attachments": [
             {"mimeType": "image/png"},
             {"mimeType": "application/pdf"},
         ]}
-        assert _pdf_attachment_count(conv) == 1
+        assert _doc_attachment_count(conv) == 1
 
-    def test_multiple_pdfs(self):
+    def test_multiple_docs(self):
         conv = {"attachments": [
             {"mimeType": "application/pdf"},
-            {"mimeType": "application/pdf"},
+            {"mimeType": "text/plain"},
         ]}
-        assert _pdf_attachment_count(conv) == 2
+        assert _doc_attachment_count(conv) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -147,12 +154,12 @@ class TestUserPlainSummaryLine:
         result = _user_plain_summary_line(conv, 100)
         assert "1 image(s) attached" in result
 
-    def test_pdf_attachment_only_no_text(self):
+    def test_doc_attachment_only_no_text(self):
         conv = {"content": "", "attachments": [{"mimeType": "application/pdf"}]}
         result = _user_plain_summary_line(conv, 100)
-        assert "1 PDF(s) attached" in result
+        assert "1 document(s) attached" in result
 
-    def test_both_images_and_pdfs_no_text(self):
+    def test_both_images_and_docs_no_text(self):
         conv = {"content": "", "attachments": [
             {"mimeType": "image/png"},
             {"mimeType": "image/jpeg"},
@@ -160,7 +167,7 @@ class TestUserPlainSummaryLine:
         ]}
         result = _user_plain_summary_line(conv, 100)
         assert "2 image(s)" in result
-        assert "1 PDF(s)" in result
+        assert "1 document(s)" in result
 
     def test_text_with_attachments(self):
         conv = {"content": "Check this", "attachments": [{"mimeType": "image/png"}]}
@@ -169,11 +176,11 @@ class TestUserPlainSummaryLine:
         assert "1 image(s)" in result
         assert "attached" in result
 
-    def test_text_with_pdf_attachment(self):
+    def test_text_with_doc_attachment(self):
         conv = {"content": "See doc", "attachments": [{"mimeType": "application/pdf"}]}
         result = _user_plain_summary_line(conv, 100)
         assert "See doc" in result
-        assert "1 PDF(s)" in result
+        assert "1 document(s)" in result
 
 
 # ---------------------------------------------------------------------------
@@ -372,38 +379,6 @@ class TestBuildRespondConversationContext:
         ))
         # 3 pairs = 6 items from conversation, so at most 6 messages
         assert len(result) <= 6
-
-
-# ---------------------------------------------------------------------------
-# compact_conversation_history
-# ---------------------------------------------------------------------------
-
-class TestCompactConversationHistory:
-    def test_empty_conversations(self):
-        summary, recent = compact_conversation_history([], MagicMock(), log)
-        assert summary is None
-        assert recent == []
-
-    def test_short_conversation_no_compaction(self):
-        convs = [
-            {"role": "user_query", "content": "q1"},
-            {"role": "bot_response", "content": "a1"},
-        ]
-        summary, recent = compact_conversation_history(convs, MagicMock(), log)
-        assert summary is None
-        assert recent == convs
-
-    def test_long_conversation_compacted(self):
-        convs = []
-        for i in range(20):
-            convs.append({"role": "user_query", "content": f"question {i}"})
-            convs.append({"role": "bot_response", "content": f"answer {i}"})
-        summary, recent = compact_conversation_history(
-            convs, MagicMock(), log, max_recent_pairs=5
-        )
-        assert summary is not None
-        assert "Previous conversation summary" in summary
-        assert len(recent) == 10  # 5 pairs * 2
 
 
 # ---------------------------------------------------------------------------
