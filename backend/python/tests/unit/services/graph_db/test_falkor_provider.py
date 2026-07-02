@@ -188,10 +188,6 @@ class TestDocumentOperations:
 
     @pytest.mark.asyncio
     async def test_get_all_documents_returns_transformed_list(self, falkor_provider: FalkorProvider):
-        # falkor_provider.client.execute_query = AsyncMock(
-        #     return_value=[[{"id": "d1", "name": "A"}], [{"id": "d2", "name": "B"}]]
-        # )
-
         falkor_provider.client.execute_query = AsyncMock(
             return_value=[
                 [Node(node_id="d1", labels=["apps"], properties={"id": "d1", "name": "A"})],
