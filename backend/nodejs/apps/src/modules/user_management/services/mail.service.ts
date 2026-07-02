@@ -80,6 +80,7 @@ export class MailService {
         data:
           error?.response?.data?.error?.message ||
           error?.response?.data?.message ||
+          (typeof error?.response?.data === 'string' ? error.response.data : null) ||
           error?.message ||
           'Error sending mail.',
       };

@@ -2188,7 +2188,7 @@ describe('UserController', () => {
         data: { isPasswordAuthEnabled: true },
       });
 
-      mockMailService.sendMail.resolves({ statusCode: 500, data: 'Error' });
+      mockMailService.sendMail.resolves({ statusCode: 500, data: null });
 
       await controller.resendInvite(req, res, next);
 
@@ -2211,7 +2211,7 @@ describe('UserController', () => {
         data: { isPasswordAuthEnabled: false },
       });
 
-      mockMailService.sendMail.resolves({ statusCode: 500, data: 'Error' });
+      mockMailService.sendMail.resolves({ statusCode: 500, data: null });
 
       await controller.resendInvite(req, res, next);
 

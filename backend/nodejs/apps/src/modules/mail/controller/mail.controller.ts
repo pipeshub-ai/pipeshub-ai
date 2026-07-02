@@ -131,7 +131,7 @@ export class MailController {
       this.logger.error('Mail send error', { error });
       return {
         status: false,
-        data: error instanceof Error ? error.message : 'Failed to send email',
+        data: error instanceof Error ? error.message : (typeof error === 'string' ? error : 'Failed to send email'),
       };
     }
   }
