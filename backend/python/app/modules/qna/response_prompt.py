@@ -532,19 +532,19 @@ async def create_response_messages(state) -> list[Any]:
                         if block.get("type") == "image_url":
                             system_content.append(block)
             # Add PDF attachments from conversation history
-            pdf_attachments = [
+            attachments = [
                 att for att in attachments
                 if isinstance(att, dict)
-                and (att.get("mimeType") or "").lower() == "application/pdf"
+                and (att.get("mimeType") or "").lower() in ["application/pdf", "text/mdx", "text/markdown","text/plain"]
             ]
-            if pdf_attachments:
+            if attachments:
                 from app.utils.chat_helpers import record_to_message_content
-                pdf_blocks = []
+                all_blocks = []
                 _vrmap = state.get("virtual_record_id_to_result")
                 if not isinstance(_vrmap, dict):
                     _vrmap = {}
                     state["virtual_record_id_to_result"] = _vrmap
-                for att in pdf_attachments:
+                for att in attachments:
                     vrid = att.get("virtualRecordId") or ""
                     if not vrid:
                         continue
@@ -555,14 +555,14 @@ async def create_response_messages(state) -> list[Any]:
                         if vrid not in _vrmap:
                             _vrmap[vrid] = record
                         blocks, _history_ref_mapper = record_to_message_content(record, ref_mapper=_history_ref_mapper, is_multimodal_llm=is_multimodal_llm)
-                        pdf_blocks.extend(blocks)
+                        all_blocks.extend(blocks)
                     except Exception as exc:
                         logger.warning(
                             "Failed to resolve historical PDF attachment vrid=%s: %s", vrid, exc
                         )
-                if pdf_blocks:
+                if all_blocks:
                     system_content.append({"type": "text", "text": "Attached PDF documents:"})
-                    system_content.extend(pdf_blocks)
+                    system_content.extend(all_blocks)
         elif role == "bot_response" and content:
             system_content.append({"type": "text", "text": f"Assistant (Turn {idx}): {content}"})
 
@@ -587,20 +587,19 @@ async def create_response_messages(state) -> list[Any]:
                 content = await build_multimodal_user_content(
                     content, attachments, blob_store, org_id,
                 )
-            # Add PDF attachments from conversation history
-            pdf_attachments = [
+            attachments = [
                 att for att in attachments
                 if isinstance(att, dict)
-                and (att.get("mimeType") or "").lower() == "application/pdf"
+                and (att.get("mimeType") or "").lower() in ["application/pdf", "text/mdx", "text/markdown","text/plain"]
             ]
-            if pdf_attachments and blob_store and org_id:
+            if attachments and blob_store and org_id:
                 from app.utils.chat_helpers import record_to_message_content
-                pdf_blocks = []
+                all_blocks = []
                 _vrmap2 = state.get("virtual_record_id_to_result")
                 if not isinstance(_vrmap2, dict):
                     _vrmap2 = {}
                     state["virtual_record_id_to_result"] = _vrmap2
-                for att in pdf_attachments:
+                for att in attachments:
                     vrid = att.get("virtualRecordId") or ""
                     if not vrid:
                         continue
@@ -611,17 +610,17 @@ async def create_response_messages(state) -> list[Any]:
                         if vrid not in _vrmap2:
                             _vrmap2[vrid] = record
                         blocks, _history_ref_mapper = record_to_message_content(record, ref_mapper=_history_ref_mapper, is_multimodal_llm=is_multimodal_llm)
-                        pdf_blocks.extend(blocks)
+                        all_blocks.extend(blocks)
                     except Exception as exc:
                         logger.warning(
                             "Failed to resolve historical PDF attachment vrid=%s: %s", vrid, exc
                         )
-                if pdf_blocks:
+                if all_blocks:
                     parts = list(content) if isinstance(content, list) else (
                         [{"type": "text", "text": content}] if content else []
                     )
                     parts.append({"type": "text", "text": "Attached PDF documents:"})
-                    parts.extend(pdf_blocks)
+                    parts.extend(all_blocks)
                     content = parts
             messages.append(HumanMessage(content=content))
         elif role == "bot_response":

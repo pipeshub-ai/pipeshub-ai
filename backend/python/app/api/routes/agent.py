@@ -546,7 +546,7 @@ async def _build_prior_routing_messages(
     """
     from langchain_core.messages import AIMessage, HumanMessage
     from app.utils.chat_helpers import is_base64_image
-    from app.utils.attachment_utils import resolve_pdf_blocks_simple
+    from app.utils.attachment_utils import resolve_attachment_blocks_simple
 
     previous = query_info.get("previous_conversations", [])
     if not previous:
@@ -574,8 +574,8 @@ async def _build_prior_routing_messages(
                         record = await blob_store.get_record_from_storage(vrid, org_id)
                         if not record:
                             continue
-                        if mime == "application/pdf":
-                            parts.extend(resolve_pdf_blocks_simple(record, is_multimodal_llm))
+                        if mime in ["application/pdf", "text/mdx", "text/markdown", "text/plain"]:
+                            parts.extend(resolve_attachment_blocks_simple(record, is_multimodal_llm))
                         elif mime.startswith("image/") and is_multimodal_llm:
                             blocks = (
                                 (record.get("block_containers") or {}).get("blocks") or []

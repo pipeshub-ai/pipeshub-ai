@@ -592,6 +592,9 @@ const SUPPORTED_CHAT_ATTACHMENT_MIMETYPES = new Set([
   'image/jpg',
   'image/png',
   'application/pdf',
+  'text/plain',
+  'text/markdown',
+  'text/mdx',
 ]);
 
 export const uploadChatAttachments =
@@ -608,7 +611,7 @@ export const uploadChatAttachments =
       );
       if (invalidFile) {
         throw new BadRequestError(
-          `Unsupported attachment type: ${invalidFile.originalname}. Supported types: PDF, JPEG, PNG.`,
+          `Unsupported attachment type: ${invalidFile.originalname}. Supported types: PDF, JPEG, PNG, TXT, MD, MDX.`,
         );
       }
 
