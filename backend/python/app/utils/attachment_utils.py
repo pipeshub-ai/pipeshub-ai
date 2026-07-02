@@ -68,10 +68,11 @@ async def resolve_attachments(
 
         is_image = mime_type.startswith("image/")
         is_pdf = mime_type.lower() == "application/pdf"
+        is_text = mime_type.lower() in ("text/plain", "text/markdown", "text/mdx")
 
-        if not is_image and not is_pdf:
+        if not is_image and not is_pdf and not is_text:
             logger.debug(
-                "Skipping non-image attachment: %s (%s)", record_name, mime_type
+                "Skipping unsupported attachment type: %s (%s)", record_name, mime_type
             )
             continue
 
@@ -126,14 +127,14 @@ async def resolve_attachments(
                     exc_info=True,
                 )
 
-        else:  # is_pdf
+        elif is_pdf or is_text:
             if blob_store is None:
                 logger.warning(
-                    "blob_store not available; cannot resolve PDF attachment %s",
+                    "blob_store not available; cannot resolve attachment %s",
                     record_name,
                 )
                 blocks.append(
-                    {"type": "text", "text": f"[PDF attached by user: {record_name}]\n"}
+                    {"type": "text", "text": f"[Document attached by user: {record_name}]\n"}
                 )
                 continue
 
@@ -155,19 +156,19 @@ async def resolve_attachments(
                 if out_records is not None:
                     out_records[virtual_record_id] = record
 
-                pdf_content, ref_mapper = record_to_message_content(
+                doc_content, ref_mapper = record_to_message_content(
                     record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm
                 )
-                if pdf_content:
-                    blocks.extend(pdf_content)
+                if doc_content:
+                    blocks.extend(doc_content)
                 else:
                     logger.debug(
-                        "No content blocks found in PDF record for %s; skipping",
+                        "No content blocks found in record for %s; skipping",
                         record_name,
                     )
             except Exception as exc:
                 logger.warning(
-                    "Failed to resolve PDF attachment %s (vrid=%s): %s",
+                    "Failed to resolve attachment %s (vrid=%s): %s",
                     record_name,
                     virtual_record_id,
                     exc,
@@ -230,7 +231,7 @@ def _extract_image_blocks(
     return result
 
 
-def resolve_pdf_blocks_simple(
+def resolve_attachment_blocks_simple(
     record: dict[str, Any],
     is_multimodal_llm: bool,
 ) -> list[dict[str, Any]]:

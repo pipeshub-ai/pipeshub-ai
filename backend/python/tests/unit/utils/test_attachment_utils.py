@@ -13,7 +13,7 @@ from app.utils.attachment_utils import (
     ensure_attachment_blocks,
     inject_attachment_blocks,
     resolve_attachments,
-    resolve_pdf_blocks_simple,
+    resolve_attachment_blocks_simple,
 )
 
 # ---------------------------------------------------------------------------
@@ -245,59 +245,59 @@ class TestResolvePdfBlocksSimple:
         return {"block_containers": {"blocks": blocks}}
 
     def test_empty_record_returns_empty(self):
-        assert resolve_pdf_blocks_simple({}, False) == []
+        assert resolve_attachment_blocks_simple({}, False) == []
 
     def test_text_block_included(self):
         record = self._record([{"type": "text", "data": "hello world"}])
-        result = resolve_pdf_blocks_simple(record, False)
+        result = resolve_attachment_blocks_simple(record, False)
         assert result == [{"type": "text", "text": "hello world"}]
 
     def test_whitespace_only_text_skipped(self):
         record = self._record([{"type": "text", "data": "   "}])
-        result = resolve_pdf_blocks_simple(record, False)
+        result = resolve_attachment_blocks_simple(record, False)
         assert result == []
 
     def test_table_row_with_nl_text(self):
         record = self._record([{"type": "table_row", "data": {"row_natural_language_text": "col1: val"}}])
-        result = resolve_pdf_blocks_simple(record, False)
+        result = resolve_attachment_blocks_simple(record, False)
         assert result == [{"type": "text", "text": "col1: val"}]
 
     def test_table_row_without_nl_text_skipped(self):
         record = self._record([{"type": "table_row", "data": {}}])
-        assert resolve_pdf_blocks_simple(record, False) == []
+        assert resolve_attachment_blocks_simple(record, False) == []
 
     def test_table_row_non_dict_data_skipped(self):
         record = self._record([{"type": "table_row", "data": "not a dict"}])
-        assert resolve_pdf_blocks_simple(record, False) == []
+        assert resolve_attachment_blocks_simple(record, False) == []
 
     def test_image_block_included_when_multimodal(self):
         record = self._record([{"type": "image", "data": {"uri": _PNG_URI}}])
-        result = resolve_pdf_blocks_simple(record, is_multimodal_llm=True)
+        result = resolve_attachment_blocks_simple(record, is_multimodal_llm=True)
         assert len(result) == 1
         assert result[0]["type"] == "image_url"
 
     def test_image_block_skipped_when_not_multimodal(self):
         record = self._record([{"type": "image", "data": {"uri": _PNG_URI}}])
-        result = resolve_pdf_blocks_simple(record, is_multimodal_llm=False)
+        result = resolve_attachment_blocks_simple(record, is_multimodal_llm=False)
         assert result == []
 
     def test_image_block_non_base64_uri_skipped(self):
         record = self._record([{"type": "image", "data": {"uri": "ftp://invalid"}}])
-        result = resolve_pdf_blocks_simple(record, is_multimodal_llm=True)
+        result = resolve_attachment_blocks_simple(record, is_multimodal_llm=True)
         assert result == []
 
     def test_image_block_non_dict_data_skipped_when_multimodal(self):
         record = self._record([{"type": "image", "data": "not_a_dict"}])
-        result = resolve_pdf_blocks_simple(record, is_multimodal_llm=True)
+        result = resolve_attachment_blocks_simple(record, is_multimodal_llm=True)
         assert result == []
 
     def test_unknown_block_type_skipped(self):
         record = self._record([{"type": "unknown", "data": "something"}])
-        assert resolve_pdf_blocks_simple(record, False) == []
+        assert resolve_attachment_blocks_simple(record, False) == []
 
     def test_none_block_containers_returns_empty(self):
         record = {"block_containers": None}
-        assert resolve_pdf_blocks_simple(record, False) == []
+        assert resolve_attachment_blocks_simple(record, False) == []
 
     def test_mixed_blocks(self):
         blocks = [
@@ -306,12 +306,12 @@ class TestResolvePdfBlocksSimple:
             {"type": "image", "data": {"uri": _PNG_URI}},
         ]
         record = self._record(blocks)
-        result = resolve_pdf_blocks_simple(record, is_multimodal_llm=True)
+        result = resolve_attachment_blocks_simple(record, is_multimodal_llm=True)
         assert len(result) == 3
 
     def test_text_block_non_str_data_skipped(self):
         record = self._record([{"type": "text", "data": 42}])
-        assert resolve_pdf_blocks_simple(record, False) == []
+        assert resolve_attachment_blocks_simple(record, False) == []
 
 
 # ---------------------------------------------------------------------------

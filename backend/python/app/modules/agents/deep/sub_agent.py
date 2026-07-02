@@ -68,14 +68,14 @@ async def _resolve_sub_agent_attachments(state: dict) -> list[dict]:
     """Build attachment blocks for sub-agents using simple PDF extraction.
 
     Image attachments are resolved normally.  PDF attachments use
-    ``resolve_pdf_blocks_simple`` (plain text/table_row/image blocks) instead
+    ``resolve_attachment_blocks_simple`` (plain text/table_row/image blocks) instead
     of ``record_to_message_content`` (which adds citation IDs, block indices,
     and Jinja-rendered templates unnecessary for sub-agent context).
     """
     from app.utils.attachment_utils import (  # noqa: PLC0415
         _extract_image_blocks,
         _SUPPORTED_IMAGE_PREFIXES,
-        resolve_pdf_blocks_simple,
+        resolve_attachment_blocks_simple,
     )
 
     raw_attachments = state.get("attachments") or []
@@ -95,8 +95,8 @@ async def _resolve_sub_agent_attachments(state: dict) -> list[dict]:
             continue
 
         is_image = mime_type.startswith("image/")
-        is_pdf = mime_type.lower() == "application/pdf"
-        if not is_image and not is_pdf:
+        is_non_image_attachment = mime_type.lower() in ["application/pdf", "text/plain", "text/markdown"]
+        if not is_image and not is_non_image_attachment:
             continue
 
         # Try to use an already-fetched record from state
@@ -115,8 +115,8 @@ async def _resolve_sub_agent_attachments(state: dict) -> list[dict]:
         if record is None:
             if is_image and not is_multimodal_llm:
                 blocks.append({"type": "text", "text": f"[Image attached by user: {record_name}]\n"})
-            elif is_pdf:
-                blocks.append({"type": "text", "text": f"[PDF attached by user: {record_name}]\n"})
+            elif is_non_image_attachment:
+                blocks.append({"type": "text", "text": f"[Document attached by user: {record_name}]\n"})
             continue
 
         if is_image:
@@ -125,7 +125,7 @@ async def _resolve_sub_agent_attachments(state: dict) -> list[dict]:
             else:
                 blocks.append({"type": "text", "text": f"[Image attached by user: {record_name}]\n"})
         else:
-            blocks.extend(resolve_pdf_blocks_simple(record, is_multimodal_llm))
+            blocks.extend(resolve_attachment_blocks_simple(record, is_multimodal_llm))
 
     return blocks
 
