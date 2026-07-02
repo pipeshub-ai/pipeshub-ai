@@ -101,14 +101,6 @@ class FalkorClient:
     async def disconnect(self) -> None:
         """Close Falkor driver and all sessions"""
         try:
-            # Close all active sessions
-            # for txn_id, session in self._active_sessions.items():
-            #     try:
-            #         await session.close()
-            #     except (ClientError, ServiceUnavailable) as e:
-            #         self.logger.warning(f"Error closing session {txn_id}: {str(e)}")
-            # self._active_sessions.clear()
-            # self._session_locks.clear()
 
             if self.driver:
                 self.driver.connection.close()
@@ -129,21 +121,6 @@ class FalkorClient:
             str: Transaction ID (session identifier)
         """
         pass
-        # import uuid
-
-        # if not self.driver:
-        #     await self.connect()
-        #     if not self.driver:
-        #         raise RuntimeError("Falkor driver not connected")
-
-        # # Create a new session for this transaction
-        # session = self.driver.session(database=self.database)
-        # txn_id = str(uuid.uuid4())
-        # self._active_sessions[txn_id] = session
-        # self._session_locks[txn_id] = asyncio.Lock()  # Create lock for this transaction
-
-        # self.logger.debug(f"🔵 Started Falkor transaction: {txn_id}")
-        # return txn_id
 
     async def commit_transaction(self, txn_id: str) -> None:
         """
@@ -152,17 +129,6 @@ class FalkorClient:
         Args:
             txn_id: Transaction ID (session identifier)
         """
-        # if txn_id not in self._active_sessions:
-        #     raise ValueError(f"Transaction {txn_id} not found")
-
-        # session = self._active_sessions[txn_id]
-        # try:
-        #     await session.close()
-        #     self.logger.debug(f"✅ Committed Falkor transaction: {txn_id}")
-        # finally:
-        #     del self._active_sessions[txn_id]
-        #     if txn_id in self._session_locks:
-        #         del self._session_locks[txn_id]
         pass
 
     async def abort_transaction(self, txn_id: str) -> None:
@@ -172,17 +138,6 @@ class FalkorClient:
         Args:
             txn_id: Transaction ID (session identifier)
         """
-        # if txn_id not in self._active_sessions:
-        #     raise ValueError(f"Transaction {txn_id} not found")
-
-        # session = self._active_sessions[txn_id]
-        # try:
-        #     await session.close()
-        #     self.logger.debug(f"🔄 Aborted Falkor transaction: {txn_id}")
-        # finally:
-        #     del self._active_sessions[txn_id]
-        #     if txn_id in self._session_locks:
-        #         del self._session_locks[txn_id]
         pass
 
     async def execute_query(
@@ -209,10 +164,6 @@ class FalkorClient:
 
         parameters = parameters or {}
 
-        # Auto-commit transaction
-        # async with self.driver.session(database=self.database) as session:
-        #     result = await session.run(query, parameters)
-        #     return await result.data()
         graph = self.driver.select_graph(self.database)
         result = await graph.query(
             query,

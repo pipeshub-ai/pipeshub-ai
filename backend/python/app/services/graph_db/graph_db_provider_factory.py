@@ -105,7 +105,7 @@ class GraphDBProviderFactory:
                 return provider
 
             else:
-                raise ValueError(f"Unsupported graph database provider: {provider_type}. Set DATA_STORE env to 'arangodb' or 'neo4j'")
+                raise ValueError(f"Unsupported graph database provider: {provider_type}. Set DATA_STORE env to 'arangodb', 'neo4j' or 'falkordb'")
 
         except Exception as e:
             logger.error(f"❌ GraphDBProviderFactory: Failed to create provider: {str(e)}")
@@ -196,13 +196,13 @@ class GraphDBProviderFactory:
         config_service: ConfigurationService,
     ):
         """
-        Create and connect a Neo4j provider.
+        Create and connect a FalkorDB provider.
 
         Args:
             logger: Logger instance
             config_service: Configuration service
         Returns:
-            Neo4jProvider: Connected Neo4j provider
+            FalkorProvider: Connected FalkorDB provider
 
         Raises:
             ConnectionError: If unable to connect to Neo4j
@@ -216,7 +216,7 @@ class GraphDBProviderFactory:
                 config_service=config_service,
             )
 
-            logger.debug("🔌 Connecting Neo4j provider...")
+            logger.debug("🔌 Connecting FalkorDB provider...")
 
             # Connect to database
             connected = await provider.connect()
@@ -224,11 +224,11 @@ class GraphDBProviderFactory:
             if not connected:
                 raise ConnectionError("Failed to connect FalkorDB provider to database")
 
-            logger.info("✅ Neo4j provider created and connected successfully")
+            logger.info("✅ FalkorDB provider created and connected successfully")
             return provider
 
         except Exception as e:
-            logger.error(f"❌ Failed to create Neo4j provider: {str(e)}")
+            logger.error(f"❌ Failed to create FalkorDB provider: {str(e)}")
             raise
 
 
