@@ -95,7 +95,7 @@ async def _resolve_sub_agent_attachments(state: dict) -> list[dict]:
             continue
 
         is_image = mime_type.startswith("image/")
-        is_non_image_attachment = mime_type.lower() in ["application/pdf", "text/plain", "text/markdown"]
+        is_non_image_attachment = mime_type.lower() in ["application/pdf", "text/plain", "text/markdown", "text/mdx"]
         if not is_image and not is_non_image_attachment:
             continue
 

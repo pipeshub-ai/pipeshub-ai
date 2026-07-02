@@ -423,7 +423,7 @@ async def _append_conversation_history(
                     att
                     for att in attachments
                     if isinstance(att, dict)
-                    and ((att.get("mimeType") or "").lower() == "application/pdf" or _is_text_attachment((att.get("mimeType") or "")))
+                    and (att.get("mimeType") or "").lower() in _DOC_ATTACHMENT_MIME_TYPES
                 ]
                 for att in attachments:
                     vrid = att.get("virtualRecordId") or ""
@@ -611,7 +611,7 @@ async def _build_attachment_llm_messages(
     attachments = [
         att for att in query_info.attachments
         if isinstance(att, dict)
-        and ((att.get("mimeType") or "").lower() == "application/pdf" or _is_text_attachment((att.get("mimeType") or "")))
+        and (att.get("mimeType") or "").lower() in _DOC_ATTACHMENT_MIME_TYPES
     ]
     content_blocks: list[dict[str, Any]] = []
     if attachments and blob_store and org_id:
@@ -1160,6 +1160,7 @@ _SUPPORTED_ATTACHMENT_MIME_TYPES = {
 }
 
 _TEXT_ATTACHMENT_MIME_TYPES = {"text/plain", "text/markdown", "text/mdx"}
+_DOC_ATTACHMENT_MIME_TYPES = _TEXT_ATTACHMENT_MIME_TYPES | {"application/pdf"}
 
 
 def _is_supported_attachment_mime(mime_type: str) -> bool:

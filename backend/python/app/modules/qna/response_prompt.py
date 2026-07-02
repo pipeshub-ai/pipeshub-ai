@@ -472,7 +472,7 @@ async def create_response_messages(state) -> list[Any]:
 
     PDF attachments on previous user_query messages are resolved from blob
     storage via ``record_to_message_content`` and appended under an
-    "Attached PDF documents:" label in both the system multimodal path and
+    "Attached documents:" label in both the system multimodal path and
     the HumanMessage history path.  The shared ``state["citation_ref_mapper"]``
     is used so historical PDF citation IDs are consistent with those for
     retrieval results and current attachments.
@@ -561,7 +561,7 @@ async def create_response_messages(state) -> list[Any]:
                             "Failed to resolve historical PDF attachment vrid=%s: %s", vrid, exc
                         )
                 if all_blocks:
-                    system_content.append({"type": "text", "text": "Attached PDF documents:"})
+                    system_content.append({"type": "text", "text": "Attached documents:"})
                     system_content.extend(all_blocks)
         elif role == "bot_response" and content:
             system_content.append({"type": "text", "text": f"Assistant (Turn {idx}): {content}"})
@@ -619,7 +619,7 @@ async def create_response_messages(state) -> list[Any]:
                     parts = list(content) if isinstance(content, list) else (
                         [{"type": "text", "text": content}] if content else []
                     )
-                    parts.append({"type": "text", "text": "Attached PDF documents:"})
+                    parts.append({"type": "text", "text": "Attached documents:"})
                     parts.extend(all_blocks)
                     content = parts
             messages.append(HumanMessage(content=content))

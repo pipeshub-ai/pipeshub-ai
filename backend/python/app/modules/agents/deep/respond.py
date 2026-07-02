@@ -1134,7 +1134,7 @@ async def _handle_direct_answer(
 
     previous = state.get("previous_conversations", [])
     _has_prev_attachments = any(
-        isinstance(att, dict) and (att.get("mimeType") or "").lower() in ["application/pdf", "text/plain", "text/markdown"]
+        isinstance(att, dict) and (att.get("mimeType") or "").lower() in ["application/pdf", "text/plain", "text/markdown", "text/mdx"]
         for conv in previous if conv.get("role") == "user_query"
         for att in (conv.get("attachments") or [])
     )

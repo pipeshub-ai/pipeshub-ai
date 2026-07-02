@@ -4461,7 +4461,7 @@ async def _build_conversation_messages(
                     content = await build_multimodal_user_content(
                         content, attachments, blob_store, org_id,
                     )
-                _DOC_MIME_TYPES = {"application/pdf", "text/plain", "text/markdown"}
+                _DOC_MIME_TYPES = {"application/pdf", "text/plain", "text/markdown", "text/mdx"}
                 doc_attachments = [
                     att for att in attachments
                     if isinstance(att, dict)
@@ -7253,7 +7253,7 @@ async def _generate_direct_response(
             "in this turn, your final answer must follow its substance and structure; adjust wording only."
         )
 
-    _DOC_MIME_TYPES = {"application/pdf", "text/plain", "text/markdown"}
+    _DOC_MIME_TYPES = {"application/pdf", "text/plain", "text/markdown", "text/mdx"}
     _has_prev_doc_attachments = any(
         isinstance(att, dict) and (att.get("mimeType") or "").lower() in _DOC_MIME_TYPES
         for conv in previous if conv.get("role") == "user_query"

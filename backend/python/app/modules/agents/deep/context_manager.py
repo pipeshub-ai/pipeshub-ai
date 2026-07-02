@@ -48,7 +48,7 @@ def _image_attachment_count(conv: Dict[str, Any]) -> int:
     )
 
 
-_DOC_ATTACHMENT_MIME_TYPES = {"application/pdf", "text/plain", "text/markdown"}
+_DOC_ATTACHMENT_MIME_TYPES = {"application/pdf", "text/plain", "text/markdown", "text/mdx"}
 
 
 def _doc_attachment_count(conv: Dict[str, Any]) -> int:
