@@ -284,6 +284,7 @@ dependencies = [
     "zstandard==0.25.0",
     "mariadb[binary,pool]>=2.0.0rc2,<3",
     "asyncpg>=0.31.0",
+    "falkordb",
 ]
 
 [tool.setuptools.packages.find]
