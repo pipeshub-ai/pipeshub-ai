@@ -9,9 +9,8 @@ import asyncio
 from logging import Logger
 from typing import TYPE_CHECKING, Any
 
-from falkordb import FalkorDB
-from neo4j import AsyncGraphDatabase
-from neo4j.exceptions import ClientError, ServiceUnavailable
+from falkordb.asyncio import FalkorDB
+import redis
 
 if TYPE_CHECKING:
     from neo4j import AsyncSession
@@ -82,10 +81,7 @@ class FalkorClient:
 
             return True
 
-        except ServiceUnavailable as e:
-            self.logger.error(f"❌ Failed to connect to Falkor: {str(e)}")
-            return False
-        except ClientError as e:
+        except redis.exceptions.RedisError as e:
             self.logger.error(f"❌ Failed to connect to Falkor: {str(e)}")
             return False
 
@@ -118,7 +114,7 @@ class FalkorClient:
                 self.driver.connection.close()
                 self.driver = None
                 self.logger.info("✅ Disconnected from Falkor")
-        except (ClientError, ServiceUnavailable) as e:
+        except redis.exceptions.RedisError as e:
             self.logger.error(f"❌ Error disconnecting from Falkor: {str(e)}")
 
     async def begin_transaction(self, read: list[str], write: list[str]) -> str:
@@ -218,7 +214,7 @@ class FalkorClient:
         #     result = await session.run(query, parameters)
         #     return await result.data()
         graph = self.driver.select_graph(self.database)
-        result = graph.query(
+        result = await graph.query(
             query,
             parameters
         )
