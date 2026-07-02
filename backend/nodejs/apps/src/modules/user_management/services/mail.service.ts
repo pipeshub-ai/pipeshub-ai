@@ -75,7 +75,15 @@ export class MailService {
       return { statusCode: 200, data: response.data };
     } catch (error: any) {
       this.logger.error('Error sending mail', { error: error?.response?.data });
-      return {statusCode: 500, data: "Error sending mail. Check your SMTP configuration."}
+      return {
+        statusCode: error?.response?.status || 500,
+        data:
+          error?.response?.data?.error?.message ||
+          error?.response?.data?.message ||
+          (typeof error?.response?.data === 'string' ? error.response.data : null) ||
+          error?.message ||
+          'Error sending mail.',
+      };
     }
   }
 }
