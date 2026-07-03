@@ -6,9 +6,11 @@ from app.telemetry.modules.activity_metrics import record_service_activity
 
 class TestRecordServiceActivity:
     def test_counts_activity_with_all_labels(self):
+        # Unique activity name: METRICS_BACKEND is process-global, and other
+        # tests emit "document_indexed" with mock label values.
         record_service_activity(
             "indexing_service",
-            "document_indexed",
+            "document_indexed_all_labels",
             connector="gmail",
             status="ok",
             org="org-1",
@@ -18,7 +20,9 @@ class TestRecordServiceActivity:
 
         text = METRICS_BACKEND.serialize()
         line = next(
-            line for line in text.splitlines() if 'activity="document_indexed"' in line
+            line
+            for line in text.splitlines()
+            if 'activity="document_indexed_all_labels"' in line
         )
         assert line.startswith("pipeshub_activity_total{")
         assert 'service="indexing_service"' in line

@@ -12,7 +12,7 @@ from app.telemetry.backend import METRICS_BACKEND
 ACTIVITY = METRICS_BACKEND.counter(
     "pipeshub_activity_total",
     "Total service activities recorded",
-    ["service", "activity", "connector", "status", "org", "kb", "mimetype"],
+    ["service", "activity", "connector", "status", "org", "kb", "domain", "mimetype"],
 )
 
 
@@ -23,7 +23,8 @@ def record_service_activity(
     status: str = "ok",
     org: str = "unknown",
     kb: str = "none",
+    domain: str = "unknown",
     mimetype: str = "none",
 ) -> None:
     """Increment a service activity counter from a pipeline call site."""
-    ACTIVITY.inc(service, activity, connector, status, org, kb, mimetype)
+    ACTIVITY.inc(service, activity, connector, status, org, kb, domain, mimetype)

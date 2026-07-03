@@ -153,11 +153,11 @@ class SinkOrchestrator(Transformer):
             connector, org, kb = self._activity_labels(record)
             result = await self.vector_store.apply(ctx)
             if result is False:
-                record_service_activity("indexing_service", "document_indexed", connector=connector, status="failed", org=org, kb=kb, mimetype=record.mime_type)
+                record_service_activity("indexing_service", "document_indexed", connector=connector, status="failed", org=org, kb=kb, mimetype=record.mime_type or "none")
                 return
             self.logger.info(f"✅ Vector store indexing succeeded for record {record_id}")
             # Per-record indexing success counter (powers the Ingestion dashboard).
-            record_service_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type)
+            record_service_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type or "none")
             self.logger.info(f"Saving reconciliation metadata for record {record_id}")
             await self.graphdb.apply(ctx)
             await self._save_reconciliation_metadata(ctx)
