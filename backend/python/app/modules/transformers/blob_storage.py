@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import time
 from typing import Any, Dict, TypedDict
 
@@ -108,6 +109,33 @@ class BlobStorage(Transformer):
             or endpoints.get("storage", {}).get("endpoint")
             or DefaultEndpoints.FRONTEND_ENDPOINT.value
         )
+
+    def _normalize_signed_url_for_internal_fetch(self, signed_url: str, nodejs_endpoint: str) -> str:
+        """Use the internal storage download route for same-service signed URLs.
+
+        Storage can return an external download URL (``/api/v1/document/{id}/download``),
+        which is validated by regular JWT auth. Service-to-service calls from Python
+        use scoped JWTs and must hit ``/api/v1/document/internal/{id}/download``.
+        """
+        try:
+            signed = URL(signed_url)
+            nodejs = URL(nodejs_endpoint)
+
+            # Only rewrite URLs that point to this Node.js service.
+            if signed.host != nodejs.host or signed.port != nodejs.port:
+                return signed_url
+
+            match = re.fullmatch(r"/api/v1/document/([^/]+)/download", signed.path)
+            if not match:
+                return signed_url
+
+            document_id = match.group(1)
+            return str(signed.with_path(
+                f"/api/v1/document/internal/{document_id}/download"
+            ))
+        except Exception:
+            # Keep original URL if parsing/rewrite fails.
+            return signed_url
 
     def _compress_record(self, record: dict) -> str:
         """
@@ -1076,7 +1104,10 @@ class BlobStorage(Transformer):
                                 self.logger.info("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
                                 return record
                             elif data.get("signedUrl"):
-                                signed_url = data.get("signedUrl")
+                                signed_url = self._normalize_signed_url_for_internal_fetch(
+                                    data.get("signedUrl"),
+                                    nodejs_endpoint,
+                                )
                                 self.logger.debug("⏱️ Received signed URL, initiating secondary fetch")
 
                                 # Reuse the same session for signed URL fetch

@@ -16,6 +16,8 @@ class ConnectionConfig:
     hosts: List[str]
     port: int = 2379
     timeout: float = 5.0
+    max_connect_retries: int = 5
+    connect_retry_delay_seconds: float = 1.0
     ca_cert: Optional[str] = None
     cert_key: Optional[str] = None
     cert_cert: Optional[str] = None
@@ -79,22 +81,43 @@ class Etcd3ConnectionManager:
             self.config.port,
         )
 
-        try:
-            logger.debug("🔄 Creating client in separate thread")
-            self.client = await asyncio.to_thread(self._create_client)
-            self.state = ConnectionState.CONNECTED
-            logger.info("✅ Successfully connected to ETCD cluster")
-            logger.debug("📋 Client details: %s", self.client)
+        last_error: Optional[Exception] = None
+        for attempt in range(1, self.config.max_connect_retries + 1):
+            try:
+                logger.debug(
+                    "🔄 Creating client in separate thread (attempt %d/%d)",
+                    attempt,
+                    self.config.max_connect_retries,
+                )
+                self.client = await asyncio.to_thread(self._create_client)
+                self.state = ConnectionState.CONNECTED
+                logger.info("✅ Successfully connected to ETCD cluster")
+                logger.debug("📋 Client details: %s", self.client)
+                return
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "⚠️ ETCD connection attempt %d/%d failed: %s",
+                    attempt,
+                    self.config.max_connect_retries,
+                    str(e),
+                )
+                if attempt < self.config.max_connect_retries:
+                    # Linear backoff is enough here and keeps startup deterministic.
+                    delay = self.config.connect_retry_delay_seconds * attempt
+                    logger.debug("⏳ Retrying ETCD connection in %.1fs", delay)
+                    await asyncio.sleep(delay)
 
-        except Exception as e:
-            self.state = ConnectionState.FAILED
-            logger.error("❌ Failed to connect to ETCD: %s", str(e))
-            logger.debug("📋 Connection attempt details:")
-            logger.debug("   - Host: %s", self.config.hosts[0])
-            logger.debug("   - Port: %s", self.config.port)
-            logger.debug("   - Error type: %s", type(e).__name__)
+        self.state = ConnectionState.FAILED
+        logger.error("❌ Failed to connect to ETCD after retries")
+        logger.debug("📋 Connection attempt details:")
+        logger.debug("   - Host: %s", self.config.hosts[0])
+        logger.debug("   - Port: %s", self.config.port)
+        if last_error is not None:
+            logger.debug("   - Error type: %s", type(last_error).__name__)
             logger.exception("Detailed error stack:")
-            raise ConnectionError(f"Failed to connect to ETCD: {str(e)}")
+            raise ConnectionError(f"Failed to connect to ETCD: {str(last_error)}")
+        raise ConnectionError("Failed to connect to ETCD: unknown connection error")
 
     def _create_client(self) -> etcd3.client:
         """Create new ETCD client instance."""

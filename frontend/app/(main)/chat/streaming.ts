@@ -48,12 +48,6 @@ function createPendingAssistantId(): string {
     return c.randomUUID();
   }
 
-  const nodeEnv = (process.env.NODE_ENV ?? '').toLowerCase();
-  const allowDevFallback = nodeEnv === 'development';
-  if (!allowDevFallback) {
-    throw new Error('crypto.randomUUID is unavailable outside development mode');
-  }
-
   const bytes = new Uint8Array(16);
   if (c && typeof c.getRandomValues === 'function') {
     c.getRandomValues(bytes);
