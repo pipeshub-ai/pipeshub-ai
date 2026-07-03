@@ -160,12 +160,15 @@ check_indexing_health() {
         if [ "$INDEXING_CONSECUTIVE_FAILURES" -ge "$INDEXING_MAX_FAILURES" ]; then
             log "Indexing service frozen. Forcing restart..."
             
-            # Try graceful shutdown first (SIGTERM)
-            kill -15 "$INDEXING_PID" 2>/dev/null || true
-            sleep 5
-            
-            # Force kill if still running (SIGKILL)
-            kill -9 "$INDEXING_PID" 2>/dev/null || true
+            local active_pid=$(pgrep -f "app.indexing_main" | head -n 1)
+            if [ -n "$active_pid" ]; then
+                kill -15 "$active_pid" 2>/dev/null || true
+                sleep 5
+                active_pid=$(pgrep -f "app.indexing_main" | head -n 1)
+                if [ -n "$active_pid" ]; then
+                    kill -9 "$active_pid" 2>/dev/null || true
+                fi
+            fi
             
             # Reset failure counter
             INDEXING_CONSECUTIVE_FAILURES=0
