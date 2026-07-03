@@ -292,7 +292,7 @@ class GetCreateIssueFieldsInput(BaseModel):
         extra = "ignore"
 
 
-@ToolsetBuilder("Jira Data Center")\
+@ToolsetBuilder("JiraDataCenter")\
     .in_group("Atlassian")\
     .with_description(
         "Jira Data Center / Server integration for issue tracking and project "
