@@ -1924,6 +1924,68 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Update node failed: {str(e)}")
             raise
 
+    async def batch_update_nodes(
+        self,
+        nodes: list[dict],
+        collection: str,
+        transaction: str | None = None
+    ) -> bool | None:
+        """
+        Batch update existing nodes only - FULLY ASYNC.
+        
+        This method ONLY updates nodes that already exist. It does NOT create new nodes.
+        Uses ArangoDB UPDATE (not UPSERT) to ensure no accidental record creation.
+
+        Args:
+            nodes: List of node documents in generic format (with 'id' or '_key' field)
+            collection: Collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[bool]: True if successful, False if any updates failed
+        """
+        try:
+            if not nodes:
+                return True
+
+            # Translate nodes from generic format to ArangoDB format
+            arango_nodes = self._translate_nodes_to_arango(nodes)
+
+            # Build AQL query for batch UPDATE (not UPSERT)
+            # This will only update existing documents and skip non-existent ones
+            bind_vars = {
+                "nodes": arango_nodes
+            }
+
+            aql_query = f"""
+                FOR doc IN @nodes
+                    UPDATE doc IN @@collection
+                    OPTIONS {{ ignoreErrors: true }}
+                    RETURN NEW
+            """
+
+            bind_vars["@collection"] = collection
+
+            result = await self.http_client.execute_aql(aql_query, bind_vars, txn_id=transaction)
+
+            # Check if all updates succeeded
+            if result and isinstance(result, list):
+                # Filter out None values (failed updates)
+                successful_updates = [r for r in result if r is not None]
+                if len(successful_updates) != len(arango_nodes):
+                    self.logger.warning(
+                        f"⚠️ Batch update failed: {len(successful_updates)}/{len(arango_nodes)} nodes updated. "
+                        f"{len(arango_nodes) - len(successful_updates)} nodes may not exist in the database."
+                    )
+                    return False  # Return False if not all updates succeeded
+                return True  # All updates succeeded
+            
+            return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Batch update failed: {str(e)}")
+            raise
+
     # ==================== Edge Operations ====================
 
     async def batch_create_edges(
@@ -5233,6 +5295,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             for queued_record in queued_records:
                 doc = dict(queued_record)
+                record_key = doc.get("_key") or doc.get("id")
+                if not record_key:
+                    continue
 
                 # Map indexing status to extraction status
                 # For EMPTY status, extraction status should also be EMPTY, not FAILED
@@ -5243,19 +5308,27 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 else:
                     extraction_status = ProgressStatus.FAILED.value
 
-                update_data = {
+                updated_records.append({
+                    "id": record_key,
                     "indexingStatus": new_indexing_status,
                     "lastIndexTimestamp": current_timestamp,
                     "isDirty": False,
                     "virtualRecordId": virtual_record_id,
                     "extractionStatus": extraction_status,
-                }
+                })
 
-                doc.update(update_data)
-                updated_records.append(doc)
+            if not updated_records:
+                return 0
 
-            # Batch update all queued records
-            await self.batch_upsert_nodes(updated_records, CollectionNames.RECORDS.value, transaction)
+            success = await self.batch_update_nodes(
+                updated_records, CollectionNames.RECORDS.value, transaction
+            )
+            if not success:
+                self.logger.warning(
+                    "⚠️ Failed to update queued duplicate records for %s - some records may not exist",
+                    record_id,
+                )
+                return -1
 
             self.logger.debug(
                 f"✅ Successfully updated {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
@@ -8195,57 +8268,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             return []
 
-    async def batch_update_nodes(
-        self,
-        node_ids: list[str],
-        updates: dict[str, Any],
-        collection: str,
-        transaction: str | None = None
-    ) -> bool:
-        """
-        Batch update multiple nodes with the same updates.
-
-        Args:
-            node_ids (List[str]): List of node IDs to update
-            updates (Dict[str, Any]): Dictionary of fields to update
-            collection (str): Collection name
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            self.logger.debug(f"🚀 Batch updating {len(node_ids)} nodes in {collection}")
-
-            query = f"""
-            FOR doc IN {collection}
-                FILTER doc._key IN @keys
-                UPDATE doc WITH @updates IN {collection}
-                RETURN NEW
-            """
-
-            bind_vars = {
-                "keys": node_ids,
-                "updates": updates
-            }
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars=bind_vars,
-                txn_id=transaction
-            )
-
-            if results:
-                self.logger.debug(f"✅ Successfully batch updated {len(results)} nodes")
-                return True
-            else:
-                self.logger.warning("⚠️ No nodes were updated")
-                return False
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to batch update nodes: {str(e)}")
-            return False
-
     async def count_connector_instances_by_scope(
         self,
         collection: str,
@@ -9652,6 +9674,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN {{
                     id: kb._key,
                     name: kb.groupName,
+                    connectorId: kb.connectorId,
                     createdAtTimestamp: kb.createdAtTimestamp,
                     updatedAtTimestamp: kb.updatedAtTimestamp,
                     createdBy: kb.createdBy,

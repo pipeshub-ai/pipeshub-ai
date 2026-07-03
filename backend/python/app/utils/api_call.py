@@ -7,6 +7,7 @@ from tenacity import (  # type: ignore
 )
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.utils.request_context import inject_request_headers
 
 # 4xx responses that *are* worth retrying — caller may be rate-limited
 # (429) or the upstream timed out servicing the request (408). Every
@@ -69,11 +70,10 @@ async def make_api_call(route: str, token: str) -> dict:
         async with aiohttp.ClientSession() as session:
             url = route
 
-            # Add the JWT to the Authorization header
-            headers = {
+            headers = inject_request_headers({
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
-            }
+            })
 
             # Make the request
             async with session.get(url, headers=headers) as response:

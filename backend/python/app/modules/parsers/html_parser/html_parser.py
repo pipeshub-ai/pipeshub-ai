@@ -37,6 +37,7 @@ class HTMLParserProtocol(Protocol):
         html_content: str,
         caption_map: Dict[str, str] | None = None,
         base_url: str | None = None,
+        name: str | None = None,
     ) -> BlocksContainer:
         """Parse preprocessed HTML into a ``BlocksContainer``.
 

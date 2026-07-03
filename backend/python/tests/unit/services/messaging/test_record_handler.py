@@ -33,6 +33,8 @@ def _make_handler(logger=None, config_service=None, event_processor=None):
     # Ensure event_processor has the nested objects the handler expects
     if not hasattr(event_processor, "graph_provider") or event_processor.graph_provider is None:
         event_processor.graph_provider = AsyncMock()
+    elif not isinstance(event_processor.graph_provider, AsyncMock):
+        event_processor.graph_provider = AsyncMock()
     if not hasattr(event_processor, "processor") or event_processor.processor is None:
         event_processor.processor = MagicMock()
         event_processor.processor.indexing_pipeline = AsyncMock()
@@ -276,7 +278,7 @@ class TestConnectorActiveCheck:
         # First call: record, second call: connector, third call: __update_document_status,
         # fourth call: finally block record fetch
         gp.get_document = AsyncMock(side_effect=[record, connector_instance, record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
         gp.update_queued_duplicates_status = AsyncMock()
 
         payload = {"recordId": "r1", "mimeType": "application/pdf", "extension": "pdf"}
@@ -284,7 +286,7 @@ class TestConnectorActiveCheck:
 
         assert len(events) == 2
         # Verify status update was called
-        gp.batch_upsert_nodes.assert_awaited()
+        gp.batch_update_nodes.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_connector_active_proceeds_normally(self):
@@ -437,7 +439,7 @@ class TestUnsupportedFileType:
         }
         # First call: record, second call: finally block
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
         gp.update_queued_duplicates_status = AsyncMock()
 
         payload = {
@@ -449,9 +451,9 @@ class TestUnsupportedFileType:
 
         assert len(events) == 2
         # Should update record with FILE_TYPE_NOT_SUPPORTED
-        gp.batch_upsert_nodes.assert_awaited()
+        gp.batch_update_nodes.assert_awaited()
         # First call is the unsupported status update
-        call_args = gp.batch_upsert_nodes.call_args_list[0]
+        call_args = gp.batch_update_nodes.call_args_list[0]
         docs = call_args[0][0]
         assert docs[0]["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
         assert docs[0]["extractionStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
@@ -859,7 +861,7 @@ class TestConnectorStreamingPath:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
 
         handler._trigger_next_queued_duplicate = AsyncMock()
 
@@ -900,7 +902,7 @@ class TestProcessEventErrors:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
 
         handler._trigger_next_queued_duplicate = AsyncMock()
 
@@ -934,7 +936,7 @@ class TestProcessEventErrors:
             "mimeType": "application/pdf",
         }
         gp.get_document = AsyncMock(return_value=record)
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
         gp.find_next_queued_duplicate = AsyncMock(return_value=None)
 
         payload = {
@@ -956,9 +958,9 @@ class TestProcessEventErrors:
                     await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         # The finally block should have called __update_document_status
-        # which calls get_document and batch_upsert_nodes
+        # which calls get_document and batch_update_nodes
         assert gp.get_document.await_count >= 2
-        assert gp.batch_upsert_nodes.awaited
+        assert gp.batch_update_nodes.awaited
 
     @pytest.mark.asyncio
     async def test_finally_block_completed_status_updates_queued_duplicates(self):
@@ -1237,7 +1239,7 @@ class TestUpdateDocumentStatus:
             "extractionStatus": ProgressStatus.NOT_STARTED.value,
         }
         gp.get_document = AsyncMock(return_value=record)
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
 
         result = await handler._RecordEventHandler__update_document_status(
             record_id="r1",
@@ -1247,8 +1249,8 @@ class TestUpdateDocumentStatus:
         )
 
         assert result is not None
-        gp.batch_upsert_nodes.assert_awaited_once()
-        call_args = gp.batch_upsert_nodes.call_args
+        gp.batch_update_nodes.assert_awaited_once()
+        call_args = gp.batch_update_nodes.call_args
         doc = call_args[0][0][0]
         assert doc["indexingStatus"] == ProgressStatus.FAILED.value
         assert doc["extractionStatus"] == ProgressStatus.FAILED.value
@@ -1279,7 +1281,7 @@ class TestUpdateDocumentStatus:
             "extractionStatus": ProgressStatus.COMPLETED.value,
         }
         gp.get_document = AsyncMock(return_value=record)
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
 
         await handler._RecordEventHandler__update_document_status(
             record_id="r1",
@@ -1287,7 +1289,7 @@ class TestUpdateDocumentStatus:
             extraction_status=ProgressStatus.FAILED.value,
         )
 
-        call_args = gp.batch_upsert_nodes.call_args
+        call_args = gp.batch_update_nodes.call_args
         doc = call_args[0][0][0]
         # Extraction should remain COMPLETED
         assert doc["extractionStatus"] == ProgressStatus.COMPLETED.value
@@ -1302,7 +1304,7 @@ class TestUpdateDocumentStatus:
             "extractionStatus": ProgressStatus.NOT_STARTED.value,
         }
         gp.get_document = AsyncMock(return_value=record)
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
 
         await handler._RecordEventHandler__update_document_status(
             record_id="r1",
@@ -1311,7 +1313,7 @@ class TestUpdateDocumentStatus:
             reason=None,
         )
 
-        call_args = gp.batch_upsert_nodes.call_args
+        call_args = gp.batch_update_nodes.call_args
         doc = call_args[0][0][0]
         assert "reason" not in doc
 
@@ -1601,7 +1603,7 @@ class TestFolderRecordSkip:
             "isFile": True,
         }
         gp.get_document = AsyncMock(side_effect=[record, record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
         gp.update_queued_duplicates_status = AsyncMock()
 
         payload = {
@@ -1612,8 +1614,8 @@ class TestFolderRecordSkip:
         events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         assert len(events) == 2
-        gp.batch_upsert_nodes.assert_awaited()
-        doc = gp.batch_upsert_nodes.call_args[0][0][0]
+        gp.batch_update_nodes.assert_awaited()
+        doc = gp.batch_update_nodes.call_args[0][0][0]
         assert doc["indexingStatus"] == ProgressStatus.COMPLETED.value
         assert doc["reason"] == "Folder record — no content to index"
 
@@ -1628,7 +1630,7 @@ class TestFolderRecordSkip:
             "mimeType": MimeTypes.GOOGLE_DRIVE_FOLDER.value,
         }
         gp.get_document = AsyncMock(side_effect=[record, record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
         gp.update_queued_duplicates_status = AsyncMock()
 
         payload = {
@@ -1652,7 +1654,7 @@ class TestFolderRecordSkip:
             "isFile": False,
         }
         gp.get_document = AsyncMock(side_effect=[record, record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
         gp.update_queued_duplicates_status = AsyncMock()
 
         payload = {
@@ -1663,7 +1665,7 @@ class TestFolderRecordSkip:
         events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         assert len(events) == 2
-        gp.batch_upsert_nodes.assert_awaited()
+        gp.batch_update_nodes.assert_awaited()
 
 
 # ===================================================================
@@ -1686,7 +1688,7 @@ class TestCodeFileHandling:
             "recordName": "legacy.cobol",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
         gp.update_queued_duplicates_status = AsyncMock()
 
         payload = {
@@ -1698,7 +1700,7 @@ class TestCodeFileHandling:
         events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         assert len(events) == 2
-        doc = gp.batch_upsert_nodes.call_args[0][0][0]
+        doc = gp.batch_update_nodes.call_args[0][0][0]
         assert doc["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
 
     @pytest.mark.asyncio
@@ -1889,7 +1891,7 @@ class TestKbUploadedCodeFileHandling:
 
         assert len(events) == 2
         mock_dl.assert_awaited_once()
-        gp.batch_upsert_nodes.assert_not_called()
+        gp.batch_update_nodes.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_non_code_mime_still_rejected(self):
@@ -1904,7 +1906,7 @@ class TestKbUploadedCodeFileHandling:
             "recordName": "setup.exe",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
         gp.update_queued_duplicates_status = AsyncMock()
 
         payload = {
@@ -1916,7 +1918,7 @@ class TestKbUploadedCodeFileHandling:
         events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         assert len(events) == 2
-        doc = gp.batch_upsert_nodes.call_args[0][0][0]
+        doc = gp.batch_update_nodes.call_args[0][0][0]
         assert doc["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
 
 
@@ -2061,14 +2063,12 @@ class TestAdditionalCoverage:
 
     @pytest.mark.asyncio
     async def test_indexing_error_caught_directly(self):
-        """IndexingError raised at the top level of process_event (lines 362-365)."""
+        """IndexingError on get_document is handled gracefully when status update cannot complete."""
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
+        handler._trigger_next_queued_duplicate = AsyncMock()
 
-        # Make get_document raise IndexingError directly
         gp.get_document = AsyncMock(side_effect=IndexingError("parse fail", record_id="r1"))
-        gp.batch_upsert_nodes = AsyncMock()
-        gp.find_next_queued_duplicate = AsyncMock(return_value=None)
 
         payload = {
             "recordId": "r1",
@@ -2077,8 +2077,10 @@ class TestAdditionalCoverage:
             "extension": "pdf",
         }
 
-        with pytest.raises(Exception, match="parse fail"):
-            await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+        events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert events == []
+        handler._trigger_next_queued_duplicate.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_record_name_without_dot_does_not_derive_extension(self):
@@ -2093,7 +2095,7 @@ class TestAdditionalCoverage:
         }
         # record + finally
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
         gp.update_queued_duplicates_status = AsyncMock()
 
         payload = {
@@ -2106,7 +2108,7 @@ class TestAdditionalCoverage:
 
         # Should fall through to unsupported file type
         assert len(events) == 2
-        gp.batch_upsert_nodes.assert_awaited()
+        gp.batch_update_nodes.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_record_name_missing_does_not_derive_extension(self):
@@ -2120,7 +2122,7 @@ class TestAdditionalCoverage:
             "mimeType": "application/x-weird",
         }
         gp.get_document = AsyncMock(side_effect=[record, record])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock(return_value=True)
         gp.update_queued_duplicates_status = AsyncMock()
 
         payload = {

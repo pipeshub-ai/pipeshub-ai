@@ -304,6 +304,10 @@ class Block(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     index: int = None
     parent_index: Optional[int] = Field(default=None, description="Index of the parent block group")
+    parent_block_index: Optional[int] = Field(
+        default=None,
+        description="Index of the container block when this block is a fragment split from a parent block that contained images",
+    )
     type: BlockType
     sub_type: Optional[BlockSubType] = None
     name: Optional[str] = None

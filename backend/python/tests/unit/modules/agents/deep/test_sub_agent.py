@@ -1429,8 +1429,11 @@ class TestPrewarmClients:
         state = _mock_state(tool_to_toolset_map={})
         log = _mock_log()
 
-        # Should not raise
-        await _prewarm_clients([], state, log)
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": MagicMock(),
+            "app.agents.tools.wrapper": MagicMock(),
+        }):
+            await _prewarm_clients([], state, log)
 
     @pytest.mark.asyncio
     async def test_prewarm_deduplicates_by_app(self):
@@ -1448,21 +1451,22 @@ class TestPrewarmClients:
         )
         log = _mock_log()
 
-        with patch("app.agents.tools.factories.registry.ClientFactoryRegistry") as mock_registry, \
-             patch("app.agents.tools.wrapper.ToolInstanceCreator") as mock_creator_cls:
-            mock_factory = MagicMock()
-            mock_factory.create_client = AsyncMock(return_value=MagicMock())
-            mock_registry.get_factory.return_value = mock_factory
+        mock_factory = MagicMock()
+        mock_factory.create_client = AsyncMock(return_value=MagicMock())
+        mock_registry = MagicMock()
+        mock_registry.get_factory.return_value = mock_factory
 
-            mock_creator = MagicMock()
-            mock_creator._get_toolset_config.return_value = {}
-            mock_creator._client_cache = {}
-            mock_creator._cache_locks = {}
-            mock_creator_cls.return_value = mock_creator
+        mock_creator = MagicMock()
+        mock_creator._get_toolset_config.return_value = {}
+        mock_creator._client_cache = {}
+        mock_creator._cache_locks = {}
+        mock_creator_cls = MagicMock(return_value=mock_creator)
 
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": MagicMock(ClientFactoryRegistry=mock_registry),
+            "app.agents.tools.wrapper": MagicMock(ToolInstanceCreator=mock_creator_cls),
+        }):
             await _prewarm_clients(tasks, state, log)
-
-            # Should only get factory once for "jira"
             mock_registry.get_factory.assert_called_once_with("jira")
 
     @pytest.mark.asyncio
@@ -1476,17 +1480,19 @@ class TestPrewarmClients:
         state = _mock_state(tool_to_toolset_map={"jira.search_issues": "ts-1"})
         log = _mock_log()
 
-        with patch("app.agents.tools.factories.registry.ClientFactoryRegistry") as mock_registry, \
-             patch("app.agents.tools.wrapper.ToolInstanceCreator") as mock_creator_cls:
-            mock_registry.get_factory.side_effect = ImportError("No factory")
+        mock_registry = MagicMock()
+        mock_registry.get_factory.side_effect = ImportError("No factory")
 
-            mock_creator = MagicMock()
-            mock_creator._get_toolset_config.return_value = {}
-            mock_creator._client_cache = {}
-            mock_creator._cache_locks = {}
-            mock_creator_cls.return_value = mock_creator
+        mock_creator = MagicMock()
+        mock_creator._get_toolset_config.return_value = {}
+        mock_creator._client_cache = {}
+        mock_creator._cache_locks = {}
+        mock_creator_cls = MagicMock(return_value=mock_creator)
 
-            # Should not raise
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": MagicMock(ClientFactoryRegistry=mock_registry),
+            "app.agents.tools.wrapper": MagicMock(ToolInstanceCreator=mock_creator_cls),
+        }):
             await _prewarm_clients(tasks, state, log)
 
 # =============================================================================
@@ -1903,18 +1909,20 @@ class TestPrewarmClientsCoverage:
             {"task_id": "t1", "tools": ["jira.search"]},
         ]
 
-        with patch("app.agents.tools.factories.registry.ClientFactoryRegistry") as mock_cfr:
-            mock_factory = MagicMock()
-            mock_cfr.get_factory.return_value = mock_factory
-            with patch("app.agents.tools.wrapper.ToolInstanceCreator") as mock_tic:
-                mock_creator = MagicMock()
-                mock_creator._client_cache = state["_client_cache"]
-                mock_creator._cache_locks = state["_client_cache_locks"]
-                mock_creator._get_toolset_config.return_value = None
-                mock_tic.return_value = mock_creator
-                await _prewarm_clients(tasks, state, log)
-                # Factory create_client should not be called because client is cached
-                mock_factory.create_client.assert_not_called()
+        mock_factory = MagicMock()
+        mock_cfr = MagicMock()
+        mock_cfr.get_factory.return_value = mock_factory
+        mock_creator = MagicMock()
+        mock_creator._client_cache = state["_client_cache"]
+        mock_creator._cache_locks = state["_client_cache_locks"]
+        mock_creator._get_toolset_config.return_value = None
+        mock_tic = MagicMock(return_value=mock_creator)
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": MagicMock(ClientFactoryRegistry=mock_cfr),
+            "app.agents.tools.wrapper": MagicMock(ToolInstanceCreator=mock_tic),
+        }):
+            await _prewarm_clients(tasks, state, log)
+            mock_factory.create_client.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_prewarm_no_factory_skips(self):
@@ -1928,15 +1936,18 @@ class TestPrewarmClientsCoverage:
             {"task_id": "t1", "tools": ["unknown.tool"]},
         ]
 
-        with patch("app.agents.tools.factories.registry.ClientFactoryRegistry") as mock_cfr:
-            mock_cfr.get_factory.return_value = None  # No factory
-            with patch("app.agents.tools.wrapper.ToolInstanceCreator") as mock_tic:
-                mock_creator = MagicMock()
-                mock_creator._client_cache = state["_client_cache"]
-                mock_creator._cache_locks = state["_client_cache_locks"]
-                mock_creator._get_toolset_config.return_value = None
-                mock_tic.return_value = mock_creator
-                await _prewarm_clients(tasks, state, log)
+        mock_cfr = MagicMock()
+        mock_cfr.get_factory.return_value = None
+        mock_creator = MagicMock()
+        mock_creator._client_cache = state["_client_cache"]
+        mock_creator._cache_locks = state["_client_cache_locks"]
+        mock_creator._get_toolset_config.return_value = None
+        mock_tic = MagicMock(return_value=mock_creator)
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": MagicMock(ClientFactoryRegistry=mock_cfr),
+            "app.agents.tools.wrapper": MagicMock(ToolInstanceCreator=mock_tic),
+        }):
+            await _prewarm_clients(tasks, state, log)
 
     @pytest.mark.asyncio
     async def test_prewarm_exception_does_not_crash(self):
@@ -1950,18 +1961,20 @@ class TestPrewarmClientsCoverage:
             {"task_id": "t1", "tools": ["slack.send"]},
         ]
 
-        with patch("app.agents.tools.factories.registry.ClientFactoryRegistry") as mock_cfr:
-            mock_factory = MagicMock()
-            mock_factory.create_client = AsyncMock(side_effect=Exception("auth failed"))
-            mock_cfr.get_factory.return_value = mock_factory
-            with patch("app.agents.tools.wrapper.ToolInstanceCreator") as mock_tic:
-                mock_creator = MagicMock()
-                mock_creator._client_cache = {}
-                mock_creator._cache_locks = {}
-                mock_creator._get_toolset_config.return_value = None
-                mock_tic.return_value = mock_creator
-                # Should not raise
-                await _prewarm_clients(tasks, state, log)
+        mock_factory = MagicMock()
+        mock_factory.create_client = AsyncMock(side_effect=Exception("auth failed"))
+        mock_cfr = MagicMock()
+        mock_cfr.get_factory.return_value = mock_factory
+        mock_creator = MagicMock()
+        mock_creator._client_cache = {}
+        mock_creator._cache_locks = {}
+        mock_creator._get_toolset_config.return_value = None
+        mock_tic = MagicMock(return_value=mock_creator)
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": MagicMock(ClientFactoryRegistry=mock_cfr),
+            "app.agents.tools.wrapper": MagicMock(ToolInstanceCreator=mock_tic),
+        }):
+            await _prewarm_clients(tasks, state, log)
 
 
 # ============================================================================
@@ -2993,21 +3006,22 @@ class TestPrewarmClientsLocking:
         ]
 
         mock_client = MagicMock()
-
-        with patch("app.agents.tools.factories.registry.ClientFactoryRegistry") as mock_cfr:
-            mock_factory = MagicMock()
-            mock_factory.create_client = AsyncMock(return_value=mock_client)
-            mock_cfr.get_factory.return_value = mock_factory
-            with patch("app.agents.tools.wrapper.ToolInstanceCreator") as mock_tic:
-                mock_creator = MagicMock()
-                mock_creator._client_cache = {}
-                mock_creator._cache_locks = {}
-                mock_creator._get_toolset_config.return_value = {"key": "val"}
-                mock_tic.return_value = mock_creator
-                state["tool_to_toolset_map"] = {"jira.search": "jid-1"}
-                await _prewarm_clients(tasks, state, log)
-                # Client should be cached
-                assert len(mock_creator._client_cache) == 1
+        mock_factory = MagicMock()
+        mock_factory.create_client = AsyncMock(return_value=mock_client)
+        mock_cfr = MagicMock()
+        mock_cfr.get_factory.return_value = mock_factory
+        mock_creator = MagicMock()
+        mock_creator._client_cache = {}
+        mock_creator._cache_locks = {}
+        mock_creator._get_toolset_config.return_value = {"key": "val"}
+        mock_tic = MagicMock(return_value=mock_creator)
+        state["tool_to_toolset_map"] = {"jira.search": "jid-1"}
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": MagicMock(ClientFactoryRegistry=mock_cfr),
+            "app.agents.tools.wrapper": MagicMock(ToolInstanceCreator=mock_tic),
+        }):
+            await _prewarm_clients(tasks, state, log)
+            assert len(mock_creator._client_cache) == 1
 
     @pytest.mark.asyncio
     async def test_prewarm_empty_tasks(self):
@@ -3017,9 +3031,11 @@ class TestPrewarmClientsLocking:
 
         tasks = [{"task_id": "t1", "tools": []}]
 
-        with patch("app.agents.tools.factories.registry.ClientFactoryRegistry"):
-            with patch("app.agents.tools.wrapper.ToolInstanceCreator"):
-                await _prewarm_clients(tasks, state, log)
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": MagicMock(),
+            "app.agents.tools.wrapper": MagicMock(),
+        }):
+            await _prewarm_clients(tasks, state, log)
 
     @pytest.mark.asyncio
     async def test_prewarm_double_check_after_lock(self):
@@ -3031,23 +3047,24 @@ class TestPrewarmClientsLocking:
             {"task_id": "t1", "tools": ["jira.search"]},
         ]
 
-        with patch("app.agents.tools.factories.registry.ClientFactoryRegistry") as mock_cfr:
-            mock_factory = MagicMock()
-            mock_factory.create_client = AsyncMock(return_value=MagicMock())
-            mock_cfr.get_factory.return_value = mock_factory
-            with patch("app.agents.tools.wrapper.ToolInstanceCreator") as mock_tic:
-                mock_creator = MagicMock()
-                toolset_id = "jid-1"
-                state["tool_to_toolset_map"] = {"jira.search": toolset_id}
-                # Pre-populate lock and cache to test double-check
-                cache_key = ("jira", toolset_id, "default")
-                mock_creator._cache_locks = {cache_key: asyncio.Lock()}
-                mock_creator._client_cache = {cache_key: MagicMock()}  # Already cached
-                mock_creator._get_toolset_config.return_value = None
-                mock_tic.return_value = mock_creator
-                await _prewarm_clients(tasks, state, log)
-                # Should not call create_client since already cached
-                mock_factory.create_client.assert_not_called()
+        mock_factory = MagicMock()
+        mock_factory.create_client = AsyncMock(return_value=MagicMock())
+        mock_cfr = MagicMock()
+        mock_cfr.get_factory.return_value = mock_factory
+        mock_creator = MagicMock()
+        toolset_id = "jid-1"
+        state["tool_to_toolset_map"] = {"jira.search": toolset_id}
+        cache_key = ("jira", toolset_id, "default")
+        mock_creator._cache_locks = {cache_key: asyncio.Lock()}
+        mock_creator._client_cache = {cache_key: MagicMock()}
+        mock_creator._get_toolset_config.return_value = None
+        mock_tic = MagicMock(return_value=mock_creator)
+        with patch.dict("sys.modules", {
+            "app.agents.tools.factories.registry": MagicMock(ClientFactoryRegistry=mock_cfr),
+            "app.agents.tools.wrapper": MagicMock(ToolInstanceCreator=mock_tic),
+        }):
+            await _prewarm_clients(tasks, state, log)
+            mock_factory.create_client.assert_not_called()
 
 
 # ============================================================================

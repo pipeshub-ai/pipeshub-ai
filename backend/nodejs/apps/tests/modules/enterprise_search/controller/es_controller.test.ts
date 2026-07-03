@@ -4860,6 +4860,182 @@ describe('Enterprise Search Controller', () => {
       expect(res.end.called).to.be.true
     })
 
+    it('should persist tool_call on ask_user_question success event', async () => {
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+
+      const mockDoc = createMockConversationDoc({
+        agentKey: 'agent-1',
+        messages: [{ messageType: 'user_query', content: 'prev' }],
+        modelInfo: {},
+      })
+      mockDoc.messages = [...mockDoc.messages]
+
+      sinon.stub(AgentConversation, 'findOne').returns({
+        then: (resolve: any) => resolve(mockDoc),
+      } as any)
+
+      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { query: 'Which channel should I use?' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const toolData = { question: 'Which channel?', options: ['#general', '#random'] }
+      const askChunk = `event: ask_user_question\ndata: ${JSON.stringify({
+        status: 'success',
+        toolData,
+      })}\n\n`
+      mockStream.emit('data', Buffer.from(askChunk))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(findByIdAndUpdateStub.calledOnce).to.be.true
+      const updatePayload = findByIdAndUpdateStub.firstCall.args[1]
+      expect(updatePayload.$push.messages.messageType).to.equal('tool_call')
+      expect(updatePayload.$push.messages.tools[0].toolName).to.equal('ask_user_question')
+      expect(updatePayload.$push.messages.tools[0].toolResult).to.deep.equal(toolData)
+
+      const forwarded = res.write.args.map((a: any) => a[0]).join('')
+      expect(forwarded).to.include('ask_user_question')
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    it('should forward ask_user_question without persisting when status is not success', async () => {
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+
+      const mockDoc = createMockConversationDoc({
+        agentKey: 'agent-1',
+        messages: [],
+        modelInfo: {},
+      })
+      mockDoc.messages = [...mockDoc.messages]
+
+      sinon.stub(AgentConversation, 'findOne').returns({
+        then: (resolve: any) => resolve(mockDoc),
+      } as any)
+
+      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { query: 'test' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      mockStream.emit('data', Buffer.from('event: ask_user_question\ndata: {"status":"pending"}\n\n'))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(findByIdAndUpdateStub.called).to.be.false
+      expect(res.write.called).to.be.true
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    it('should forward malformed ask_user_question event without persisting', async () => {
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+
+      const mockDoc = createMockConversationDoc({
+        agentKey: 'agent-1',
+        messages: [],
+        modelInfo: {},
+      })
+      mockDoc.messages = [...mockDoc.messages]
+
+      sinon.stub(AgentConversation, 'findOne').returns({
+        then: (resolve: any) => resolve(mockDoc),
+      } as any)
+
+      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { query: 'test' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      mockStream.emit('data', Buffer.from('event: ask_user_question\ndata: {invalid json}\n\n'))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(findByIdAndUpdateStub.called).to.be.false
+      expect(res.write.called).to.be.true
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    it('should still forward ask_user_question when DB persistence fails', async () => {
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+
+      const mockDoc = createMockConversationDoc({
+        agentKey: 'agent-1',
+        messages: [],
+        modelInfo: {},
+      })
+      mockDoc.messages = [...mockDoc.messages]
+
+      sinon.stub(AgentConversation, 'findOne').returns({
+        then: (resolve: any) => resolve(mockDoc),
+      } as any)
+
+      sinon.stub(AgentConversation, 'findByIdAndUpdate').rejects(new Error('DB write failed'))
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { query: 'test' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      mockStream.emit(
+        'data',
+        Buffer.from(
+          'event: ask_user_question\ndata: {"status":"success","toolData":{"question":"Pick one"}}\n\n',
+        ),
+      )
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const forwarded = res.write.args.map((a: any) => a[0]).join('')
+      expect(forwarded).to.include('ask_user_question')
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
     it('should handle AI service stream start failure for agent conversation', async () => {
       const handler = addMessageStreamToAgentConversation(createMockAppConfig())
 
@@ -5252,6 +5428,123 @@ describe('Enterprise Search Controller', () => {
       await new Promise((resolve) => setTimeout(resolve, 100))
 
       expect(res.end.called).to.be.true
+    })
+
+    it('should persist tool_call on ask_user_question success event', async () => {
+      const handler = streamAgentConversation(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        agentKey: 'agent-1',
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+
+      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1' },
+        body: { query: 'Which channel should I post in?' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const toolData = { question: 'Pick a channel', options: ['#general', '#random'] }
+      const askChunk = `event: ask_user_question\ndata: ${JSON.stringify({
+        status: 'success',
+        toolData,
+      })}\n\n`
+      mockStream.emit('data', Buffer.from(askChunk))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(findByIdAndUpdateStub.calledOnce).to.be.true
+      const updatePayload = findByIdAndUpdateStub.firstCall.args[1]
+      expect(updatePayload.$push.messages.tools[0].toolName).to.equal('ask_user_question')
+      expect(updatePayload.$push.messages.tools[0].toolResult).to.deep.equal(toolData)
+
+      const forwarded = res.write.args.map((a: any) => a[0]).join('')
+      expect(forwarded).to.include('ask_user_question')
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    it('should forward malformed ask_user_question event without persisting', async () => {
+      const handler = streamAgentConversation(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        agentKey: 'agent-1',
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+
+      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1' },
+        body: { query: 'hello' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      mockStream.emit('data', Buffer.from('event: ask_user_question\ndata: {invalid json}\n\n'))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(findByIdAndUpdateStub.called).to.be.false
+      expect(res.write.called).to.be.true
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    it('should still forward ask_user_question when DB persistence fails', async () => {
+      const handler = streamAgentConversation(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        agentKey: 'agent-1',
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+
+      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      sinon.stub(AgentConversation, 'findByIdAndUpdate').rejects(new Error('DB write failed'))
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1' },
+        body: { query: 'hello' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      mockStream.emit(
+        'data',
+        Buffer.from(
+          'event: ask_user_question\ndata: {"status":"success","toolData":{"question":"Pick one"}}\n\n',
+        ),
+      )
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const forwarded = res.write.args.map((a: any) => a[0]).join('')
+      expect(forwarded).to.include('ask_user_question')
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
     })
 
     it('should handle client disconnect by destroying stream', async () => {

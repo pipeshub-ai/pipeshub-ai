@@ -1,0 +1,15 @@
+name: link_layer
+description: LinkRecord fields not on Record
+fields:
+  is_public:
+    required: false
+    type: string
+  linked_record_id:
+    required: false
+    type: string
+  title:
+    required: false
+    type: string
+  url:
+    required: true
+    type: string

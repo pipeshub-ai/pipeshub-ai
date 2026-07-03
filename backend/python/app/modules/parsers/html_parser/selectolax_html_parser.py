@@ -96,6 +96,7 @@ class SelectolaxHtmlParser:
         html_content: str,
         caption_map: Dict[str, str] | None = None,
         base_url: str | None = None,
+        name: str | None = None,
     ) -> BlocksContainer:
         """Parse preprocessed HTML to ``BlocksContainer``.
 
@@ -105,6 +106,7 @@ class SelectolaxHtmlParser:
             html_content: Preprocessed HTML source string.
             caption_map: Optional mapping of image alt-text to base-64 data URIs.
             base_url: Optional base URL for resolving relative image URLs.
+            name: Unused; kept for protocol signature compatibility.
 
         Returns:
             Populated ``BlocksContainer``.

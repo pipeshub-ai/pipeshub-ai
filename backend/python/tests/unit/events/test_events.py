@@ -181,7 +181,7 @@ class TestMarkRecordStatusEdgeCases:
     async def test_error_with_non_empty_status_does_not_raise(self):
         """Errors with non-EMPTY statuses are swallowed."""
         ep, logger, _, gp = _make_event_processor()
-        gp.batch_upsert_nodes.side_effect = Exception("fail")
+        gp.batch_update_nodes.side_effect = Exception("fail")
         doc = {"_key": "k6"}
 
         # FAILED is not EMPTY, so exception should be swallowed
@@ -192,7 +192,7 @@ class TestMarkRecordStatusEdgeCases:
     async def test_error_with_empty_status_raises(self):
         """Errors with EMPTY status are re-raised."""
         ep, _, _, gp = _make_event_processor()
-        gp.batch_upsert_nodes.side_effect = Exception("fail")
+        gp.batch_update_nodes.side_effect = Exception("fail")
         doc = {"_key": "k7"}
 
         with pytest.raises(Exception, match="Failed to mark record status to EMPTY"):
@@ -1224,7 +1224,7 @@ class TestOnEventDuplicate:
         gp.find_duplicate_records = AsyncMock(return_value=[
             {"_key": "dup-1", "indexingStatus": ProgressStatus.IN_PROGRESS.value}
         ])
-        gp.batch_upsert_nodes = AsyncMock()
+        gp.batch_update_nodes = AsyncMock()
 
         doc = {"_key": "rec-1", "md5Checksum": "abc123", "recordType": "FILE", "sizeInBytes": 100}
         result = await ep._check_duplicate_by_md5(b"hello world", doc)

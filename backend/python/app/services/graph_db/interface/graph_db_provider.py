@@ -299,6 +299,40 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def batch_update_nodes(
+        self,
+        nodes: list[dict],
+        collection: str,
+        transaction: str | None = None,
+    ) -> bool | None:
+        """
+        Batch update multiple existing nodes/documents. Does NOT create new nodes.
+        
+        This method only updates nodes that already exist in the database.
+        If a node doesn't exist, it will be skipped (not created).
+        
+        This is different from batch_upsert_nodes which creates nodes if they don't exist.
+        Use this method in indexing service to ensure records are not accidentally created.
+
+        Args:
+            nodes (List[Dict]): List of documents to update. Each document should have 'id' or '_key' field:
+                {
+                    "id": "user123",           # Generic node identifier
+                    "orgId": "org456",
+                    # ... other node properties to update
+                }
+            collection (str): Collection/table name
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            bool: True if every input node was found and updated.
+            False if any node did not exist (zero or partial matches). Providers log
+            how many nodes were updated vs requested; updated document data is not returned.
+            Raises on database or validation errors.
+        """
+        pass
+
     # ==================== Edge/Relationship Operations ====================
 
     @abstractmethod
@@ -3737,28 +3771,6 @@ class IGraphDBProvider(ABC):
 
         Returns:
             bool: True if name is unique, False if already exists
-        """
-        pass
-
-    @abstractmethod
-    async def batch_update_nodes(
-        self,
-        node_ids: list[str],
-        updates: dict[str, Any],
-        collection: str,
-        transaction: str | None = None
-    ) -> bool:
-        """
-        Batch update multiple nodes with the same updates.
-
-        Args:
-            node_ids (List[str]): List of node IDs to update
-            updates (Dict[str, Any]): Dictionary of fields to update
-            collection (str): Collection name
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            bool: True if successful, False otherwise
         """
         pass
 

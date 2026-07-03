@@ -11,6 +11,7 @@ import {
   MAX_SLOTS,
   SearchResultItem,
   type ModelInfo,
+  type PendingAskUserQuestion,
 } from './types';
 import type { RecordDetailsResponse } from '@/knowledge-base/types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
@@ -163,6 +164,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     regenerateMessageId: null,
     pendingCollections: [],
     artifacts: [],
+    pendingAskUserQuestion: null,
     abortController: null,
     messagePagination: null,
     lastAccessedAt: Date.now(),
@@ -305,6 +307,8 @@ interface ChatState {
   createSlot: (convId: string | null) => string;
   /** Patch fields in a single slot. Only that slot's reference changes. */
   updateSlot: (slotId: string, patch: Partial<ChatSlot>) => void;
+  /** Replace interactive questionnaire state for a slot (alias for `updateSlot`). */
+  setPendingAskUserQuestion: (slotId: string, value: PendingAskUserQuestion | null) => void;
   /** Switch the active slot. Updates lastAccessedAt on the target. */
   setActiveSlot: (slotId: string) => void;
   /** Remove a slot from the dictionary entirely. */
@@ -599,6 +603,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         },
       };
     });
+  },
+
+  setPendingAskUserQuestion: (slotId, value) => {
+    get().updateSlot(slotId, { pendingAskUserQuestion: value });
   },
 
   setActiveSlot: (slotId) => {

@@ -8,6 +8,7 @@ from redis.asyncio import Redis
 
 from app.services.messaging.config import RedisStreamsConfig
 from app.services.messaging.interface.producer import IMessagingProducer
+from app.utils.request_context import inject_envelope
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -79,6 +80,7 @@ class RedisStreamsProducer(IMessagingProducer):
             if self.redis is None:
                 await self.initialize()
 
+            message = inject_envelope(message)
             fields: dict[str, str] = {
                 "value": json.dumps(message),
             }

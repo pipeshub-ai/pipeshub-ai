@@ -16,6 +16,11 @@ from app.connectors.core.constants import (
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.oauth_config import get_oauth_config
+from app.utils.request_context import (
+    new_system_root,
+    reset_context,
+    set_context,
+)
 
 
 class TokenRefreshService:
@@ -68,9 +73,14 @@ class TokenRefreshService:
 
     async def _refresh_all_tokens(self) -> None:
         """Refresh tokens for all authenticated connectors (regardless of active status)"""
-        # Prevent concurrent execution
-        async with self._refresh_lock:
-            await self._refresh_all_tokens_internal()
+        # Seed a trace root so every refresh-cycle log line is attributable.
+        token = set_context(new_system_root())
+        try:
+            # Prevent concurrent execution
+            async with self._refresh_lock:
+                await self._refresh_all_tokens_internal()
+        finally:
+            reset_context(token)
 
     async def _is_connector_authenticated(self, connector_id: str) -> bool:
         """

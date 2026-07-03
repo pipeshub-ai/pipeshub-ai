@@ -9,7 +9,7 @@ import json
 from collections.abc import Callable
 
 from langchain_core.tools import BaseTool
-from pydantic import ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.agents.tools.factories.registry import ClientFactoryRegistry
 from app.modules.agents.qna.chat_state import ChatState
@@ -19,6 +19,16 @@ TOOL_RESULT_TUPLE_LENGTH = 2
 
 # Type aliases
 ToolResult = tuple | str | dict | list | int | float | bool
+
+
+class _EmptyInput(BaseModel):
+    """Schema for tools that accept no arguments.
+
+    Used when a registry tool has no args_schema and no legacy parameters so
+    that LangChain sends an empty-properties schema to the LLM instead of the
+    generic **kwargs schema inferred from _run — preventing LLMs from
+    hallucinating arguments like {"kwargs": {}}.
+    """
 
 
 class ToolInstanceCreator:
@@ -383,6 +393,21 @@ class RegistryToolWrapper(BaseTool):
 
         instance_creator = ToolInstanceCreator(state)
 
+        # Wire the registry tool's Pydantic schema into LangChain so the LLM
+        # receives the correct input schema rather than the generic **kwargs one
+        # inferred from _run. For no-arg tools (no schema, no legacy parameters)
+        # we use _EmptyInput which produces {"properties": {}} — preventing LLMs
+        # from hallucinating arguments like {"kwargs": {}}.
+        schema = getattr(registry_tool, 'args_schema', None)
+        if schema is not None and not (isinstance(schema, type) and issubclass(schema, BaseModel)):
+            schema = None
+        try:
+            has_parameters = bool(getattr(registry_tool, 'parameters', None))
+        except Exception:
+            has_parameters = False
+        if schema is None and not has_parameters:
+            schema = _EmptyInput
+
         init_data: dict[str, str | object] = {
             'name': f"{app_name}.{tool_name}",
             'description': full_description,
@@ -391,6 +416,7 @@ class RegistryToolWrapper(BaseTool):
             'registry_tool': registry_tool,
             'chat_state': state,
             'instance_creator': instance_creator,
+            'args_schema': schema,
             **kwargs
         }
 
@@ -589,6 +615,24 @@ class RegistryToolWrapper(BaseTool):
 
             bound_method = getattr(instance, self.tool_name)
 
+            # Filter arguments to only those the method actually accepts.
+            # LLMs sometimes send spurious keys (e.g. "kwargs": {}) when the
+            # tool schema was auto-inferred from a **kwargs wrapper function.
+            sig = inspect.signature(bound_method)
+            has_var_keyword = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD
+                for p in sig.parameters.values()
+            )
+            if not has_var_keyword and arguments:
+                valid_params = {
+                    name for name, p in sig.parameters.items()
+                    if p.kind in (
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                        inspect.Parameter.KEYWORD_ONLY,
+                    )
+                }
+                arguments = {k: v for k, v in arguments.items() if k in valid_params}
+
             try:
                 # Always call the method first - the @tool decorator may wrap `async def` such that
                 # iscoroutinefunction() returns False on the bound method, but calling it still
@@ -649,6 +693,23 @@ class RegistryToolWrapper(BaseTool):
             )
 
             bound_method = getattr(instance, self.tool_name)
+
+            # Filter arguments to only those the method actually accepts.
+            sig = inspect.signature(bound_method)
+            has_var_keyword = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD
+                for p in sig.parameters.values()
+            )
+            if not has_var_keyword and arguments:
+                valid_params = {
+                    name for name, p in sig.parameters.items()
+                    if p.kind in (
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                        inspect.Parameter.KEYWORD_ONLY,
+                    )
+                }
+                arguments = {k: v for k, v in arguments.items() if k in valid_params}
+
             try:
                 return bound_method(**arguments)
             finally:

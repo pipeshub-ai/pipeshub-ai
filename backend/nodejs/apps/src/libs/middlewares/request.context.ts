@@ -1,5 +1,10 @@
-import crypto from "crypto";
 import { Request, Response, NextFunction } from "express";
+import {
+  newAnonRoot,
+  runWithRequestContext,
+  sanitizeRootId,
+} from "../context/request-context";
+import { Logger } from "../services/logger.service";
 
 /**
  * Interface for the request context object.
@@ -34,15 +39,16 @@ declare global {
   }
 }
 
-/**
- * Generates a random request ID
- * @param userId - Optional user ID to include in the request ID (currently not used)
- * @returns Generated request ID
- */
-const generateRequestId = (): string => {
-  const timestamp = Date.now();
-  const random = crypto.randomBytes(10).toString("hex");
-  return `${timestamp}-${random}`;
+
+const resolveRequestId = (raw: string | undefined): string => {
+  const sanitized = sanitizeRootId(raw);
+  if (raw && sanitized !== raw) {
+    Logger.getInstance().debug("Sanitized client-supplied x-request-id", {
+      rawLength: raw.length,
+      sanitized: sanitized ?? "(empty, regenerated)",
+    });
+  }
+  return sanitized || newAnonRoot();
 };
 
 /**
@@ -55,7 +61,7 @@ const createRequestContext = (req: Request): RequestContext => {
     userAgent: req.get("user-agent") || "unknown",
     clientIp: req.ip || undefined,
     correlationId: req.get("X-Correlation-ID") || undefined,
-    requestId: req.get("X-Request-ID") || generateRequestId(),
+    requestId: resolveRequestId(req.get("X-Request-ID")),
     origin: req.get("origin") || undefined,
     referer: req.get("referer") || undefined,
     language: req.get("accept-language") || undefined,
@@ -77,20 +83,17 @@ const createRequestContext = (req: Request): RequestContext => {
 
 /**
  * Express middleware to attach request context to the req object.
- * Note: Request ID is kept internal for logging/debugging and NOT exposed to clients
+ * Note: Request ID is just for tracking and debugging purposes. Does not expose anything to end users.
  */
 export const requestContextMiddleware = (
   req: Request,
-  res: Response,
+  _res: Response,
   next: NextFunction
 ): void => {
   req.context = createRequestContext(req);
-
-  if(process.env.NEED_REQUEST_ID_HEADER === 'true') {
-    res.setHeader("X-Request-ID", req.context.requestId);
-  }
-  
-  // DO NOT expose internal request IDs to clients (security/privacy concern)
-  // Only use internally for logging and debugging
-  next();
+  // Bind the id for the whole request so the Logger tags every line.
+  runWithRequestContext(
+    { rootId: req.context.requestId },
+    () => next(),
+  );
 };

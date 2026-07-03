@@ -32,6 +32,8 @@ import {
   type SSEConnectedEvent,
   type ChatArtifact,
   type SSEArtifactEvent,
+  type SSEAskUserQuestionEvent,
+  type PendingAskUserQuestion,
 } from './types';
 import {
   buildCitationMapsFromStreaming,
@@ -62,6 +64,30 @@ function createPendingAssistantId(): string {
   }
   const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
   return `asst-pending-${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function applyAskUserQuestionSse(
+  slotId: string,
+  data: SSEAskUserQuestionEvent,
+  assistantRowId: string
+): void {
+  const toolData = data?.toolData;
+  if (
+    !toolData ||
+    toolData.name !== 'ask_user_question' ||
+    !Array.isArray(toolData.questions) ||
+    toolData.questions.length === 0
+  ) {
+    return;
+  }
+  useChatStore.getState().updateSlot(slotId, {
+    pendingAskUserQuestion: {
+      assistantMessageId: assistantRowId,
+      payload: toolData,
+      answers: {},
+      status: 'pending',
+    },
+  });
 }
 
 /**
@@ -284,6 +310,9 @@ export async function streamMessageForSlot(
   let lastFlushTime = 0;
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let clearedStatusWhenAnswerVisible = false;
+  // When ask_user_question is received, stop accumulating answer_chunks so
+  // only the question card is shown (not a partial streamed answer above it).
+  let ignoreChunks = false;
 
   // Minimum-dwell scheduler for SSE status messages (see
   // createStatusDwellScheduler for the rationale).
@@ -375,6 +404,7 @@ export async function streamMessageForSlot(
       },
 
       onChunk: (data) => {
+        if (ignoreChunks) return;
         debugLog.chunk();
         accumulatedContent = data.accumulated;
         if (!clearedStatusWhenAnswerVisible && data.accumulated.length > 0) {
@@ -412,6 +442,25 @@ export async function streamMessageForSlot(
         }
       },
 
+      onAskUserQuestion: (data: SSEAskUserQuestionEvent) => {
+        // Stop accumulating answer_chunks so no partial answer is shown
+        // above the question card.
+        ignoreChunks = true;
+        if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+        accumulatedContent = '';
+        pendingCitationMaps = null;
+        lastCitationKey = '';
+        clearedStatusWhenAnswerVisible = false;
+        useChatStore.getState().updateSlot(slotId, {
+          streamingContent: '',
+          streamingCitationMaps: null,
+          currentStatusMessage: null,
+        });
+        const slotSnap = useChatStore.getState().slots[slotId];
+        const rowId = slotSnap?.regenerateMessageId ?? pendingAssistantId;
+        applyAskUserQuestionSse(slotId, data, rowId);
+      },
+
       onComplete: (data) => {
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         cancelPendingStatus();
@@ -419,7 +468,21 @@ export async function streamMessageForSlot(
         const newConvId = conv._id || conv.id || '';
 
         // Build finalized messages from API response
-        const finalMessages = loadHistoricalMessages(data.conversation.messages);
+        const { messages: finalMessages } = loadHistoricalMessages(data.conversation.messages);
+
+        // SSE placeholder assistant id → persisted Mongo message id after complete.
+        const pendingBefore = useChatStore.getState().slots[slotId]?.pendingAskUserQuestion;
+        let remappedPending: PendingAskUserQuestion | undefined;
+        if (
+          pendingBefore?.status === 'pending' &&
+          pendingBefore.assistantMessageId === pendingAssistantId
+        ) {
+          const lastAsst = [...finalMessages].reverse().find((m) => m.role === 'assistant');
+          const newId = typeof lastAsst?.id === 'string' ? lastAsst.id : undefined;
+          if (newId) {
+            remappedPending = { ...pendingBefore, assistantMessageId: newId };
+          }
+        }
 
         // Determine pagination for the "load older messages" feature.
         // We don't get pagination metadata from the SSE event, so we preserve
@@ -464,6 +527,7 @@ export async function streamMessageForSlot(
             conversationModelInfo: data.conversation.modelInfo,
             ...(newMsgPagination !== null ? { messagePagination: newMsgPagination } : {}),
             ...(isNewConversation ? { isOwner: true } : {}),
+            ...(remappedPending ? { pendingAskUserQuestion: remappedPending } : {}),
           });
         });
 
@@ -518,6 +582,7 @@ export async function streamMessageForSlot(
           streamingCitationMaps: null,
           pendingCollections: [],
           abortController: null,
+          pendingAskUserQuestion: null,
           messages: withStreamingErrorMessage(currentMessages, err),
         });
         if (isNewConversation) {
@@ -573,6 +638,7 @@ export async function streamMessageForSlot(
       streamingCitationMaps: null,
       pendingCollections: [],
       abortController: null,
+      pendingAskUserQuestion: null,
       messages: withStreamingErrorMessage(currentMessages, errorMessage),
     });
     if (isNewConversation) {
@@ -641,6 +707,7 @@ export async function streamRegenerateForSlot(
   let lastFlushTime = 0;
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let clearedStatusWhenAnswerVisible = false;
+  let ignoreChunks = false;
 
   // Minimum-dwell scheduler for SSE status messages (see
   // createStatusDwellScheduler for the rationale).
@@ -716,6 +783,7 @@ export async function streamRegenerateForSlot(
     },
 
     onChunk: (data) => {
+      if (ignoreChunks) return;
       debugLog.chunk();
       accumulatedContent = data.accumulated;
       if (!clearedStatusWhenAnswerVisible && data.accumulated.length > 0) {
@@ -733,6 +801,21 @@ export async function streamRegenerateForSlot(
       scheduleFlush();
     },
 
+    onAskUserQuestion: (data: SSEAskUserQuestionEvent) => {
+      ignoreChunks = true;
+      if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+      accumulatedContent = '';
+      pendingCitationMaps = null;
+      lastCitationKey = '';
+      clearedStatusWhenAnswerVisible = false;
+      useChatStore.getState().updateSlot(slotId, {
+        streamingContent: '',
+        streamingCitationMaps: null,
+        currentStatusMessage: null,
+      });
+      applyAskUserQuestionSse(slotId, data, messageId);
+    },
+
     onComplete: async () => {
       if (flushTimer !== null) {
         clearTimeout(flushTimer);
@@ -743,7 +826,7 @@ export async function streamRegenerateForSlot(
         const detail = reloadViaAgentId
           ? await AgentsApi.fetchAgentConversation(reloadViaAgentId, slot.convId!)
           : await ChatApi.fetchConversation(slot.convId!);
-        const finalMessages = loadHistoricalMessages(detail.messages);
+        const { messages: finalMessages } = loadHistoricalMessages(detail.messages);
         const postRegenModelInfo = pickModelInfoFromConversationBundle({
           modelInfo: detail.conversation.modelInfo,
           messages: detail.messages,
@@ -926,7 +1009,7 @@ export async function loadOlderMessagesForSlot(slotId: string): Promise<void> {
       ? await AgentsApi.fetchAgentConversation(slot.threadAgentId, slot.convId, { page: nextPage })
       : await ChatApi.fetchConversation(slot.convId, nextPage);
 
-    const olderMessages = loadHistoricalMessages(detail.messages);
+    const { messages: olderMessages } = loadHistoricalMessages(detail.messages);
     const newPagination = {
       currentPage: detail.pagination.page,
       hasOlderMessages: detail.pagination.hasNextPage,

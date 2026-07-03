@@ -345,6 +345,54 @@ class TestCreateAttachmentFileRecord:
         # Should NOT have AUTO_INDEX_OFF because skip_filter_check=True
         assert not hasattr(record, 'indexing_status') or record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
 
+    def test_resolves_mime_type_from_extension_map(self):
+        c, *_ = _make_connector()
+        record = c._create_attachment_file_record(
+            attachment_id="12350",
+            filename="report.pdf",
+            mime_type="application/octet-stream",
+            file_size=1024,
+            created_at=1700000000000,
+            parent_issue_id="10001",
+            parent_node_id=None,
+            project_id="proj-1",
+            weburl=None,
+        )
+        assert record.extension == "pdf"
+        assert record.mime_type == "application/pdf"
+
+    def test_falls_back_to_api_mime_for_unmapped_extension(self):
+        c, *_ = _make_connector()
+        record = c._create_attachment_file_record(
+            attachment_id="12351",
+            filename="archive.xyz",
+            mime_type="application/custom",
+            file_size=100,
+            created_at=1700000000000,
+            parent_issue_id="10001",
+            parent_node_id=None,
+            project_id="proj-1",
+            weburl=None,
+        )
+        assert record.extension == "xyz"
+        assert record.mime_type == "application/custom"
+
+    def test_normalizes_extension_case(self):
+        c, *_ = _make_connector()
+        record = c._create_attachment_file_record(
+            attachment_id="12352",
+            filename="Report.PDF",
+            mime_type="application/octet-stream",
+            file_size=512,
+            created_at=1700000000000,
+            parent_issue_id="10001",
+            parent_node_id=None,
+            project_id="proj-1",
+            weburl=None,
+        )
+        assert record.extension == "pdf"
+        assert record.mime_type == "application/pdf"
+
 
 # ===========================================================================
 # _organize_issue_comments_to_threads

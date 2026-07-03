@@ -10,6 +10,7 @@ import {
 } from './token-refresh';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { applyElectronOverrides } from '@/lib/electron';
+import { generateRequestId } from '@/lib/utils/request-id';
 
 declare module 'axios' {
   export interface AxiosRequestConfig {
@@ -31,6 +32,7 @@ export const apiClient = axios.create({
   timeout: API_TIMEOUT,
   headers: {
     'Content-Type': 'application/json',
+    'client-name': 'pipeshub-ai',
   },
   withCredentials: true,
 });
@@ -51,6 +53,9 @@ apiClient.interceptors.request.use(
   async (config) => {
     config.baseURL = getApiBaseUrl();
     applyElectronOverrides(config);
+
+    // Tag every request so it can be traced across all backend services.
+    config.headers['x-request-id'] = generateRequestId();
 
     // Skip token handling for the refresh endpoint itself to avoid loops.
     if (config.url?.includes(REFRESH_TOKEN_ENDPOINT)) {

@@ -2,6 +2,8 @@ import winston from 'winston';
 import { Request } from 'express';
 import { injectable } from 'inversify';
 import path from 'path';
+import { threadId } from 'worker_threads';
+import { currentDisplayId, getRequestContext } from '../context/request-context';
 
 export enum LogLevel {
   Debug = 'debug',
@@ -52,6 +54,7 @@ export class Logger {
   constructor(config?: LoggerConfig) {
     if (!Logger.instance) {
       this.defaultMeta = {
+        service_tier: 'nodejs_service',
         service: config?.service || 'default-service',
         ...config?.additionalMeta,
       };
@@ -74,7 +77,21 @@ export class Logger {
     const logFormat = winston.format.combine(
       winston.format.timestamp(),
       winston.format.errors({ stack: true }),
-      winston.format.printf(({ timestamp, level, message, metadata, stack, filename, line }) => {
+      winston.format.printf((info) => {
+        const { message, metadata, stack, filename, line, request_id, thread_id } = info;
+        const serviceTier = info.service_tier || 'nodejs_service';
+
+        const ts =
+          typeof info.timestamp === 'string'
+            ? info.timestamp.replace('T', ' ').replace('Z', '').replace('.', ',')
+            : info.timestamp;
+
+        const rawLevel = String(info[Symbol.for('level')] || info.level).toUpperCase();
+        const levelColors: Record<string, string> = { ERROR: '\x1b[31m', WARNING: '\x1b[33m' };
+        const levelStr = levelColors[rawLevel]
+          ? `${levelColors[rawLevel]}${rawLevel}\x1b[0m`
+          : rawLevel;
+
         let metaString = '';
         if (metadata) {
           try {
@@ -87,8 +104,11 @@ export class Logger {
         }
         const stackString = stack ? `\nstack: ${stack}` : '';
         const fileInfo = filename ? `[${filename}:${line}]` : '';
+        // Present only when a request context is in flight.
+        const traceInfo =
+          request_id !== undefined ? `[req:${request_id} thr:${thread_id}] ` : '';
 
-        return `${timestamp} ${fileInfo} ${level}: ${message}${metaString}${stackString}`;
+        return `${ts} - ${serviceTier} - ${levelStr} - ${traceInfo}${fileInfo} - ${message}${metaString}${stackString}`;
       })
     );
 
@@ -108,9 +128,7 @@ export class Logger {
           format: winston.format.combine(logFormat, winston.format.json())
         }),
         new winston.transports.Console({
-          format: process.env.NODE_ENV !== 'production'
-            ? winston.format.combine(winston.format.colorize(), logFormat)
-            : winston.format.combine(logFormat, winston.format.json()),
+          format: logFormat,
         }),
       ],
     });
@@ -206,10 +224,15 @@ export class Logger {
 
   private logWithLevel(level: string, message: string, meta?: any) {
     const callerInfo = this.getCallerInfo();
+    // Read at emit time; omitted entirely when there is no context.
+    const traceMeta = getRequestContext()
+      ? { request_id: currentDisplayId(), thread_id: threadId }
+      : {};
     this.logger.log({
       level,
       message,
       metadata: meta,
+      ...traceMeta,
       ...callerInfo,
     });
   }

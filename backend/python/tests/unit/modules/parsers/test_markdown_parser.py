@@ -340,4 +340,4 @@ class TestMarkdownParserShim:
             return_value=MagicMock(),
         ) as mock_parse:
             await parser.parse("# Hello\n")
-            mock_parse.assert_called_once_with("# Hello\n", None)
+            mock_parse.assert_called_once_with("# Hello\n", None, page_number=None)

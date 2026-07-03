@@ -12,6 +12,11 @@ from app.services.messaging.config import (
     messaging_env,
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
+from app.utils.request_context import (
+    context_from_envelope,
+    reset_context,
+    set_context,
+)
 
 MAX_CONCURRENT_TASKS = 5
 
@@ -356,6 +361,10 @@ class RedisStreamsConsumer(IMessagingConsumer):
 
             parsed_message = StreamMessage(**raw)
 
+            # Carry the producer's trace id into consumer-side logs.
+            envelope = raw if isinstance(raw, dict) else {}
+            ctx = context_from_envelope(envelope)
+            token = set_context(ctx.root_id)
             try:
                 return await self.message_handler(parsed_message)
             except Exception as e:
@@ -366,6 +375,8 @@ class RedisStreamsConsumer(IMessagingConsumer):
                     exc_info=True,
                 )
                 return False
+            finally:
+                reset_context(token)
 
         except Exception as e:
             self.logger.error(

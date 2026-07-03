@@ -102,7 +102,7 @@ class SinkOrchestrator(Transformer):
 
         if skip_vector_store:
             timestamp = get_epoch_timestamp_in_ms()
-            await self.graph_provider.batch_upsert_nodes(
+            success = await self.graph_provider.batch_update_nodes(
                 [
                     {
                         "id": record_id,
@@ -114,6 +114,12 @@ class SinkOrchestrator(Transformer):
                 ],
                 CollectionNames.RECORDS.value,
             )
+            if not success:
+                self.logger.warning(
+                    "⚠️ Failed to update record %s status - record may not exist in database",
+                    record_id,
+                )
+                return
             self.logger.info(
                 "✅ Sink-only mode completed for record %s (vector indexing skipped)",
                 record_id,

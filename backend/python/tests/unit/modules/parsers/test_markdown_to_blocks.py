@@ -21,6 +21,7 @@ from app.modules.parsers.markdown.markdown_to_blocks import (
     _TableCell,
     _TableState,
     _TokenWalker,
+    _split_raw_markdown_into_segments,
 )
 
 
@@ -51,6 +52,60 @@ def _child_group_indices(group: BlockGroup) -> list[int]:
     for group_range in group.children.block_group_ranges:
         indices.extend(range(group_range.start, group_range.end + 1))
     return indices
+
+
+def _is_empty_split_container(block: Block) -> bool:
+    if block.parent_block_index is not None:
+        return False
+    data = block.data
+    if isinstance(data, str) and not data.strip():
+        return True
+    if isinstance(data, dict):
+        if not data:
+            return True
+        if block.type == BlockType.TABLE_ROW:
+            return not data.get("row_natural_language_text") and not data.get("cells")
+    return False
+
+
+def _assert_all_blocks_have_data(container: BlocksContainer) -> None:
+    for block in container.blocks:
+        assert block.data is not None, (
+            f"block index={block.index} type={block.type} "
+            f"sub_type={block.sub_type} has data=None"
+        )
+
+
+def _assert_empty_text_split_container(block: Block) -> None:
+    assert block.data == ""
+    assert _is_empty_split_container(block)
+
+
+def _fragment_blocks(container: BlocksContainer, container_index: int) -> list[Block]:
+    return [
+        block
+        for block in container.blocks
+        if block.parent_block_index == container_index
+    ]
+
+
+def _content_text_blocks(container: BlocksContainer) -> list[Block]:
+    return [
+        block
+        for block in container.blocks
+        if block.type == BlockType.TEXT and not _is_empty_split_container(block)
+    ]
+
+
+def _split_container_blocks(
+    container: BlocksContainer,
+    sub_type: BlockSubType,
+) -> list[Block]:
+    return [
+        block
+        for block in container.blocks
+        if block.sub_type == sub_type and _is_empty_split_container(block)
+    ]
 
 
 class TestHeadings:
@@ -209,7 +264,7 @@ class TestParagraphs:
         container = converter.convert("Plain paragraph.\n")
         block = container.blocks[0]
         assert block.data == "Plain paragraph."
-        assert block.format == DataFormat.TXT
+        assert block.format == DataFormat.MARKDOWN
 
     def test_multiple_paragraphs_are_separate_blocks(self, converter: MarkdownToBlocksConverter):
         container = converter.convert("First paragraph.\n\nSecond paragraph.\n")
@@ -333,7 +388,7 @@ class TestLists:
             if block.sub_type == BlockSubType.LIST_ITEM
         ]
         assert len(list_items) == 1
-        assert list_items[0].data == "- outer\n  - inner"
+        assert list_items[0].data == "outer\n  - inner"
         assert list_items[0].format == DataFormat.MARKDOWN
         assert list_items[0].parent_index == list_group.index
         assert _child_block_indices(list_group) == [list_items[0].index]
@@ -369,11 +424,16 @@ class TestImages:
             "See ![Image_1](https://example.com/a.png) here\n",
             caption_map={"Image_1": "data:image/png;base64,abc"},
         )
-        assert len(container.blocks) == 2
-        assert container.blocks[0].sub_type == BlockSubType.PARAGRAPH
-        assert container.blocks[0].data == "See  here"
+        assert len(container.blocks) == 3
+        assert container.blocks[0].type == BlockType.TEXT
+        assert container.blocks[0].data == "See "
+        assert container.blocks[0].parent_block_index is None
         assert container.blocks[1].type == BlockType.IMAGE
         assert container.blocks[1].format == DataFormat.BASE64
+        assert container.blocks[1].parent_block_index is None
+        assert container.blocks[2].type == BlockType.TEXT
+        assert container.blocks[2].data == " here"
+        assert container.blocks[2].parent_block_index is None
 
     # ------------------------------------------------------------------
     # No alt text
@@ -449,14 +509,15 @@ class TestImages:
     def test_image_only_paragraph_produces_no_text_block(
         self, converter: MarkdownToBlocksConverter
     ):
-        """A paragraph that is purely an image should not produce a text block."""
+        """A paragraph that is purely an image emits a single IMAGE block at root."""
         container = converter.convert(
             "![Image_1](https://example.com/img.png)\n",
             caption_map={"Image_1": "data:image/png;base64,abc"},
         )
-        text_blocks = [b for b in container.blocks if b.type == BlockType.TEXT]
-        assert text_blocks == []
+        assert _content_text_blocks(container) == []
         assert len(_blocks_by_type(container, BlockType.IMAGE)) == 1
+        assert container.blocks[0].type == BlockType.IMAGE
+        assert container.blocks[0].parent_block_index is None
 
     # ------------------------------------------------------------------
     # parent_index inside groups
@@ -465,7 +526,7 @@ class TestImages:
     def test_image_inside_blockquote_is_preserved_in_raw_markdown(
         self, converter: MarkdownToBlocksConverter
     ):
-        """Without caption_map, image inside blockquote stays in raw markdown only."""
+        """Without caption_map, blockquote splits into empty container and text fragment."""
         container = converter.convert("> ![Image_1](https://example.com/img.png)\n")
         assert len(container.block_groups) == 1
         quote_group = container.block_groups[0]
@@ -473,97 +534,98 @@ class TestImages:
         assert quote_group.sub_type == GroupSubType.QUOTE
         assert _blocks_by_type(container, BlockType.IMAGE) == []
 
-        quote_block = container.blocks[0]
-        assert quote_block.sub_type == BlockSubType.QUOTE
-        assert quote_block.data == "> ![Image_1](https://example.com/img.png)"
-        assert quote_block.format == DataFormat.MARKDOWN
-        assert quote_block.parent_index == quote_group.index
+        quote_containers = _split_container_blocks(container, BlockSubType.QUOTE)
+        assert len(quote_containers) == 1
+        _assert_empty_text_split_container(quote_containers[0])
+        fragments = _fragment_blocks(container, quote_containers[0].index)
+        assert len(fragments) == 1
+        assert fragments[0].data == "> "
+        assert fragments[0].parent_block_index == quote_containers[0].index
+        assert quote_containers[0].parent_index == quote_group.index
 
     def test_image_inside_blockquote_with_caption_map_emits_image_block(
         self, converter: MarkdownToBlocksConverter
     ):
-        """With caption_map, blockquote keeps raw markdown and adds a sibling IMAGE block."""
+        """With caption_map, blockquote splits into container, text fragment, and IMAGE."""
         caption_map = {"Image_1": "data:image/png;base64,QUOTEIMG"}
         container = converter.convert(
             "> ![Image_1](https://example.com/img.png)\n",
             caption_map=caption_map,
         )
         quote_group = container.block_groups[0]
-        quote_blocks = [
-            b for b in container.blocks if b.sub_type == BlockSubType.QUOTE
-        ]
+        quote_containers = _split_container_blocks(container, BlockSubType.QUOTE)
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
 
-        assert len(quote_blocks) == 1
-        assert quote_blocks[0].data == "> ![Image_1](https://example.com/img.png)"
+        assert len(quote_containers) == 1
+        _assert_empty_text_split_container(quote_containers[0])
+        fragments = _fragment_blocks(container, quote_containers[0].index)
+        assert fragments[0].data == "> "
         assert len(image_blocks) == 1
         assert image_blocks[0].data == {"uri": "data:image/png;base64,QUOTEIMG"}
         assert image_blocks[0].format == DataFormat.BASE64
-        assert image_blocks[0].parent_index == quote_group.index
-        assert image_blocks[0].image_metadata.captions == ["Image_1"]
-        assert _child_block_indices(quote_group) == [
-            quote_blocks[0].index,
-            image_blocks[0].index,
-        ]
+        assert image_blocks[0].parent_index is None
+        assert image_blocks[0].parent_block_index == quote_containers[0].index
+        assert _child_block_indices(quote_group) == [quote_containers[0].index]
 
     def test_image_inside_blockquote_without_matching_uri_skips_image_block(
         self, converter: MarkdownToBlocksConverter
     ):
-        """caption_map present but alt not resolved → keep raw markdown only."""
+        """caption_map present but alt not resolved → container and text fragment only."""
         container = converter.convert(
             "> ![Image_1](https://example.com/img.png)\n",
             caption_map={"Image_2": "data:image/png;base64,OTHER"},
         )
         assert _blocks_by_type(container, BlockType.IMAGE) == []
-        quote_block = container.blocks[0]
-        assert quote_block.data == "> ![Image_1](https://example.com/img.png)"
+        quote_container = container.blocks[0]
+        _assert_empty_text_split_container(quote_container)
+        assert _fragment_blocks(container, quote_container.index)[0].data == "> "
 
     def test_image_inside_list_is_preserved_in_raw_markdown(
         self, converter: MarkdownToBlocksConverter
     ):
-        """Without caption_map, image inside list item stays in raw markdown only."""
+        """Without caption_map, list item splits into empty container and text fragment."""
         container = converter.convert("- ![Image_1](https://example.com/img.png)\n")
         assert len(container.block_groups) == 1
         list_group = container.block_groups[0]
         assert list_group.type == GroupType.LIST
         assert _blocks_by_type(container, BlockType.IMAGE) == []
 
-        list_item = container.blocks[0]
-        assert list_item.sub_type == BlockSubType.LIST_ITEM
-        assert list_item.data == "- ![Image_1](https://example.com/img.png)"
-        assert list_item.format == DataFormat.MARKDOWN
-        assert list_item.parent_index == list_group.index
+        list_container = container.blocks[0]
+        assert list_container.sub_type == BlockSubType.LIST_ITEM
+        _assert_empty_text_split_container(list_container)
+        assert _fragment_blocks(container, list_container.index) == []
+        assert list_container.parent_index == list_group.index
 
     def test_image_inside_list_with_caption_map_emits_image_block(
         self, converter: MarkdownToBlocksConverter
     ):
-        """With caption_map, list item keeps raw markdown and adds a sibling IMAGE block."""
+        """With caption_map, list item splits into container, text fragment, and IMAGE."""
         caption_map = {"Image_1": "data:image/png;base64,LISTIMG"}
         container = converter.convert(
             "- Available connectors: ![Image_1](https://example.com/img.png)\n",
             caption_map=caption_map,
         )
         list_group = container.block_groups[0]
-        list_items = [
-            b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM
-        ]
+        list_containers = _split_container_blocks(container, BlockSubType.LIST_ITEM)
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
 
-        assert len(list_items) == 1
-        assert "![Image_1](https://example.com/img.png)" in list_items[0].data
+        assert len(list_containers) == 1
+        _assert_empty_text_split_container(list_containers[0])
+        fragments = _fragment_blocks(container, list_containers[0].index)
+        assert fragments[0].data == "Available connectors: "
+        assert fragments[0].sub_type is None
         assert len(image_blocks) == 1
         assert image_blocks[0].data == {"uri": "data:image/png;base64,LISTIMG"}
         assert image_blocks[0].format == DataFormat.BASE64
-        assert image_blocks[0].parent_index == list_group.index
-        assert _child_block_indices(list_group) == [
-            list_items[0].index,
-            image_blocks[0].index,
-        ]
+        assert image_blocks[0].parent_index is None
+        assert image_blocks[0].parent_block_index == list_containers[0].index
+        assert image_blocks[0].sub_type is None
+        assert _child_block_indices(list_group) == [list_containers[0].index]
 
     def test_image_inside_table_cell_with_caption_map_emits_image_block(
         self, converter: MarkdownToBlocksConverter
     ):
-        """Table cells with inline images emit IMAGE blocks linked to the TABLE group."""
+        """Table cells with inline images split into TABLE_ROW container, TEXT, and IMAGE."""
         markdown = (
             "| Name | Icon |\n"
             "| --- | --- |\n"
@@ -573,20 +635,62 @@ class TestImages:
         container = converter.convert(markdown, caption_map=caption_map)
 
         table_group = container.block_groups[0]
-        row_blocks = _blocks_by_type(container, BlockType.TABLE_ROW)
+        row_containers = _blocks_by_type(container, BlockType.TABLE_ROW)
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
 
-        assert len(row_blocks) == 1
+        assert len(row_containers) == 1
+        assert row_containers[0].data is not None
+        assert _is_empty_split_container(row_containers[0])
         assert len(image_blocks) == 1
         assert image_blocks[0].data == {"uri": "data:image/png;base64,TABLEIMG"}
         assert image_blocks[0].format == DataFormat.BASE64
-        assert image_blocks[0].parent_index == table_group.index
-        assert container.blocks[0].type == BlockType.TABLE_ROW
-        assert container.blocks[1].type == BlockType.IMAGE
-        assert _child_block_indices(table_group) == [
-            row_blocks[0].index,
-            image_blocks[0].index,
-        ]
+        assert image_blocks[0].parent_index is None
+        assert image_blocks[0].parent_block_index == row_containers[0].index
+        fragments = _fragment_blocks(container, row_containers[0].index)
+        assert fragments[0].type == BlockType.TEXT
+        assert fragments[0].data == "Name: Connectors"
+        assert _child_block_indices(table_group) == [row_containers[0].index]
+
+    def test_table_header_image_is_skipped(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        markdown = (
+            "| Label | ![Image_1](https://example.com/logo.png) |\n"
+            "| --- | --- |\n"
+            "| Value | cell |\n"
+        )
+        caption_map = {"Image_1": "data:image/png;base64,HEADERIMG"}
+        container = converter.convert(markdown, caption_map=caption_map)
+
+        table_group = container.block_groups[0]
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+
+        assert table_group.data["column_headers"] == ["Label", ""]
+        assert len(image_blocks) == 0
+
+    def test_table_mid_cell_image_splits_row_text_fragments(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        markdown = (
+            "| col1 | col2 | col3 |\n"
+            "| --- | --- | --- |\n"
+            "| text1 | Text2 ![Image_1](https://example.com/img.png) Text3 | text4 |\n"
+        )
+        caption_map = {"Image_1": "data:image/png;base64,IMG"}
+        container = converter.convert(markdown, caption_map=caption_map)
+
+        row_container = _blocks_by_type(container, BlockType.TABLE_ROW)[0]
+        fragments = _fragment_blocks(container, row_container.index)
+        text_fragments = [b for b in fragments if b.type == BlockType.TEXT]
+        image_blocks = [b for b in fragments if b.type == BlockType.IMAGE]
+
+        assert row_container.data is not None
+        assert _is_empty_split_container(row_container)
+        assert len(text_fragments) == 2
+        assert text_fragments[0].data == "col1: text1, col2: Text2"
+        assert text_fragments[1].data == "col2: Text3, col3: text4"
+        assert len(image_blocks) == 1
+        assert image_blocks[0].parent_block_index == row_container.index
 
     def test_table_row_images_follow_their_row_in_block_order(
         self, converter: MarkdownToBlocksConverter
@@ -605,12 +709,14 @@ class TestImages:
 
         assert [block.type for block in container.blocks] == [
             BlockType.TABLE_ROW,
+            BlockType.TEXT,
             BlockType.IMAGE,
             BlockType.TABLE_ROW,
+            BlockType.TEXT,
             BlockType.IMAGE,
         ]
-        assert container.blocks[1].data == {"uri": "data:image/png;base64,IMG1"}
-        assert container.blocks[3].data == {"uri": "data:image/png;base64,IMG2"}
+        assert container.blocks[2].data == {"uri": "data:image/png;base64,IMG1"}
+        assert container.blocks[5].data == {"uri": "data:image/png;base64,IMG2"}
 
     def test_image_inside_code_block_is_not_emitted(
         self, converter: MarkdownToBlocksConverter
@@ -651,39 +757,42 @@ class TestImages:
         2. URL is resolved to base64 and stored in caption_map.
         3. parse_to_blocks produces an IMAGE block with BASE64 data.
         """
+        pytest.importorskip("markdown")
         from app.modules.parsers.markdown.docling_markdown_parser import (
             _extract_and_replace_images,
         )
 
-        # Heading + standalone image (no inline text around the image)
         original_md = "# Report\n\n![chart](https://cdn.example.com/chart.png)\n"
         modified_md, images = _extract_and_replace_images(original_md)
 
         assert len(images) == 1
-        new_alt = images[0]["new_alt_text"]   # "Image_1"
+        new_alt = images[0]["new_alt_text"]
         assert new_alt == "Image_1"
-        assert images[0]["url"] == "https://cdn.example.com/chart.png"
 
-        # Simulate URL-to-base64 resolution done by the processor
         fake_base64 = "data:image/png;base64,CHARTDATA"
         caption_map = {new_alt: fake_base64}
 
         container = converter.convert(modified_md, caption_map=caption_map)
 
-        # Heading merges with the following image paragraph; image emitted separately
-        text_blocks = [b for b in container.blocks if b.type == BlockType.TEXT]
+        _assert_all_blocks_have_data(container)
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
-        assert len(text_blocks) == 1
-        assert text_blocks[0].sub_type == BlockSubType.PARAGRAPH
-        assert text_blocks[0].data == "# Report"
-        assert text_blocks[0].format == DataFormat.MARKDOWN
         assert len(image_blocks) == 1
         assert image_blocks[0].data == {"uri": fake_base64}
         assert image_blocks[0].format == DataFormat.BASE64
         assert image_blocks[0].image_metadata.captions == ["Image_1"]
 
+        text_blocks = [
+            block for block in container.blocks
+            if block.type == BlockType.TEXT and block.sub_type == BlockSubType.PARAGRAPH
+        ]
+        assert len(text_blocks) == 1
+        assert text_blocks[0].data == "# Report"
+        assert text_blocks[0].format == DataFormat.MARKDOWN
+        assert text_blocks[0].parent_block_index is None
+
     def test_full_pipeline_multiple_images(self, converter: MarkdownToBlocksConverter):
         """extract_and_replace_images assigns sequential Image_N labels."""
+        pytest.importorskip("markdown")
         from app.modules.parsers.markdown.docling_markdown_parser import (
             _extract_and_replace_images,
         )
@@ -703,6 +812,7 @@ class TestImages:
             "Image_2": "data:image/png;base64,BANNER",
         }
         container = converter.convert(modified_md, caption_map=caption_map)
+        _assert_all_blocks_have_data(container)
         image_blocks = _blocks_by_type(container, BlockType.IMAGE)
         assert len(image_blocks) == 2
         assert image_blocks[0].data == {"uri": "data:image/png;base64,LOGO"}
@@ -712,6 +822,7 @@ class TestImages:
         self, converter: MarkdownToBlocksConverter
     ):
         """When base64 conversion fails, no caption_map entry → no IMAGE block."""
+        pytest.importorskip("markdown")
         from app.modules.parsers.markdown.docling_markdown_parser import (
             _extract_and_replace_images,
         )
@@ -722,6 +833,7 @@ class TestImages:
         caption_map: dict[str, str] = {}
 
         container = converter.convert(modified_md, caption_map=caption_map)
+        _assert_all_blocks_have_data(container)
         assert _blocks_by_type(container, BlockType.IMAGE) == []
 
 
@@ -839,6 +951,7 @@ class TestMixedContentOrder:
         )
         container = converter.convert(markdown)
 
+        _assert_all_blocks_have_data(container)
         assert len(_groups_by_type(container, GroupType.TEXT_SECTION)) == 1
         assert len(_groups_by_type(container, GroupType.TABLE)) == 1
         assert len(_groups_by_type(container, GroupType.LIST)) == 1
@@ -856,6 +969,7 @@ class TestMixedContentOrder:
 
 class TestMarkdownItParserIntegration:
     def test_parse_to_blocks_delegates_to_converter(self):
+        pytest.importorskip("markdown")
         from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
 
         parser = MarkdownItParser()
@@ -868,6 +982,7 @@ class TestMarkdownItParserIntegration:
         parser._converter.convert.assert_called_once_with(
             "# Hello",
             caption_map={"Image_1": "uri"},
+            page_number=None,
         )
 
 
@@ -959,16 +1074,21 @@ class TestInlineRendering:
             "**Bold** ![Image_1](https://example.com/a.png)\n",
             caption_map={"Image_1": "data:image/png;base64,abc"},
         )
+        assert len(container.blocks) == 2
         text_block = container.blocks[0]
+        assert text_block.type == BlockType.TEXT
         assert text_block.format == DataFormat.MARKDOWN
-        assert text_block.data == "**Bold**"
-        assert container.blocks[1].type == BlockType.IMAGE
-        assert container.blocks[1].format == DataFormat.BASE64
+        assert text_block.data.strip() == "**Bold**"
+        assert text_block.parent_block_index is None
+        image_block = container.blocks[1]
+        assert image_block.type == BlockType.IMAGE
+        assert image_block.format == DataFormat.BASE64
+        assert image_block.parent_block_index is None
 
     def test_hard_line_break_renders_as_newline(self, converter: MarkdownToBlocksConverter):
         container = converter.convert("Line one  \nLine two\n")
         block = container.blocks[0]
-        assert block.format == DataFormat.TXT
+        assert block.format == DataFormat.MARKDOWN
         assert "Line one\nLine two" in block.data
 
 
@@ -1009,6 +1129,111 @@ class TestTableEdgeCases:
         walker._finish_table()
         assert len(walker.blocks) == 1
         assert walker.blocks[0].data["cells"] == ["1"]
+
+
+class TestSplitRawMarkdownIntoSegments:
+    def test_markdown_image_splits_text(self):
+        segments = _split_raw_markdown_into_segments("before ![alt](url) after")
+        assert [(s.kind, s.text or s.alt_text) for s in segments] == [
+            ("text", "before "),
+            ("image", "alt"),
+            ("text", " after"),
+        ]
+
+    def test_html_img_tag_splits_text(self):
+        segments = _split_raw_markdown_into_segments(
+            'text <img alt="Image_1" src="x"> more'
+        )
+        assert [(s.kind, s.text or s.alt_text) for s in segments] == [
+            ("text", "text "),
+            ("image", "Image_1"),
+            ("text", " more"),
+        ]
+
+    def test_empty_string_returns_no_segments(self):
+        assert _split_raw_markdown_into_segments("") == []
+        assert _split_raw_markdown_into_segments("   ") == []
+
+
+class TestBlockDataNeverNone:
+    """Emitted blocks must always carry data; empty text containers use ""."""
+
+    @pytest.mark.parametrize(
+        ("markdown", "caption_map"),
+        [
+            (
+                "- item ![Image_1](https://example.com/a.png) tail\n",
+                {"Image_1": "data:image/png;base64,IMG"},
+            ),
+            (
+                "> quote ![Image_1](https://example.com/a.png)\n",
+                {"Image_1": "data:image/png;base64,IMG"},
+            ),
+            (
+                "| A | B |\n| --- | --- |\n| x | ![Image_1](https://example.com/a.png) |\n",
+                {"Image_1": "data:image/png;base64,IMG"},
+            ),
+            ("- ![Image_1](https://example.com/a.png)\n", {}),
+        ],
+    )
+    def test_image_split_outputs_never_have_none_data(
+        self,
+        converter: MarkdownToBlocksConverter,
+        markdown: str,
+        caption_map: dict[str, str],
+    ) -> None:
+        container = converter.convert(markdown, caption_map=caption_map)
+        _assert_all_blocks_have_data(container)
+        for block in container.blocks:
+            if _is_empty_split_container(block) and block.type == BlockType.TEXT:
+                assert block.data == ""
+
+    def test_unsplit_document_never_has_none_data(
+        self, converter: MarkdownToBlocksConverter
+    ) -> None:
+        markdown = (
+            "# Report\n\n"
+            "Plain paragraph.\n\n"
+            "| Metric | Value |\n| --- | --- |\n| Users | 10 |\n\n"
+            "- action item\n"
+        )
+        container = converter.convert(markdown)
+        _assert_all_blocks_have_data(container)
+
+
+class TestImageSplitContainers:
+    def test_image_only_list_item_emits_image_block_with_list_item_sub_type(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        container = converter.convert(
+            "- ![Image_1](https://example.com/img.png)\n",
+            caption_map={"Image_1": "data:image/png;base64,LISTIMG"},
+        )
+        list_containers = _split_container_blocks(container, BlockSubType.LIST_ITEM)
+        image_blocks = _blocks_by_type(container, BlockType.IMAGE)
+
+        assert list_containers == []
+        assert len(image_blocks) == 1
+        assert image_blocks[0].sub_type == BlockSubType.LIST_ITEM
+        assert image_blocks[0].parent_block_index is None
+        assert image_blocks[0].data == {"uri": "data:image/png;base64,LISTIMG"}
+
+    def test_image_split_table_row_container_carries_only_row_number(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        markdown = (
+            "| Name | Icon |\n"
+            "| --- | --- |\n"
+            "| Connectors | ![Image_1](https://example.com/icon.png) |\n"
+        )
+        container = converter.convert(
+            markdown,
+            caption_map={"Image_1": "data:image/png;base64,TABLEIMG"},
+        )
+        row_container = _blocks_by_type(container, BlockType.TABLE_ROW)[0]
+        assert row_container.data == {"row_number": 1}
+        assert row_container.data is not None
+        assert _is_empty_split_container(row_container)
 
 
 class TestTokenWalkerUtilities:
@@ -1105,10 +1330,40 @@ class TestTokenWalkerUtilities:
         inline = Token("inline", "", 0)
         inline.content = "  plain  "
         inline.children = None
-        text, images, fmt = walker._split_inline_content(inline)
+        text, fmt = walker._split_inline_content(inline)
         assert text == "plain"
-        assert images == []
-        assert fmt == DataFormat.TXT
+        assert fmt == DataFormat.MARKDOWN
+
+    def test_split_inline_into_segments_with_markdown_image(self):
+        walker = _TokenWalker("")
+        inline = Token("inline", "", 0)
+        inline.children = [
+            Token("text", "", 0),
+            Token("image", "img", 0),
+            Token("text", "", 0),
+        ]
+        inline.children[0].content = "See "
+        inline.children[1].content = "Image_1"
+        inline.children[2].content = " here"
+        segments = walker._split_inline_into_segments(inline)
+        assert [(s.kind, s.text or s.alt_text) for s in segments] == [
+            ("text", "See "),
+            ("image", "Image_1"),
+            ("text", " here"),
+        ]
+
+    def test_split_inline_into_segments_with_html_img_inline(self):
+        walker = _TokenWalker("")
+        inline = Token("inline", "", 0)
+        html = Token("html_inline", "", 0)
+        html.content = '<img alt="Image_1" src="x">'
+        inline.children = [Token("text", "", 0), html]
+        inline.children[0].content = "Before "
+        segments = walker._split_inline_into_segments(inline)
+        assert [(s.kind, s.text or s.alt_text) for s in segments] == [
+            ("text", "Before "),
+            ("image", "Image_1"),
+        ]
 
     def test_render_inline_markdown_softbreak_and_hardbreak(self):
         walker = _TokenWalker("")
@@ -1218,3 +1473,32 @@ class TestTokenWalkerUtilities:
         index = walker._process_token(tokens, 0)
         assert index == 1
         assert walker.table_state.current_row == [_TableCell(plain="", markdown="")]
+
+
+class TestLongTextSplitting:
+    def test_oversized_paragraph_splits_into_multiple_blocks(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        long_sentence = "A" * 600_000 + "."
+        markdown = long_sentence + " " + ("B" * 600_000 + ".")
+        container = converter.convert(markdown)
+
+        text_blocks = _blocks_by_type(container, BlockType.TEXT)
+        assert len(text_blocks) >= 2
+        assert all(
+            isinstance(block.data, str) and len(block.data) <= 500_000
+            for block in text_blocks
+        )
+
+    def test_oversized_blockquote_uses_container_and_fragments(
+        self, converter: MarkdownToBlocksConverter
+    ):
+        long_text = ("Quote sentence. " * 80_000).strip()
+        container = converter.convert(f"> {long_text}")
+
+        text_blocks = _blocks_by_type(container, BlockType.TEXT)
+        containers = [b for b in text_blocks if b.data == ""]
+        fragments = [b for b in text_blocks if b.parent_block_index is not None]
+        assert containers
+        assert len(fragments) >= 2
+        assert all(len(block.data) <= 500_000 for block in fragments)

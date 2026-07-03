@@ -24,6 +24,7 @@ def _make_tx_store():
     store.get_edge = AsyncMock(return_value=None)
     store.get_edges_from_node_with_target_name = AsyncMock(return_value=[])
     store.batch_upsert_nodes = AsyncMock()
+    store.batch_update_nodes = AsyncMock(return_value=True)
     store.batch_create_edges = AsyncMock()
     store.batch_delete_edges = AsyncMock(return_value=0)
     return store
@@ -104,9 +105,9 @@ class TestApplyMetadataIsNone:
 
         await transformer.apply(ctx)
 
-        # Verify batch_upsert_nodes was called with FAILED status
-        tx_store.batch_upsert_nodes.assert_awaited_once()
-        call_args = tx_store.batch_upsert_nodes.call_args
+        # Verify batch_update_nodes was called with FAILED status
+        tx_store.batch_update_nodes.assert_awaited_once()
+        call_args = tx_store.batch_update_nodes.call_args
         status_doc = call_args[0][0][0]
         assert status_doc["extractionStatus"] == "FAILED"
         assert status_doc["indexingStatus"] == "COMPLETED"
@@ -117,7 +118,7 @@ class TestApplyMetadataIsNone:
     async def test_raises_on_transaction_error(self):
         transformer = _make_transformer()
         tx_store = _make_tx_store()
-        tx_store.batch_upsert_nodes.side_effect = Exception("DB error")
+        tx_store.batch_update_nodes.side_effect = Exception("DB error")
 
         transformer.graph_data_store.transaction = MagicMock()
         ctx_mgr = AsyncMock()
@@ -355,13 +356,12 @@ class TestSaveMetadataToDb:
         )
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # Should have called batch_upsert_nodes for:
-        # category, sub1, sub2, sub3, and status doc = at least 5
+        # Should have called batch_upsert_nodes for category/subcategory nodes
         assert tx_store.batch_upsert_nodes.await_count >= 4
 
     @pytest.mark.asyncio
     async def test_status_doc_completed(self):
-        """After successful save, should upsert extraction status as COMPLETED."""
+        """After successful save, should update extraction status as COMPLETED."""
         tx_store = _make_tx_store()
         tx_store.get_nodes_by_filters.return_value = []
         transformer, _ = self._setup_transformer_with_tx(tx_store)
@@ -369,9 +369,9 @@ class TestSaveMetadataToDb:
         metadata = _make_semantic_metadata(categories=["General"])
         await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
 
-        # The last batch_upsert_nodes call should be the status doc
-        last_call = tx_store.batch_upsert_nodes.call_args_list[-1]
-        status_doc = last_call[0][0][0]
+        # The batch_update_nodes call should be the status doc
+        status_call = tx_store.batch_update_nodes.call_args
+        status_doc = status_call[0][0][0]
         assert status_doc["extractionStatus"] == "COMPLETED"
         assert status_doc["indexingStatus"] == "COMPLETED"
         assert status_doc["isDirty"] is False
@@ -388,8 +388,7 @@ class TestSaveMetadataToDb:
             "rec-1", metadata, "vr-1", is_vlm_ocr_processed=True
         )
 
-        last_call = tx_store.batch_upsert_nodes.call_args_list[-1]
-        status_doc = last_call[0][0][0]
+        status_doc = tx_store.batch_update_nodes.call_args[0][0][0]
         assert status_doc.get("isVLMOcrProcessed") is True
 
     @pytest.mark.asyncio
@@ -404,8 +403,7 @@ class TestSaveMetadataToDb:
             "rec-1", metadata, "vr-1", is_vlm_ocr_processed=False
         )
 
-        last_call = tx_store.batch_upsert_nodes.call_args_list[-1]
-        status_doc = last_call[0][0][0]
+        status_doc = tx_store.batch_update_nodes.call_args[0][0][0]
         assert "isVLMOcrProcessed" not in status_doc
 
     @pytest.mark.asyncio

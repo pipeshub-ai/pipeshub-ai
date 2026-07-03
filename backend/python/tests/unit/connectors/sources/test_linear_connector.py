@@ -797,7 +797,7 @@ class TestLinearTransformIssueToTicketRecord:
         c = _make_connector_cov()
         issue = _make_issue_data()
         ticket = c._transform_issue_to_ticket_record(issue, "team-1")
-        assert ticket.record_name == "Test Issue"
+        assert ticket.record_name == "[ENG-1] Test Issue"
         assert ticket.record_type == RecordType.TICKET
         assert ticket.external_record_id == "issue-1"
         assert ticket.external_record_group_id == "team-1"
@@ -4672,7 +4672,7 @@ class TestTransformIssueToTicketRecord:
         connector = _make_connector_fullcov()
         issue_data = _make_issue_data_fullcov()
         ticket = connector._transform_issue_to_ticket_record(issue_data, "team-1")
-        assert ticket.record_name == "Test Issue"
+        assert ticket.record_name == "[ENG-1] Test Issue"
         assert ticket.external_record_id == "issue-1"
         assert ticket.record_type == RecordType.TICKET
         assert ticket.version == 0

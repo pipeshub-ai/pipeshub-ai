@@ -16,6 +16,8 @@ const LLM_PROVIDER_ICON_FILE: Record<string, string> = {
   cohere: 'cohere-color.svg',
   bedrock: 'bedrock-color.svg',
   ollama: 'ollama.svg',
+  lmStudio: 'lm-studio.svg',
+  litellmProxy: 'litellm.svg',
   openAICompatible: 'openai.svg',
   together: 'together-color.svg',
   anthropic: 'claude-color.svg',

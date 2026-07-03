@@ -359,6 +359,28 @@ describe('uploadRecords — KB existence and write-permission pre-check', () => 
     const errorCallArgs = next.args.find((a: any[]) => a[0] instanceof Error)
     expect(errorCallArgs).to.be.undefined
   })
+
+  it('defaults isVersioned to true when omitted from request body', async () => {
+    stubConnectorCalls([{ statusCode: 200, data: { userRole: 'OWNER' } }])
+    const placeholderStub = sinon.stub(kbUtils, 'createPlaceholderDocument').resolves({
+      documentId: 'doc-1',
+      documentName: 'test',
+    })
+    sinon.stub(kbUtils, 'processUploadsInBackground').resolves()
+
+    const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
+    const req = createMockRequest({
+      params: { kbId: 'kb-1' },
+      body: { fileBuffers: SINGLE_FILE },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(placeholderStub.calledOnce).to.be.true
+    expect(placeholderStub.firstCall.args[3]).to.be.true
+  })
 })
 
 // ---------------------------------------------------------------------------

@@ -1031,6 +1031,70 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Update node failed: {str(e)}")
             raise
 
+    async def batch_update_nodes(
+        self,
+        nodes: list[dict],
+        collection: str,
+        transaction: str | None = None
+    ) -> bool | None:
+        """
+        Batch update existing nodes only.
+        
+        This method ONLY updates nodes that already exist. It does NOT create new nodes.
+        Uses Neo4j MATCH + SET to ensure no accidental node creation.
+
+        Args:
+            nodes: List of node documents (with 'id' or '_key' field)
+            collection: Collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[bool]: True if successful, False if any updates failed
+        """
+        try:
+            if not nodes:
+                return True
+
+            label = collection_to_label(collection)
+            
+            # Convert nodes to Neo4j format and validate
+            neo4j_nodes = []
+            for node in nodes:
+                neo4j_node = self._arango_to_neo4j_node(node, collection)
+                self.validator.validate_node_update(collection, neo4j_node)
+                neo4j_nodes.append(neo4j_node)
+
+            # Use UNWIND to batch update multiple nodes
+            # MATCH ensures we only update existing nodes (no CREATE)
+            query = f"""
+            UNWIND $nodes AS node_data
+            MATCH (n:{label} {{id: node_data.id}})
+            SET n += node_data
+            RETURN n
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"nodes": neo4j_nodes},
+                txn_id=transaction
+            )
+
+            # Check if all updates succeeded
+            if results is not None and isinstance(results, list):
+                if len(results) != len(neo4j_nodes):
+                    self.logger.warning(
+                        f"⚠️ Batch update failed: {len(results)}/{len(neo4j_nodes)} nodes updated. "
+                        f"{len(neo4j_nodes) - len(results)} nodes may not exist in the database."
+                    )
+                    return False  # Return False if not all updates succeeded
+                return True  # All updates succeeded
+            
+            return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Batch update nodes failed: {str(e)}")
+            raise
+
     # ==================== Edge Operations ====================
 
     async def batch_create_edges(
@@ -3602,6 +3666,9 @@ class Neo4jProvider(IGraphDBProvider):
 
             for queued_record in queued_records:
                 doc = dict(queued_record)
+                record_key = doc.get("_key") or doc.get("id")
+                if not record_key:
+                    continue
 
                 # Map indexing status to extraction status
                 # For EMPTY status, extraction status should also be EMPTY, not FAILED
@@ -3612,19 +3679,27 @@ class Neo4jProvider(IGraphDBProvider):
                 else:
                     extraction_status = ProgressStatus.FAILED.value
 
-                update_data = {
+                updated_records.append({
+                    "id": record_key,
                     "indexingStatus": new_indexing_status,
                     "lastIndexTimestamp": current_timestamp,
                     "isDirty": False,
                     "virtualRecordId": virtual_record_id,
                     "extractionStatus": extraction_status,
-                }
+                })
 
-                doc.update(update_data)
-                updated_records.append(doc)
+            if not updated_records:
+                return 0
 
-            # Batch update all queued records
-            await self.batch_upsert_nodes(updated_records, CollectionNames.RECORDS.value, transaction)
+            success = await self.batch_update_nodes(
+                updated_records, CollectionNames.RECORDS.value, transaction
+            )
+            if not success:
+                self.logger.warning(
+                    "⚠️ Failed to update queued duplicate records for %s - some records may not exist",
+                    record_id,
+                )
+                return -1
 
             self.logger.debug(
                 f"✅ Successfully updated {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
@@ -6798,64 +6873,6 @@ class Neo4jProvider(IGraphDBProvider):
             # On error, allow the operation (fail-open to avoid blocking)
             return True
 
-    async def batch_update_nodes(
-        self,
-        node_ids: list[str],
-        updates: dict[str, Any],
-        collection: str,
-        transaction: str | None = None
-    ) -> bool:
-        """
-        Batch update multiple nodes with the same updates.
-
-        Args:
-            node_ids (List[str]): List of node IDs to update
-            updates (Dict[str, Any]): Dictionary of fields to update
-            collection (str): Collection name
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            self.logger.debug(f"🚀 Batch updating {len(node_ids)} nodes in {collection}")
-
-            label = self._get_label(collection)
-
-            # Build SET clause from updates
-            set_clauses = []
-            parameters = {"node_ids": node_ids}
-            for i, (key, value) in enumerate(updates.items()):
-                param_name = f"update_{i}"
-                set_clauses.append(f"doc.{key} = ${param_name}")
-                parameters[param_name] = value
-
-            set_clause = ", ".join(set_clauses)
-
-            query = f"""
-            MATCH (doc:{label})
-            WHERE doc.id IN $node_ids
-            SET {set_clause}
-            RETURN doc.id AS id
-            """
-
-            results = await self.client.execute_query(
-                query,
-                parameters=parameters,
-                txn_id=transaction
-            )
-
-            if results:
-                self.logger.debug(f"✅ Successfully batch updated {len(results)} nodes")
-                return True
-            else:
-                self.logger.warning("⚠️ No nodes were updated")
-                return False
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to batch update nodes: {str(e)}")
-            return False
-
     async def get_connector_instances_with_filters(
         self,
         collection: str,
@@ -8892,6 +8909,7 @@ class Neo4jProvider(IGraphDBProvider):
             RETURN {{
                 id: kb.id,
                 name: COALESCE(kb.groupName, 'Untitled'),
+                connectorId: kb.connectorId,
                 createdAtTimestamp: kb.createdAtTimestamp,
                 updatedAtTimestamp: kb.updatedAtTimestamp,
                 createdBy: kb.createdBy,

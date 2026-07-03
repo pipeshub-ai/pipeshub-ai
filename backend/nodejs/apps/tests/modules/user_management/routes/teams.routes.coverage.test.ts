@@ -58,14 +58,6 @@ describe('Teams Routes - handler coverage', () => {
       await handler({ body: { name: 'Team1' } } as any, mockRes(), sinon.stub())
       expect(mockTeamsController.createTeam.calledOnce).to.be.true
     })
-
-    it('should call next on error', async () => {
-      mockTeamsController.createTeam.rejects(new Error('Create failed'))
-      const handler = findHandler('/', 'post')
-      const next = sinon.stub()
-      await handler({} as any, mockRes(), next)
-      expect(next.calledOnce).to.be.true
-    })
   })
 
   describe('GET /user/teams handler', () => {

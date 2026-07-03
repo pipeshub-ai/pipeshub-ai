@@ -3778,43 +3778,47 @@ class TestToolExecutorValidateAndNormalizeArgs:
     async def test_no_schema_returns_args_as_is(self):
         tool = _make_mock_tool()
         tool.args_schema = None
-        result = await ToolExecutor._validate_and_normalize_args(
+        args, err = await ToolExecutor._validate_and_normalize_args(
             tool, "test", {"key": "val"}, _mock_log()
         )
-        assert result == {"key": "val"}
+        assert err is None
+        assert args == {"key": "val"}
 
     @pytest.mark.asyncio
     async def test_valid_args_validated(self):
         schema = _make_pydantic_schema(query=str)
         tool = _make_mock_tool(schema=schema)
-        result = await ToolExecutor._validate_and_normalize_args(
+        args, err = await ToolExecutor._validate_and_normalize_args(
             tool, "test", {"query": "hello"}, _mock_log()
         )
-        assert result is not None
-        assert result["query"] == "hello"
+        assert err is None
+        assert args is not None
+        assert args["query"] == "hello"
 
     @pytest.mark.asyncio
     async def test_missing_required_returns_none(self):
         schema = _make_pydantic_schema(query=str)
         tool = _make_mock_tool(schema=schema)
-        result = await ToolExecutor._validate_and_normalize_args(
+        args, err = await ToolExecutor._validate_and_normalize_args(
             tool, "test", {}, _mock_log()
         )
-        # Pydantic will raise a validation error -> returns None
-        assert result is None
+        assert args is None
+        assert err is not None
+        assert "query" in err
 
     @pytest.mark.asyncio
     async def test_extra_args_with_model_validate(self):
         """Extra args should be handled based on Pydantic model config."""
         schema = _make_pydantic_schema(query=str)
         tool = _make_mock_tool(schema=schema)
-        result = await ToolExecutor._validate_and_normalize_args(
+        args, err = await ToolExecutor._validate_and_normalize_args(
             tool, "test", {"query": "hello", "extra": "value"}, _mock_log()
         )
         # By default Pydantic ignores extra fields in model_validate;
         # model_dump(exclude_unset=True) returns only 'query'
-        assert result is not None
-        assert "query" in result
+        assert err is None
+        assert args is not None
+        assert "query" in args
 
 
 # ============================================================================
@@ -3838,6 +3842,24 @@ class TestToolExecutorExecuteSingleTool:
         assert result["status"] == "success"
         assert result["tool_name"] == "jira.create_issue"
         assert "duration_ms" in result
+
+    @pytest.mark.asyncio
+    async def test_validation_failure_includes_detail_in_result(self):
+        """Pydantic ValidationError detail is passed to the LLM via tool result text."""
+        schema = _make_pydantic_schema(query=str)
+        tool = _make_mock_tool(schema=schema)
+        out = await ToolExecutor._execute_single_tool(
+            tool=tool,
+            tool_name="bad.tool",
+            tool_args={},
+            tool_id="call_0_bad.tool",
+            state={},
+            log=_mock_log(),
+        )
+        assert out["status"] == "error"
+        assert "Invalid tool arguments for bad.tool" in out["result"]
+        assert "query" in out["result"]
+        tool.arun.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_timeout_error(self):
@@ -3895,7 +3917,7 @@ class TestToolExecutorExecuteSingleTool:
             log=_mock_log()
         )
         assert result["status"] == "error"
-        assert "validation failed" in result["result"].lower()
+        assert "invalid tool arguments" in result["result"].lower()
 
     @pytest.mark.asyncio
     async def test_exception_handling(self):

@@ -8,6 +8,7 @@ from aiokafka import AIOKafkaProducer  # type: ignore
 
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.config.kafka_config import KafkaProducerConfig
+from app.utils.request_context import inject_envelope
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -117,6 +118,7 @@ class KafkaMessagingProducer(IMessagingProducer):
             if self.producer is None:
                 await self.initialize()
 
+            message = inject_envelope(message)
             message_value = json.dumps(message).encode('utf-8')
             message_key = key.encode('utf-8') if key else None
 

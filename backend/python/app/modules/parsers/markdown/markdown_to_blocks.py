@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Literal
 from uuid import uuid4
 
 from markdown_it import MarkdownIt
@@ -14,6 +15,7 @@ from app.models.blocks import (
     BlocksContainer,
     BlockSubType,
     BlockType,
+    CitationMetadata,
     CodeMetadata,
     DataFormat,
     GroupSubType,
@@ -21,16 +23,34 @@ from app.models.blocks import (
     ImageMetadata,
     TableMetadata,
 )
+from app.modules.parsers.text_splitting import split_long_text
 
 _MD_IMAGE_RE = re.compile(r'!\[([^\]]*)\]\(([^\s)]+)(?:\s+"[^"]*")?\)')
-_HTML_IMG_ALT_RE = re.compile(r'<img\s[^>]*alt=["\']([^"\']*)["\']', re.IGNORECASE)
+_HTML_IMG_ALT_RE = re.compile(
+    r'<img\s[^>]*alt=["\']([^"\']*)["\'][^>]*>', re.IGNORECASE
+)
+_LIST_MARKER_RE = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+")
+
+
+def _strip_list_marker(raw: str) -> str:
+    """Strip the leading bullet/ordered list marker from a list item's raw slice.
+
+    ``token.map`` covers the whole item *including* the ``- `` / ``1. `` prefix,
+    so the marker would otherwise leak into the first text segment as a
+    standalone fragment. Only the first line's marker is stripped; nested
+    markers on later lines stay (they are handled when that nested item is
+    suppressed by ``_skip_structural_emission``).
+    """
+    if not raw:
+        return raw
+    return _LIST_MARKER_RE.sub("", raw, count=1)
 
 
 @dataclass
-class _OpenGroup:
-    index: int
-    child_block_indices: list[int] = field(default_factory=list)
-    child_group_indices: list[int] = field(default_factory=list)
+class _Segment:
+    kind: Literal["text", "image"]
+    text: str = ""
+    alt_text: str = ""
 
 
 @dataclass
@@ -38,6 +58,93 @@ class _TableCell:
     plain: str
     markdown: str
     images: list[Token] = field(default_factory=list)
+
+
+def _next_image_match(text: str, start: int) -> re.Match[str] | None:
+    md_match = _MD_IMAGE_RE.search(text, start)
+    html_match = _HTML_IMG_ALT_RE.search(text, start)
+    if md_match is None:
+        return html_match
+    if html_match is None:
+        return md_match
+    return md_match if md_match.start() <= html_match.start() else html_match
+
+
+def _image_alt_from_match(match: re.Match[str]) -> str:
+    return match.group(1)
+
+
+def _split_raw_markdown_into_segments(raw: str) -> list[_Segment]:
+    """Split raw markdown/HTML into ordered text and image segments."""
+    if not raw:
+        return []
+
+    segments: list[_Segment] = []
+    pos = 0
+    while pos < len(raw):
+        match = _next_image_match(raw, pos)
+        if match is None:
+            tail = raw[pos:]
+            if tail.strip():
+                segments.append(_Segment(kind="text", text=tail))
+            break
+
+        before = raw[pos:match.start()]
+        if before.strip():
+            segments.append(_Segment(kind="text", text=before))
+
+        segments.append(_Segment(kind="image", alt_text=_image_alt_from_match(match)))
+        pos = match.end()
+
+    return segments
+
+
+def _split_cell_into_segments(cell: _TableCell) -> list[_Segment]:
+    if (
+        not cell.images
+        and not _MD_IMAGE_RE.search(cell.markdown)
+        and not _HTML_IMG_ALT_RE.search(cell.markdown)
+    ):
+        value = (cell.plain or cell.markdown).strip()
+        return [_Segment(kind="text", text=value)] if value else []
+    return _split_raw_markdown_into_segments(cell.markdown)
+
+
+def _strip_inline_images_from_markdown(text: str) -> str:
+    """Return *text* with markdown/HTML inline images removed (text segments only)."""
+    if not text:
+        return ""
+    if not _MD_IMAGE_RE.search(text) and not _HTML_IMG_ALT_RE.search(text):
+        return text.strip()
+    parts = [
+        seg.text.strip()
+        for seg in _split_raw_markdown_into_segments(text)
+        if seg.kind == "text" and seg.text.strip()
+    ]
+    return " ".join(parts).strip()
+
+
+def _table_cell_text_without_images(cell: _TableCell) -> str:
+    """Return table cell text with inline images stripped (for header labels)."""
+    has_images = bool(
+        cell.images
+        or _MD_IMAGE_RE.search(cell.markdown or "")
+        or _HTML_IMG_ALT_RE.search(cell.markdown or "")
+    )
+    if cell.markdown:
+        stripped = _strip_inline_images_from_markdown(cell.markdown)
+        if stripped or has_images:
+            return stripped
+    if has_images:
+        return ""
+    return (cell.plain or "").strip()
+
+
+@dataclass
+class _OpenGroup:
+    index: int
+    child_block_indices: list[int] = field(default_factory=list)
+    child_group_indices: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -52,6 +159,15 @@ class _TableState:
 _PLAIN_INLINE_CHILD_TYPES = frozenset({"text", "softbreak", "hardbreak"})
 
 
+def _apply_page_number_to_container(
+    container: BlocksContainer, page_number: int
+) -> None:
+    for block in container.blocks:
+        block.citation_metadata = CitationMetadata(page_number=page_number)
+    for group in container.block_groups:
+        group.citation_metadata = CitationMetadata(page_number=page_number)
+
+
 class MarkdownToBlocksConverter:
     """Convert Markdown content directly into BlocksContainer without Docling."""
 
@@ -62,6 +178,7 @@ class MarkdownToBlocksConverter:
         self,
         markdown_content: str,
         caption_map: dict[str, str] | None = None,
+        page_number: int | None = None,
     ) -> BlocksContainer:
         """Convert Markdown to a BlocksContainer.
 
@@ -82,7 +199,10 @@ class MarkdownToBlocksConverter:
             markdown_content=markdown_content,
             caption_map=caption_map,
         )
-        return walker.walk(tokens)
+        container = walker.walk(tokens)
+        if page_number is not None:
+            _apply_page_number_to_container(container, page_number)
+        return container
 
 
 class _TokenWalker:
@@ -241,17 +361,38 @@ class _TokenWalker:
             if not self._skip_structural_emission():
                 raw_markdown = self._slice_token_map(token)
                 if raw_markdown:
-                    self._add_block(
-                        Block(
-                            id=str(uuid4()),
-                            type=BlockType.TEXT,
+                    # token.map covers the bullet/ordinal marker too; drop it
+                    # so the "- " prefix does not leak into the first text
+                    # fragment (and become a standalone "- " block when the
+                    # item is image-only).
+                    stripped = _strip_list_marker(raw_markdown)
+                    segments = _split_raw_markdown_into_segments(stripped)
+                    if (
+                        len(segments) == 1
+                        and segments[0].kind == "image"
+                    ):
+                        # Image-only list item: skip the empty container +
+                        # fragmentation and emit a single IMAGE block whose
+                        # sub_type marks it as the list item itself.
+                        if image_block := self._build_image_block(
+                            segments[0].alt_text,
+                            sub_type=BlockSubType.LIST_ITEM,
+                        ):
+                            self._add_block(image_block)
+                        else:
+                            self._emit_with_image_splits(
+                                block_type=BlockType.TEXT,
+                                sub_type=BlockSubType.LIST_ITEM,
+                                format=DataFormat.MARKDOWN,
+                                segments=segments,
+                            )
+                    else:
+                        self._emit_with_image_splits(
+                            block_type=BlockType.TEXT,
                             sub_type=BlockSubType.LIST_ITEM,
                             format=DataFormat.MARKDOWN,
-                            data=raw_markdown,
-                            parent_index=self._current_parent_index(),
+                            segments=segments,
                         )
-                    )
-                    self._emit_images_from_raw_markdown(raw_markdown)
             self.list_item_depth += 1
             return index
 
@@ -270,17 +411,12 @@ class _TokenWalker:
                 self._open_group(GroupType.TEXT_SECTION, GroupSubType.QUOTE)
                 raw_markdown = self._slice_token_map(token)
                 if raw_markdown:
-                    self._add_block(
-                        Block(
-                            id=str(uuid4()),
-                            type=BlockType.TEXT,
-                            sub_type=BlockSubType.QUOTE,
-                            format=DataFormat.MARKDOWN,
-                            data=raw_markdown,
-                            parent_index=self._current_parent_index(),
-                        )
+                    self._emit_with_image_splits(
+                        block_type=BlockType.TEXT,
+                        sub_type=BlockSubType.QUOTE,
+                        format=DataFormat.MARKDOWN,
+                        segments=_split_raw_markdown_into_segments(raw_markdown),
                     )
-                    self._emit_images_from_raw_markdown(raw_markdown)
             self.blockquote_depth += 1
             return index
 
@@ -433,15 +569,11 @@ class _TokenWalker:
         if not content:
             return
         self._open_group(GroupType.TEXT_SECTION)
-        self._add_block(
-            Block(
-                id=str(uuid4()),
-                type=BlockType.TEXT,
-                sub_type=BlockSubType.PARAGRAPH,
-                format=DataFormat.HTML,
-                data=content,
-                parent_index=self._current_parent_index(),
-            )
+        self._emit_with_image_splits(
+            block_type=BlockType.TEXT,
+            sub_type=BlockSubType.PARAGRAPH,
+            format=DataFormat.HTML,
+            segments=_split_raw_markdown_into_segments(content),
         )
         self._close_group()
 
@@ -450,22 +582,25 @@ class _TokenWalker:
         inline_token: Token,
         sub_type: BlockSubType,
     ) -> None:
-        text, image_tokens, data_format = self._split_inline_content(inline_token)
-
-        if text:
-            self._add_block(
-                Block(
-                    id=str(uuid4()),
-                    type=BlockType.TEXT,
+        segments = self._split_inline_into_segments(inline_token)
+        if not any(seg.kind == "image" for seg in segments):
+            text, data_format = self._split_inline_content(inline_token)
+            if text:
+                self._emit_text_chunks(
+                    text=text,
+                    block_type=BlockType.TEXT,
                     sub_type=sub_type,
                     format=data_format,
-                    data=text,
-                    parent_index=self._current_parent_index(),
                 )
-            )
+            return
 
-        for image_token in image_tokens:
-            self._add_image_block(image_token)
+        data_format = self._inline_segments_format(inline_token)
+        self._emit_with_image_splits(
+            block_type=BlockType.TEXT,
+            sub_type=sub_type,
+            format=data_format,
+            segments=segments,
+        )
 
     def _add_paragraph_with_heading(
         self,
@@ -473,36 +608,35 @@ class _TokenWalker:
         heading_inline: Token,
         paragraph_inline: Token,
     ) -> None:
-        """Emit a single PARAGRAPH block whose data is the heading prefix
-        followed by the paragraph content.  The result is always MARKDOWN
-        format because the heading syntax (``# …``) is markdown markup."""
-        heading_text, heading_images, _ = self._split_inline_content(heading_inline)
-        para_text, para_images, _ = self._split_inline_content(paragraph_inline)
-
-        prefix = "#" * heading_level + " " + heading_text if heading_text else ""
-        if prefix and para_text:
-            merged = prefix + "\n" + para_text
-        elif prefix:
-            merged = prefix
-        else:
-            merged = para_text
-
-        if merged:
-            self._add_block(
-                Block(
-                    id=str(uuid4()),
-                    type=BlockType.TEXT,
+        """Emit a PARAGRAPH block (or split container) with heading prefix and body."""
+        segments = self._merge_heading_paragraph_segments(
+            heading_level, heading_inline, paragraph_inline
+        )
+        if not any(seg.kind == "image" for seg in segments):
+            heading_text, _ = self._split_inline_content(heading_inline)
+            para_text, _ = self._split_inline_content(paragraph_inline)
+            prefix = "#" * heading_level + " " + heading_text if heading_text else ""
+            if prefix and para_text:
+                merged = prefix + "\n" + para_text
+            elif prefix:
+                merged = prefix
+            else:
+                merged = para_text
+            if merged:
+                self._emit_text_chunks(
+                    text=merged,
+                    block_type=BlockType.TEXT,
                     sub_type=BlockSubType.PARAGRAPH,
                     format=DataFormat.MARKDOWN,
-                    data=merged,
-                    parent_index=self._current_parent_index(),
                 )
-            )
+            return
 
-        for img in heading_images:
-            self._add_image_block(img)
-        for img in para_images:
-            self._add_image_block(img)
+        self._emit_with_image_splits(
+            block_type=BlockType.TEXT,
+            sub_type=BlockSubType.PARAGRAPH,
+            format=DataFormat.MARKDOWN,
+            segments=segments,
+        )
 
     def _resolve_image_uri(self, alt_text: str) -> str | None:
         if alt_text and alt_text in self.caption_map:
@@ -511,7 +645,13 @@ class _TokenWalker:
                 return uri
         return None
 
-    def _build_image_block(self, alt_text: str) -> Block | None:
+    def _build_image_block(
+        self,
+        alt_text: str,
+        *,
+        parent_block_index: int | None = None,
+        sub_type: BlockSubType | None = None,
+    ) -> Block | None:
         uri = self._resolve_image_uri(alt_text)
         if not uri:
             return None
@@ -526,51 +666,351 @@ class _TokenWalker:
         return Block(
             id=str(uuid4()),
             type=BlockType.IMAGE,
+            sub_type=sub_type,
             format=DataFormat.BASE64,
             data={"uri": uri},
-            parent_index=self._current_parent_index(),
+            parent_index=(
+                None
+                if parent_block_index is not None
+                else self._current_parent_index()
+            ),
+            parent_block_index=parent_block_index,
             image_metadata=ImageMetadata(
                 captions=[alt_text] if alt_text else [],
                 image_format=image_fmt,
             ),
         )
 
-    def _add_image_block(self, image_token: Token) -> None:
-        alt_text = image_token.content
-        if block := self._build_image_block(alt_text):
-            self._add_block(block)
+    def _append_fragment_block(self, block: Block, parent_block_index: int) -> Block:
+        block.parent_block_index = parent_block_index
+        return self._append_block(block)
 
-    def _emit_images_from_raw_markdown(self, raw_markdown: str) -> None:
-        """Scan raw markdown text for image references and emit IMAGE blocks.
+    def _emit_text_chunks(
+        self,
+        *,
+        text: str,
+        block_type: BlockType,
+        sub_type: BlockSubType | None,
+        format: DataFormat,
+        parent_block_index: int | None = None,
+    ) -> Block | None:
+        """Emit one or more TEXT blocks, splitting oversized content at parse time."""
+        if not text or not text.strip():
+            return None
 
-        Used for structures (list items, blockquotes) where the content is
-        captured as a raw slice and inner image tokens are suppressed.
-        Matches both ``![alt](url)`` and ``<img alt="...">`` patterns.
+        chunks = split_long_text(text)
+        if parent_block_index is not None:
+            last: Block | None = None
+            for chunk in chunks:
+                last = self._append_fragment_block(
+                    Block(
+                        id=str(uuid4()),
+                        type=BlockType.TEXT,
+                        format=format,
+                        data=chunk,
+                    ),
+                    parent_block_index,
+                )
+            return last
+
+        if len(chunks) == 1:
+            return self._add_block(
+                Block(
+                    id=str(uuid4()),
+                    type=block_type,
+                    sub_type=sub_type,
+                    format=format,
+                    data=chunks[0],
+                    parent_index=self._current_parent_index(),
+                )
+            )
+
+        if self._uses_image_split_container():
+            container = self._add_block(
+                Block(
+                    id=str(uuid4()),
+                    type=block_type,
+                    sub_type=sub_type,
+                    format=format,
+                    data="",
+                    parent_index=self._current_parent_index(),
+                )
+            )
+            for chunk in chunks:
+                self._append_fragment_block(
+                    Block(
+                        id=str(uuid4()),
+                        type=BlockType.TEXT,
+                        format=format,
+                        data=chunk,
+                    ),
+                    container.index,
+                )
+            return container
+
+        last = None
+        for chunk in chunks:
+            last = self._add_block(
+                Block(
+                    id=str(uuid4()),
+                    type=block_type,
+                    sub_type=sub_type,
+                    format=format,
+                    data=chunk,
+                    parent_index=self._current_parent_index(),
+                )
+            )
+        return last
+
+    def _uses_image_split_container(self) -> bool:
+        """Return True when inline images should use an empty container block.
+
+        Container + ``parent_block_index`` children apply inside list and
+        blockquote groups. Top-level paragraphs emit flat sibling blocks instead.
         """
-        if not self.caption_map:
+        if not self.group_stack:
+            return False
+        group = self.block_groups[self.group_stack[-1].index]
+        if group.type in (GroupType.LIST, GroupType.ORDERED_LIST):
+            return True
+        if group.type == GroupType.TEXT_SECTION and group.sub_type == GroupSubType.QUOTE:
+            return True
+        return False
+
+    def _emit_with_image_splits(
+        self,
+        *,
+        block_type: BlockType,
+        sub_type: BlockSubType | None,
+        format: DataFormat,
+        segments: list[_Segment],
+        container_data: str = "",
+    ) -> None:
+        """Emit blocks from text/image segments.
+
+        Without images: one block with joined text. With images inside a list or
+        quote group: empty container plus TEXT/IMAGE children linked via
+        ``parent_block_index``. Fragment children omit ``sub_type``; only the
+        container carries the parent semantic type (e.g. ``LIST_ITEM``).
+        """
+        has_images = any(seg.kind == "image" for seg in segments)
+        if not has_images:
+            full_text = "".join(seg.text for seg in segments if seg.kind == "text").strip()
+            if not full_text and not container_data:
+                return
+            data = container_data or full_text
+            if isinstance(data, str) and not data.strip():
+                return
+            self._emit_text_chunks(
+                text=data,
+                block_type=block_type,
+                sub_type=sub_type,
+                format=format,
+            )
             return
 
-        seen: set[str] = set()
+        if not self._uses_image_split_container():
+            for seg in segments:
+                if seg.kind == "text":
+                    if not seg.text.strip():
+                        continue
+                    self._emit_text_chunks(
+                        text=seg.text,
+                        block_type=BlockType.TEXT,
+                        sub_type=sub_type,
+                        format=format,
+                    )
+                elif seg.kind == "image":
+                    if image_block := self._build_image_block(seg.alt_text):
+                        self._add_block(image_block)
+            return
 
-        for match in _MD_IMAGE_RE.finditer(raw_markdown):
-            alt_text = match.group(1)
-            if alt_text in seen:
-                continue
-            block = self._build_image_block(alt_text)
-            if block is None:
-                continue
-            seen.add(alt_text)
-            self._add_block(block)
+        container = self._add_block(
+            Block(
+                id=str(uuid4()),
+                type=block_type,
+                sub_type=sub_type,
+                format=format,
+                data=container_data,
+                parent_index=self._current_parent_index(),
+            )
+        )
+        container_index = container.index
 
-        for match in _HTML_IMG_ALT_RE.finditer(raw_markdown):
-            alt_text = match.group(1)
-            if alt_text in seen:
+        for seg in segments:
+            if seg.kind == "text":
+                if not seg.text.strip():
+                    continue
+                self._emit_text_chunks(
+                    text=seg.text,
+                    block_type=BlockType.TEXT,
+                    sub_type=None,
+                    format=format,
+                    parent_block_index=container_index,
+                )
+            elif seg.kind == "image":
+                if image_block := self._build_image_block(
+                    seg.alt_text, parent_block_index=container_index
+                ):
+                    self._append_block(image_block)
+
+    def _merge_heading_paragraph_segments(
+        self,
+        heading_level: int,
+        heading_inline: Token,
+        paragraph_inline: Token,
+    ) -> list[_Segment]:
+        segments = self._split_inline_into_segments(heading_inline)
+        para_segments = self._split_inline_into_segments(paragraph_inline)
+        if segments and segments[0].kind == "text":
+            prefix = "#" * heading_level + " "
+            segments[0].text = prefix + segments[0].text
+        elif heading_level > 0:
+            segments.insert(0, _Segment(kind="text", text="#" * heading_level + " "))
+        if segments and para_segments:
+            last = segments[-1]
+            first_para = para_segments[0]
+            if last.kind == "text" and first_para.kind == "text":
+                last.text = last.text + "\n" + first_para.text
+                segments.extend(para_segments[1:])
+            else:
+                segments.extend(para_segments)
+        else:
+            segments.extend(para_segments)
+        return segments
+
+    def _inline_segments_format(self, inline_token: Token) -> DataFormat:
+        return DataFormat.MARKDOWN
+
+    def _split_inline_into_segments(self, inline_token: Token) -> list[_Segment]:
+        if not inline_token.children:
+            text = inline_token.content.strip()
+            return [_Segment(kind="text", text=text)] if text else []
+
+        segments: list[_Segment] = []
+        text_children: list[Token] = []
+
+        def flush_text_children() -> None:
+            if not text_children:
+                return
+            if self._has_inline_formatting(text_children):
+                rendered = self._render_inline_markdown_from_children(text_children)
+            else:
+                rendered = "".join(self._render_inline(c) for c in text_children)
+            if rendered.strip():
+                segments.append(_Segment(kind="text", text=rendered))
+            text_children.clear()
+
+        for child in inline_token.children:
+            if child.type == "image":
+                flush_text_children()
+                segments.append(_Segment(kind="image", alt_text=child.content))
+            elif child.type == "html_inline":
+                flush_text_children()
+                for html_seg in _split_raw_markdown_into_segments(child.content):
+                    if html_seg.kind == "image":
+                        segments.append(html_seg)
+                    elif html_seg.text.strip():
+                        segments.append(_Segment(kind="text", text=html_seg.text))
+            else:
+                text_children.append(child)
+
+        flush_text_children()
+        return segments
+
+    def _row_has_images(self, row_cells: list[_TableCell]) -> bool:
+        return any(
+            cell.images
+            or _MD_IMAGE_RE.search(cell.markdown)
+            or _HTML_IMG_ALT_RE.search(cell.markdown)
+            for cell in row_cells
+        )
+
+    def _split_table_row_into_segments(
+        self,
+        headers: list[str],
+        row_cells: list[_TableCell],
+    ) -> list[_Segment]:
+        pending_pairs: list[tuple[str, str]] = []
+        fragments: list[_Segment] = []
+
+        def flush_text_fragment() -> None:
+            if not pending_pairs:
+                return
+            hdrs = [pair[0] for pair in pending_pairs]
+            vals = [pair[1] for pair in pending_pairs]
+            text = self._format_table_row(hdrs, vals)
+            if text.strip():
+                fragments.append(_Segment(kind="text", text=text))
+            pending_pairs.clear()
+
+        for col_idx, cell in enumerate(row_cells):
+            header = (
+                headers[col_idx]
+                if col_idx < len(headers)
+                else f"Column {col_idx + 1}"
+            )
+            cell_segments = _split_cell_into_segments(cell)
+            if not any(seg.kind == "image" for seg in cell_segments):
+                value = ""
+                if cell_segments and cell_segments[0].kind == "text":
+                    value = cell_segments[0].text.strip()
+                elif cell.plain:
+                    value = cell.plain.strip()
+                if value:
+                    pending_pairs.append((header, value))
                 continue
-            block = self._build_image_block(alt_text)
-            if block is None:
-                continue
-            seen.add(alt_text)
-            self._add_block(block)
+
+            for seg in cell_segments:
+                if seg.kind == "text":
+                    value = seg.text.strip()
+                    if value:
+                        pending_pairs.append((header, value))
+                else:
+                    flush_text_fragment()
+                    fragments.append(seg)
+
+        flush_text_fragment()
+        return fragments
+
+    def _emit_table_row_with_image_splits(
+        self,
+        *,
+        group_index: int,
+        row_number: int,
+        headers: list[str],
+        row_cells: list[_TableCell],
+        child_block_indices: list[int],
+    ) -> None:
+        segments = self._split_table_row_into_segments(headers, row_cells)
+        container = self._append_block(
+            Block(
+                id=str(uuid4()),
+                type=BlockType.TABLE_ROW,
+                format=DataFormat.JSON,
+                parent_index=group_index,
+                data={"row_number": row_number},
+            )
+        )
+        child_block_indices.append(container.index)
+        container_index = container.index
+
+        for seg in segments:
+            if seg.kind == "text":
+                if not seg.text.strip():
+                    continue
+                self._emit_text_chunks(
+                    text=seg.text,
+                    block_type=BlockType.TEXT,
+                    sub_type=None,
+                    format=DataFormat.MARKDOWN,
+                    parent_block_index=container_index,
+                )
+            elif seg.kind == "image":
+                if image_block := self._build_image_block(
+                    seg.alt_text, parent_block_index=container_index
+                ):
+                    self._append_block(image_block)
 
     # ---------------------------------------------------------- inline render
 
@@ -582,27 +1022,26 @@ class _TokenWalker:
 
     def _split_inline_content(
         self, inline_token: Token
-    ) -> tuple[str, list[Token], DataFormat]:
+    ) -> tuple[str, DataFormat]:
         if not inline_token.children:
-            return inline_token.content.strip(), [], DataFormat.TXT
+            return inline_token.content.strip(), DataFormat.MARKDOWN
 
-        image_tokens = [c for c in inline_token.children if c.type == "image"]
         non_image_children = [c for c in inline_token.children if c.type != "image"]
+        has_images = len(non_image_children) != len(inline_token.children)
 
-        if not image_tokens:
+        if not has_images:
             if self._has_inline_formatting(inline_token.children):
-                return inline_token.content.strip(), [], DataFormat.MARKDOWN
-            return self._render_inline(inline_token).strip(), [], DataFormat.TXT
+                return inline_token.content.strip(), DataFormat.MARKDOWN
+            return self._render_inline(inline_token).strip(), DataFormat.MARKDOWN
 
         if self._has_inline_formatting(non_image_children):
             return (
                 self._render_inline_markdown_from_children(non_image_children).strip(),
-                image_tokens,
                 DataFormat.MARKDOWN,
             )
 
         text_parts = [rendered for c in non_image_children if (rendered := self._render_inline(c))]
-        return "".join(text_parts).strip(), image_tokens, DataFormat.TXT
+        return "".join(text_parts).strip(), DataFormat.MARKDOWN
 
     def _render_inline(self, token: Token) -> str:
         """Render a token to plain text (no markup decorators)."""
@@ -702,10 +1141,21 @@ class _TokenWalker:
             else:
                 rows.append(self.table_state.current_row)
 
-        header_md = [h.markdown for h in headers]
+        header_md = [_table_cell_text_without_images(h) for h in headers]
 
         child_block_indices: list[int] = []
+
         for row_number, row_cells in enumerate(rows, start=1):
+            if self._row_has_images(row_cells):
+                self._emit_table_row_with_image_splits(
+                    group_index=group.index,
+                    row_number=row_number,
+                    headers=header_md,
+                    row_cells=row_cells,
+                    child_block_indices=child_block_indices,
+                )
+                continue
+
             row_text = self._format_table_row(header_md, [c.markdown for c in row_cells])
             block = self._append_block(
                 Block(
@@ -721,12 +1171,6 @@ class _TokenWalker:
                 )
             )
             child_block_indices.append(block.index)
-            for cell in row_cells:
-                for image_token in cell.images:
-                    if image_block := self._build_image_block(image_token.content):
-                        image_block.parent_index = group.index
-                        self._append_block(image_block)
-                        child_block_indices.append(image_block.index)
 
         group.table_metadata = TableMetadata(
             num_of_rows=len(rows),
@@ -741,9 +1185,6 @@ class _TokenWalker:
         group.data = {"table_summary": "", "column_headers": header_md}
         group.children = BlockGroupChildren.from_indices(block_indices=child_block_indices)
 
-        # Pop the table group off the stack. Rows use _append_block (not
-        # _add_block) so the _OpenGroup carries no child indices to propagate
-        # upward — the pop is all that's needed.
         if self.group_stack and self.group_stack[-1].index == group.index:
             self.group_stack.pop()
 

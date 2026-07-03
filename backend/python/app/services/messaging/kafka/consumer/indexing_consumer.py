@@ -17,6 +17,11 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
+from app.utils.request_context import (
+    context_from_envelope,
+    reset_context,
+    set_context,
+)
 
 FUTURE_CLEANUP_INTERVAL = 100  # Cleanup completed futures every N messages
 
@@ -488,15 +493,21 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 return False
 
             if self.message_handler:
-                async for event in self.message_handler(parsed_message):
-                    if event.event == IndexingEvent.PARSING_COMPLETE and parsing_held and self.parsing_semaphore:
-                        self.parsing_semaphore.release()
-                        parsing_held = False
-                        self.logger.debug(f"Released parsing semaphore for {message_id}")
-                    elif event.event == IndexingEvent.INDEXING_COMPLETE and indexing_held and self.indexing_semaphore:
-                        self.indexing_semaphore.release()
-                        indexing_held = False
-                        self.logger.debug(f"Released indexing semaphore for {message_id}")
+                # Carry the producer's trace id into indexing logs.
+                ctx = context_from_envelope({"requestId": parsed_message.requestId})
+                token = set_context(ctx.root_id)
+                try:
+                    async for event in self.message_handler(parsed_message):
+                        if event.event == IndexingEvent.PARSING_COMPLETE and parsing_held and self.parsing_semaphore:
+                            self.parsing_semaphore.release()
+                            parsing_held = False
+                            self.logger.debug(f"Released parsing semaphore for {message_id}")
+                        elif event.event == IndexingEvent.INDEXING_COMPLETE and indexing_held and self.indexing_semaphore:
+                            self.indexing_semaphore.release()
+                            indexing_held = False
+                            self.logger.debug(f"Released indexing semaphore for {message_id}")
+                finally:
+                    reset_context(token)
             else:
                 self.logger.error(f"No message handler available for {message_id}")
                 return False

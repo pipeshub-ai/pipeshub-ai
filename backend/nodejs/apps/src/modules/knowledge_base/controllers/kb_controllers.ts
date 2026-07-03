@@ -3,10 +3,8 @@ import * as crypto from 'crypto';
 import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
 import { NextFunction, Response } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
-import { RecordRelationService } from '../services/kb.relation.service';
 import {
   BadRequestError,
-  ConflictError,
   ForbiddenError,
   InternalServerError,
   NotFoundError,
@@ -138,84 +136,6 @@ export const getKnowledgeHubNodes =
     }
   };
 
-// Types and helpers for active connector validation
-interface ConnectorInfo {
-  _key: string;
-}
-
-interface ActiveConnectorsResponse {
-  connectors: ConnectorInfo[];
-}
-
-const LOCK_MESSAGES: Record<string, string> = {
-  FULL_SYNCING: 'A full sync is in progress. Please wait and try again.',
-  SYNCING: 'A sync is already in progress. Please wait and try again.',
-};
-
-interface ConnectorInstanceLock {
-  connector?: { isLocked?: boolean; status?: string };
-}
-
-const validateConnectorNotLocked = async (
-  connectorId: string,
-  appConfig: AppConfig,
-  headers: Record<string, string>,
-): Promise<void> => {
-  const response = await executeConnectorCommand(
-    `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
-    HttpMethod.GET,
-    headers,
-  );
-
-  const data = response.data as ConnectorInstanceLock | undefined;
-  if (response.statusCode !== 200 || !data?.connector) {
-    return;
-  }
-
-  const connector = data.connector;
-  if (connector.isLocked) {
-    const status = connector.status ?? '';
-    const message =
-      LOCK_MESSAGES[status] ??
-      'Another operation is in progress. Please wait and try again.';
-    throw new ConflictError(message);
-  }
-};
-
-const normalizeAppName = (value: string): string =>
-  value.replace(' ', '').toLowerCase();
-
-const validateActiveConnector = async (
-  connectorId: string,
-  appConfig: AppConfig,
-  headers: Record<string, string>,
-): Promise<void> => {
-  const activeAppsResponse = await executeConnectorCommand(
-    `${appConfig.connectorBackend}/api/v1/connectors/active`,
-    HttpMethod.GET,
-    headers,
-  );
-
-  if (activeAppsResponse.statusCode !== 200) {
-    throw new InternalServerError('Failed to get active connectors');
-  }
-
-  const data = activeAppsResponse.data as ActiveConnectorsResponse;
-  const connectors = data?.connectors || [];
-
-  const isAllowed = connectors.some(
-    (connector) => connector._key === connectorId,
-  );
-
-  if (!isAllowed) {
-    throw new BadRequestError(`Connector ${connectorId} not allowed`);
-  }
-
-  logger.debug('Connector validation successful', {
-    connectorId,
-  });
-};
-
 export const createKnowledgeBase =
   (appConfig: AppConfig) =>
   async (
@@ -284,6 +204,18 @@ export const getKnowledgeBase =
         HttpMethod.GET,
         req.headers as Record<string, string>,
       );
+
+      if (response?.data && typeof response.data === 'object') {
+        const data = response.data as Record<string, unknown>;
+        const folders = data.folders;
+        if (Array.isArray(folders)) {
+          for (const folder of folders) {
+            if (folder && typeof folder === 'object') {
+              delete (folder as Record<string, unknown>).webUrl;
+            }
+          }
+        }
+      }
 
       handleConnectorResponse(
         response,
@@ -390,10 +322,7 @@ export const listKnowledgeBases =
       if (permissions) {
         const validPermissions = [
           'OWNER',
-          'ORGANIZER',
-          'FILEORGANIZER',
           'WRITER',
-          'COMMENTER',
           'READER',
         ];
         const invalidPermissions = permissions.filter(
@@ -432,6 +361,23 @@ export const listKnowledgeBases =
         HttpMethod.GET,
         req.headers as Record<string, string>,
       );
+
+      if (response?.data && typeof response.data === 'object') {
+        const data = response.data as Record<string, unknown>;
+        const knowledgeBases = data.knowledgeBases;
+        if (Array.isArray(knowledgeBases)) {
+          for (const kb of knowledgeBases) {
+            if (!kb || typeof kb !== 'object') continue;
+            const folders = (kb as Record<string, unknown>).folders;
+            if (!Array.isArray(folders)) continue;
+            for (const folder of folders) {
+              if (folder && typeof folder === 'object') {
+                delete (folder as Record<string, unknown>).webUrl;
+              }
+            }
+          }
+        }
+      }
 
       handleConnectorResponse(
         response,
@@ -534,7 +480,7 @@ export const deleteKnowledgeBase =
     }
   };
 
-export const createRootFolder =
+export const createFolder =
   (appConfig: AppConfig) =>
   async (
     req: AuthenticatedUserRequest,
@@ -544,22 +490,30 @@ export const createRootFolder =
     try {
       const { userId, orgId } = req.user || {};
       const { kbId } = req.params;
+      const { folderId } = req.query as { folderId?: string };
       const { folderName } = req.body;
 
       if (!userId || !orgId) {
         throw new UnauthorizedError('User authentication required');
       }
 
-      // Validate folderName for XSS and format specifiers
       if (folderName) {
         validateNoXSS(folderName, 'Folder name');
         validateNoFormatSpecifiers(folderName, 'Folder name');
       }
 
-      logger.info(`Creating folder '${folderName}' in KB ${kbId}`);
+      if (folderId) {
+        logger.info(`Creating folder '${folderName}' in folder ${folderId}`);
+      } else {
+        logger.info(`Creating folder '${folderName}' in KB ${kbId}`);
+      }
+
+      const connectorUrl = folderId
+        ? `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/subfolder`
+        : `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder`;
 
       const response = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder`,
+        connectorUrl,
         HttpMethod.POST,
         req.headers as Record<string, string>,
         {
@@ -567,10 +521,14 @@ export const createRootFolder =
         },
       );
 
+      if (response?.data && typeof response.data === 'object') {
+        delete (response.data as Record<string, unknown>).webUrl;
+      }
+
       handleConnectorResponse(
         response,
         res,
-        'Creating folder',
+        folderId ? 'Creating nested folder' : 'Creating folder',
         'Folder not found',
       );
     } catch (error: any) {
@@ -581,59 +539,7 @@ export const createRootFolder =
         status: error.response?.status,
         data: error.response?.data,
       });
-      const handleError = handleBackendError(error, 'create root folder');
-      next(handleError);
-    }
-  };
-
-export const createNestedFolder =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      const { userId, orgId } = req.user || {};
-      const { kbId, folderId } = req.params;
-      const { folderName } = req.body;
-
-      if (!userId || !orgId) {
-        throw new UnauthorizedError('User authentication required');
-      }
-
-      // Validate folderName for XSS and format specifiers
-      if (folderName) {
-        validateNoXSS(folderName, 'Folder name');
-        validateNoFormatSpecifiers(folderName, 'Folder name');
-      }
-
-      logger.info(`Creating folder '${folderName}' in folder ${folderId}`);
-
-      const response = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/subfolder`,
-        HttpMethod.POST,
-        req.headers as Record<string, string>,
-        {
-          name: folderName,
-        },
-      );
-
-      handleConnectorResponse(
-        response,
-        res,
-        'Creating nested folder',
-        'Folder not found',
-      );
-    } catch (error: any) {
-      logger.error('Error creating subfolder folder', {
-        error: error.message,
-        kbId: req.params.kbId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
-      const handleError = handleBackendError(error, 'create nested folder');
+      const handleError = handleBackendError(error, 'create folder');
       next(handleError);
     }
   };
@@ -984,7 +890,7 @@ const streamKbUpload = async (opts: {
 
 /**
  * Verify the KB exists and the caller has write permission before touching
- * storage. The GET /kb endpoint returns 200 for ANY role (READER/COMMENTER
+ * storage. The GET /kb endpoint returns 200 for ANY role (READER
  * included), so a 200 alone is insufficient — we must inspect `userRole` in the
  * response body. Throws the appropriate HTTP error otherwise.
  */
@@ -1042,7 +948,7 @@ export const uploadRecords =
       const orgId = req.user?.orgId;
       const { kbId } = req.params;
       const folderId = req.query.folderId as string | undefined;
-      const isVersioned = req.body.isVersioned ?? false;
+      const isVersioned = req.body.isVersioned ?? true;
 
       // Validation
       if (!userId || !orgId) {
@@ -1366,636 +1272,6 @@ export const updateRecord =
     }
   };
 
-/**
- * Get records for a specific Knowledge Base
- */
-export const getKBContent =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      // Extract user from request
-      const { userId, orgId } = req.user || {};
-      const { kbId } = req.params;
-
-      // Validate user authentication
-      if (!userId || !orgId) {
-        throw new UnauthorizedError(
-          'User not authenticated or missing organization ID',
-        );
-      }
-
-      if (!kbId) {
-        throw new BadRequestError('Knowledge Base ID is required');
-      }
-
-      // Extract and parse query parameters with safe integer validation
-      let page: number;
-      let limit: number;
-      try {
-        const pagination = safeParsePagination(
-          req.query.page as string | undefined,
-          req.query.limit as string | undefined,
-          1,
-          20,
-          100,
-        );
-        page = pagination.page;
-        limit = pagination.limit;
-      } catch (error: any) {
-        throw new BadRequestError(
-          error.message || 'Invalid pagination parameters',
-        );
-      }
-
-      const search = req.query.search ? String(req.query.search) : undefined;
-
-      // Validate search parameter for XSS and format specifiers
-      if (search) {
-        try {
-          validateNoXSS(search, 'search parameter');
-          validateNoFormatSpecifiers(search, 'search parameter');
-
-          if (search.length > 1000) {
-            throw new BadRequestError(
-              'Search parameter too long (max 1000 characters)',
-            );
-          }
-        } catch (error: any) {
-          throw new BadRequestError(
-            error.message ||
-              'Search parameter contains potentially dangerous content',
-          );
-        }
-      }
-
-      const recordTypes = req.query.recordTypes
-        ? String(req.query.recordTypes).split(',')
-        : undefined;
-      const origins = req.query.origins
-        ? String(req.query.origins).split(',')
-        : undefined;
-      const connectors = req.query.connectors
-        ? String(req.query.connectors).split(',')
-        : undefined;
-      const indexingStatus = req.query.indexingStatus
-        ? String(req.query.indexingStatus).split(',')
-        : undefined;
-
-      // Parse date filters with safe integer validation
-      let dateFrom: number | undefined;
-      let dateTo: number | undefined;
-      if (req.query.dateFrom) {
-        try {
-          dateFrom = parseInt(String(req.query.dateFrom), 10);
-          if (isNaN(dateFrom) || dateFrom < 0) {
-            throw new BadRequestError('Invalid dateFrom parameter');
-          }
-        } catch (error: any) {
-          throw new BadRequestError('Invalid dateFrom parameter');
-        }
-      }
-      if (req.query.dateTo) {
-        try {
-          dateTo = parseInt(String(req.query.dateTo), 10);
-          if (isNaN(dateTo) || dateTo < 0) {
-            throw new BadRequestError('Invalid dateTo parameter');
-          }
-        } catch (error: any) {
-          throw new BadRequestError('Invalid dateTo parameter');
-        }
-      }
-
-      // Sorting parameters
-      const sortBy = req.query.sortBy
-        ? String(req.query.sortBy)
-        : 'createdAtTimestamp';
-      const sortOrderParam = req.query.sortOrder
-        ? String(req.query.sortOrder)
-        : 'desc';
-      const sortOrder =
-        sortOrderParam === 'asc' || sortOrderParam === 'desc'
-          ? sortOrderParam
-          : 'desc';
-
-      logger.info('Getting KB records', {
-        kbId,
-        userId,
-        orgId,
-        page,
-        limit,
-        search,
-        recordTypes,
-        origins,
-        connectors,
-        indexingStatus,
-        dateFrom,
-        dateTo,
-        sortBy,
-        sortOrder,
-        requestId: req.context?.requestId,
-      });
-
-      const queryParams = new URLSearchParams();
-      if (page) {
-        queryParams.append('page', page.toString());
-      }
-      if (limit) {
-        queryParams.append('limit', limit.toString());
-      }
-      if (search) {
-        queryParams.append('search', search);
-      }
-      if (recordTypes) {
-        queryParams.append('record_types', recordTypes.join(','));
-      }
-      if (origins) {
-        queryParams.append('origins', origins.join(','));
-      }
-      if (connectors) {
-        queryParams.append('connectors', connectors.join(','));
-      }
-      if (indexingStatus) {
-        queryParams.append('indexing_status', indexingStatus.join(','));
-      }
-      if (dateFrom) {
-        queryParams.append('date_from', dateFrom.toString());
-      }
-      if (dateTo) {
-        queryParams.append('date_to', dateTo.toString());
-      }
-      if (sortBy) {
-        queryParams.append('sort_by', sortBy);
-      }
-      if (sortOrder) {
-        queryParams.append('sort_order', sortOrder);
-      }
-
-      // Call the Python service to get KB records
-      const response = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/children?${queryParams.toString()}`,
-        HttpMethod.GET,
-        req.headers as Record<string, string>,
-      );
-
-      handleConnectorResponse(
-        response,
-        res,
-        'Getting KB records',
-        'KB records not found',
-      );
-
-      // Log successful retrieval
-      logger.info('KB records retrieved successfully', kbId);
-    } catch (error: any) {
-      logger.error('Error getting KB records', {
-        kbId: req.params.kbId,
-        userId: req.user?.userId,
-        orgId: req.user?.orgId,
-        error: error.message,
-        stack: error.stack,
-        requestId: req.context?.requestId,
-      });
-      const handleError = handleBackendError(error, 'get KB records');
-      next(handleError);
-    }
-  };
-
-/**
- * Get records for a specific Knowledge Base
- */
-export const getFolderContents =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      // Extract user from request
-      const { userId, orgId } = req.user || {};
-      const { kbId, folderId } = req.params;
-
-      // Validate user authentication
-      if (!userId || !orgId) {
-        throw new UnauthorizedError(
-          'User not authenticated or missing organization ID',
-        );
-      }
-
-      if (!kbId) {
-        throw new BadRequestError('Knowledge Base ID is required');
-      }
-
-      // Extract and parse query parameters with safe integer validation
-      let page: number;
-      let limit: number;
-      try {
-        const pagination = safeParsePagination(
-          req.query.page as string | undefined,
-          req.query.limit as string | undefined,
-          1,
-          20,
-          100,
-        );
-        page = pagination.page;
-        limit = pagination.limit;
-      } catch (error: any) {
-        throw new BadRequestError(
-          error.message || 'Invalid pagination parameters',
-        );
-      }
-
-      const search = req.query.search ? String(req.query.search) : undefined;
-
-      // Validate search parameter for XSS and format specifiers
-      if (search) {
-        try {
-          validateNoXSS(search, 'search parameter');
-          validateNoFormatSpecifiers(search, 'search parameter');
-
-          if (search.length > 1000) {
-            throw new BadRequestError(
-              'Search parameter too long (max 1000 characters)',
-            );
-          }
-        } catch (error: any) {
-          throw new BadRequestError(
-            error.message ||
-              'Search parameter contains potentially dangerous content',
-          );
-        }
-      }
-
-      const recordTypes = req.query.recordTypes
-        ? String(req.query.recordTypes).split(',')
-        : undefined;
-      const origins = req.query.origins
-        ? String(req.query.origins).split(',')
-        : undefined;
-      const connectors = req.query.connectors
-        ? String(req.query.connectors).split(',')
-        : undefined;
-      const indexingStatus = req.query.indexingStatus
-        ? String(req.query.indexingStatus).split(',')
-        : undefined;
-
-      // Parse date filters with safe integer validation
-      let dateFrom: number | undefined;
-      let dateTo: number | undefined;
-      if (req.query.dateFrom) {
-        try {
-          dateFrom = parseInt(String(req.query.dateFrom), 10);
-          if (isNaN(dateFrom) || dateFrom < 0) {
-            throw new BadRequestError('Invalid dateFrom parameter');
-          }
-        } catch (error: any) {
-          throw new BadRequestError('Invalid dateFrom parameter');
-        }
-      }
-      if (req.query.dateTo) {
-        try {
-          dateTo = parseInt(String(req.query.dateTo), 10);
-          if (isNaN(dateTo) || dateTo < 0) {
-            throw new BadRequestError('Invalid dateTo parameter');
-          }
-        } catch (error: any) {
-          throw new BadRequestError('Invalid dateTo parameter');
-        }
-      }
-
-      // Sorting parameters
-      const sortBy = req.query.sortBy
-        ? String(req.query.sortBy)
-        : 'createdAtTimestamp';
-      const sortOrderParam = req.query.sortOrder
-        ? String(req.query.sortOrder)
-        : 'desc';
-      const sortOrder =
-        sortOrderParam === 'asc' || sortOrderParam === 'desc'
-          ? sortOrderParam
-          : 'desc';
-
-      logger.info('Getting KB records', {
-        kbId,
-        userId,
-        orgId,
-        page,
-        limit,
-        search,
-        recordTypes,
-        origins,
-        connectors,
-        indexingStatus,
-        dateFrom,
-        dateTo,
-        sortBy,
-        sortOrder,
-        requestId: req.context?.requestId,
-      });
-
-      const queryParams = new URLSearchParams();
-      if (page) {
-        queryParams.append('page', page.toString());
-      }
-      if (limit) {
-        queryParams.append('limit', limit.toString());
-      }
-      if (search) {
-        queryParams.append('search', search);
-      }
-      if (recordTypes) {
-        queryParams.append('record_types', recordTypes.join(','));
-      }
-      if (origins) {
-        queryParams.append('origins', origins.join(','));
-      }
-      if (connectors) {
-        queryParams.append('connectors', connectors.join(','));
-      }
-      if (indexingStatus) {
-        queryParams.append('indexing_status', indexingStatus.join(','));
-      }
-      if (dateFrom) {
-        queryParams.append('date_from', dateFrom.toString());
-      }
-      if (dateTo) {
-        queryParams.append('date_to', dateTo.toString());
-      }
-      if (sortBy) {
-        queryParams.append('sort_by', sortBy);
-      }
-      if (sortOrder) {
-        queryParams.append('sort_order', sortOrder);
-      }
-
-      // Call the Python service to get KB records
-      const response = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/children?${queryParams.toString()}`,
-        HttpMethod.GET,
-        req.headers as Record<string, string>,
-      );
-
-      handleConnectorResponse(
-        response,
-        res,
-        'Getting folder contents',
-        'Folder contents not found',
-      );
-
-      // Log successful retrieval
-      logger.info('KB records retrieved successfully', kbId);
-    } catch (error: any) {
-      logger.error('Error getting KB records', {
-        kbId: req.params.kbId,
-        userId: req.user?.userId,
-        orgId: req.user?.orgId,
-        error: error.message,
-        stack: error.stack,
-        requestId: req.context?.requestId,
-      });
-      const handleError = handleBackendError(error, 'get KB records');
-      next(handleError);
-    }
-  };
-
-/**
- * Get all records accessible to user across all Knowledge Bases
- */
-export const getAllRecords =
-  (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-    try {
-      // Extract user from request
-      const { userId, orgId } = req.user || {};
-
-      // Validate user authentication
-      if (!userId || !orgId) {
-        throw new UnauthorizedError(
-          'User not authenticated or missing organization ID',
-        );
-      }
-
-      // Extract and parse query parameters
-      const page = req.query.page ? parseInt(String(req.query.page), 10) : 1;
-      const limit = req.query.limit
-        ? parseInt(String(req.query.limit), 10)
-        : 20;
-      const search = req.query.search ? String(req.query.search) : undefined;
-
-      // Validate search parameter for XSS and format specifiers
-      if (search) {
-        try {
-          validateNoXSS(search, 'search parameter');
-          validateNoFormatSpecifiers(search, 'search parameter');
-
-          if (search.length > 1000) {
-            throw new BadRequestError(
-              'Search parameter too long (max 1000 characters)',
-            );
-          }
-        } catch (error: any) {
-          throw new BadRequestError(
-            error.message ||
-              'Search parameter contains potentially dangerous content',
-          );
-        }
-      }
-
-      const recordTypes = req.query.recordTypes
-        ? String(req.query.recordTypes).split(',')
-        : undefined;
-      const origins = req.query.origins
-        ? String(req.query.origins).split(',')
-        : undefined;
-      const connectors = req.query.connectors
-        ? String(req.query.connectors).split(',')
-        : undefined;
-      const permissions = req.query.permissions
-        ? String(req.query.permissions).split(',')
-        : undefined;
-      const indexingStatus = req.query.indexingStatus
-        ? String(req.query.indexingStatus).split(',')
-        : undefined;
-
-      // Parse date filters
-      const dateFrom = req.query.dateFrom
-        ? parseInt(String(req.query.dateFrom), 10)
-        : undefined;
-      const dateTo = req.query.dateTo
-        ? parseInt(String(req.query.dateTo), 10)
-        : undefined;
-
-      // Sorting parameters
-      const sortBy = req.query.sortBy
-        ? String(req.query.sortBy)
-        : 'createdAtTimestamp';
-      const sortOrderParam = req.query.sortOrder
-        ? String(req.query.sortOrder)
-        : 'desc';
-      const sortOrder =
-        sortOrderParam === 'asc' || sortOrderParam === 'desc'
-          ? sortOrderParam
-          : 'desc';
-
-      // Parse source parameter
-      const source = req.query.source
-        ? ['all', 'local', 'connector'].includes(String(req.query.source))
-          ? (String(req.query.source) as 'all' | 'local' | 'connector')
-          : 'all'
-        : 'all';
-
-      // Validate pagination parameters
-      if (page < 1) {
-        throw new BadRequestError('Page must be greater than 0');
-      }
-      if (limit < 1 || limit > 100) {
-        throw new BadRequestError('Limit must be between 1 and 100');
-      }
-
-      logger.debug('Getting all records for user', {
-        userId,
-        orgId,
-        page,
-        limit,
-        search,
-        recordTypes,
-        origins,
-        connectors,
-        permissions,
-        indexingStatus,
-        dateFrom,
-        dateTo,
-        sortBy,
-        sortOrder,
-        source,
-        requestId: req.context?.requestId,
-      });
-
-      const queryParams = new URLSearchParams();
-
-      if (page) {
-        queryParams.append('page', page.toString());
-      }
-      if (limit) {
-        queryParams.append('limit', limit.toString());
-      }
-      if (search) {
-        queryParams.append('search', search);
-      }
-      if (recordTypes) {
-        queryParams.append('record_types', recordTypes.join(','));
-      }
-      if (origins) {
-        queryParams.append('origins', origins.join(','));
-      }
-      if (connectors) {
-        queryParams.append('connectors', connectors.join(','));
-      }
-      if (permissions) {
-        queryParams.append('permissions', permissions.join(','));
-      }
-      if (indexingStatus) {
-        queryParams.append('indexing_status', indexingStatus.join(','));
-      }
-      if (dateFrom) {
-        queryParams.append('date_from', dateFrom.toString());
-      }
-      if (dateTo) {
-        queryParams.append('date_to', dateTo.toString());
-      }
-      if (sortBy) {
-        queryParams.append('sort_by', sortBy);
-      }
-      if (sortOrder) {
-        queryParams.append('sort_order', sortOrder);
-      }
-      if (source) {
-        queryParams.append('source', source);
-      }
-
-      // Call the Python service to get all records
-      const response = await executeConnectorCommand(
-        // `${appConfig.connectorBackend}/api/v1/kb/records/user/${userId}/org/${orgId}`,
-        `${appConfig.connectorBackend}/api/v1/records?${queryParams.toString()}`,
-        HttpMethod.GET,
-        req.headers as Record<string, string>,
-      );
-
-      if (response.statusCode !== 200) {
-        throw new InternalServerError('Failed to get all records');
-      }
-
-      const result = response.data as any;
-
-      // Log successful retrieval
-      logger.debug('All records retrieved successfully', {
-        totalRecords: result.pagination?.totalCount || 0,
-        page: result.pagination?.page || page,
-        userId,
-        orgId,
-        source,
-        requestId: req.context?.requestId,
-      });
-
-      // Send response
-      res.status(200).json({
-        records: result.records || [],
-        pagination: {
-          page: result.pagination?.page || page,
-          limit: result.pagination?.limit || limit,
-          totalCount: result.pagination?.totalCount || 0,
-          totalPages: result.pagination?.totalPages || 0,
-        },
-        filters: {
-          applied: {
-            search,
-            recordTypes,
-            origins,
-            connectors,
-            permissions,
-            indexingStatus,
-            source: source !== 'all' ? source : null,
-            dateRange:
-              dateFrom || dateTo ? { from: dateFrom, to: dateTo } : null,
-            sortBy,
-            sortOrder,
-          },
-          available: result.filters?.available || {},
-        },
-      });
-    } catch (error: any) {
-      // Handle permission errors
-      if (
-        error instanceof Error &&
-        (error.message.includes('does not have permission') ||
-          error.message.includes('does not have the required permissions'))
-      ) {
-        throw new UnauthorizedError(
-          'You do not have permission to access these records',
-        );
-      }
-
-      // Log and forward any other errors
-      logger.error('Error getting all records', {
-        userId: req.user?.userId,
-        orgId: req.user?.orgId,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        stack: error instanceof Error ? error.stack : undefined,
-        requestId: req.context?.requestId,
-      });
-      const handleError = handleBackendError(error, 'get all records');
-      next(handleError);
-    }
-  };
-
 export const getRecordById =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -2017,8 +1293,24 @@ export const getRecordById =
         req.headers as Record<string, string>,
       );
 
+      const responseForClient: Record<string, any> = { ...response, data: { ...(response?.data || {}) } };
+      if (responseForClient.data?.record) {
+        responseForClient.data.record = { ...responseForClient.data.record };
+        // TODO: Move this response shaping into a typed mapper once the connector contract drops record._id.
+        delete responseForClient.data.record._id;
+        delete responseForClient.data.record._rev;
+        if (responseForClient.data.record.fileRecord) {
+          responseForClient.data.record.fileRecord = {
+            ...responseForClient.data.record.fileRecord,
+          };
+          delete responseForClient.data.record.fileRecord._rev;
+          delete responseForClient.data.record.fileRecord._key;
+          delete responseForClient.data.record.fileRecord._id;
+        }
+      }
+
       handleConnectorResponse(
-        response,
+        responseForClient,
         res,
         'Getting record by id',
         'Record not found',
@@ -2210,10 +1502,7 @@ export const createKBPermission =
       if (role) {
         const validRoles = [
           'OWNER',
-          'ORGANIZER',
-          'FILEORGANIZER',
           'WRITER',
-          'COMMENTER',
           'READER',
         ];
         if (!validRoles.includes(role)) {
@@ -2290,10 +1579,7 @@ export const updateKBPermission =
 
       const validRoles = [
         'OWNER',
-        'ORGANIZER',
-        'FILEORGANIZER',
         'WRITER',
-        'COMMENTER',
         'READER',
       ];
       if (!validRoles.includes(role)) {
@@ -2434,90 +1720,6 @@ export const listKBPermissions =
     }
   };
 
-export const getConnectorStats =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const { userId, orgId } = req.user || {};
-
-      // Validate user authentication
-      if (!userId || !orgId) {
-        throw new UnauthorizedError(
-          'User not authenticated or missing organization ID',
-        );
-      }
-
-      if (!req.params.connectorId) {
-        throw new BadRequestError('Connector ID is required');
-      }
-
-      try {
-        // Call the Python service to get record
-
-        const queryParams = new URLSearchParams();
-
-        queryParams.append('org_id', orgId);
-        queryParams.append('connector_id', req.params.connectorId);
-        const response = await executeConnectorCommand(
-          `${appConfig.connectorBackend}/api/v1/stats?${queryParams.toString()}`,
-          HttpMethod.GET,
-          req.headers as Record<string, string>,
-        );
-
-        if (response.statusCode !== 200) {
-          throw new InternalServerError(
-            'Failed to get connector stats via Python service',
-          );
-        }
-
-        const result = response.data;
-
-        // Log successful retrieval
-        logger.info('Connector stats retrieved successfully', {
-          userId,
-          orgId,
-          requestId: req.context?.requestId,
-        });
-
-        // Send response
-        res.status(200).json(result);
-      } catch (pythonServiceError: any) {
-        logger.error('Error calling Python service for record', {
-          userId,
-          orgId,
-          error: pythonServiceError.message,
-          response: pythonServiceError.response?.data,
-          requestId: req.context?.requestId,
-        });
-
-        // Handle different error types from Python service
-        if (pythonServiceError.response?.status === 403) {
-          throw new ForbiddenError(
-            'You do not have permission to access connector stats',
-          );
-        } else if (pythonServiceError.response?.status === 404) {
-          throw new NotFoundError('No records found or user not found');
-        } else if (pythonServiceError.response?.status === 400) {
-          throw new BadRequestError(
-            pythonServiceError.response?.data?.reason ||
-              'Invalid request parameters',
-          );
-        } else {
-          throw new InternalServerError(
-            `Failed to get connector stats: ${pythonServiceError.message}`,
-          );
-        }
-      }
-    } catch (error: any) {
-      logger.error('Error getting connector stats', {
-        recordId: req.params.recordId,
-        error,
-      });
-      next(error);
-      return; // Added return statement
-    }
-  };
-
 export const getRecordBuffer =
   (connectorUrl: string) =>
   async (
@@ -2617,107 +1819,6 @@ export const getRecordBuffer =
         error: error.message,
       });
       next(handleError);
-    }
-  };
-
-export const reindexFailedRecords =
-  (recordRelationService: RecordRelationService, appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const userId = req.user?.userId;
-      const orgId = req.user?.orgId;
-      const app = req.body.app;
-      const connectorId = req.body.connectorId;
-      if (!userId || !orgId) {
-        throw new BadRequestError('User not authenticated');
-      }
-
-      await validateActiveConnector(
-        connectorId,
-        appConfig,
-        req.headers as Record<string, string>,
-      );
-
-      await validateConnectorNotLocked(
-        connectorId,
-        appConfig,
-        req.headers as Record<string, string>,
-      );
-
-      const reindexPayload = {
-        userId,
-        orgId,
-        app: normalizeAppName(app),
-        connectorId,
-        statusFilters: req.body.statusFilters,
-      };
-
-      const reindexResponse =
-        await recordRelationService.reindexFailedRecords(reindexPayload);
-
-      res.status(200).json({
-        reindexResponse,
-      });
-
-      return; // Added return statement
-    } catch (error: any) {
-      logger.error('Error re indexing failed records', {
-        error,
-      });
-      next(error);
-      return; // Added return statement
-    }
-  };
-
-export const resyncConnectorRecords =
-  (recordRelationService: RecordRelationService, appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const userId = req.user?.userId;
-      const orgId = req.user?.orgId;
-      const connectorName = req.body.connectorName;
-      const connectorId = req.body.connectorId;
-      const fullSync = req.body.fullSync || false;
-      if (!userId || !orgId) {
-        throw new BadRequestError('User not authenticated');
-      }
-
-      await validateActiveConnector(
-        connectorId,
-        appConfig,
-        req.headers as Record<string, string>,
-      );
-
-      await validateConnectorNotLocked(
-        connectorId,
-        appConfig,
-        req.headers as Record<string, string>,
-      );
-
-      const resyncConnectorPayload = {
-        userId,
-        orgId,
-        connectorName: normalizeAppName(connectorName),
-        connectorId,
-        fullSync,
-      };
-
-      const resyncConnectorResponse =
-        await recordRelationService.resyncConnectorRecords(
-          resyncConnectorPayload,
-        );
-
-      res.status(200).json({
-        resyncConnectorResponse,
-      });
-
-      return; // Added return statement
-    } catch (error: any) {
-      logger.error('Error resyncing connector records', {
-        error,
-      });
-      next(error);
-      return; // Added return statement
     }
   };
 

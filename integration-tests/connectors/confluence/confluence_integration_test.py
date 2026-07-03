@@ -92,7 +92,7 @@ class TestConfluenceValidation:
         expected = RecordAssertion(
             external_record_id=page_id,
             record_type=RecordType.CONFLUENCE_PAGE.value,
-            mime_type="application/blocks",
+            mime_type="text/html",
             record_name=page_item.title,
             external_record_group_id=space_id,
         )
@@ -610,17 +610,17 @@ class TestConfluenceStream:
         
         # Verify response
         assert response.status_code == 200
-        assert "application/blocks" in response.headers.get("content-type", "").lower()
+        assert "text/html" in response.headers.get("content-type", "").lower()
         
         # Read some content
         content_chunk = next(response.iter_content(chunk_size=1024))
         assert len(content_chunk) > 0, "Should have received content"
-        # Content is now in blocks format (JSON), not HTML
-        assert content_chunk.lstrip().startswith(b"{") or content_chunk.lstrip().startswith(b"["), (
-            "Content should be JSON blocks format"
+        # Content is now in HTML format
+        assert b"<" in content_chunk or b"<!DOCTYPE" in content_chunk.upper(), (
+            "Content should be HTML format"
         )
         
-        logger.info("✅ TC-CF-052: Page content streamed successfully (blocks format)")
+        logger.info("✅ TC-CF-052: Page content streamed successfully (HTML format)")
 
 
 @pytest.mark.integration

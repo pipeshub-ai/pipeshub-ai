@@ -1,0 +1,388 @@
+====================================================================
+STANDARD OPERATING PROCEDURE
+====================================================================
+Document Title  : Patient Admission, Triage & Bed Allocation Protocol
+Document Number : SOP-OPS-ADM-014
+Version         : 2.1
+Effective Date  : August 1, 2024
+Review Due      : July 31, 2025
+Prepared by     : Quality & Patient Safety Department
+Approved by     : Medical Director | COO | Head Nurse (ICU & General)
+====================================================================
+Organisation    : Sunrise MultiSpecialty Hospital, Hyderabad
+Applicability   : Emergency Department, OPD, General Wards (IP),
+                  ICU/HDU, Front Desk Administration
+====================================================================
+
+--------------------------------------------------------------------
+1. PURPOSE
+--------------------------------------------------------------------
+
+This Standard Operating Procedure (SOP) defines the process for the
+admission, triage, and bed allocation of patients at Sunrise Multi-
+Specialty Hospital. Its purpose is to ensure that:
+
+  a) Every patient presenting to the hospital receives timely,
+     appropriate clinical assessment based on acuity of need.
+
+  b) Bed allocation is systematic, data-driven, and prioritizes
+     patient safety over administrative convenience.
+
+  c) All staff involved in the admission process follow a consistent,
+     documented workflow that complies with NABH accreditation
+     standards and applicable medicolegal requirements.
+
+  d) Accurate records are maintained in the Hospital Management
+     Information System (HMIS) from the point of first contact.
+
+--------------------------------------------------------------------
+2. SCOPE
+--------------------------------------------------------------------
+
+This SOP applies to:
+  - Walk-in patients (Emergency and OPD)
+  - Patients arriving by ambulance
+  - Referral patients from other hospitals or clinics
+  - Patients transferred from one department/unit to another
+    within the hospital
+
+It does NOT cover:
+  - Day-care procedures (refer SOP-OPS-DAY-007)
+  - Surgical pre-admission workup (refer SOP-OPS-PRE-002)
+  - Neonatal ICU (NICU) admissions (refer SOP-NICU-ADM-001)
+
+--------------------------------------------------------------------
+3. DEFINITIONS
+--------------------------------------------------------------------
+
+TRIAGE       : The process of prioritising patients based on the
+               severity of their condition to ensure that the most
+               critically ill are treated first.
+
+ESI          : Emergency Severity Index — a five-level triage tool
+               used to categorise patients on arrival at the Emergency
+               Department.
+
+HMIS         : Hospital Management Information System (the hospital
+               uses MediSync v4.2 as of this version).
+
+BED STATUS   : Classification of hospital bed availability, updated
+               in HMIS in real-time: Available / Occupied / Reserved /
+               Under Cleaning / Under Maintenance.
+
+ADT          : Admission, Discharge, and Transfer — the core patient
+               movement workflow tracked in HMIS.
+
+LAMA         : Leave Against Medical Advice — when a patient chooses
+               to leave despite clinical recommendation to stay.
+
+IP           : In-Patient (admitted to a ward or ICU bed).
+
+OP           : Out-Patient (consultation-only, not admitted).
+
+HDU          : High Dependency Unit — step-down care between ICU
+               and general ward.
+
+--------------------------------------------------------------------
+4. RESPONSIBILITIES
+--------------------------------------------------------------------
+
+Role                         Responsibilities
+--------------------------------------------------------------------
+Front Desk Executive         Patient registration, ID verification,
+                             demographic capture in HMIS, insurance
+                             pre-authorisation initiation.
+
+Triage Nurse (ER)            ESI scoring, vital signs recording,
+                             initial clinical documentation, notifying
+                             ER physician for ESI 1 and 2 cases.
+
+ER Physician                 Clinical assessment, admission decision,
+                             specialty referral, initial orders entry.
+
+Bed Manager / Coordinator    Real-time bed status monitoring, bed
+                             allocation coordination, resolution of
+                             bed conflicts, communication with wards
+                             and housekeeping.
+
+Ward Nurse (Receiving)       Patient reception at the ward, nursing
+                             assessment, care plan initiation.
+
+Housekeeping Supervisor      Timely turnaround of vacated beds
+                             (target: under 45 minutes).
+
+HMIS Administrator           System access management, daily bed
+                             census report, escalation of system
+                             downtime.
+
+Medical Social Worker        Support for unidentified/unconscious
+                             patients, LAMA cases, insurance issues.
+
+--------------------------------------------------------------------
+5. PROCEDURE
+--------------------------------------------------------------------
+
+5.1 STEP 1: PATIENT ARRIVAL AND REGISTRATION
+
+5.1.1 All patients arriving at the hospital — whether at the
+      Emergency Department (ER/Casualty), OPD Reception, or directly
+      referred to a ward — must be registered in HMIS before any
+      clinical service is provided, EXCEPT in the following cases:
+
+      - ESI Level 1 (immediate life threat): Clinical stabilisation
+        takes priority. Registration must be completed within
+        30 minutes of arrival by the Front Desk Executive
+        accompanying the clinical team to the bedside.
+
+      - Unconscious/unidentified patients: Registered as "Unknown
+        Male/Female [Date] [Time]" and tagged with a unique wristband
+        ID. Medical Social Worker notified immediately.
+
+5.1.2 Information collected at registration:
+      - Full name, date of birth, gender
+      - Contact number (patient and emergency contact)
+      - Address (current residence)
+      - Government photo ID number (Aadhaar / Passport / DL)
+      - Insurance details (if applicable; copy of card/policy)
+      - Referral details (if referred by external physician/hospital)
+      - Mode of arrival (walk-in, ambulance, private vehicle)
+
+5.1.3 The patient is issued a unique Patient Registration Number (PRN)
+      generated by HMIS. A printed wristband is applied within
+      10 minutes of registration. The wristband displays:
+        - PRN
+        - Patient name
+        - Date of birth
+        - Allergy alert flag (if known at time of registration)
+
+--------------------------------------------------------------------
+
+5.2 STEP 2: TRIAGE (EMERGENCY PATIENTS)
+
+5.2.1 All patients presenting to the Emergency Department undergo
+      triage assessment by the designated Triage Nurse within
+      5 minutes of arrival at the ER entrance.
+
+5.2.2 The ESI (Emergency Severity Index) scale used:
+
+      Level  Description            Target Time to Physician
+      --------------------------------------------------------
+        1    Immediately life-       Immediate (physician at bedside
+             threatening             within 0 min — pre-alerted)
+        2    High-risk / severely   Within 10 minutes
+             distressed
+        3    Stable but requires    Within 30 minutes
+             multiple resources
+        4    Stable, likely 1        Within 60 minutes
+             resource needed
+        5    No resource needed     Within 120 minutes
+      --------------------------------------------------------
+
+5.2.3 Triage Nurse records in HMIS:
+      - Chief complaint (free text + coded using ICD-10 symptom codes)
+      - Vital signs: BP, pulse rate, respiratory rate, SpO2, temperature
+      - ESI level assigned
+      - Triage timestamp (auto-captured by HMIS on save)
+      - Pain score (NRS 0–10)
+      - Allergy history (brief)
+
+5.2.4 ESI Level 1 and 2 patients: Triage Nurse activates the
+      ER Rapid Response Protocol:
+        - Verbal alert to ER Physician (direct call, not intercom)
+        - Code Blue announced over PA if cardiac/respiratory arrest
+        - Resuscitation bay or trauma bay assigned immediately
+
+5.2.5 ESI Level 3–5 patients are directed to the ER waiting area and
+      called based on their triage level and sequence within level.
+
+--------------------------------------------------------------------
+
+5.3 STEP 3: CLINICAL ASSESSMENT AND ADMISSION DECISION
+
+5.3.1 The ER Physician (or, for OPD patients, the consulting
+      specialist) conducts a full history and examination and
+      determines one of the following dispositions:
+
+        A. Admit as In-Patient (IP)
+        B. Admit to Day Care (referral to Day Care SOP)
+        C. Discharge with OPD follow-up
+        D. Refer to another hospital (if service not available)
+        E. LAMA (if patient insists on leaving)
+
+5.3.2 For Disposition A (IP Admission):
+      - Physician completes the IP Admission Order in HMIS,
+        specifying:
+          * Admitting diagnosis (ICD-10 code mandatory)
+          * Specialty / unit (e.g., Cardiology, Orthopedics, General Medicine)
+          * Ward preference (General / Semi-Private / Private / ICU)
+          * Diet orders (initial)
+          * Investigations required pre-admission
+          * Attending physician name
+      - The Admission Order serves as the legal and financial trigger
+        for bed allocation and billing initiation.
+
+5.3.3 For Disposition E (LAMA):
+      - Physician counsels patient and documents risks of self-discharge.
+      - Patient (or legal guardian if minor/incapacitated) signs the
+        LAMA declaration form (Form-MED-LAMA-01).
+      - Medical Social Worker is involved if patient appears vulnerable.
+
+--------------------------------------------------------------------
+
+5.4 STEP 4: BED ALLOCATION
+
+5.4.1 Upon IP Admission Order entry by the physician, HMIS
+      automatically notifies the Bed Manager via dashboard alert
+      and, if after-hours, via pager/SMS.
+
+5.4.2 Bed Allocation Priority Rules:
+
+      Priority 1 — ICU / HDU beds:
+        - ESI 1 & 2 patients with critical diagnoses (MI, stroke,
+          polytrauma, respiratory failure, septic shock, etc.)
+        - Post-operative patients requiring intensive monitoring
+        - ICU beds allocated by ICU Intensivist, not Bed Manager
+
+      Priority 2 — HDU beds (step-down):
+        - Patients being shifted from ICU as condition stabilises
+        - High-dependency post-operative cases
+
+      Priority 3 — Specialty/Observation beds:
+        - Allocated by Bed Manager per physician specialty request
+        - Patient preference (General/Semi-Private/Private) applied
+          when medically equivalent beds are available
+
+5.4.3 If the requested bed type is not available:
+        - Bed Manager searches for available equivalent within specialty
+        - If no equivalent: discusses with physician and patient/family
+          for temporary accommodation in a different category
+        - If no beds available (full capacity):
+            > Bed Manager activates Surge Protocol (SOP-OPS-SURGE-001)
+            > Identifies patients eligible for early discharge
+            > Contacts sister facilities within Sunrise Group for
+              transfer (if patient consents)
+
+5.4.4 Target Bed Allocation Time (from Admission Order to bed assignment):
+        - ICU / HDU    : < 15 minutes
+        - General Ward : < 45 minutes
+        - Private Room : < 30 minutes
+
+5.4.5 Bed Manager updates HMIS to "Reserved" once allocated.
+      Ward receiving nurse is notified via HMIS alert and phone call.
+
+--------------------------------------------------------------------
+
+5.5 STEP 5: PATIENT TRANSPORT TO WARD
+
+5.5.1 ER Patient: Transported by orderly/ward boy with Triage Nurse
+      or ER Nurse escort. For ESI 1/2 patients or those on oxygen or
+      IV drips, a Nurse must accompany.
+
+5.5.2 Mandatory handover checklist at ward:
+        [ ] Patient identity verified (PRN wristband)
+        [ ] Current vital signs communicated
+        [ ] Active medication / IV infusion details
+        [ ] Allergy status communicated
+        [ ] Pending investigation results flagged
+        [ ] Physician admission orders accessible in HMIS
+
+5.5.3 Receiving Ward Nurse acknowledges handover in HMIS.
+      HMIS bed status auto-updates from "Reserved" to "Occupied."
+
+--------------------------------------------------------------------
+
+5.6 STEP 6: INITIAL NURSING ASSESSMENT IN WARD
+
+Upon patient arrival at the ward, the Nurse must complete within
+60 minutes:
+  - Full nursing assessment (functional status, fall risk — Morse
+    Scale, pressure ulcer risk — Braden Scale, pain assessment)
+  - Care plan initiation in HMIS
+  - Notification to Nutrition team if dietary order is flagged
+  - Confirmation of emergency contact and next-of-kin details
+  - Patient and family orientation to ward (call bell, visiting
+    hours, escalation process)
+
+--------------------------------------------------------------------
+6. ESCALATION MATRIX
+--------------------------------------------------------------------
+
+Situation                              Escalate To
+---------------------------------------------------------
+No bed available > 60 min for IP       Medical Superintendent
+ESI 1 patient with no ICU bed          ICU In-charge + Medical Director
+HMIS system down > 30 min             IT Helpdesk + HMIS Admin + COO
+Conflict over bed allocation           Bed Manager → COO
+LAMA with medicolegal risk             Medical Social Worker → Medical
+                                       Director + Legal Cell
+Unidentified / MLC patient             Duty Medical Officer → Hospital
+                                       Administration → Police (as reqd)
+---------------------------------------------------------
+
+--------------------------------------------------------------------
+7. KEY PERFORMANCE INDICATORS (KPIs)
+--------------------------------------------------------------------
+
+Metric                                Target        Measurement
+---------------------------------------------------------------
+Triage completion within 5 min         > 95%        Monthly audit
+ESI 1 physician contact < 0 min       100%          HMIS timestamp
+ESI 2 physician contact < 10 min       > 95%        HMIS timestamp
+Bed allocation time (General) < 45 min > 90%        HMIS timestamp
+Bed turnaround time (vacated) < 45 min > 90%        Housekeeping log
+Nursing assessment within 60 min       > 95%        HMIS timestamp
+Wristband applied within 10 min        > 98%        Random audit
+HMIS registration completeness         100%         Daily HMIS report
+---------------------------------------------------------------
+
+--------------------------------------------------------------------
+8. RECORDS AND DOCUMENTATION
+--------------------------------------------------------------------
+
+Record                    Format      Retention     Custodian
+---------------------------------------------------------------
+Triage Register           HMIS        7 years       Medical Records
+Admission Register        HMIS        Permanent     Medical Records
+LAMA Declaration Form     Paper+Scan  10 years      Medical Records
+Bed Allocation Log        HMIS        3 years       Bed Manager
+Handover Checklist        Paper+HMIS  2 years       Ward Nurse
+Daily Bed Census Report   HMIS/PDF    1 year        HMIS Admin
+---------------------------------------------------------------
+
+--------------------------------------------------------------------
+9. REFERENCES
+--------------------------------------------------------------------
+
+  - NABH Standards for Hospitals (5th Edition), Chapter 3: Access,
+    Assessment, and Continuity of Care (AAC)
+  - Digital Personal Data Protection Act, 2023 (for patient data)
+  - MCI / NMC Code of Medical Ethics (relevant sections)
+  - Sunrise Hospital Policy: Patient Rights and Responsibilities
+    (Document: POL-PT-RTS-001)
+  - Sunrise Hospital Surge Capacity Protocol (SOP-OPS-SURGE-001)
+  - MediSync v4.2 User Manual — ADT Module
+
+--------------------------------------------------------------------
+10. REVISION HISTORY
+--------------------------------------------------------------------
+
+Version   Date            Author                Changes
+--------------------------------------------------------------------
+1.0       March 2019      Dr. P. Raghavan       Initial issue
+1.1       September 2020  Q&PS Team             COVID-19 addendum
+           (addendum)                            (now retired)
+2.0       January 2023    Q&PS / Med Director   Full revision: ESI
+                                                 adoption, HMIS v4
+2.1       August 2024     Q&PS Team             DPDP Act compliance
+                                                 notes; KPI section
+                                                 added; LAMA process
+                                                 updated
+--------------------------------------------------------------------
+
+====================================================================
+END OF DOCUMENT
+
+Quality & Patient Safety Department
+Sunrise MultiSpecialty Hospital | Hyderabad
+Document Control System Reference: SOP-OPS-ADM-014-v2.1
+====================================================================

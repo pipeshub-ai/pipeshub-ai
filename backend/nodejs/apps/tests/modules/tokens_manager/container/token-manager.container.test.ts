@@ -56,15 +56,25 @@ describe('tokens_manager/container/token-manager.container', () => {
       const mockMongo = { isConnected: sinon.stub().returns(true), destroy: sinon.stub().resolves() }
       const mockRedis = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() }
       const mockMessageProducer = { isConnected: sinon.stub().returns(true), disconnect: sinon.stub().resolves() }
+      const mockRecordsEventProducer = { stop: sinon.stub().resolves() }
+      const mockSyncEventProducer = { stop: sinon.stub().resolves() }
 
       const mockContainer = {
         isBound: sinon.stub().callsFake((key: string) =>
-          ['MongoService', 'RedisService', 'MessageProducer'].includes(key),
+          [
+            'MongoService',
+            'RedisService',
+            'MessageProducer',
+            'RecordsEventProducer',
+            'SyncEventProducer',
+          ].includes(key),
         ),
         get: sinon.stub().callsFake((key: string) => {
           if (key === 'MongoService') return mockMongo
           if (key === 'RedisService') return mockRedis
           if (key === 'MessageProducer') return mockMessageProducer
+          if (key === 'RecordsEventProducer') return mockRecordsEventProducer
+          if (key === 'SyncEventProducer') return mockSyncEventProducer
           return null
         }),
       };
@@ -72,6 +82,8 @@ describe('tokens_manager/container/token-manager.container', () => {
 
       await TokenManagerContainer.dispose()
 
+      expect(mockRecordsEventProducer.stop.calledOnce).to.be.true
+      expect(mockSyncEventProducer.stop.calledOnce).to.be.true
       expect(mockRedis.disconnect.calledOnce).to.be.true
       expect(mockMessageProducer.disconnect.calledOnce).to.be.true
       expect(mockMongo.destroy.calledOnce).to.be.true

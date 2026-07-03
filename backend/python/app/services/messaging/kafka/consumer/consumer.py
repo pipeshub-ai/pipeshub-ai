@@ -9,6 +9,11 @@ from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
 from app.services.messaging.config import MessageHandler, StreamMessage
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
+from app.utils.request_context import (
+    context_from_envelope,
+    reset_context,
+    set_context,
+)
 
 # Concurrency control settings
 MAX_CONCURRENT_TASKS = 5  # Maximum number of messages to process concurrently
@@ -181,8 +186,11 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                 )
                 return False
 
-            # Call the provided message handler
+            # Carry the producer's trace id into consumer-side logs.
             if self.message_handler and parsed_message:
+                envelope = parsed_message if isinstance(parsed_message, dict) else {}
+                ctx = context_from_envelope(envelope)
+                token = set_context(ctx.root_id)
                 try:
                     stream_message = StreamMessage(**parsed_message)
                     return await self.message_handler(stream_message)
@@ -192,6 +200,8 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                         exc_info=True,
                     )
                     return False
+                finally:
+                    reset_context(token)
             else:
                 self.logger.error(f"No message handler available for {message_id}")
                 return False

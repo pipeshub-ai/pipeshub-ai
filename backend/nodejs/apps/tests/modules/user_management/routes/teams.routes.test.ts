@@ -49,12 +49,6 @@ describe('Teams Routes', () => {
     expect(router).to.be.a('function');
   });
 
-  it('should have route handlers registered', () => {
-    const router = createTeamsRouter(container);
-    const routes = (router as any).stack || [];
-    expect(routes.length).to.be.greaterThan(0);
-  });
-
   describe('route registration', () => {
     it('should register POST / route for creating team', () => {
       const router = createTeamsRouter(container);
@@ -133,7 +127,6 @@ describe('Teams Routes', () => {
       );
       expect(usersRoute).to.not.be.undefined;
     });
-
   });
 
   describe('route count', () => {
@@ -147,46 +140,72 @@ describe('Teams Routes', () => {
   });
 
   describe('middleware chains', () => {
-    it('should include auth and metrics middleware on each route', () => {
+    it('should include auth middleware on all routes', () => {
       const router = createTeamsRouter(container);
       const routes = (router as any).stack.filter((layer: any) => layer.route);
 
       for (const routeLayer of routes) {
-        const handlerCount = routeLayer.route.stack.length;
-        // Each route should have at least auth + requireScopes + metrics + handler
-        expect(handlerCount).to.be.greaterThanOrEqual(2,
-          `Route ${routeLayer.route.path} should have at least 2 handlers`);
+        // Each route must have at least: authenticate + handler = 2 handlers in its stack
+        expect(routeLayer.route.stack.length).to.be.greaterThanOrEqual(2,
+          `Route ${routeLayer.route.methods} ${routeLayer.route.path} should include auth middleware`);
       }
     });
 
-    it('should have validation middleware on create route', () => {
+    it('should have full middleware chain on write routes (POST, PUT, DELETE)', () => {
       const router = createTeamsRouter(container);
-      const routes = (router as any).stack.filter((layer: any) => layer.route);
+      const writeRoutes = [
+        { path: '/', method: 'post' },
+        { path: '/:teamId', method: 'put' },
+        { path: '/:teamId', method: 'delete' },
+      ];
 
-      const createRoute = routes.find(
-        (layer: any) => layer.route.path === '/' && layer.route.methods.post,
-      );
-      expect(createRoute).to.not.be.undefined;
-      // auth + requireScopes + metrics + validation + handler
-      expect(createRoute.route.stack.length).to.be.greaterThanOrEqual(3);
+      for (const { path, method } of writeRoutes) {
+        const routeLayer = (router as any).stack.find(
+          (l: any) => l.route && l.route.path === path && l.route.methods[method],
+        );
+        expect(routeLayer).to.not.be.undefined;
+        // authenticate + requireScopes + metricsMiddleware + validate + handler = 5
+        expect(routeLayer.route.stack.length).to.equal(5,
+          `${method.toUpperCase()} ${path} should have 5 middleware handlers`);
+      }
+    });
+
+    it('should have full middleware chain on read routes (GET)', () => {
+      const router = createTeamsRouter(container);
+      const readRoutes = [
+        { path: '/user/teams', method: 'get' },
+        { path: '/:teamId', method: 'get' },
+        { path: '/:teamId/users', method: 'get' },
+      ];
+
+      for (const { path, method } of readRoutes) {
+        const routeLayer = (router as any).stack.find(
+          (l: any) => l.route && l.route.path === path && l.route.methods[method],
+        );
+        expect(routeLayer).to.not.be.undefined;
+        // authenticate + requireScopes + metricsMiddleware + validate + handler = 5
+        expect(routeLayer.route.stack.length).to.equal(5,
+          `${method.toUpperCase()} ${path} should have 5 middleware handlers`);
+      }
     });
   });
 
-  describe('route handler invocations', () => {
+  describe('handler wiring', () => {
+    const VALID_TEAM_ID = '550e8400-e29b-41d4-a716-446655440000';
+
     function findRouteHandler(router: any, path: string, method: string) {
       const layer = router.stack.find(
         (l: any) => l.route && l.route.path === path && l.route.methods[method],
       );
-      if (!layer) return undefined;
-      const handlers = layer.route.stack.map((s: any) => s.handle);
-      return handlers[handlers.length - 1];
+      if (!layer) return null;
+      return layer.route.stack[layer.route.stack.length - 1].handle;
     }
 
     function createMockReqRes() {
       const mockReq: any = {
-        user: { userId: 'user123', orgId: 'org123' },
-        body: {},
-        params: { teamId: 'team123' },
+        user: { userId: '507f1f77bcf86cd799439011', orgId: '507f1f77bcf86cd799439012' },
+        body: { name: 'Team' },
+        params: { teamId: VALID_TEAM_ID },
         query: {},
         headers: {},
       };
@@ -201,11 +220,8 @@ describe('Teams Routes', () => {
     it('POST / handler should call teamsController.createTeam', async () => {
       const router = createTeamsRouter(container);
       const handler = findRouteHandler(router, '/', 'post');
-      expect(handler).to.not.be.undefined;
-
-      const { mockReq, mockRes, mockNext } = createMockReqRes();
-      await handler(mockReq, mockRes, mockNext);
-
+      const next = sinon.stub();
+      await handler({ body: { name: 'Team' } }, { status: sinon.stub().returnsThis(), json: sinon.stub() }, next);
       expect(mockTeamsController.createTeam.calledOnce).to.be.true;
     });
 

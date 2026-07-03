@@ -267,12 +267,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Shutting down embedding server")
 
 
+from app.api.middlewares.request_context import RequestContextMiddleware
+from app.utils.request_context import set_service_suffix
+
+set_service_suffix("-es")
+
 app = FastAPI(
     title="Embedding Server API",
     description="OpenAI-compatible API for local dense embedding models",
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Trace context — outermost.
+app.add_middleware(RequestContextMiddleware)
 
 
 @app.get("/health")

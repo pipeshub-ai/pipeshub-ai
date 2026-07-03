@@ -21,7 +21,10 @@ from app.config.constants.arangodb import (
     GraphNames,
     LegacyCollectionNames,
     LegacyGraphNames,
+    FILE_MIME_TYPES,
+    get_mime_type_for_extension,
     MimeTypes,
+    normalize_file_extension,
     OriginTypes,
     ProgressStatus,
     QdrantCollectionNames,
@@ -224,6 +227,32 @@ class TestMimeTypes:
     def test_no_duplicate_values(self):
         values = [e.value for e in MimeTypes]
         assert len(values) == len(set(values))
+
+
+class TestFileMimeTypes:
+    def test_file_mime_types_maps_pdf_extension(self):
+        assert FILE_MIME_TYPES[".pdf"] == MimeTypes.PDF
+
+    def test_normalize_file_extension_strips_dot_and_lowercases(self):
+        assert normalize_file_extension(".PDF") == "pdf"
+        assert normalize_file_extension("mdx") == "mdx"
+        assert normalize_file_extension(None) == ""
+        assert normalize_file_extension("") == ""
+
+    def test_get_mime_type_for_extension_known(self):
+        assert get_mime_type_for_extension("pdf") == MimeTypes.PDF.value
+        assert get_mime_type_for_extension(".docx") == MimeTypes.DOCX.value
+
+    def test_get_mime_type_for_extension_unknown_returns_fallback(self):
+        assert get_mime_type_for_extension(
+            "xyz", fallback="application/custom"
+        ) == "application/custom"
+        assert get_mime_type_for_extension("xyz") is None
+
+    def test_get_mime_type_for_extension_empty_returns_fallback(self):
+        assert get_mime_type_for_extension(
+            None, fallback=MimeTypes.UNKNOWN.value
+        ) == MimeTypes.UNKNOWN.value
 
 
 # ---------------------------------------------------------------------------

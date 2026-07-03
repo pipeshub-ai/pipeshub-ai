@@ -1,0 +1,333 @@
+------------------------------------------------------------------------
+MEETING MINUTES
+------------------------------------------------------------------------
+Organization  : Crestfield Insurance Group
+Meeting Title : Q4 Digital Transformation Steering Committee — Monthly Review
+Date          : November 7, 2024
+Time          : 10:00 AM – 12:15 PM IST
+Venue         : Board Room 2A, Head Office, Mumbai | + Video Conference
+Minute-taker  : Priya Anand, Project Management Office
+------------------------------------------------------------------------
+
+ATTENDEES (IN PERSON)
+------------------------------------------------------------------------
+1. Rajesh Kumar Nair       — Chief Digital Officer (Chair)
+2. Anita Sharma            — VP, IT Infrastructure
+3. Deepak Menon            — VP, Customer Experience
+4. Kavitha Sundaram        — Head, Data & Analytics
+5. Rohan Pillai            — Head, Compliance & Risk
+6. Meghna Tewari           — Head, Human Resources
+7. Sudarshan Rao           — Project Lead, Digital Core Program
+8. Priya Anand             — PMO (Minutes)
+
+ATTENDEES (VIDEO CONFERENCE)
+------------------------------------------------------------------------
+9.  Arun Krishnamurthy     — Regional Head, South India Operations
+10. Farida Khan            — Head, Actuary & Underwriting Analytics
+11. Nilesh Joshi           — CTO, TechEdge Consulting (Vendor)
+
+ABSENT / APOLOGIES
+------------------------------------------------------------------------
+- Girish Patel (CFO) — travel. Represented by Meena Handa (Finance).
+  Note: Meena Handa joined via VC at 11:00 AM for Agenda Item 4.
+
+------------------------------------------------------------------------
+AGENDA
+------------------------------------------------------------------------
+1. Approval of Previous Meeting Minutes (Oct 3, 2024)
+2. Program Status Update — Digital Core Program
+3. CRM Platform Migration — Phase 2 Update
+4. Budget Review: Q4 Actuals vs. Plan
+5. Data Privacy Compliance Update (DPDP Act 2023)
+6. Change Management & Training Rollout
+7. Risk Log Review
+8. Any Other Business (AOB)
+9. Next Steps and Close
+
+------------------------------------------------------------------------
+PROCEEDINGS
+------------------------------------------------------------------------
+
+ITEM 1: APPROVAL OF PREVIOUS MEETING MINUTES
+
+The minutes of the meeting held on October 3, 2024 were circulated prior
+to this meeting. Deepak Menon noted a correction: in Item 3, the go-live
+date for the self-service portal was stated as "November 30" but should
+read "December 15." The correction was accepted. Minutes were approved
+with this amendment.
+
+  ACTION: Priya Anand to recirculate corrected minutes by EOD Nov 8.
+
+------------------------------------------------------------------------
+
+ITEM 2: PROGRAM STATUS UPDATE — DIGITAL CORE PROGRAM
+
+Sudarshan Rao presented the overall program dashboard.
+
+Summary:
+  - 7 of 12 workstreams are on track (GREEN)
+  - 3 workstreams are at risk (AMBER): Policy Admin System migration,
+    Agent Portal enhancements, and Legacy Data Archival
+  - 2 workstreams are behind schedule (RED): Mobile App v2.0 and the
+    Document Management System (DMS) integration
+
+Policy Admin System (PAS) Migration [AMBER]:
+  The migration of 1.2 million legacy policies from the old ACES platform
+  to InsureCore is running approximately 3 weeks behind due to data quality
+  issues discovered during the parallel-run phase. Out of 47 data fields
+  mapped, 6 still have reconciliation gaps exceeding the 0.1% error threshold.
+
+  Nilesh Joshi (TechEdge) confirmed that his team has added 4 additional
+  data engineers to the reconciliation effort. He committed to clearing
+  the backlog by November 22, 2024.
+
+  Rajesh Kumar Nair emphasized that the parallel run must not be closed
+  until reconciliation error rate is below 0.05% on all fields.
+
+  ACTION [P1]: TechEdge / Sudarshan Rao — Submit daily reconciliation
+  status reports to PMO from Nov 8 onward. Due: Daily, starting Nov 8.
+
+Mobile App v2.0 [RED]:
+  The iOS build has been delayed due to Apple's App Store review rejection
+  (two cycles). Rejection reasons: privacy manifest incomplete and a
+  third-party SDK flagged for deprecated API usage.
+
+  Anita Sharma confirmed that the development team has resolved the privacy
+  manifest issue and replaced the deprecated SDK. The resubmission was
+  made on November 5. Expected review turnaround: 5–7 business days.
+
+  If the app is approved by November 15, the release can proceed on
+  November 22 as planned. If not, launch will slip to December 10.
+
+  ACTION [P1]: Anita Sharma — Monitor App Store status daily and flag
+  immediately if another rejection occurs. Escalation path: CDO.
+
+DMS Integration [RED]:
+  The Document Management System integration with the claims workflow has
+  hit a blocker: the on-premise DMS (OpenText v16.2) is not compatible
+  with the new claims API's OAuth 2.0 token format. OpenText support has
+  confirmed a patch is available but requires a version upgrade to v16.4.
+
+  The upgrade has a testing window requirement of 3 weeks minimum.
+  Options discussed:
+    (a) Expedite upgrade — go-live pushed to Jan 15, 2025
+    (b) Build a token-translation middleware layer (4-week effort)
+    (c) Phase the integration — basic document upload in scope by Dec,
+        advanced workflow features in Q1 2025
+
+  Decision: Option (c) was agreed upon as the pragmatic path. The phased
+  approach will be reflected in the program plan by next steering.
+
+  ACTION: Sudarshan Rao — Update program plan with phased DMS scope
+  and circulate revised plan by Nov 14.
+
+------------------------------------------------------------------------
+
+ITEM 3: CRM PLATFORM MIGRATION — PHASE 2 UPDATE
+
+Deepak Menon presented the CRM (Salesforce) Phase 2 update.
+
+Phase 1 (Sales Cloud) is live for all 1,400+ field agents across
+17 regional offices. Adoption rate is at 84%, slightly below the 90%
+target. Deepak attributed this to resistance from senior agents (15+
+years experience) in Tier-2 cities who prefer existing Excel-based
+processes.
+
+Phase 2 scope: Service Cloud implementation for the claims and
+customer service teams (approx. 600 users), targeting go-live on
+January 31, 2025.
+
+Key milestones for Phase 2:
+  - Business Requirements Sign-off         : Completed Oct 25, 2024
+  - Configuration Sprint 1 (5 weeks)       : Nov 1 – Dec 6, 2024
+  - User Acceptance Testing (UAT)          : Dec 9 – Dec 23, 2024
+  - Training (claims team)                 : Jan 6 – Jan 17, 2025
+  - Go-live                                : Jan 31, 2025
+
+Farida Khan raised a concern that the Underwriting Analytics team's
+custom loss ratio dashboards in the old CRM have not been replicated
+in Salesforce yet. TechEdge confirmed this is in scope under the
+Analytics workstream but is currently scheduled for March 2025.
+
+Farida requested this be brought forward to Phase 2 given its
+operational criticality. Rajesh noted this would need a scope change
+request with budget and timeline implications.
+
+  ACTION: Deepak Menon and Farida Khan to jointly assess feasibility
+  of pulling in underwriting dashboards into Phase 2. Present options
+  at Dec steering meeting.
+
+------------------------------------------------------------------------
+
+ITEM 4: BUDGET REVIEW — Q4 ACTUALS VS. PLAN
+
+Meena Handa (Finance, joining via VC) presented the Q4 budget status.
+
+                         Q4 Budget (Cr)   Q4 Actuals (Cr)   Variance
+  -----------------------------------------------------------------------
+  Software Licensing         3.80              3.60           +0.20
+  Vendor / Consulting        8.20              9.10           -0.90
+  Hardware & Infra           2.10              1.75           +0.35
+  Training & L&D             0.60              0.42           +0.18
+  Internal Staff (charged)   2.50              2.65           -0.15
+  Contingency                1.00              0.30           +0.70
+  -----------------------------------------------------------------------
+  TOTAL (Q4, YTD Oct)       18.20             17.82           +0.38
+
+The overall Q4 program spend is INR 0.38 crore under budget at the
+end of October. However, the vendor cost overrun of INR 0.90 crore
+reflects the additional TechEdge resources for PAS reconciliation.
+
+Rajesh noted that if the PAS effort continues at this pace into November,
+the contingency buffer will be fully consumed. He directed Finance and PMO
+to flag immediately if the program is projected to exceed total budget.
+
+Contingency drawdown requests now require CDO approval.
+
+  ACTION: Meena Handa — Prepare revised Q4 forecast incorporating
+  PAS overrun risk. Share with CDO and CFO by Nov 12.
+
+------------------------------------------------------------------------
+
+ITEM 5: DATA PRIVACY COMPLIANCE UPDATE (DPDP ACT 2023)
+
+Rohan Pillai presented the compliance readiness status with respect to
+India's Digital Personal Data Protection Act, 2023.
+
+Current Status:
+  - Data inventory (mapping of personal data flows): 80% complete
+  - Consent management framework: Design approved; implementation 60%
+  - Privacy notices update (policy documents, website): 90% complete
+  - Data Principal rights mechanism (access, correction, erasure): 25%
+    (significant work remaining)
+  - Vendor DPA (Data Processing Agreements) review: 40 of 112 done
+
+Target: Full compliance readiness by March 31, 2025 (ahead of expected
+enforcement commencement).
+
+Key risk flagged by Rohan: The proposed consent management architecture
+requires a new database table structure that needs to be integrated with
+both the legacy PAS and the new InsureCore system. Given that both systems
+are in active migration, the compliance team is requesting a dedicated
+sprint (2 weeks) from TechEdge specifically for consent module integration.
+
+Nilesh Joshi agreed to scope this into the November plan but noted
+it may impact PAS reconciliation bandwidth. Rohan and Sudarshan to
+coordinate sprint prioritization.
+
+  ACTION: Rohan Pillai and Sudarshan Rao — Finalise consent module
+  integration sprint plan by Nov 15 and confirm resource allocation.
+
+------------------------------------------------------------------------
+
+ITEM 6: CHANGE MANAGEMENT & TRAINING ROLLOUT
+
+Meghna Tewari presented the change management update.
+
+  - Digital Readiness Assessment: Completed for all 3,200 employees
+    - 38% assessed as "digitally proficient"
+    - 49% assessed as "developing"
+    - 13% assessed as "requiring intensive support"
+
+  - Training delivered YTD (Oct):
+    - InsureCore Awareness Sessions : 1,840 employees (57%)
+    - Salesforce Sales Cloud Basic  :   890 employees (completed target)
+    - Cybersecurity Awareness (mandatory): 2,910 employees (91%)
+
+  - Upcoming:
+    - InsureCore Role-Based Training (Nov–Dec): 850 employees (Ops + Claims)
+    - Mobile App User Orientation: Dec 2024 (post-launch)
+
+  - Challenges:
+    - Tier-2 city attendance rates are lower (avg. 62% vs. 85% target)
+    - Language barriers: training content available only in English and Hindi;
+      regional language versions (Tamil, Telugu, Marathi) still in development.
+
+  ACTION: Meghna Tewari — Accelerate Tamil and Telugu training content
+  translation. Target completion: December 15. Engage regional HR heads
+  to improve attendance rates in Tier-2 cities.
+
+------------------------------------------------------------------------
+
+ITEM 7: RISK LOG REVIEW
+
+Top 5 risks reviewed:
+
+ID     Description                          Likelihood  Impact  Status
+-----------------------------------------------------------------------
+R-01   PAS reconciliation delays further    HIGH        HIGH    OPEN
+       pushing go-live beyond Dec 31
+R-02   App Store rejection causes mobile    MED         HIGH    OPEN
+       app launch to slip to Q1 2025
+R-03   DPDP compliance gap if consent       MED         HIGH    OPEN
+       module not integrated in time
+R-04   CRM adoption below 90% among         MED         MED     OPEN
+       field agents at end of program
+R-05   Key TechEdge consultant attrition    LOW         HIGH    WATCH
+       causing knowledge loss
+-----------------------------------------------------------------------
+
+No risks were closed this cycle. R-05 was elevated from LOW to WATCH
+after Nilesh Joshi disclosed that one of the two lead architects has
+received an external offer. TechEdge is managing internally.
+
+  ACTION: Nilesh Joshi — Provide succession/knowledge transfer plan for
+  the architect role by Nov 21 as a contingency measure.
+
+------------------------------------------------------------------------
+
+ITEM 8: ANY OTHER BUSINESS (AOB)
+
+  8.1 Arun Krishnamurthy requested that the South India Operations team
+  be given access to the program dashboard on SharePoint. Sudarshan Rao
+  confirmed access will be granted by Nov 11.
+
+  8.2 Kavitha Sundaram informed the committee that the new Data Lake
+  (Azure ADLS Gen2) has been provisioned and the first 3 data pipelines
+  (policy, claims, agent performance) are live. Full onboarding of
+  business teams will begin in December.
+
+  8.3 Rajesh reminded all workstream leads that the program's Board-level
+  presentation is scheduled for December 5. All leads must submit their
+  slide inputs to PMO by November 28.
+
+------------------------------------------------------------------------
+
+ITEM 9: NEXT STEPS SUMMARY
+------------------------------------------------------------------------
+
+  #    Action                                  Owner           Due Date
+  -----------------------------------------------------------------------
+  1    Recirculate corrected Oct minutes        Priya Anand     Nov 8
+  2    Daily PAS reconciliation reports         Sudarshan / TechEdge  Daily
+  3    App Store status monitoring              Anita Sharma    Ongoing
+  4    Revised program plan (phased DMS)        Sudarshan Rao   Nov 14
+  5    CRM dashboard options for Underwriting   Deepak / Farida Dec Steer
+  6    Q4 revised budget forecast               Meena Handa     Nov 12
+  7    Consent module sprint plan               Rohan / Sudarshan Nov 15
+  8    Language training content completion     Meghna Tewari   Dec 15
+  9    TechEdge architect succession plan       Nilesh Joshi    Nov 21
+  10   SharePoint access for South India Ops    Sudarshan Rao   Nov 11
+  11   Board presentation slide inputs          All Leads       Nov 28
+  -----------------------------------------------------------------------
+
+------------------------------------------------------------------------
+NEXT MEETING
+------------------------------------------------------------------------
+Date  : December 5, 2024
+Time  : 10:00 AM – 12:00 PM IST
+Venue : Board Room 2A, Head Office, Mumbai + VC
+Chair : Rajesh Kumar Nair (CDO)
+
+NOTE: This will be a combined Steering Committee + Board Pre-read session.
+All workstream leads are required to attend in person if possible.
+
+------------------------------------------------------------------------
+Meeting adjourned at 12:15 PM IST.
+
+Minutes prepared by: Priya Anand, PMO
+Reviewed by       : Sudarshan Rao, Program Lead
+Approved by       : Rajesh Kumar Nair, CDO
+
+Distribution: All attendees + CFO + MD & CEO office
+------------------------------------------------------------------------

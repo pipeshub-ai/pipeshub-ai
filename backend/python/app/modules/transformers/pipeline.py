@@ -141,12 +141,13 @@ class IndexingPipeline:
                 )
 
                 docs = [record_dict]
-                success = await self.document_extraction.graph_provider.batch_upsert_nodes(
+                success = await self.document_extraction.graph_provider.batch_update_nodes(
                     docs, CollectionNames.RECORDS.value
                 )
                 if not success:
-                    raise DocumentProcessingError(
-                        "Failed to update indexing status for record id: " + record_id
+                    self.logger.warning(
+                        "⚠️ Failed to update indexing status for record %s - record may not exist",
+                        record_id,
                     )
                 return
             if ctx.reconciliation_context is None:

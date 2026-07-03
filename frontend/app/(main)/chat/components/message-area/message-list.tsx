@@ -9,7 +9,7 @@ import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AppliedFilters, AttachmentRef, ChatArtifact } from '../../types';
+import type { AppliedFilters, AskUserQuestionPayload, AttachmentRef, ChatArtifact } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
@@ -78,6 +78,8 @@ interface MessagePair {
   createdAt?: string;
   /** Attachments uploaded with this user query (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
+  /** Persisted ask_user_question payload from a historical tool_call (read-only display) */
+  persistedAskUserQuestion?: AskUserQuestionPayload;
 }
 
 export function MessageList() {
@@ -253,12 +255,14 @@ export function MessageList() {
           confidence?: ConfidenceLevel;
           modelInfo?: ModelInfo;
           feedbackInfo?: { value?: 'like' | 'dislike' };
+          persistedAskUserQuestion?: AskUserQuestionPayload;
         } } }).metadata?.custom as {
           messageId?: string;
           citationMaps?: CitationMaps;
           confidence?: ConfidenceLevel;
           modelInfo?: ModelInfo;
           feedbackInfo?: { value?: 'like' | 'dislike' };
+          persistedAskUserQuestion?: AskUserQuestionPayload;
         } | undefined;
 
         // Find preceding user message
@@ -302,13 +306,13 @@ export function MessageList() {
           isStreaming: isCurrentlyStreaming || isBeingRegenerated,
           modelInfo: metadata?.modelInfo,
           feedbackInfo: metadata?.feedbackInfo,
-          // Use streaming collections for the temp message; user metadata for the final message
           collections: isCurrentlyStreaming
             ? (pendingCollections.length > 0 ? pendingCollections : userMessageCollections)
             : userMessageCollections,
           appliedFilters: userMessageAppliedFilters,
           createdAt: userCreatedAt,
           attachments: userMessageAttachments,
+          persistedAskUserQuestion: metadata?.persistedAskUserQuestion,
         });
       }
     }
@@ -1104,6 +1108,8 @@ export function MessageList() {
                   currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
                   streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
                   streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
+                  persistedAskUserQuestion={pair.persistedAskUserQuestion}
+                  feedbackInfo={pair.feedbackInfo}
                 />
 
                 {/* Ask More — follow-up suggestions after the last bot response.

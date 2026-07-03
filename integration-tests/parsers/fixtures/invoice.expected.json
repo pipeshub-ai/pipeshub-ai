@@ -44,7 +44,16 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": [
+          "Description",
+          "Qty / Hrs",
+          "Unit Price",
+          "Discount",
+          "Amount"
+        ]
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -124,7 +133,10 @@
         ],
         "block_group_ranges": []
       },
-      "data": null,
+      "data": {
+        "table_summary": "",
+        "column_headers": []
+      },
       "format": null,
       "weburl": null,
       "comments": [],
@@ -135,17 +147,18 @@
     {
       "index": 0,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "Meridian Studio\n      Digital Design & Development\n      \n        12 Lavelle Road, Bengaluru — 560001\n        hello@meridianstudio.in · +91 98400 77321\n        GST: 29AABCM1234F1Z5\n    Tax Invoice\n      INV-2026-0084\n      \n        Issue Date: 10 June 2026\n        Due Date: 10 July 2026\n      \n      Awaiting Payment",
+      "data": "Meridian Studio\nDigital Design & Development\n\n        12 Lavelle Road, Bengaluru — 560001\n        hello@meridianstudio.in · +91 98400 77321\n        GST: 29AABCM1234F1Z5\nTax Invoice\nINV-2026-0084\n\n        Issue Date: 10 June 2026\n        Due Date: 10 July 2026\n\nAwaiting Payment",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -166,6 +179,7 @@
     {
       "index": 1,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -197,6 +211,7 @@
     {
       "index": 2,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -228,6 +243,7 @@
     {
       "index": 3,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -259,10 +275,11 @@
     {
       "index": 4,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -290,6 +307,7 @@
     {
       "index": 5,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -331,6 +349,7 @@
     {
       "index": 6,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -342,10 +361,10 @@
       "source_name": null,
       "source_type": null,
       "data": {
-        "row_natural_language_text": "Description: UI/UX Design — Web Platform\n[[\"Discovery & wireframes\", \"18 hrs\"], [\"High-fidelity design (12 screens)\", \"36 hrs\"], [\"Prototype & usability review\", \"10 hrs\"]], Qty / Hrs: 64 hrs, Unit Price: ₹4,500, Discount: –, Amount: ₹2,88,000",
+        "row_natural_language_text": "Description: UI/UX Design — Web Platform\n| Column 1 | Column 2 |\n| --- | --- |\n| Discovery & wireframes | 18 hrs |\n| High-fidelity design (12 screens) | 36 hrs |\n| Prototype & usability review | 10 hrs |, Qty / Hrs: 64 hrs, Unit Price: ₹4,500, Discount: –, Amount: ₹2,88,000",
         "row_number": 2,
         "cells": [
-          "UI/UX Design — Web Platform\n[[\"Discovery & wireframes\", \"18 hrs\"], [\"High-fidelity design (12 screens)\", \"36 hrs\"], [\"Prototype & usability review\", \"10 hrs\"]]",
+          "UI/UX Design — Web Platform\n| Column 1 | Column 2 |\n| --- | --- |\n| Discovery & wireframes | 18 hrs |\n| High-fidelity design (12 screens) | 36 hrs |\n| Prototype & usability review | 10 hrs |",
           "64 hrs",
           "₹4,500",
           "–",
@@ -372,6 +391,7 @@
     {
       "index": 7,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -413,6 +433,7 @@
     {
       "index": 8,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -454,6 +475,7 @@
     {
       "index": 9,
       "parent_index": 0,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -465,10 +487,10 @@
       "source_name": null,
       "source_type": null,
       "data": {
-        "row_natural_language_text": "Description: Hosting & Infra Setup (12-month prepaid)\n[[\"Vercel Pro plan\", \"₹18,000\"], [\"Domain registration (5 years)\", \"₹4,500\"], [\"Cloudflare CDN + SSL\", \"₹7,500\"]], Qty / Hrs: 1 lot, Unit Price: ₹30,000, Discount: –, Amount: ₹30,000",
+        "row_natural_language_text": "Description: Hosting & Infra Setup (12-month prepaid)\n| Column 1 | Column 2 |\n| --- | --- |\n| Vercel Pro plan | ₹18,000 |\n| Domain registration (5 years) | ₹4,500 |\n| Cloudflare CDN + SSL | ₹7,500 |, Qty / Hrs: 1 lot, Unit Price: ₹30,000, Discount: –, Amount: ₹30,000",
         "row_number": 5,
         "cells": [
-          "Hosting & Infra Setup (12-month prepaid)\n[[\"Vercel Pro plan\", \"₹18,000\"], [\"Domain registration (5 years)\", \"₹4,500\"], [\"Cloudflare CDN + SSL\", \"₹7,500\"]]",
+          "Hosting & Infra Setup (12-month prepaid)\n| Column 1 | Column 2 |\n| --- | --- |\n| Vercel Pro plan | ₹18,000 |\n| Domain registration (5 years) | ₹4,500 |\n| Cloudflare CDN + SSL | ₹7,500 |",
           "1 lot",
           "₹30,000",
           "–",
@@ -495,10 +517,11 @@
     {
       "index": 10,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "heading",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -526,6 +549,7 @@
     {
       "index": 11,
       "parent_index": 1,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -557,6 +581,7 @@
     {
       "index": 12,
       "parent_index": 1,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -588,6 +613,7 @@
     {
       "index": 13,
       "parent_index": 1,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -619,6 +645,7 @@
     {
       "index": 14,
       "parent_index": 1,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "list_item",
       "name": null,
@@ -650,6 +677,7 @@
     {
       "index": 15,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -688,6 +716,7 @@
     {
       "index": 16,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -726,6 +755,7 @@
     {
       "index": 17,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -737,10 +767,10 @@
       "source_name": null,
       "source_type": null,
       "data": {
-        "row_natural_language_text": "GST (18%)\n[[\"CGST 9%\", \"₹38,250\"], [\"SGST 9%\", \"₹38,250\"]], ₹76,500",
+        "row_natural_language_text": "GST (18%)\n| Column 1 | Column 2 |\n| --- | --- |\n| CGST 9% | ₹38,250 |\n| SGST 9% | ₹38,250 |, ₹76,500",
         "row_number": 3,
         "cells": [
-          "GST (18%)\n[[\"CGST 9%\", \"₹38,250\"], [\"SGST 9%\", \"₹38,250\"]]",
+          "GST (18%)\n| Column 1 | Column 2 |\n| --- | --- |\n| CGST 9% | ₹38,250 |\n| SGST 9% | ₹38,250 |",
           "₹76,500"
         ]
       },
@@ -764,6 +794,7 @@
     {
       "index": 18,
       "parent_index": 2,
+      "parent_block_index": null,
       "type": "table_row",
       "sub_type": null,
       "name": null,
@@ -802,6 +833,7 @@
     {
       "index": 19,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
@@ -812,7 +844,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "#### Bank Transfer Details\nAccount NameMeridian Studio LLP\n      Account Number004201600931\n      IFSC CodeICIC0000042\n      BankICICI Bank Ltd.\n      BranchLavelle Road, Bengaluru\n      ReferenceINV-2026-0084",
+      "data": "#### Bank Transfer Details\n\nAccount NameMeridian Studio LLP\nAccount Number004201600931\nIFSC CodeICIC0000042\nBankICICI Bank Ltd.\nBranchLavelle Road, Bengaluru\nReferenceINV-2026-0084",
       "links": null,
       "weburl": null,
       "public_data_link": null,
@@ -833,10 +865,11 @@
     {
       "index": 20,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,
@@ -864,10 +897,11 @@
     {
       "index": 21,
       "parent_index": null,
+      "parent_block_index": null,
       "type": "text",
       "sub_type": "paragraph",
       "name": null,
-      "format": "txt",
+      "format": "markdown",
       "comments": [],
       "source_creation_date": null,
       "source_update_date": null,

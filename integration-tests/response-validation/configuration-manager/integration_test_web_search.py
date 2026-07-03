@@ -17,10 +17,8 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import Dict
 
 import pytest
-import requests
 
 _ROOT = Path(__file__).resolve().parents[2]
 _RV_HELPER = _ROOT / "response-validation" / "helper"
@@ -29,7 +27,7 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
-from helper.pipeshub_client import PipeshubClient  # noqa: E402
+from helper.clients.config_client import ConfigClient  # noqa: E402
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
     assert_response_matches_openapi_ref,
@@ -37,21 +35,21 @@ from openapi_schema_validator import (  # noqa: E402
 
 logger = logging.getLogger("web-search-integration-test")
 
-_WEB_SEARCH_PATH = "/api/v1/configurationManager/web-search"
+
+# ------------------------------------------------------------------ #
+# Base test class
+# ------------------------------------------------------------------ #
+class WebSearchTestBase:
+    """Base class with shared config_client fixture."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, config_client: ConfigClient) -> None:
+        self.config = config_client
 
 
-def _auth_headers(client: PipeshubClient) -> Dict[str, str]:
-    client._ensure_access_token()
-    return {
-        "Authorization": f"Bearer {client._access_token}",
-        "Content-Type": "application/json",
-    }
-
-
-def _web_search_url(client: PipeshubClient) -> str:
-    return client._url(_WEB_SEARCH_PATH)
-
-
+# ------------------------------------------------------------------ #
+# Helpers
+# ------------------------------------------------------------------ #
 def _assert_error_envelope_matches_spec(body: dict) -> None:
     assert_response_matches_openapi_ref(body, "#/components/schemas/ErrorResponse")
 
@@ -76,23 +74,15 @@ def _assert_web_search_success_shape(body: dict) -> None:
     )
 
 
+# ==================================================================== #
+# GET /api/v1/configurationManager/web-search
+# ==================================================================== #
 @pytest.mark.integration
-class TestGetWebSearchProviders:
+class TestGetWebSearchProviders(WebSearchTestBase):
     """GET /configurationManager/web-search — getWebSearchProviders."""
 
-    @pytest.fixture(autouse=True)
-    def _setup(self, pipeshub_client: PipeshubClient) -> None:
-        self.client = pipeshub_client
-        self.headers = _auth_headers(pipeshub_client)
-        self.timeout = pipeshub_client.timeout_seconds
-        self.url = _web_search_url(pipeshub_client)
-
     def test_get_web_search_providers_200_matches_openapi(self) -> None:
-        resp = requests.get(
-            self.url,
-            headers=self.headers,
-            timeout=self.timeout,
-        )
+        resp = self.config.get_web_search_providers()
         assert resp.status_code == 200, (
             f"Expected 200, got {resp.status_code}: {resp.text[:500]}"
         )
@@ -103,11 +93,7 @@ class TestGetWebSearchProviders:
         _assert_web_search_success_shape(body)
 
     def test_get_web_search_missing_authorization(self) -> None:
-        resp = requests.get(
-            self.url,
-            headers={"Content-Type": "application/json"},
-            timeout=self.timeout,
-        )
+        resp = self.config.get("/web-search", auth=False)
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 without Authorization, got {resp.status_code}: "
             f"{resp.text[:500]}"
@@ -115,13 +101,10 @@ class TestGetWebSearchProviders:
         _assert_error_envelope_matches_spec(resp.json())
 
     def test_get_web_search_invalid_bearer_token(self) -> None:
-        resp = requests.get(
-            self.url,
-            headers={
-                "Authorization": "Bearer invalid-token",
-                "Content-Type": "application/json",
-            },
-            timeout=self.timeout,
+        resp = self.config.get(
+            "/web-search",
+            auth=False,
+            headers={"Authorization": "Bearer invalid-token"},
         )
         assert resp.status_code in (400, 401), (
             f"Expected 400/401 for invalid Bearer, got {resp.status_code}: "

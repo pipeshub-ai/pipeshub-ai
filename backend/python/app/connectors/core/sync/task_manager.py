@@ -8,6 +8,13 @@ import asyncio
 import logging
 from typing import Coroutine, Dict
 
+from app.utils.request_context import (
+    get_context,
+    new_system_root,
+    reset_context,
+    set_context,
+)
+
 
 class SyncTaskManager:
     """
@@ -41,8 +48,19 @@ class SyncTaskManager:
         # Cancel any existing task for this connector
         await self.cancel_sync(connector_id)
 
-        # Create and register the new task
-        task = asyncio.create_task(coro, name=f"sync_{connector_id}")
+        # Inherit the triggering request's context (create_task copies it); only
+        # a pure background trigger with no context mints a fresh root.
+        async def _traced() -> None:
+            if get_context() is not None:
+                await coro
+                return
+            token = set_context(new_system_root())
+            try:
+                await coro
+            finally:
+                reset_context(token)
+
+        task = asyncio.create_task(_traced(), name=f"sync_{connector_id}")
         self._tasks[connector_id] = task
 
         # Auto-remove the task from the registry once it finishes

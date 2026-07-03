@@ -534,6 +534,7 @@ export function ChatInput({
         : undefined;
       setActiveMessageAction(null);
       setRegenModelOverride(null);
+      setMessage('');
       if (activeSlotId) {
         streamRegenerateForSlot(activeSlotId, activeMessageAction.messageId, modelOverride, originalFilters);
       }
@@ -546,6 +547,7 @@ export function ChatInput({
       });
       setActiveMessageAction(null);
       setRegenModelOverride(null);
+      setMessage('');
       return;
     }
   }, [activeMessageAction, regenModelOverride, activeSlotId, t]);
@@ -685,7 +687,7 @@ export function ChatInput({
       handleDismissAction();
       return;
     }
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       handleSubmit(e);
     }

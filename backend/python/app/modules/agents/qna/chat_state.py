@@ -180,6 +180,7 @@ class ChatState(TypedDict):
     has_sql_knowledge: bool  # True when agent_knowledge contains a SQL connector (POSTGRESQL/SNOWFLAKE/MARIADB)
     has_slack_connector: bool  # True when org has at least one configured Slack connector
     has_slack_knowledge: bool  # True when agent_knowledge contains a Slack connector
+    has_ui_client: bool  # True when client-name header was present; gates UI-only tools like ask_user_question
 
 def _build_tool_to_toolset_map(toolsets: list[dict[str, Any]]) -> dict[str, str]:
     """
@@ -394,7 +395,7 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
 
 def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
-                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool,is_multimodal_llm: bool = False, has_slack_connector: bool = False) -> ChatState:
+                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, client_name: str | None = None) -> ChatState:
     """
     Build the initial state from the chat query and user info.
 
@@ -584,4 +585,5 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "has_sql_knowledge": has_sql_knowledge,
         "has_slack_connector": has_slack_connector,
         "has_slack_knowledge": has_slack_knowledge,
+        "has_ui_client": bool(client_name),
     }

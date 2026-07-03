@@ -235,6 +235,7 @@ class TestTransformToWebpageRecord:
         rec = c._transform_to_webpage_record(data, RecordType.CONFLUENCE_PAGE)
         assert rec is not None
         assert rec.record_name == "Test Page"
+        assert rec.mime_type == MimeTypes.HTML.value
         assert rec.external_record_group_id == "100"
         assert rec.parent_external_record_id == "p0"
 
@@ -248,6 +249,7 @@ class TestTransformToWebpageRecord:
         }
         rec = c._transform_to_webpage_record(data, RecordType.CONFLUENCE_BLOGPOST)
         assert rec is not None
+        assert rec.mime_type == MimeTypes.HTML.value
         assert rec.parent_external_record_id == "parent1"
 
     def test_no_space(self):
@@ -575,7 +577,7 @@ class TestFetchPageContent:
         c = _c()
         mock_ds = MagicMock()
         mock_ds.get_page_content_v2 = AsyncMock(return_value=_resp(200, {
-            "body": {"export_view": {"value": "<p>Content</p>"}},
+            "body": {"styled_view": {"value": "<p>Content</p>"}},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         result = await c._fetch_page_content("p1", RecordType.CONFLUENCE_PAGE)
@@ -586,7 +588,7 @@ class TestFetchPageContent:
         c = _c()
         mock_ds = MagicMock()
         mock_ds.get_blogpost_content_v2 = AsyncMock(return_value=_resp(200, {
-            "body": {"export_view": {"value": "<p>Blog</p>"}},
+            "body": {"styled_view": {"value": "<p>Blog</p>"}},
         }))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         result = await c._fetch_page_content("b1", RecordType.CONFLUENCE_BLOGPOST)

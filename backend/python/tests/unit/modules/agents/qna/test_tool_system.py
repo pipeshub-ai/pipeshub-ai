@@ -227,6 +227,16 @@ class TestIsInternalTool:
         tool = _make_registry_tool(app_name="utility")
         assert _is_internal_tool("utility.helper", tool) is True
 
+    def test_internaltools_app_name(self):
+        """Tool with app_name='internaltools' is internal (e.g. ask_user_question)."""
+        tool = _make_registry_tool(app_name="internaltools")
+        assert _is_internal_tool("internaltools.ask_user_question", tool) is True
+
+    def test_internaltools_full_name_pattern(self):
+        """Full name containing 'internaltools.' matches internal pattern."""
+        tool = _make_registry_tool()
+        assert _is_internal_tool("internaltools.ask_user_question", tool) is True
+
     def test_metadata_category_internal(self):
         """Tool with metadata.category containing 'internal' is internal."""
         metadata = SimpleNamespace(category="internal", is_internal=False)

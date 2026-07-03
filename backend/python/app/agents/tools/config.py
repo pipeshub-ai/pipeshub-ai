@@ -116,6 +116,9 @@ class ToolDiscoveryConfig:
         "image_generator": AppConfiguration(
             app_name="image_generator",
         ),
+        "internaltools": AppConfiguration(
+            app_name="internaltools",
+        ),
         "google": AppConfiguration(
             app_name="google",
             subdirectories=["gmail", "calendar", "drive", "meet"],
@@ -242,6 +245,7 @@ class ToolDiscoveryConfig:
         "get_current_datetime",
         "retrieval.search_internal_knowledge",
         "image_generator.",
+        "ask_user_question",
     }
 
     # Files to skip during discovery

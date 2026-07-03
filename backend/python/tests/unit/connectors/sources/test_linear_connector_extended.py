@@ -216,7 +216,7 @@ class TestTransformIssueToTicketRecord:
         ticket = connector._transform_issue_to_ticket_record(issue, "team-1")
 
         assert ticket.record_type == RecordType.TICKET
-        assert ticket.record_name == "Test Issue"
+        assert ticket.record_name == "[ENG-1] Test Issue"
         assert ticket.external_record_id == "issue-1"
         assert ticket.external_record_group_id == "team-1"
         assert ticket.connector_id == "linear-test-1"

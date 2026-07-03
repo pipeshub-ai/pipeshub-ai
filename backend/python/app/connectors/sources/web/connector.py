@@ -17,6 +17,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
     Connectors,
+    FILE_MIME_TYPES,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
@@ -114,35 +115,6 @@ RETRYABLE_STATUS_CODES = {
 _BACKOFF_BASE = 15.0
 _BACKOFF_CAP = 120.0
 MAX_RETRIES = 2
-
-# MIME type mapping for common file extensions
-FILE_MIME_TYPES = {
-    '.pdf': MimeTypes.PDF,
-    '.doc': MimeTypes.DOC,
-    '.docx': MimeTypes.DOCX,
-    '.xls': MimeTypes.XLS,
-    '.xlsx': MimeTypes.XLSX,
-    '.ppt': MimeTypes.PPT,
-    '.pptx': MimeTypes.PPTX,
-    '.txt': MimeTypes.PLAIN_TEXT,
-    '.csv': MimeTypes.CSV,
-    '.tsv': MimeTypes.TSV,
-    '.json': MimeTypes.JSON,
-    '.xml': MimeTypes.XML,
-    '.zip': MimeTypes.ZIP,
-    '.jpg': MimeTypes.JPEG,
-    '.jpeg': MimeTypes.JPEG,
-    '.png': MimeTypes.PNG,
-    '.gif': MimeTypes.GIF,
-    '.svg': MimeTypes.SVG,
-    '.webp': MimeTypes.WEBP,
-    '.heic': MimeTypes.HEIC,
-    '.heif': MimeTypes.HEIF,
-    '.html': MimeTypes.HTML,
-    '.htm': MimeTypes.HTML,
-    '.md': MimeTypes.MARKDOWN,
-    '.mdx': MimeTypes.MDX,
-}
 
 DOCUMENT_MIME_TYPES = {
     MimeTypes.PDF.value,
@@ -275,14 +247,6 @@ class WebApp(App):
             filter_type=FilterType.BOOLEAN,
             category=FilterCategory.INDEXING,
             description="Enable indexing of images",
-            default_value=True
-        ))
-        .add_filter_field(FilterField(
-            name=IndexingFilterKey.VIDEOS.value,
-            display_name="Index Videos",
-            filter_type=FilterType.BOOLEAN,
-            category=FilterCategory.INDEXING,
-            description="Enable indexing of videos",
             default_value=True
         ))
         .add_filter_field(FilterField(

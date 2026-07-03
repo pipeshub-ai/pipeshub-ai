@@ -84,7 +84,7 @@ async def _collect_events(async_gen):
 
 # ===================================================================
 # Lines 156-157: process_image - non-DocumentProcessingError wrapping
-# When batch_upsert_nodes raises a generic Exception (not
+# When batch_update_nodes raises a generic Exception (not
 # DocumentProcessingError), it should be wrapped.
 # ===================================================================
 
@@ -97,8 +97,8 @@ class TestProcessImageNonDocError:
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="photo.png", mimeType="image/png")
         )
-        # batch_upsert_nodes raises a generic error
-        proc.graph_provider.batch_upsert_nodes = AsyncMock(
+        # batch_update_nodes raises a generic error
+        proc.graph_provider.batch_update_nodes = AsyncMock(
             side_effect=RuntimeError("db connection lost")
         )
 
@@ -739,6 +739,51 @@ class TestBuildUpdatedBlocksContainerParentOffsets:
         assert isinstance(result, BlocksContainer)
 
 
+class TestFinalizeProcessedBlockgroupData:
+    def test_clears_string_data_after_processing(self):
+        from app.models.blocks import (
+            Block,
+            BlockGroup,
+            BlocksContainer,
+            BlockType,
+            DataFormat,
+            GroupType,
+        )
+
+        proc = _make_processor()
+        bg0 = BlockGroup(
+            index=0,
+            type=GroupType.TEXT_SECTION,
+            requires_processing=True,
+            data="# markdown",
+            format=DataFormat.MARKDOWN,
+        )
+        block_containers = BlocksContainer(blocks=[], block_groups=[bg0])
+        new_block = Block(
+            index=0,
+            type=BlockType.TEXT,
+            format=DataFormat.TXT,
+            data="parsed",
+            parent_index=0,
+        )
+        processing_results = {0: ([], [new_block])}
+        index_shift_map = {0: 0}
+
+        result = proc._build_updated_blocks_container(
+            block_containers,
+            [bg0],
+            [],
+            processing_results,
+            index_shift_map,
+            initial_block_count=0,
+        )
+
+        processed_bg = result.block_groups[0]
+        assert processed_bg.data is None
+        assert processed_bg.format == DataFormat.MARKDOWN
+        assert processed_bg.requires_processing is False
+
+
 # ===================================================================
 # Lines 1347-1348: _process_blockgroups - empty processing_results
 # ===================================================================
@@ -807,7 +852,7 @@ class TestProcessDelimitedNonUnicodeError:
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="test.csv")
         )
-        proc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        proc.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
@@ -910,7 +955,9 @@ class TestProcessHtmlInputHandling:
                 proc.process_html_document("test.html", "r1", "1", "src", "o1", html_str, "vr1")
             )
 
-        html_parser.parse.assert_awaited_once_with("<p>Hello</p>", caption_map=None)
+        html_parser.parse.assert_awaited_once_with(
+            "<p>Hello</p>", caption_map=None, name="test.html"
+        )
         assert any(e.event == "indexing_complete" for e in events)
 
 

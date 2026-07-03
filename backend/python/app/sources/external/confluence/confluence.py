@@ -73,9 +73,51 @@ class ConfluenceDataSource:
             self.base_url = self._client.get_base_url().rstrip('/') # type: ignore [valid method]
         except AttributeError as exc:
             raise ValueError('HTTP client does not have get_base_url method') from exc
+        self._space_id_to_key: Dict[str, str] = {}
 
     def get_data_source(self) -> 'ConfluenceDataSource':
         return self
+
+    async def _resolve_space_id_to_key(self, space_id: str) -> Optional[str]:
+        """Resolve a numeric v2 space ID to a space key for CQL queries.
+
+        CQL (used by the v1 REST search API) does not support ``space.id``;
+        it requires ``space.key="KEY"``. This helper calls the v2 ``GET /spaces/{id}``
+        endpoint once and caches the result for the lifetime of the data-source
+        instance so repeated searches in the same space don't pay the round-trip.
+
+        Returns the space key, or ``None`` if the lookup fails.
+        """
+        cached = self._space_id_to_key.get(space_id)
+        if cached:
+            return cached
+        try:
+            resp = await self.get_space_by_id(id=int(space_id))
+            if resp.status == 200:
+                key = resp.json().get("key")
+                if key:
+                    self._space_id_to_key[space_id] = key
+                    return key
+        except Exception:
+            pass
+        return None
+
+    async def _cql_space_clause(self, space_id: str) -> str:
+        """Build the CQL space-filter clause from a space ID or key.
+
+        Numeric IDs are resolved to keys via ``_resolve_space_id_to_key``
+        because the v1 CQL grammar only supports ``space.key``, not ``space.id``.
+        """
+        try:
+            int(space_id)
+            key = await self._resolve_space_id_to_key(space_id)
+            if key:
+                return f'space.key="{_escape_cql_literal(key)}"'
+            # Fallback: try the raw numeric value as a key (unlikely to work,
+            # but better than silently dropping the filter).
+            return f'space.key="{_escape_cql_literal(space_id)}"'
+        except ValueError:
+            return f'space.key="{_escape_cql_literal(space_id)}"'
 
     def _resolve_attachment_download_url(self, download_path: str) -> str:
         """Resolve an attachment ``_links.download`` path to a full URL.
@@ -8973,7 +9015,7 @@ class ConfluenceDataSource:
         escaped_term = _escape_cql_literal(search_term)
         cql_parts = [f'title ~ "{escaped_term}*"', 'type=page']
         if space_id:
-            cql_parts.append(f'space.id={space_id}')
+            cql_parts.append(await self._cql_space_clause(space_id))
 
         cql = ' and '.join(cql_parts)
 
@@ -8981,7 +9023,7 @@ class ConfluenceDataSource:
             'cql': cql,
             'limit': limit
         }
-        
+
         # Add pagination parameters (prefer cursor if both are provided)
         if cursor is not None:
             _query['cursor'] = cursor
@@ -9155,11 +9197,7 @@ class ConfluenceDataSource:
         # 5. Type and 6. Space — added after validation so they don't satisfy it
         cql_parts.append(type_clause)
         if space_id:
-            try:
-                int(space_id)
-                cql_parts.append(f'space.id={space_id}')
-            except ValueError:
-                cql_parts.append(f'space.key="{_escape_cql_literal(space_id)}"')
+            cql_parts.append(await self._cql_space_clause(space_id))
 
         cql = ' AND '.join(cql_parts)
 
@@ -9241,7 +9279,7 @@ class ConfluenceDataSource:
         escaped_term = _escape_cql_literal(search_term)
         cql_parts = [f'title ~ "{escaped_term}*"', 'type=blogpost']
         if space_id:
-            cql_parts.append(f'space.id={space_id}')
+            cql_parts.append(await self._cql_space_clause(space_id))
 
         cql = ' and '.join(cql_parts)
 
@@ -9249,7 +9287,7 @@ class ConfluenceDataSource:
             'cql': cql,
             'limit': limit
         }
-        
+
         # Add pagination parameters (prefer cursor if both are provided)
         if cursor is not None:
             _query['cursor'] = cursor

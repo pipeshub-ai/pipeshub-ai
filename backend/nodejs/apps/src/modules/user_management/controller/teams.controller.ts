@@ -18,7 +18,6 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { inject, injectable } from 'inversify';
-import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
 import { UserDisplayPicture } from '../schema/userDp.schema';
 import type {
   TeamCreatedByUser,
@@ -441,22 +440,6 @@ export class TeamsController {
       }
 
       const { page, limit, search, created_by, created_after, created_before } = req.query;
-
-      // Validate search parameter for XSS and format specifiers
-      if (search) {
-        try {
-          validateNoXSS(String(search), 'search parameter');
-          validateNoFormatSpecifiers(String(search), 'search parameter');
-
-          if (String(search).length > 1000) {
-            throw new BadRequestError('Search parameter too long (max 1000 characters)');
-          }
-        } catch (error: any) {
-          throw new BadRequestError(
-            error.message || 'Search parameter contains potentially dangerous content'
-          );
-        }
-      }
 
       const queryParams = new URLSearchParams();
       if (page) queryParams.append('page', String(page));

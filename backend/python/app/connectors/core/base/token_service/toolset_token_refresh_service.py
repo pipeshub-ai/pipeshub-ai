@@ -16,6 +16,11 @@ if TYPE_CHECKING:
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
 from app.utils.oauth_config import get_oauth_config
+from app.utils.request_context import (
+    new_system_root,
+    reset_context,
+    set_context,
+)
 
 # Constants
 MIN_PATH_PARTS_COUNT = 4  # Minimum path parts: services, toolsets, instance_id, user_id
@@ -155,9 +160,14 @@ class ToolsetTokenRefreshService:
 
     async def _refresh_all_tokens(self) -> None:
         """Refresh tokens for all authenticated toolsets"""
-        # Prevent concurrent execution
-        async with self._refresh_lock:
-            await self._refresh_all_tokens_internal()
+        # Seed a trace root so every refresh-cycle log line is attributable.
+        token = set_context(new_system_root())
+        try:
+            # Prevent concurrent execution
+            async with self._refresh_lock:
+                await self._refresh_all_tokens_internal()
+        finally:
+            reset_context(token)
 
     async def _is_toolset_authenticated(self, config_path: str) -> bool:
         """
