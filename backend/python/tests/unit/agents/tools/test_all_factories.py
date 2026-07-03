@@ -123,6 +123,49 @@ class TestJiraFactory:
             assert result is not None
 
 
+class TestJiraDataCenterFactory:
+    """The DC factory adds an auth-type guardrail before delegating to the shared
+    JiraClient.build_from_toolset: only API_TOKEN / BASIC_AUTH may reach it, so a
+    DC instance never routes through the Cloud OAuth / cloud-id proxy."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("auth_type", ["API_TOKEN", "BASIC_AUTH", "basic_auth", " api_token "])
+    async def test_supported_auth_delegates_to_client(self, auth_type):
+        from app.agents.tools.factories.jira import JiraDataCenterClientFactory
+        factory = JiraDataCenterClientFactory()
+        with patch("app.agents.tools.factories.jira.JiraClient") as MockClient:
+            MockClient.build_from_toolset = AsyncMock(return_value=MagicMock())
+            result = await factory.create_client(
+                config_service=MagicMock(), logger=MagicMock(),
+                toolset_config={"authType": auth_type}, state=None,
+            )
+            assert result is not None
+            MockClient.build_from_toolset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("auth_type", ["OAUTH", "oauth", "SAML", "unexpected"])
+    async def test_unsupported_auth_rejected(self, auth_type):
+        from app.agents.tools.factories.jira import JiraDataCenterClientFactory
+        factory = JiraDataCenterClientFactory()
+        with patch("app.agents.tools.factories.jira.JiraClient") as MockClient:
+            MockClient.build_from_toolset = AsyncMock(return_value=MagicMock())
+            with pytest.raises(ValueError, match="API_TOKEN"):
+                await factory.create_client(
+                    config_service=MagicMock(), logger=MagicMock(),
+                    toolset_config={"authType": auth_type}, state=None,
+                )
+            MockClient.build_from_toolset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missing_auth_type_rejected(self):
+        from app.agents.tools.factories.jira import JiraDataCenterClientFactory
+        factory = JiraDataCenterClientFactory()
+        with pytest.raises(ValueError, match="missing"):
+            await factory.create_client(
+                config_service=MagicMock(), logger=MagicMock(),
+                toolset_config={}, state=None,
+            )
+
 
 class TestZoomFactory:
     @pytest.mark.asyncio

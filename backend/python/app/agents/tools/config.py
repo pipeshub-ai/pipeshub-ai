@@ -81,6 +81,10 @@ class ToolDiscoveryConfig:
             app_name="jira",
             client_builder="JiraClient",
         ),
+        "jiradatacenter": AppConfiguration(
+            app_name="jiradatacenter",
+            client_builder="JiraClient",
+        ),
         "slack": AppConfiguration(
             app_name="slack",
             client_builder="SlackClient",

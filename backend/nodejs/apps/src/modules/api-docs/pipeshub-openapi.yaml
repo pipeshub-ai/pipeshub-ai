@@ -8450,6 +8450,7 @@ components:
         - github
         - gmail
         - jira
+        - jiradatacenter
         - lumos
         - mariadb
         - onedrive

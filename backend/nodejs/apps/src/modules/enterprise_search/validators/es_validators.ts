@@ -341,6 +341,7 @@ export const AGENT_CREATE_TOOLSET_NAMES = [
   'github',
   'gmail',
   'jira',
+  'jiradatacenter',
   'lumos',
   'mariadb',
   'onedrive',

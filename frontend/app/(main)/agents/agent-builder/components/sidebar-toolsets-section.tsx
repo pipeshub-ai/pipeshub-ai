@@ -335,7 +335,7 @@ export function AgentBuilderToolsetsSection(props: {
     (ts: BuilderSidebarToolset) => {
       onNotify(
         t('agentBuilder.toolsetDuplicateNotify', {
-          name: normalizePaletteLabel(ts.toolsetType || ts.name),
+          name: normalizePaletteLabel(ts.displayName || ts.toolsetType || ts.name),
         })
       );
     },
@@ -397,7 +397,7 @@ export function AgentBuilderToolsetsSection(props: {
             return (
               <Box key={toolsetType} mb="2">
                 <SidebarCategoryRow
-                  groupLabel={normalizePaletteLabel((first.toolsetType || toolsetType) as string)}
+                  groupLabel={normalizePaletteLabel((first.displayName || first.toolsetType || toolsetType) as string)}
                   groupConnectorType={(first.toolsetType || toolsetType) as string}
                   groupIcon={first.iconPath}
                   itemCount={typeToolsets.length}
