@@ -129,7 +129,6 @@ DOCLING_PID=""
 INDEXING_PID=""
 CONNECTOR_PID=""
 QUERY_PID=""
-HEALTH_CHECK_LOOP_PID=""
 
 # Health check tracking
 INDEXING_CONSECUTIVE_FAILURES=0
@@ -143,8 +142,8 @@ log() {
 
 check_indexing_health() {
     local current_time=$(date +%s)
-    
-    # Skip health check during cooldown period
+
+    # Skip health check during the post-restart startup grace period
     if [ "$HEALTH_CHECK_COOLDOWN_END" -gt "$current_time" ]; then
         return 0
     fi
@@ -159,32 +158,27 @@ check_indexing_health() {
         
         if [ "$INDEXING_CONSECUTIVE_FAILURES" -ge "$INDEXING_MAX_FAILURES" ]; then
             log "Indexing service frozen. Forcing restart..."
-            
-            local active_pid=$(pgrep -f "app.indexing_main" | head -n 1)
-            if [ -n "$active_pid" ]; then
-                kill -15 "$active_pid" 2>/dev/null || true
+
+            if [ -n "$INDEXING_PID" ]; then
+                kill -15 "$INDEXING_PID" 2>/dev/null || true
                 sleep 5
-                active_pid=$(pgrep -f "app.indexing_main" | head -n 1)
-                if [ -n "$active_pid" ]; then
-                    kill -9 "$active_pid" 2>/dev/null || true
+                if kill -0 "$INDEXING_PID" 2>/dev/null; then
+                    kill -9 "$INDEXING_PID" 2>/dev/null || true
                 fi
             fi
-            
-            # Reset failure counter
-            INDEXING_CONSECUTIVE_FAILURES=0
-            
-            # Set cooldown period (60 seconds)
-            HEALTH_CHECK_COOLDOWN_END=$(($(date +%s) + 60))
-            
+
             # Track restart count
             RESTART_COUNT_FILE="/tmp/indexing_restart_count"
             local restart_num=$(($(cat $RESTART_COUNT_FILE 2>/dev/null || echo 0) + 1))
             echo $restart_num > $RESTART_COUNT_FILE
-            log "Indexing service restarted (restart #${restart_num})"
-            
-            return 1
+            log "Indexing service frozen, restart #${restart_num} triggered"
+
+            # Respawn immediately instead of waiting for the next monitoring
+            # tick to notice the PID is gone. start_indexing() resets the
+            # failure counter and cooldown for the fresh process.
+            start_indexing
         fi
-        return 0
+        return 1
     fi
 }
 
@@ -266,6 +260,12 @@ start_indexing() {
     python -m app.indexing_main &
     INDEXING_PID=$!
     log "Indexing started with PID: $INDEXING_PID"
+
+    # Reset health-check state for the fresh process and grant it a startup
+    # grace period before freeze detection resumes - applies whether this was
+    # called from a health-check restart or an independent process crash.
+    INDEXING_CONSECUTIVE_FAILURES=0
+    HEALTH_CHECK_COOLDOWN_END=$(($(date +%s) + 60))
 }
 
 start_connector() {
@@ -318,7 +318,6 @@ check_process() {
 cleanup() {
     log "Shutting down all services..."
     
-    [ -n "$HEALTH_CHECK_LOOP_PID" ] && kill "$HEALTH_CHECK_LOOP_PID" 2>/dev/null || true
     [ -n "$NODEJS_PID" ] && kill "$NODEJS_PID" 2>/dev/null || true
     [ -n "$SLACKBOT_PID" ] && kill "$SLACKBOT_PID" 2>/dev/null || true
     [ -n "$EMBEDDING_PID" ] && kill "$EMBEDDING_PID" 2>/dev/null || true
@@ -345,16 +344,6 @@ start_docling
 
 log "All services started. Beginning monitoring cycle (checking every ${CHECK_INTERVAL}s)..."
 
-# Start independent health check loop in background
-(
-    log "Starting independent health check loop (every 15s)..."
-    while true; do
-        sleep 15
-        check_indexing_health || true
-    done
-) &
-HEALTH_CHECK_LOOP_PID=$!
-
 while true; do
     sleep "$CHECK_INTERVAL"
     
@@ -376,6 +365,8 @@ while true; do
     
     if ! check_process "$INDEXING_PID" "Indexing"; then
         start_indexing
+    else
+        check_indexing_health || true
     fi
     
     if ! check_process "$CONNECTOR_PID" "Connector"; then
