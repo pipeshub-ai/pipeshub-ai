@@ -5,9 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.telemetry.event_buffer import event_buffer
 from app.telemetry.pusher import (
-    DEFAULT_PUSH_INTERVAL_MS,
-    DEFAULT_SERVER_URL,
     METRICS_CONFIG_KEY,
+    REQUIRED_CONFIG_FIELDS,
     MetricsPusher,
     _as_bool,
     _as_dict,
@@ -18,7 +17,20 @@ def make_pusher(config: dict | None = None) -> MetricsPusher:
     config_service = MagicMock()
     config_service.get_config = AsyncMock(return_value=config or {})
     config_service.set_config = AsyncMock()
-    return MetricsPusher(config_service, "query_service", MagicMock(), version="1.2.3")
+    return MetricsPusher(config_service, "query_service", MagicMock())
+
+
+def node_config(**overrides) -> dict:
+    """A config as the Node service persists it (all required fields present)."""
+    return {
+        "serverUrl": "http://localhost:3031/collect-metrics",
+        "installId": "install-1",
+        "apiKey": "k",
+        "appVersion": "1.0.0",
+        "pushIntervalMs": "5000",
+        "enableMetricCollection": "true",
+        **overrides,
+    }
 
 
 class TestAsDict:
@@ -88,37 +100,49 @@ class TestHeaders:
 
 
 class TestLoadConfig:
-    async def test_defaults_when_store_is_empty(self):
-        pusher = make_pusher({"installId": "install-1"})
-
-        cfg = await pusher._load_config()
-
-        assert cfg["url"] == DEFAULT_SERVER_URL
-        assert cfg["token"] == ""
-        assert cfg["interval_s"] == DEFAULT_PUSH_INTERVAL_MS / 1000
-        assert cfg["enabled"] is True
-        assert cfg["install_id"] == "install-1"
-
-    async def test_reads_shared_config_values(self):
+    async def test_reads_node_published_config(self):
         pusher = make_pusher(
-            {
-                "serverUrl": "https://collector.io/collect-metrics",
-                "apiKey": "k",
-                "pushIntervalMs": "5000",
-                "enableMetricCollection": "false",
-                "installId": "install-2",
-            }
+            node_config(
+                serverUrl="https://collector.io/collect-metrics",
+                enableMetricCollection="false",
+                installId="install-2",
+            )
         )
 
         cfg = await pusher._load_config()
 
+        assert cfg is not None
         assert cfg["url"] == "https://collector.io/collect-metrics"
         assert cfg["token"] == "k"
         assert cfg["interval_s"] == 5.0
         assert cfg["enabled"] is False
+        assert cfg["install_id"] == "install-2"
+
+    async def test_uses_node_published_app_version(self):
+        pusher = make_pusher(node_config(appVersion="2.5.0"))
+
+        cfg = await pusher._load_config()
+
+        assert cfg is not None
+        assert cfg["version"] == "2.5.0"
+
+    async def test_none_until_node_publishes_all_required_fields(self):
+        for missing in REQUIRED_CONFIG_FIELDS:
+            config = node_config()
+            del config[missing]
+            pusher = make_pusher(config)
+
+            assert await pusher._load_config() is None
+            pusher._config_service.set_config.assert_not_called()
+
+    async def test_empty_store_returns_none_and_never_writes(self):
+        pusher = make_pusher({})
+
+        assert await pusher._load_config() is None
+        pusher._config_service.set_config.assert_not_called()
 
     async def test_reads_config_from_shared_key(self):
-        pusher = make_pusher({"installId": "i"})
+        pusher = make_pusher(node_config())
         await pusher._load_config()
 
         pusher._config_service.get_config.assert_called_once_with(
@@ -126,41 +150,57 @@ class TestLoadConfig:
         )
 
 
-class TestInstallId:
-    async def test_generates_and_persists_missing_install_id(self):
-        pusher = make_pusher({"serverUrl": "u"})
+class TestConfigDeferral:
+    async def test_defers_push_until_node_publishes_config(self):
+        pusher = make_pusher({"enableMetricCollection": "true"})
+        pusher._push = AsyncMock()
+        pusher._ship_events = AsyncMock()
 
-        install_id = await pusher._get_or_create_install_id({"serverUrl": "u"})
+        with (
+            patch("app.telemetry.pusher.set_metric_collection_enabled") as consent_mock,
+            patch(
+                "asyncio.sleep",
+                AsyncMock(side_effect=[None, asyncio.CancelledError]),
+            ),
+        ):
+            try:
+                await pusher._run()
+            except asyncio.CancelledError:
+                pass
 
-        assert install_id
-        pusher._config_service.set_config.assert_called_once()
-        _, merged = pusher._config_service.set_config.call_args.args
-        assert merged["installId"] == install_id
-        assert merged["serverUrl"] == "u"
+        pusher._push.assert_not_called()
+        pusher._ship_events.assert_not_called()
+        consent_mock.assert_not_called()
+        # The "waiting for config" notice is logged once, not every tick.
+        pusher._logger.info.assert_called_once()
 
-    async def test_reuses_cached_id_without_touching_store(self):
+    async def test_pushes_once_node_publishes_config(self):
         pusher = make_pusher()
-        first = await pusher._get_or_create_install_id({})
-        pusher._config_service.set_config.reset_mock()
+        pusher._config_service.get_config = AsyncMock(
+            side_effect=[{}, node_config()]
+        )
+        pusher._push = AsyncMock()
+        pusher._ship_events = AsyncMock()
 
-        second = await pusher._get_or_create_install_id({})
+        with (
+            patch("app.telemetry.pusher.set_metric_collection_enabled"),
+            patch(
+                "asyncio.sleep",
+                AsyncMock(side_effect=[None, asyncio.CancelledError]),
+            ),
+        ):
+            try:
+                await pusher._run()
+            except asyncio.CancelledError:
+                pass
 
-        assert second == first
-        pusher._config_service.set_config.assert_not_called()
-
-    async def test_persist_failure_falls_back_to_in_memory_id(self):
-        pusher = make_pusher()
-        pusher._config_service.set_config = AsyncMock(side_effect=RuntimeError("etcd down"))
-
-        install_id = await pusher._get_or_create_install_id({})
-
-        assert install_id
-        pusher._logger.warning.assert_called_once()
+        pusher._push.assert_called_once()
+        assert pusher._push.call_args.args[0]["install_id"] == "install-1"
 
 
 class TestRunLoop:
     async def test_pushes_and_ships_when_enabled(self):
-        pusher = make_pusher({"installId": "i", "enableMetricCollection": "true"})
+        pusher = make_pusher(node_config())
         pusher._push = AsyncMock()
         pusher._ship_events = AsyncMock()
 
@@ -178,7 +218,7 @@ class TestRunLoop:
         pusher._ship_events.assert_called_once()
 
     async def test_does_not_transmit_when_consent_is_off(self):
-        pusher = make_pusher({"installId": "i", "enableMetricCollection": "false"})
+        pusher = make_pusher(node_config(enableMetricCollection="false"))
         pusher._push = AsyncMock()
         pusher._ship_events = AsyncMock()
 
@@ -210,7 +250,7 @@ class TestRunLoop:
 
 class TestStartStop:
     async def test_start_creates_task_and_stop_cancels_it(self):
-        pusher = make_pusher({"installId": "i", "enableMetricCollection": "false"})
+        pusher = make_pusher(node_config(enableMetricCollection="false"))
 
         await pusher.start()
         assert pusher._task is not None
@@ -220,7 +260,7 @@ class TestStartStop:
         assert pusher._task.done()
 
     async def test_start_is_idempotent_while_running(self):
-        pusher = make_pusher({"installId": "i", "enableMetricCollection": "false"})
+        pusher = make_pusher(node_config(enableMetricCollection="false"))
 
         await pusher.start()
         task = pusher._task
@@ -237,7 +277,11 @@ class TestShipEvents:
 
         with patch("aiohttp.ClientSession") as session_mock:
             await pusher._ship_events(
-                {"url": DEFAULT_SERVER_URL, "token": "", "install_id": "i"}
+                {
+                    "url": "http://localhost:3031/collect-metrics",
+                    "token": "",
+                    "install_id": "i",
+                }
             )
 
         session_mock.assert_not_called()

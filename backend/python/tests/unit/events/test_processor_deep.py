@@ -1087,6 +1087,22 @@ class TestConvertRecordDictToRecord:
         rec = convert_record_dict_to_record(d)
         assert rec.id == "id_fallback"
 
+    def test_group_ids_carried_through(self):
+        """recordGroupId/externalGroupId reach the Record (kb metric label)."""
+        from app.events.processor import convert_record_dict_to_record
+        rec = convert_record_dict_to_record(
+            _mock_record_dict(recordGroupId="rg1", externalGroupId="kb-uuid")
+        )
+        assert rec.record_group_id == "rg1"
+        assert rec.external_record_group_id == "kb-uuid"
+
+    def test_group_ids_default_none(self):
+        """KB docs without group fields stay None (metric label 'none')."""
+        from app.events.processor import convert_record_dict_to_record
+        rec = convert_record_dict_to_record(_mock_record_dict())
+        assert rec.record_group_id is None
+        assert rec.external_record_group_id is None
+
 
 # ============================================================================
 # _separate_block_groups_by_index

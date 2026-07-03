@@ -33,9 +33,8 @@ class TestPendingPusher:
         config_service = MagicMock()
         logger = MagicMock()
 
-        pusher = pending.bind(config_service, logger, version="2.0.0")
+        pusher = pending.bind(config_service, logger)
 
         assert isinstance(pusher, MetricsPusher)
         assert pending.pusher is pusher
         assert pusher._service_name == "query_service"
-        assert pusher._version == "2.0.0"

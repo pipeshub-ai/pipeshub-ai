@@ -33,8 +33,8 @@ class PendingPusher:
         self._service_name = service_name
         self._pusher: MetricsPusher | None = None
 
-    def bind(self, config_service, logger, version: str = "1.0.0") -> MetricsPusher:
-        self._pusher = MetricsPusher(config_service, self._service_name, logger, version)
+    def bind(self, config_service, logger) -> MetricsPusher:
+        self._pusher = MetricsPusher(config_service, self._service_name, logger)
         return self._pusher
 
     @property

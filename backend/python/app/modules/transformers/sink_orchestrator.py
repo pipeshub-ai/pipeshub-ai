@@ -76,10 +76,13 @@ class SinkOrchestrator(Transformer):
 
     @staticmethod
     def _activity_labels(record: Record) -> tuple[str, str, str]:
-        """Low-cardinality labels for the ``document_indexed`` activity counter.
-
+        """
         Returns ``(connector, org, kb)``. ``kb`` is the Knowledge Base id for
         KB-sourced records and ``"none"`` for everything else.
+
+        KB record docs don't carry ``recordGroupId`` — for KB uploads the
+        group is "external" to the connector framework, so the KB UUID is
+        stored as ``externalGroupId``.
         """
         connector = record.connector_name.value if record.connector_name else "unknown"
         org = record.org_id or "unknown"
@@ -87,7 +90,8 @@ class SinkOrchestrator(Transformer):
             record.connector_name == Connectors.KNOWLEDGE_BASE
             or record.record_group_type == RecordGroupType.KB
         )
-        kb = record.record_group_id if is_kb and record.record_group_id else "none"
+        kb_id = record.record_group_id or record.external_record_group_id
+        kb = kb_id if is_kb and kb_id else "none"
         return connector, org, kb
 
     async def apply(self, ctx: TransformContext) -> None:

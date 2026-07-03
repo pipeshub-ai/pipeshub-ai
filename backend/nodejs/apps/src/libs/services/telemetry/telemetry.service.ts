@@ -92,14 +92,26 @@ export class TelemetryService implements ITelemetryService {
 
   private async initializeMetricsCollection(): Promise<void> {
     try {
-      await Promise.all([
-        this.loadServerUrl(),
-        this.loadApiKey(),
-        this.loadInstanceId(),
-        this.loadAppVersion(),
-        this.loadPushInterval(),
-        this.loadMetricCollectionFlag(),
-      ]);
+      const config = await this.getConfig();
+      await this.persistMissingDefaults(config);
+
+      this.metricsServerUrl =
+        config[keyValues.SERVER_URL] ??
+        this.getEnv('METRICS_SERVER_URL', DEFAULTS.METRIC_HOST);
+      this.apiKey = config[keyValues.API_KEY] ?? '';
+      this.instanceId = config[keyValues.INSTALL_ID] ?? '';
+      this.appVersion = config[keyValues.APP_VERSION] ?? DEFAULTS.APP_VERSION;
+      this.pushIntervalMs = parseInt(
+        firstNonEmpty(
+          config[keyValues.PUSH_INTERVAL],
+          String(DEFAULTS.PUSH_INTERVAL),
+        ),
+        10,
+      );
+      this.enableMetricCollection = parseBoolean(
+        firstNonEmpty(config[keyValues.ENABLE_METRIC_COLLECTION], 'true'),
+      );
+
       this.logConfig();
       await this.startOrStopMetricCollection();
     } catch (error) {
@@ -116,50 +128,32 @@ export class TelemetryService implements ITelemetryService {
     }
   }
 
-  private async loadServerUrl(): Promise<void> {
-    const config = await this.getConfig();
-    const stored = config[keyValues.SERVER_URL];
-    this.metricsServerUrl =
-      stored != null && stored.trim() !== ''
-        ? stored
-        : this.getEnv('METRICS_SERVER_URL', DEFAULTS.METRIC_HOST);
-  }
-
-  private async loadApiKey(): Promise<void> {
-    this.apiKey = await this.getOrSet(
-      keyValues.API_KEY,
-      this.generateInstanceId(),
-    );
-  }
-
-  private async loadInstanceId(): Promise<void> {
-    this.instanceId = await this.getOrSet(
-      keyValues.INSTALL_ID,
-      this.generateInstallId(),
-    );
-  }
-
-  private async loadAppVersion(): Promise<void> {
-    this.appVersion = await this.getOrSet(
-      keyValues.APP_VERSION,
-      DEFAULTS.APP_VERSION,
-    );
-  }
-
-  private async loadPushInterval(): Promise<void> {
-    this.pushIntervalMs = parseInt(
-      await this.getOrSet(
-        keyValues.PUSH_INTERVAL,
-        String(DEFAULTS.PUSH_INTERVAL),
-      ),
-      10,
-    );
-  }
-
-  private async loadMetricCollectionFlag(): Promise<void> {
-    this.enableMetricCollection = parseBoolean(
-      await this.getOrSet(keyValues.ENABLE_METRIC_COLLECTION, 'true'),
-    );
+  private async persistMissingDefaults(config: MetricsConfig): Promise<void> {
+    const defaults: [string, () => string][] = [
+      [
+        keyValues.SERVER_URL,
+        () => this.getEnv('METRICS_SERVER_URL', DEFAULTS.METRIC_HOST),
+      ],
+      [keyValues.API_KEY, () => this.generateInstanceId()],
+      [keyValues.INSTALL_ID, () => this.generateInstallId()],
+      [keyValues.APP_VERSION, () => DEFAULTS.APP_VERSION],
+      [keyValues.PUSH_INTERVAL, () => String(DEFAULTS.PUSH_INTERVAL)],
+      [keyValues.ENABLE_METRIC_COLLECTION, () => 'true'],
+    ];
+    let changed = false;
+    for (const [key, makeDefault] of defaults) {
+      const stored = config[key];
+      if (stored == null || stored.trim() === '') {
+        config[key] = makeDefault();
+        changed = true;
+      }
+    }
+    if (changed) {
+      await this.kvStore.set<string>(
+        configPaths.metricsCollection,
+        this.getEncryptionService().encrypt(JSON.stringify(config)),
+      );
+    }
   }
 
   private watchKeysForMetricsCollection(key: string): void {
@@ -171,12 +165,7 @@ export class TelemetryService implements ITelemetryService {
   }
 
   private async startOrStopMetricCollection(): Promise<void> {
-    const config = await this.getConfig();
-    const currentValue = parseBoolean(
-      firstNonEmpty(config[keyValues.ENABLE_METRIC_COLLECTION], 'true'),
-    );
-
-    if (currentValue) {
+    if (this.enableMetricCollection) {
       logger.debug('Starting metrics push');
       await this.startMetricsPush();
     } else {
@@ -214,20 +203,6 @@ export class TelemetryService implements ITelemetryService {
       });
       return {};
     }
-  }
-
-  private async getOrSet(key: string, defaultValue: string): Promise<string> {
-    const config = await this.getConfig();
-    const stored = config[key];
-    if (stored == null || stored.trim() === '') {
-      config[key] = defaultValue;
-      await this.kvStore.set<string>(
-        configPaths.metricsCollection,
-        this.getEncryptionService().encrypt(JSON.stringify(config)),
-      );
-      return defaultValue;
-    }
-    return stored;
   }
 
   private async startMetricsPush(): Promise<void> {
@@ -282,6 +257,10 @@ export class TelemetryService implements ITelemetryService {
   }
 
   private async pushMetricsToServer(): Promise<void> {
+    if (this.instanceId === '') {
+      logger.debug('Skipping metrics push - installId not initialized');
+      return;
+    }
     try {
       const metricsText = await metricsBackend.serialize();
 
@@ -331,6 +310,10 @@ export class TelemetryService implements ITelemetryService {
   }
 
   private async shipEventsToServer(): Promise<void> {
+    if (this.instanceId === '') {
+      logger.debug('Skipping event shipment - installId not initialized');
+      return;
+    }
     const events = eventBuffer.drain();
     if (events.length === 0) {
       return;

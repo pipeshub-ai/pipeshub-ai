@@ -1,15 +1,8 @@
-"""Background task that pushes this service's metrics to the collector gateway.
-
-Reads its configuration from the SAME etcd/Redis key the Node service uses
-(``/services/metricsCollection``), so every service in an install shares one
-``serverUrl``, ``apiKey`` (ingest token), push interval, enable flag, and — most
-importantly — one stable ``installId``. Metrics are pushed *cumulatively* and are
-never reset (the TSDB computes increase()/rate()).
+"""Background task that pushes this service's metrics to the collector gateway..
 """
 
 import asyncio
 import json
-import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -32,13 +25,20 @@ SCHEMA_VERSION = 1
 # Shared config key — mirrors Node's `configPaths.metricsCollection`.
 METRICS_CONFIG_KEY = "/services/metricsCollection"
 
-# Mirrors Node's `METRIC_HOST` default so services agree when `serverUrl` is unset.
-DEFAULT_SERVER_URL = "https://metrics-collector.intellysense.com/collect-metrics"
-DEFAULT_PUSH_INTERVAL_MS = 60000
-DEFAULT_VERSION = "1.0.0"
 PUSH_TIMEOUT_S = 10
 METRICS_VERSION = "2"
 
+REQUIRED_CONFIG_FIELDS = (
+    "serverUrl",
+    "installId",
+    "apiKey",
+    "appVersion",
+    "pushIntervalMs",
+    "enableMetricCollection",
+)
+
+# Retry cadence while waiting for Node to publish the config.
+CONFIG_POLL_INTERVAL_S = 5
 
 def _as_dict(raw: object) -> dict:
     if isinstance(raw, dict):
@@ -63,13 +63,12 @@ def _as_bool(value: object, default: bool = True) -> bool:
 class MetricsPusher:
     """Periodically serializes the registry and POSTs it to the gateway."""
 
-    def __init__(self, config_service, service_name: str, logger, version: str = DEFAULT_VERSION) -> None:
+    def __init__(self, config_service, service_name: str, logger) -> None:
         self._config_service = config_service
         self._service_name = service_name
         self._logger = logger
-        self._version = version
         self._task: Optional[asyncio.Task] = None
-        self._install_id: Optional[str] = None
+        self._waiting_for_config_logged = False
 
     async def start(self) -> None:
         if self._task is None or self._task.done():
@@ -99,16 +98,25 @@ class MetricsPusher:
 
     async def _run(self) -> None:
         while True:
-            interval_s = DEFAULT_PUSH_INTERVAL_MS / 1000
+            interval_s = float(CONFIG_POLL_INTERVAL_S)
             token = set_context(new_system_root())
             try:
                 cfg = await self._load_config()
-                interval_s = cfg["interval_s"]
-                # Reflect current consent locally each tick (not pushed while off).
-                set_metric_collection_enabled(self._service_name, cfg["enabled"])
-                if cfg["enabled"]:
-                    await self._push(cfg)
-                    await self._ship_events(cfg)
+                if cfg is None:
+                    if not self._waiting_for_config_logged:
+                        self._waiting_for_config_logged = True
+                        self._logger.info(
+                            "Telemetry deferred: waiting for the Node service "
+                            "to publish the metrics config"
+                        )
+                else:
+                    self._waiting_for_config_logged = False
+                    interval_s = cfg["interval_s"]
+                    # Reflect current consent locally each tick (not pushed while off).
+                    set_metric_collection_enabled(self._service_name, cfg["enabled"])
+                    if cfg["enabled"]:
+                        await self._push(cfg)
+                        await self._ship_events(cfg)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -117,31 +125,19 @@ class MetricsPusher:
                 reset_context(token)
             await asyncio.sleep(interval_s)
 
-    async def _load_config(self) -> dict:
+    async def _load_config(self) -> Optional[dict]:
         raw = _as_dict(await self._config_service.get_config(METRICS_CONFIG_KEY, default={}))
+        if any(raw.get(field) in (None, "") for field in REQUIRED_CONFIG_FIELDS):
+            return None
         return {
-            "url": raw.get("serverUrl", DEFAULT_SERVER_URL),
-            "token": raw.get("apiKey", ""),
-            "interval_s": int(raw.get("pushIntervalMs", DEFAULT_PUSH_INTERVAL_MS)) / 1000,
-            "enabled": _as_bool(raw.get("enableMetricCollection", True)),
-            "install_id": await self._get_or_create_install_id(raw),
+            "url": raw["serverUrl"],
+            "token": raw["apiKey"],
+            "interval_s": int(raw["pushIntervalMs"]) / 1000,
+            "enabled": _as_bool(raw["enableMetricCollection"]),
+            "install_id": raw["installId"],
+            # Node owns appVersion; every service reports the same value.
+            "version": raw["appVersion"],
         }
-
-    async def _get_or_create_install_id(self, raw: dict) -> str:
-        """Stable per-install id, shared across all services via the config store."""
-        if self._install_id:
-            return self._install_id
-        install_id = raw.get("installId")
-        if not install_id:
-            install_id = str(uuid.uuid4())
-            try:
-                merged = {**raw, "installId": install_id}
-                await self._config_service.set_config(METRICS_CONFIG_KEY, merged)
-            except Exception as e:
-                # Non-fatal: fall back to the in-memory id for this process.
-                self._logger.warning(f"Could not persist installId: {e}")
-        self._install_id = install_id
-        return install_id
 
     def _has_samples(self, metrics_text: str) -> bool:
         return any(
@@ -156,7 +152,7 @@ class MetricsPusher:
         payload = {
             "metrics": metrics_text,
             "instanceId": cfg["install_id"],
-            "version": self._version,
+            "version": cfg["version"],
             "metricsVersion": METRICS_VERSION,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -200,7 +196,7 @@ class MetricsPusher:
         payload = {
             "instanceId": cfg["install_id"],
             "service": self._service_name,
-            "version": self._version,
+            "version": cfg["version"],
             "metricsVersion": METRICS_VERSION,
             "schemaVersion": SCHEMA_VERSION,
             "events": events,

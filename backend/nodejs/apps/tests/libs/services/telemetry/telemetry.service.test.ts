@@ -131,6 +131,25 @@ describe('TelemetryService', () => {
       expect(kv.set.called).to.be.true;
     });
 
+    it('should persist all missing defaults in a single write when the store is empty', async () => {
+      sandbox
+        .stub(TelemetryService.prototype as any, 'startMetricsPush')
+        .resolves();
+      const kv = mockKvStore(null);
+      const svc = new TelemetryService(kv as any);
+      await flushAsync();
+
+      // One read-modify-write for every defaulted key — installId must never
+      // be written in a separate racing update.
+      expect(kv.set.calledOnce).to.be.true;
+      expect((svc as any).instanceId).to.match(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      );
+      expect((svc as any).apiKey).to.have.length.greaterThan(0);
+      expect((svc as any).pushIntervalMs).to.equal(5000);
+      expect((svc as any).enableMetricCollection).to.be.true;
+    });
+
     it('should return an empty config when the store is empty or invalid JSON', async () => {
       const svc = new TelemetryService(mockKvStore() as any);
       await flushAsync();
@@ -347,16 +366,15 @@ describe('TelemetryService', () => {
 
   describe('push loop control', () => {
     it('should start the interval when collection is enabled and stop it when disabled', async () => {
-      const kv = mockKvStore();
-      const svc = new TelemetryService(kv as any);
+      const svc = new TelemetryService(mockKvStore() as any);
       await flushAsync();
       expect((svc as any).pushInterval).to.be.null;
 
-      kv.get.resolves(storedConfig({ enableMetricCollection: 'true' }));
+      (svc as any).enableMetricCollection = true;
       await (svc as any).startOrStopMetricCollection();
       expect((svc as any).pushInterval).to.not.be.null;
 
-      kv.get.resolves(storedConfig({ enableMetricCollection: 'false' }));
+      (svc as any).enableMetricCollection = false;
       await (svc as any).startOrStopMetricCollection();
       expect((svc as any).pushInterval).to.be.null;
     });
