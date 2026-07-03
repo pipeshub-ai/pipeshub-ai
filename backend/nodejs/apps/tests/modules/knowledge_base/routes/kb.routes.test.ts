@@ -9,7 +9,6 @@ import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import { RecordsEventProducer } from '../../../../src/modules/knowledge_base/services/records_events.service';
 import { SyncEventProducer } from '../../../../src/modules/knowledge_base/services/sync_events.service';
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service';
-import { PrometheusService } from '../../../../src/libs/services/prometheus/prometheus.service';
 import { KB_UPLOAD_LIMITS } from '../../../../src/modules/knowledge_base/constants/kb.constants';
 import * as configurationUtil from '../../../../src/modules/configuration_manager/utils/util';
 import { FileProcessorService } from '../../../../src/libs/middlewares/file_processor/fp.service';
@@ -95,10 +94,6 @@ describe('Knowledge Base Routes', () => {
       delete: sinon.stub().resolves(),
     };
 
-    const mockPrometheusService = {
-      recordActivity: sinon.stub(),
-      getMetrics: sinon.stub().resolves(''),
-    };
 
     container
       .bind<AuthMiddleware>('AuthMiddleware')
@@ -115,9 +110,6 @@ describe('Knowledge Base Routes', () => {
     container
       .bind<KeyValueStoreService>('KeyValueStoreService')
       .toConstantValue(mockKeyValueStore);
-    container
-      .bind(PrometheusService)
-      .toConstantValue(mockPrometheusService as any);
 
     router = createKnowledgeBaseRouter(container);
   });
@@ -203,9 +195,9 @@ describe('Knowledge Base Routes', () => {
     it('should wire createFolderSchema validation before the createFolder handler', () => {
       const handlers = findRouteStack('/:kbId/folder', 'post');
 
-      expect(handlers).to.have.lengthOf(5);
+      expect(handlers).to.have.lengthOf(4);
+      expect(handlers[2]).to.be.a('function');
       expect(handlers[3]).to.be.a('function');
-      expect(handlers[4]).to.be.a('function');
     });
 
     it('should register folder update and delete routes', () => {
@@ -306,7 +298,7 @@ describe('Knowledge Base Routes', () => {
   describe('multipart validation middleware', () => {
     it('should call next() for safe multipart form fields', () => {
       const handlers = findRouteStack('/record/:recordId', 'put');
-      const validateMultipart = handlers[4];
+      const validateMultipart = handlers[3];
       const req = {
         body: {
           recordName: 'Quarterly report',
@@ -323,7 +315,7 @@ describe('Knowledge Base Routes', () => {
 
     it('should forward validation errors for unsafe multipart form fields', () => {
       const handlers = findRouteStack('/:kbId/upload', 'post');
-      const validateMultipart = handlers[4];
+      const validateMultipart = handlers[3];
       const req = {
         body: {
           folderName: '<script>alert(1)</script>',
@@ -359,7 +351,7 @@ describe('Knowledge Base Routes', () => {
         .returns(processMiddleware as any);
 
       const handlers = findRouteStack('/:kbId/upload', 'post');
-      const dynamicUpload = handlers[3];
+      const dynamicUpload = handlers[2];
       const req = { headers: {} };
       const res = mockRes();
       const next = sinon.stub();
@@ -389,7 +381,7 @@ describe('Knowledge Base Routes', () => {
       );
 
       const handlers = findRouteStack('/:kbId/upload', 'post');
-      const dynamicUpload = handlers[3];
+      const dynamicUpload = handlers[2];
       const next = sinon.stub();
 
       await dynamicUpload({ headers: {} }, mockRes(), next);
@@ -408,7 +400,7 @@ describe('Knowledge Base Routes', () => {
       sinon.stub(FileProcessorService.prototype, 'upload').throws(setupError);
 
       const handlers = findRouteStack('/record/:recordId', 'put');
-      const dynamicUpload = handlers[3];
+      const dynamicUpload = handlers[2];
       const next = sinon.stub();
 
       await dynamicUpload({ headers: {} }, mockRes(), next);

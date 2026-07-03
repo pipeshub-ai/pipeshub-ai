@@ -6,7 +6,6 @@ import { createCrawlingManagerRouter } from '../../../../src/modules/crawling_ma
 import { CrawlingSchedulerService } from '../../../../src/modules/crawling_manager/services/crawling_service'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
-import { PrometheusService } from '../../../../src/libs/services/prometheus/prometheus.service'
 
 describe('Crawling Manager Routes', () => {
   let container: Container
@@ -37,15 +36,10 @@ describe('Crawling Manager Routes', () => {
       connectorBackend: 'http://localhost:8088',
     }
 
-    const mockPrometheusService = {
-      recordActivity: sinon.stub(),
-      getMetrics: sinon.stub().resolves(''),
-    }
 
     container.bind<CrawlingSchedulerService>(CrawlingSchedulerService).toConstantValue(mockCrawlingService)
     container.bind<AuthMiddleware>(AuthMiddleware).toConstantValue(mockAuthMiddleware as any)
     container.bind<AppConfig>('AppConfig').toConstantValue(mockAppConfig as any)
-    container.bind(PrometheusService).toConstantValue(mockPrometheusService as any)
   })
 
   afterEach(() => {

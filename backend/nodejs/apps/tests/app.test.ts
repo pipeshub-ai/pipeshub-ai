@@ -7,7 +7,9 @@ import { Container } from 'inversify';
 import { Application } from '../src/app';
 import { createMockLogger, MockLogger } from './helpers/mock-logger';
 import { Logger } from '../src/libs/services/logger.service';
-import { PrometheusService } from '../src/libs/services/prometheus/prometheus.service';
+import * as telemetryModule from '../src/libs/services/telemetry/telemetry.service';
+import * as metricsRefreshModule from '../src/modules/user_management/services/metrics.refresh.service';
+import { KeyValueStoreService } from '../src/libs/services/keyValueStore.service';
 import { MigrationService } from '../src/modules/configuration_manager/services/migration.service';
 import { NotificationService } from '../src/modules/notification/service/notification.service';
 import * as appConfigModule from '../src/modules/tokens_manager/config/config';
@@ -179,6 +181,11 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
 function stubAllContainers(sandbox: sinon.SinonSandbox) {
   // Stub route factories so configureRoutes() doesn't blow up
   stubAllRouteFactories(sandbox);
+
+  // Telemetry — never start the real push loop / Mongo-backed gauge refresh
+  sandbox.stub(telemetryModule, 'startTelemetry');
+  sandbox.stub(metricsRefreshModule, 'startOrgMetricsRefresh');
+  sandbox.stub(KeyValueStoreService, 'getInstance').returns({} as any);
 
   const containers: Record<string, Container> = {};
   const containerClasses = [
@@ -406,24 +413,21 @@ describe('Application', () => {
       expect(mockSamlController.updateSamlStrategiesWithCallback.calledOnce).to.be.true;
     });
 
-    it('should bind PrometheusService to all service containers', async () => {
+    it('should start telemetry and the org metrics refresh loop', async () => {
       const app = new Application();
-      const { containers } = stubAllContainers(sandbox);
+      stubAllContainers(sandbox);
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
       await app.initialize();
 
-      // Check that PrometheusService was bound in major containers
-      const containerNames = [
-        'token', 'userManager', 'auth', 'cm', 'storage',
-        'es', 'kb', 'mail', 'crawling', 'oauth', 'toolsets',
-      ];
-      for (const name of containerNames) {
-        expect(
-          containers[name].isBound(PrometheusService),
-          `PrometheusService should be bound in ${name} container`,
-        ).to.be.true;
-      }
+      expect(
+        (telemetryModule.startTelemetry as sinon.SinonStub).calledOnce,
+        'startTelemetry should be called once during initialize',
+      ).to.be.true;
+      expect(
+        (metricsRefreshModule.startOrgMetricsRefresh as sinon.SinonStub).calledOnce,
+        'startOrgMetricsRefresh should be called once during initialize',
+      ).to.be.true;
     });
 
     it('should bind MigrationService to configuration manager container', async () => {
