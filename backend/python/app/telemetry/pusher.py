@@ -27,7 +27,7 @@ SCHEMA_VERSION = 1
 METRICS_CONFIG_KEY = "/services/metricsCollection"
 
 # Mirrors Node's `METRIC_HOST` default so services agree when `serverUrl` is unset.
-DEFAULT_SERVER_URL = "http://localhost:3031/collect-metrics/"
+DEFAULT_SERVER_URL = "https://metrics-collector.intellysense.com/collect-metrics"
 DEFAULT_PUSH_INTERVAL_MS = 60000
 DEFAULT_VERSION = "1.0.0"
 PUSH_TIMEOUT_S = 10
