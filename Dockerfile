@@ -129,9 +129,60 @@ DOCLING_PID=""
 INDEXING_PID=""
 CONNECTOR_PID=""
 QUERY_PID=""
+HEALTH_CHECK_LOOP_PID=""
+
+# Health check tracking
+INDEXING_CONSECUTIVE_FAILURES=0
+INDEXING_MAX_FAILURES=3
+HEALTH_CHECK_TIMEOUT=10
+HEALTH_CHECK_COOLDOWN_END=0
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+check_indexing_health() {
+    local current_time=$(date +%s)
+    
+    # Skip health check during cooldown period
+    if [ "$HEALTH_CHECK_COOLDOWN_END" -gt "$current_time" ]; then
+        return 0
+    fi
+    
+    # Attempt health check with timeout
+    if curl -sf --max-time $HEALTH_CHECK_TIMEOUT "http://localhost:8091/health" > /dev/null 2>&1; then
+        INDEXING_CONSECUTIVE_FAILURES=0
+        return 0
+    else
+        INDEXING_CONSECUTIVE_FAILURES=$((INDEXING_CONSECUTIVE_FAILURES + 1))
+        log "Indexing health check failed ($INDEXING_CONSECUTIVE_FAILURES/$INDEXING_MAX_FAILURES)"
+        
+        if [ "$INDEXING_CONSECUTIVE_FAILURES" -ge "$INDEXING_MAX_FAILURES" ]; then
+            log "Indexing service frozen. Forcing restart..."
+            
+            # Try graceful shutdown first (SIGTERM)
+            kill -15 "$INDEXING_PID" 2>/dev/null || true
+            sleep 5
+            
+            # Force kill if still running (SIGKILL)
+            kill -9 "$INDEXING_PID" 2>/dev/null || true
+            
+            # Reset failure counter
+            INDEXING_CONSECUTIVE_FAILURES=0
+            
+            # Set cooldown period (60 seconds)
+            HEALTH_CHECK_COOLDOWN_END=$(($(date +%s) + 60))
+            
+            # Track restart count
+            RESTART_COUNT_FILE="/tmp/indexing_restart_count"
+            local restart_num=$(($(cat $RESTART_COUNT_FILE 2>/dev/null || echo 0) + 1))
+            echo $restart_num > $RESTART_COUNT_FILE
+            log "Indexing service restarted (restart #${restart_num})"
+            
+            return 1
+        fi
+        return 0
+    fi
 }
 
 start_nodejs() {
@@ -264,6 +315,7 @@ check_process() {
 cleanup() {
     log "Shutting down all services..."
     
+    [ -n "$HEALTH_CHECK_LOOP_PID" ] && kill "$HEALTH_CHECK_LOOP_PID" 2>/dev/null || true
     [ -n "$NODEJS_PID" ] && kill "$NODEJS_PID" 2>/dev/null || true
     [ -n "$SLACKBOT_PID" ] && kill "$SLACKBOT_PID" 2>/dev/null || true
     [ -n "$EMBEDDING_PID" ] && kill "$EMBEDDING_PID" 2>/dev/null || true
@@ -289,6 +341,16 @@ start_query
 start_docling
 
 log "All services started. Beginning monitoring cycle (checking every ${CHECK_INTERVAL}s)..."
+
+# Start independent health check loop in background
+(
+    log "Starting independent health check loop (every 15s)..."
+    while true; do
+        sleep 15
+        check_indexing_health || true
+    done
+) &
+HEALTH_CHECK_LOOP_PID=$!
 
 while true; do
     sleep "$CHECK_INTERVAL"
