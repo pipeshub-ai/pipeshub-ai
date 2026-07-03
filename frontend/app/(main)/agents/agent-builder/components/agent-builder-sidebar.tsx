@@ -150,6 +150,7 @@ export function AgentBuilderSidebar(props: {
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     models: true,
+    inputs: true,
     knowledge: true,
     'knowledge-apps': true,
     'knowledge-collections': true,
@@ -160,6 +161,8 @@ export function AgentBuilderSidebar(props: {
   const groupedConnectors = useMemo(() => groupConnectorInstances(configuredConnectors), [configuredConnectors]);
   const connectorTypeEntries = useMemo(() => Object.entries(groupedConnectors), [groupedConnectors]);
 
+  const agentTemplates = filtered.filter((t) => t.category === 'agent');
+  const inputTemplates = filtered.filter((t) => t.category === 'inputs');
   const llmTemplates = filtered.filter((t) => t.category === 'llm');
   // kbGroup/appGroup are looked up from the unfiltered templates so that group section
   // headers remain visible when the user searches for individual items inside them.
@@ -267,6 +270,66 @@ export function AgentBuilderSidebar(props: {
             maxWidth: '100%',
           }}
         >
+          <SectionHeader
+            title={t('agentBuilder.coreNodeTitle')}
+            icon="account_tree"
+            open={expanded.agent ?? true}
+            onToggle={() => toggle('agent')}
+          />
+          {expanded.agent ?? true ? (
+            loading ? (
+              <Box className="agent-builder-palette-nest">
+                <AgentBuilderPaletteSkeletonList count={1} />
+              </Box>
+            ) : (
+              <Box className="agent-builder-palette-nest">
+                {agentTemplates.map((template) => (
+                  <DraggableRow key={template.type} comfortable data={prepareDragData(template)}>
+                    <MaterialIcon
+                      name={typeof template.icon === 'string' && template.icon ? template.icon : 'auto_awesome'}
+                      size={PALETTE_ICON_SIZE}
+                      color="var(--olive-11)"
+                    />
+                    <span style={paletteRowLabelStyle}>{template.label}</span>
+                  </DraggableRow>
+                ))}
+              </Box>
+            )
+          ) : null}
+
+          <SectionHeader
+            title={t('agentBuilder.inputSection')}
+            icon="input"
+            open={expanded.inputs}
+            onToggle={() => toggle('inputs')}
+          />
+          {expanded.inputs ? (
+            loading ? (
+              <Box className="agent-builder-palette-nest">
+                <AgentBuilderPaletteSkeletonList count={2} />
+              </Box>
+            ) : (
+              <Box className="agent-builder-palette-nest">
+                {inputTemplates.map((template) => (
+                  <DraggableRow
+                    key={template.type}
+                    comfortable
+                    data={prepareDragData(template)}
+                    disabled={paletteStructureLocked}
+                    onBlocked={paletteStructureLocked ? onPaletteDragBlocked : undefined}
+                  >
+                    <MaterialIcon
+                      name={typeof template.icon === 'string' && template.icon ? template.icon : 'input'}
+                      size={PALETTE_ICON_SIZE}
+                      color="var(--olive-11)"
+                    />
+                    <span style={paletteRowLabelStyle}>{template.label}</span>
+                  </DraggableRow>
+                ))}
+              </Box>
+            )
+          ) : null}
+
           <SectionHeader
             title={t('agentBuilder.aiModels')}
             icon="auto_awesome"
