@@ -165,18 +165,26 @@ check_indexing_health() {
                 if kill -0 "$INDEXING_PID" 2>/dev/null; then
                     kill -9 "$INDEXING_PID" 2>/dev/null || true
                 fi
+                wait "$INDEXING_PID" 2>/dev/null || true
             fi
-
-            # Track restart count
-            RESTART_COUNT_FILE="/tmp/indexing_restart_count"
-            local restart_num=$(($(cat $RESTART_COUNT_FILE 2>/dev/null || echo 0) + 1))
-            echo $restart_num > $RESTART_COUNT_FILE
-            log "Indexing service frozen, restart #${restart_num} triggered"
 
             # Respawn immediately instead of waiting for the next monitoring
             # tick to notice the PID is gone. start_indexing() resets the
-            # failure counter and cooldown for the fresh process.
+            # failure counter and cooldown for the fresh process. This runs
+            # before the restart-count bookkeeping below so a corrupt counter
+            # file can never delay or skip the actual respawn.
             start_indexing
+
+            # Track restart count (best-effort, purely for observability).
+            RESTART_COUNT_FILE="/tmp/indexing_restart_count"
+            local prev_count
+            prev_count=$(cat "$RESTART_COUNT_FILE" 2>/dev/null || echo 0)
+            case "$prev_count" in
+                ''|*[!0-9]*) prev_count=0 ;;
+            esac
+            local restart_num=$((prev_count + 1))
+            echo "$restart_num" > "$RESTART_COUNT_FILE"
+            log "Recorded indexing restart #${restart_num} (worker loop freeze)"
         fi
         return 1
     fi
