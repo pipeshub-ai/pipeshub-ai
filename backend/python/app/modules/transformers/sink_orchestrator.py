@@ -17,7 +17,7 @@ from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.telemetry.modules.activity_metrics import record_activity
+from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -150,14 +150,14 @@ class SinkOrchestrator(Transformer):
 
         indexing_status = record_doc.get("indexingStatus")
         if indexing_status != ProgressStatus.COMPLETED.value:
-            connector, org, kb = self._activity_labels(record) # add mimetype to the labels
+            connector, org, kb = self._activity_labels(record)
             result = await self.vector_store.apply(ctx)
             if result is False:
-                record_activity("indexing_service", "document_indexed", connector=connector, status="failed", org=org, kb=kb)
+                record_service_activity("indexing_service", "document_indexed", connector=connector, status="failed", org=org, kb=kb, mimetype=record.mime_type)
                 return
             self.logger.info(f"✅ Vector store indexing succeeded for record {record_id}")
             # Per-record indexing success counter (powers the Ingestion dashboard).
-            record_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type)
+            record_service_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type)
             self.logger.info(f"Saving reconciliation metadata for record {record_id}")
             await self.graphdb.apply(ctx)
             await self._save_reconciliation_metadata(ctx)

@@ -24,7 +24,7 @@ from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.capability_summary import fetch_connector_configs
-from app.telemetry import record_event
+from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.execute_query import has_sql_connector_configured
 from app.utils.fetch_slack_thread import has_slack_connector_configured

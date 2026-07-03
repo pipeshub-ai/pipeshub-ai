@@ -28,7 +28,7 @@ from app.config.constants.ai_models import (
     EMBEDDING_SERVER_PORT,
 )
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
-from app.telemetry import setup_telemetry
+from app.telemetry.setup import setup_telemetry
 from app.utils.logger import create_logger
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 

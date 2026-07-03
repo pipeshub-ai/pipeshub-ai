@@ -1,8 +1,8 @@
-"""Shared telemetry for PipesHub Python services.
+"""Wire telemetry into a FastAPI app.
 
 Usage (once per FastAPI app):
 
-    from app.telemetry import setup_telemetry
+    from app.telemetry.setup import setup_telemetry
 
     pusher = setup_telemetry(app, service_name="query_service")
     # in lifespan startup:  await pusher.bind(config_service, logger).start()
@@ -11,12 +11,8 @@ Usage (once per FastAPI app):
 
 from fastapi import FastAPI
 
-from app.telemetry.event_buffer import record_event
-from app.telemetry.modules.activity_metrics import record_activity
 from app.telemetry.middleware import MetricsMiddleware
 from app.telemetry.pusher import MetricsPusher
-
-__all__ = ["setup_telemetry", "MetricsPusher", "record_activity", "record_event"]
 
 
 def setup_telemetry(app: FastAPI, service_name: str) -> "PendingPusher":

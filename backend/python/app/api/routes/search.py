@@ -11,7 +11,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.telemetry import record_event
+from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.query_transform import setup_query_transformation
 

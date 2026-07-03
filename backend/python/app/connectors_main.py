@@ -36,7 +36,7 @@ from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
-from app.telemetry import setup_telemetry
+from app.telemetry.setup import setup_telemetry
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 container = ConnectorAppContainer.init("connector_service")

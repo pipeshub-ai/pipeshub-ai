@@ -22,7 +22,7 @@ from app.services.docling.docling_service import (
 from app.services.docling.docling_service import (
     app as docling_app,
 )
-from app.telemetry import setup_telemetry
+from app.telemetry.setup import setup_telemetry
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
