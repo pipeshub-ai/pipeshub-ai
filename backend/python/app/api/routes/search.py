@@ -114,6 +114,7 @@ async def search(
             "domain": domain_from_email(_su_email),
             "status_code": custom_status_code,
             "num_queries": len(queries),
+            "search_type": "search",
         })
 
         return JSONResponse(status_code=custom_status_code, content=results)

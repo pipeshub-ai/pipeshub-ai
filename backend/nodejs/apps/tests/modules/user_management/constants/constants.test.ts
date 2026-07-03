@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
-import { mailConfigUrl, ORG_CREATED_ACTIVITY } from '../../../../src/modules/user_management/constants/constants';
+import { mailConfigUrl, ORG_CREATED_EVENT } from '../../../../src/modules/user_management/constants/constants';
 
 describe('User Management Constants', () => {
   describe('mailConfigUrl', () => {
@@ -18,14 +18,14 @@ describe('User Management Constants', () => {
     });
   });
 
-  describe('ORG_CREATED_ACTIVITY', () => {
+  describe('ORG_CREATED_EVENT', () => {
     it('should be a non-empty string', () => {
-      expect(ORG_CREATED_ACTIVITY).to.be.a('string');
-      expect(ORG_CREATED_ACTIVITY).to.not.be.empty;
+      expect(ORG_CREATED_EVENT).to.be.a('string');
+      expect(ORG_CREATED_EVENT).to.not.be.empty;
     });
 
     it('should equal org_created', () => {
-      expect(ORG_CREATED_ACTIVITY).to.equal('org_created');
+      expect(ORG_CREATED_EVENT).to.equal('org_created');
     });
   });
 });

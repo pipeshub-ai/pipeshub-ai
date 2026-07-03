@@ -1618,12 +1618,14 @@ async def askAIStream(
 
     _chat_user = getattr(request.state, "user", {}) or {}
     _chat_email = _chat_user.get("email")
+    _search_type = "web_search" if query_info.chatMode == "web_search" else "internal_search"
     record_event("chat_session_started", {
         "orgId": _chat_user.get("orgId"),
         "userId": _chat_user.get("userId"),
         "email": _chat_email,
         "domain": domain_from_email(_chat_email),
         "mode": query_info.chatMode,
+        "search_type": _search_type,
     })
 
     if query_info.chatMode == "web_search":

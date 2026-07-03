@@ -19,7 +19,13 @@ import aiohttp
 from app.telemetry.backend import METRICS_BACKEND
 from app.telemetry.event_buffer import event_buffer
 from app.telemetry.modules.collection_metrics import set_metric_collection_enabled
-from app.utils.request_context import HEADER_REQUEST_ID, new_system_root
+from app.utils.request_context import (
+    HEADER_REQUEST_ID,
+    get_context,
+    new_system_root,
+    reset_context,
+    set_context,
+)
 
 SCHEMA_VERSION = 1
 
@@ -68,7 +74,9 @@ class MetricsPusher:
     async def start(self) -> None:
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run())
-            self._logger.info(f"📈 Telemetry pusher started for '{self._service_name}'")
+            self._log_with_context(
+                f"📈 Telemetry pusher started for '{self._service_name}'"
+            )
 
     async def stop(self) -> None:
         if self._task is not None and not self._task.done():
@@ -77,11 +85,22 @@ class MetricsPusher:
                 await self._task
             except (asyncio.CancelledError, Exception):
                 pass
-            self._logger.info("📉 Telemetry pusher stopped")
+            self._log_with_context("📉 Telemetry pusher stopped")
+
+    def _log_with_context(self, message: str) -> None:
+        if get_context() is not None:
+            self._logger.info(message)
+            return
+        token = set_context(new_system_root())
+        try:
+            self._logger.info(message)
+        finally:
+            reset_context(token)
 
     async def _run(self) -> None:
         while True:
             interval_s = DEFAULT_PUSH_INTERVAL_MS / 1000
+            token = set_context(new_system_root())
             try:
                 cfg = await self._load_config()
                 interval_s = cfg["interval_s"]
@@ -94,6 +113,8 @@ class MetricsPusher:
                 raise
             except Exception as e:
                 self._logger.warning(f"Failed to push telemetry: {e}")
+            finally:
+                reset_context(token)
             await asyncio.sleep(interval_s)
 
     async def _load_config(self) -> dict:
@@ -150,15 +171,14 @@ class MetricsPusher:
                     )
                 else:
                     self._logger.debug(
-                        f"Successfully pushed metrics)"
+                        f"Successfully pushed metrics"
                     )
 
     @staticmethod
     def _headers(cfg: dict) -> dict:
-        # A fresh `sys-` request id per outbound POST lets the collector
-        # correlate/dedupe each push.
+        ctx = get_context()
         headers = {
-            HEADER_REQUEST_ID: new_system_root(),
+            HEADER_REQUEST_ID: ctx.root_id if ctx else new_system_root(),
             "X-Metrics-Version": METRICS_VERSION,
         }
         if cfg["token"]:

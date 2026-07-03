@@ -35,8 +35,9 @@ import {
 } from '../services/entity_events.service';
 import { mailJwtGenerator } from '../../../libs/utils/createJwt';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { recordActivity } from '../../../libs/services/telemetry/modules/activity-metrics';
-import { ORG_CREATED_ACTIVITY } from '../constants/constants';
+import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
+import { domainFromEmail } from '../../../libs/services/telemetry/identity';
+import { ORG_CREATED_EVENT } from '../constants/constants';
 
 @injectable()
 export class OrgController {
@@ -265,15 +266,13 @@ export class OrgController {
         await org.save();
       }
 
-      recordActivity(
-        ORG_CREATED_ACTIVITY,
-        (adminUser._id as mongoose.Types.ObjectId).toString(),
-        (org._id as mongoose.Types.ObjectId).toString(),
-        contactEmail,
-        adminFullName,
-        req.context?.requestId,
-        JSON.stringify(req.context),
-      );
+      recordEvent(ORG_CREATED_EVENT, {
+        orgId: (org._id as mongoose.Types.ObjectId).toString(),
+        userId: (adminUser._id as mongoose.Types.ObjectId).toString(),
+        email: contactEmail,
+        domain: domainFromEmail(contactEmail),
+        fullName: adminFullName,
+      });
 
       if (sendEmail) {
         await this.mailService.sendMail({
