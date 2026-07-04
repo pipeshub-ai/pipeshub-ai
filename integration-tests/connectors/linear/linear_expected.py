@@ -29,7 +29,7 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from connectors.linear.linear_test_utils import parse_linear_timestamp
+from connectors.linear.linear_test_utils import _api_call_with_retry, parse_linear_timestamp
 
 
 class LinearExpected:
@@ -64,8 +64,10 @@ class LinearExpected:
         """Build a ``TicketRecord`` from live Linear issue JSON."""
         vm = value_mapper or ValueMapper()
 
-        resp = await datasource.issue(id=issue_id)
-        assert resp.success, f"issue({issue_id!r}) failed: {resp.message}"
+        resp = await _api_call_with_retry(
+            datasource.issue, id=issue_id,
+            context=f"LinearExpected.ticket_record({issue_id})",
+        )
         issue: Dict[str, Any] = (resp.data or {}).get("issue", {})
 
         identifier = issue.get("identifier", "")
@@ -171,8 +173,10 @@ class LinearExpected:
         team_id: str,
     ) -> ProjectRecord:
         """Build a ``ProjectRecord`` from live Linear project JSON."""
-        resp = await datasource.project(id=project_id)
-        assert resp.success, f"project({project_id!r}) failed: {resp.message}"
+        resp = await _api_call_with_retry(
+            datasource.project, id=project_id,
+            context=f"LinearExpected.project_record({project_id})",
+        )
         proj: Dict[str, Any] = (resp.data or {}).get("project", {})
 
         name = proj.get("name", "")
@@ -319,8 +323,10 @@ class LinearExpected:
         parent_node_id: Optional[str] = None,
     ) -> LinkRecord:
         """Build a ``LinkRecord`` from live Linear attachment JSON."""
-        resp = await datasource.attachment(id=attachment_id)
-        assert resp.success, f"attachment({attachment_id!r}) failed: {resp.message}"
+        resp = await _api_call_with_retry(
+            datasource.attachment, id=attachment_id,
+            context=f"LinearExpected.link_record({attachment_id})",
+        )
         attachment: Dict[str, Any] = (resp.data or {}).get("attachment", {})
 
         url = attachment.get("url", "")
@@ -381,8 +387,10 @@ class LinearExpected:
         parent_node_id: Optional[str] = None,
     ) -> WebpageRecord:
         """Build a ``WebpageRecord`` from live Linear document JSON."""
-        resp = await datasource.document(id=document_id)
-        assert resp.success, f"document({document_id!r}) failed: {resp.message}"
+        resp = await _api_call_with_retry(
+            datasource.document, id=document_id,
+            context=f"LinearExpected.webpage_record({document_id})",
+        )
         document: Dict[str, Any] = (resp.data or {}).get("document", {})
 
         url = document.get("url", "")

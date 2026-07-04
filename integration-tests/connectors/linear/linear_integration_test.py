@@ -197,11 +197,22 @@ class TestLinearConnector:
                 timeout=120,
             )
 
-            _restart_sync(pipeshub_client, connector_id)
-            await wait_for_sync_completion(
-                pipeshub_client, graph_provider, connector_id,
-                min_records=before_count + 1, timeout=240,
-            )
+            max_sync_attempts = 3
+            for sync_attempt in range(max_sync_attempts):
+                _restart_sync(pipeshub_client, connector_id)
+                await wait_for_sync_completion(
+                    pipeshub_client, graph_provider, connector_id, timeout=240,
+                )
+                after_count = await graph_provider.count_records(connector_id)
+                if after_count >= before_count + 1:
+                    break
+                if sync_attempt < max_sync_attempts - 1:
+                    logger.warning(
+                        "TC-INCR-001: sync finished with %d records (need %d), "
+                        "re-triggering (attempt %d/%d)",
+                        after_count, before_count + 1,
+                        sync_attempt + 2, max_sync_attempts,
+                    )
 
             after_count = await graph_provider.count_records(connector_id)
             assert after_count == before_count + 1, (

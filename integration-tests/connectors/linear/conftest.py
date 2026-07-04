@@ -28,6 +28,7 @@ from helper.assertions import ConnectorAssertions  # type: ignore[import-not-fou
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
 from connectors.linear.linear_test_utils import (  # type: ignore[import-not-found]
+    _api_call_with_retry,
     assert_linear_dependent_counts_match_graph,
     assert_linear_issues_match_graph_records,
     count_linear_scope_files,
@@ -142,18 +143,18 @@ async def linear_connector(
 
     # 1. Resolve current user + organization.
     logger.info("SETUP: Fetching viewer and organization info")
-    viewer_resp = await linear_datasource.viewer()
-    if not viewer_resp.success:
-        raise RuntimeError(f"Failed to fetch Linear viewer: {viewer_resp.message}")
+    viewer_resp = await _api_call_with_retry(
+        linear_datasource.viewer, context="conftest:viewer",
+    )
     viewer_data = (viewer_resp.data or {}).get("viewer", {})
     state["viewer_id"] = viewer_data.get("id")
     state["viewer_email"] = viewer_data.get("email")
     if not state["viewer_id"]:
         raise RuntimeError("Linear viewer response missing id")
 
-    org_resp = await linear_datasource.organization()
-    if not org_resp.success:
-        raise RuntimeError(f"Failed to fetch Linear organization: {org_resp.message}")
+    org_resp = await _api_call_with_retry(
+        linear_datasource.organization, context="conftest:organization",
+    )
     org_data = (org_resp.data or {}).get("organization", {})
     state["organization_url_key"] = org_data.get("urlKey")
 
