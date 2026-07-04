@@ -3,7 +3,7 @@ Knowledge Hub API helpers for Confluence connector integration tests.
 
 Asserts user-visible browse ACL via the same endpoints the frontend uses.
 Requires Node.js gateway (PIPESHUB_BASE_URL) so OAuth client_credentials
-resolves to the test user and forwards x-oauth-user-id to Python.
+resolves to the test user.
 """
 
 from __future__ import annotations

@@ -223,13 +223,11 @@ class TestRequireScopes:
 # ---------------------------------------------------------------------------
 
 
-def _make_fake_request(authorization=None, extra_headers=None):
+def _make_fake_request(authorization=None):
     """Build a fake FastAPI Request with mocked container/logger."""
     headers = {}
     if authorization is not None:
         headers["Authorization"] = authorization
-    if extra_headers:
-        headers.update(extra_headers)
 
     request = MagicMock()
     request.headers = headers
@@ -363,10 +361,10 @@ class TestIsJwtTokenValid:
     @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.get_config_service")
     @patch("app.api.middlewares.auth.jwt.decode")
-    async def test_oauth_client_credentials_uses_x_oauth_user_id_header(
+    async def test_oauth_client_credentials_resolves_owner_from_created_by(
         self, mock_jwt_decode, mock_get_config
     ):
-        """Node gateway sets x-oauth-user-id to resolved app owner for machine tokens."""
+        """client_credentials tokens act on behalf of the app owner (createdBy claim)."""
         mock_config_service = AsyncMock()
         mock_config_service.get_config.return_value = {
             "jwtSecret": "regular-secret",
@@ -379,23 +377,21 @@ class TestIsJwtTokenValid:
             "tokenType": "oauth",
             "scope": "admin",
             "client_id": "client-xyz",
+            "createdBy": "app-owner-id",
         }
 
-        request = _make_fake_request(
-            authorization="Bearer oauth.jwt.token",
-            extra_headers={"x-oauth-user-id": "resolved-owner-id"},
-        )
+        request = _make_fake_request(authorization="Bearer oauth.jwt.token")
         result = await isJwtTokenValid(request)
         assert result["isOAuth"] is True
-        assert result["userId"] == "resolved-owner-id"
+        assert result["userId"] == "app-owner-id"
 
     @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.get_config_service")
     @patch("app.api.middlewares.auth.jwt.decode")
-    async def test_oauth_client_credentials_keeps_jwt_user_id_without_gateway_header(
+    async def test_oauth_client_credentials_keeps_jwt_user_id_without_created_by(
         self, mock_jwt_decode, mock_get_config
     ):
-        """Direct Python calls without Node keep JWT userId (e.g. client_id subject)."""
+        """client_credentials tokens without a createdBy claim keep the client_id subject."""
         mock_config_service = AsyncMock()
         mock_config_service.get_config.return_value = {
             "jwtSecret": "regular-secret",
@@ -475,10 +471,10 @@ class TestIsJwtTokenValid:
     @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.get_config_service")
     @patch("app.api.middlewares.auth.jwt.decode")
-    async def test_oauth_token_without_x_oauth_user_id_header(
+    async def test_oauth_token_keeps_jwt_user_id(
         self, mock_jwt_decode, mock_get_config
     ):
-        """OAuth token keeps JWT userId when subject is not legacy client_id shape."""
+        """authorization_code tokens keep the real user subject; createdBy must not override it."""
         mock_config_service = AsyncMock()
         mock_config_service.get_config.return_value = {
             "jwtSecret": "regular-secret",
@@ -491,6 +487,7 @@ class TestIsJwtTokenValid:
             "tokenType": "oauth",
             "scope": "read",
             "client_id": "client-1",
+            "createdBy": "app-owner-id",
         }
 
         request = _make_fake_request(authorization="Bearer oauth.jwt.token")

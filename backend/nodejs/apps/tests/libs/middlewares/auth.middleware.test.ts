@@ -171,27 +171,6 @@ describe('AuthMiddleware', () => {
       expect(req.user).to.deep.equal(decoded)
     })
 
-    it('should strip x-oauth-user-id header to prevent spoofing', async () => {
-      const decoded = { userId: 'user1', orgId: 'org1', iat: Math.floor(Date.now() / 1000) }
-      tokenService.verifyToken.resolves(decoded)
-
-      const mockQuery = createMockQuery(null)
-      sinon.stub(UserActivities, 'findOne').returns(mockQuery)
-
-      const req = createMockRequest({
-        headers: {
-          authorization: `Bearer ${validToken}`,
-          'x-oauth-user-id': 'spoofed-user',
-        },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await authMiddleware.authenticate(req, res, next)
-
-      expect(req.headers['x-oauth-user-id']).to.be.undefined
-    })
-
     it('should reject token if logout activity is newer than token iat', async () => {
       const tokenIat = Math.floor(Date.now() / 1000) - 3600 // 1 hour ago
       const decoded = { userId: 'user1', orgId: 'org1', iat: tokenIat }
@@ -362,7 +341,7 @@ describe('AuthMiddleware', () => {
       expect(req.user.oauthScopes).to.deep.equal(['user:read', 'kb:read'])
     })
 
-    it('should resolve client_credentials JWT via createdBy and set x-oauth-user-id', async () => {
+    it('should resolve client_credentials JWT via createdBy', async () => {
       sinon.stub(jwt, 'decode').returns({
         tokenType: 'oauth',
         client_id: 'client123',
@@ -389,7 +368,6 @@ describe('AuthMiddleware', () => {
 
       expect(next.firstCall.args).to.have.length(0)
       expect(req.user.userId).to.equal('real-owner-id')
-      expect(req.headers['x-oauth-user-id']).to.equal('real-owner-id')
     })
 
     it('should resolve client_credentials via OAuthApp when createdBy absent', async () => {
@@ -421,7 +399,6 @@ describe('AuthMiddleware', () => {
 
       expect(next.firstCall.args).to.have.length(0)
       expect(req.user.userId).to.equal('db-owner-id')
-      expect(req.headers['x-oauth-user-id']).to.equal('db-owner-id')
     })
 
     it('should throw when OAuth app missing for client_credentials without createdBy', async () => {
@@ -549,33 +526,6 @@ describe('AuthMiddleware', () => {
       expect(logger.error.calledWithMatch('Failed to look up OAuth user email')).to.be.true
     })
 
-    it('should not set x-oauth-user-id header for authorization_code flow', async () => {
-      sinon.stub(jwt, 'decode').returns({
-        tokenType: 'oauth',
-        client_id: 'client123',
-        iss: 'https://example.com',
-      })
-
-      mockOAuthTokenService.verifyAccessToken.resolves({
-        userId: 'user1', // not equal to client_id -> authorization_code
-        orgId: 'org1',
-        client_id: 'client123',
-        scope: 'user:read',
-        fullName: 'User',
-        accountType: 'basic',
-      })
-
-      const userQuery = createMockQuery({ email: 'user@test.com', fullName: 'User' })
-      sinon.stub(Users, 'findOne').returns(userQuery)
-
-      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await authMiddleware.authenticate(req, res, next)
-
-      expect(req.headers['x-oauth-user-id']).to.be.undefined
-    })
   })
 
   // -----------------------------------------------------------------------

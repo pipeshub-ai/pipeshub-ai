@@ -116,16 +116,13 @@ async def isJwtTokenValid(request: Request) -> dict:
             """Add metadata and normalize OAuth tokens for scope enforcement."""
             payload["user"] = token
             payload["token_type"] = token_type
-
             # Detect OAuth tokens and normalize for require_scopes()
             if payload.get("tokenType") == "oauth":
                 payload["isOAuth"] = True
                 payload["oauthScopes"] = payload.get("scope", "").split(" ")
                 payload["oauthClientId"] = payload.get("client_id")
-                # For client_credentials grants, use the resolved userId from header
-                oauth_user_id = request.headers.get("x-oauth-user-id")
-                if oauth_user_id:
-                    payload["userId"] = oauth_user_id
+                if payload.get("userId") == payload.get("client_id") and payload.get("createdBy"):
+                    payload["userId"] = payload["createdBy"]
 
             return payload
 

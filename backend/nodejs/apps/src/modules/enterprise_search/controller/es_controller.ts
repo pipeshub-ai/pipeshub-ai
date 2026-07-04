@@ -678,7 +678,7 @@ export const deleteChatAttachment =
       const aiUrl = `${appConfig.aiBackend}/api/v1/chat/attachments/${encodeURIComponent(recordId.trim())}`;
 
       // Mirror the header-filtering that BaseCommand.sanitizeHeaders() applies.
-      const allowedHeaders = new Set(['content-type', 'authorization', 'x-is-admin', 'x-oauth-user-id']);
+      const allowedHeaders = new Set(['content-type', 'authorization', 'x-is-admin']);
       const forwardHeaders: Record<string, string> = Object.fromEntries(
         Object.entries(req.headers as Record<string, string>).filter(([k]) =>
           allowedHeaders.has(k.toLowerCase()),
