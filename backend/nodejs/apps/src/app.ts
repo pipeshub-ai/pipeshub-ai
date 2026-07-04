@@ -361,7 +361,6 @@ export class Application {
 
     // Global rate limiter - applies to all routes
     this.app.use(createGlobalRateLimiter(this.logger, appConfig.maxRequestsPerMinute));
-    // Global telemetry middleware
     this.app.use(metricsMiddleware());
   }
 

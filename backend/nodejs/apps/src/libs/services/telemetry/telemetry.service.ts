@@ -11,7 +11,7 @@ import {
   newSystemRoot,
 } from '../../context/request-context';
 import { metricsBackend } from './metrics-backend';
-import { setInfraServiceUp, setInstallInfo } from './modules/install-metrics';
+import { setInstallInfo } from './modules/install-metrics';
 import { createHash, randomUUID } from 'crypto';
 const SCHEMA_VERSION = 1;
 const METRICS_VERSION = '2';
@@ -31,7 +31,6 @@ const DEFAULTS = {
 const TIMEOUT_MS = 10000;
 const START_DELAY_MS = 200;
 
-// Returns the first defined, non-empty value; the last arg is the default.
 const firstNonEmpty = (...values: (string | undefined)[]): string => {
   for (const value of values) {
     if (value != null && value !== '') {
@@ -67,7 +66,6 @@ export class TelemetryService implements ITelemetryService {
   private enableMetricCollection: boolean = true;
   private pushInterval: NodeJS.Timeout | null = null;
   private isStarting: boolean = false;
-  private lastInfraHealthCheck: number = 0;
   private mutex: Mutex = new Mutex();
 
   constructor(
@@ -101,13 +99,18 @@ export class TelemetryService implements ITelemetryService {
       this.apiKey = config[keyValues.API_KEY] ?? '';
       this.instanceId = config[keyValues.INSTALL_ID] ?? '';
       this.appVersion = config[keyValues.APP_VERSION] ?? DEFAULTS.APP_VERSION;
-      this.pushIntervalMs = parseInt(
+      const parsedInterval = parseInt(
         firstNonEmpty(
           config[keyValues.PUSH_INTERVAL],
           String(DEFAULTS.PUSH_INTERVAL),
         ),
         10,
       );
+      // NaN or <=0 would make setInterval fire ~every ms.
+      this.pushIntervalMs =
+        Number.isFinite(parsedInterval) && parsedInterval > 0
+          ? parsedInterval
+          : DEFAULTS.PUSH_INTERVAL;
       this.enableMetricCollection = parseBoolean(
         firstNonEmpty(config[keyValues.ENABLE_METRIC_COLLECTION], 'true'),
       );
@@ -228,16 +231,13 @@ export class TelemetryService implements ITelemetryService {
         this.refreshInstallInfo().catch((err: unknown) => {
           logger.warn('Failed to refresh install info:', err);
         });
-        this.refreshInfraHealth().catch((err: unknown) => {
-          logger.warn('Failed to refresh infra health:', err);
-        });
       }, this.pushIntervalMs);
       logger.debug(
         `Started pushing metrics every ${String(this.pushIntervalMs)}ms`,
       );
     } finally {
       this.isStarting = false;
-      release(); // Release the mutex in the finally block
+      release();
     }
   }
 
@@ -476,34 +476,6 @@ export class TelemetryService implements ITelemetryService {
       });
     } catch (error) {
       logger.warn('Failed to refresh install info:', error);
-    }
-  }
-
-  private async refreshInfraHealth(): Promise<void> {
-    const HEALTH_INTERVAL_MS = 5 * 60 * 1000;
-    const now = Date.now();
-    if (now - this.lastInfraHealthCheck < HEALTH_INTERVAL_MS) {
-      return;
-    }
-    this.lastInfraHealthCheck = now;
-    try {
-      const port = firstNonEmpty(process.env.PORT, '3000');
-      const resp = await axios.get<{ services?: Record<string, string> }>(
-        `http://localhost:${port}/api/v1/health`,
-        { timeout: TIMEOUT_MS },
-      );
-      const services = resp.data.services ?? {};
-      setInfraServiceUp(
-        Object.entries(services).map(([service, status]) => ({
-          service,
-          healthy: status === 'healthy',
-        })),
-      );
-    } catch (error: unknown) {
-      logger.warn(
-        'Failed to probe infra health:',
-        error instanceof Error ? error.message : String(error),
-      );
     }
   }
 }

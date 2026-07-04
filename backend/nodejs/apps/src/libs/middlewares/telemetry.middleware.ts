@@ -2,7 +2,10 @@ import { Response, NextFunction } from 'express';
 import { AuthenticatedUserRequest } from './types';
 import { Logger } from '../services/logger.service';
 import { recordHttpRequest } from '../services/telemetry/modules/http-metrics';
-import { domainFromEmail } from '../services/telemetry/identity';
+import {
+  domainFromEmail,
+  normalizeOrgId,
+} from '../services/telemetry/identity';
 
 const logger = Logger.getInstance({
   service: 'Telemetry Middleware',
@@ -36,10 +39,7 @@ function getRouteTemplate(req: AuthenticatedUserRequest): string {
 function getOrgId(req: AuthenticatedUserRequest): string {
   const user = req.user;
   if (user != null && typeof user === 'object' && 'orgId' in user) {
-    const orgId = (user as { orgId: unknown }).orgId;
-    if (typeof orgId === 'string' && orgId !== '') {
-      return orgId;
-    }
+    return normalizeOrgId((user as { orgId: unknown }).orgId);
   }
   return 'unknown';
 }

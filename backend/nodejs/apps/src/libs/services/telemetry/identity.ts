@@ -12,3 +12,9 @@ export function domainFromEmail(email: string | undefined | null): string {
   if (!email || !email.includes('@')) return 'unknown';
   return email.split('@').pop()?.trim().toLowerCase() || 'unknown';
 }
+
+export function normalizeOrgId(orgId: unknown): string {
+  if (orgId == null) return 'unknown';
+  const str = String(orgId);
+  return str !== '' && str !== '[object Object]' ? str : 'unknown';
+}

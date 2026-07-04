@@ -964,6 +964,22 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
     })
+
+    it('should fall back to the raw stored value when decryption fails (unencrypted config)', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(JSON.stringify({ enableMetricCollection: true })),
+      })
+      mockEncService.decrypt.throws(new Error('bad ciphertext'))
+      const handler = getMetricsCollection(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.calledWith({ enableMetricCollection: true })).to.be.true
+    })
   })
 
   describe('setMetricsCollectionPushInterval', () => {

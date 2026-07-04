@@ -1,5 +1,8 @@
 import { expect } from 'chai';
-import { domainFromEmail } from '../../../../src/libs/services/telemetry/identity';
+import {
+  domainFromEmail,
+  normalizeOrgId,
+} from '../../../../src/libs/services/telemetry/identity';
 
 describe('telemetry identity', () => {
   describe('domainFromEmail', () => {
@@ -27,6 +30,27 @@ describe('telemetry identity', () => {
 
     it('should return "unknown" for a trailing @ with no domain', () => {
       expect(domainFromEmail('user@')).to.equal('unknown');
+    });
+  });
+
+  describe('normalizeOrgId', () => {
+    it('should pass through a non-empty string', () => {
+      expect(normalizeOrgId('org-42')).to.equal('org-42');
+    });
+
+    it('should stringify an ObjectId-like value', () => {
+      const objectIdLike = { toString: () => '507f1f77bcf86cd799439011' };
+      expect(normalizeOrgId(objectIdLike)).to.equal('507f1f77bcf86cd799439011');
+    });
+
+    it('should return "unknown" for null, undefined, and empty string', () => {
+      expect(normalizeOrgId(null)).to.equal('unknown');
+      expect(normalizeOrgId(undefined)).to.equal('unknown');
+      expect(normalizeOrgId('')).to.equal('unknown');
+    });
+
+    it('should return "unknown" for a plain object', () => {
+      expect(normalizeOrgId({ nested: true })).to.equal('unknown');
     });
   });
 });

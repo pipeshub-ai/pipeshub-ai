@@ -118,6 +118,31 @@ describe('telemetry middleware', () => {
     expect(domain).to.equal('acme.io');
   });
 
+  it('should stringify an ObjectId-like orgId instead of falling back to "unknown"', () => {
+    const middleware = metricsMiddleware();
+    const objectIdLike = {
+      toString: () => '507f1f77bcf86cd799439011',
+    };
+    const req = mockReq({ user: { orgId: objectIdLike } });
+    const res = mockRes();
+
+    middleware(req, res as any, sinon.stub());
+    res.emit('finish');
+
+    expect(recordStub.firstCall.args[3]).to.equal('507f1f77bcf86cd799439011');
+  });
+
+  it('should fall back to "unknown" when orgId is a plain object', () => {
+    const middleware = metricsMiddleware();
+    const req = mockReq({ user: { orgId: { nested: true } } });
+    const res = mockRes();
+
+    middleware(req, res as any, sinon.stub());
+    res.emit('finish');
+
+    expect(recordStub.firstCall.args[3]).to.equal('unknown');
+  });
+
   it('should fall back to "unknown" org/domain for unauthenticated requests', () => {
     const middleware = metricsMiddleware();
     const req = mockReq();

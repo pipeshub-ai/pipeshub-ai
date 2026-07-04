@@ -6,12 +6,6 @@ const installInfo = metricsBackend.createGauge({
   labelNames: ['graph_db', 'vector_db', 'message_broker', 'kv_store'],
 });
 
-const infraServiceUp = metricsBackend.createGauge({
-  name: 'pipeshub_infra_service_up',
-  help: 'Infrastructure backend health (1 = healthy)',
-  labelNames: ['service'],
-});
-
 export function setInstallInfo(labels: {
   graph_db: string;
   vector_db: string;
@@ -20,13 +14,4 @@ export function setInstallInfo(labels: {
 }): void {
   installInfo.reset();
   installInfo.set(labels, 1);
-}
-
-export function setInfraServiceUp(
-  rows: { service: string; healthy: boolean }[],
-): void {
-  infraServiceUp.reset();
-  for (const r of rows) {
-    infraServiceUp.set({ service: r.service }, r.healthy ? 1 : 0);
-  }
 }

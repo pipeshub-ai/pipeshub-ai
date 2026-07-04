@@ -1,5 +1,4 @@
-"""Background task that pushes this service's metrics to the collector gateway..
-"""
+"""Background task that pushes this service's metrics to the collector gateway."""
 
 import asyncio
 import json

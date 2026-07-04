@@ -355,11 +355,7 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
         logger.error(f"❌ Error during container resource shutdown: {str(e)}")
 
 async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60) -> None:
-    """Periodically set the connector_active gauge from active APPS instances.
-
-    Counts active connector instances by type
-    Uses the DB-agnostic get_all_documents; best-effort, never fatal.
-    """
+    """Periodically refresh the connector_active gauge; best-effort, never fatal."""
     from app.config.constants.arangodb import CollectionNames
     from app.telemetry.modules.connector_metrics import set_connector_active
 
@@ -402,7 +398,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning(f"❌ Failed to start telemetry pusher: {e}")
 
-    # Refresh the connector_active gauge from the graph DB on a tick.
     app.state.connector_metrics_task = asyncio.create_task(
         refresh_connector_metrics(graph_provider, logger, interval_s=60*5), name="connector_metrics_refresh"
     )
@@ -488,7 +483,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except (asyncio.CancelledError, Exception):
             pass
     logger.info("🔄 Shut down application started")
-    # Stop connector metrics refresher
     connector_metrics_task = getattr(app.state, "connector_metrics_task", None)
     if connector_metrics_task is not None and not connector_metrics_task.done():
         connector_metrics_task.cancel()
@@ -496,7 +490,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await connector_metrics_task
         except (asyncio.CancelledError, Exception):
             pass
-    # Stop telemetry pusher
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
     # Shutdown all container resources

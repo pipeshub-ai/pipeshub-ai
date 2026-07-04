@@ -118,6 +118,19 @@ describe('metrics.refresh.service', () => {
     ]);
   });
 
+  it('should label users with no org as "unknown", not "null"', async () => {
+    stubDb({
+      userAgg: [{ _id: null, count: 3 }],
+    });
+
+    timer = startOrgMetricsRefresh(mockLogger as any, NEVER_MS);
+    await flushAsync();
+
+    expect(setOrgUsersStub.firstCall.args[0]).to.deep.equal([
+      { org: 'unknown', domain: 'unknown', count: 3 },
+    ]);
+  });
+
   it('should flatten and dedupe auth methods across auth steps', async () => {
     stubDb({
       authConfigs: [
@@ -139,6 +152,28 @@ describe('metrics.refresh.service', () => {
     expect(setOrgAuthMethodsStub.calledOnce).to.be.true;
     expect(setOrgAuthMethodsStub.firstCall.args[0]).to.have.deep.members([
       { org: 'o1', method: 'password' },
+      { org: 'o1', method: 'saml' },
+    ]);
+  });
+
+  it('should skip auth configs with a missing orgId', async () => {
+    stubDb({
+      authConfigs: [
+        {
+          orgId: null,
+          authSteps: [{ allowedMethods: [{ type: 'password' }] }],
+        },
+        {
+          orgId: 'o1',
+          authSteps: [{ allowedMethods: [{ type: 'saml' }] }],
+        },
+      ],
+    });
+
+    timer = startOrgMetricsRefresh(mockLogger as any, NEVER_MS);
+    await flushAsync();
+
+    expect(setOrgAuthMethodsStub.firstCall.args[0]).to.deep.equal([
       { org: 'o1', method: 'saml' },
     ]);
   });

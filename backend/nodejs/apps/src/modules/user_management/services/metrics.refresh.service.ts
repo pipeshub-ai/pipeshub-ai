@@ -6,9 +6,10 @@ import {
   setOrgAuthMethods,
 } from '../../../libs/services/telemetry/modules/org-metrics';
 import { setOrgUsers } from '../../../libs/services/telemetry/modules/user-metrics';
+import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
 import { Logger } from '../../../libs/services/logger.service';
 
-const DEFAULT_INTERVAL_MS = 60000 * 5; //5 minutes
+const DEFAULT_INTERVAL_MS = 60000 * 5;
 
 interface OrgRow {
   _id: unknown;
@@ -29,16 +30,6 @@ interface AuthConfigLean {
   authSteps?: AuthStepLean[];
 }
 
-/**
- * @param logger - The logger to use for logging.
- * @param intervalMs - The interval in milliseconds to refresh the metrics.
- * @returns The timer for the interval.
- * @description
- * This function is used to refresh the metrics for the organizations and users.
- * It is called every 5 minutes by default.
- * It is used to refresh the metrics for the organizations and users.
- * It is used to refresh the metrics for the organizations and users.
- */
 export function startOrgMetricsRefresh(
   logger: Logger,
   intervalMs: number = DEFAULT_INTERVAL_MS,
@@ -80,11 +71,11 @@ export function startOrgMetricsRefresh(
       setOrgsTotal([...orgTotals.values()]);
 
       const domainById = new Map<string, string>(
-        orgs.map((o) => [String(o._id), norm(o.domain)]),
+        orgs.map((o) => [normalizeOrgId(o._id), norm(o.domain)]),
       );
       setOrgUsers(
         userAgg.map((r) => {
-          const orgId = String(r._id);
+          const orgId = normalizeOrgId(r._id);
           const domain = domainById.get(orgId);
           return {
             org: orgId,
@@ -101,7 +92,10 @@ export function startOrgMetricsRefresh(
       ).lean()) as AuthConfigLean[];
       const authRows: { org: string; method: string }[] = [];
       for (const cfg of authConfigs) {
-        const org = String(cfg.orgId);
+        const org = normalizeOrgId(cfg.orgId);
+        // An auth config without an org is malformed — skip rather than
+        // emit auth-method rows under an "unknown" org label.
+        if (org === 'unknown') continue;
         const methods = new Set<string>();
         for (const step of cfg.authSteps ?? []) {
           for (const m of step.allowedMethods ?? []) {

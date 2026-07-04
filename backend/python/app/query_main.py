@@ -209,7 +209,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Shutdown
     logger.info("🔄 Shutting down application")
 
-    # Stop telemetry pusher
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
 

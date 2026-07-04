@@ -103,6 +103,19 @@ describe('TelemetryService', () => {
       expect(kv.set.called).to.be.false;
     });
 
+    it('should fall back to the default push interval for non-numeric or non-positive values', async () => {
+      for (const bad of ['not-a-number', '0', '-5000']) {
+        (TelemetryService as any).instance = undefined;
+        const kv = mockKvStore(storedConfig({ pushIntervalMs: bad }));
+        const svc = new TelemetryService(kv as any);
+        await flushAsync();
+
+        expect((svc as any).pushIntervalMs, `pushIntervalMs="${bad}"`).to.equal(
+          5000,
+        );
+      }
+    });
+
     it('should watch the metrics config key for changes', async () => {
       const kv = mockKvStore();
       new TelemetryService(kv as any);
@@ -329,38 +342,6 @@ describe('TelemetryService', () => {
       await (svc as any).refreshInstallInfo();
 
       expect(setInstallInfoStub.firstCall.args[0].graph_db).to.equal('neo4j');
-    });
-  });
-
-  describe('refreshInfraHealth', () => {
-    it('should map health endpoint services to up/down rows', async () => {
-      const setInfraStub = sandbox.stub(installMetricsModule, 'setInfraServiceUp');
-      sandbox.stub(axios, 'get').resolves({
-        data: {
-          services: { mongodb: 'healthy', kafka: 'unhealthy' },
-        },
-      });
-      const svc = new TelemetryService(mockKvStore() as any);
-      await flushAsync();
-
-      await (svc as any).refreshInfraHealth();
-
-      expect(setInfraStub.calledOnce).to.be.true;
-      expect(setInfraStub.firstCall.args[0]).to.have.deep.members([
-        { service: 'mongodb', healthy: true },
-        { service: 'kafka', healthy: false },
-      ]);
-    });
-
-    it('should throttle health probes to once per window', async () => {
-      const getStub = sandbox.stub(axios, 'get').resolves({ data: { services: {} } });
-      const svc = new TelemetryService(mockKvStore() as any);
-      await flushAsync();
-
-      await (svc as any).refreshInfraHealth();
-      await (svc as any).refreshInfraHealth();
-
-      expect(getStub.calledOnce).to.be.true;
     });
   });
 

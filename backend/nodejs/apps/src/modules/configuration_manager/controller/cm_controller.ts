@@ -29,6 +29,7 @@ import {
 } from '../constants/constants';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/modules/collection-metrics';
+import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
 import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
 import { loadConfigurationManagerConfig } from '../config/config';
 import { Org } from '../../user_management/schema/org.schema';
@@ -2337,11 +2338,17 @@ const getMetricsCollectionConfig = async (
   if (!encrypted) {
     return {};
   }
+  let decrypted: string;
   try {
-    const decrypted = EncryptionService.getInstance(
+    decrypted = EncryptionService.getInstance(
       configManagerConfig.algorithm,
       configManagerConfig.secretKey,
     ).decrypt(encrypted);
+  } catch {
+    // Value may predate encryption (migration/local dev); try it as-is.
+    decrypted = encrypted;
+  }
+  try {
     const parsed = JSON.parse(decrypted);
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch (error) {
@@ -2379,7 +2386,7 @@ export const toggleMetricsCollection =
       const enabled = !(
         enableMetricCollection === false || enableMetricCollection === 'false'
       );
-      setMetricCollectionEnabled(req.user?.orgId || 'unknown', enabled);
+      setMetricCollectionEnabled(normalizeOrgId(req.user?.orgId), enabled);
 
       if (!enabled) {
         await TelemetryService.current()?.flush();
