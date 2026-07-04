@@ -130,64 +130,76 @@ INDEXING_PID=""
 CONNECTOR_PID=""
 QUERY_PID=""
 
-# Health check tracking
-INDEXING_CONSECUTIVE_FAILURES=0
-INDEXING_MAX_FAILURES=3
-HEALTH_CHECK_TIMEOUT=10
-HEALTH_CHECK_COOLDOWN_END=0
+# Health check tracking (Indexing freeze detection)
+HEALTH_CHECK_TIMEOUT=${HEALTH_CHECK_TIMEOUT:-2}                     # curl --max-time, seconds, per attempt
+INDEXING_HEALTH_BURST_ATTEMPTS=${INDEXING_HEALTH_BURST_ATTEMPTS:-5} # 1 initial + 4 rapid re-checks before declaring a freeze
+HEALTH_CHECK_BURST_INTERVAL=${HEALTH_CHECK_BURST_INTERVAL:-1}       # seconds between burst re-checks
+HEALTH_CHECK_COOLDOWN_END=0                                         # epoch seconds; checks skipped while now < this
+
+# Indexing restart backoff (crash/freeze-loop protection)
+INDEXING_BACKOFF_BASE_SECONDS=${INDEXING_BACKOFF_BASE_SECONDS:-60}
+INDEXING_BACKOFF_MAX_SECONDS=${INDEXING_BACKOFF_MAX_SECONDS:-600}
+INDEXING_BACKOFF_RESET_AFTER_SECONDS=${INDEXING_BACKOFF_RESET_AFTER_SECONDS:-600}
+INDEXING_RESTART_STREAK=0
+INDEXING_LAST_RESTART_TIME=0
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
 check_indexing_health() {
-    local current_time=$(date +%s)
+    local current_time
+    current_time=$(date +%s)
 
     # Skip health check during the post-restart startup grace period
     if [ "$HEALTH_CHECK_COOLDOWN_END" -gt "$current_time" ]; then
         return 0
     fi
-    
-    # Attempt health check with timeout
-    if curl -sf --max-time $HEALTH_CHECK_TIMEOUT "http://localhost:8091/health" > /dev/null 2>&1; then
-        INDEXING_CONSECUTIVE_FAILURES=0
-        return 0
-    else
-        INDEXING_CONSECUTIVE_FAILURES=$((INDEXING_CONSECUTIVE_FAILURES + 1))
-        log "Indexing health check failed ($INDEXING_CONSECUTIVE_FAILURES/$INDEXING_MAX_FAILURES)"
-        
-        if [ "$INDEXING_CONSECUTIVE_FAILURES" -ge "$INDEXING_MAX_FAILURES" ]; then
-            log "Indexing service frozen. Forcing restart..."
 
-            if [ -n "$INDEXING_PID" ]; then
-                kill -15 "$INDEXING_PID" 2>/dev/null || true
-                sleep 5
-                if kill -0 "$INDEXING_PID" 2>/dev/null; then
-                    kill -9 "$INDEXING_PID" 2>/dev/null || true
-                fi
-                wait "$INDEXING_PID" 2>/dev/null || true
+    # Burst-on-first-failure: the main event loop has no blocking calls, so a
+    # healthy /health responds in low single-digit ms. A single slow attempt
+    # is already anomalous but could still be a transient blip, so retry
+    # quickly right here instead of waiting for the next outer monitoring
+    # tick. Only a fully-failed burst counts as a confirmed freeze.
+    local attempt=1
+    while [ "$attempt" -le "$INDEXING_HEALTH_BURST_ATTEMPTS" ]; do
+        if curl -sf --max-time "$HEALTH_CHECK_TIMEOUT" "http://localhost:8091/health" > /dev/null 2>&1; then
+            if [ "$attempt" -gt 1 ]; then
+                log "Indexing health check recovered on attempt $attempt/$INDEXING_HEALTH_BURST_ATTEMPTS (transient blip, no restart)"
             fi
-
-            # Respawn immediately instead of waiting for the next monitoring
-            # tick to notice the PID is gone. start_indexing() resets the
-            # failure counter and cooldown for the fresh process. This runs
-            # before the restart-count bookkeeping below so a corrupt counter
-            # file can never delay or skip the actual respawn.
-            start_indexing
-
-            # Track restart count (best-effort, purely for observability).
-            RESTART_COUNT_FILE="/tmp/indexing_restart_count"
-            local prev_count
-            prev_count=$(cat "$RESTART_COUNT_FILE" 2>/dev/null || echo 0)
-            case "$prev_count" in
-                ''|*[!0-9]*) prev_count=0 ;;
-            esac
-            local restart_num=$((prev_count + 1))
-            echo "$restart_num" > "$RESTART_COUNT_FILE"
-            log "Recorded indexing restart #${restart_num} (worker loop freeze)"
+            return 0
         fi
-        return 1
+
+        log "Indexing health check attempt $attempt/$INDEXING_HEALTH_BURST_ATTEMPTS failed"
+
+        if [ "$attempt" -eq "$INDEXING_HEALTH_BURST_ATTEMPTS" ]; then
+            break
+        fi
+
+        sleep "$HEALTH_CHECK_BURST_INTERVAL"
+        attempt=$((attempt + 1))
+    done
+
+    log "Indexing service frozen after $INDEXING_HEALTH_BURST_ATTEMPTS consecutive health check failures. Forcing restart..."
+
+    if [ -n "$INDEXING_PID" ]; then
+        kill -15 "$INDEXING_PID" 2>/dev/null || true
+        sleep 5
+        if kill -0 "$INDEXING_PID" 2>/dev/null; then
+            kill -9 "$INDEXING_PID" 2>/dev/null || true
+        fi
+        wait "$INDEXING_PID" 2>/dev/null || true
     fi
+
+    # Respawn immediately instead of waiting for the next monitoring tick.
+    # start_indexing() sets the baseline cooldown for the fresh process.
+    # This runs before the backoff bookkeeping below so a bug there can
+    # never delay or skip the actual respawn - it can only widen the
+    # cooldown start_indexing() already set.
+    start_indexing
+    record_indexing_restart
+
+    return 1
 }
 
 start_nodejs() {
@@ -269,11 +281,66 @@ start_indexing() {
     INDEXING_PID=$!
     log "Indexing started with PID: $INDEXING_PID"
 
-    # Reset health-check state for the fresh process and grant it a startup
-    # grace period before freeze detection resumes - applies whether this was
-    # called from a health-check restart or an independent process crash.
-    INDEXING_CONSECUTIVE_FAILURES=0
-    HEALTH_CHECK_COOLDOWN_END=$(($(date +%s) + 60))
+    # Grant a baseline startup grace period before freeze detection resumes -
+    # applies whether this was called from a freeze-triggered restart or an
+    # independent process crash. record_indexing_restart() (freeze path only)
+    # may widen this further, but only after this function has returned.
+    HEALTH_CHECK_COOLDOWN_END=$(( $(date +%s) + INDEXING_BACKOFF_BASE_SECONDS ))
+}
+
+# Tracks freeze-triggered restarts in a rolling backoff window and widens the
+# post-restart health-check grace period exponentially, so a reliably
+# recurring freeze (e.g. a poison-pill record re-queued on every restart)
+# produces a slowing, escalating restart cadence instead of a tight loop.
+# Only called from the freeze path (check_indexing_health) - a plain process
+# crash (check_process) still gets the flat baseline cooldown from
+# start_indexing() above. Must be called strictly after start_indexing() has
+# already relaunched the process: this function only widens
+# HEALTH_CHECK_COOLDOWN_END and can never delay or prevent the respawn.
+record_indexing_restart() {
+    local now
+    now=$(date +%s)
+
+    case "$INDEXING_RESTART_STREAK" in ''|*[!0-9]*) INDEXING_RESTART_STREAK=0 ;; esac
+    case "$INDEXING_LAST_RESTART_TIME" in ''|*[!0-9]*) INDEXING_LAST_RESTART_TIME=0 ;; esac
+
+    if [ "$INDEXING_LAST_RESTART_TIME" -gt 0 ]; then
+        local elapsed=$(( now - INDEXING_LAST_RESTART_TIME ))
+        if [ "$elapsed" -ge "$INDEXING_BACKOFF_RESET_AFTER_SECONDS" ]; then
+            log "Indexing has been stable for ${elapsed}s (>= ${INDEXING_BACKOFF_RESET_AFTER_SECONDS}s) - resetting restart backoff streak"
+            INDEXING_RESTART_STREAK=0
+        fi
+    fi
+
+    INDEXING_RESTART_STREAK=$((INDEXING_RESTART_STREAK + 1))
+    INDEXING_LAST_RESTART_TIME=$now
+
+    # Exponential backoff: base * 2^(streak-1), capped at max. Doubles
+    # iteratively (rather than computing a raw power) so an unbounded streak
+    # can never overflow bash arithmetic.
+    local grace=$INDEXING_BACKOFF_BASE_SECONDS
+    local i=1
+    while [ "$i" -lt "$INDEXING_RESTART_STREAK" ] && [ "$grace" -lt "$INDEXING_BACKOFF_MAX_SECONDS" ]; do
+        grace=$((grace * 2))
+        i=$((i + 1))
+    done
+    if [ "$grace" -gt "$INDEXING_BACKOFF_MAX_SECONDS" ]; then
+        grace=$INDEXING_BACKOFF_MAX_SECONDS
+    fi
+
+    HEALTH_CHECK_COOLDOWN_END=$(( now + grace ))
+    log "Indexing freeze-restart streak: ${INDEXING_RESTART_STREAK}; widened grace period to ${grace}s (cap ${INDEXING_BACKOFF_MAX_SECONDS}s)"
+
+    # Track restart count (best-effort, purely for observability).
+    RESTART_COUNT_FILE="/tmp/indexing_restart_count"
+    local prev_count
+    prev_count=$(cat "$RESTART_COUNT_FILE" 2>/dev/null || echo 0)
+    case "$prev_count" in
+        ''|*[!0-9]*) prev_count=0 ;;
+    esac
+    local restart_num=$((prev_count + 1))
+    echo "$restart_num" > "$RESTART_COUNT_FILE"
+    log "Recorded indexing restart #${restart_num} (worker loop freeze, streak ${INDEXING_RESTART_STREAK})"
 }
 
 start_connector() {
