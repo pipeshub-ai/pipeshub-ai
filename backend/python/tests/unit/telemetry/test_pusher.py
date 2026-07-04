@@ -27,7 +27,7 @@ def node_config(**overrides) -> dict:
         "installId": "install-1",
         "apiKey": "k",
         "appVersion": "1.0.0",
-        "pushIntervalMs": "5000",
+        "pushIntervalMs": "300000",
         "enableMetricCollection": "true",
         **overrides,
     }
@@ -114,7 +114,7 @@ class TestLoadConfig:
         assert cfg is not None
         assert cfg["url"] == "https://collector.io/collect-metrics"
         assert cfg["token"] == "k"
-        assert cfg["interval_s"] == 5.0
+        assert cfg["interval_s"] == 300.0
         assert cfg["enabled"] is False
         assert cfg["install_id"] == "install-2"
 
@@ -125,6 +125,15 @@ class TestLoadConfig:
 
         assert cfg is not None
         assert cfg["version"] == "2.5.0"
+
+    async def test_invalid_push_interval_falls_back_to_default(self):
+        for bad in ("not-a-number", "0", "-5000"):
+            pusher = make_pusher(node_config(pushIntervalMs=bad))
+
+            cfg = await pusher._load_config()
+
+            assert cfg is not None, f"pushIntervalMs={bad!r}"
+            assert cfg["interval_s"] == 300.0, f"pushIntervalMs={bad!r}"
 
     async def test_none_until_node_publishes_all_required_fields(self):
         for missing in REQUIRED_CONFIG_FIELDS:

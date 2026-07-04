@@ -111,7 +111,7 @@ describe('TelemetryService', () => {
         await flushAsync();
 
         expect((svc as any).pushIntervalMs, `pushIntervalMs="${bad}"`).to.equal(
-          5000,
+          300000,
         );
       }
     });
@@ -159,8 +159,25 @@ describe('TelemetryService', () => {
         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
       );
       expect((svc as any).apiKey).to.have.length.greaterThan(0);
-      expect((svc as any).pushIntervalMs).to.equal(5000);
+      expect((svc as any).pushIntervalMs).to.equal(300000);
       expect((svc as any).enableMetricCollection).to.be.true;
+    });
+
+    it('should seed the 5-minute default when the interval is missing from the stored config', async () => {
+      const kv = mockKvStore(
+        JSON.stringify({
+          serverUrl: VALID_URL,
+          apiKey: 'test-api-key',
+          installId: 'install-1234',
+          appVersion: '9.9.9',
+          enableMetricCollection: 'false',
+        }),
+      );
+      const svc = new TelemetryService(kv as any);
+      await flushAsync();
+
+      expect((svc as any).pushIntervalMs).to.equal(300000);
+      expect(kv.set.calledOnce).to.be.true;
     });
 
     it('should return an empty config when the store is empty or invalid JSON', async () => {

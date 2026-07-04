@@ -24,7 +24,7 @@ const logger = Logger.getInstance({ service: 'Telemetry Service' });
 
 const DEFAULTS = {
   METRIC_HOST: 'https://metrics-collector.intellysense.com/collect-metrics',
-  PUSH_INTERVAL: 5000,
+  PUSH_INTERVAL: 300000,
   APP_VERSION: '1.0.0',
 };
 

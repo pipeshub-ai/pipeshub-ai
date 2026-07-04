@@ -36,7 +36,7 @@ REQUIRED_CONFIG_FIELDS = (
     "enableMetricCollection",
 )
 
-# Retry cadence while waiting for Node to publish the config.
+DEFAULT_PUSH_INTERVAL_MS = 300000
 CONFIG_POLL_INTERVAL_S = 5
 
 def _as_dict(raw: object) -> dict:
@@ -57,6 +57,16 @@ def _as_bool(value: object, default: bool = True) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
     return default
+
+
+def _interval_s(raw_value: object) -> float:
+    try:
+        ms = float(str(raw_value).strip())
+    except (TypeError, ValueError):
+        ms = float(DEFAULT_PUSH_INTERVAL_MS)
+    if ms <= 0:
+        ms = float(DEFAULT_PUSH_INTERVAL_MS)
+    return ms / 1000
 
 
 class MetricsPusher:
@@ -131,7 +141,7 @@ class MetricsPusher:
         return {
             "url": raw["serverUrl"],
             "token": raw["apiKey"],
-            "interval_s": int(raw["pushIntervalMs"]) / 1000,
+            "interval_s": _interval_s(raw["pushIntervalMs"]),
             "enabled": _as_bool(raw["enableMetricCollection"]),
             "install_id": raw["installId"],
             # Node owns appVersion; every service reports the same value.
