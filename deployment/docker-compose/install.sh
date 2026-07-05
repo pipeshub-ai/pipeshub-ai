@@ -200,7 +200,19 @@ persist_env_var() {
     fi
   done < "$ENV_FILE" > "$tmp"
   $found || printf '%s=%s\n' "$key" "$val" >> "$tmp"
-  mv "$tmp" "$ENV_FILE"
+  # Overwrite contents rather than `mv` so the file keeps its inode, ownership,
+  # chmod 600, and any symlinks pointing at it.
+  cat "$tmp" > "$ENV_FILE" && rm -f "$tmp"
+}
+
+# Docker Desktop VM memory in MB, or 0 when unknown. Guards against docker info
+# emitting an empty or non-numeric MemTotal, which would otherwise make the
+# arithmetic below fail and abort the whole installer under `set -e`.
+docker_vm_mem_mb() {
+  local bytes
+  bytes="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
+  [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+  echo $(( bytes / 1024 / 1024 ))
 }
 
 # List working directories of RUNNING containers in our Compose project that
@@ -512,8 +524,7 @@ if ! $FLAG_UPGRADE; then
   # a Linux VM. On native Linux, docker info reports host RAM (already checked above).
   # Docker Desktop doesn't need 16 GB; 8 GB in the VM is sufficient for PipesHub.
   if $IS_MACOS; then
-    _docker_mem="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
-    _docker_mem_mb=$(( _docker_mem / 1024 / 1024 ))
+    _docker_mem_mb="$(docker_vm_mem_mb)"
     if (( _docker_mem_mb > 0 && _docker_mem_mb < 8192 )); then
       warn "Docker Desktop has only ${_docker_mem_mb} MB allocated to its VM. Recommend at least 8 GB in Docker Desktop → Settings → Resources → Memory."
     fi
@@ -522,8 +533,7 @@ if ! $FLAG_UPGRADE; then
   # Docker Desktop on Windows (Git Bash) — host RAM is not readable from Git Bash,
   # so probe the Docker Desktop VM allocation directly (same approach as macOS).
   if $IS_WINDOWS; then
-    _docker_mem="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
-    _docker_mem_mb=$(( _docker_mem / 1024 / 1024 ))
+    _docker_mem_mb="$(docker_vm_mem_mb)"
     if (( _docker_mem_mb > 0 && _docker_mem_mb < 8192 )); then
       warn "Docker Desktop has only ${_docker_mem_mb} MB allocated to its VM. Recommend at least 8 GB in Docker Desktop → Settings → Resources → Memory."
     elif (( _docker_mem_mb >= 8192 )); then
@@ -1315,8 +1325,7 @@ elif [[ -n "${_CRASH_REPORT:-}" ]]; then
     _free_mb="$(free -m 2>/dev/null | awk '/^Mem:/{print $7}')"
     [[ -n "${_free_mb:-}" ]] && warn "  (available memory right now: ${_free_mb} MB; the full stack wants ~16 GB)"
   else
-    _vm_mb="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
-    _vm_mb=$(( _vm_mb / 1024 / 1024 ))
+    _vm_mb="$(docker_vm_mem_mb)"
     (( _vm_mb > 0 )) && warn "  (Docker Desktop VM memory: ${_vm_mb} MB; the full stack wants ~16 GB — raise it in Settings → Resources)"
   fi
   warn "  • exit 137 / oom=true → out of memory. Free RAM, or switch to the lighter"
