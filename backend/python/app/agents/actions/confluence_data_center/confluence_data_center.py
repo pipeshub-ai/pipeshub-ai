@@ -286,18 +286,17 @@ class ConfluenceDataCenter:
     # DC-specific helpers
     # ------------------------------------------------------------------
     async def _get_site_url(self) -> Optional[str]:
-        """Data Center browse URLs use the configured instance base URL directly."""
+        """Data Center browse URLs use the configured instance base URL directly.
+
+        ``ConfluenceDataSource.base_url`` is populated (and trailing-slash-stripped) at
+        init, so use it directly rather than re-deriving from the private HTTP client.
+        """
         if self._site_url:
             return self._site_url
-        try:
-            client_obj = self.client._client
-            if hasattr(client_obj, "get_base_url"):
-                base_url = client_obj.get_base_url()
-                if base_url:
-                    self._site_url = base_url.rstrip("/")
-                    return self._site_url
-        except Exception as e:
-            logger.warning("Could not get site URL: %s", e)
+        base_url = getattr(self.client, "base_url", None)
+        if base_url:
+            self._site_url = base_url
+            return self._site_url
         return None
 
     def _url_from_links(self, links: Any, base: Optional[str]) -> Optional[str]:

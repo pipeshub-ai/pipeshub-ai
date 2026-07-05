@@ -316,11 +316,9 @@ class TestSimplifySearchResults:
 
 class TestGetSiteUrl:
     @pytest.mark.asyncio
-    async def test_uses_base_url_stripped(self):
+    async def test_uses_datasource_base_url(self):
         tool = _build()
-        client_obj = MagicMock(spec=["get_base_url"])
-        client_obj.get_base_url = MagicMock(return_value="https://c.co/")
-        tool.client._client = client_obj
+        tool.client.base_url = "https://c.co"  # ConfluenceDataSource strips the slash at init
         assert await tool._get_site_url() == "https://c.co"
         assert tool._site_url == "https://c.co"
 
@@ -331,25 +329,15 @@ class TestGetSiteUrl:
         assert await tool._get_site_url() == "https://cached.co"
 
     @pytest.mark.asyncio
-    async def test_no_attr(self):
+    async def test_none_base_url(self):
         tool = _build()
-        tool.client._client = MagicMock(spec=[])
+        tool.client.base_url = None
         assert await tool._get_site_url() is None
 
     @pytest.mark.asyncio
     async def test_empty_base_url(self):
         tool = _build()
-        client_obj = MagicMock(spec=["get_base_url"])
-        client_obj.get_base_url = MagicMock(return_value="")
-        tool.client._client = client_obj
-        assert await tool._get_site_url() is None
-
-    @pytest.mark.asyncio
-    async def test_exception(self):
-        tool = _build()
-        client_obj = MagicMock(spec=["get_base_url"])
-        client_obj.get_base_url = MagicMock(side_effect=RuntimeError("boom"))
-        tool.client._client = client_obj
+        tool.client.base_url = ""
         assert await tool._get_site_url() is None
 
 
