@@ -21918,8 +21918,7 @@ paths:
     get:
       deprecated: true
       x-speakeasy-deprecation-message: >-
-        Use the Knowledge Base API instead
-        (sdk.knowledge_base.get_root_nodes / get_child_nodes).
+        Use the Knowledge Base API instead.
         This grouping will be removed in a future release
       tags:
         - Knowledge Base
@@ -22397,8 +22396,7 @@ paths:
     get:
       deprecated: true
       x-speakeasy-deprecation-message: >-
-        Use the Knowledge Base API instead
-        (sdk.knowledge_base.get_root_nodes / get_child_nodes).
+        Use the Knowledge Base API instead.
         This grouping will be removed in a future release
       tags:
         - Knowledge Base
