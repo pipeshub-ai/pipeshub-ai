@@ -337,6 +337,7 @@ export const AGENT_CREATE_TOOLSET_NAMES = [
   'calendar',
   'clickup',
   'confluence',
+  'confluencedatacenter',
   'drive',
   'github',
   'gmail',

@@ -77,6 +77,10 @@ class ToolDiscoveryConfig:
             app_name="confluence",
             client_builder="ConfluenceClient",
         ),
+        "confluencedatacenter": AppConfiguration(
+            app_name="confluencedatacenter",
+            client_builder="ConfluenceClient",
+        ),
         "jira": AppConfiguration(
             app_name="jira",
             client_builder="JiraClient",
