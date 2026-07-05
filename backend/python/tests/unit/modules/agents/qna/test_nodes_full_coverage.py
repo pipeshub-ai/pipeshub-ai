@@ -469,7 +469,7 @@ class TestFormatToolDescriptionsFull:
         mock_tool.description = "Search Jira issues"
         mock_schema = MagicMock()
         mock_tool.args_schema = mock_schema
-        with patch("app.modules.agents.qna.nodes._extract_parameters_from_schema", return_value={
+        with patch("app.modules.agents.context.tool_descriptions._extract_parameters_from_schema", return_value={
             "query": {"type": "string", "required": True, "description": "The search query"},
         }):
             result = _format_tool_descriptions([mock_tool], _log())

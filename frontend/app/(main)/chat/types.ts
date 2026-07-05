@@ -574,6 +574,15 @@ export interface SSEErrorEvent {
   error: string;
   message: string;
   code?: string;
+  /**
+   * Stable error classification the backend derives from the underlying
+   * failure (`rate_limit` / `auth_error` / `server_error` / `timeout` /
+   * `unknown` — see `error_classification.py`). `message` is already a
+   * user-friendly string for any of these, so this is only needed if a
+   * caller wants to branch on the failure kind (e.g. offer a "try again"
+   * affordance for `rate_limit` specifically).
+   */
+  type?: string;
 }
 
 // Status message for display during streaming

@@ -155,6 +155,8 @@ services:
       # Set to "true" to defer graph enrichment until after vectordb indexing completes
       - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
+      - PIPESHUB_USE_AGENT_LOOP=${PIPESHUB_USE_AGENT_LOOP:-true}
+
     depends_on:
       qdrant:
         condition: service_healthy
