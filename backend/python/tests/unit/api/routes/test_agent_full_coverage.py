@@ -1214,15 +1214,16 @@ class TestAutoSelectGraph:
         structured = AsyncMock()
         mock_llm.with_structured_output = MagicMock(return_value=structured)
         mock_decision = MagicMock()
-        mock_decision.chatMode = "react"
+        mock_decision.route = "react"
+        mock_decision.reasoning = "test"
         structured.ainvoke = AsyncMock(return_value=mock_decision)
         blob_store = AsyncMock()
 
-        with patch("app.api.routes.agent._build_agent_capability_context",
+        with patch("app.modules.agents.qna.router.build_capability_context",
                    return_value=("cap_block", 0, [], [], [])), \
-             patch("app.api.routes.agent._build_prior_routing_messages",
+             patch("app.modules.agents.qna.router.build_prior_routing_messages",
                    new_callable=AsyncMock, return_value=[]), \
-             patch("app.api.routes.agent.resolve_attachments",
+             patch("app.modules.agents.qna.router.resolve_attachments",
                    new_callable=AsyncMock, return_value=[{"type": "image_url", "image_url": {"url": "base64..."}}]):
             result = await _auto_select_graph(
                 {"query": "analyze this", "attachments": [{"id": "a1"}]},

@@ -349,8 +349,8 @@ class TestAutoSelectGraph:
             "type": "image_url",
             "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="},
         }
-        with patch("app.api.routes.agent.BlobStorage") as bs_cls, patch(
-            "app.api.routes.agent.resolve_attachments",
+        with patch("app.modules.agents.qna.router.BlobStorage") as bs_cls, patch(
+            "app.modules.agents.qna.router.resolve_attachments",
             new_callable=AsyncMock,
         ) as ra:
             bs_cls.return_value = MagicMock()

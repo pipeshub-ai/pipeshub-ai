@@ -147,6 +147,8 @@ services:
       # from the registry instead; build/push from deployment/sandbox alongside pipeshub-ai.
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
 
+      - PIPESHUB_USE_AGENT_LOOP=${PIPESHUB_USE_AGENT_LOOP:-true}
+
     depends_on:
       qdrant:
         condition: service_healthy

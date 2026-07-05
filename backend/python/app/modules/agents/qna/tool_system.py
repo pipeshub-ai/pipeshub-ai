@@ -281,7 +281,7 @@ _UI_ONLY_INTERNAL_TOOLS: frozenset[str] = frozenset({
 })
 
 
-def _code_execution_enabled(state: ChatState) -> bool:
+def code_execution_enabled(state: ChatState) -> bool:
     """Return whether this deployment/caller has access to code-execution tools.
 
     Source of truth is the ``ENABLE_CODE_EXECUTION`` platform feature flag
@@ -374,7 +374,7 @@ def _load_all_tools(state: ChatState, blocked_tools: dict[str, int]) -> list[Reg
     # SECURITY: Code-execution tools are opt-in. If the deployment has not
     # enabled them, filter out coding_sandbox / database_sandbox completely
     # so the LLM can never be tricked into running them.
-    code_exec_enabled = _code_execution_enabled(state)
+    code_exec_enabled = code_execution_enabled(state)
     if state_logger and not code_exec_enabled:
         state_logger.info(
             "Code-execution tools disabled (toggle in Labs → Enable Code Execution)"

@@ -154,6 +154,23 @@ ignore = [
 "app/sources/external/**/example*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN401", "T201", "T203"]
 "app/**/migrations/*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN401"]
 "tests/**/*.py" = ["ANN001", "ANN002", "ANN003", "FBT001", "FBT002", "T201", "T203"]
+# Inlined third-party library (formerly vendored at lib/agent_loop, see
+# app/agent_loop_lib/README.md) — written to its own upstream conventions,
+# not PipesHub's. Relax stylistic rules only; real bug-catchers (F401, F811,
+# F841, B006, etc.) stay enforced.
+"app/agent_loop_lib/**/*.py" = [
+    "ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN204", "ANN401",
+    "TC001", "TC002", "TC003",
+    "T201", "T203",
+    "FBT001", "FBT002",
+    "E402", "E731",
+    "A001", "A002",
+    "SIM102", "SIM105",
+    "PERF401",
+    "PLW0603", "PLW2901",
+    "B904",
+    "RET504",
+]
 
 
 [project]
@@ -261,6 +278,7 @@ dependencies = [
     "python-docx==1.1.2",
     "neo4j>=5.0.0",
     "python-dotenv==1.2.2",
+    "pyyaml>=6.0",
     "redshift_connector==2.1.8",
     # PDF generation libs for the coding sandbox. Pure-Python, no native deps.
     # Pre-shipping these means offline sandbox hosts don't have to hit PyPI
