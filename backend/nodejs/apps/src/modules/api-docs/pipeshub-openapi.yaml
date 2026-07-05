@@ -5682,13 +5682,11 @@ components:
           enum: [user_query, bot_response, error, feedback, system]
           description: |
             Type of message:
-            <ul>
-            <li><code>user_query</code> - User's question or input</li>
-            <li><code>bot_response</code> - AI-generated response</li>
-            <li><code>error</code> - Error message from the system</li>
-            <li><code>feedback</code> - User feedback on a response</li>
-            <li><code>system</code> - System notification or status</li>
-            </ul>
+            - `user_query` - User's question or input
+            - `bot_response` - AI-generated response
+            - `error` - Error message from the system
+            - `feedback` - User feedback on a response
+            - `system` - System notification or status
         content:
           type: string
           description: The message text content
@@ -5708,6 +5706,8 @@ components:
           description: |
             AI confidence in the answer. Present only on `bot_response` messages,
             and only when the model emitted a trailing confidence block.
+
+            This field is now optional and nullable; it was previously always present and non-nullable. Treat a missing or `null` value as "no confidence reported" and guard before using it. Change effective in SDK v1.3.0 (v1.2.0 and earlier always populated it).
         followUpQuestions:
           type: array
           items:
@@ -9443,6 +9443,8 @@ components:
           description: |
             AI confidence in the answer. Present only on `bot_response` messages,
             and only when the model emitted a trailing confidence block.
+
+            This field is now optional and nullable; it was previously always present and non-nullable. Treat a missing or `null` value as "no confidence reported" and guard before using it. Change effective in SDK v1.3.0 (v1.2.0 and earlier always populated it).
         followUpQuestions:
           type: array
           items:
@@ -21914,6 +21916,11 @@ paths:
   # -------------------- Knowledge Hub --------------------
   /knowledgeBase/knowledge-hub/nodes:
     get:
+      deprecated: true
+      x-speakeasy-deprecation-message: >-
+        Use the Knowledge Base API instead
+        (sdk.knowledge_base.get_root_nodes / get_child_nodes).
+        This grouping will be removed in a future release
       tags:
         - Knowledge Base
         - Knowledge Hub
@@ -22388,6 +22395,11 @@ paths:
 
   /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}:
     get:
+      deprecated: true
+      x-speakeasy-deprecation-message: >-
+        Use the Knowledge Base API instead
+        (sdk.knowledge_base.get_root_nodes / get_child_nodes).
+        This grouping will be removed in a future release
       tags:
         - Knowledge Base
         - Knowledge Hub
@@ -24287,7 +24299,10 @@ paths:
                               type: string
                               enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
                               nullable: true
-                              description: AI confidence in the answer. Present only on `bot_response` messages, and only when the model emitted a trailing confidence block.
+                              description: |
+                                AI confidence in the answer. Present only on `bot_response` messages, and only when the model emitted a trailing confidence block.
+
+                                This field is now optional and nullable; it was previously always present and non-nullable. Treat a missing or `null` value as "no confidence reported" and guard before using it. Change effective in SDK v1.2.0 (v1.1.0 and earlier always populated it).
                             citations:
                               type: array
                               description: Citations attached to this message. `citationData` is the populated citation document.
@@ -25088,6 +25103,8 @@ paths:
                                 AI confidence in the answer. Present only on
                                 `bot_response` messages, and only when the
                                 model emitted a trailing confidence block.
+
+                                This field is now optional and nullable; it was previously always present and non-nullable. Treat a missing or `null` value as "no confidence reported" and guard before using it. Change effective in SDK v1.3.0 (v1.2.0 and earlier always populated it).
                             citations:
                               type: array
                               description: |
