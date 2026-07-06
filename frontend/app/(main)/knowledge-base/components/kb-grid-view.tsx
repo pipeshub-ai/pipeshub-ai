@@ -4,7 +4,6 @@ import { useState, useRef, useEffect } from 'react';
 import { Flex, Box, Text, Checkbox, IconButton, DropdownMenu } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon, FolderIcon } from '@/app/components/ui';
-import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import { formatSize } from '@/lib/utils/formatters';
 import { CARD_ICONS } from './grid-card-icons';
 import {
@@ -13,7 +12,7 @@ import {
   shouldShowDownloadForTableItem,
 } from '../utils/kb-table-item-actions';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
-import { getIndexingProgressView } from '../utils/indexing-progress';
+import { IndexingProgressIndicator } from './indexing-progress-indicator';
 import { useTranslation } from 'react-i18next';
 import {
   getReindexMenuState,
@@ -187,42 +186,17 @@ function GridCard({
             </Flex>
           );
         case 'IN_PROGRESS': {
-          const view = getIndexingProgressView(item);
-          if (view.isStalled) {
-            return (
-              <Flex
-                align="center"
-                gap="1"
-                style={{
-                  backgroundColor: 'var(--orange-2)',
-                  border: '1px solid var(--orange-7)',
-                  borderRadius: 'var(--radius-1)',
-                  padding: '4px 6px',
-                }}
-              >
-                <MaterialIcon name="error_outline" size={12} color="var(--orange-9)" />
-                <Text size="1" weight="medium" style={{ color: 'var(--orange-11)' }}>
-                  {view.label}
-                </Text>
-              </Flex>
-            );
-          }
           return (
-            <Flex
-              align="center"
-              gap="1"
+            <Box
               style={{
-                backgroundColor: 'var(--amber-2)',
-                border: '1px solid var(--amber-7)',
-                borderRadius: 'var(--radius-1)',
-                padding: '4px 6px',
+                backgroundColor: 'var(--blue-2)',
+                border: '1px solid var(--blue-6)',
+                borderRadius: 'var(--radius-2)',
+                padding: '6px 8px',
               }}
             >
-              <LapTimerIcon size={16} color="var(--amber-9)" />
-              <Text size="1" weight="medium" style={{ color: 'var(--amber-11)' }}>
-                {view.label}
-              </Text>
-            </Flex>
+              <IndexingProgressIndicator record={item} compact />
+            </Box>
           );
         }
         case 'FAILED':
@@ -272,21 +246,16 @@ function GridCard({
           );
         case 'QUEUED':
           return (
-            <Flex
-              align="center"
-              gap="1"
+            <Box
               style={{
                 backgroundColor: 'var(--blue-2)',
-                border: '1px solid var(--blue-7)',
-                borderRadius: 'var(--radius-1)',
-                padding: '4px 6px',
+                border: '1px solid var(--blue-6)',
+                borderRadius: 'var(--radius-2)',
+                padding: '6px 8px',
               }}
             >
-              <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={12} color="var(--blue-9)" />
-              <Text size="1" weight="medium" style={{ color: 'var(--blue-11)' }}>
-                Queued
-              </Text>
-            </Flex>
+              <IndexingProgressIndicator record={item} compact />
+            </Box>
           );
         case 'AUTO_INDEX_OFF':
           return (

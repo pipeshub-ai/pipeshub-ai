@@ -21,6 +21,7 @@ import { KbNodeNameIcon } from '../utils/kb-node-name-icon';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { getIndexingProgressView } from '../utils/indexing-progress';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
+import { IndexingProgressIndicator } from './indexing-progress-indicator';
 import {
   runItemMenuOpenFromMenu,
   shouldHideIndexingStatusForHubRecord,
@@ -510,8 +511,8 @@ function TableRow({
         )}
       </Flex>
 
-      {/* Status — active indexing shows the stage directly; terminal statuses stay compact. */}
-      <Flex align="center" justify="center" style={{ width: '132px', padding: '0 var(--space-2)' }}>
+      {/* Status — active indexing shows full progression; terminal statuses stay compact. */}
+      <Flex align="center" justify="center" style={{ width: '260px', padding: '0 var(--space-2)' }}>
         {(() => {
           if (shouldHideIndexingStatusForHubRecord(item)) {
             return (
@@ -526,25 +527,11 @@ function TableRow({
             return <Box style={{ display: 'inline-flex', minHeight: '20px' }} />;
           }
           if (isKnowledgeHubNode(item) && (item.indexingStatus === 'IN_PROGRESS' || item.indexingStatus === 'QUEUED')) {
-            const view = getIndexingProgressView(item);
-            const color = view.isStalled ? 'var(--orange-11)' : 'var(--amber-11)';
             return (
               <Tooltip content={statusLabel} side="top" delayDuration={200}>
-                <Flex align="center" gap="1" style={{ minWidth: 0 }}>
-                  <Box style={{ display: 'inline-flex', flexShrink: 0 }}>{statusIcon}</Box>
-                  <Text
-                    size="1"
-                    weight="medium"
-                    style={{
-                      color,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {view.label}
-                  </Text>
-                </Flex>
+                <Box>
+                  <IndexingProgressIndicator record={item} compact />
+                </Box>
               </Tooltip>
             );
           }
@@ -720,7 +707,7 @@ export function KbListView({
         <TableHeaderCell label="File Name" field="name" flex={1} sort={sort} onSort={onSort} />
 
         {/* Status */}
-        <TableHeaderCell label="Status" width="60px" sort={sort} onSort={onSort} />
+        <TableHeaderCell label="Status" width="260px" sort={sort} onSort={onSort} />
 
         {/* Source - Only shown in All Records mode */}
         {showSourceColumn && (

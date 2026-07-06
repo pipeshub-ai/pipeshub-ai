@@ -213,6 +213,7 @@ interface KnowledgeBaseActions {
   setTableDataError: (error: string | null) => void;
   setSelectedNode: (node: { nodeType: string; nodeId: string } | null) => void;
   clearTableData: () => void;
+  patchVisibleRecordProgress: (items: KnowledgeHubNode[]) => void;
 
   // Collections pagination actions
   setCollectionsPagination: (pagination: AllRecordsPagination) => void;
@@ -718,6 +719,29 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
           state.tableData = null;
           state.tableDataError = null;
           state.selectedNode = null;
+        }),
+
+      patchVisibleRecordProgress: (items) =>
+        set((state) => {
+          const byId = new Map(items.map((item) => [item.id, item]));
+          const patchItem = (item: KnowledgeHubNode) => {
+            const fresh = byId.get(item.id);
+            if (!fresh) return item;
+            return {
+              ...item,
+              indexingStatus: fresh.indexingStatus,
+              indexingStage: fresh.indexingStage,
+              lastActivityTimestamp: fresh.lastActivityTimestamp,
+              reason: fresh.reason,
+            };
+          };
+
+          if (state.tableData?.items) {
+            state.tableData.items = state.tableData.items.map(patchItem);
+          }
+          if (state.allRecordsTableData?.items) {
+            state.allRecordsTableData.items = state.allRecordsTableData.items.map(patchItem);
+          }
         }),
 
       setCollectionsPagination: (pagination) =>

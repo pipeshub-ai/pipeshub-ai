@@ -140,6 +140,7 @@ function KnowledgeBasePageContent() {
     setIsLoadingTableData,
     setTableDataError,
     setSelectedNode,
+    patchVisibleRecordProgress,
     setCollectionsPagination,
     setCollectionsPage,
     setCollectionsLimit,
@@ -1290,8 +1291,40 @@ function KnowledgeBasePageContent() {
     }
   }, [isAllRecordsMode, selectedNode, searchParams, fetchTableData, fetchAllRecordsTableData]);
 
-  const refetchRef = useRef(refetchMainTableForCurrentRoute);
-  refetchRef.current = refetchMainTableForCurrentRoute;
+  const pollVisibleRecordProgress = useCallback(async () => {
+    const currentState = useKnowledgeBaseStore.getState();
+    if (isAllRecordsMode) {
+      const params = buildAllRecordsFilterParams(
+        { ...currentState.allRecordsFilter, searchQuery: currentState.allRecordsSearchQuery },
+        currentState.allRecordsSort,
+        currentState.allRecordsPagination
+      );
+      const nodeType = searchParams.get('nodeType');
+      const nodeId = searchParams.get('nodeId');
+      const data = nodeType && nodeId
+        ? await KnowledgeHubApi.loadFolderData(nodeType as NodeType, nodeId, params)
+        : await KnowledgeHubApi.getAllRootItems(params);
+      patchVisibleRecordProgress(data.items);
+      return;
+    }
+
+    const nodeType = selectedNode?.nodeType ?? searchParams.get('nodeType');
+    const nodeId = selectedNode?.nodeId ?? searchParams.get('nodeId') ?? searchParams.get('folderId');
+    if (!nodeType || !nodeId) return;
+
+    const params = buildFilterParams(
+      { ...currentState.filter, searchQuery: currentState.searchQuery },
+      currentState.sort,
+      currentState.collectionsPagination
+    );
+    const data = await KnowledgeHubApi.loadFolderData(nodeType as NodeType, nodeId, params, {
+      suppressErrorToast: true,
+    });
+    patchVisibleRecordProgress(data.items);
+  }, [isAllRecordsMode, patchVisibleRecordProgress, searchParams, selectedNode]);
+
+  const pollProgressRef = useRef(pollVisibleRecordProgress);
+  pollProgressRef.current = pollVisibleRecordProgress;
 
   useEffect(() => {
     if (!hasActiveRecords) return undefined;
@@ -1314,7 +1347,7 @@ function KnowledgeBasePageContent() {
         // loop alive so it resumes promptly when the user returns.
         if (typeof document === 'undefined' || !document.hidden) {
           try {
-            await refetchRef.current();
+            await pollProgressRef.current();
           } catch {
             // Best-effort; a transient failure shouldn't kill the poll loop.
           }
@@ -1324,7 +1357,7 @@ function KnowledgeBasePageContent() {
     };
 
     if (typeof document === 'undefined' || !document.hidden) {
-      void refetchRef.current().catch(() => {
+      void pollProgressRef.current().catch(() => {
         // Best-effort; a transient failure shouldn't kill the poll loop.
       });
     }
