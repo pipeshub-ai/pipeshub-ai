@@ -14,10 +14,9 @@
 #     progress, generous/overridable health-wait timeout).
 #   - Compose app healthcheck stays reconciled with the installer's readiness
 #     check (core services only; embedding excluded).
-#   - Compose runtime robustness guards: mongo WiredTiger cache cap + memory
-#     limit + overridable image tag / glibc rseq tunable, and HuggingFace offline
-#     mode (default on, overridable) so baked-in models load without a network
-#     check that would otherwise hang indexing startup on offline hosts.
+#   - Compose runtime robustness guards: HuggingFace offline mode (default on,
+#     overridable) so baked-in models load without a network check that would
+#     otherwise hang indexing startup on offline hosts.
 #   - env.template documents the above knobs.
 #   - Image refresh policy: prebuilt installs refresh the app image by default
 #     (so a cached :latest is not run forever), with opt-outs for local builds,
@@ -213,16 +212,6 @@ if [[ "$compose" == *"s.get('embedding') in ('healthy','starting')"* ]]; then
 else
   pass "embedding excluded from app container health gate"
 fi
-# Mongo must cap its WiredTiger cache + carry a memory limit, else it tries to
-# grab ~50% of host RAM and gets OOM-killed into a restart loop on small hosts.
-check "mongo caps WiredTiger cache" "$compose" "wiredTigerCacheSizeGB"
-check "mongo has a memory limit" "$compose" 'memory: ${MONGO_MEMORY_LIMIT:-2G}'
-# Mongo image tag must be overridable (default unchanged) so hosts where mongo 8.x
-# segfaults can pin a working tag (e.g. 7.0) without editing the compose file.
-check "mongo image tag is overridable" "$compose" 'image: mongo:${MONGO_IMAGE_TAG:-8.0.17}'
-# Verified fix for the glibc rseq segfault on new kernels: an overridable
-# GLIBC_TUNABLES env (empty default, so normal hosts are unaffected).
-check "mongo GLIBC_TUNABLES is overridable" "$compose" 'GLIBC_TUNABLES=${MONGO_GLIBC_TUNABLES:-}'
 # The default local models (dense embedding + Qdrant/BM25 sparse) are baked into
 # the image. huggingface_hub still does a network check before using the cache,
 # which blocks indexing startup *forever* (sync model load in IndexingPipeline
@@ -242,8 +231,6 @@ echo "== env.template documents runtime robustness knobs =="
 envtmpl="$(cat "$COMPOSE_DIR/env.template")"
 check "env.template documents HF_HUB_OFFLINE" "$envtmpl" "HF_HUB_OFFLINE"
 check "env.template documents TRANSFORMERS_OFFLINE" "$envtmpl" "TRANSFORMERS_OFFLINE"
-check "env.template documents mongo rseq tunable" "$envtmpl" "MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1"
-check "env.template documents mongo image pin fallback" "$envtmpl" "MONGO_IMAGE_TAG=8.0.17"
 
 echo "== In-tree installer: crash-loop detection (real function) =="
 eval "$(extract_fn crash_looping_containers "$INNER_INSTALLER")"

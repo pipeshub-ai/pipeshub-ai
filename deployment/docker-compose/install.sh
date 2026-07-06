@@ -1331,8 +1331,8 @@ elif [[ -n "${_CRASH_REPORT:-}" ]]; then
   warn "  • exit 137 / oom=true → out of memory. Free RAM, or switch to the lighter"
   warn "      'slim' profile (Redis broker + KV; drops Kafka/Zookeeper): ./install.sh --reconfigure"
   warn "  • exit 139            → the service crashed (segfault). Usually a corrupted data"
-  warn "      volume from an earlier hard kill — recreate it and re-run ./install.sh. If it is"
-  warn "      MongoDB on a very new kernel, set MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1 in .env."
+  warn "      volume from an earlier hard kill — recreate it and re-run ./install.sh. If it"
+  warn "      recurs on a fresh volume, it is an incompatible host kernel/CPU (see docker logs)."
   warn "  • anything else       → read 'docker logs' above for the specific error"
 else
   warn "Health check did not pass within ${HEALTH_WAIT_SECS}s."

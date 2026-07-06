@@ -247,33 +247,16 @@ services:
   # ---------------------------------------------------------------------------
 
   mongodb:
-    # Pin via MONGO_IMAGE_TAG to recover from host-specific crashes (e.g. the 8.x
-    # JournalFlusher segfaults on some uncommon/very new kernels — pin "7.0" there).
-    image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
+    image: mongo:8.0.17
     container_name: mongodb
     restart: always
-    # WiredTiger's cache defaults to ~50% of (RAM-1GB) — ~7GB on a 16GB host —
-    # which it tries to reserve and gets OOM-killed under memory pressure,
-    # crash-looping the DB and every service that depends on it. Cap it to a
-    # modest, configurable size so the full stack fits on smaller machines.
-    command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-}
-      # Some very new/uncommon host kernels segfault mongo 8.x's tcmalloc via a
-      # glibc rseq conflict (exit 139). Set MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1
-      # in .env to work around it without downgrading. Empty = glibc default.
-      - GLIBC_TUNABLES=${MONGO_GLIBC_TUNABLES:-}
     volumes:
       - mongodb_data:/data/db
     networks:
       - pipeshub
-    deploy:
-      resources:
-        limits:
-          memory: ${MONGO_MEMORY_LIMIT:-2G}
-        reservations:
-          memory: 512M
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 5s
