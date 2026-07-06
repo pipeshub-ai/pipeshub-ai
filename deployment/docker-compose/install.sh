@@ -11,6 +11,7 @@
 #   ./install.sh --yes           # accept all defaults, non-interactive (CI)
 #   ./install.sh --version 0.7.0 # pin a specific image tag
 #   ./install.sh --build         # build image locally instead of pulling from Docker Hub
+#   ./install.sh --no-pull       # start from the cached image (air-gapped / keep current)
 #   ./install.sh --print-env-only  # write .env and print compose command, don't launch
 #   ./install.sh --reconfigure   # overwrite an existing .env (re-run wizard)
 #   ./install.sh --upgrade       # pull/rebuild images and recreate containers
@@ -74,7 +75,9 @@ cd "$SCRIPT_DIR" || exit 1
 ENV_FILE="${SCRIPT_DIR}/.env"
 COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
 PROJECT_NAME="pipeshub-ai"
-HEALTH_WAIT_SECS=300
+# First start downloads the embedding model and cold-starts the full stack, which
+# on smaller hosts can edge past 5 min; default generously and allow overriding.
+HEALTH_WAIT_SECS="${HEALTH_WAIT_SECS:-420}"
 # APP_PORT and HEALTH_URL are resolved later (after port selection in the wizard)
 
 # ── CLI flags ─────────────────────────────────────────────────────────────────
@@ -85,6 +88,7 @@ FLAG_UPGRADE=false
 FLAG_STOP=false
 FLAG_UNINSTALL=false
 FLAG_BUILD=false
+FLAG_NO_PULL=false
 CLI_VERSION=""
 
 # ── CLI argument parsing ──────────────────────────────────────────────────────
@@ -98,6 +102,8 @@ Options:
   -y, --yes            Accept all defaults, skip interactive prompts (CI)
       --version TAG    Pin a specific image tag (e.g. 0.7.0, latest, slim)
       --build          Build image locally from source instead of pulling from Docker Hub
+      --no-pull        Do not refresh the image; start from the locally cached one
+                       (air-gapped hosts, or to keep a known-good/old image)
       --print-env-only Write .env and print the compose command; do not launch
       --reconfigure    Overwrite an existing .env (re-run the wizard)
       --upgrade        Pull or rebuild images and recreate containers (data preserved)
@@ -111,6 +117,7 @@ Environment overrides (bypass prompts in CI):
   PIPESHUB_BROKER        kafka | redis
   PIPESHUB_KV_STORE      etcd | redis
   PIPESHUB_IMAGE_SOURCE  prebuilt | local  (default: prebuilt)
+  PIPESHUB_NO_PULL       1 | true to skip the image refresh (same as --no-pull)
   PIPESHUB_VERSION       image tag (prebuilt) or local build tag (default: local)
   PIPESHUB_PORT          host port (default: 3000)
   PIPESHUB_PUBLIC_URL    public HTTPS URL (e.g. https://pipeshub.yourdomain.com)
@@ -122,6 +129,7 @@ while [[ $# -gt 0 ]]; do
     -y|--yes)            FLAG_YES=true ;;
     --version)           [[ $# -lt 2 ]] && die "--version requires a TAG argument (e.g. --version 0.7.0)"; CLI_VERSION="$2"; shift ;;
     --build)             FLAG_BUILD=true ;;
+    --no-pull)           FLAG_NO_PULL=true ;;
     --print-env-only)    FLAG_PRINT_ENV_ONLY=true ;;
     --reconfigure)       FLAG_RECONFIGURE=true ;;
     --upgrade)           FLAG_UPGRADE=true ;;
@@ -156,6 +164,77 @@ get_existing_val() {
     val="$(grep -E "^${key}=" "$ENV_FILE" | cut -d'=' -f2-)"
   fi
   printf '%s' "${val:-$default}"
+}
+
+# Derive the COMPOSE_PROFILES that the *currently configured* services require,
+# from the canonical selectors persisted in .env. The app talks to whatever
+# DATA_STORE / MESSAGE_BROKER / KV_STORE_TYPE say, so the profiles that start the
+# matching containers must agree with them. A stale or hand-edited
+# COMPOSE_PROFILES (e.g. from an older installer that used different profile
+# names) otherwise silently leaves the graph DB or broker container down.
+derive_compose_profiles() {
+  local p=()
+  case "${DATA_STORE:-}" in
+    arangodb) p+=("graph-arango") ;;
+    neo4j)    p+=("graph-neo4j") ;;
+  esac
+  [[ "${KV_STORE_TYPE:-}"  == "etcd"  ]] && p+=("kv-etcd")
+  [[ "${MESSAGE_BROKER:-}" == "kafka" ]] && p+=("broker-kafka")
+  # Guard the empty-array case: on bash 3.2 under `set -u`, "${p[*]}" on an empty
+  # array is an unbound-variable error.
+  if (( ${#p[@]} == 0 )); then echo ""; return; fi
+  (IFS=','; echo "${p[*]}")
+}
+
+# Update KEY=VALUE in .env in place (replacing an existing line or appending),
+# without sed/awk so it works identically on macOS and Linux.
+persist_env_var() {
+  local key="$1" val="$2" tmp line found=false
+  [[ -f "$ENV_FILE" ]] || return 0
+  tmp="$(mktemp)"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "${key}="* ]]; then
+      printf '%s=%s\n' "$key" "$val"; found=true
+    else
+      printf '%s\n' "$line"
+    fi
+  done < "$ENV_FILE" > "$tmp"
+  $found || printf '%s=%s\n' "$key" "$val" >> "$tmp"
+  # Overwrite contents rather than `mv` so the file keeps its inode, ownership,
+  # chmod 600, and any symlinks pointing at it.
+  cat "$tmp" > "$ENV_FILE" && rm -f "$tmp"
+}
+
+# Docker Desktop VM memory in MB, or 0 when unknown. Guards against docker info
+# emitting an empty or non-numeric MemTotal, which would otherwise make the
+# arithmetic below fail and abort the whole installer under `set -e`.
+docker_vm_mem_mb() {
+  local bytes
+  bytes="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
+  [[ "$bytes" =~ ^[0-9]+$ ]] || bytes=0
+  echo $(( bytes / 1024 / 1024 ))
+}
+
+# List working directories of RUNNING containers in our Compose project that
+# were launched from a directory other than this one. Compose stamps each
+# container with com.docker.compose.project.working_dir. Because the project
+# name, container names, network, and volumes are all fixed, a stack started
+# from elsewhere shares all of them — launching from here reconciles/takes over
+# that deployment instead of starting an independent one.
+compose_other_working_dirs() {
+  docker ps \
+    --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
+    --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null \
+    | grep -v '^$' | sort -u | grep -vxF "$SCRIPT_DIR" || true
+}
+
+# Return 0 if a RUNNING container in our project already publishes the given host
+# port (i.e. the port is "in use" by our own stack, so a restart is fine).
+port_owned_by_project() {
+  local port="$1"
+  docker ps \
+    --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
+    --format '{{.Ports}}' 2>/dev/null | grep -q ":${port}->"
 }
 
 # Check if a Docker volume (by exact name) exists.
@@ -338,8 +417,14 @@ success "Docker daemon is running"
 if $FLAG_STOP; then
   header "Stopping PipesHub"
   if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
-  export COMPOSE_PROFILES="${COMPOSE_PROFILES:-}"
-  docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down
+  # Enable ALL profiles so `down` removes every profile-gated container
+  # (ArangoDB, Neo4j, etcd, Kafka/Zookeeper) regardless of which profile this
+  # .env currently selects. Otherwise a container started under a different
+  # profile stays attached to the network and blocks its removal
+  # ("Resource is still in use"). --remove-orphans clears containers left by a
+  # previously-active profile too.
+  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka"
+  docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down --remove-orphans
   success "PipesHub stopped. Data volumes are preserved."
   info "To start again: ./install.sh"
   exit 0
@@ -360,9 +445,30 @@ if $FLAG_UNINSTALL; then
   # previously-used profile (e.g. arango_data after switching to neo4j) would
   # be silently left behind.
   export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka"
-  docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down -v
+  docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down -v --remove-orphans
   success "PipesHub stopped and all data volumes removed."
   exit 0
+fi
+
+# ==============================================================================
+# 2c. CROSS-DIRECTORY DEPLOYMENT GUARD
+# Warn before launching if PipesHub is already running from another directory.
+# ==============================================================================
+_OTHER_DIRS="$(compose_other_working_dirs)"
+if [[ -n "$_OTHER_DIRS" ]]; then
+  header "Existing deployment detected"
+  warn "PipesHub (project '${PROJECT_NAME}') is already running from another directory:"
+  while IFS= read -r _d; do [[ -n "$_d" ]] && warn "    $_d"; done <<< "$_OTHER_DIRS"
+  warn "Container names, network, and data volumes are shared by project name, so"
+  warn "launching from here manages that same stack rather than a separate one."
+  warn "If this directory has a different .env, its secrets may not match the existing"
+  warn "data volumes and can cause database auth failures."
+  warn "Recommended: manage PipesHub from one directory, or run --uninstall there first."
+  if ! $FLAG_YES; then
+    printf "\n  ${BOLD}Continue and manage the existing deployment from here?${RESET} [y/N]: "
+    read -r _reply
+    [[ "${_reply:-N}" =~ ^[Yy]$ ]] || die "Aborted to avoid clashing with the deployment in the directory above."
+  fi
 fi
 
 # ==============================================================================
@@ -370,7 +476,7 @@ fi
 # ==============================================================================
 if ! $FLAG_UPGRADE; then
 
-  # System RAM — minimum 16 GB required
+  # System RAM — 16 GB-class machine recommended
   TOTAL_RAM_MB=0
   if $IS_LINUX || $IS_WSL; then
     if [[ -r /proc/meminfo ]]; then
@@ -389,16 +495,21 @@ if ! $FLAG_UPGRADE; then
   # WSL caps its VM at whatever the user sets in .wslconfig (default ≈ 50–80% of
   # host RAM). 10 GB in the VM is sufficient; requiring 16 GB would block most
   # WSL users even on well-resourced Windows machines.
+  #
+  # Native Linux/macOS: a machine marketed as "16 GB" reports less than 16384 MB
+  # of MemTotal because firmware, the kernel, and (on iGPU systems) shared video
+  # memory are reserved before user space sees it — commonly ~15.3–15.7 GiB. Use
+  # a 16 GB-class floor (15000 MB) so genuine 16 GB machines are not warned.
   if $IS_WSL; then
     _RAM_MIN_MB=10240
     _RAM_MIN_LABEL="10 GB"
   else
-    _RAM_MIN_MB=16384
+    _RAM_MIN_MB=15000
     _RAM_MIN_LABEL="16 GB"
   fi
 
   if (( TOTAL_RAM_MB > 0 && TOTAL_RAM_MB < _RAM_MIN_MB )); then
-    warn "Low RAM: ${TOTAL_RAM_MB} MB detected. PipesHub recommends at least ${_RAM_MIN_LABEL}."
+    warn "Low RAM: ${TOTAL_RAM_MB} MB detected. PipesHub recommends a ${_RAM_MIN_LABEL}-class machine."
     warn "The 'slim' deployment may still work on lower-memory machines, but performance may suffer."
     if ! $FLAG_YES; then
       printf "\n  ${BOLD}Proceed with installation anyway?${RESET} [y/N]: "
@@ -413,8 +524,7 @@ if ! $FLAG_UPGRADE; then
   # a Linux VM. On native Linux, docker info reports host RAM (already checked above).
   # Docker Desktop doesn't need 16 GB; 8 GB in the VM is sufficient for PipesHub.
   if $IS_MACOS; then
-    _docker_mem="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
-    _docker_mem_mb=$(( _docker_mem / 1024 / 1024 ))
+    _docker_mem_mb="$(docker_vm_mem_mb)"
     if (( _docker_mem_mb > 0 && _docker_mem_mb < 8192 )); then
       warn "Docker Desktop has only ${_docker_mem_mb} MB allocated to its VM. Recommend at least 8 GB in Docker Desktop → Settings → Resources → Memory."
     fi
@@ -423,8 +533,7 @@ if ! $FLAG_UPGRADE; then
   # Docker Desktop on Windows (Git Bash) — host RAM is not readable from Git Bash,
   # so probe the Docker Desktop VM allocation directly (same approach as macOS).
   if $IS_WINDOWS; then
-    _docker_mem="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
-    _docker_mem_mb=$(( _docker_mem / 1024 / 1024 ))
+    _docker_mem_mb="$(docker_vm_mem_mb)"
     if (( _docker_mem_mb > 0 && _docker_mem_mb < 8192 )); then
       warn "Docker Desktop has only ${_docker_mem_mb} MB allocated to its VM. Recommend at least 8 GB in Docker Desktop → Settings → Resources → Memory."
     elif (( _docker_mem_mb >= 8192 )); then
@@ -746,10 +855,12 @@ if ! ${SKIP_WIZARD:-false}; then
   # ── 13. WRITE .env ──────────────────────────────────────────────────────────
   header "Writing .env"
 
-  # Backup existing .env before overwriting
+  # Backup existing .env before overwriting. The backup holds the same secrets,
+  # so lock it down to owner-only too (don't rely on the caller's umask).
   if [[ -f "$ENV_FILE" ]]; then
     _backup="${ENV_FILE}.bak.$(date +%Y%m%d%H%M%S)"
     cp "$ENV_FILE" "$_backup"
+    chmod 600 "$_backup" 2>/dev/null || true
     info "Backed up existing .env to $(basename "$_backup")"
   fi
 
@@ -847,7 +958,12 @@ OPIK_API_KEY=
 OPIK_WORKSPACE=
 ENVFILE
 
-  success ".env written to $ENV_FILE"
+  # Restrict to owner read/write — .env holds database passwords and the app
+  # secret key in plain text. Guarantee this regardless of the caller's umask
+  # (a permissive umask would otherwise leave it world-readable).
+  chmod 600 "$ENV_FILE" 2>/dev/null || true
+
+  success ".env written to $ENV_FILE (permissions: owner read/write only)"
 
 fi  # end wizard
 
@@ -863,10 +979,102 @@ set -a; . "$ENV_FILE"; set +a
 APP_PORT="${APP_PORT:-3000}"
 HEALTH_URL="http://localhost:${APP_PORT}/api/v1/health/services"
 
+# Self-heal a reused/legacy .env that is missing a valid DATA_STORE (older
+# installers did not write it). Resolve it the same way the wizard does — from
+# existing data volumes, otherwise the product default (Neo4j) — so users are not
+# forced into a manual --reconfigure. We only stop when the choice is genuinely
+# unsafe: ambiguous data (both DBs have volumes) or an existing volume whose
+# password was lost (a fresh password would fail authentication).
+case "${DATA_STORE:-}" in
+  arangodb|neo4j) ;;   # already valid — nothing to heal
+  *)
+    _has_arango=false; _has_neo4j=false
+    volume_exists "${PROJECT_NAME}_arango_data" && _has_arango=true
+    volume_exists "${PROJECT_NAME}_neo4j_data"  && _has_neo4j=true
+
+    if $_has_arango && $_has_neo4j; then
+      die "DATA_STORE is unset in ${ENV_FILE}, but data volumes for BOTH graph
+  databases exist (${PROJECT_NAME}_arango_data and ${PROJECT_NAME}_neo4j_data).
+  Cannot safely choose one. Pick explicitly with:
+    ./install.sh --reconfigure
+  or set DATA_STORE=arangodb|neo4j in ${ENV_FILE}."
+    elif $_has_arango; then
+      DATA_STORE="arangodb"
+      warn "DATA_STORE was unset; reusing the existing ArangoDB data volume (DATA_STORE=arangodb)."
+    elif $_has_neo4j; then
+      DATA_STORE="neo4j"
+      warn "DATA_STORE was unset; reusing the existing Neo4j data volume (DATA_STORE=neo4j)."
+    else
+      DATA_STORE="neo4j"
+      warn "DATA_STORE was unset; defaulting to Neo4j (no existing graph data found)."
+    fi
+    GRAPH_DB_TYPE="$DATA_STORE"
+
+    # The chosen DB needs a password. Keep an existing one; otherwise generate a
+    # fresh one only when there is no volume yet. If a volume already exists but
+    # its password is gone, a new one would fail auth — stop and let the user
+    # reconfigure or reset.
+    if [[ "$DATA_STORE" == "arangodb" ]]; then
+      _graph_pw="$(get_existing_val ARANGO_PASSWORD "")"
+      if [[ -z "$_graph_pw" ]]; then
+        $_has_arango && die "The ArangoDB data volume (${PROJECT_NAME}_arango_data) exists but ARANGO_PASSWORD
+  is missing from ${ENV_FILE}; its original password cannot be recovered, and a
+  new one would fail authentication against the existing volume. Either:
+    - set the known ARANGO_PASSWORD in ${ENV_FILE}, or
+    - discard the data and start fresh:  ./install.sh --uninstall
+      (or: docker volume rm ${PROJECT_NAME}_arango_data)"
+        _graph_pw="$(gen_secret 16)"
+      fi
+      ARANGO_PASSWORD="$_graph_pw"; persist_env_var ARANGO_PASSWORD "$ARANGO_PASSWORD"
+    else
+      _graph_pw="$(get_existing_val NEO4J_PASSWORD "")"
+      if [[ -z "$_graph_pw" ]]; then
+        $_has_neo4j && die "The Neo4j data volume (${PROJECT_NAME}_neo4j_data) exists but NEO4J_PASSWORD
+  is missing from ${ENV_FILE}; its original password cannot be recovered, and a
+  new one would fail authentication against the existing volume. Either:
+    - set the known NEO4J_PASSWORD in ${ENV_FILE}, or
+    - discard the data and start fresh:  ./install.sh --uninstall
+      (or: docker volume rm ${PROJECT_NAME}_neo4j_data)"
+        _graph_pw="$(gen_secret 16)"
+      fi
+      NEO4J_PASSWORD="$_graph_pw"; persist_env_var NEO4J_PASSWORD "$NEO4J_PASSWORD"
+    fi
+
+    persist_env_var DATA_STORE "$DATA_STORE"
+    persist_env_var GRAPH_DB_TYPE "$GRAPH_DB_TYPE"
+    success "Repaired graph DB configuration in .env (DATA_STORE=${DATA_STORE})."
+    ;;
+esac
+
+# Repair COMPOSE_PROFILES if it disagrees with the configured services. Without
+# this, reusing an .env written by an older installer (or hand-edited) can start
+# the app while leaving its graph DB / broker container down, so the health
+# check can never pass. Derive the correct set, fix it in memory, and persist it.
+_EXPECTED_PROFILES="$(derive_compose_profiles)"
+if [[ "${COMPOSE_PROFILES:-}" != "$_EXPECTED_PROFILES" ]]; then
+  warn "COMPOSE_PROFILES in .env ('${COMPOSE_PROFILES:-}') does not match the configured services"
+  warn "  (DATA_STORE=${DATA_STORE:-unset}, MESSAGE_BROKER=${MESSAGE_BROKER:-unset}, KV_STORE_TYPE=${KV_STORE_TYPE:-unset})."
+  warn "Repairing to '${_EXPECTED_PROFILES:-(none)}' so the required containers start."
+  COMPOSE_PROFILES="$_EXPECTED_PROFILES"
+  persist_env_var "COMPOSE_PROFILES" "$COMPOSE_PROFILES"
+fi
+
+# On reuse/upgrade the wizard's interactive port scan was skipped. Confirm the
+# app port is free — or already held by our own stack (a restart) — and otherwise
+# fail clearly instead of letting docker emit a cryptic bind error mid-launch.
+if ${SKIP_WIZARD:-false}; then
+  if port_in_use "$APP_PORT" 2>/dev/null && ! port_owned_by_project "$APP_PORT"; then
+    die "Port ${APP_PORT} is already in use by another process.
+  Free it, stop the conflicting service, or change APP_PORT in:
+    ${ENV_FILE}
+  then re-run ./install.sh."
+  fi
+fi
+
 printf "\n"
 printf "  %-22s %s\n" "Image source:"  "${IMAGE_SOURCE:-prebuilt}"
 printf "  %-22s %s\n" "Image tag:"     "${IMAGE_TAG:-latest}"
-printf "  %-22s %s\n" "Graph DB:"      "${DATA_STORE:-arangodb}"
+printf "  %-22s %s\n" "Graph DB:"      "${DATA_STORE:-(unset)}"
 printf "  %-22s %s\n" "KV store:"      "${KV_STORE_TYPE:-redis}"
 printf "  %-22s %s\n" "Broker:"        "${MESSAGE_BROKER:-redis}"
 printf "  %-22s %s\n" "Profiles:"      "${COMPOSE_PROFILES:-(none)}"
@@ -910,23 +1118,40 @@ export COMPOSE_PROFILES="${COMPOSE_PROFILES:-}"
 _USE_BUILD=false
 [[ "${IMAGE_SOURCE:-prebuilt}" == "local" ]] && _USE_BUILD=true
 
-if $FLAG_UPGRADE; then
-  if $_USE_BUILD; then
-    info "Rebuilding image from source for tag: ${IMAGE_TAG:-local}..."
-  else
-    info "Pulling new images for tag: ${IMAGE_TAG:-latest}..."
-    docker compose \
-      -f "$COMPOSE_FILE" \
-      -p "$PROJECT_NAME" \
-      --env-file "$ENV_FILE" \
-      pull 2>&1 || true
-  fi
-fi
+# Compose's default "tty" progress redraws a single block via cursor-movement
+# escapes. When stdout is captured (terminal logs, `curl | bash`, CI), those
+# escapes don't collapse and every frame is recorded, producing hundreds of
+# duplicated "[+] Running N/17" blocks. Plain progress is append-only and stays
+# readable in every context.
+_PROGRESS=(--progress plain)
+
+# Decide whether to refresh the prebuilt image from the registry before starting.
+# Pure decision (no side effects) so it is unit-testable in isolation.
+# `docker compose up -d` only pulls an image that is ABSENT locally, so a cached
+# :latest is reused forever — that is how a host ends up on a weeks-old build.
+# Refreshing by default fixes that, with deliberate opt-outs for the cases where
+# someone wants their current/specific image instead.
+should_pull_image() { # args: use_build flag_no_pull env_no_pull -> "true"|"false"
+  local use_build="$1" flag_no_pull="$2" env_no_pull="$3"
+  # Local build owns the image; nothing to pull.
+  [[ "$use_build" == true ]] && { echo false; return; }
+  # Explicit opt-out: keep a known-good/old cached image, or air-gapped host.
+  [[ "$flag_no_pull" == true ]] && { echo false; return; }
+  case "$env_no_pull" in 1|true|yes) echo false; return ;; esac
+  echo true
+}
+
+_DO_PULL="$(should_pull_image "$_USE_BUILD" "$FLAG_NO_PULL" "${PIPESHUB_NO_PULL:-}")"
+# Pinning a specific tag (--version / PIPESHUB_VERSION) still benefits from the
+# pull: it fetches exactly that immutable tag rather than a moving :latest, so
+# reproducibility is preserved while a stale local copy is corrected.
+_APP_IMAGE="pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}"
 
 if $_USE_BUILD; then
+  $FLAG_UPGRADE && info "Rebuilding image from source for tag: ${IMAGE_TAG:-local}..."
   info "Building image from source and starting containers..."
   info "(This may take 10–30+ minutes on first run)"
-  if ! docker compose \
+  if ! docker compose "${_PROGRESS[@]}" \
       -f "$COMPOSE_FILE" \
       -p "$PROJECT_NAME" \
       --env-file "$ENV_FILE" \
@@ -936,8 +1161,29 @@ if $_USE_BUILD; then
     die "Fix the build error above and re-run install.sh."
   fi
 else
+  if [[ "$_DO_PULL" == true ]]; then
+    info "Refreshing the PipesHub image ($_APP_IMAGE)... (pass --no-pull to keep the cached image)"
+    # Only the app image is on a moving :latest; infra images use pinned tags and
+    # are fetched by `up -d` when absent, so refreshing just pipeshub-ai is enough.
+    # A pull failure is non-fatal when an image is already cached, so a flaky
+    # network or a temporary registry outage does not block a working install.
+    if ! docker compose "${_PROGRESS[@]}" \
+        -f "$COMPOSE_FILE" \
+        -p "$PROJECT_NAME" \
+        --env-file "$ENV_FILE" \
+        pull pipeshub-ai 2>&1; then
+      if docker image inspect "$_APP_IMAGE" >/dev/null 2>&1; then
+        warn "Could not refresh the image; continuing with the cached $_APP_IMAGE."
+      else
+        warn "Could not pull $_APP_IMAGE and none is cached locally — the next step may fail."
+        warn "On an air-gapped host, preload the image (docker load) and re-run with --no-pull."
+      fi
+    fi
+  else
+    info "Skipping image refresh; using the locally cached $_APP_IMAGE (--no-pull)."
+  fi
   info "Starting containers..."
-  if ! docker compose \
+  if ! docker compose "${_PROGRESS[@]}" \
       -f "$COMPOSE_FILE" \
       -p "$PROJECT_NAME" \
       --env-file "$ENV_FILE" \
@@ -956,49 +1202,199 @@ header "Waiting for PipesHub to become healthy"
 
 printf "  (May take up to %ds on first start — embedding model may need to download)\n\n" "$HEALTH_WAIT_SECS"
 
-ELAPSED=0
-INTERVAL=10
-HEALTHY=false
+CONTAINER_HEALTHY=false
+HOST_REACHABLE=false
 
-while (( ELAPSED < HEALTH_WAIT_SECS )); do
-  if docker exec pipeshub-ai \
-      curl -sf http://localhost:3000/api/v1/health/services \
-      -o /tmp/pipeshub_hc.json 2>/dev/null && \
-     docker exec pipeshub-ai \
-      python3 -c "
+# Confirm the app port is reachable from the host — not just healthy inside the
+# container. This catches port-publish, firewall, and reverse-proxy problems
+# that leave the UI unreachable even though every service reports healthy.
+# If neither curl nor wget is available we cannot verify, so we do not block.
+check_host_reachable() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -sf "http://localhost:${APP_PORT}/api/v1/health/services" -o /dev/null 2>/dev/null
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O /dev/null "http://localhost:${APP_PORT}/api/v1/health/services" 2>/dev/null
+  else
+    return 0
+  fi
+}
+
+# One readiness probe: the core services must all report healthy. Runs inside the
+# container so the host needs no curl/python. embedding is intentionally excluded
+# — on first run it downloads its model and can sit 'unhealthy' for minutes
+# without blocking core usability (mirrors the compose healthcheck).
+app_is_healthy() {
+  docker exec pipeshub-ai \
+    curl -sf http://localhost:3000/api/v1/health/services \
+    -o /tmp/pipeshub_hc.json 2>/dev/null || return 1
+  docker exec pipeshub-ai python3 -c "
 import json, sys
 d = json.load(open('/tmp/pipeshub_hc.json'))
 s = d.get('services', {}) or {}
-# embedding is intentionally excluded: on first run it downloads its model
-# and may remain 'unhealthy' for several minutes; it is not required for
-# the core application to be usable.
 required = ('query', 'connector', 'indexing', 'docling')
-ok = all(s.get(k) == 'healthy' for k in required)
-sys.exit(0 if ok else 1)
-" 2>/dev/null; then
-    HEALTHY=true
+sys.exit(0 if all(s.get(k) == 'healthy' for k in required) else 1)
+" 2>/dev/null
+}
+
+# A container that has restarted several times is broken in a way the stack can't
+# recover from on its own — it is crashing (e.g. SIGSEGV) or being killed (e.g.
+# OOM). Report any such container (by the compose project label, so profile-gated
+# services are included) with its restart count and last exit code so the failure
+# names the actual symptom instead of guessing a cause. exit 137 = killed (often
+# OOM), 139 = segfault. Output is one indented line per offending container.
+CRASH_LOOP_THRESHOLD=4
+crash_looping_containers() {
+  local id name count exit_code
+  for id in $(docker ps -aq --filter "label=com.docker.compose.project=${PROJECT_NAME}" 2>/dev/null); do
+    count="$(docker inspect "$id" --format '{{.RestartCount}}' 2>/dev/null || echo 0)"
+    if [[ "${count:-0}" -ge "$CRASH_LOOP_THRESHOLD" ]]; then
+      name="$(docker inspect "$id" --format '{{.Name}}' 2>/dev/null | sed 's#^/##')"
+      exit_code="$(docker inspect "$id" --format '{{.State.ExitCode}}' 2>/dev/null || echo '?')"
+      printf '    - %s (%s restarts, last exit %s)\n' "$name" "$count" "${exit_code:-?}"
+    fi
+  done
+}
+
+# Poll until healthy or the deadline passes. On a TTY, redraw a single spinner
+# line in place (clean, one line); when output is captured (logs, curl | bash,
+# CI) emit a sparse heartbeat instead so transcripts don't fill with frames.
+ELAPSED=0
+CHECK_EVERY=5
+HEARTBEAT_EVERY=30
+START_TS=$SECONDS
+_spinner=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+_spin=0
+_CRASH_REPORT=""
+_is_tty=false; [[ -t 1 ]] && _is_tty=true
+
+while (( ELAPSED < HEALTH_WAIT_SECS )); do
+  if (( ELAPSED % CHECK_EVERY == 0 )) && app_is_healthy; then
+    CONTAINER_HEALTHY=true
     break
   fi
-  printf "  Waiting... %ds elapsed\n" "$ELAPSED"
-  sleep "$INTERVAL"
-  ELAPSED=$(( ELAPSED + INTERVAL ))
+  # After a grace period for normal startup churn (e.g. Kafka waiting on
+  # Zookeeper), give up early if a container is clearly restart-looping — it will
+  # not recover on its own, so there is no point waiting out the full timeout.
+  if (( ELAPSED >= 30 && ELAPSED % 15 == 0 )); then
+    _CRASH_REPORT="$(crash_looping_containers)"
+    [[ -n "$_CRASH_REPORT" ]] && break
+  fi
+  if $_is_tty; then
+    printf "\r  ${CYAN}%s${RESET} Starting services… ${BOLD}%ds${RESET} elapsed (timeout %ds)  " \
+      "${_spinner[_spin]}" "$ELAPSED" "$HEALTH_WAIT_SECS"
+    _spin=$(( (_spin + 1) % ${#_spinner[@]} ))
+    sleep 1
+    ELAPSED=$(( ELAPSED + 1 ))
+  else
+    (( ELAPSED % HEARTBEAT_EVERY == 0 )) && \
+      printf "  … still starting (%ds / %ds)\n" "$ELAPSED" "$HEALTH_WAIT_SECS"
+    sleep "$CHECK_EVERY"
+    ELAPSED=$(( ELAPSED + CHECK_EVERY ))
+  fi
 done
 
-printf "\n"
+# Final probe: the app may have crossed the line within the last interval; do not
+# report a false "not ready" verdict if it is in fact serving now.
+if ! $CONTAINER_HEALTHY && app_is_healthy; then CONTAINER_HEALTHY=true; fi
 
-if $HEALTHY; then
-  success "PipesHub is healthy!"
+# Erase the spinner line so the result prints cleanly.
+$_is_tty && printf "\r\033[K"
+
+if $CONTAINER_HEALTHY; then
+  success "PipesHub services are healthy (ready in $(( SECONDS - START_TS ))s)."
+  if check_host_reachable; then
+    HOST_REACHABLE=true
+  else
+    warn "Services are healthy inside the container, but http://localhost:${APP_PORT} is not reachable from this host."
+    warn "This is usually a port-publish, firewall, or reverse-proxy issue."
+    warn "  docker compose -f ${COMPOSE_FILE} -p ${PROJECT_NAME} logs -f pipeshub-ai"
+  fi
+elif [[ -n "${_CRASH_REPORT:-}" ]]; then
+  error "A container keeps restarting, so the stack cannot become healthy:"
+  printf "%s\n" "$_CRASH_REPORT"
+  _c1="$(printf '%s' "$_CRASH_REPORT" | sed -n '1s/^[[:space:]]*-[[:space:]]*\([^ ]*\).*/\1/p')"
+  _c1="${_c1:-<name>}"
+  warn "A service that restarts repeatedly is crashing or being killed. Find out why:"
+  warn "  docker logs --tail 50 ${_c1}"
+  warn "  docker inspect ${_c1} --format 'exit={{.State.ExitCode}} oom={{.State.OOMKilled}}'"
+  warn "Read the last exit code above, then:"
+  # Memory hint: on Linux/WSL the host figure (free) is what matters; on
+  # macOS/Windows containers run in the Docker Desktop VM, so report its
+  # allocation instead. free(1)/awk do not exist on macOS in the host sense.
+  if $IS_LINUX || $IS_WSL; then
+    _free_mb="$(free -m 2>/dev/null | awk '/^Mem:/{print $7}')"
+    [[ -n "${_free_mb:-}" ]] && warn "  (available memory right now: ${_free_mb} MB; the full stack wants ~16 GB)"
+  else
+    _vm_mb="$(docker_vm_mem_mb)"
+    (( _vm_mb > 0 )) && warn "  (Docker Desktop VM memory: ${_vm_mb} MB; the full stack wants ~16 GB — raise it in Settings → Resources)"
+  fi
+  warn "  • exit 137 / oom=true → out of memory. Free RAM, or switch to the lighter"
+  warn "      'slim' profile (Redis broker + KV; drops Kafka/Zookeeper): ./install.sh --reconfigure"
+  warn "  • exit 139            → the service crashed (segfault). Usually a corrupted data"
+  warn "      volume from an earlier hard kill — recreate it and re-run ./install.sh. If it"
+  warn "      recurs on a fresh volume, it is an incompatible host kernel/CPU (see docker logs)."
+  warn "  • anything else       → read 'docker logs' above for the specific error"
 else
   warn "Health check did not pass within ${HEALTH_WAIT_SECS}s."
-  warn "Services may still be starting. Check logs:"
+  warn "Services may still be starting (first start can be slow while the embedding model downloads). Check logs:"
   warn "  docker compose -f ${COMPOSE_FILE} -p ${PROJECT_NAME} logs -f pipeshub-ai"
 fi
 
 # ==============================================================================
-# 17. SUCCESS BANNER
+# 16b. OUTBOUND CONNECTIVITY (warn-only — air-gapped installs are valid)
+# Cloud LLMs and external connectors need container egress; local models do not.
 # ==============================================================================
-printf "\n${BOLD}${GREEN}%s${RESET}\n\n" "$(printf '━%.0s' {1..64})"
-printf "  ${BOLD}PipesHub AI is running!${RESET}\n\n"
+docker_iptables_disabled() {
+  local f="/etc/docker/daemon.json"
+  [[ -r "$f" ]] || return 1
+  grep -qE '"iptables"[[:space:]]*:[[:space:]]*false' "$f" 2>/dev/null
+}
+
+container_has_outbound_internet() {
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'pipeshub-ai' || return 1
+  if docker exec pipeshub-ai sh -c \
+      'command -v curl >/dev/null 2>&1 && curl -sf -m 8 -4 -o /dev/null https://1.1.1.1/ 2>/dev/null'; then
+    return 0
+  fi
+  docker exec pipeshub-ai sh -c \
+    'command -v wget >/dev/null 2>&1 && wget -q -T 8 -O /dev/null https://1.1.1.1/ 2>/dev/null'
+}
+
+warn_container_outbound_connectivity() {
+  if container_has_outbound_internet; then
+    return 0
+  fi
+  warn "PipesHub container cannot reach the public internet."
+  warn "  Cloud LLMs (Gemini, OpenAI, …) and external connectors will not work until container egress is fixed."
+  warn "  Local models (Ollama, LM Studio, built-in embeddings) still work — air-gapped installs are supported."
+  if docker_iptables_disabled; then
+    warn "  Detected: /etc/docker/daemon.json has \"iptables\": false (Docker is not managing NAT for containers)."
+    warn "    Fix: remove that setting or set \"iptables\": true, then: sudo systemctl restart docker"
+  fi
+  warn "  Diagnose: docker exec pipeshub-ai curl -s -o /dev/null -m 6 -w '%{http_code}\\n' https://1.1.1.1/"
+  warn "  Docs: deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity"
+}
+
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'pipeshub-ai'; then
+  warn_container_outbound_connectivity
+fi
+
+# ==============================================================================
+# 17. FINAL STATUS BANNER
+# Ready only when services are healthy AND the app answers from the host.
+# ==============================================================================
+READY=false
+if $CONTAINER_HEALTHY && $HOST_REACHABLE; then READY=true; fi
+
+if $READY; then
+  printf "\n${BOLD}${GREEN}%s${RESET}\n\n" "$(printf '━%.0s' {1..64})"
+  printf "  ${BOLD}${GREEN}PipesHub AI is ready!${RESET}\n\n"
+else
+  printf "\n${BOLD}${YELLOW}%s${RESET}\n\n" "$(printf '━%.0s' {1..64})"
+  printf "  ${BOLD}${YELLOW}PipesHub containers are running, but not confirmed ready yet.${RESET}\n"
+  printf "  First start can take several minutes. Open the URL below in a few minutes;\n"
+  printf "  if it stays down, check the logs at the bottom of this output.\n\n"
+fi
 printf "  ${BOLD}URLs${RESET}\n"
 printf "  ${DIM}%s${RESET}\n" "$(printf '─%.0s' {1..53})"
 printf "  ${CYAN}Local:${RESET}   http://localhost:${APP_PORT}\n"
@@ -1009,6 +1405,8 @@ if [[ -n "${FRONTEND_PUBLIC_URL:-}" ]]; then
 fi
 printf "\n  ${BOLD}Useful commands${RESET}\n"
 printf "  ${DIM}%s${RESET}\n\n" "$(printf '─%.0s' {1..53})"
+printf "  ${DIM}# Check health from this host${RESET}\n"
+printf "  curl -fsS http://localhost:%s/api/v1/health/services\n\n" "$APP_PORT"
 printf "  ${DIM}# View logs${RESET}\n"
 printf "  docker compose -f %s -p %s logs -f pipeshub-ai\n\n" "$COMPOSE_FILE" "$PROJECT_NAME"
 printf "  ${DIM}# Stop (data preserved)${RESET}\n"
@@ -1019,4 +1417,8 @@ printf "  ${DIM}# Reconfigure (re-run wizard)${RESET}\n"
 printf "  ./install.sh --reconfigure\n\n"
 printf "  ${DIM}# Uninstall and remove all data (irreversible)${RESET}\n"
 printf "  ./install.sh --uninstall\n\n"
-printf "${BOLD}${GREEN}%s${RESET}\n\n" "$(printf '━%.0s' {1..64})"
+if $READY; then
+  printf "${BOLD}${GREEN}%s${RESET}\n\n" "$(printf '━%.0s' {1..64})"
+else
+  printf "${BOLD}${YELLOW}%s${RESET}\n\n" "$(printf '━%.0s' {1..64})"
+fi

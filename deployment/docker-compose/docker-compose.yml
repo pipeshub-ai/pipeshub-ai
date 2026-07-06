@@ -154,6 +154,15 @@ services:
       # ML threading
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 
+      # HuggingFace Hub offline mode. The default local models (dense embedding
+      # + Qdrant/BM25 sparse) are baked into the image, so the runtime needs no
+      # network to load them. Without this, huggingface_hub performs a network
+      # check that blocks indexing startup indefinitely on hosts whose container
+      # has no outbound internet (air-gapped/firewalled). Set to 0 only if you
+      # configure a custom remote model that must be downloaded at runtime.
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-1}
+
       # Indexing concurrency
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-7}
@@ -218,11 +227,16 @@ services:
       - "host.docker.internal:host-gateway"
 
     healthcheck:
+      # Gate on the core services only. embedding is intentionally excluded: it
+      # may be absent (not deployed) or sit 'unhealthy' for minutes while it
+      # downloads its model on first run, and it is not required for the app to
+      # be usable. This mirrors the installer's readiness check so `docker ps`
+      # health agrees with what install.sh reports.
       test:
         - CMD-SHELL
         - >
           curl -sf http://localhost:3000/api/v1/health/services -o /tmp/hc.json &&
-          python3 -c "import json,sys; d=json.load(open('/tmp/hc.json')); s=d.get('services',{}) or {}; required=('query','connector','indexing','docling'); sys.exit(0 if all(s.get(k)=='healthy' for k in required) and s.get('embedding') in ('healthy','starting') else 1)"
+          python3 -c "import json,sys; d=json.load(open('/tmp/hc.json')); s=d.get('services',{}) or {}; required=('query','connector','indexing','docling'); sys.exit(0 if all(s.get(k)=='healthy' for k in required) else 1)"
       interval: 15s
       timeout: 10s
       retries: 5
