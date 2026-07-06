@@ -119,7 +119,9 @@ export function useAgentBuilderNodeTemplates(
       },
       {
         type: 'scheduled-input',
-        label: normalizeDisplayName(t('agentBuilder.nodeLabelScheduledInput')),
+        label: normalizeDisplayName(
+          t('agentBuilder.scheduledInput', { defaultValue: 'Scheduled Trigger' })
+        ),
         description: t('agentBuilder.nodeDescScheduledInput'),
         icon: 'schedule',
         defaultConfig: {
