@@ -1144,6 +1144,48 @@ class TestParsePlannerResponseFromLlm:
         result = _parse_planner_response_from_llm(resp, _log(), using_structured=True)
         assert len(result["tools"]) == 1
 
+    def test_aimessage_with_list_content_blocks(self):
+        """Gemini list content is coerced before JSON parse (no '.strip' crash)."""
+        from app.modules.agents.qna.nodes import _parse_planner_response_from_llm
+
+        resp = MagicMock()
+        resp.content = [
+            {"type": "text", "text": '{"intent": "search", "reasoning": "r", '},
+            {
+                "type": "text",
+                "text": '"can_answer_directly": false, "needs_clarification": false, '
+                '"tools": [{"name": "jira.search", "args": {"query": "bugs"}}]}',
+            },
+        ]
+        result = _parse_planner_response_from_llm(resp, _log(), using_structured=False)
+        assert result["intent"] == "search"
+        assert len(result["tools"]) == 1
+        assert result["tools"][0]["name"] == "jira.search"
+
+
+# ============================================================================
+# reflect_node list-content coercion (via shared helper + _parse_reflection_response)
+# ============================================================================
+
+
+class TestReflectListContentCoercion:
+    def test_list_content_blocks_coerced_before_parse(self):
+        """Same pipeline as reflect_node: coerce list blocks, then parse JSON."""
+        import json
+
+        from app.modules.agents.qna.nodes import _parse_reflection_response
+        from app.utils.aimodels import coerce_message_content_to_text
+
+        raw = json.dumps({"decision": "respond_success", "reasoning": "All good"})
+        mid = len(raw) // 2
+        blocks = [
+            {"type": "text", "text": raw[:mid]},
+            {"type": "text", "text": raw[mid:]},
+        ]
+        result = _parse_reflection_response(coerce_message_content_to_text(blocks), _log())
+        assert result["decision"] == "respond_success"
+        assert result["reasoning"] == "All good"
+
 
 # ============================================================================
 # coerce_message_content_to_text — used by planner/reflection paths

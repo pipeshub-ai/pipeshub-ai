@@ -720,6 +720,27 @@ class TestFallbackSummary:
         assert result.summary == "Summary of the doc."
 
     @pytest.mark.asyncio
+    async def test_fallback_list_content_ignores_image_blocks(self):
+        """Non-text blocks in list content are ignored before .strip()."""
+        from unittest.mock import AsyncMock
+
+        ext = _build_extractor()
+
+        mock_response = MagicMock()
+        mock_response.content = [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            {"type": "text", "text": "  Text-only summary.  "},
+        ]
+
+        ext.llm = AsyncMock()
+        ext.llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        result = await ext._fallback_summary([{"type": "text", "text": "content"}])
+
+        assert result is not None
+        assert result.summary == "Text-only summary."
+
+    @pytest.mark.asyncio
     async def test_fallback_string_response(self):
         from unittest.mock import AsyncMock
 
