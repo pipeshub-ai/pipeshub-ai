@@ -14,6 +14,7 @@ from app.utils.aimodels import (
     EmbeddingProvider,
     LLMProvider,
     _anthropic_supports_sampling_params,
+    coerce_message_content_to_text,
     get_embedding_model,
     get_generator_model,
     get_image_generation_model,
@@ -142,4 +143,41 @@ class TestImageGenDefaultSkipsValidation:
         }
         adapter = get_image_generation_model("openAI", cfg, model_name="custom-model")
         assert adapter.model == "custom-model"
+
+
+# ---------------------------------------------------------------------------
+# coerce_message_content_to_text
+# ---------------------------------------------------------------------------
+
+
+class TestCoerceMessageContentToText:
+    def test_string_passthrough(self):
+        assert coerce_message_content_to_text("plain text") == "plain text"
+
+    def test_none_returns_empty(self):
+        assert coerce_message_content_to_text(None) == ""
+
+    def test_gemini_text_blocks_joined(self):
+        content = [
+            {"type": "text", "text": "Hello "},
+            {"type": "text", "text": "world"},
+        ]
+        assert coerce_message_content_to_text(content) == "Hello world"
+
+    def test_mixed_string_and_dict_blocks(self):
+        content = ["prefix ", {"type": "text", "text": "suffix"}]
+        assert coerce_message_content_to_text(content) == "prefix suffix"
+
+    def test_non_text_blocks_ignored(self):
+        content = [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            {"type": "text", "text": "ok"},
+        ]
+        assert coerce_message_content_to_text(content) == "ok"
+
+    def test_scalar_list_items_stringified(self):
+        assert coerce_message_content_to_text([1, 2, 3]) == "123"
+
+    def test_non_list_non_string_coerced(self):
+        assert coerce_message_content_to_text(42) == "42"
 
