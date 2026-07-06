@@ -98,6 +98,28 @@ class ConfigurationService:
 
     def _get_env_fallback(self, key: str) -> dict | None:
         """Get environment variable fallback for specific configuration keys"""
+        if key == config_node_constants.SECRET_KEYS.value:
+            # Auth must remain available even when the distributed config store is
+            # temporarily unavailable; read JWT secrets from environment as fallback.
+            jwt_secret = (
+                os.getenv("JWT_SECRET")
+                or os.getenv("JWT_SECRET_KEY")
+                or os.getenv("jwtSecret")
+            )
+            scoped_jwt_secret = (
+                os.getenv("SCOPED_JWT_SECRET")
+                or os.getenv("SCOPED_JWT_SECRET_KEY")
+                or os.getenv("scopedJwtSecret")
+            )
+
+            if jwt_secret:
+                fallback = {"jwtSecret": jwt_secret}
+                if scoped_jwt_secret:
+                    fallback["scopedJwtSecret"] = scoped_jwt_secret
+                return fallback
+
+            return None
+
         if key == config_node_constants.KAFKA.value:
             # Kafka configuration fallback
             kafka_brokers = os.getenv("KAFKA_BROKERS")
