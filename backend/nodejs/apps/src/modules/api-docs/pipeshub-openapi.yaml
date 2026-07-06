@@ -8446,10 +8446,12 @@ components:
         - calendar
         - clickup
         - confluence
+        - confluencedatacenter
         - drive
         - github
         - gmail
         - jira
+        - jiradatacenter
         - lumos
         - mariadb
         - onedrive

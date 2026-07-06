@@ -741,16 +741,17 @@ class TestProcessPdfWithDocling:
         assert any(e.event == "docling_failed" for e in events)
 
     @pytest.mark.asyncio
-    async def test_create_blocks_returns_none_raises(self):
-        """When docling create_blocks returns None, an exception is raised."""
+    async def test_create_blocks_returns_none_yields_docling_failed(self):
+        """When docling create_blocks returns None, yields docling_failed."""
         proc = _make_processor()
         proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
         proc.docling_client.create_blocks = AsyncMock(return_value=None)
 
-        with pytest.raises(Exception, match="failed to create blocks"):
-            await _collect_events(
-                proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
-            )
+        events = await _collect_events(
+            proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
+        )
+        assert any(e.event == "parsing_complete" for e in events)
+        assert any(e.event == "docling_failed" for e in events)
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
@@ -1441,7 +1442,7 @@ class TestRunIndexingPipeline:
 class TestProcessPdfWithDoclingAdditional:
     @pytest.mark.asyncio
     async def test_exception_in_pipeline(self):
-        """Exception during pipeline processing propagates."""
+        """Exception during pipeline processing yields docling_failed."""
         proc = _make_processor()
         proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
         proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
@@ -1455,10 +1456,11 @@ class TestProcessPdfWithDoclingAdditional:
                 side_effect=RuntimeError("pipeline boom")
             )
 
-            with pytest.raises(RuntimeError, match="pipeline boom"):
-                await _collect_events(
-                    proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
-                )
+            events = await _collect_events(
+                proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
+            )
+            assert any(e.event == "parsing_complete" for e in events)
+            assert any(e.event == "docling_failed" for e in events)
 
     @pytest.mark.asyncio
     async def test_appends_pdf_extension(self):

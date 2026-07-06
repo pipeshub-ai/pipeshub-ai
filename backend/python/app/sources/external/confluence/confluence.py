@@ -510,6 +510,208 @@ class ConfluenceDataSource:
         )
         return await self._client.execute(req)
 
+    async def get_child_pages_v1(
+        self,
+        content_id: str,
+        expand: str = "version,space",
+        start: int = 0,
+        limit: int = 25,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """``GET /wiki/rest/api/content/{id}/child/page`` — direct child pages of a page (v1).
+
+        Server / Data Center analogue of the Cloud v2 ``GET /pages/{id}/children``.
+        Offset-paged (``start``/``limit``); response is ``{results:[...], size, _links}``.
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        base = self._v1_rest_api_base()
+        url = f"{base}/content/{quote(str(content_id), safe='')}/child/page"
+        _headers: Dict[str, Any] = dict(headers or {})
+        _query: Dict[str, Any] = {"start": start, "limit": limit}
+        if expand:
+            _query["expand"] = expand
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def get_content_versions_v1(
+        self,
+        content_id: str,
+        expand: str = "",
+        start: int = 0,
+        limit: int = 25,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """``GET /rest/experimental/content/{id}/version`` — version history of a page.
+
+        Server / Data Center analogue of the Cloud v2 ``GET /pages/{id}/versions``.
+        The content-version **collection** is exposed under ``/rest/experimental`` on
+        Server/DC, NOT ``/rest/api`` (which 404s — the ``/rest/api`` content resource
+        only carries the single current version inline). Each entry:
+        ``{by, when, number, minorEdit, message}``; offset-paged.
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        base = self._v1_rest_api_base()
+        if base.endswith("/rest/api"):
+            base = base[: -len("/rest/api")] + "/rest/experimental"
+        url = f"{base}/content/{quote(str(content_id), safe='')}/version"
+        _headers: Dict[str, Any] = dict(headers or {})
+        _query: Dict[str, Any] = {"start": start, "limit": limit}
+        if expand:
+            _query["expand"] = expand
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def create_content_v1(
+        self,
+        body: Dict[str, Any],
+        expand: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """``POST /wiki/rest/api/content`` — create a page/comment (Confluence REST v1, DC/Server).
+
+        The v1 ``content`` resource is the Server/Data Center analogue of the Cloud v2
+        ``POST /pages`` + ``POST /footer-comments`` endpoints (which DC does not expose).
+        The caller supplies the full v1 body, e.g. for a page::
+
+            {"type": "page", "title": "...", "space": {"key": "DS"},
+             "body": {"storage": {"value": "<p>..</p>", "representation": "storage"}},
+             "ancestors": [{"id": "123"}]}
+
+        and for a comment::
+
+            {"type": "comment", "container": {"id": "123", "type": "page"},
+             "body": {"storage": {"value": "<p>..</p>", "representation": "storage"}}}
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        base = self._v1_rest_api_base()
+        url = f"{base}/content"
+        _headers: Dict[str, Any] = dict(headers or {})
+        _headers.setdefault("Content-Type", "application/json")
+        _query: Dict[str, Any] = {}
+        if expand:
+            _query["expand"] = expand
+
+        req = HTTPRequest(
+            method="POST",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=body,
+        )
+        return await self._client.execute(req)
+
+    async def update_content_v1(
+        self,
+        content_id: str,
+        body: Dict[str, Any],
+        expand: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """``PUT /wiki/rest/api/content/{id}`` — update a page's title/body/status (Confluence REST v1, DC/Server).
+
+        The Server/Data Center analogue of the Cloud v2 ``PUT /pages/{id}``. The caller
+        supplies the full v1 body including the bumped ``version.number``, e.g.::
+
+            {"type": "page", "title": "...", "version": {"number": 4},
+             "body": {"storage": {"value": "<p>..</p>", "representation": "storage"}}}
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        base = self._v1_rest_api_base()
+        url = f"{base}/content/{quote(str(content_id), safe='')}"
+        _headers: Dict[str, Any] = dict(headers or {})
+        _headers.setdefault("Content-Type", "application/json")
+        _query: Dict[str, Any] = {}
+        if expand:
+            _query["expand"] = expand
+
+        req = HTTPRequest(
+            method="PUT",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=body,
+        )
+        return await self._client.execute(req)
+
+    async def create_comment_v1(
+        self,
+        page_id: str,
+        body_value: str,
+        parent_comment_id: Optional[str] = None,
+        representation: str = "storage",
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """Add a footer comment to a page via Confluence REST v1 (DC/Server).
+
+        Wraps ``create_content_v1`` with the ``type=comment`` container payload — the
+        Server analogue of the Cloud v2 ``POST /footer-comments``. Pass
+        ``parent_comment_id`` to reply to an existing comment.
+        """
+        comment_body: Dict[str, Any] = {
+            "type": "comment",
+            "container": {"id": str(page_id), "type": "page"},
+            "body": {representation: {"value": body_value, "representation": representation}},
+        }
+        if parent_comment_id:
+            comment_body["ancestors"] = [{"id": str(parent_comment_id)}]
+        return await self.create_content_v1(body=comment_body, headers=headers)
+
+    async def get_current_user_v1(
+        self,
+        expand: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """``GET /wiki/rest/api/user/current`` — the current authenticated user (Confluence REST v1).
+
+        On Data Center / Server the identity is ``username`` / ``userKey`` (no ``accountId``).
+        Used for connection validation and "who am I".
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        base = self._v1_rest_api_base()
+        url = f"{base}/user/current"
+        _headers: Dict[str, Any] = dict(headers or {})
+        _query: Dict[str, Any] = {}
+        if expand:
+            _query["expand"] = expand
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
     async def get_user_list_v1(
         self,
         start: int = 0,
@@ -556,6 +758,42 @@ class ConfluenceDataSource:
             method="GET",
             url=url,
             headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def search_users_v1(
+        self,
+        query: str,
+        limit: int = 25,
+        start: Optional[int] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """Search users by name via the general CQL search endpoint (Data Center / Server).
+
+        ``GET /rest/api/search?cql=type=user AND user.fullname ~ "<query>*"``
+
+        Confluence Cloud's ``/rest/api/search/user`` returns **404** on Data Center;
+        DC exposes user search only through the general ``/search`` endpoint with a
+        ``type=user`` clause. Each hit is wrapped as ``{"user": {...}, "url": "/display/~name"}``
+        (``userKey``/``username``, no ``accountId``; email is not returned here).
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        escaped = _escape_cql_literal(query.strip()).rstrip("*")
+        cql = f'type=user AND user.fullname ~ "{escaped}*"'
+        _query: Dict[str, Any] = {"cql": cql, "limit": limit}
+        if start is not None:
+            _query["start"] = start
+
+        url = f"{self._v1_rest_api_base()}/search"
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(dict(headers or {})),
             path={},
             query=_as_str_dict(_query),
             body=None,
