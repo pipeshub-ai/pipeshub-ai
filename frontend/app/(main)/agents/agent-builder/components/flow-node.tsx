@@ -101,7 +101,6 @@ function NodeCardShell(props: {
       <Box
         style={{
           borderBottom: '1px solid var(--agent-flow-node-border)',
-                        {t('agentBuilder.scheduledInput', { defaultValue: 'Scheduled Trigger' })}
         }}
       >
         {header}
