@@ -49,7 +49,7 @@ class SSEEventEmitter(EventEmitter):
         if event.event_type == EventType.RUN_STARTED:
             return {
                 "event": "status",
-                "data": {"status": "planning", "message": "Planning how to answer..."},
+                "data": {"status": "planning", "message": "Planning next step..."},
             }
 
         if event.event_type == EventType.TOOL_CALL_START:

@@ -51,7 +51,7 @@ class TestSSEEventEmitterTranslation:
         await emitter.emit(_event(EventType.RUN_STARTED, {}))
 
         sink.write.assert_awaited_once_with(
-            {"event": "status", "data": {"status": "planning", "message": "Planning how to answer..."}}
+            {"event": "status", "data": {"status": "planning", "message": "Planning next step..."}}
         )
 
     async def test_tool_call_start_maps_to_executing_status(self) -> None:
