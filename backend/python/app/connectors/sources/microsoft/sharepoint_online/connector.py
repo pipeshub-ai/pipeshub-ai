@@ -30,7 +30,6 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from kiota_abstractions.base_request_configuration import RequestConfiguration
 from msgraph import GraphServiceClient
-from msgraph.generated.groups.groups_request_builder import GroupsRequestBuilder
 from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.group import Group
 from msgraph.generated.models.list_item import ListItem
@@ -110,7 +109,6 @@ from app.models.entities import (
 )
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.notification.types import NotificationSeverity, NotificationType
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -1047,7 +1045,7 @@ class SharePointConnector(BaseConnector):
                     type=NotificationType.CONNECTOR_WARNING,
                     severity=NotificationSeverity.WARNING,
                     title="No sites synced",
-                    message="Verify you have Sites.FullControl.All permissions with Admin Consent or check your connector filter settings.",
+                    message="Verify you have Sites.FullControl.All permissions with Admin Consent or check your connector sites filter settings.",
                     recipient_user_ids=[self.created_by],
                     payload={
                         "connector_id": self.connector_id,
@@ -3924,9 +3922,9 @@ class SharePointConnector(BaseConnector):
         Probe all five required Microsoft Graph application permissions:
           - User.Read.All          → GET /users?$top=1&$select=id
           - Group.Read.All         → GET /groups?$top=1&$select=id
-          - GroupMember.Read.All   → GET /groups/{id}/members?$top=1
           - Files.ReadWrite.All    → GET /sites/root/drives
-          - Sites.FullControl.All  → GET /sites/root?$select=id,displayName
+          - Sites.Read.All,Sites.FullControl.All  → GET /search/query with entityTypes=["site"]
+          - Sites.FullControl.All (Sharepoint REST API) → GET /_api/web
 
         Returns True only when all five probes succeed.
         """
@@ -3992,7 +3990,7 @@ class SharePointConnector(BaseConnector):
     async def _probe_sp_users_scope(self) -> None:
         """Probe User.Read.All via GET /users?$top=1&$select=id."""
         await self.client.users.get(
-            RequestConfiguration(
+            request_configuration=RequestConfiguration(
                 query_parameters=UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
                     top=1, select=["id"]
                 )
@@ -4030,6 +4028,7 @@ class SharePointConnector(BaseConnector):
             entity_types=["site"],
             query="*",
             limit=1,
+            region=self.tenant_region,
         )
 
     async def _probe_legacy_sharepoint_sites_scope(self) -> None:
