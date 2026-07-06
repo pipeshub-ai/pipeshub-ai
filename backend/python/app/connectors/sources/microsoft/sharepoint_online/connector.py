@@ -28,14 +28,19 @@ from azure.identity.aio import CertificateCredential, ClientSecretCredential
 from bs4 import BeautifulSoup, Comment
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
+from kiota_abstractions.base_request_configuration import RequestConfiguration
 from msgraph import GraphServiceClient
+from msgraph.generated.groups.groups_request_builder import GroupsRequestBuilder
 from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.group import Group
 from msgraph.generated.models.list_item import ListItem
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from msgraph.generated.models.site import Site
 from msgraph.generated.models.site_page import SitePage
 from msgraph.generated.models.subscription import Subscription
 from msgraph.generated.sites.item.pages.pages_request_builder import PagesRequestBuilder
+from msgraph.generated.groups.delta.delta_request_builder import DeltaRequestBuilder
+from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -105,6 +110,7 @@ from app.models.entities import (
 )
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import NotificationSeverity, NotificationType
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -1036,6 +1042,18 @@ class SharePointConnector(BaseConnector):
             if pre_scope_count > 0 and len(valid_sites) == 0:
                 self.logger.warning(
                     "⚠️ No sites remain after validation and site ID filters — check filters and permissions"
+                )
+                await self.notify(
+                    type=NotificationType.CONNECTOR_WARNING,
+                    severity=NotificationSeverity.WARNING,
+                    title="No sites synced",
+                    message="Verify you have Sites.FullControl.All permissions with Admin Consent or check your connector filter settings.",
+                    recipient_user_ids=[self.created_by],
+                    payload={
+                        "connector_id": self.connector_id,
+                        "connector_name": self.connector_name.value,
+                        "connector_scope": self.scope,
+                    },
                 )
             return valid_sites
 
@@ -3902,13 +3920,140 @@ class SharePointConnector(BaseConnector):
             raise
 
     async def test_connection_and_access(self) -> bool:
-        """Test connection and access to SharePoint."""
-        try:
-            self.logger.info("Testing connection and access to SharePoint")
-            return True
-        except Exception as e:
-            self.logger.error(f"❌ Error testing connection and access to SharePoint: {e}")
-            return False
+        """
+        Probe all five required Microsoft Graph application permissions:
+          - User.Read.All          → GET /users?$top=1&$select=id
+          - Group.Read.All         → GET /groups?$top=1&$select=id
+          - GroupMember.Read.All   → GET /groups/{id}/members?$top=1
+          - Files.ReadWrite.All    → GET /sites/root/drives
+          - Sites.FullControl.All  → GET /sites/root?$select=id,displayName
+
+        Returns True only when all five probes succeed.
+        """
+        self.logger.info("Testing connection and access to SharePoint")
+
+        scope_probes = [
+            ("User.Read.All",         self._probe_sp_users_scope),
+            ("Group.Read.All",        self._probe_sp_groups_scope),
+            ("Files.ReadWrite.All",   self._probe_sp_site_drives_scope),
+            ("Sites.Read.All, Sites.FullControl.All", self._probe_sp_sites_scope),
+            ("Sites.FullControl.All (Sharepoint REST API)", self._probe_legacy_sharepoint_sites_scope),
+        ]
+
+        all_passed = True
+        missing_scopes: List[str] = []
+        for scope_name, probe in scope_probes:
+            try:
+                await probe()
+                self.logger.info(f"✅ Permission verified: {scope_name}")
+            except ODataError as e:
+                all_passed = False
+                error_code = (e.error.code or "") if e.error else ""
+                if error_code == "Authorization_RequestDenied" or e.response_status_code == 403:
+                    missing_scopes.append(scope_name)
+                    self.logger.error(
+                        f"❌ Missing required Microsoft Graph permission: {scope_name} "
+                        f"(Azure error code: {error_code})"
+                    )
+                else:
+                    # Transient error (429, 503, 500, …) — log only, no notification.
+                    self.logger.error(
+                        f"❌ Unexpected Graph API error while probing {scope_name} "
+                        f"(code={error_code}): {e}"
+                    )
+            except PermissionError as e:
+                all_passed = False
+                missing_scopes.append(scope_name)
+                self.logger.error(f"❌ Missing required permission: {scope_name} — {e}")
+            except Exception as e:
+                all_passed = False
+                self.logger.error(f"❌ Error testing {scope_name} permission: {e}")
+
+        if missing_scopes:
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="SharePoint: missing API permissions",
+                message=(
+                    f"SharePoint is missing the following Microsoft Graph permissions: "
+                    f"{', '.join(missing_scopes)}. "
+                    "Please grant these application permissions in Azure AD and provide admin consent."
+                ),
+                recipient_user_ids=[self.created_by],
+                payload={
+                    "connector_id": self.connector_id,
+                    "connector_name": self.connector_name.value,
+                    "connector_scope": self.scope,
+                },
+            )
+
+        return all_passed
+
+    async def _probe_sp_users_scope(self) -> None:
+        """Probe User.Read.All via GET /users?$top=1&$select=id."""
+        await self.client.users.get(
+            RequestConfiguration(
+                query_parameters=UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
+                    top=1, select=["id"]
+                )
+            )
+        )
+
+    async def _probe_sp_groups_scope(self) -> None:
+        """Probe Group.Read.All reliably via the Delta endpoint. /groups/delta"""
+        # The SDK exposes the query parameters directly under the delta builder module
+        q_params = DeltaRequestBuilder.DeltaRequestBuilderGetQueryParameters(top=1)
+        
+        await self.client.groups.delta.get(
+            request_configuration=RequestConfiguration(query_parameters=q_params)
+        )
+
+    async def _probe_sp_site_drives_scope(self) -> None:
+        """
+        Probe Files.ReadWrite.All via GET /sites/root/drives.
+
+        The root site is always present in any SharePoint tenant, making it a
+        reliable probe target:
+          - 200 → Files.ReadWrite.All is granted (drives list may be empty).
+          - 403 → Files.ReadWrite.All is not granted.
+        """
+        await self.client.sites.by_site_id("root").drives.get()
+
+    async def _probe_sp_sites_scope(self) -> None:
+        """
+        Probe Sites.Read.All via POST /search/query with entityTypes=["site"].
+        Unlike GET /sites/root or GET /sites/root/lists, the Microsoft Search API
+        explicitly gates site entity access behind Sites.Read.All and returns a
+        clear 403 Forbidden even when Files.ReadWrite.All is granted.
+        """
+        await self.msgraph_client.search_query(
+            entity_types=["site"],
+            query="*",
+            limit=1,
+        )
+
+    async def _probe_legacy_sharepoint_sites_scope(self) -> None:
+        """
+        Probe SharePoint-tier Sites.FullControl.All via legacy REST API.
+        """
+        token = await self._get_sharepoint_access_token()
+        if not token:
+            raise ValueError("Failed to obtain SharePoint access token for permission probe")
+
+        url = f"{self.sharepoint_domain.rstrip('/')}/_api/web"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json;odata=verbose",
+        }
+
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.get(url, headers=headers)
+            if response.status_code in (401, 403):
+                raise PermissionError(
+                    f"SharePoint REST API denied access (HTTP {response.status_code}). "
+                    "Ensure Sites.FullControl.All is granted in the SharePoint admin centre."
+                )
+            response.raise_for_status()
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """Stream record content (file or page) from SharePoint."""
