@@ -206,9 +206,10 @@ export function extractAgentConfigFromFlow(
         if (kbId) {
           // Each collection is its own knowledge entry keyed by its recordGroup id as connectorId,
           // so multiple collections never collapse into a single connector entry on save.
+          const nodeFilters = (cfg.filters as Record<string, unknown>) || {};
           const records =
-            (cfg.selectedRecords as string[]) || (cfg.filters as { records?: string[] })?.records || [];
-          addKnowledgeSource(kbId, { recordGroups: [kbId], records }, 'knowledge');
+            (cfg.selectedRecords as string[]) || (nodeFilters.records as string[]) || [];
+          addKnowledgeSource(kbId, { ...nodeFilters, recordGroups: [kbId], records }, 'knowledge');
         }
       }
     } else if (nt.startsWith('app-') && nt !== 'app-group') {
@@ -264,9 +265,13 @@ export function extractAgentConfigFromFlow(
     const selectedKBs = cfg.selectedKBs as string[] | undefined;
     if (isKBGroupConnected && selectedKBs) {
       selectedKBs.forEach((kbId) => {
-        const kbSpecificFilters = (cfg.kbFilters as Record<string, { records?: string[] }>)?.[kbId] || {};
+        const kbSpecificFilters = (cfg.kbFilters as Record<string, Record<string, unknown>>)?.[kbId] || {};
         // Key each collection by its own recordGroup id so collections stay separate entries.
-        addKnowledgeSource(kbId, { recordGroups: [kbId], records: kbSpecificFilters.records || [] }, 'knowledge');
+        addKnowledgeSource(
+          kbId,
+          { ...kbSpecificFilters, recordGroups: [kbId], records: (kbSpecificFilters.records as string[]) || [] },
+          'knowledge'
+        );
       });
     }
   }
