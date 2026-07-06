@@ -188,50 +188,15 @@ function KnowledgeBasePageContent() {
   const isLoadingFlatCollections = useKnowledgeBaseStore((state) => state.isLoadingFlatCollections);
   const loadingAppIds = useKnowledgeBaseStore((state) => state.loadingAppIds);
 
-  // Memoize filter and sort to prevent unnecessary re-renders and infinite loops
-  // Only recreate when actual property values change, not on every render
-  const filter = useMemo(() => rawFilter, [
-    rawFilter.recordTypes?.join(','),
-    rawFilter.indexingStatus?.join(','),
-    rawFilter.origins?.join(','),
-    rawFilter.connectorIds?.join(','),
-    rawFilter.kbIds?.join(','),
-    rawFilter.sizeRanges?.join(','),
-    rawFilter.createdAfter,
-    rawFilter.createdBefore,
-    rawFilter.updatedAfter,
-    rawFilter.updatedBefore,
-    rawFilter.searchQuery,
-  ]);
-
-  const sort = useMemo(() => rawSort, [
-    rawSort.field,
-    rawSort.order,
-  ]);
+  const filter = rawFilter;
+  const sort = rawSort;
 
   // Extract All Records filter and sort separately to create stable references
   const rawAllRecordsFilter = useKnowledgeBaseStore((state) => state.allRecordsFilter);
   const rawAllRecordsSort = useKnowledgeBaseStore((state) => state.allRecordsSort);
 
-  // Stabilize allRecordsFilter - same pattern as collections filter above
-  const allRecordsFilter = useMemo(() => rawAllRecordsFilter, [
-    rawAllRecordsFilter.nodeTypes?.join(','),
-    rawAllRecordsFilter.recordTypes?.join(','),
-    rawAllRecordsFilter.indexingStatus?.join(','),
-    rawAllRecordsFilter.origins?.join(','),
-    rawAllRecordsFilter.connectorIds?.join(','),
-    rawAllRecordsFilter.sizeRanges?.join(','),
-    rawAllRecordsFilter.createdAfter,
-    rawAllRecordsFilter.createdBefore,
-    rawAllRecordsFilter.updatedAfter,
-    rawAllRecordsFilter.updatedBefore,
-    rawAllRecordsFilter.searchQuery,
-  ]);
-
-  const allRecordsSort = useMemo(() => rawAllRecordsSort, [
-    rawAllRecordsSort.field,
-    rawAllRecordsSort.order,
-  ]);
+  const allRecordsFilter = rawAllRecordsFilter;
+  const allRecordsSort = rawAllRecordsSort;
 
   /**
    * Single source of truth for the current Knowledge Base (collection) ID.
@@ -1066,23 +1031,25 @@ function KnowledgeBasePageContent() {
   // Collections: page/limit changes go through URL sync → searchParams; no separate pagination effects (avoids double fetch).
 
   // Helper function to convert EnhancedFolderTreeNode to FolderTreeNode format for move dialog
-  const convertEnhancedToFolderTree = useCallback(
-    (nodes: EnhancedFolderTreeNode[], depth = 0, parentId: string | null = null): FolderTreeNode[] => {
-      if (!nodes || nodes.length === 0) return [];
+  const convertEnhancedToFolderTree = (
+    nodes: EnhancedFolderTreeNode[],
+    depth = 0,
+    parentId: string | null = null
+  ): FolderTreeNode[] => {
+    if (!nodes || nodes.length === 0) return [];
 
-      return nodes.map((node) => ({
-        id: node.id,
-        name: node.name,
-        depth,
-        parentId,
-        isExpanded: false,
-        children: node.children && node.children.length > 0
+    return nodes.map((node) => ({
+      id: node.id,
+      name: node.name,
+      depth,
+      parentId,
+      isExpanded: false,
+      children:
+        node.children && node.children.length > 0
           ? convertEnhancedToFolderTree(node.children as EnhancedFolderTreeNode[], depth + 1, node.id)
           : [],
-      }));
-    },
-    []
-  );
+    }));
+  };
 
   // Build a single collection tree for the move dialog (only the current collection)
   const moveCollectionTree = useMemo((): FolderTreeNode | null => {
@@ -1106,7 +1073,7 @@ function KnowledgeBasePageContent() {
       isExpanded: true,
       children,
     };
-  }, [selectedKbId, categorizedNodes, convertEnhancedToFolderTree]);
+  }, [selectedKbId, categorizedNodes]);
 
   // Handle "Go to Collections" from All Records empty state
   const handleGoToCollection = useCallback(() => {
@@ -2197,11 +2164,11 @@ function KnowledgeBasePageContent() {
   );
 
   const executeReindex = useCallback(
-    async (
+    async function executeReindex(
       item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
       depth: number,
       statusFilters?: string[],
-    ) => {
+    ) {
       const hubItem = item as KnowledgeHubNode;
       const reindexNode = getReindexNodeFromHubItem({
         nodeType: hubItem.nodeType,

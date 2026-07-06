@@ -235,7 +235,7 @@ export default function PromptsPage() {
         variant: 'error',
         title: t('workspace.prompts.toasts.saveError'),
         description: t('workspace.prompts.toasts.saveErrorDescription'),
-        action: { label: t('action.tryAgain'), onClick: handleSave },
+        action: { label: t('action.tryAgain') },
       });
     } finally {
       setIsSaving(false);
