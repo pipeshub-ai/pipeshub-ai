@@ -105,8 +105,13 @@ class DoclingDocToBlocksConverter():
 
         def _enrich_metadata(block: Block|BlockGroup, item: dict[str, Any], doc_dict: dict[str, Any], default_page_number: int | None = None) -> None:
             page_metadata = doc_dict.get("pages", {})
-            # self.logger.debug(f"Page metadata: {json.dumps(page_metadata, indent=4)}")
-            # self.logger.debug(f"Item: {json.dumps(item, indent=4)}")
+            if page_metadata is None:
+                self.logger.error(
+                    "_enrich_metadata: 'pages' key is present but its value is None — "
+                    "citation metadata cannot be set. item self_ref=%s",
+                    item.get("self_ref"),
+                )
+                page_metadata = {}
             if "prov" in item:
                 prov = item["prov"]
                 if isinstance(prov, list) and len(prov) > 0:
@@ -114,7 +119,16 @@ class DoclingDocToBlocksConverter():
                     page_no = prov[0].get("page_no")
                     if page_no:
                         block.citation_metadata = CitationMetadata(page_number=page_no)
-                        page_size = page_metadata[str(page_no)].get("size", {})
+                        page_entry = page_metadata.get(str(page_no))
+                        if page_entry is None:
+                            self.logger.error(
+                                "_enrich_metadata: no entry for page_no=%s in pages dict "
+                                "(available keys: %s). item self_ref=%s",
+                                page_no,
+                                list(page_metadata.keys()),
+                                item.get("self_ref"),
+                            )
+                        page_size = (page_entry or {}).get("size", {})
                         page_width = page_size.get("width", 0)
                         page_height = page_size.get("height", 0)
                         page_bbox = prov[0].get("bbox", {})
@@ -256,14 +270,37 @@ class DoclingDocToBlocksConverter():
             return block
 
         async def _handle_table_block(item: dict[str, Any], doc_dict: dict[str, Any],parent_index: int | None, ref_path: str,level: int,doc: DoclingDocument) -> BlockGroup|None:
-            table_data = item.get("data", {})
-            cell_data = table_data.get("table_cells", [])
+            table_data = item.get("data")
+            if table_data is None:
+                self.logger.error(
+                    "_handle_table_block: 'data' is None for table ref=%s", ref_path
+                )
+                return None
+
+            cell_data = table_data.get("table_cells")
+            if cell_data is None:
+                self.logger.error(
+                    "_handle_table_block: 'table_cells' is None for table ref=%s — "
+                    "table_data keys: %s",
+                    ref_path,
+                    list(table_data.keys()),
+                )
+                return None
             if len(cell_data) == 0:
-                self.logger.warning(f"No table cells found in the table data: {table_data}")
+                self.logger.warning(
+                    "_handle_table_block: empty table_cells for ref=%s", ref_path
+                )
                 return None
 
             # Get table grid for summary generation
-            table_grid = table_data.get("grid", [])
+            table_grid = table_data.get("grid") or []
+            if table_data.get("grid") is None:
+                self.logger.warning(
+                    "_handle_table_block: 'grid' is None for table ref=%s — "
+                    "falling back to empty grid for summary; table_cells count=%d",
+                    ref_path,
+                    len(cell_data),
+                )
             table_grid_data = [
                 [cell.get("text", "") for cell in row]
                 for row in table_grid
@@ -362,6 +399,14 @@ class DoclingDocToBlocksConverter():
                 return None
 
             items = doc_dict.get(item_type, [])
+            if items is None:
+                self.logger.error(
+                    "_process_item: '%s' key is present but its value is None — "
+                    "cannot resolve ref %s",
+                    item_type,
+                    ref_path,
+                )
+                return None
             if item_index >= len(items):
                 return None
 
@@ -395,6 +440,14 @@ class DoclingDocToBlocksConverter():
 
         # Start processing from body
         doc_dict = doc.export_to_dict()
+
+        null_keys = [k for k, v in doc_dict.items() if v is None]
+        self.logger.info(
+            "doc_dict top-level keys: %s | null-valued keys: %s",
+            list(doc_dict.keys()),
+            null_keys,
+        )
+
         body = doc_dict.get("body", {})
         for child in body.get("children", []):
             await _process_item(child,doc)
