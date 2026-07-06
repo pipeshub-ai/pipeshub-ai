@@ -314,6 +314,32 @@ class TestGetEnvFallback:
 
         assert result is None
 
+    def test_secret_keys_fallback_with_jwt_and_scoped(self):
+        svc = _build_service()
+
+        env = {
+            "JWT_SECRET": "regular-secret-from-env",
+            "SCOPED_JWT_SECRET": "scoped-secret-from-env",
+        }
+        with patch("app.config.configuration_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)):
+            result = svc._get_env_fallback("/services/secretKeys")
+
+        assert result == {
+            "jwtSecret": "regular-secret-from-env",
+            "scopedJwtSecret": "scoped-secret-from-env",
+        }
+
+    def test_secret_keys_fallback_requires_regular_jwt_secret(self):
+        svc = _build_service()
+
+        env = {
+            "SCOPED_JWT_SECRET": "scoped-only",
+        }
+        with patch("app.config.configuration_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)):
+            result = svc._get_env_fallback("/services/secretKeys")
+
+        assert result is None
+
 
 # =========================================================================
 # set_config
