@@ -8,8 +8,10 @@ every adapter-layer piece built in Phases 2-6:
 - Phase 5's hook middleware (tool blocking, citation tracking, conversation
   memory, result accumulation, `ask_user_question` SSE)
 - `SSEEventEmitter` (this phase) for real-time tool-orchestration events
-- `router.select_loop()` (this phase) for `chatMode` -> `LoopStrategy`
-- Phase 10: when `select_loop()` resolves to `OrchestratorLoop`, the deep
+- `router.select_loop_and_goal()` (this phase + intent) for `chatMode` ->
+  `LoopStrategy`, AND (every mode) the intent-parsed `Goal` the agent runs
+  with — see `intent.py` for the merged intent+routing call
+- Phase 10: when `select_loop_and_goal()` resolves to `OrchestratorLoop`, the deep
   agent's top-level `spec.tool_names` is narrowed to the four coordination
   tools (`create_plan`/`critique_plan`/`spawn_agent`/`verify_result` —
   registered onto the request's `tool_registry` here) and
@@ -54,11 +56,12 @@ from app.agents.agent_loop.loops.orchestrator import (
     register_coordination_tools,
 )
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
-from app.agents.agent_loop.router import select_loop
+from app.agents.agent_loop.router import select_loop_and_goal
 from app.agents.agent_loop.sandbox_bridge import (
     build_coding_sandbox_manager,
     register_coding_sandbox_hooks,
     register_coding_sandbox_tools,
+    sandbox_network_enabled,
 )
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.tool_guidance import ToolGuidanceProvider
@@ -69,6 +72,8 @@ if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.agent_loop_lib.core.messages import Message
+    from app.agent_loop_lib.core.types import Goal
+    from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
     from app.agents.agent_loop.context import AgentContext
 
 logger = logging.getLogger(__name__)
@@ -93,10 +98,21 @@ class PipesHubAgentFactory:
         query: str,
         model_name: str = "",
         session_id: str | None = None,
-    ) -> tuple[Agent, AgentRuntime]:
-        """Builds a fully-wired `Agent`. Async because `chatMode == "auto"`
-        (the default) resolves its `LoopStrategy` via an LLM classification
-        call (`router.select_loop`) before the `Agent` can be constructed.
+    ) -> tuple[Agent, AgentRuntime, "Goal", list["AskUserQuestionItemInput"]]:
+        """Builds a fully-wired `Agent` plus the intent-parsed `Goal` it
+        should run with. Async because every request now resolves its
+        `Goal` (and, for `chatMode == "auto"`, its `LoopStrategy`) via one
+        structured LLM call (`router.select_loop_and_goal`) before the
+        `Agent` can be constructed.
+
+        The 4th return value is non-empty exactly when the intent call
+        decided the request is too ambiguous to run at all — the `Agent`
+        is still built and returned (simpler than threading a nullable
+        `Agent` through this signature; it's a cheap, side-effect-free
+        object to construct), but callers MUST check this list first and
+        skip `agent.run()` entirely when it's non-empty, routing to
+        `clarification.emit_pre_run_clarification()` instead. See
+        `stream_bridge.py`.
         """
         transport_registry = TransportRegistry()
         transport_registry.register(
@@ -123,17 +139,26 @@ class PipesHubAgentFactory:
             context, skip_apps={"coding_sandbox"} if code_exec_enabled else set(),
         )
 
+        # Resolved ONCE per request and threaded into every surface the
+        # model sees or that shapes `run_code`'s actual behavior — the
+        # sandbox manager/tool, the package-policy deny message, the
+        # planner's upfront-plan steering, and (via `sandbox_has_network`
+        # below) the system prompt — so none of them can disagree about
+        # whether the sandbox has network access this turn.
+        network_enabled = sandbox_network_enabled()
+
         sandbox_manager = None
         if code_exec_enabled:
-            sandbox_manager = build_coding_sandbox_manager()
-            register_coding_sandbox_tools(tool_registry, sandbox_manager)
+            sandbox_manager = build_coding_sandbox_manager(allow_network=network_enabled)
+            register_coding_sandbox_tools(tool_registry, sandbox_manager, allow_network=network_enabled)
             # Stashed on the context (not returned from create()) so
             # stream_bridge.py's finally block can tear it down without
             # widening this method's (Agent, AgentRuntime) return contract.
             context.sandbox_manager = sandbox_manager
             logger.info(
-                "PipesHubAgentFactory.create: registered coding-sandbox tools: %s",
+                "PipesHubAgentFactory.create: registered coding-sandbox tools: %s (network=%s)",
                 [n for n in tool_registry.names() if n in ("run_code", "install_packages", "read_sandbox_file")],
+                network_enabled,
             )
         else:
             logger.info(
@@ -141,9 +166,20 @@ class PipesHubAgentFactory:
                 "(run_code/install_packages/read_sandbox_file) will NOT be available this turn"
             )
 
-        hooks = self._build_hooks(context, sandbox_manager)
+        hooks = self._build_hooks(context, sandbox_manager, allow_network=network_enabled)
 
-        loop = await select_loop(chat_mode=chat_mode, query=query, llm=llm, context=context)
+        # Pass the already-loaded registry names so the "quick" route's
+        # `PlanAheadPlanner` (see `select_loop_and_goal`) can reference real
+        # tools like `run_code` in its upfront plan instead of producing
+        # tool-agnostic phases the ReAct loop has no obligation to honor.
+        loop, goal, clarifying_questions = await select_loop_and_goal(
+            chat_mode=chat_mode,
+            query=query,
+            llm=llm,
+            context=context,
+            tool_names=tool_registry.names(),
+            sandbox_has_network=network_enabled,
+        )
 
         # Phase 10: the deep agent's top-level `Agent` is a pure
         # planner/dispatcher — it must never call connector tools directly
@@ -196,11 +232,11 @@ class PipesHubAgentFactory:
         if context.previous_conversations:
             await self._seed_conversation_history(agent, context.previous_conversations)
 
-        return agent, runtime
+        return agent, runtime, goal, clarifying_questions
 
     @staticmethod
     def _build_hooks(
-        context: "AgentContext", sandbox_manager: Any = None,
+        context: "AgentContext", sandbox_manager: Any = None, *, allow_network: bool = False,
     ) -> HookRegistry:
         """Phase 5's five hooks, wired onto a fresh `HookRegistry` (never a
         shared/global one — see that phase's hook docstrings for why
@@ -233,7 +269,7 @@ class PipesHubAgentFactory:
         # auto-add there does not apply — it, and the artifact/package-policy
         # bridge hooks, must be wired explicitly here.
         if sandbox_manager is not None:
-            register_coding_sandbox_hooks(hooks, context, sandbox_manager)
+            register_coding_sandbox_hooks(hooks, context, sandbox_manager, allow_network=allow_network)
 
         return hooks
 

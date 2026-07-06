@@ -159,7 +159,7 @@ class TestRunAgentLoopStream:
             await context.event_sink.write({"event": "status", "data": {"status": "planning", "message": "..."}})
             agent = MagicMock()
             agent.run = AsyncMock(return_value=MagicMock(success=True, error=None))
-            return agent, MagicMock()
+            return agent, MagicMock(), MagicMock(), []
 
         async def _fake_respond_run(self, *, agent_success, agent_error, event_sink):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
@@ -193,6 +193,61 @@ class TestRunAgentLoopStream:
         assert events[0].startswith("event: status\n")
         assert events[1].startswith("event: complete\n")
         assert json.loads(events[1].split("data: ", 1)[1].strip()) == {"answer": "42"}
+
+    async def test_clarifying_questions_short_circuit_skips_agent_run(self) -> None:
+        """When `factory.create()` returns non-empty `clarifying_questions`,
+        `_produce()` must call `emit_pre_run_clarification()` instead of
+        `agent.run()`/`RespondPipeline.run()` — see `clarification.py`."""
+        from app.agent_loop_lib.core.types import Goal
+        from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
+
+        question = AskUserQuestionItemInput(
+            question="Which project should this apply to?",
+            options=[{"label": "Project A"}, {"label": "Project B"}, {"label": "Project C"}],
+            multiSelect=False,
+        )
+        goal = Goal(description="do the ambiguous thing")
+        agent_run = AsyncMock(side_effect=AssertionError("agent.run() must not be called"))
+        respond_run = AsyncMock(side_effect=AssertionError("RespondPipeline.run() must not be called"))
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None):
+            agent = MagicMock()
+            agent.run = agent_run
+            return agent, MagicMock(), goal, [question]
+
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={
+                    "org_id": "org-1", "user_id": "user-1", "query": "hello", "has_ui_client": True,
+                },
+            ),
+            patch(
+                "app.utils.execute_query.has_sql_connector_configured",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "app.utils.fetch_slack_thread.has_slack_connector_configured",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create",
+                new=_fake_create,
+            ),
+            patch(
+                "app.agents.agent_loop.stream_bridge.RespondPipeline.run",
+                new=respond_run,
+            ),
+        ):
+            events = [chunk async for chunk in run_agent_loop_stream(**self._base_kwargs())]
+
+        agent_run.assert_not_called()
+        respond_run.assert_not_called()
+        event_names = [chunk.split("\n", 1)[0] for chunk in events]
+        assert "event: ask_user_question" in event_names
+        assert event_names[-1] == "event: complete"
+        complete_payload = json.loads(events[-1].split("data: ", 1)[1].strip())
+        assert complete_payload["answerMatchType"] == "Clarification Needed"
 
     async def test_agent_run_failure_emits_error_event(self) -> None:
         async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None):
@@ -268,7 +323,7 @@ class TestRunAgentLoopStream:
             context.sandbox_manager = sandbox_manager
             agent = MagicMock()
             agent.run = AsyncMock(return_value=MagicMock(success=True, error=None))
-            return agent, MagicMock()
+            return agent, MagicMock(), MagicMock(), []
 
         async def _fake_respond_run(self, *, agent_success, agent_error, event_sink):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
@@ -343,7 +398,7 @@ class TestRunAgentLoopStream:
             context.sandbox_manager = sandbox_manager
             agent = MagicMock()
             agent.run = AsyncMock(return_value=MagicMock(success=True, error=None))
-            return agent, MagicMock()
+            return agent, MagicMock(), MagicMock(), []
 
         async def _fake_respond_run(self, *, agent_success, agent_error, event_sink):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
@@ -385,7 +440,7 @@ class TestRunAgentLoopStream:
             assert context.sandbox_manager is None
             agent = MagicMock()
             agent.run = AsyncMock(return_value=MagicMock(success=True, error=None))
-            return agent, MagicMock()
+            return agent, MagicMock(), MagicMock(), []
 
         async def _fake_respond_run(self, *, agent_success, agent_error, event_sink):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})

@@ -1,7 +1,8 @@
-"""Phase 8: bridges agent-loop's push-based event delivery (`EventEmitter.
-emit()`/`EventSink.write()`, both plain `await`-and-return coroutines) to
-FastAPI's `StreamingResponse`, which needs an async generator that YIELDS
-SSE lines as they become available while `Agent.run()` is still executing.
+"""Phase 8 (+ intent): bridges agent-loop's push-based event delivery
+(`EventEmitter.emit()`/`EventSink.write()`, both plain `await`-and-return
+coroutines) to FastAPI's `StreamingResponse`, which needs an async generator
+that YIELDS SSE lines as they become available while `Agent.run()` is still
+executing.
 
 `Agent.run(goal)` is one long-lived coroutine — it doesn't yield control
 back to its caller between tool calls the way `graph.astream(...,
@@ -21,7 +22,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from app.agent_loop_lib.core.types import Goal
+from app.agents.agent_loop.clarification import emit_pre_run_clarification
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.error_classification import classify_error
 from app.agents.agent_loop.factory import PipesHubAgentFactory
@@ -108,19 +109,29 @@ async def run_agent_loop_stream(
     async def _produce() -> None:
         try:
             factory = PipesHubAgentFactory()
-            agent, _runtime = await factory.create(
+            agent, _runtime, goal, clarifying_questions = await factory.create(
                 context, llm, query_info.get("chatMode", "auto"),
                 query=query_info.get("query", ""),
                 model_name=model_name or "",
             )
-            goal = Goal(description=query_info.get("query", ""))
-            result = await agent.run(goal)
 
-            respond = RespondPipeline(context, CitationCollector(context))
-            await respond.run(
-                agent_success=result.success, agent_error=result.error,
-                event_sink=context.event_sink,
-            )
+            if clarifying_questions:
+                # Too ambiguous to safely reorganize into a Goal — skip
+                # Agent.run()/RespondPipeline entirely and end the turn
+                # with the same ask_user_question SSE contract the main
+                # agent's own tool call would produce mid-run.
+                await emit_pre_run_clarification(
+                    context, goal.description, clarifying_questions,
+                    event_sink=context.event_sink,
+                )
+            else:
+                result = await agent.run(goal)
+
+                respond = RespondPipeline(context, CitationCollector(context))
+                await respond.run(
+                    agent_success=result.success, agent_error=result.error,
+                    event_sink=context.event_sink,
+                )
         except Exception as exc:
             log.error("agent-loop stream: run failed: %s", exc, exc_info=True)
             error_code, user_message = classify_error(str(exc))

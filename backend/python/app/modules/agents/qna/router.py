@@ -236,68 +236,16 @@ async def build_prior_routing_messages(
     return messages
 
 
-async def classify_route(
-    query_info: dict[str, Any],
-    logger: Logger,
-    llm: BaseChatModel,
-    *,
-    config_service: Any = None,
-    graph_provider: Any = None,
-    is_multimodal_llm: bool = False,
-    org_id: str = "",
-    opik_tracer: Any = None,
-) -> RouteDecision:
+def build_tier_rubric(capability_block: str, sql_verify_override: str, n_knowledge: int) -> str:
+    """Builds the quick/react/deep tier-classification system prompt from
+    already-computed capability context.
+
+    Extracted out of `classify_route()` unchanged (byte-identical output for
+    the same inputs) so `app.agents.agent_loop.intent.parse_intent_and_route`
+    can reuse the SAME tier rubric for its merged intent+route call without
+    the two prompts drifting apart — see that module's docstring.
     """
-    Classify a query into one of three agent tiers: quick, react, or deep.
-    Falls back to 'react' if the query is empty or the LLM call/parsing fails.
-    """
-    user_query = query_info.get("query", "").strip()
-    if not user_query:
-        return RouteDecision(reasoning="empty query", route="react")
-
-    capability_block, n_knowledge, _indexed_connectors, _kb_sources, _tools_data = (
-        build_capability_context(query_info)
-    )
-    toolsets = query_info.get("toolsets") or []
-    has_sql_toolset = any(
-        isinstance(ts, dict)
-        and any(name in ts.get("name", "").lower() for name in ("mariadb", "redshift"))
-        for ts in toolsets
-    )
-    sql_verify_override = ""
-    if has_sql_toolset:
-        sql_verify_override = (
-            "## SQL override (highest priority)\n"
-            "This agent has SQL database tools (MariaDB and/or Redshift) "
-            "configured. SQL queries require schema introspection before "
-            "execution and verification of intermediate results, so any "
-            "request that may touch these tools MUST be routed to **react**. "
-            "This rule overrides the tier definitions below — do NOT choose "
-            "`quick` or `deep` when SQL tools are involved.\n\n"
-        )
-
-    # Create blob_store once; reused for both history attachments and current ones.
-    blob_store = None
-    if config_service and graph_provider:
-        try:
-            blob_store = BlobStorage(
-                logger=logger,
-                config_service=config_service,
-                graph_provider=graph_provider,
-            )
-        except Exception as _bs_exc:
-            logger.warning("Router: failed to create blob_store: %s", _bs_exc)
-
-    prior_messages = await build_prior_routing_messages(
-        query_info,
-        blob_store=blob_store,
-        org_id=org_id,
-        is_multimodal_llm=is_multimodal_llm,
-    )
-
-    structured_llm = llm.with_structured_output(RouteDecision)
-
-    system_prompt = (
+    return (
         "You are a routing agent. Classify the user request into exactly one "
         "execution tier: quick, react, or deep.\n\n"
 
@@ -382,6 +330,77 @@ async def classify_route(
         "above, then apply the decision tree to that inferred intent."
     )
 
+
+def build_sql_verify_override(query_info: dict[str, Any]) -> str:
+    """Extracted from `classify_route()` — SQL toolsets always force
+    `react` regardless of tier, since schema introspection + intermediate
+    verification is required before any SQL execution."""
+    toolsets = query_info.get("toolsets") or []
+    has_sql_toolset = any(
+        isinstance(ts, dict)
+        and any(name in ts.get("name", "").lower() for name in ("mariadb", "redshift"))
+        for ts in toolsets
+    )
+    if not has_sql_toolset:
+        return ""
+    return (
+        "## SQL override (highest priority)\n"
+        "This agent has SQL database tools (MariaDB and/or Redshift) "
+        "configured. SQL queries require schema introspection before "
+        "execution and verification of intermediate results, so any "
+        "request that may touch these tools MUST be routed to **react**. "
+        "This rule overrides the tier definitions below — do NOT choose "
+        "`quick` or `deep` when SQL tools are involved.\n\n"
+    )
+
+
+async def classify_route(
+    query_info: dict[str, Any],
+    logger: Logger,
+    llm: BaseChatModel,
+    *,
+    config_service: Any = None,
+    graph_provider: Any = None,
+    is_multimodal_llm: bool = False,
+    org_id: str = "",
+    opik_tracer: Any = None,
+) -> RouteDecision:
+    """
+    Classify a query into one of three agent tiers: quick, react, or deep.
+    Falls back to 'react' if the query is empty or the LLM call/parsing fails.
+    """
+    user_query = query_info.get("query", "").strip()
+    if not user_query:
+        return RouteDecision(reasoning="empty query", route="react")
+
+    capability_block, n_knowledge, _indexed_connectors, _kb_sources, _tools_data = (
+        build_capability_context(query_info)
+    )
+    sql_verify_override = build_sql_verify_override(query_info)
+
+    # Create blob_store once; reused for both history attachments and current ones.
+    blob_store = None
+    if config_service and graph_provider:
+        try:
+            blob_store = BlobStorage(
+                logger=logger,
+                config_service=config_service,
+                graph_provider=graph_provider,
+            )
+        except Exception as _bs_exc:
+            logger.warning("Router: failed to create blob_store: %s", _bs_exc)
+
+    prior_messages = await build_prior_routing_messages(
+        query_info,
+        blob_store=blob_store,
+        org_id=org_id,
+        is_multimodal_llm=is_multimodal_llm,
+    )
+
+    structured_llm = llm.with_structured_output(RouteDecision)
+
+    system_prompt = build_tier_rubric(capability_block, sql_verify_override, n_knowledge)
+
     # Build the routing HumanMessage: the user query goes here so multimodal
     # models receive both text and image blocks in the same turn.
     # Prior-turn attachments are already carried by prior_messages in order.
@@ -435,5 +454,7 @@ __all__ = [
     "RouteDecision",
     "build_capability_context",
     "build_prior_routing_messages",
+    "build_sql_verify_override",
+    "build_tier_rubric",
     "classify_route",
 ]

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.agents.agent_loop.sandbox_bridge import sandbox_network_enabled
 from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.context.connector_detection import (
     _has_clickup_tools,
@@ -113,6 +114,59 @@ _HYBRID_WEB_SEARCH_NOTE = """
 - When you suspect internal knowledge is incomplete on a public-knowledge question — combine with retrieval.
 """
 
+_CODE_EXECUTION_STEERING_NO_NETWORK = """
+## Code Execution (MANDATORY for file generation; NO network access)
+
+When a task requires ANY of the following, you MUST use `run_code` — never answer in text alone, and never claim you cannot do it:
+- Generating a downloadable file (PDF, DOCX, XLSX, CSV, image, chart, presentation).
+- Data processing that produces structured output (tables, aggregations, transformations) beyond what a single tool call returns.
+- Any computation the user explicitly asks you to "run", "execute", or "code".
+
+`run_code`'s sandbox has NO network access, ever — code that tries to call an external API, fetch a URL, or scrape a page (via `requests`/`fetch`/`urllib`/anything) will fail. For any task needing live/external data (a REST API, a webpage, search results, ...), call `web_search` or `fetch_url` FIRST to get that data, THEN pass the already-fetched data into `run_code`'s `code` as a literal for processing/file generation — never write network calls inside `run_code`.
+
+Do NOT describe file contents in markdown as a substitute for producing the file. Write a complete program with `run_code`, have it write the output file(s) to the working directory (or `$OUTPUT_DIR`), and let the resulting `artifacts` be delivered automatically — do not print file paths in your answer.
+"""
+
+_CODE_EXECUTION_STEERING_NETWORK = """
+## Code Execution (MANDATORY for file generation; network access available)
+
+When a task requires ANY of the following, you MUST use `run_code` — never answer in text alone, and never claim you cannot do it:
+- Generating a downloadable file (PDF, DOCX, XLSX, CSV, image, chart, presentation).
+- Data processing that produces structured output (tables, aggregations, transformations) beyond what a single tool call returns.
+- Any computation the user explicitly asks you to "run", "execute", or "code".
+- Getting live, structured data from a well-known public REST API and analyzing/filtering/aggregating it — write ONE `run_code` program that calls the API (e.g. with `requests`/`httpx`/`fetch`) and processes the response, rather than eyeballing raw API output yourself.
+
+`run_code`'s sandbox CAN reach the network — prefer it over `web_search` whenever a public, unauthenticated API serves the exact data the query needs: an API call returns the current answer, while `web_search` only surfaces articles describing the topic (a stale snapshot). Still use `web_search`/`fetch_url` for discovery, research, or reading a specific known page — see "Tool Selection Strategy" below.
+
+Do NOT describe file contents in markdown as a substitute for producing the file. Write a complete program with `run_code`, have it write the output file(s) to the working directory (or `$OUTPUT_DIR`), and let the resulting `artifacts` be delivered automatically — do not print file paths in your answer.
+"""
+
+_TOOL_SELECTION_STRATEGY_HEADER = "\n## Tool Selection Strategy\n\n"
+
+_TOOL_SELECTION_MATCH_SOURCE_LIVE_API = (
+    "- Match the tool to the data source the question actually needs: a live, "
+    "structured, real-time fact that a well-known public API serves is best "
+    "answered by writing a `run_code` program that calls that API directly and "
+    "analyzes the response; `web_search` is best for discovery, opinions, and "
+    "questions with no single authoritative source; `fetch_url` is best for "
+    "reading one specific already-known page.\n"
+    "- Prefer live data over a stale snapshot: if a public REST API can give "
+    "you the current, exact answer, prefer calling it from `run_code` over "
+    "`web_search` — search results describe the data, an API call IS the data.\n"
+)
+_TOOL_SELECTION_MATCH_SOURCE_NO_API = (
+    "- Match the tool to the data source the question actually needs: "
+    "`web_search` for discovery, opinions, and current public information; "
+    "`fetch_url` for reading one specific already-known page.\n"
+)
+_TOOL_SELECTION_ARBITRATION = (
+    "- When it is genuinely unclear which available tool is the better fit, or "
+    "two tools would return complementary information, call BOTH in parallel "
+    "rather than guessing — then either combine their results into one answer "
+    "or prefer the more authoritative/live source, stating any discrepancy "
+    "rather than silently picking one.\n"
+)
+
 _SERVICE_ONLY_STRATEGY = """
 ## Service-Tool Search Strategy (MANDATORY DEFAULT)
 
@@ -202,6 +256,22 @@ class PipesHubPromptBuilder:
 
         parts.append(self._build_hybrid_strategy_section(state, has_web_search=has_web_search))
 
+        has_run_code = "run_code" in (spec.tool_names or [])
+        sandbox_networked = has_run_code and sandbox_network_enabled()
+        if has_run_code:
+            steering = (
+                _CODE_EXECUTION_STEERING_NETWORK if sandbox_networked
+                else _CODE_EXECUTION_STEERING_NO_NETWORK
+            )
+            parts.append(steering)
+
+        if has_web_search:
+            # `sandbox_networked` (not just `has_run_code`) gates the
+            # "call a live API from run_code" bullet — that guidance would
+            # contradict _CODE_EXECUTION_STEERING_NO_NETWORK above if the
+            # sandbox has no network access this request.
+            parts.append(self._build_tool_selection_section(has_run_code=sandbox_networked))
+
         for guidance_text in self._guidance.get_active_guidance(self._context).values():
             parts.append(guidance_text)
 
@@ -283,6 +353,21 @@ class PipesHubPromptBuilder:
             return _SERVICE_ONLY_STRATEGY
 
         return ""
+
+    @staticmethod
+    def _build_tool_selection_section(*, has_run_code: bool) -> str:
+        """Generic tool-arbitration guidance: distinct from
+        `_build_hybrid_strategy_section` above (which only covers internal
+        retrieval vs. connector service tools) — this covers picking between
+        `web_search`/`fetch_url` and, when the sandbox has network access,
+        writing a `run_code` program that calls a live API directly."""
+        section = _TOOL_SELECTION_STRATEGY_HEADER
+        section += (
+            _TOOL_SELECTION_MATCH_SOURCE_LIVE_API if has_run_code
+            else _TOOL_SELECTION_MATCH_SOURCE_NO_API
+        )
+        section += _TOOL_SELECTION_ARBITRATION
+        return section
 
 
 __all__ = ["PipesHubPromptBuilder"]
