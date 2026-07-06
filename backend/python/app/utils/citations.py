@@ -292,6 +292,9 @@ def _resolve_ref(target: str, ref_to_url: dict[str, str] | None) -> str:
         return ref_to_url[inner_ref]
     return target
 
+_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(ref\d+\)')
+
+
 def _renumber_citation_links(
     text: str,
     md_matches: list,
@@ -315,7 +318,18 @@ def _renumber_citation_links(
         if new_num is not None:
             replacement = f"[{new_num}]({full_url})"
             text = text[:match.start()] + replacement + text[match.end():]
+    text = _strip_unresolved_ref_citations(text)
     return text
+
+
+def _strip_unresolved_ref_citations(text: str) -> str:
+    """Remove ``[text](refN)`` links that survived renumbering.
+
+    These are dead references — typically carried over from a prior
+    conversation turn whose ``CitationRefMapper`` no longer exists.
+    Leaving them renders as broken ``[source](ref209)`` in the UI.
+    """
+    return _UNRESOLVED_REF_LINK_RE.sub('', text)
 
 
 def _extract_block_index_from_url(url: str) -> int | None:

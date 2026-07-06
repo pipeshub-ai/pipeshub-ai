@@ -188,7 +188,8 @@ class RespondPipeline:
                 and not event_data.get("citations")
             ):
                 event_data = self._enrich_citations(
-                    event_data, final_results, virtual_record_map, captured_web_records, ref_mapper, log
+                    event_data, final_results, virtual_record_map, captured_web_records,
+                    ref_mapper, log, records=self._collector.tool_records,
                 )
 
             if event_type == "complete" and event_data.get("referenceData"):
@@ -373,6 +374,7 @@ class RespondPipeline:
         captured_web_records: list[dict[str, Any]],
         ref_mapper: Any,  # noqa: ANN401
         log: logging.Logger,
+        records: list[Any] | None = None,
     ) -> dict[str, Any]:
         raw_answer = event_data.get("answer", "")
         if not raw_answer:
@@ -380,7 +382,8 @@ class RespondPipeline:
         try:
             ref_to_url = ref_mapper.ref_to_url if ref_mapper else None
             _, enriched = normalize_citations_and_chunks_for_agent(
-                raw_answer, final_results, virtual_record_map, [],
+                raw_answer, final_results, virtual_record_map,
+                records or [],
                 ref_to_url=ref_to_url, web_records=captured_web_records,
             )
         except Exception as exc:
