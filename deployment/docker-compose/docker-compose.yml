@@ -243,9 +243,9 @@ services:
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-}
-      # Empty by default overrides the official image's rseq=0 setting; set
+      # Keep the official image's rseq=0 default for TCMalloc performance; set
       # MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1 if MongoDB exits 139 on newer kernels.
-      - GLIBC_TUNABLES=${MONGO_GLIBC_TUNABLES:-}
+      - GLIBC_TUNABLES=${MONGO_GLIBC_TUNABLES:-glibc.pthread.rseq=0}
     volumes:
       - mongodb_data:/data/db
     networks:

@@ -66,7 +66,7 @@ trap 'rm -rf "$tmp_dir"' EXIT
 for compose_file in "${COMPOSE_FILES[@]}"; do
   rendered="$tmp_dir/${compose_file}.default.json"
   render_compose "$compose_file" "$rendered"
-  assert_mongo_config "$rendered" "$compose_file" "mongo:8.0.17" "1" ""
+  assert_mongo_config "$rendered" "$compose_file" "mongo:8.0.17" "1" "glibc.pthread.rseq=0"
 done
 
 override_rendered="$tmp_dir/docker-compose.override.json"
