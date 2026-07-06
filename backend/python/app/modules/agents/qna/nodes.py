@@ -3564,8 +3564,10 @@ async def respond_node(
                         )
                         _ref_to_url = state.get("citation_ref_mapper")
                         _ref_to_url = _ref_to_url.ref_to_url if _ref_to_url else None
+                        _tool_records = state.get("tool_records") or []
                         _, _enriched = _ncc_agent(
-                            _raw_answer, final_results, virtual_record_map, [],
+                            _raw_answer, final_results, virtual_record_map,
+                            _tool_records,
                             ref_to_url=_ref_to_url, web_records=_captured_web_records,
                         )
                         if _enriched:
