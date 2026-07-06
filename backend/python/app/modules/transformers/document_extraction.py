@@ -13,6 +13,7 @@ from app.modules.extraction.prompt_template import (
 )
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
@@ -348,13 +349,14 @@ class DocumentExtraction(Transformer):
                 [HumanMessage(content=fallback_prompt)]
             )
 
-            summary_text = ""
             if hasattr(response, "content"):
-                summary_text = response.content
+                raw_content = response.content
             elif isinstance(response, str):
-                summary_text = response
+                raw_content = response
+            else:
+                raw_content = response
 
-            summary_text = summary_text.strip()
+            summary_text = coerce_message_content_to_text(raw_content).strip()
             if not summary_text:
                 self.logger.error("❌ Fallback summary returned empty response")
                 return None

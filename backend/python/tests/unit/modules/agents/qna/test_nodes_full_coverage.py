@@ -1146,31 +1146,28 @@ class TestParsePlannerResponseFromLlm:
 
 
 # ============================================================================
-# _normalize_llm_content — lines 5025-5034
+# coerce_message_content_to_text — used by planner/reflection paths
 # ============================================================================
 
 
-class TestNormalizeLlmContent:
+class TestCoerceMessageContentForPlanner:
     def test_string_passthrough(self):
-        from app.modules.agents.qna.nodes import _normalize_llm_content
-        assert _normalize_llm_content("hello") == "hello"
+        from app.utils.aimodels import coerce_message_content_to_text
+        assert coerce_message_content_to_text("hello") == "hello"
 
     def test_list_of_blocks(self):
-        """Lines 5025-5033 — list content blocks."""
-        from app.modules.agents.qna.nodes import _normalize_llm_content
+        from app.utils.aimodels import coerce_message_content_to_text
         blocks = [
             {"type": "text", "text": "part1"},
             {"type": "image"},
             "raw_string",
         ]
-        result = _normalize_llm_content(blocks)
-        assert "part1" in result
-        assert "raw_string" in result
+        result = coerce_message_content_to_text(blocks)
+        assert result == "part1raw_string"
 
     def test_other_type(self):
-        """Line 5034 — fallback to str()."""
-        from app.modules.agents.qna.nodes import _normalize_llm_content
-        assert _normalize_llm_content(42) == "42"
+        from app.utils.aimodels import coerce_message_content_to_text
+        assert coerce_message_content_to_text(42) == "42"
 
 
 # ============================================================================

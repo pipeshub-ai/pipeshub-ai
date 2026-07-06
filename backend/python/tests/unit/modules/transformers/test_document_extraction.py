@@ -699,6 +699,27 @@ class TestFallbackSummary:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_fallback_list_content_blocks_coerced(self):
+        """Gemini returns content as a list of blocks; must not crash on .strip()."""
+        from unittest.mock import AsyncMock
+
+        ext = _build_extractor()
+
+        mock_response = MagicMock()
+        mock_response.content = [
+            {"type": "text", "text": "Summary "},
+            {"type": "text", "text": "of the doc."},
+        ]
+
+        ext.llm = AsyncMock()
+        ext.llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        result = await ext._fallback_summary([{"type": "text", "text": "content"}])
+
+        assert result is not None
+        assert result.summary == "Summary of the doc."
+
+    @pytest.mark.asyncio
     async def test_fallback_string_response(self):
         from unittest.mock import AsyncMock
 
