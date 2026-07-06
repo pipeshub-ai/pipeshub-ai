@@ -510,12 +510,42 @@ class TestSharePointTestConnection:
         c.notify.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_connection_always_returns_true(self):
-        """When all permission probes succeed, test_connection_and_access returns True."""
+    async def test_connection_failure_odata_error(self):
         c = _make_connector_cov()
         _mock_all_sp_probes(c)
+        
+        from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+        
+        odata_error = ODataError()
+        odata_error.error = MagicMock()
+        odata_error.error.code = "Authorization_RequestDenied"
+        
+        c._probe_sp_users_scope = AsyncMock(side_effect=odata_error)
+        
         result = await c.test_connection_and_access()
-        assert result is True
+        assert result is False
+        c.notify.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_connection_failure_permission_error(self):
+        c = _make_connector_cov()
+        _mock_all_sp_probes(c)
+        
+        c._probe_legacy_sharepoint_sites_scope = AsyncMock(side_effect=PermissionError("Denied"))
+        
+        result = await c.test_connection_and_access()
+        assert result is False
+        c.notify.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_connection_failure_generic_exception(self):
+        c = _make_connector_cov()
+        _mock_all_sp_probes(c)
+        
+        c._probe_sp_site_drives_scope = AsyncMock(side_effect=Exception("Generic error"))
+        
+        result = await c.test_connection_and_access()
+        assert result is False
         c.notify.assert_not_called()
 
 
