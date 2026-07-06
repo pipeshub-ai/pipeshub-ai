@@ -620,6 +620,8 @@ class RecordEventHandler(BaseEventService):
         logged. File-type/model agnostic — called from the shared event loop.
         """
         try:
+            # Generic partial-update format: graph providers translate `id` → `_key`
+            # (Arango) or match on `id` (Neo4j).
             doc = {"id": record_id, **build_indexing_progress(stage)}
             await self.event_processor.graph_provider.batch_update_nodes(
                 [doc], CollectionNames.RECORDS.value

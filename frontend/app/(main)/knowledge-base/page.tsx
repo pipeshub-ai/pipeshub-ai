@@ -1290,6 +1290,9 @@ function KnowledgeBasePageContent() {
     }
   }, [isAllRecordsMode, selectedNode, searchParams, fetchTableData, fetchAllRecordsTableData]);
 
+  const refetchRef = useRef(refetchMainTableForCurrentRoute);
+  refetchRef.current = refetchMainTableForCurrentRoute;
+
   useEffect(() => {
     if (!hasActiveRecords) return undefined;
 
@@ -1311,7 +1314,7 @@ function KnowledgeBasePageContent() {
         // loop alive so it resumes promptly when the user returns.
         if (typeof document === 'undefined' || !document.hidden) {
           try {
-            await refetchMainTableForCurrentRoute();
+            await refetchRef.current();
           } catch {
             // Best-effort; a transient failure shouldn't kill the poll loop.
           }
@@ -1325,7 +1328,7 @@ function KnowledgeBasePageContent() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [hasActiveRecords, refetchMainTableForCurrentRoute]);
+  }, [hasActiveRecords]);
 
   // Handle refresh
   const handleRefresh = useCallback(async () => {

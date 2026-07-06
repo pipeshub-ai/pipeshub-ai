@@ -1891,7 +1891,12 @@ class TestKbUploadedCodeFileHandling:
 
         assert len(events) == 2
         mock_dl.assert_awaited_once()
-        gp.batch_update_nodes.assert_not_called()
+        # parsing_complete now triggers a best-effort stage heartbeat write.
+        gp.batch_update_nodes.assert_called_once()
+        stage_doc = gp.batch_update_nodes.call_args[0][0][0]
+        assert stage_doc["id"] == "r1"
+        assert stage_doc["indexingStage"] == "INDEXING"
+        assert "lastActivityTimestamp" in stage_doc
 
     @pytest.mark.asyncio
     async def test_non_code_mime_still_rejected(self):
