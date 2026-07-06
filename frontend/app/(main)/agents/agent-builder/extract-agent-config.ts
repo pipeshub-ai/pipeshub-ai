@@ -204,20 +204,11 @@ export function extractAgentConfigFromFlow(
       if (connectedKnowledgeNodeIds.has(node.id)) {
         const kbId = cfg.kbId as string | undefined;
         if (kbId) {
-          const kbConnectorInstanceId =
-            (cfg.connectorInstanceId as string) || (cfg.kbConnectorId as string);
-          if (!kbConnectorInstanceId) {
-            console.warn(`KB node ${kbId} missing connectorInstanceId. Using KB ID as fallback.`);
-          }
-          const filters = {
-            recordGroups: [kbId],
-            records: (cfg.selectedRecords as string[]) || (cfg.filters as { records?: string[] })?.records || [],
-            ...((cfg.filters as object) || {}),
-          };
-          if (!filters.recordGroups.includes(kbId)) {
-            filters.recordGroups = [kbId, ...filters.recordGroups];
-          }
-          addKnowledgeSource(kbConnectorInstanceId || kbId, filters, 'knowledge');
+          // Each collection is its own knowledge entry keyed by its recordGroup id as connectorId,
+          // so multiple collections never collapse into a single connector entry on save.
+          const records =
+            (cfg.selectedRecords as string[]) || (cfg.filters as { records?: string[] })?.records || [];
+          addKnowledgeSource(kbId, { recordGroups: [kbId], records }, 'knowledge');
         }
       }
     } else if (nt.startsWith('app-') && nt !== 'app-group') {
@@ -272,25 +263,10 @@ export function extractAgentConfigFromFlow(
     const cfg = kbGroupNode.data.config ?? {};
     const selectedKBs = cfg.selectedKBs as string[] | undefined;
     if (isKBGroupConnected && selectedKBs) {
-      const kbConnectorIds = (cfg.kbConnectorIds as Record<string, string>) || {};
-      const sharedConnectorId =
-        (cfg.connectorInstanceId as string) || (cfg.kbConnectorId as string);
       selectedKBs.forEach((kbId) => {
-        let connectorId = kbConnectorIds[kbId] || sharedConnectorId;
-        if (!connectorId) {
-          console.warn(`KB group: KB ${kbId} missing connectorId. Using KB ID as fallback.`);
-          connectorId = kbId;
-        }
         const kbSpecificFilters = (cfg.kbFilters as Record<string, { records?: string[] }>)?.[kbId] || {};
-        const filters = {
-          ...kbSpecificFilters,
-          recordGroups: [kbId],
-          records: kbSpecificFilters.records || [],
-        };
-        if (!filters.recordGroups.includes(kbId)) {
-          filters.recordGroups = [kbId, ...filters.recordGroups];
-        }
-        addKnowledgeSource(connectorId, filters, 'knowledge');
+        // Key each collection by its own recordGroup id so collections stay separate entries.
+        addKnowledgeSource(kbId, { recordGroups: [kbId], records: kbSpecificFilters.records || [] }, 'knowledge');
       });
     }
   }
