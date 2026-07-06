@@ -170,7 +170,8 @@ services:
     image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
     container_name: mongodb
     restart: always
-    # Keep MongoDB from reserving half the host RAM and allow the rseq workaround.
+    # Shared 16 GB-class quickstart hosts need MongoDB bounded: 1 GB cache
+    # leaves room for the app, graph DB, vector DB, Redis, and broker services.
     command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}

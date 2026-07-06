@@ -237,8 +237,10 @@ services:
     image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
     container_name: mongodb
     restart: always
-    # WiredTiger otherwise reserves roughly half of host RAM, which can OOM-loop
-    # small Docker hosts running the full stack.
+    # Quickstart targets a 16 GB-class shared Docker host running MongoDB beside
+    # the app, Qdrant, graph DB, Redis, and optional broker services. WiredTiger
+    # otherwise reserves roughly half of host RAM; cap cache at 1 GB by default
+    # and keep the container limit at 2 GB to leave room for process overhead.
     command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
