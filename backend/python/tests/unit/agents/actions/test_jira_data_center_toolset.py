@@ -31,7 +31,6 @@ from app.agents.actions.jira_data_center.jira_data_center import (
     GetCommentsInput,
     GetCreateIssueFieldsInput,
     GetIssueInput,
-    GetIssuesInput,
     GetProjectInput,
     GetProjectMetadataInput,
     JiraDataCenter,
@@ -107,20 +106,6 @@ class TestCreateIssueInput:
     def test_extra_keys_ignored(self):
         data = CreateIssueInput(project_key="P", summary="s", issue_type_name="Task", foo="bar")
         assert not hasattr(data, "foo")
-
-
-class TestGetIssuesInput:
-    def test_project_key_canonical(self):
-        assert GetIssuesInput(project_key="P").project_key == "P"
-
-    def test_project_alias_extracted(self):
-        assert GetIssuesInput(project="P").project_key == "P"
-
-    def test_projectKey_camel_alias_extracted(self):
-        assert GetIssuesInput(projectKey="P").project_key == "P"
-
-    def test_non_dict_input_returned_as_is(self):
-        assert GetIssuesInput.extract_project_key(None) is None
 
 
 class TestGetIssueInput:
@@ -1693,55 +1678,8 @@ class TestGetProjectMetadata:
 
 
 # ===========================================================================
-# Tool: get_issues / get_issue
+# Tool: get_issue
 # ===========================================================================
-
-class TestGetIssues:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        jira = _build_jira()
-        jira.client.search_issues_post_v2 = AsyncMock(return_value=_mock_response(200, {"issues": [{"key": "P-1", "fields": {}}]}))
-        jira.client.get_fields_v2 = AsyncMock(return_value=_mock_response(200, []))
-        with patch.object(jira, "_get_site_url", AsyncMock(return_value="https://s")):
-            ok, payload = await jira.get_issues("P")
-        data = json.loads(payload)
-        assert ok is True
-        assert data["data"]["issues"][0]["url"] == "https://s/browse/P-1"
-
-    @pytest.mark.asyncio
-    async def test_days_and_max_results_in_jql(self):
-        jira = _build_jira()
-        jira.client.search_issues_post_v2 = AsyncMock(return_value=_mock_response(200, {"issues": []}))
-        jira.client.get_fields_v2 = AsyncMock(return_value=_mock_response(200, []))
-        with patch.object(jira, "_get_site_url", AsyncMock(return_value=None)):
-            await jira.get_issues("P", days=7, max_results=10)
-        kwargs = jira.client.search_issues_post_v2.call_args.kwargs
-        assert "-7d" in kwargs["jql"]
-        assert kwargs["maxResults"] == 10
-
-    @pytest.mark.asyncio
-    async def test_project_key_quotes_escaped_in_jql(self):
-        jira = _build_jira()
-        jira.client.search_issues_post_v2 = AsyncMock(return_value=_mock_response(200, {"issues": []}))
-        jira.client.get_fields_v2 = AsyncMock(return_value=_mock_response(200, []))
-        with patch.object(jira, "_get_site_url", AsyncMock(return_value=None)):
-            await jira.get_issues('P"X')
-        assert '\\"' in jira.client.search_issues_post_v2.call_args.kwargs["jql"]
-
-    @pytest.mark.asyncio
-    async def test_api_error(self):
-        jira = _build_jira()
-        jira.client.search_issues_post_v2 = AsyncMock(return_value=_mock_response(500, {"message": "x"}))
-        ok, _ = await jira.get_issues("P")
-        assert ok is False
-
-    @pytest.mark.asyncio
-    async def test_exception(self):
-        jira = _build_jira()
-        jira.client.search_issues_post_v2 = AsyncMock(side_effect=RuntimeError("boom"))
-        ok, _ = await jira.get_issues("P")
-        assert ok is False
-
 
 class TestGetIssue:
     @pytest.mark.asyncio

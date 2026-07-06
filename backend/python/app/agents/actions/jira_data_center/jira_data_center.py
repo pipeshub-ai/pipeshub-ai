@@ -95,30 +95,6 @@ class CreateIssueInput(BaseModel):
         extra = "ignore"
 
 
-class GetIssuesInput(BaseModel):
-    """Schema for getting issues from a project"""
-    project_key: str = Field(description="Project key (e.g., 'PA')")
-    days: Optional[int] = Field(default=None, description="Days to look back")
-    max_results: Optional[int] = Field(default=None, description="Max results")
-
-    @model_validator(mode="before")
-    @classmethod
-    def extract_project_key(cls, data: dict) -> dict:
-        if isinstance(data, dict):
-            normalized = dict(data)
-            for key in ["project", "projectKey", "project_key"]:
-                if key in normalized and "project_key" not in normalized:
-                    normalized["project_key"] = normalized[key]
-                    if key != "project_key":
-                        normalized.pop(key, None)
-            return normalized
-        return data
-
-    class Config:
-        populate_by_name = True
-        extra = "ignore"
-
-
 class GetIssueInput(BaseModel):
     """Schema for getting a specific issue"""
     issue_key: str = Field(description="Issue key (e.g., 'PA-123')")
@@ -943,6 +919,19 @@ class JiraDataCenter:
         description="Validate the Jira Data Center connection and provide diagnostics",
         parameters=[],
         returns="Connection validation status with diagnostics",
+        llm_description=(
+            "Check that the Jira Data Center connection (base URL + PAT/Basic auth) works and report the "
+            "authenticated user. Use as a first-step health check before other Jira actions."
+        ),
+        when_to_use=[
+            "User asks whether the Jira connection/integration is working",
+            "Diagnosing auth or base-URL problems before running other Jira tools",
+        ],
+        when_not_to_use=[
+            "Just need the current user's details (use get_current_user)",
+            "Performing an actual Jira action like search or create",
+        ],
+        typical_queries=["Is my Jira connection working?", "Test the Jira Data Center integration", "Why can't I access Jira?"],
         primary_intent=ToolIntent.UTILITY,
         category=ToolCategory.PROJECT_MANAGEMENT,
     )
@@ -971,6 +960,19 @@ class JiraDataCenter:
         description="Get the current authenticated Jira Data Center user's details (name, key, displayName, email)",
         parameters=[],
         returns="Current user's account details",
+        llm_description=(
+            "Return the authenticated Jira Data Center user (name, key, displayName, email). Use to resolve "
+            "'me'/'my' before building JQL such as `assignee = currentUser()`."
+        ),
+        when_to_use=[
+            "User refers to themselves ('my issues', 'assigned to me')",
+            "Need the current account's username/key/email",
+        ],
+        when_not_to_use=[
+            "Looking up a different person (use search_users)",
+            "Only checking connectivity (use validate_connection)",
+        ],
+        typical_queries=["Who am I in Jira?", "What's my Jira username?", "Show my account details"],
         primary_intent=ToolIntent.SEARCH,
         category=ToolCategory.PROJECT_MANAGEMENT,
     )
@@ -1003,6 +1005,15 @@ class JiraDataCenter:
             "Returns all fields (required and optional) for a specific issue type in a Jira Data Center "
             "project. Call this before create_issue, and before update_issue when changing the issue type."
         ),
+        when_to_use=[
+            "Before create_issue (or changing issue type) to discover required/allowed fields for a project + issue type",
+            "User hits a 'field is required' error on create or update",
+        ],
+        when_not_to_use=[
+            "Creating a standard issue with already-known fields (go straight to create_issue)",
+            "Reading an existing issue (use get_issue)",
+        ],
+        typical_queries=["What fields are required to create a Bug in PA?", "Show the create fields for a Story", "Which fields must I set for this issue type?"],
         primary_intent=ToolIntent.SEARCH,
         category=ToolCategory.PROJECT_MANAGEMENT,
     )
@@ -1093,6 +1104,19 @@ class JiraDataCenter:
         description="Create a new Jira Data Center issue",
         args_schema=CreateIssueInput,
         returns="Created issue key and details",
+        llm_description=(
+            "Create a new Jira Data Center issue in a project. Resolves the assignee username and validates "
+            "fields; call get_create_issue_fields first if the issue type has required custom fields."
+        ),
+        when_to_use=[
+            "User wants to file/open/create a new issue, bug, task, or story",
+            "Logging a new ticket in a project",
+        ],
+        when_not_to_use=[
+            "Modifying an existing issue (use update_issue)",
+            "Only adding a note to an issue (use add_comment)",
+        ],
+        typical_queries=["Create a bug in PA titled 'Login fails'", "Open a new task assigned to jdoe", "File a story in the ENG project"],
         primary_intent=ToolIntent.ACTION,
         category=ToolCategory.PROJECT_MANAGEMENT,
     )
@@ -1210,6 +1234,20 @@ class JiraDataCenter:
         description="Update an existing Jira Data Center issue (fields, status, assignee, type)",
         args_schema=UpdateIssueInput,
         returns="Update result",
+        llm_description=(
+            "Update an existing issue's fields, assignee, reporter, priority, labels, components, issue type, "
+            "or transition its status. Fetches the issue and applies only the provided changes."
+        ),
+        when_to_use=[
+            "User wants to change/edit/assign/reassign/close/transition an existing issue",
+            "Move an issue to a new status or change its issue type",
+        ],
+        when_not_to_use=[
+            "Creating a brand-new issue (use create_issue)",
+            "Only commenting (use add_comment)",
+            "Just reading the issue (use get_issue)",
+        ],
+        typical_queries=["Assign PA-123 to jdoe", "Move PA-45 to In Progress", "Change the priority of PA-9 to High"],
         primary_intent=ToolIntent.ACTION,
         category=ToolCategory.PROJECT_MANAGEMENT,
     )
@@ -1419,6 +1457,19 @@ class JiraDataCenter:
         description="Get all Jira Data Center projects",
         parameters=[],
         returns="List of projects",
+        llm_description=(
+            "List all Jira Data Center projects the user can see (key, name, id). Use to discover a project "
+            "key before other project-scoped calls."
+        ),
+        when_to_use=[
+            "User asks what projects exist or to list projects",
+            "Need a project key but only know the project name",
+        ],
+        when_not_to_use=[
+            "Details of one known project (use get_project)",
+            "Issues inside a project (use search_issues)",
+        ],
+        typical_queries=["List my Jira projects", "What projects can I access?", "Show all Jira projects"],
         primary_intent=ToolIntent.SEARCH,
         category=ToolCategory.PROJECT_MANAGEMENT,
     )
@@ -1449,6 +1500,16 @@ class JiraDataCenter:
         description="Get a specific Jira Data Center project",
         args_schema=GetProjectInput,
         returns="Project details",
+        llm_description="Get details of a single Jira Data Center project by key (name, lead, description, URL).",
+        when_to_use=[
+            "User asks about a specific project by key or name",
+            "Need one project's lead or description",
+        ],
+        when_not_to_use=[
+            "Listing all projects (use get_projects)",
+            "Issue types/components for creating issues (use get_project_metadata)",
+        ],
+        typical_queries=["Show the PA project", "Who leads the ENG project?", "Details of project PA"],
         primary_intent=ToolIntent.SEARCH,
         category=ToolCategory.PROJECT_MANAGEMENT,
     )
@@ -1476,41 +1537,23 @@ class JiraDataCenter:
 
     @tool(
         app_name=_APP,
-        tool_name="get_issues",
-        description="Get issues from a Jira Data Center project. For specific queries, use search_issues with JQL.",
-        args_schema=GetIssuesInput,
-        returns="List of issues from the project",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-    )
-    async def get_issues(self, project_key: str, days: Optional[int] = None, max_results: Optional[int] = None) -> tuple[bool, str]:
-        try:
-            escaped = project_key.replace('"', '\\"')
-            time_filter = days or 30
-            jql = f'project = "{escaped}" AND updated >= -{time_filter}d ORDER BY updated DESC'
-            response = await self._run_search(jql, max_results)
-            if response.status == HttpStatusCode.SUCCESS.value:
-                cleaned_data = self._clean_search_response(response.json())
-                field_schema = await self._fetch_and_cache_field_schema()
-                cleaned_data = await self._normalize_issues_in_response(cleaned_data, field_schema)
-                site_url = await self._get_site_url()
-                if site_url and isinstance(cleaned_data, dict) and "issues" in cleaned_data:
-                    for issue in cleaned_data["issues"]:
-                        if issue.get("key"):
-                            issue["url"] = f"{site_url}/browse/{issue['key']}"
-                        self._add_urls_to_issue_references(issue, site_url)
-                return True, json.dumps({"message": "Issues fetched successfully", "data": cleaned_data})
-            return self._handle_response(response, "Issues fetched successfully", include_guidance=True)
-        except Exception as e:
-            logger.error(f"Error getting issues: {e}")
-            return False, json.dumps({"error": str(e)})
-
-    @tool(
-        app_name=_APP,
         tool_name="get_issue",
         description="Get a specific Jira Data Center issue",
         args_schema=GetIssueInput,
         returns="Issue details",
+        llm_description=(
+            "Fetch one Jira Data Center issue by key with full fields, a readable (rendered) description, and "
+            "a browse URL."
+        ),
+        when_to_use=[
+            "User references a specific issue key (e.g. PA-123)",
+            "Need the full details or description of one issue",
+        ],
+        when_not_to_use=[
+            "Searching or filtering many issues (use search_issues)",
+            "Only the comments (use get_comments)",
+        ],
+        typical_queries=["Show PA-123", "What's the status of PA-45?", "Get details of issue ENG-7"],
         primary_intent=ToolIntent.SEARCH,
         category=ToolCategory.PROJECT_MANAGEMENT,
     )
@@ -1556,6 +1599,20 @@ class JiraDataCenter:
         description="Search Jira Data Center issues using JQL",
         args_schema=SearchIssuesInput,
         returns="Matching issues",
+        llm_description=(
+            "Run a JQL query against Jira Data Center and return matching issues (single page, with a "
+            "truncation note). Build JQL for any filter: project, assignee, status, dates, or text. For recent "
+            "issues in a project use `project = KEY AND updated >= -30d ORDER BY updated DESC`."
+        ),
+        when_to_use=[
+            "Any filtered list of issues: by project, assignee, status, label, date, or free text",
+            "User asks for 'my issues', 'open bugs', or 'issues updated this week'",
+        ],
+        when_not_to_use=[
+            "A single known issue key (use get_issue)",
+            "Listing projects (use get_projects)",
+        ],
+        typical_queries=["Show open bugs in PA", "Issues assigned to me", "Tickets updated in the last 7 days in ENG"],
         primary_intent=ToolIntent.SEARCH,
         category=ToolCategory.PROJECT_MANAGEMENT,
     )
@@ -1609,6 +1666,19 @@ class JiraDataCenter:
         description="Add a comment to a Jira Data Center issue",
         args_schema=AddCommentInput,
         returns="Comment result",
+        llm_description=(
+            "Add a comment (plain text / wiki markup) to a Jira Data Center issue and return a permalink to "
+            "the new comment."
+        ),
+        when_to_use=[
+            "User wants to comment on or add a note/update to an issue",
+            "Reply or log progress on a ticket",
+        ],
+        when_not_to_use=[
+            "Changing issue fields or status (use update_issue)",
+            "Reading existing comments (use get_comments)",
+        ],
+        typical_queries=["Comment 'fixed in build 42' on PA-123", "Add a note to PA-9", "Leave an update on ENG-7"],
         primary_intent=ToolIntent.ACTION,
         category=ToolCategory.PROJECT_MANAGEMENT,
     )
@@ -1645,6 +1715,16 @@ class JiraDataCenter:
         description="Get comments for a Jira Data Center issue",
         args_schema=GetCommentsInput,
         returns="List of comments",
+        llm_description="List the comments on a Jira Data Center issue with author, timestamp, body, and a permalink each.",
+        when_to_use=[
+            "User wants to read the discussion or comments on an issue",
+            "Summarize what people said on a ticket",
+        ],
+        when_not_to_use=[
+            "Adding a comment (use add_comment)",
+            "Full issue details (use get_issue)",
+        ],
+        typical_queries=["Show comments on PA-123", "What did people say on ENG-7?", "Read the discussion for PA-45"],
         primary_intent=ToolIntent.SEARCH,
         category=ToolCategory.PROJECT_MANAGEMENT,
     )
@@ -1682,6 +1762,15 @@ class JiraDataCenter:
             "Search Jira Data Center users by name or email. Returns the username ('name') needed to set "
             "an assignee. For issues assigned to the current user, use `assignee = currentUser()` in JQL instead."
         ),
+        when_to_use=[
+            "Need a user's username ('name') to set an assignee or reporter",
+            "User asks to find a person by name or email",
+        ],
+        when_not_to_use=[
+            "Referring to the current user (use get_current_user or `currentUser()` in JQL)",
+            "Finding issues assigned to someone (use search_issues with an assignee clause)",
+        ],
+        typical_queries=["Find the user John Smith", "What's the Jira username for jane@acme.com?", "Look up a user to assign"],
         primary_intent=ToolIntent.SEARCH,
         category=ToolCategory.PROJECT_MANAGEMENT,
     )
@@ -1732,6 +1821,19 @@ class JiraDataCenter:
         description="Get Jira Data Center project metadata (issue types, components, lead)",
         args_schema=GetProjectMetadataInput,
         returns="Project metadata",
+        llm_description=(
+            "Get a project's issue types, components, and lead — the reference data needed to pick a valid "
+            "issue type or component when creating or updating issues."
+        ),
+        when_to_use=[
+            "Need the valid issue types or components for a project",
+            "Deciding which issue type/component to use before create/update",
+        ],
+        when_not_to_use=[
+            "Required fields for a specific issue type (use get_create_issue_fields)",
+            "General project details (use get_project)",
+        ],
+        typical_queries=["What issue types does PA have?", "List components in the ENG project", "Who's the lead and what types exist for PA?"],
         primary_intent=ToolIntent.SEARCH,
         category=ToolCategory.PROJECT_MANAGEMENT,
     )
