@@ -510,8 +510,8 @@ function TableRow({
         )}
       </Flex>
 
-      {/* Status — tooltip only when an icon exists (avoid empty tooltip when status is null) */}
-      <Flex align="center" justify="center" style={{ width: '60px', padding: '0 var(--space-2)' }}>
+      {/* Status — active indexing shows the stage directly; terminal statuses stay compact. */}
+      <Flex align="center" justify="center" style={{ width: '132px', padding: '0 var(--space-2)' }}>
         {(() => {
           if (shouldHideIndexingStatusForHubRecord(item)) {
             return (
@@ -524,6 +524,29 @@ function TableRow({
           const statusLabel = getStatusLabel();
           if (!statusIcon) {
             return <Box style={{ display: 'inline-flex', minHeight: '20px' }} />;
+          }
+          if (isKnowledgeHubNode(item) && (item.indexingStatus === 'IN_PROGRESS' || item.indexingStatus === 'QUEUED')) {
+            const view = getIndexingProgressView(item);
+            const color = view.isStalled ? 'var(--orange-11)' : 'var(--amber-11)';
+            return (
+              <Tooltip content={statusLabel} side="top" delayDuration={200}>
+                <Flex align="center" gap="1" style={{ minWidth: 0 }}>
+                  <Box style={{ display: 'inline-flex', flexShrink: 0 }}>{statusIcon}</Box>
+                  <Text
+                    size="1"
+                    weight="medium"
+                    style={{
+                      color,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {view.label}
+                  </Text>
+                </Flex>
+              </Tooltip>
+            );
           }
           return (
             <Tooltip content={statusLabel} side="top" delayDuration={200}>

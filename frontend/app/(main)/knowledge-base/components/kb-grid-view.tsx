@@ -192,7 +192,7 @@ function GridCard({
             return (
               <Flex
                 align="center"
-                justify="center"
+                gap="1"
                 style={{
                   backgroundColor: 'var(--orange-2)',
                   border: '1px solid var(--orange-7)',
@@ -201,20 +201,27 @@ function GridCard({
                 }}
               >
                 <MaterialIcon name="error_outline" size={12} color="var(--orange-9)" />
+                <Text size="1" weight="medium" style={{ color: 'var(--orange-11)' }}>
+                  {view.label}
+                </Text>
               </Flex>
             );
           }
           return (
             <Flex
               align="center"
-              justify="center"
+              gap="1"
               style={{
                 backgroundColor: 'var(--amber-2)',
                 border: '1px solid var(--amber-7)',
                 borderRadius: 'var(--radius-1)',
+                padding: '4px 6px',
               }}
             >
               <LapTimerIcon size={16} color="var(--amber-9)" />
+              <Text size="1" weight="medium" style={{ color: 'var(--amber-11)' }}>
+                {view.label}
+              </Text>
             </Flex>
           );
         }
@@ -267,7 +274,7 @@ function GridCard({
           return (
             <Flex
               align="center"
-              justify="center"
+              gap="1"
               style={{
                 backgroundColor: 'var(--blue-2)',
                 border: '1px solid var(--blue-7)',
@@ -276,6 +283,9 @@ function GridCard({
               }}
             >
               <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={12} color="var(--blue-9)" />
+              <Text size="1" weight="medium" style={{ color: 'var(--blue-11)' }}>
+                Queued
+              </Text>
             </Flex>
           );
         case 'AUTO_INDEX_OFF':

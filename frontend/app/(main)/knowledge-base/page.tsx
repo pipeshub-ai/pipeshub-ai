@@ -1323,6 +1323,11 @@ function KnowledgeBasePageContent() {
       }, nextDelay());
     };
 
+    if (typeof document === 'undefined' || !document.hidden) {
+      void refetchRef.current().catch(() => {
+        // Best-effort; a transient failure shouldn't kill the poll loop.
+      });
+    }
     schedule();
     return () => {
       cancelled = true;
