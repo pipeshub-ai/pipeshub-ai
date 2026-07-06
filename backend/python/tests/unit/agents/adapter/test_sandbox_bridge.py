@@ -19,6 +19,7 @@ from app.agent_loop_lib.sandbox.coding.docker import DockerCodingSandbox
 from app.agent_loop_lib.sandbox.coding.local import LocalCodingSandbox
 from app.agent_loop_lib.sandbox.manager import SandboxManager, SandboxType, UnknownSandboxError
 from app.agent_loop_lib.tools.base import ToolOutput
+from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import CodingSandboxTool
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.sandbox_bridge import (
@@ -28,6 +29,7 @@ from app.agents.agent_loop.sandbox_bridge import (
     coding_sandbox_package_policy,
     register_coding_sandbox_hooks,
     register_coding_sandbox_tools,
+    sandbox_network_enabled,
 )
 
 
@@ -46,6 +48,22 @@ def _make_context(**overrides: Any) -> AgentContext:
     }
     defaults.update(overrides)
     return AgentContext(**defaults)
+
+
+class TestSandboxNetworkEnabled:
+    def test_defaults_to_enabled_when_unset(self, monkeypatch) -> None:
+        monkeypatch.delenv("SANDBOX_ALLOW_NETWORK", raising=False)
+        assert sandbox_network_enabled() is True
+
+    @pytest.mark.parametrize("value", ["false", "False", "0", "no", "off"])
+    def test_falsy_values_disable_network(self, monkeypatch, value: str) -> None:
+        monkeypatch.setenv("SANDBOX_ALLOW_NETWORK", value)
+        assert sandbox_network_enabled() is False
+
+    @pytest.mark.parametrize("value", ["true", "1", "yes", "on"])
+    def test_truthy_values_enable_network(self, monkeypatch, value: str) -> None:
+        monkeypatch.setenv("SANDBOX_ALLOW_NETWORK", value)
+        assert sandbox_network_enabled() is True
 
 
 class TestBuildCodingSandboxManager:
@@ -118,6 +136,26 @@ class TestBuildCodingSandboxManager:
         backend = entry.factory()
         assert isinstance(backend, DockerCodingSandbox)
 
+    def test_docker_backend_receives_resolved_allow_network_flag(self, monkeypatch) -> None:
+        monkeypatch.setenv("SANDBOX_MODE", "docker")
+        with patch("app.agents.agent_loop.sandbox_bridge.DockerCodingSandbox") as mock_docker:
+            manager = build_coding_sandbox_manager(allow_network=True)
+            manager._factories[SandboxType.CODING].factory()
+        assert mock_docker.call_args.kwargs["allow_network"] is True
+
+        with patch("app.agents.agent_loop.sandbox_bridge.DockerCodingSandbox") as mock_docker:
+            manager = build_coding_sandbox_manager(allow_network=False)
+            manager._factories[SandboxType.CODING].factory()
+        assert mock_docker.call_args.kwargs["allow_network"] is False
+
+    def test_docker_backend_falls_back_to_env_flag_when_allow_network_omitted(self, monkeypatch) -> None:
+        monkeypatch.setenv("SANDBOX_MODE", "docker")
+        monkeypatch.setenv("SANDBOX_ALLOW_NETWORK", "false")
+        with patch("app.agents.agent_loop.sandbox_bridge.DockerCodingSandbox") as mock_docker:
+            manager = build_coding_sandbox_manager()
+            manager._factories[SandboxType.CODING].factory()
+        assert mock_docker.call_args.kwargs["allow_network"] is False
+
 
 class TestRegisterCodingSandboxTools:
     def test_registers_all_three_tools(self) -> None:
@@ -130,6 +168,26 @@ class TestRegisterCodingSandboxTools:
         assert registry.has_path("/toolsets/coding_sandbox/run_code")
         assert registry.has_path("/toolsets/coding_sandbox/install_packages")
         assert registry.has_path("/toolsets/coding_sandbox/read_sandbox_file")
+
+    def test_run_code_tool_receives_resolved_allow_network_flag(self) -> None:
+        registry = ToolRegistry()
+        manager = SandboxManager()
+
+        register_coding_sandbox_tools(registry, manager, allow_network=True)
+
+        run_code_tool = registry.resolve("/toolsets/coding_sandbox/run_code")
+        assert isinstance(run_code_tool, CodingSandboxTool)
+        assert run_code_tool._allow_network is True
+
+    def test_run_code_tool_falls_back_to_env_flag_when_allow_network_omitted(self, monkeypatch) -> None:
+        monkeypatch.setenv("SANDBOX_ALLOW_NETWORK", "false")
+        registry = ToolRegistry()
+        manager = SandboxManager()
+
+        register_coding_sandbox_tools(registry, manager)
+
+        run_code_tool = registry.resolve("/toolsets/coding_sandbox/run_code")
+        assert run_code_tool._allow_network is False
 
 
 class TestCodingSandboxPathPattern:
@@ -177,6 +235,35 @@ class TestCodingSandboxPackagePolicy:
         assert "some-random-unlisted-pkg" in ctx.decision_reason
         assert ctx.metadata["rejected_package"] == "some-random-unlisted-pkg"
         assert "pandas" in ctx.metadata["allowed_packages"]
+
+    async def test_denial_reason_clarifies_no_package_grants_network_access(self) -> None:
+        """Without this, the model reads a plain "package not allowed" denial
+        and reasonably tries a DIFFERENT network library next — every retry
+        is doomed since the sandbox has no network at all, regardless of
+        package (see `docker.py`'s `network_mode="none"`)."""
+        ctx = ToolCallContext(
+            tool_path="/toolsets/coding_sandbox/run_code",
+            tool_input={"packages": ["requests"], "language": "python"},
+        )
+        await coding_sandbox_package_policy()(ctx, _noop_next)
+
+        assert ctx.decision == PreDecision.DENY
+        assert "no package can give this sandbox network access" in ctx.decision_reason
+        assert "web_search" in ctx.decision_reason
+
+    async def test_denial_reason_notes_network_access_when_allowed(self) -> None:
+        """Once the sandbox has network access, "no package can give this
+        sandbox network access" would be actively wrong — the deny message
+        must reflect that network is on but the allowlist still applies."""
+        ctx = ToolCallContext(
+            tool_path="/toolsets/coding_sandbox/run_code",
+            tool_input={"packages": ["requests"], "language": "python"},
+        )
+        await coding_sandbox_package_policy(allow_network=True)(ctx, _noop_next)
+
+        assert ctx.decision == PreDecision.DENY
+        assert "no package can give this sandbox network access" not in ctx.decision_reason
+        assert "this sandbox has network access" in ctx.decision_reason
 
     async def test_unmapped_language_skips_enforcement(self) -> None:
         ctx = ToolCallContext(
@@ -506,11 +593,11 @@ class TestRegisterCodingSandboxHooksIntegration:
     `/toolsets/coding_sandbox/**` only — a sibling toolset's calls must be
     completely unaffected by the coding-sandbox safety/policy middleware."""
 
-    def _build(self) -> tuple[HookRegistry, AgentContext, SandboxManager]:
+    def _build(self, *, allow_network: bool | None = None) -> tuple[HookRegistry, AgentContext, SandboxManager]:
         context = _make_context()
         manager = SandboxManager()
         hooks = HookRegistry()
-        register_coding_sandbox_hooks(hooks, context, manager)
+        register_coding_sandbox_hooks(hooks, context, manager, allow_network=allow_network)
         return hooks, context, manager
 
     async def test_dangerous_code_denied_within_coding_sandbox_scope(self) -> None:
@@ -540,6 +627,16 @@ class TestRegisterCodingSandboxHooksIntegration:
         result = await hooks.on(HookEvent.PRE_TOOL_USE).dispatch(ctx)
         assert result.decision == PreDecision.DENY
         assert "not-on-allowlist" in result.decision_reason
+
+    async def test_package_policy_deny_message_reflects_allow_network_flag(self) -> None:
+        hooks, _, _ = self._build(allow_network=True)
+        ctx = ToolCallContext(
+            tool_path="/toolsets/coding_sandbox/install_packages",
+            tool_input={"packages": ["not-on-allowlist"], "language": "typescript"},
+        )
+        result = await hooks.on(HookEvent.PRE_TOOL_USE).dispatch(ctx)
+        assert result.decision == PreDecision.DENY
+        assert "this sandbox has network access" in result.decision_reason
 
     async def test_post_tool_use_redacts_within_scope(self) -> None:
         hooks, _, _ = self._build()

@@ -19,10 +19,18 @@ from app.agents.agent_loop.tool_guidance import ToolGuidanceProvider
 from tests.unit.agents.adapter.conftest import make_context
 
 
-def _build(context, *, goal: Goal | None = None, base_system_prompt: str = "BASE_REACT_PROMPT") -> str:
+def _build(
+    context,
+    *,
+    goal: Goal | None = None,
+    base_system_prompt: str = "BASE_REACT_PROMPT",
+    tool_names: list[str] | None = None,
+    sandbox_has_network: bool = False,
+) -> str:
     spec = AgentSpec(
         name="pipeshub-agent",
         system_prompt=base_system_prompt,
+        tool_names=tool_names or [],
         model=ModelSpec(provider="scripted", model="scripted-model"),
     )
     builder = PipesHubPromptBuilder(context, ToolGuidanceProvider())
@@ -34,6 +42,7 @@ def _build(context, *, goal: Goal | None = None, base_system_prompt: str = "BASE
         build_llm_time_context=MagicMock(return_value=""),
         build_capability_summary=MagicMock(return_value=""),
         _format_user_context=MagicMock(return_value=""),
+        sandbox_network_enabled=MagicMock(return_value=sandbox_has_network),
     ):
         return builder.build(spec, MagicMock(), goal or Goal(description="hello"), [], {})
 
@@ -141,6 +150,90 @@ class TestHybridStrategySection:
         context.tool_state["web_search_config"] = {"enabled": True}
         result = _build(context)
         assert "web_search" in result.split("## Hybrid Search Strategy", 1)[1]
+
+
+class TestCodeExecutionSteering:
+    """`run_code` being available must trigger the mandatory
+    file-generation/API-call steering rule — without it, the model has no
+    strong signal to prefer code execution over answering in text for
+    file-generation and external-API-calling tasks."""
+
+    def test_steering_included_when_run_code_available(self) -> None:
+        context = make_context()
+        result = _build(context, tool_names=["run_code", "web_search"])
+        assert "## Code Execution (MANDATORY" in result
+
+    def test_steering_excluded_when_run_code_unavailable(self) -> None:
+        context = make_context()
+        result = _build(context, tool_names=["web_search"])
+        assert "## Code Execution (MANDATORY" not in result
+
+    def test_steering_excluded_with_no_tools(self) -> None:
+        context = make_context()
+        result = _build(context, tool_names=[])
+        assert "## Code Execution (MANDATORY" not in result
+
+    def test_steering_clarifies_no_network_access(self) -> None:
+        """When the sandbox has no network access (see `docker.py`'s
+        `network_mode="none"`), the steering rule must say so explicitly, or
+        the model keeps trying (and failing) to call external APIs from
+        inside `run_code` instead of fetching first via `web_search`/
+        `fetch_url`."""
+        context = make_context()
+        result = _build(context, tool_names=["run_code"], sandbox_has_network=False)
+        assert "NO network access" in result
+        assert "web_search" in result
+        assert "fetch_url" in result
+
+    def test_steering_advertises_network_access_when_sandbox_networked(self) -> None:
+        """Once the sandbox CAN reach the network (see
+        `sandbox_bridge.sandbox_network_enabled()`), the steering must flip
+        to actively recommend calling a live public API from `run_code`
+        over `web_search` — the whole point of turning network on."""
+        context = make_context()
+        result = _build(context, tool_names=["run_code"], sandbox_has_network=True)
+        assert "network access available" in result
+        assert "NO network access" not in result
+        assert "CAN reach the network" in result
+
+
+class TestToolSelectionStrategy:
+    """Generic tool-arbitration guidance: pick the tool matching the data
+    source, prefer live data over stale snapshots, and call overlapping
+    tools in parallel when it's unclear which one is the better fit."""
+
+    def test_section_included_when_web_search_configured(self) -> None:
+        context = make_context()
+        context.tool_state["web_search_config"] = {"enabled": True}
+        result = _build(context, tool_names=["web_search"])
+        assert "## Tool Selection Strategy" in result
+
+    def test_section_excluded_without_web_search(self) -> None:
+        context = make_context()
+        result = _build(context, tool_names=["run_code"], sandbox_has_network=True)
+        assert "## Tool Selection Strategy" not in result
+
+    def test_live_api_guidance_included_when_sandbox_networked(self) -> None:
+        context = make_context()
+        context.tool_state["web_search_config"] = {"enabled": True}
+        result = _build(context, tool_names=["run_code", "web_search"], sandbox_has_network=True)
+        section = result.split("## Tool Selection Strategy", 1)[1]
+        assert "run_code" in section
+        assert "an API call IS the data" in section
+
+    def test_live_api_guidance_excluded_when_sandbox_has_no_network(self) -> None:
+        context = make_context()
+        context.tool_state["web_search_config"] = {"enabled": True}
+        result = _build(context, tool_names=["run_code", "web_search"], sandbox_has_network=False)
+        section = result.split("## Tool Selection Strategy", 1)[1]
+        assert "an API call IS the data" not in section
+
+    def test_arbitration_guidance_always_present_when_section_shown(self) -> None:
+        context = make_context()
+        context.tool_state["web_search_config"] = {"enabled": True}
+        result = _build(context, tool_names=["web_search"])
+        section = result.split("## Tool Selection Strategy", 1)[1]
+        assert "call BOTH in parallel" in section
 
 
 class TestConnectorGuidance:

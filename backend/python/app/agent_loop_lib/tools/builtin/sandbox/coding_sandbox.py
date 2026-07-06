@@ -39,6 +39,32 @@ __all__ = ["CodingSandboxTool", "InstallPackagesTool", "ReadSandboxFileTool"]
 _LANGUAGE_ENUM = ["typescript", "python"]
 _logger = logging.getLogger(__name__)
 
+_NO_NETWORK_NOTE = (
+    "IMPORTANT — this sandbox has NO network access, ever, by design: code that "
+    "tries to reach any external host (HTTP requests, API calls, DNS, sockets — "
+    "via `requests`/`fetch`/`urllib`/`axios`/anything) will fail or hang, and no "
+    "package can change this. Never write code that calls an external API or "
+    "fetches a URL. If a task needs live/external data (a REST API, a webpage, "
+    "search results, ...), fetch that data FIRST with `web_search` or `fetch_url` "
+    "(which do have network access), then pass the already-fetched data into this "
+    "tool's `code` as a literal — this tool's job is local computation and file "
+    "generation from data you already have, never data retrieval."
+)
+
+_NETWORK_NOTE = (
+    "This sandbox CAN reach the network: code may call public HTTP/HTTPS APIs "
+    "directly (e.g. with `requests`/`httpx` in Python, `fetch`/`axios` in "
+    "TypeScript) to pull live data and analyze it in the same program. PREFER "
+    "this over `web_search` whenever a well-known, unauthenticated public REST "
+    "API serves the data the query needs — API responses are current, while "
+    "search results are point-in-time snapshots of articles written about the "
+    "topic. `web_search` is still the better choice for discovery/research "
+    "questions with no single authoritative API, and `fetch_url` for reading "
+    "one specific already-known page. Internal/private hosts (VPN-only "
+    "services, org-internal APIs, cloud metadata endpoints) are not reachable "
+    "and must not be targeted."
+)
+
 
 class CodingSandboxTool(Tool):
     """`run_code` — write and run a standalone TypeScript/Python program."""
@@ -49,10 +75,16 @@ class CodingSandboxTool(Tool):
         *,
         default_timeout: float = 30.0,
         artifact_output_dir: str | None = None,
+        allow_network: bool = False,
     ) -> None:
         self._manager = manager
         self._default_timeout = default_timeout
         self._artifact_output_dir = artifact_output_dir
+        self._allow_network = allow_network
+
+    @property
+    def app_name(self) -> str:
+        return "coding_sandbox"
 
     @property
     def name(self) -> str:
@@ -80,7 +112,8 @@ class CodingSandboxTool(Tool):
             "call to reuse the same environment: installed packages and files persist "
             "across calls, but variables/imports do NOT (each call is a fresh process). "
             "Use this tool to run generated programs; use execute_code only when your code "
-            "needs to call OTHER agent tools programmatically."
+            "needs to call OTHER agent tools programmatically.\n\n"
+            + (_NETWORK_NOTE if self._allow_network else _NO_NETWORK_NOTE)
         )
 
     @property
@@ -133,7 +166,13 @@ class CodingSandboxTool(Tool):
             return ToolOutput(success=False, error=str(e))
 
         resolved_timeout = timeout if timeout is not None else self._default_timeout
-        request = CodeRequest(code=code, language=language, timeout=resolved_timeout, packages=packages or [])
+        request = CodeRequest(
+            code=code,
+            language=language,
+            timeout=resolved_timeout,
+            packages=packages or [],
+            allow_network=self._allow_network,
+        )
         result = await backend.execute(request)
 
         data = {**result.model_dump(), "sandbox_id": resolved_id}
@@ -150,6 +189,10 @@ class InstallPackagesTool(Tool):
 
     def __init__(self, manager: SandboxManager) -> None:
         self._manager = manager
+
+    @property
+    def app_name(self) -> str:
+        return "coding_sandbox"
 
     @property
     def name(self) -> str:
@@ -218,6 +261,10 @@ class ReadSandboxFileTool(Tool):
 
     def __init__(self, manager: SandboxManager) -> None:
         self._manager = manager
+
+    @property
+    def app_name(self) -> str:
+        return "coding_sandbox"
 
     @property
     def name(self) -> str:

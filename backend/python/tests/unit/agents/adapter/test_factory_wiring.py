@@ -1,8 +1,8 @@
 """`PipesHubAgentFactory` (`app/agents/agent_loop/factory.py`) — Phase 7:
-verifies `create()` assembles a fully-wired `Agent`/`AgentRuntime` from an
-`AgentContext` without going through the LLM auto-router (direct chat modes
-only; `router.select_loop`'s "auto" branch is covered by `router.py`-focused
-tests, not here)."""
+verifies `create()` assembles a fully-wired `Agent`/`AgentRuntime`/`Goal`
+from an `AgentContext` without going through the LLM auto-router (direct
+chat modes only; `router.select_loop_and_goal`'s "auto" branch is covered
+by `router.py`-focused tests, not here)."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ class TestCreate:
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
-        agent, runtime = await factory.create(context, context.llm, "react", query="hello")
+        agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "react", query="hello")
 
         assert isinstance(agent, Agent)
         assert isinstance(runtime, AgentRuntime)
@@ -47,7 +47,7 @@ class TestCreate:
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
-        agent, _runtime = await factory.create(context, context.llm, "react", query="hello")
+        agent, _runtime, _goal, _clarifying = await factory.create(context, context.llm, "react", query="hello")
 
         assert isinstance(agent.spec.loop, ReActLoop)
 
@@ -55,7 +55,7 @@ class TestCreate:
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
-        _agent, runtime = await factory.create(context, context.llm, "react", query="hello", model_name="gpt-4")
+        _agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "react", query="hello", model_name="gpt-4")
 
         transport = runtime.transport_registry.resolve("langchain")
         assert transport.provider == "langchain"
@@ -64,7 +64,7 @@ class TestCreate:
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
-        agent, _runtime = await factory.create(context, context.llm, "react", query="hello")
+        agent, _runtime, _goal, _clarifying = await factory.create(context, context.llm, "react", query="hello")
 
         assert agent.spec.max_turns == 15
 
@@ -72,7 +72,7 @@ class TestCreate:
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
-        _agent, runtime = await factory.create(context, context.llm, "react", query="hello")
+        _agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "react", query="hello")
 
         # `Pipeline` exposes no public "is anything registered" query — its
         # internal `_stack` is the only way to assert wiring without also
@@ -88,7 +88,7 @@ class TestCreate:
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
-        _agent, runtime = await factory.create(context, context.llm, "react", query="hello")
+        _agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "react", query="hello")
 
         assert len(runtime.hooks.wrapper(HookEvent.PRE_MODEL_CALL)._stack) >= 1
 
@@ -97,7 +97,7 @@ class TestCreate:
         context = make_context(llm=FakeChatModel(), event_sink=sink)
         factory = PipesHubAgentFactory()
 
-        _agent, runtime = await factory.create(context, context.llm, "react", query="hello")
+        _agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "react", query="hello")
 
         assert runtime.event_emitter is not None
 
@@ -105,7 +105,7 @@ class TestCreate:
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
-        _agent, runtime = await factory.create(context, context.llm, "react", query="hello")
+        _agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "react", query="hello")
 
         assert runtime.event_emitter is None
 
@@ -119,7 +119,7 @@ class TestCreate:
         )
         factory = PipesHubAgentFactory()
 
-        agent, _runtime = await factory.create(context, context.llm, "react", query="follow up")
+        agent, _runtime, _goal, _clarifying = await factory.create(context, context.llm, "react", query="follow up")
 
         assert agent._context is not None
         messages = await agent._context.messages()
@@ -129,7 +129,7 @@ class TestCreate:
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
-        agent, _runtime = await factory.create(context, context.llm, "react", query="hello")
+        agent, _runtime, _goal, _clarifying = await factory.create(context, context.llm, "react", query="hello")
 
         assert agent._context is None
 
@@ -139,9 +139,30 @@ class TestCreate:
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
-        agent, _runtime = await factory.create(context, context.llm, "quick", query="hello")
+        agent, _runtime, _goal, _clarifying = await factory.create(context, context.llm, "quick", query="hello")
 
         assert isinstance(agent.spec.loop, PlanExecuteLoop)
+
+    async def test_quick_mode_threads_resolved_sandbox_network_flag_into_planner(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`create()` resolves `sandbox_network_enabled()` ONCE and threads
+        the SAME value into the planner (via `select_loop_and_goal`) as it
+        does into the sandbox manager/tool — this pins the planner side of
+        that contract."""
+        monkeypatch.setenv("SANDBOX_ALLOW_NETWORK", "false")
+        context = make_context(llm=FakeChatModel())
+        factory = PipesHubAgentFactory()
+
+        agent, _runtime, _goal, _clarifying = await factory.create(context, context.llm, "quick", query="hello")
+
+        assert agent.spec.loop._planner._sandbox_has_network is False
+
+        monkeypatch.setenv("SANDBOX_ALLOW_NETWORK", "true")
+        context2 = make_context(llm=FakeChatModel())
+        agent2, _runtime2, _goal2, _clarifying2 = await factory.create(context2, context2.llm, "quick", query="hello")
+
+        assert agent2.spec.loop._planner._sandbox_has_network is True
 
     async def test_deep_mode_uses_orchestrator_loop(self) -> None:
         from app.agents.agent_loop.loops.orchestrator import OrchestratorLoop
@@ -149,7 +170,7 @@ class TestCreate:
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
-        agent, _runtime = await factory.create(context, context.llm, "deep", query="hello")
+        agent, _runtime, _goal, _clarifying = await factory.create(context, context.llm, "deep", query="hello")
 
         assert isinstance(agent.spec.loop, OrchestratorLoop)
 
@@ -159,7 +180,7 @@ class TestCreate:
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
-        agent, _runtime = await factory.create(context, context.llm, "deep", query="hello")
+        agent, _runtime, _goal, _clarifying = await factory.create(context, context.llm, "deep", query="hello")
 
         assert set(agent.spec.tool_names) == set(COORDINATION_TOOL_NAMES)
 
@@ -169,7 +190,7 @@ class TestCreate:
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
-        _agent, runtime = await factory.create(context, context.llm, "deep", query="hello")
+        _agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "deep", query="hello")
 
         for name in COORDINATION_TOOL_NAMES:
             assert runtime.tool_registry.has(name)
@@ -178,7 +199,7 @@ class TestCreate:
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
-        _agent, runtime = await factory.create(context, context.llm, "deep", query="hello")
+        _agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "deep", query="hello")
 
         assert runtime.spec_factory is not None
         child_spec = runtime.spec_factory("jira")
@@ -188,7 +209,7 @@ class TestCreate:
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
-        _agent, runtime = await factory.create(context, context.llm, "react", query="hello")
+        _agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "react", query="hello")
 
         assert runtime.spec_factory is None
 
@@ -198,20 +219,20 @@ class TestCreate:
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
-        agent, runtime = await factory.create(context, context.llm, "react", query="hello")
+        agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "react", query="hello")
 
         assert agent.spec.tool_names == runtime.tool_registry.names()
 
     async def test_auto_mode_invokes_classifier(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from app.modules.agents.qna.router import RouteDecision
+        from app.agents.agent_loop.intent import IntentRouteDecision
 
-        async def _fake_classify(*_args: Any, **_kwargs: Any) -> RouteDecision:
-            return RouteDecision(route="react", reasoning="test")
+        async def _fake_parse_intent(*_args: Any, **_kwargs: Any) -> IntentRouteDecision:
+            return IntentRouteDecision(reasoning="test", rewritten_query="hello", route="react")
 
-        monkeypatch.setattr("app.agents.agent_loop.router.classify_route", _fake_classify)
+        monkeypatch.setattr("app.agents.agent_loop.router.parse_intent_and_route", _fake_parse_intent)
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
-        agent, _runtime = await factory.create(context, context.llm, "auto", query="hello")
+        agent, _runtime, _goal, _clarifying = await factory.create(context, context.llm, "auto", query="hello")
 
         assert isinstance(agent.spec.loop, ReActLoop)

@@ -198,6 +198,66 @@ class TestExecuteHappyPath:
         assert kwargs["network_disabled"] is True
 
 
+class TestNetworkAccess:
+    async def test_default_run_container_has_no_network(self, tmp_path) -> None:
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        container = _fake_container(exit_code=0)
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = container
+
+        with patch("docker.from_env", return_value=fake_client):
+            await sandbox.execute(CodeRequest(code="print(1)", language="python"))
+
+        _, kwargs = fake_client.containers.create.call_args
+        assert kwargs["network_mode"] == "none"
+        assert kwargs["network_disabled"] is True
+        assert "network" not in kwargs
+
+    async def test_backend_and_request_both_allowing_network_joins_egress_network(self, tmp_path) -> None:
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"), allow_network=True, egress_network="my-egress")
+        container = _fake_container(exit_code=0)
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = container
+        fake_client.networks.list.return_value = [MagicMock()]
+
+        with patch("docker.from_env", return_value=fake_client):
+            await sandbox.execute(CodeRequest(code="print(1)", language="python", allow_network=True))
+
+        _, kwargs = fake_client.containers.create.call_args
+        assert kwargs["network"] == "my-egress"
+        assert kwargs["network_disabled"] is False
+        assert "network_mode" not in kwargs
+
+    async def test_backend_flag_off_vetoes_request_allow_network(self, tmp_path) -> None:
+        """The backend-level ceiling (set once by the operator/adapter) must
+        win even if an individual `CodeRequest` asks for network — either
+        side can veto it."""
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"), allow_network=False)
+        container = _fake_container(exit_code=0)
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = container
+
+        with patch("docker.from_env", return_value=fake_client):
+            await sandbox.execute(CodeRequest(code="print(1)", language="python", allow_network=True))
+
+        _, kwargs = fake_client.containers.create.call_args
+        assert kwargs["network_mode"] == "none"
+        assert kwargs["network_disabled"] is True
+
+    async def test_request_flag_off_vetoes_backend_allow_network(self, tmp_path) -> None:
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"), allow_network=True)
+        container = _fake_container(exit_code=0)
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = container
+
+        with patch("docker.from_env", return_value=fake_client):
+            await sandbox.execute(CodeRequest(code="print(1)", language="python", allow_network=False))
+
+        _, kwargs = fake_client.containers.create.call_args
+        assert kwargs["network_mode"] == "none"
+        assert kwargs["network_disabled"] is True
+
+
 class TestExecuteFailureAsData:
     async def test_nonzero_exit_populates_error_analysis(self, tmp_path) -> None:
         sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))

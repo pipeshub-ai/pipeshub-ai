@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.core.exceptions import PlanningError
-from app.agent_loop_lib.core.types import Goal, UserMessage
+from app.agent_loop_lib.core.types import Confidence, Goal, UserMessage
 from app.agent_loop_lib.modules.pipeline.planner.base import Phase, Plan, Planner, parse_confidence
 
 if TYPE_CHECKING:
@@ -44,8 +44,25 @@ class PlanAheadPlanner(Planner):
     before any execution begins.
     """
 
-    def __init__(self, model: "SupportsStructuredComplete | None" = None) -> None:
+    def __init__(
+        self,
+        model: "SupportsStructuredComplete | None" = None,
+        tool_names: list[str] | None = None,
+        *,
+        sandbox_has_network: bool = False,
+    ) -> None:
         self._model = model
+        # Without this, the planner only ever sees the goal text and has no
+        # idea `run_code` (or any other real tool) exists, so it produces
+        # abstract phases ("fetch data", "create document") the executing
+        # ReAct loop has no obligation to map back onto an actual tool call.
+        self._tool_names = tool_names or []
+        # Whether `run_code`'s sandbox has network access — mirrors the
+        # SAME flag threaded into the tool's own description/CodeRequest
+        # (see `sandbox_bridge.sandbox_network_enabled()`), so the upfront
+        # plan and the executing tool never disagree about what `run_code`
+        # can do.
+        self._sandbox_has_network = sandbox_has_network
 
     async def plan(self, goal: Goal) -> Plan:
         if self._model is None:
@@ -58,11 +75,39 @@ class PlanAheadPlanner(Planner):
             f"Constraints: {'; '.join(goal.constraints) or 'none'}"
         )
         msg = UserMessage(content=prompt)
+        system = _PLAN_SYSTEM
+        if self._tool_names:
+            system += (
+                "\n\nAvailable tools for execution: "
+                f"{', '.join(self._tool_names)}. Reference these EXACT tool "
+                "names in a phase's `tools` list (and its description) "
+                "whenever that phase's work maps onto one of them — e.g. "
+                "any phase that must generate a downloadable file (PDF, "
+                "spreadsheet, chart, document, ...) from data already "
+                "gathered MUST reference `run_code` if it is in this list. "
+            )
+            if self._sandbox_has_network:
+                system += (
+                    "`run_code` CAN reach the network — for a query needing live, "
+                    "real-time public data that a well-known REST API serves, a "
+                    "single phase may reference `run_code` directly to call that "
+                    "API and analyze the response, instead of a separate fetch "
+                    "phase. `web_search`/`fetch_url` (if in this list) are still "
+                    "the better choice for discovery/research questions with no "
+                    "single authoritative API, or for reading one known page."
+                )
+            else:
+                system += (
+                    "`run_code` has NO network access — any phase that needs "
+                    "live/external data (an API, a webpage, search results) "
+                    "MUST reference `web_search`/`fetch_url` (if in this list) "
+                    "as an earlier phase, never `run_code`, to fetch that data."
+                )
         try:
             response = await self._model.complete_structured(
                 messages=[msg],
                 output_schema=_PLAN_SCHEMA,
-                system=_PLAN_SYSTEM,
+                system=system,
             )
             result = response.data
             phases = [

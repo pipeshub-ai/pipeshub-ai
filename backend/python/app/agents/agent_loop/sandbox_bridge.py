@@ -76,6 +76,7 @@ __all__ = [
     "build_coding_sandbox_manager",
     "register_coding_sandbox_tools",
     "register_coding_sandbox_hooks",
+    "sandbox_network_enabled",
 ]
 
 CODING_SANDBOX_PATH_PATTERN = "/toolsets/coding_sandbox/**"
@@ -87,11 +88,31 @@ _ENV_DOCKER_IMAGE = "SANDBOX_DOCKER_IMAGE"
 _ENV_EGRESS_NETWORK = "SANDBOX_EGRESS_NETWORK"
 _ENV_PIP_INDEX_URL = "SANDBOX_PIP_INDEX_URL"
 _ENV_NPM_REGISTRY = "SANDBOX_NPM_REGISTRY"
+_ENV_ALLOW_NETWORK = "SANDBOX_ALLOW_NETWORK"
 
 _DEFAULT_DOCKER_IMAGE = "pipeshub/sandbox:latest"
 _DEFAULT_EGRESS_NETWORK = "pipeshub_sandbox_egress"
 _DEFAULT_PIP_INDEX_URL = "https://pypi.org/simple"
 _DEFAULT_NPM_REGISTRY = "https://registry.npmjs.org"
+
+_FALSY_ENV_VALUES = {"0", "false", "no", "off"}
+
+
+def sandbox_network_enabled() -> bool:
+    """Whether `run_code`'s sandbox may reach the network — read once per
+    call so tests/operators can flip `SANDBOX_ALLOW_NETWORK` without a
+    process restart. Defaults to enabled: writing code that calls a public
+    REST API for live data (then analyzing the response in the same
+    program) is the whole point of giving the agent this tool alongside
+    `web_search`/`fetch_url` — see `factory.py`, which reads this once per
+    request and threads the SAME resolved value into the sandbox manager,
+    the `run_code` tool, the package-policy deny message, the planner's
+    upfront-plan steering, and the system prompt, so every surface the
+    model sees agrees on whether network is on."""
+    raw = os.environ.get(_ENV_ALLOW_NETWORK)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in _FALSY_ENV_VALUES
 
 _LANGUAGE_TO_SANDBOX_LANGUAGE: dict[str, SandboxLanguage] = {
     "python": SandboxLanguage.PYTHON,
@@ -108,15 +129,20 @@ def _curated_package_allowlist() -> list[str]:
 
 
 def build_coding_sandbox_manager(
-    *, max_concurrent: int = 5, max_lifetime_s: float = 1800.0,
+    *, max_concurrent: int = 5, max_lifetime_s: float = 1800.0, allow_network: bool | None = None,
 ) -> SandboxManager:
     """Create a fresh, per-request `SandboxManager` wired to the local or
     Docker coding-sandbox backend, chosen the same way the legacy
-    `app/sandbox/manager.py::get_executor()` stack is (`SANDBOX_MODE`)."""
+    `app/sandbox/manager.py::get_executor()` stack is (`SANDBOX_MODE`).
+
+    `allow_network` defaults to `sandbox_network_enabled()` when omitted —
+    callers that already resolved the flag (see `factory.py`) should pass
+    it explicitly so it isn't re-read (and can't drift) mid-request."""
     manager = SandboxManager()
     mode = get_sandbox_mode()
     allowlist = _curated_package_allowlist()
     limits = SandboxLimits(max_concurrent=max_concurrent, max_lifetime_s=max_lifetime_s)
+    network_enabled = sandbox_network_enabled() if allow_network is None else allow_network
 
     if mode == SandboxMode.DOCKER:
         image = os.environ.get(_ENV_DOCKER_IMAGE, _DEFAULT_DOCKER_IMAGE)
@@ -132,6 +158,7 @@ def build_coding_sandbox_manager(
                 npm_registry=npm_registry,
                 package_allowlist=allowlist,
                 image_node_modules="/home/sandbox/node_modules",
+                allow_network=network_enabled,
             )
 
         manager.register_backend_factory(SandboxType.CODING, _make_docker_sandbox, limits=limits)
@@ -145,14 +172,26 @@ def build_coding_sandbox_manager(
 
 
 def register_coding_sandbox_tools(
-    tool_registry: "ToolRegistry", manager: SandboxManager, *, default_timeout: float = 30.0,
+    tool_registry: "ToolRegistry",
+    manager: SandboxManager,
+    *,
+    default_timeout: float = 30.0,
+    allow_network: bool | None = None,
 ) -> None:
     """Register `run_code`/`install_packages`/`read_sandbox_file` onto
     `tool_registry`. Deliberately does NOT pass `artifact_output_dir` to
     `CodingSandboxTool` — PipesHub's own artifact pipeline (blob storage +
     ArangoDB) is wired separately via the POST_TOOL_USE hook below, not the
-    tool's built-in local-disk save path."""
-    tool_registry.register_tool(CodingSandboxTool(manager, default_timeout=default_timeout))
+    tool's built-in local-disk save path.
+
+    `allow_network` should be the SAME resolved value passed to
+    `build_coding_sandbox_manager()` — it only changes `run_code`'s
+    advertised `description`/`CodeRequest.allow_network`; the backend
+    itself independently enforces its own `allow_network` ceiling."""
+    network_enabled = sandbox_network_enabled() if allow_network is None else allow_network
+    tool_registry.register_tool(
+        CodingSandboxTool(manager, default_timeout=default_timeout, allow_network=network_enabled)
+    )
     tool_registry.register_tool(InstallPackagesTool(manager))
     tool_registry.register_tool(ReadSandboxFileTool(manager))
 
@@ -163,30 +202,41 @@ def register_coding_sandbox_hooks(
     manager: SandboxManager,
     *,
     max_code_size: int = 50_000,
+    allow_network: bool | None = None,
 ) -> None:
     """Wire the coding-sandbox PRE/POST hooks onto `hooks`. Explicit here
     (rather than relying on `ControlPlane.start()`'s auto-add) because the
     agent-loop adapter path builds its own `HookRegistry` directly — see
-    `PipesHubAgentFactory._build_hooks`."""
+    `PipesHubAgentFactory._build_hooks`.
+
+    `allow_network` should be the SAME resolved value passed to
+    `build_coding_sandbox_manager()`/`register_coding_sandbox_tools()` — it
+    only changes the package-policy deny message's wording."""
+    network_enabled = sandbox_network_enabled() if allow_network is None else allow_network
     hooks.on(HookEvent.PRE_TOOL_USE).use(
         CODING_SANDBOX_PATH_PATTERN, coding_sandbox_safety(max_code_size=max_code_size),
     )
     hooks.on(HookEvent.PRE_TOOL_USE).use(
-        CODING_SANDBOX_PATH_PATTERN, coding_sandbox_package_policy(),
+        CODING_SANDBOX_PATH_PATTERN, coding_sandbox_package_policy(allow_network=network_enabled),
     )
     hooks.on(HookEvent.POST_TOOL_USE).use(
         CODING_SANDBOX_PATH_PATTERN, coding_sandbox_artifact_bridge(context, manager),
     )
 
 
-def coding_sandbox_package_policy():
+def coding_sandbox_package_policy(*, allow_network: bool = False):
     """PRE_TOOL_USE middleware: enforce PipesHub's curated package allowlist
     (`app/sandbox/package_policy.py`) for `run_code`/`install_packages`
     calls. `ToolCallContext.deny()` only carries a plain-text reason (no
     structured payload reaches the model on a PRE_TOOL_USE denial — see
     `ToolExecutor.call_tool`), so the reason string itself is built to
     contain both the rejected package and the full allowed list, giving the
-    LLM everything the legacy `_package_rejection` dict conveyed."""
+    LLM everything the legacy `_package_rejection` dict conveyed.
+
+    The allowlist itself is unaffected by `allow_network` — only the deny
+    message's closing note changes, since "no package can give this
+    sandbox network access" would be actively wrong once the sandbox has
+    network access some other way (see `sandbox_network_enabled()`)."""
 
     async def _middleware(ctx: ToolCallContext, next_fn) -> None:
         packages = ctx.tool_input.get("packages")
@@ -199,10 +249,21 @@ def coding_sandbox_package_policy():
                 except PackageNotAllowedError as exc:
                     ctx.metadata["rejected_package"] = exc.package
                     ctx.metadata["allowed_packages"] = exc.allowed
+                    network_note = (
+                        "Note: this sandbox has network access, but the package "
+                        "allowlist still applies regardless — pick an allowed "
+                        "package instead of retrying with a different one."
+                        if allow_network else
+                        "Note: no package can give this sandbox network access — it "
+                        "has none, ever, regardless of package. Do not retry with a "
+                        "different HTTP/network library. For live or external data, "
+                        "call web_search/fetch_url first, then pass the "
+                        "already-fetched data into run_code."
+                    )
                     ctx.deny(
                         f"Package {exc.package!r} is not on the {exc.language.value} sandbox "
                         f"allowlist and will not be installed. Allowed {exc.language.value} "
-                        f"packages: {', '.join(exc.allowed)}"
+                        f"packages: {', '.join(exc.allowed)}. {network_note}"
                     )
                     return
         await next_fn()

@@ -9,6 +9,7 @@ import tarfile
 import tempfile
 import time
 import uuid
+from typing import Any
 
 from app.agent_loop_lib.sandbox.base import SandboxInfo
 from app.agent_loop_lib.sandbox.coding.base import (
@@ -39,8 +40,13 @@ Two-phase execution, ported from PipesHub's own stateless
 ``app/sandbox/docker_executor.py`` (this backend adopts that module's proven
 security model, not just its shape):
 
-- User code always runs in its own container with ``network_mode="none"``
-  AND ``network_disabled=True`` — no routable networking stack at all.
+- By default, user code runs in its own container with ``network_mode="none"``
+  AND ``network_disabled=True`` — no routable networking stack at all. When
+  the backend is constructed with ``allow_network=True`` AND the individual
+  ``CodeRequest.allow_network`` is also set, the run container instead joins
+  the SAME dedicated egress bridge used for package installs (below) —
+  real internet access for the sandboxed code, but still never the caller's
+  default Docker network, so compose sibling services stay unreachable.
 - Packages are installed in a SEPARATE, short-lived container attached to a
   dedicated egress network (outbound internet for pip/npm only) — never the
   caller's default Docker network, so this backend can be dropped into a
@@ -96,6 +102,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
         cpu_limit: float = 0.5,
         egress_network: str = "sandbox_egress",
         network_disabled: bool = True,
+        allow_network: bool = False,
         pip_index_url: str = "https://pypi.org/simple",
         npm_registry: str = "https://registry.npmjs.org",
         package_allowlist: list[str] | None = None,
@@ -112,6 +119,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
         self._cpu_limit = cpu_limit
         self._egress_network = egress_network
         self._network_disabled = network_disabled
+        self._allow_network = allow_network
         self._pip_index_url = pip_index_url
         self._npm_registry = npm_registry
         self._allowlist = set(package_allowlist) if package_allowlist else None
@@ -178,9 +186,15 @@ class DockerCodingSandbox(CodingSandboxBackend):
 
         run_cmd = ["sh", "-c", _RUN_COMMANDS[request.language].format(file=entry)]
 
+        # Both the backend-level ceiling (`self._allow_network`, set once
+        # per adapter/operator config) AND the per-call request must agree
+        # before the run container gets network — either one can veto it.
+        network_enabled = self._allow_network and request.allow_network
         try:
             exit_code, stdout, stderr = await asyncio.wait_for(
-                asyncio.to_thread(self._run_container_sync, run_cmd, src_dir, request.timeout),
+                asyncio.to_thread(
+                    self._run_container_sync, run_cmd, src_dir, request.timeout, network_enabled,
+                ),
                 timeout=request.timeout + 30,
             )
         except (asyncio.TimeoutError, asyncio.CancelledError):
@@ -346,7 +360,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
     # -- blocking docker-py calls: only ever invoked via asyncio.to_thread --
 
     def _run_container_sync(
-        self, command: list[str], src_dir: str, timeout: float,
+        self, command: list[str], src_dir: str, timeout: float, network_enabled: bool,
     ) -> tuple[int, str, str]:
         try:
             import docker
@@ -386,18 +400,27 @@ class DockerCodingSandbox(CodingSandboxBackend):
 
             mem_bytes = self._memory_limit_mb * 1024 * 1024
             nano_cpus = int(self._cpu_limit * 1e9)
-            container = client.containers.create(
-                image=self._image,
-                command=command,
-                environment=env,
-                working_dir="/src",
-                mem_limit=mem_bytes,
-                nano_cpus=nano_cpus,
-                network_mode="none",
-                network_disabled=self._network_disabled,
-                tmpfs={"/tmp": "size=100M"},
-                detach=True,
-            )
+            container_kwargs: dict[str, Any] = {
+                "image": self._image,
+                "command": command,
+                "environment": env,
+                "working_dir": "/src",
+                "mem_limit": mem_bytes,
+                "nano_cpus": nano_cpus,
+                "tmpfs": {"/tmp": "size=100M"},
+                "detach": True,
+            }
+            if network_enabled:
+                # Same dedicated egress bridge the install phase uses (below)
+                # — real internet access for the run container, but never
+                # the caller's default Docker network, so compose sibling
+                # services (mongo/arango/redis/...) stay unreachable by name.
+                container_kwargs["network"] = self._ensure_egress_network(client)
+                container_kwargs["network_disabled"] = False
+            else:
+                container_kwargs["network_mode"] = "none"
+                container_kwargs["network_disabled"] = self._network_disabled
+            container = client.containers.create(**container_kwargs)
 
             container.put_archive("/src", _tar_directory(src_dir))
             container.put_archive("/", _tar_empty_dir("output", mode=0o777))
