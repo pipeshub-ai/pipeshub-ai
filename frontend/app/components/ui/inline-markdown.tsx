@@ -48,12 +48,14 @@ export function renderInlineMarkdown(text: string): React.ReactNode {
       // heading containing `code` or **bold**) still renders correctly.
       nodes.push(<strong key={key++}>{renderInlineMarkdown(heading)}</strong>);
     } else if (boldItalic !== undefined) {
-      nodes.push(<strong key={key++}><em>{boldItalic}</em></strong>);
+      nodes.push(<strong key={key++}><em>{renderInlineMarkdown(boldItalic)}</em></strong>);
     } else if (bold1 !== undefined || bold2 !== undefined) {
-      nodes.push(<strong key={key++}>{bold1 ?? bold2}</strong>);
+      nodes.push(<strong key={key++}>{renderInlineMarkdown(bold1 ?? bold2)}</strong>);
     } else if (strike !== undefined) {
-      nodes.push(<del key={key++}>{strike}</del>);
+      nodes.push(<del key={key++}>{renderInlineMarkdown(strike)}</del>);
     } else if (code !== undefined) {
+      // Not recursed into — code span contents render literally (no nested
+      // markdown), matching CommonMark's rule that inline code is verbatim.
       nodes.push(
         <code
           key={key++}
@@ -65,13 +67,15 @@ export function renderInlineMarkdown(text: string): React.ReactNode {
             borderRadius: '4px',
             fontFamily: '"Fira Code", "Cascadia Code", Consolas, "Courier New", monospace',
             fontSize: '0.9em',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
           }}
         >
           {code}
         </code>
       );
     } else if (italic1 !== undefined || italic2 !== undefined) {
-      nodes.push(<em key={key++}>{italic1 ?? italic2}</em>);
+      nodes.push(<em key={key++}>{renderInlineMarkdown(italic1 ?? italic2)}</em>);
     }
 
     cursor = match.index + match[0].length;

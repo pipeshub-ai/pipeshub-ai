@@ -21,12 +21,16 @@ import { i18n } from '@/lib/i18n';
 
 /**
  * Backend page/paragraph arrays sometimes contain `null` entries (e.g. a
- * chunk that spans an unnumbered page). Drop them so consumers never render
- * a location badge with no number in it.
+ * chunk that spans an unnumbered page). Drop them — along with any
+ * non-numeric junk from malformed responses — so consumers never render a
+ * location badge with no number in it, or crash trying to `.filter()` a
+ * value that turned out not to be an array.
  */
-function filterValidNumbers(values?: (number | null | undefined)[]): number[] | undefined {
-  if (!values) return undefined;
-  const filtered = values.filter((v): v is number => v != null);
+function filterValidNumbers(values?: unknown): number[] | undefined {
+  if (!Array.isArray(values)) return undefined;
+  const filtered = values.filter(
+    (v): v is number => typeof v === 'number' && !Number.isNaN(v),
+  );
   return filtered.length > 0 ? filtered : undefined;
 }
 
