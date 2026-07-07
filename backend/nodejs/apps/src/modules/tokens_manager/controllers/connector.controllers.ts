@@ -2100,3 +2100,158 @@ export const resyncConnectorRecords =
       return; // Added return statement
     }
   };
+/**
+ * Grant share access on a personal connector to users.
+ * userIds must contain at least one entry.
+ */
+export const shareConnector =
+(appConfig: AppConfig) =>
+async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const { userId } = req.user || {};
+    const { connectorId } = req.params;
+    const userIds: string[] = req.body.userIds ?? [];
+
+    if (!userId) {
+      throw new UnauthorizedError('User authentication required');
+    }
+    if (!connectorId) {
+      throw new BadRequestError('Connector ID is required');
+    }
+    if (userIds.length === 0) {
+      throw new BadRequestError('At least one userId is required');
+    }
+
+    logger.debug('Sharing connector', { connectorId, userId, userIds });
+
+    const connectorResponse = await executeConnectorCommand(
+      `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/shares`,
+      HttpMethod.POST,
+      req.headers as Record<string, string>,
+      { userIds },
+    );
+
+    handleConnectorResponse(
+      connectorResponse,
+      res,
+      'Share connector',
+      'Failed to share connector',
+    );
+  } catch (error: any) {
+    logger.error('Error sharing connector', {
+      error: error.message,
+      connectorId: req.params.connectorId,
+      userId: req.user?.userId,
+      status: error.response?.status,
+      data: error.response?.data,
+    });
+    next(handleBackendError(error, 'share connector'));
+  }
+};
+
+/**
+ * List all shares for a connector (accessible by the owner or any recipient).
+ */
+export const listConnectorShares =
+(appConfig: AppConfig) =>
+async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const { userId } = req.user || {};
+    const { connectorId } = req.params;
+
+    if (!userId) {
+      throw new UnauthorizedError('User authentication required');
+    }
+    if (!connectorId) {
+      throw new BadRequestError('Connector ID is required');
+    }
+
+    logger.debug('Listing connector shares', { connectorId, userId });
+
+    const connectorResponse = await executeConnectorCommand(
+      `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/shares`,
+      HttpMethod.GET,
+      req.headers as Record<string, string>,
+    );
+
+    handleConnectorResponse(
+      connectorResponse,
+      res,
+      'List connector shares',
+      'Failed to list connector shares',
+    );
+  } catch (error: any) {
+    logger.error('Error listing connector shares', {
+      error: error.message,
+      connectorId: req.params.connectorId,
+      userId: req.user?.userId,
+      status: error.response?.status,
+      data: error.response?.data,
+    });
+    next(handleBackendError(error, 'list connector shares'));
+  }
+};
+
+/**
+ * Revoke share grants from a connector.
+ * Owner can remove any user; non-owner can only self-leave (own userId).
+ * userIds must contain at least one entry.
+ */
+export const revokeConnectorShares =
+(appConfig: AppConfig) =>
+async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  try {
+    const { userId } = req.user || {};
+    const { connectorId } = req.params;
+    const userIds: string[] = req.body.userIds ?? [];
+
+    if (!userId) {
+      throw new UnauthorizedError('User authentication required');
+    }
+    if (!connectorId) {
+      throw new BadRequestError('Connector ID is required');
+    }
+    if (userIds.length === 0) {
+      throw new BadRequestError('At least one userId is required');
+    }
+
+    logger.debug('Revoking connector shares', { connectorId, userId, userIds });
+
+    const connectorResponse = await executeConnectorCommand(
+      `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/shares`,
+      HttpMethod.DELETE,
+      req.headers as Record<string, string>,
+      { userIds },
+    );
+
+    handleConnectorResponse(
+      connectorResponse,
+      res,
+      'Revoke connector shares',
+      'Failed to revoke connector shares',
+    );
+  } catch (error: any) {
+    logger.error('Error revoking connector shares', {
+      error: error.message,
+      connectorId: req.params.connectorId,
+      userId: req.user?.userId,
+      status: error.response?.status,
+      data: error.response?.data,
+    });
+    next(handleBackendError(error, 'revoke connector shares'));
+  }
+};
+
+

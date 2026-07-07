@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { ShareRole, ShareSelection } from './types';
@@ -15,6 +16,8 @@ interface ShareSearchInputProps {
   selectedRole: ShareRole;
   /** Whether to show the role picker on chips */
   supportsRoles: boolean;
+  /** Whether team sharing is supported (controls placeholder wording) */
+  supportsTeams?: boolean;
   /** Callback when search query changes */
   onSearchChange: (query: string) => void;
   /** Callback when a selection is removed */
@@ -32,12 +35,14 @@ export function ShareSearchInput({
   searchQuery,
   selectedRole,
   supportsRoles,
+  supportsTeams = true,
   onSearchChange,
   onRemoveSelection,
   onRoleChange,
   onRemoveLastSelection,
   onEmailSubmit,
 }: ShareSearchInputProps) {
+  const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
   const roleAnchorRef = useRef<HTMLDivElement>(null);
   const hasUserSelection = selections.some((s) => s.type === 'user');
@@ -117,7 +122,9 @@ export function ShareSearchInput({
           }}
           placeholder={
             selections.length === 0
-              ? 'Emails, teams or names (separated by commas)'
+              ? supportsTeams
+                ? t('workspace.connectors.share.searchPlaceholderWithTeams')
+                : t('workspace.connectors.share.searchPlaceholder')
               : ''
           }
           style={{

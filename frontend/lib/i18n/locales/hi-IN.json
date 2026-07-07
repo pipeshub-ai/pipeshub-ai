@@ -1855,6 +1855,27 @@
         "syncing": "Syncing Records...",
         "synced": "Records Synced",
         "failed": "Sync Failed"
+      },
+      "sharedCard": {
+        "sharedBy": "द्वारा साझा",
+        "leave": "कनेक्टर छोड़ें",
+        "loadingConnectors": "साझा कनेक्टर लोड हो रहे हैं…",
+        "emptyState": "आपके साथ अभी तक कोई कनेक्टर साझा नहीं किया गया है।",
+        "tabLabel": "मेरे साथ साझा किए गए",
+        "leaveSuccess": "आपने इस कनेक्टर को छोड़ दिया है",
+        "leaveError": "कनेक्टर नहीं छोड़ा जा सका",
+        "leaveDialog": {
+          "title": "कनेक्टर छोड़ें",
+          "description": "आप {{name}} और उसके रिकॉर्ड तक पहुंच खो देंगे। आप स्वामी से इसे फिर से साझा करने के लिए कह सकते हैं।"
+        }
+      },
+      "share": {
+        "fullAccess": "पूर्ण पहुंच",
+        "noRolesChat": "चैट में भूमिकाएं नहीं होती हैं",
+        "noRolesConnector": "कनेक्टर में भूमिकाएं नहीं होती हैं",
+        "noRolesDefault": "इस आइटम में भूमिकाएं नहीं हैं",
+        "searchPlaceholderWithTeams": "ईमेल, टीमें या नाम (अल्पविराम से अलग)",
+        "searchPlaceholder": "ईमेल या नाम (अल्पविराम से अलग)"
       }
     },
     "bots": {

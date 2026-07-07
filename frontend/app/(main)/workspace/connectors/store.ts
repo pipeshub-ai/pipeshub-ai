@@ -84,7 +84,7 @@ interface ConnectorsState {
   // ── Create mode ───────────────────────────────────────────────
   instanceName: string;
   instanceNameError: string | null;
-  selectedScope: 'personal' | 'team';
+  selectedScope: ConnectorScope;
 
   // ── Records selection ─────────────────────────────────────────
   selectedRecords: string[];
@@ -177,7 +177,7 @@ interface ConnectorsState {
   setAuthState: (state: AuthCardState | 'authenticating') => void;
   setInstanceName: (name: string) => void;
   setInstanceNameError: (error: string | null) => void;
-  setSelectedScope: (scope: 'personal' | 'team') => void;
+  setSelectedScope: (scope: 'personal' | 'team' | 'shared') => void;
   setSelectedRecords: (records: string[]) => void;
   setAvailableRecords: (records: { id: string; name: string }[]) => void;
   setIsLoadingSchema: (loading: boolean) => void;
@@ -291,7 +291,7 @@ const initialState = {
   // Create mode
   instanceName: '',
   instanceNameError: null as string | null,
-  selectedScope: 'team' as 'personal' | 'team',
+  selectedScope: 'team' as ConnectorScope,
 
   // Records
   selectedRecords: [] as string[],

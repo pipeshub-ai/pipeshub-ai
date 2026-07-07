@@ -55,6 +55,9 @@ import {
   getConnectorStats,
   reindexFailedRecords,
   resyncConnectorRecords,
+  shareConnector,
+  listConnectorShares,
+  revokeConnectorShares,
 } from '../controllers/connector.controllers';
 import { RecordRelationService } from '../../knowledge_base/services/kb.relation.service';
 import { RecordsEventProducer } from '../../knowledge_base/services/records_events.service';
@@ -120,9 +123,7 @@ const createConnectorInstanceSchema = z.object({
       filters: z.any().optional(),
     }).optional(),
     baseUrl: z.string().optional(),
-    scope: z.enum(['team', 'personal']).refine((val) => val === 'team' || val === 'personal', {
-      message: 'Scope must be either team or personal',
-    }),
+    scope: z.enum(['team', 'personal']),
     authType: z.string().optional(), // Auth type selected by user (required for connectors with multiple auth types)
   }),
 });
@@ -285,12 +286,9 @@ const connectorTypeParamSchema = z.object({
  */
 const connectorListSchema = z.object({
   query: z.object({
-    scope: z
-      .enum(['team', 'personal'])
-      .refine((val) => val === 'team' || val === 'personal', {
-        message: 'Scope must be either team or personal',
-      })
-      .default('team'),
+    // 'shared' must be part of the enum itself — Zod validates the enum before
+    // any .refine(), so listing it only in a refine would still reject 'shared'.
+    scope: z.enum(['team', 'personal', 'shared']).default('team'),
     page: z
       .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
       .optional(),
@@ -353,6 +351,60 @@ const reindexFailedRecordSchema = z.object({
  */
 const getConnectorStatsSchema = z.object({
   params: z.object({ connectorId: z.string().min(1) }),
+});
+
+// ============================================================================
+// Connector Sharing Schemas
+// ============================================================================
+
+// Accepts a single ID string or an array of ID strings (any non-empty string;
+// IDs may be UUIDs or MongoDB ObjectIds depending on the source).
+const idArray = z
+  .union([z.string().min(1), z.array(z.string().min(1))])
+  .optional()
+  .transform((val) => {
+    if (val === undefined || val === null) return [];
+    return Array.isArray(val) ? val : [val];
+  });
+
+const connectorIdParam = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(
+    /^[A-Za-z0-9_-]+$/,
+    'Connector ID must be 1-64 chars of letters, digits, underscore, or hyphen',
+  );
+
+/**
+ * Schema for POST /connectors/:connectorId/shares — grant share access.
+ * userIds must contain at least one entry (enforced in the controller).
+ * Team sharing is reserved for a future release.
+ */
+const createShareSchema = z.object({
+  params: z.object({ connectorId: connectorIdParam }),
+  body: z.object({
+    userIds: idArray,
+  }),
+});
+
+/**
+ * Schema for GET /connectors/:connectorId/shares — list shares.
+ */
+const listShareSchema = z.object({
+  params: z.object({ connectorId: connectorIdParam }),
+});
+
+/**
+ * Schema for DELETE /connectors/:connectorId/shares — revoke shares.
+ * userIds must contain at least one entry (enforced in the controller).
+ * Team sharing is reserved for a future release.
+ */
+const deleteShareSchema = z.object({
+  params: z.object({ connectorId: connectorIdParam }),
+  body: z.object({
+    userIds: idArray,
+  }),
 });
 
 // ============================================================================
@@ -725,6 +777,50 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
     ValidationMiddleware.validate(connectorIdParamSchema),
     submitConnectorFileEvents(config),
+  );
+
+
+  // ============================================================================
+  // Connector Sharing Routes
+  // ============================================================================
+
+  /**
+   * POST /:connectorId/shares
+   * Grant share access to users/teams (owner only)
+   */
+  router.post(
+    '/:connectorId/shares',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    ValidationMiddleware.validate(createShareSchema),
+    shareConnector(config)
+  );
+
+  /**
+   * GET /:connectorId/shares
+   * List current shares for a connector (owner or recipient)
+   */
+  router.get(
+    '/:connectorId/shares',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    ValidationMiddleware.validate(listShareSchema),
+    listConnectorShares(config),
+  );
+
+  /**
+   * DELETE /:connectorId/shares
+   * Revoke shares (owner can remove anyone; recipient can self-leave)
+   */
+  router.delete(
+    // Revoking/leaving a share is a write on the share grant, not a delete of
+    // the connector itself. Match the Python service (CONNECTOR_WRITE) so a
+    // recipient with write access can self-leave without needing delete scope.
+    '/:connectorId/shares',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    ValidationMiddleware.validate(deleteShareSchema),
+    revokeConnectorShares(config),
   );
 
   // ============================================================================

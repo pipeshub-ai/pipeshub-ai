@@ -18,7 +18,7 @@ import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import { fetchInstanceStats } from '../../utils/fetch-instance-stats';
-import type { ConnectorScope, InstancePanelTab } from '../../types';
+import type { ConnectorInstance, ConnectorScope, InstancePanelTab } from '../../types';
 import { OverviewTab } from './overview-tab';
 import { SettingsTab } from './settings-tab';
 import { DisableFirstDialog } from '../disable-first-dialog';
@@ -27,7 +27,11 @@ import { DisableFirstDialog } from '../disable-first-dialog';
 // InstanceManagementPanel
 // ========================================
 
-export function InstanceManagementPanel() {
+interface InstanceManagementPanelProps {
+  onLeaveConnector?: (instance: ConnectorInstance) => void | Promise<void>;
+}
+
+export function InstanceManagementPanel({ onLeaveConnector }: InstanceManagementPanelProps = {}) {
   const pathname = usePathname();
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
@@ -52,6 +56,8 @@ export function InstanceManagementPanel() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [disableFirstDeleteOpen, setDisableFirstDeleteOpen] = useState(false);
+  const [leaveOpen, setLeaveOpen] = useState(false);
+  const [leaveBusy, setLeaveBusy] = useState(false);
 
   const nestedModalHost = useWorkspaceDrawerNestedModalHost(isInstancePanelOpen);
 
@@ -164,7 +170,27 @@ export function InstanceManagementPanel() {
     };
   }, [isInstancePanelOpen, instanceId, addToast, t]);
 
+  // NOTE: all hooks must run before any early return (Rules of Hooks).
+  // The body guards against a null selectedInstance, so this is safe to
+  // declare unconditionally; the render-time guard is below.
+  const confirmLeaveConnector = useCallback(async () => {
+    if (!selectedInstance || leaveBusy || !onLeaveConnector) return;
+    setLeaveBusy(true);
+    try {
+      await onLeaveConnector(selectedInstance);
+      setLeaveOpen(false);
+      closeInstancePanel();
+    } finally {
+      setLeaveBusy(false);
+    }
+  }, [selectedInstance, leaveBusy, onLeaveConnector, closeInstancePanel]);
+
   if (!selectedInstance) return null;
+
+  // Shared-with-me when the backend sets scope="shared" (primary signal)
+  // or when sharedBy is populated (fallback for older cached data).
+  const isSharedWithMe = selectedInstance.scope === 'shared' || Boolean(selectedInstance.sharedBy);
+
   const instanceConfig = instanceId ? instanceConfigs[instanceId] : undefined;
   const instanceStat = instanceId ? instanceStats[instanceId] : undefined;
   const localSyncStatus = instanceId ? localSyncStatuses[instanceId] : undefined;
@@ -293,27 +319,44 @@ export function InstanceManagementPanel() {
               <Tabs.Trigger value="overview">
                 {t('workspace.connectors.instancePanel.overview')}
               </Tabs.Trigger>
-              <Tabs.Trigger value="settings">
-                {t('workspace.connectors.instancePanel.settings')}
-              </Tabs.Trigger>
+              {!isSharedWithMe && (
+                <Tabs.Trigger value="settings">
+                  {t('workspace.connectors.instancePanel.settings')}
+                </Tabs.Trigger>
+              )}
             </Tabs.List>
-            <Button
-              type="button"
-              variant="outline"
-              color="gray"
-              size="1"
-              disabled={manageConfigDisabled}
-              aria-label={t('workspace.connectors.instancePanel.manageConfig')}
-              onClick={handleManageConfiguration}
-              style={{
-                flexShrink: 0,
-                cursor: manageConfigDisabled ? 'not-allowed' : 'pointer',
-                gap: 'var(--space-1)',
-              }}
-            >
-              <MaterialIcon name="settings" size={14} color="var(--gray-11)" />
-              <Text size="1">{t('workspace.connectors.instancePanel.manageConfig')}</Text>
-            </Button>
+            {!isSharedWithMe && (
+              <Button
+                type="button"
+                variant="outline"
+                color="gray"
+                size="1"
+                disabled={manageConfigDisabled}
+                aria-label={t('workspace.connectors.instancePanel.manageConfig')}
+                onClick={handleManageConfiguration}
+                style={{
+                  flexShrink: 0,
+                  cursor: manageConfigDisabled ? 'not-allowed' : 'pointer',
+                  gap: 'var(--space-1)',
+                }}
+              >
+                <MaterialIcon name="settings" size={14} color="var(--gray-11)" />
+                <Text size="1">{t('workspace.connectors.instancePanel.manageConfig')}</Text>
+              </Button>
+            )}
+            {isSharedWithMe && onLeaveConnector && (
+              <Button
+                type="button"
+                variant="outline"
+                color="red"
+                size="1"
+                onClick={() => setLeaveOpen(true)}
+                style={{ flexShrink: 0, gap: 'var(--space-1)', cursor: 'pointer' }}
+              >
+                <MaterialIcon name="exit_to_app" size={14} color="var(--red-9)" />
+                <Text size="1">{t('workspace.connectors.sharedCard.leave')}</Text>
+              </Button>
+            )}
           </Flex>
 
           <Tabs.Content value="overview">
@@ -323,6 +366,7 @@ export function InstanceManagementPanel() {
               statsLoading={statsLoading}
               connectorConfig={instanceConfig}
               localSyncStatus={localSyncStatus}
+              readOnly={isSharedWithMe}
             />
           </Tabs.Content>
           <Tabs.Content value="settings">
@@ -385,6 +429,36 @@ export function InstanceManagementPanel() {
                 </AlertDialog.Cancel>
                 <Button color="red" loading={deleteBusy} onClick={() => void confirmRemoveConnector()}>
                   {t('workspace.connectors.removeInstanceDialog.confirm')}
+                </Button>
+              </Flex>
+            </AlertDialog.Content>
+          </AlertDialog.Root>
+
+          {/* Leave connector confirmation — shown for shared connectors */}
+          <AlertDialog.Root
+            open={leaveOpen}
+            onOpenChange={(open) => {
+              if (!open && leaveBusy) return;
+              setLeaveOpen(open);
+            }}
+          >
+            <AlertDialog.Content container={nestedModalHost} style={{ maxWidth: 440 }}>
+              <AlertDialog.Title>
+                {t('workspace.connectors.sharedCard.leaveDialog.title')}
+              </AlertDialog.Title>
+              <AlertDialog.Description size="2">
+                {t('workspace.connectors.sharedCard.leaveDialog.description', {
+                  name: `"${selectedInstance.name}"`,
+                })}
+              </AlertDialog.Description>
+              <Flex gap="3" justify="end" mt="4">
+                <AlertDialog.Cancel>
+                  <Button variant="soft" color="gray" disabled={leaveBusy}>
+                    {t('workspace.connectors.removeInstanceDialog.cancel')}
+                  </Button>
+                </AlertDialog.Cancel>
+                <Button color="red" loading={leaveBusy} onClick={() => void confirmLeaveConnector()}>
+                  {t('workspace.connectors.sharedCard.leave')}
                 </Button>
               </Flex>
             </AlertDialog.Content>

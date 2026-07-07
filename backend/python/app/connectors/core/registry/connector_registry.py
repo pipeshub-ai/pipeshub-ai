@@ -248,34 +248,53 @@ class ConnectorRegistry:
         user_id: str,
         *,
         is_admin: bool,
+        allow_shared: bool = True,
     ) -> bool:
-        """
-        Check if user can access a connector instance.
+        """Check whether a user may access a connector instance.
 
         Args:
-            connector_instance: Connector instance document
-            user_id: User ID
-            is_admin: Whether the user is an admin
+            connector_instance: Connector instance document from the graph DB.
+            user_id: External userId of the requesting user.
+            is_admin: Whether the requesting user is an org admin.
+            allow_shared: When False, shared (non-owner) access is denied even if
+                the user has been granted sharing.  Set to False for mutating
+                operations (update, delete) so that recipients stay read-only.
 
         Returns:
-            True if user can access the connector
+            True if the user may access the connector.
         """
         try:
             connector_scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value)
             created_by = connector_instance.get("createdBy")
+            connector_id = connector_instance.get("_key") or connector_instance.get("id")
 
-            # Team scope: accessible by admins and the creator
             if connector_scope == ConnectorScope.TEAM.value:
                 return is_admin or created_by == user_id
 
-            # Personal scope: only accessible by creator
             if connector_scope == ConnectorScope.PERSONAL.value:
-                return created_by == user_id
+                if created_by == user_id:
+                    return True
+                if allow_shared and connector_id:
+                    return await self._check_share_access(connector_id, user_id)
+                return False
 
             return False
 
         except Exception as e:
             self.logger.error(f"Error checking connector access: {e}")
+            return False
+
+    async def _check_share_access(self, connector_id: str, user_id: str) -> bool:
+        """Return True if the user has been granted sharing access to this connector.
+
+        Delegates to the graph provider which checks for an isShared=true
+        PERMISSION edge from the user to the connector's ConnectorGroup.
+        """
+        try:
+            graph_provider = await self._get_graph_provider()
+            return await graph_provider.has_connector_share_access(connector_id, user_id)
+        except Exception as e:
+            self.logger.error(f"Error checking share access for connector {connector_id}: {e}")
             return False
 
     async def _check_name_uniqueness(
@@ -581,8 +600,8 @@ class ConnectorRegistry:
         connector_type: str,
         metadata: dict[str, Any],
         instance_data: dict[str, Any] | None = None,
-        scope: str | None = None,
         include_config: bool = True,
+        scope: str | None = None,
     ) -> dict[str, Any]:
         """
         Build connector information dictionary from metadata and instance data.
@@ -647,11 +666,15 @@ class ConnectorRegistry:
                 'updatedAtTimestamp': instance_data.get('updatedAtTimestamp'),
                 '_key': instance_data.get('_key') or instance_data.get('id'),
                 'name': instance_data.get('name'),
-                'scope': instance_data.get('scope', ConnectorScope.PERSONAL.value),
+                'scope': scope if scope else instance_data.get('scope', ConnectorScope.PERSONAL.value),
                 'createdBy': instance_data.get('createdBy'),
                 'updatedBy': instance_data.get('updatedBy'),
                 'isLocked': instance_data.get('isLocked', False),
             })
+
+            if instance_data.get('sharedBy'):
+                connector_info['sharedBy'] = instance_data.get('sharedBy')
+                connector_info['sharedAt'] = instance_data.get('sharedAt')
 
         return connector_info
 
@@ -906,6 +929,7 @@ class ConnectorRegistry:
                     metadata,
                     document,
                     include_config=False,
+                    scope=scope,
                 )
                 connector_instances.append(connector_info)
 
@@ -1351,11 +1375,12 @@ class ConnectorRegistry:
                 )
                 return None
 
-            # Check access
+            # Only the owner or an admin may update; shared (non-owner) recipients are read-only.
             has_access = await self._can_access_connector(
                 existing_document,
                 user_id,
                 is_admin=is_admin,
+                allow_shared=False,
             )
 
             if not has_access:

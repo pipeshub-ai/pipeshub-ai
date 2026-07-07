@@ -496,10 +496,16 @@ export function ConnectorPanel() {
       try {
         setSaveError(null);
 
+        // 'shared' is a read-only view, never a creatable scope — the create
+        // flow only ever runs in personal/team. Narrow here so the typed
+        // create payload is satisfied without widening the API contract.
+        const createScope: 'personal' | 'team' =
+          selectedScope === 'shared' ? 'personal' : selectedScope;
+
         const result = (await ConnectorsApi.createConnectorInstance({
           connectorType,
           instanceName: instanceName.trim(),
-          scope: selectedScope,
+          scope: createScope,
           authType: selectedAuthType,
           config: {
             auth: {

@@ -5,6 +5,7 @@ import { Dialog, Flex, Box, Text, Button, IconButton, VisuallyHidden } from '@ra
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useAuthStore } from '@/lib/store/auth-store';
+import { useUserStore } from '@/lib/store/user-store';
 import { usePaginatedList } from '@/app/(main)/workspace/hooks/use-paginated-list';
 import { ShareCommonApi } from './api';
 import {
@@ -28,6 +29,7 @@ import type {
 } from './types';
 import { LottieLoader } from '../ui/lottie-loader';
 import { toast } from '@/lib/store/toast-store';
+import { useTranslation } from 'react-i18next';
 
 interface ShareSidebarProps {
   open: boolean;
@@ -43,7 +45,13 @@ export function ShareSidebar({
   adapter,
   onShareSuccess,
 }: ShareSidebarProps) {
-  const currentUser = useAuthStore((s) => s.user);
+  const { t } = useTranslation();
+  // useAuthStore.user is only populated during the login flow itself and is
+  // null after a refresh (see chat/share-adapter.ts) — useUserStore.profile
+  // is the reliably-populated source, decoded from the JWT on every page load.
+  const profileUserId = useUserStore((s) => s.profile?.userId);
+  const authUserId = useAuthStore((s) => s.user?.id);
+  const currentUserId = profileUserId ?? authUserId;
 
   // View toggle
   const [currentView, setCurrentView] = useState<'share' | 'create-team'>('share');
@@ -185,12 +193,12 @@ export function ShareSidebar({
     return allUsers.filter((user) => {
       if (existingMemberIds.has(user.id)) return false;
       if (selectedIds.has(user.id)) return false;
-      if (currentUser && user.id === currentUser.id) return false;
+      if (currentUserId && user.id === currentUserId) return false;
       if (isPaginatedMode || !searchQueryInput) return true;
       const q = searchQueryInput.toLowerCase();
       return user.name.toLowerCase().includes(q) || (user.email ?? '').toLowerCase().includes(q);
     });
-  }, [allUsers, existingMemberIds, selectedIds, currentUser, searchQueryInput, isPaginatedMode]);
+  }, [allUsers, existingMemberIds, selectedIds, currentUserId, searchQueryInput, isPaginatedMode]);
 
   // Handle raw email typed by user
   const handleEmailSubmit = useCallback(
@@ -198,8 +206,8 @@ export function ShareSidebar({
       const q = email.toLowerCase();
       const match = allUsers.find((u) => (u.email ?? '').toLowerCase() === q);
       if (match) {
-        // Valid org user — add as normal selection if not already present
-        if (!selectedIds.has(match.id) && !existingMemberIds.has(match.id)) {
+        // Valid org user — add as normal selection if not already present (and not self)
+        if (match.id !== currentUserId && !selectedIds.has(match.id) && !existingMemberIds.has(match.id)) {
           setSelectedItems((prev) => [...prev, { type: 'user', id: match.id, name: match.name, email: match.email }]);
         }
       } else {
@@ -209,7 +217,7 @@ export function ShareSidebar({
         }
       }
     },
-    [allUsers, selectedIds, existingMemberIds]
+    [allUsers, selectedIds, existingMemberIds, currentUserId]
   );
 
   // Toggle selection of a team or member
@@ -494,6 +502,7 @@ export function ShareSidebar({
                 searchQuery={searchQueryInput}
                 selectedRole={selectedRole}
                 supportsRoles={adapter.supportsRoles}
+                supportsTeams={adapter.supportsTeams}
                 onSearchChange={updateSearchQuery}
                 onRemoveSelection={handleRemoveSelection}
                 onRoleChange={setSelectedRole}
@@ -639,7 +648,15 @@ export function ShareSidebar({
                           showRoleDropdown={!member.isCurrentUser}
                           noRolesInfo={
                             !adapter.supportsRoles && member.type === 'user'
-                              ? { title: 'Full Access', description: 'Chats do not have roles' }
+                              ? {
+                                  title: t('workspace.connectors.share.fullAccess'),
+                                  description:
+                                    adapter.entityType === 'conversation'
+                                      ? t('workspace.connectors.share.noRolesChat')
+                                      : adapter.entityType === 'search'
+                                        ? t('workspace.connectors.share.noRolesConnector')
+                                        : t('workspace.connectors.share.noRolesDefault'),
+                                }
                               : undefined
                           }
                           onRoleChange={

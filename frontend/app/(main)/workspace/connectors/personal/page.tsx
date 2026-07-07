@@ -3,8 +3,12 @@
 import { useEffect, useLayoutEffect, useCallback, useMemo, useState, Suspense, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
+import { Flex, Text, Grid } from '@radix-ui/themes';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
+import { useAuthStore } from '@/lib/store/auth-store';
 import { isElectron } from '@/lib/electron';
 import { isLocalFsConnectorType } from '../utils/local-fs-helpers';
 import { useConnectorsStore } from '../store';
@@ -12,6 +16,7 @@ import { ConnectorsApi } from '../api';
 import { startConnectorSync } from '../utils/connector-sync-actions';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
+import { fetchInstanceStats } from '../utils/fetch-instance-stats';
 import {
   refreshAllConnectorInstances,
   refreshConnectorInstanceDetails,
@@ -28,6 +33,8 @@ import {
   InstanceManagementPanel,
   ConfigSuccessDialog,
 } from '../components';
+import { InstanceCard } from '../components/instance-card';
+import { SharedConnectorCard } from '../components/shared-connector-card';
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
 import { useResolvedConnectorTypeParam } from '../utils/resolve-connector-type-param';
@@ -53,7 +60,13 @@ function PersonalConnectorsPageContent() {
     { value: 'all', label: t('workspace.actions.tabs.all') },
     { value: 'active', label: t('status.active') },
     { value: 'inactive', label: t('status.inactive') },
+    { value: 'shared', label: t('workspace.connectors.sharedCard.tabLabel') },
   ];
+
+  // ── Shared connectors state ──────────────────────────────────
+  const [sharedConnectors, setSharedConnectors] = useState<ConnectorInstance[]>([]);
+  const [isLoadingShared, setIsLoadingShared] = useState(false);
+  const currentUserId = useAuthStore((s) => s.user?.id);
 
   const managedWatcherIdsRef = useRef<Set<string>>(new Set());
   const [isRefreshingAllInstances, setIsRefreshingAllInstances] = useState(false);
@@ -118,13 +131,32 @@ function PersonalConnectorsPageContent() {
   // ── URL → Store: sync tab from query param ───────────────────
   useEffect(() => {
     const tab = searchParams.get('tab') as PersonalFilterTab | null;
-    const validTabs: PersonalFilterTab[] = ['all', 'active', 'inactive'];
+    const validTabs: PersonalFilterTab[] = ['all', 'active', 'inactive', 'shared'];
     if (tab && validTabs.includes(tab)) {
       setPersonalFilterTab(tab);
     } else {
       setPersonalFilterTab('all');
     }
   }, [searchParams, setPersonalFilterTab]);
+
+  // ── Fetch shared connectors when that tab is active ──────────
+  const fetchSharedConnectors = useCallback(async () => {
+    setIsLoadingShared(true);
+    try {
+      const res = await ConnectorsApi.getActiveConnectors('shared');
+      setSharedConnectors((res.connectors ?? []) as ConnectorInstance[]);
+    } catch {
+      setSharedConnectors([]);
+    } finally {
+      setIsLoadingShared(false);
+    }
+  }, []);
+
+  // Always keep sharedConnectors in sync so the tab badge count is correct on first render.
+  // When the user is already on the shared tab this is the same call that renders the list.
+  useEffect(() => {
+    void fetchSharedConnectors();
+  }, [fetchSharedConnectors, catalogRefreshToken]);
 
   // ── Fetch connector list data ───────────────────────────────
   const fetchData = useCallback(async () => {
@@ -461,8 +493,36 @@ function PersonalConnectorsPageContent() {
   const handleInstanceChevron = useCallback(
     (instance: ConnectorInstance) => {
       openInstancePanel(instance);
+      // Eagerly fetch stats so the Overview tab has data immediately.
+      // For personal connectors this is also done by the URL-driven useEffect,
+      // but for shared connectors (no URL navigation) this is the only trigger.
+      if (instance._key) {
+        void fetchInstanceStats(instance._key).catch(() => {});
+      }
     },
     [openInstancePanel]
+  );
+
+  // ── Shared connector: Leave ───────────────────────────────────
+  const handleLeaveSharedConnector = useCallback(
+    async (instance: ConnectorInstance) => {
+      if (!instance._key || !currentUserId) return;
+      try {
+        await ConnectorsApi.revokeConnectorShare(instance._key, {
+          userIds: [currentUserId],
+          teamIds: [],
+        });
+        addToast({
+          variant: 'success',
+          title: t('workspace.connectors.sharedCard.leaveSuccess'),
+          duration: 2500,
+        });
+        await fetchSharedConnectors();
+      } catch {
+        addToast({ variant: 'error', title: t('workspace.connectors.sharedCard.leaveError') });
+      }
+    },
+    [currentUserId, addToast, fetchSharedConnectors, t]
   );
 
   // ── Success dialog handlers ─────────────────────────────────
@@ -541,7 +601,7 @@ function PersonalConnectorsPageContent() {
           }
         />
         <ConnectorPanel />
-        <InstanceManagementPanel />
+        <InstanceManagementPanel onLeaveConnector={handleLeaveSharedConnector} />
         <ConfigSuccessDialog
           open={showConfigSuccessDialog}
           connectorName={connectorTypeInfo?.name ?? ''}
@@ -551,6 +611,35 @@ function PersonalConnectorsPageContent() {
       </>
     );
   }
+
+  const sharedTabContent = isLoadingShared ? (
+    <Flex align="center" justify="center" style={{ flex: 1 }}>
+      <LottieLoader variant="loader" size={48} showLabel label={t('workspace.connectors.sharedCard.loadingConnectors')} />
+    </Flex>
+  ) : sharedConnectors.length === 0 ? (
+    <Flex
+      direction="column"
+      align="center"
+      justify="center"
+      gap="2"
+      style={{ paddingTop: 80 }}
+    >
+      <MaterialIcon name="share" size={48} color="var(--gray-9)" />
+      <Text size="2" style={{ color: 'var(--gray-11)' }}>
+        {t('workspace.connectors.sharedCard.emptyState')}
+      </Text>
+    </Flex>
+  ) : (
+    <Grid columns={{ initial: '1', md: '2', lg: '3' }} gap="4" style={{ width: '100%' }}>
+      {sharedConnectors.map((instance) => (
+        <SharedConnectorCard
+          key={instance._key ?? instance.type}
+          instance={instance}
+          onChevronClick={handleInstanceChevron}
+        />
+      ))}
+    </Grid>
+  );
 
   return (
     <>
@@ -568,8 +657,11 @@ function PersonalConnectorsPageContent() {
         onAddInstance={handleAddInstanceFromCatalog}
         onCardClick={handleCardClick}
         isLoading={isLoading}
+        tabContent={{ shared: sharedTabContent }}
+        extraTabCounts={{ shared: sharedConnectors.length }}
       />
       <ConnectorPanel />
+      <InstanceManagementPanel onLeaveConnector={handleLeaveSharedConnector} />
     </>
   );
 }

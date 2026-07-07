@@ -222,6 +222,15 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edges_to(to_id, to_collection, collection, transaction=self.txn)
 
+    async def delete_non_shared_edges_to(self, to_id: str, to_collection: str, collection: str) -> None:
+        """Delete edges to a node, skipping edges with isShared=true.
+
+        Used during ConnectorGroup resync to preserve share-membership edges.
+        """
+        return await self.graph_provider.delete_non_shared_edges_to(
+            to_id, to_collection, collection, transaction=self.txn
+        )
+
     async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
         """Delete PARENT_CHILD edges pointing to a specific target record"""
         return await self.graph_provider.delete_parent_child_edge_to_record(record_id, transaction=self.txn)

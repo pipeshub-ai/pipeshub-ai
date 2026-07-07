@@ -1864,6 +1864,27 @@
         "syncing": "Syncing Records...",
         "synced": "Records Synced",
         "failed": "Sync Failed"
+      },
+      "sharedCard": {
+        "sharedBy": "Shared By",
+        "leave": "Leave Connector",
+        "loadingConnectors": "Loading shared connectors…",
+        "emptyState": "No connectors have been shared with you yet.",
+        "tabLabel": "Shared with me",
+        "leaveSuccess": "You have left this connector",
+        "leaveError": "Could not leave the connector",
+        "leaveDialog": {
+          "title": "Leave Connector",
+          "description": "You will lose access to {{name}} and its records. You can ask the owner to share it again."
+        }
+      },
+      "share": {
+        "fullAccess": "Full Access",
+        "noRolesChat": "Chats do not have roles",
+        "noRolesConnector": "Connectors do not have roles",
+        "noRolesDefault": "This item does not have roles",
+        "searchPlaceholderWithTeams": "Emails, teams or names (separated by commas)",
+        "searchPlaceholder": "Emails or names (separated by commas)"
       }
     },
     "bots": {
