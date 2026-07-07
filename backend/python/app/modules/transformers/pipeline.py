@@ -7,6 +7,7 @@ from app.modules.transformers.block_container_validator import BlockContainerVal
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import ReconciliationContext, TransformContext
+from app.services.progress.progress_counter import bump_status
 from app.utils.logger import create_logger
 
 
@@ -131,6 +132,8 @@ class IndexingPipeline:
                     record_id, CollectionNames.RECORDS.value
                 )
 
+                old_status = record_dict.get("indexingStatus")
+
                 record_dict.update(
                     {
                         "indexingStatus": ProgressStatus.EMPTY.value,
@@ -149,6 +152,8 @@ class IndexingPipeline:
                         "⚠️ Failed to update indexing status for record %s - record may not exist",
                         record_id,
                     )
+                else:
+                    await bump_status(record_dict, old_status, ProgressStatus.EMPTY.value)
                 return
             if ctx.reconciliation_context is None:
                 ctx.reconciliation_context = await self._build_reconciliation_context(ctx)

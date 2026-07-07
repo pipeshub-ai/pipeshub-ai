@@ -7,6 +7,8 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
+import { Box } from '@radix-ui/themes';
+import { IndexingProgressWidget } from '@/components/indexing-progress';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import { startConnectorSync } from '../utils/connector-sync-actions';
@@ -51,7 +53,26 @@ function TeamConnectorsAccessGate() {
     return null;
   }
 
-  return <TeamConnectorsPageContent />;
+  return (
+    <>
+      <TeamConnectorsPageContent />
+      {/* Org-wide indexing progress — admin-only, floats above the catalog and
+          renders nothing unless a sync is active/completing, so it never
+          disturbs the page layout. */}
+      <Box
+        style={{
+          position: 'fixed',
+          right: 'var(--space-4)',
+          bottom: 'var(--space-4)',
+          width: 360,
+          maxWidth: 'calc(100vw - var(--space-6))',
+          zIndex: 50,
+        }}
+      >
+        <IndexingProgressWidget />
+      </Box>
+    </>
+  );
 }
 
 function TeamConnectorsPageContent() {

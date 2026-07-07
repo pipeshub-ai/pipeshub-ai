@@ -3,11 +3,13 @@ from typing import Dict, List, Optional
 
 from app.config.constants.arangodb import (
     CollectionNames,
+    ProgressStatus,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.blocks import SemanticMetadata
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.progress.progress_counter import bump_status
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -52,6 +54,13 @@ class GraphDBTransformer(Transformer):
                             record_id,
                         )
                         return
+                    # A record reaching the sink is IN_PROGRESS; the slow
+                    # reconcile heals the rare case it was something else.
+                    await bump_status(
+                        {"orgId": record.org_id, "connectorId": record.connector_id},
+                        ProgressStatus.IN_PROGRESS.value,
+                        ProgressStatus.COMPLETED.value,
+                    )
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
                 raise
@@ -351,6 +360,8 @@ class GraphDBTransformer(Transformer):
                         record_id,
                     )
                     return
+
+                await bump_status(record, record.get("indexingStatus"), "COMPLETED")
 
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")

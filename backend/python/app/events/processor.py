@@ -35,6 +35,7 @@ from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.progress.progress_counter import bump_status
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
 from app.utils.image_utils import get_extension_from_mimetype
@@ -148,6 +149,7 @@ class Processor:
             is_multimodal_embedding = embedding_config.get("isMultimodal") if embedding_config else False
             if not is_multimodal_embedding and not is_multimodal_llm:
                 try:
+                    old_status = record.get("indexingStatus")
                     record.update(
                         {
                             "indexingStatus": ProgressStatus.ENABLE_MULTIMODAL_MODELS.value,
@@ -163,6 +165,8 @@ class Processor:
                             "⚠️ Failed to update indexing status for record %s - record may not exist",
                             record_id,
                         )
+                    else:
+                        await bump_status(record, old_status, ProgressStatus.ENABLE_MULTIMODAL_MODELS.value)
                     # Yield both events since we're skipping processing
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1584,6 +1588,7 @@ class Processor:
                 doc_id=record_id,
             )
         doc = dict(record)
+        old_status = record.get("indexingStatus")
         timestamp = get_epoch_timestamp_in_ms()
         status_update: dict[str, Any] = {
             "indexingStatus": indexing_status.value,
@@ -1607,6 +1612,7 @@ class Processor:
                 record_id,
             )
             return
+        await bump_status(record, old_status, indexing_status.value)
 
     async def process_html_document(
         self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None

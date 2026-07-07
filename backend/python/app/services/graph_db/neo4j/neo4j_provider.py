@@ -7574,6 +7574,30 @@ class Neo4jProvider(IGraphDBProvider):
                 "data": None
             }
 
+    async def get_indexing_status_counts(self, org_id: str) -> list[dict]:
+        """Count records grouped by (connectorId, indexingStatus) for an org.
+
+        Index-only mirror of the Arango implementation (no relationship hops) that
+        powers the org-wide progress bar baseline seed / reconcile.
+        Returns rows: [{connectorId, indexingStatus, cnt}, ...].
+        """
+        try:
+            # connectorName resolves to the connector *instance* name (App.name);
+            # OPTIONAL MATCH yields null for a missing/KB app, so coalesce falls
+            # back to the record's connector type. Resolved per group.
+            query = """
+            MATCH (r:Record {orgId: $org_id})
+            WHERE coalesce(r.isInternal, false) = false
+            WITH r.connectorId AS connectorId, r.connectorName AS connectorType, r.indexingStatus AS indexingStatus, count(*) AS cnt
+            OPTIONAL MATCH (a:App {id: connectorId})
+            RETURN connectorId, coalesce(a.name, connectorType) AS connectorName, indexingStatus, cnt
+            """
+            results = await self.client.execute_query(query, parameters={"org_id": org_id})
+            return results or []
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get indexing status counts for org {org_id}: {str(e)}")
+            return []
+
     async def reindex_single_record(
         self,
         record_id: str,

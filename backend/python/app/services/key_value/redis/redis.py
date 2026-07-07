@@ -112,6 +112,92 @@ class RedisService(IKeyValueService):
             self.logger.error(f"Failed to delete Redis key {key}: {str(e)}")
             return False
 
+    # ------------------------------------------------------------------
+    # Raw progress:* ops for the org-wide indexing progress bar.
+    #
+    # These deliberately bypass ``self.prefix`` and TTLs: they operate on the
+    # literal ``progress:*`` keyspace shared byte-for-byte with the Node ticker's
+    # raw ioredis client. Do NOT route progress keys through set/get/delete above
+    # (those namespace-prefix and expire the key).
+    # ------------------------------------------------------------------
+
+    async def hincrby(self, key: str, field: str, amount: int) -> int | None:
+        try:
+            return await self.redis_client.hincrby(key, field, amount)
+        except Exception as e:
+            self.logger.debug(f"Redis hincrby failed for {key}/{field}: {e}")
+            return None
+
+    async def hgetall(self, key: str) -> Dict[str, str]:
+        try:
+            return await self.redis_client.hgetall(key) or {}
+        except Exception as e:
+            self.logger.debug(f"Redis hgetall failed for {key}: {e}")
+            return {}
+
+    async def hset(self, key: str, mapping: Dict[str, int]) -> bool:
+        try:
+            if not mapping:
+                return True
+            await self.redis_client.hset(key, mapping=mapping)
+            return True
+        except Exception as e:
+            self.logger.debug(f"Redis hset failed for {key}: {e}")
+            return False
+
+    async def sadd(self, key: str, member: str) -> bool:
+        try:
+            await self.redis_client.sadd(key, member)
+            return True
+        except Exception as e:
+            self.logger.debug(f"Redis sadd failed for {key}: {e}")
+            return False
+
+    async def srem(self, key: str, member: str) -> bool:
+        try:
+            await self.redis_client.srem(key, member)
+            return True
+        except Exception as e:
+            self.logger.debug(f"Redis srem failed for {key}: {e}")
+            return False
+
+    async def smembers(self, key: str) -> set:
+        try:
+            return await self.redis_client.smembers(key) or set()
+        except Exception as e:
+            self.logger.debug(f"Redis smembers failed for {key}: {e}")
+            return set()
+
+    async def scard(self, key: str) -> int:
+        try:
+            return await self.redis_client.scard(key) or 0
+        except Exception as e:
+            self.logger.debug(f"Redis scard failed for {key}: {e}")
+            return 0
+
+    async def delete_key(self, key: str) -> bool:
+        try:
+            await self.redis_client.delete(key)
+            return True
+        except Exception as e:
+            self.logger.debug(f"Redis delete_key failed for {key}: {e}")
+            return False
+
+    async def set_str(self, key: str, value: str) -> bool:
+        try:
+            await self.redis_client.set(key, value)
+            return True
+        except Exception as e:
+            self.logger.debug(f"Redis set_str failed for {key}: {e}")
+            return False
+
+    async def get_str(self, key: str) -> Optional[str]:
+        try:
+            return await self.redis_client.get(key)
+        except Exception as e:
+            self.logger.debug(f"Redis get_str failed for {key}: {e}")
+            return None
+
     async def store_progress(self, progress: Dict) -> bool:
         """Store sync progress"""
         return await self.set("sync_progress", json.dumps(progress))

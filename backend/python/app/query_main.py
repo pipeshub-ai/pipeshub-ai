@@ -18,6 +18,7 @@ set_service_suffix("-qs")
 from app.api.routes.agent import router as agent_router
 from app.api.routes.chatbot import router as chatbot_router
 from app.api.routes.health import router as health_router
+from app.api.routes.progress import router as progress_router
 from app.api.routes.search import router as search_router
 from app.api.routes.ai_models_registry import router as ai_models_registry_router
 from app.api.routes.speech import router as speech_router
@@ -28,6 +29,7 @@ from app.services.messaging.config import get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.services.progress.seed_service import create_progress_counter
 from app.telemetry.setup import setup_telemetry
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -151,6 +153,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
+    # Install the progress counter so the on-demand seed route can populate Redis
+    # when the admin widget mounts against a cold cache. Best-effort. The query
+    # service also owns the authoritative reconcile loop (single main loop → no
+    # graph cross-loop hazard, unlike the indexing service).
+    app.state.progress_reconcile_task = None
+    progress_counter = await create_progress_counter(app_container.config_service(), logger)
+    if progress_counter is not None:
+        from app.services.progress.seed_service import progress_reconcile_loop
+        app.state.progress_reconcile_task = asyncio.create_task(
+            progress_reconcile_loop(progress_counter, graph_provider, logger)
+        )
+
     # Start all message consumers centrally
     try:
         consumers = await start_kafka_consumers(app_container)
@@ -211,6 +225,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
+
+    # Cancel the progress reconcile loop.
+    reconcile_task: asyncio.Task | None = getattr(app.state, "progress_reconcile_task", None)
+    if reconcile_task is not None:
+        reconcile_task.cancel()
+        try:
+            await reconcile_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
     # Cancel embedding warmup task if it is still running.
     warmup_task: asyncio.Task | None = getattr(app.state, "embedding_warmup_task", None)
@@ -344,6 +367,7 @@ app.include_router(agent_router, prefix="/api/v1/agent")
 app.include_router(toolsets_router)
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(ai_models_registry_router, prefix="/api/v1")
+app.include_router(progress_router, prefix="/api/v1/internal")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = True) -> None:

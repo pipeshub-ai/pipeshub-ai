@@ -1485,6 +1485,19 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_indexing_status_counts(self, org_id: str) -> list[dict]:
+        """
+        Count records grouped by (connectorId, indexingStatus) for an org.
+
+        Light, index-only aggregation (no edge traversal) used to seed/reconcile
+        the org-wide indexing progress bar.
+
+        Returns:
+            list[dict]: rows of {connectorId, indexingStatus, cnt}
+        """
+        pass
+
+    @abstractmethod
     async def get_users(
         self,
         org_id: str,

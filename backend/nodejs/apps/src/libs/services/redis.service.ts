@@ -73,6 +73,16 @@ export class RedisService {
     return this.connected;
   }
 
+  /**
+   * Raw ioredis client. Keys accessed through it are NOT namespace-prefixed
+   * (unlike get/set/delete above, which prepend `this.keyPrefix`). The org-wide
+   * progress bar uses this so the Node ticker reads the exact literal `progress:*`
+   * keys written by the Python services. Use pipeline() on it for batch reads.
+   */
+  getClient(): Redis {
+    return this.client;
+  }
+
   private buildKey(key: string, namespace?: string): string {
     const namespacePrefix =
       namespace !== undefined && namespace !== '' ? `${namespace}:` : '';

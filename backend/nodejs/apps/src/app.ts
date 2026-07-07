@@ -52,6 +52,9 @@ import { StorageContainer } from './modules/storage/container/storage.container'
 import { NotificationContainer } from './modules/notification/container/notification.container';
 import { NotificationConsumer } from './modules/notification/service/notification.consumer';
 import { createNotificationRouter } from './modules/notification/routes/notification.routes';
+import { ProgressContainer } from './modules/progress/container/progress.container';
+import { ProgressService } from './modules/progress/service/progress.service';
+import { createProgressRouter } from './modules/progress/routes/progress.routes';
 import {
   loadAppConfig,
   AppConfig,
@@ -105,6 +108,8 @@ export class Application {
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
   private toolsetsContainer!: Container;
+  private progressContainer!: Container;
+  private appConfig!: AppConfig;
   private desktopProxySocketGateway: DesktopProxySocketGateway | null = null;
   private port: number;
 
@@ -173,6 +178,14 @@ export class Application {
 
       this.notificationContainer =
         await NotificationContainer.initialize(appConfig);
+      this.appConfig = appConfig;
+
+      // Progress ticker shares the live NotificationService instance so it can
+      // emit over the same Socket.IO server (started below).
+      this.progressContainer = await ProgressContainer.initialize(
+        appConfig,
+        this.notificationContainer.get<NotificationService>(NotificationService),
+      );
 
       this.crawlingManagerContainer =
         await CrawlingManagerContainer.initialize(
@@ -223,6 +236,9 @@ export class Application {
       this.desktopProxySocketGateway =
         this.desktopProxyContainer.get(DesktopProxySocketGateway);
       this.desktopProxySocketGateway.initialize(this.server);
+
+      // Start the org-wide indexing progress ticker once the socket server is up.
+      this.progressContainer.get<ProgressService>(ProgressService).start();
 
       this.bootstrapNotificationBrokerConsumer();
 
@@ -455,6 +471,15 @@ export class Application {
     this.app.use(
       '/api/v1/notifications',
       createNotificationRouter(this.entityManagerContainer),
+    );
+
+    this.app.use(
+      '/api/v1/progress',
+      createProgressRouter(
+        this.progressContainer,
+        this.entityManagerContainer,
+        this.appConfig,
+      ),
     );
 
     // configuration manager routes

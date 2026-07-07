@@ -15935,6 +15935,44 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "data": None,
             }
 
+    async def get_indexing_status_counts(self, org_id: str) -> list[dict]:
+        """Count records grouped by (connectorId, indexingStatus) for an org.
+
+        Deliberately index-only: no belongs_to / is_of_type edge hops (unlike
+        get_connector_stats) so it stays cheap enough to run at boot, on the slow
+        reconcile, and on-demand. Powers the org-wide progress bar baseline seed.
+        Returns rows: [{connectorId, indexingStatus, cnt}, ...].
+        """
+        try:
+            # connectorName resolves to the connector *instance* name (apps.name);
+            # DOCUMENT() returns null for a missing/KB app, so it falls back to the
+            # record's connector type. Resolved per group, not per record.
+            query = """
+            FOR doc IN @@records
+                FILTER doc.orgId == @org_id
+                FILTER doc.isInternal != true
+                COLLECT connectorId = doc.connectorId, connectorType = doc.connectorName, indexingStatus = doc.indexingStatus WITH COUNT INTO cnt
+                LET app = DOCUMENT(CONCAT(@apps_prefix, connectorId))
+                RETURN {
+                    connectorId: connectorId,
+                    connectorName: (app != null AND app.name != null ? app.name : connectorType),
+                    indexingStatus: indexingStatus,
+                    cnt: cnt
+                }
+            """
+            rows = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "org_id": org_id,
+                    "@records": CollectionNames.RECORDS.value,
+                    "apps_prefix": f"{CollectionNames.APPS.value}/",
+                },
+            )
+            return rows or []
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get indexing status counts for org {org_id}: {str(e)}")
+            return []
+
     def _get_app_children_subquery(self, app_id: str, org_id: str, user_key: str) -> tuple[str, dict[str, Any]]:
         """Generate AQL sub-query to fetch RecordGroups for an App.
 
