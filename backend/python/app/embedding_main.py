@@ -12,9 +12,11 @@ import asyncio
 import base64
 import os
 import struct
+import threading
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import Any
 
 import uvicorn
@@ -70,6 +72,159 @@ ALLOWED_MODELS: frozenset[str] | None = (
     else None
 )
 
+# Formats sentence-transformers never needs at inference time on CPU/GPU
+# (alternate export formats for other runtimes). Skipping them keeps the
+# tracked download size close to what actually gets used and avoids paying
+# for multi-format repos when only the PyTorch weights are needed.
+MODEL_DOWNLOAD_IGNORE_PATTERNS: list[str] = [
+    "*.onnx",
+    "*.msgpack",
+    "*.h5",
+    "*.tflite",
+    "*.ot",
+    "onnx/**",
+    "openvino/**",
+    "coreml/**",
+]
+
+# Progress is measured by polling on-disk blob size rather than hooking
+# huggingface_hub's internal tqdm bars (whose class is bound by reference
+# inside huggingface_hub.file_download at import time, so patching the
+# public `huggingface_hub.utils.tqdm.tqdm` class does not affect per-file
+# download bars). Polling the cache directory is version-stable and works
+# for both regular HTTP and hf_transfer/xet download backends since all of
+# them stream into the same on-disk blob (as a growing `.incomplete` file).
+DOWNLOAD_PROGRESS_POLL_INTERVAL_SECONDS = 1.0
+
+
+@dataclass
+class DownloadStatus:
+    """Snapshot of a single model's download/load lifecycle.
+
+    status transitions: checking -> downloading -> loading -> ready
+                                                            \\-> failed
+    """
+
+    status: str = "checking"
+    progress: float = 0.0
+    downloaded_bytes: int = 0
+    total_bytes: int = 0
+    error: str | None = None
+    started_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "progress": round(self.progress, 1),
+            "downloaded_bytes": self.downloaded_bytes,
+            "total_bytes": self.total_bytes,
+            "error": self.error,
+            "started_at": self.started_at,
+            "updated_at": self.updated_at,
+        }
+
+
+def _model_cache_blobs_dir(model_name: str) -> str:
+    from huggingface_hub.constants import HF_HUB_CACHE
+
+    repo_folder = f"models--{model_name.replace('/', '--')}"
+    return os.path.join(HF_HUB_CACHE, repo_folder, "blobs")
+
+
+def _measure_blobs_dir_bytes(blobs_dir: str) -> int:
+    """Sum bytes on disk for a repo's blob store, including in-progress
+    ``.incomplete`` files, so progress reflects partial downloads."""
+    if not os.path.isdir(blobs_dir):
+        return 0
+    total = 0
+    for entry in os.scandir(blobs_dir):
+        try:
+            if entry.is_file(follow_symlinks=False):
+                total += entry.stat(follow_symlinks=False).st_size
+        except OSError:
+            continue
+    return total
+
+
+def _compute_expected_total_bytes(model_name: str) -> int:
+    """Best-effort lookup of the repo's total download size via the Hub
+    metadata API. Returns 0 if the lookup fails (e.g. offline, private repo
+    without credentials); progress then falls back to byte-count-only."""
+    try:
+        from huggingface_hub import HfApi
+        from huggingface_hub.utils import filter_repo_objects
+
+        api = HfApi()
+        info = api.model_info(model_name, files_metadata=True)
+        siblings = info.siblings or []
+        filtered = filter_repo_objects(
+            siblings,
+            ignore_patterns=MODEL_DOWNLOAD_IGNORE_PATTERNS,
+            key=lambda f: f.rfilename,
+        )
+        return sum(f.size or 0 for f in filtered)
+    except Exception:
+        logger.info(
+            "Could not fetch expected size for '%s'; progress will show bytes downloaded only",
+            model_name,
+        )
+        return 0
+
+
+def _download_with_progress(
+    model_name: str,
+    status: "DownloadStatus",
+    status_lock: threading.Lock,
+) -> None:
+    """Download a repo snapshot while polling on-disk size for progress.
+
+    Runs on a worker thread (called from within ``ModelManager._load``, which
+    is itself already off the event loop via ``asyncio.to_thread``).
+    """
+    from huggingface_hub import snapshot_download
+
+    total_bytes = _compute_expected_total_bytes(model_name)
+    with status_lock:
+        status.total_bytes = total_bytes
+        status.downloaded_bytes = 0
+
+    blobs_dir = _model_cache_blobs_dir(model_name)
+    stop_event = threading.Event()
+
+    def _poll() -> None:
+        while not stop_event.wait(DOWNLOAD_PROGRESS_POLL_INTERVAL_SECONDS):
+            downloaded = _measure_blobs_dir_bytes(blobs_dir)
+            with status_lock:
+                status.downloaded_bytes = downloaded
+                if status.total_bytes > 0:
+                    status.progress = min(
+                        99.0, downloaded / status.total_bytes * 100
+                    )
+                status.updated_at = time.time()
+
+    poll_thread = threading.Thread(
+        target=_poll, name=f"embedding-download-poll-{model_name}", daemon=True
+    )
+    poll_thread.start()
+    try:
+        snapshot_download(
+            repo_id=model_name,
+            ignore_patterns=MODEL_DOWNLOAD_IGNORE_PATTERNS,
+        )
+    finally:
+        stop_event.set()
+        poll_thread.join(timeout=5)
+
+    # Final measurement so the reported total matches what's on disk even
+    # if the Hub metadata lookup under-/over-estimated it.
+    downloaded = _measure_blobs_dir_bytes(blobs_dir)
+    with status_lock:
+        status.downloaded_bytes = downloaded
+        status.total_bytes = max(status.total_bytes, downloaded)
+        status.progress = 100.0
+        status.updated_at = time.time()
+
 
 class EmbeddingRequest(BaseModel):
     model: str
@@ -109,6 +264,11 @@ class ModelListResponse(BaseModel):
     data: list[ModelListItem]
 
 
+class PrepareModelRequest(BaseModel):
+    model: str
+    trust_remote_code: bool = False
+
+
 class ModelManager:
     """Thread-safe cache of loaded SentenceTransformer models."""
 
@@ -125,6 +285,9 @@ class ModelManager:
         self._locks: dict[str, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
         self._encode_semaphore = asyncio.Semaphore(max_concurrency)
+        self._download_status: dict[str, DownloadStatus] = {}
+        self._download_status_lock = threading.Lock()
+        self._prepare_tasks: dict[str, asyncio.Task] = {}
 
     @staticmethod
     def _cache_key(model_name: str, *, trust_remote_code: bool) -> str:
@@ -132,6 +295,66 @@ class ModelManager:
 
     def list_loaded_models(self) -> list[str]:
         return list({key.split("::", 1)[0] for key in self._models})
+
+    def is_ready(self, model_name: str) -> bool:
+        return model_name in self.list_loaded_models()
+
+    def _get_or_create_status(self, model_name: str) -> DownloadStatus:
+        with self._download_status_lock:
+            status = self._download_status.get(model_name)
+            if status is None:
+                status = DownloadStatus()
+                self._download_status[model_name] = status
+            return status
+
+    def get_download_status(self, model_name: str) -> DownloadStatus | None:
+        with self._download_status_lock:
+            return self._download_status.get(model_name)
+
+    def start_prepare(
+        self,
+        model_name: str,
+        *,
+        trust_remote_code: bool = False,
+    ) -> DownloadStatus:
+        """Kick off (or reuse) a background load/download for ``model_name``.
+
+        Returns immediately with the current status; the caller polls
+        ``get_download_status`` for progress instead of blocking on the
+        request that triggered it.
+        """
+        if self.is_ready(model_name):
+            status = self._get_or_create_status(model_name)
+            status.status = "ready"
+            status.progress = 100.0
+            status.updated_at = time.time()
+            return status
+
+        existing_task = self._prepare_tasks.get(model_name)
+        if existing_task is not None and not existing_task.done():
+            return self._get_or_create_status(model_name)
+
+        status = self._get_or_create_status(model_name)
+        status.status = "checking"
+        status.error = None
+        status.updated_at = time.time()
+
+        async def _run() -> None:
+            try:
+                await self.get_model(model_name, trust_remote_code=trust_remote_code)
+            except Exception as exc:
+                logger.exception(
+                    "Background model preparation failed for '%s'", model_name
+                )
+                with self._download_status_lock:
+                    status.status = "failed"
+                    status.error = str(exc)
+                    status.updated_at = time.time()
+            finally:
+                self._prepare_tasks.pop(model_name, None)
+
+        self._prepare_tasks[model_name] = asyncio.create_task(_run())
+        return status
 
     async def warmup(self, model_name: str) -> None:
         await self.get_model(model_name)
@@ -145,6 +368,8 @@ class ModelManager:
         cache_key = self._cache_key(model_name, trust_remote_code=trust_remote_code)
         if cache_key in self._models:
             return self._models[cache_key]
+
+        status = self._get_or_create_status(model_name)
 
         async with self._global_lock:
             if cache_key not in self._locks:
@@ -160,6 +385,9 @@ class ModelManager:
                 self._device,
                 trust_remote_code,
             )
+            status.status = "checking"
+            status.error = None
+            status.updated_at = time.time()
 
             def _load() -> Any:
                 from sentence_transformers import SentenceTransformer
@@ -173,21 +401,49 @@ class ModelManager:
                 # network even when the model is already in the HF cache. Only
                 # reach out to the network when the model is not cached yet.
                 try:
-                    return SentenceTransformer(
+                    model = SentenceTransformer(
                         model_name,
                         local_files_only=True,
                         **load_kwargs,
                     )
+                    with self._download_status_lock:
+                        status.status = "ready"
+                        status.progress = 100.0
+                        status.updated_at = time.time()
+                    return model
                 except Exception:
                     logger.info(
                         "Model '%s' not found in local cache; downloading from Hub",
                         model_name,
                     )
-                    return SentenceTransformer(
+                    with self._download_status_lock:
+                        status.status = "downloading"
+                        status.started_at = time.time()
+                        status.updated_at = status.started_at
+                    try:
+                        _download_with_progress(
+                            model_name, status, self._download_status_lock
+                        )
+                    except Exception as download_exc:
+                        with self._download_status_lock:
+                            status.status = "failed"
+                            status.error = str(download_exc)
+                            status.updated_at = time.time()
+                        raise
+
+                    with self._download_status_lock:
+                        status.status = "loading"
+                        status.updated_at = time.time()
+                    model = SentenceTransformer(
                         model_name,
-                        local_files_only=False,
+                        local_files_only=True,
                         **load_kwargs,
                     )
+                    with self._download_status_lock:
+                        status.status = "ready"
+                        status.progress = 100.0
+                        status.updated_at = time.time()
+                    return model
 
             model = await asyncio.to_thread(_load)
             self._models[cache_key] = model
@@ -345,6 +601,61 @@ async def list_models() -> ModelListResponse:
             ModelListItem(id=DEFAULT_EMBEDDING_MODEL, created=created)
         )
     return ModelListResponse(data=models)
+
+
+@app.post("/prepare-model")
+async def prepare_model(request: PrepareModelRequest) -> JSONResponse:
+    """Kick off a non-blocking model load/download and return its status.
+
+    Callers (the Node.js config manager) poll ``GET /download-progress`` for
+    progress instead of blocking a single request on a multi-GB download,
+    which is what previously tripped health-check and axios timeouts.
+    """
+    if ALLOWED_MODELS is not None and request.model not in ALLOWED_MODELS:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Model '{request.model}' is not in the server's allowed model list.",
+        )
+    if request.trust_remote_code and not ALLOW_REMOTE_CODE:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "trust_remote_code is disabled on this server. "
+                "Set environment variable EMBEDDING_SERVER_ALLOW_REMOTE_CODE=true to enable it."
+            ),
+        )
+
+    status = model_manager.start_prepare(
+        request.model, trust_remote_code=request.trust_remote_code
+    )
+    return JSONResponse(
+        status_code=202,
+        content={"model": request.model, **status.to_dict()},
+    )
+
+
+@app.get("/download-progress/{model_name:path}")
+async def download_progress(model_name: str) -> JSONResponse:
+    import urllib.parse
+
+    decoded_name = urllib.parse.unquote(model_name)
+    status = model_manager.get_download_status(decoded_name)
+    if status is None:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "model": decoded_name,
+                "status": "ready" if model_manager.is_ready(decoded_name) else "not_found",
+                "progress": 100.0 if model_manager.is_ready(decoded_name) else 0.0,
+                "downloaded_bytes": 0,
+                "total_bytes": 0,
+                "error": None,
+            },
+        )
+    return JSONResponse(
+        status_code=200,
+        content={"model": decoded_name, **status.to_dict()},
+    )
 
 
 @app.post("/v1/embeddings")
