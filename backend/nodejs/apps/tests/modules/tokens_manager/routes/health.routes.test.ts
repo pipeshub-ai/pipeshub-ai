@@ -1283,15 +1283,22 @@ describe('tokens_manager/routes/health.routes', () => {
     })
 
     it('should include all service keys as unknown in error fallback', async () => {
-      sinon.stub(axiosModule, 'get').throws(new Error('Unexpected'))
+      sinon.stub(axiosModule, 'get').resolves({
+        status: 200,
+        data: { status: 'healthy' },
+      })
 
       const handler = findHandler('/services', 'get')
       const res = mockRes()
+      // Force the primary response serialization to throw so the handler falls
+      // into its outer catch block; the fallback re-sends via res.json.
+      res.json.onFirstCall().throws(new Error('serialization failed'))
       const next = sinon.stub()
 
       await handler({}, res, next)
 
-      const jsonArg = res.json.firstCall.args[0]
+      const jsonArg = res.json.secondCall.args[0]
+      expect(jsonArg.status).to.equal('unhealthy')
       expect(jsonArg.services.query).to.equal('unknown')
       expect(jsonArg.services.connector).to.equal('unknown')
       expect(jsonArg.services.indexing).to.equal('unknown')
