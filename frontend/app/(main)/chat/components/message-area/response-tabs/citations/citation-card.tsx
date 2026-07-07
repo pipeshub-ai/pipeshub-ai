@@ -8,6 +8,7 @@ import { isLocalFsConnectorType } from '@/app/(main)/workspace/connectors/utils/
 import { openRecordSource } from '@/chat/utils/open-record-source';
 import { getConnectorConfig, formatSyncLabel } from './utils';
 import { FileIcon } from '@/app/components/ui/file-icon';
+import { renderInlineMarkdown } from '@/app/components/ui/inline-markdown';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import type { ResponseTab } from '@/chat/types';
 import type { CitationData, CitationCallbacks } from './types';
@@ -212,7 +213,7 @@ export function ReferenceCard({
                   overflow: 'hidden',
                 }}
               >
-                {citation.content}
+                {renderInlineMarkdown(citation.content)}
               </Text>
             </Box>
           )}
