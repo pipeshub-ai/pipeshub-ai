@@ -1,4 +1,4 @@
-import type { IndexingProgressMetrics, IndexingStage, IndexingStatus } from '../types';
+import type { IndexingProgressMetrics, IndexingRollup, IndexingStage, IndexingStatus } from '../types';
 
 /**
  * Extraction emits no fine-grained backend metric on opaque parser paths (e.g.
@@ -185,11 +185,54 @@ export function isActiveIndexingStatus(status?: IndexingStatus | string | null):
   return status === 'IN_PROGRESS' || status === 'QUEUED';
 }
 
-/** True if any record in the list is still in flight (drives gated polling). */
+/**
+ * True if any row is still in flight — either a leaf record that is QUEUED/
+ * IN_PROGRESS, or a container whose subtree rollup is still active. The latter
+ * keeps polling alive while descendants index even when no visible leaf row is
+ * itself active (e.g. browsing a collection whose child folders are indexing).
+ */
 export function hasActiveIndexing(
-  nodes: ReadonlyArray<{ indexingStatus?: IndexingStatus | string | null }>,
+  nodes: ReadonlyArray<{
+    indexingStatus?: IndexingStatus | string | null;
+    indexingRollup?: IndexingRollup | null;
+  }>,
 ): boolean {
-  return nodes.some((n) => isActiveIndexingStatus(n.indexingStatus));
+  return nodes.some(
+    (n) => isActiveIndexingStatus(n.indexingStatus) || n.indexingRollup?.isActive === true,
+  );
+}
+
+export interface RollupProgressView {
+  /** True while descendants are still queued or in progress. */
+  isActive: boolean;
+  /** Weighted completion percentage (0–100). */
+  percent: number;
+  /** e.g. "42 of 96 indexed". */
+  label: string;
+  /** Optional secondary line for failed/skipped counts, when any. */
+  detail?: string;
+  /** True once nothing is active but some records failed. */
+  hasErrors: boolean;
+}
+
+/** Build the container-row display model from an aggregated rollup. */
+export function getRollupProgressView(rollup: IndexingRollup): RollupProgressView {
+  const done = rollup.completed + rollup.failed + rollup.skipped;
+  const hasErrors = !rollup.isActive && rollup.failed > 0;
+
+  const extras: string[] = [];
+  if (rollup.failed > 0) extras.push(`${rollup.failed} failed`);
+  if (rollup.skipped > 0) extras.push(`${rollup.skipped} skipped`);
+
+  return {
+    isActive: rollup.isActive,
+    percent: Math.max(0, Math.min(100, rollup.percent)),
+    label: rollup.isActive
+      ? `${done} of ${rollup.total} indexed`
+      : `${rollup.total} indexed`,
+    detail: extras.length ? extras.join(' · ') : undefined,
+    hasErrors,
+  };
 }
 
 /**

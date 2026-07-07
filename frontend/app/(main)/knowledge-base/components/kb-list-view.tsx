@@ -21,7 +21,7 @@ import { KbNodeNameIcon } from '../utils/kb-node-name-icon';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { getIndexingProgressView } from '../utils/indexing-progress';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
-import { IndexingProgressIndicator } from './indexing-progress-indicator';
+import { ContainerRollupIndicator, IndexingProgressIndicator } from './indexing-progress-indicator';
 import {
   runItemMenuOpenFromMenu,
   shouldHideIndexingStatusForHubRecord,
@@ -254,7 +254,8 @@ function TableRow({
     isKnowledgeHubNode(item) && (item.indexingStatus === 'IN_PROGRESS' || item.indexingStatus === 'QUEUED')
       ? getIndexingProgressView(item)
       : null;
-  const rowHeight = activeProgressView ? '76px' : '60px';
+  const containerRollup = isKnowledgeHubNode(item) ? item.indexingRollup ?? null : null;
+  const rowHeight = activeProgressView || containerRollup?.isActive ? '76px' : '60px';
 
   // Status label for tooltip
   const getStatusLabel = (): string => {
@@ -520,6 +521,14 @@ function TableRow({
               <Text size="1" style={{ color: 'var(--slate-9)' }}>
                 —
               </Text>
+            );
+          }
+          // Container rows show an aggregated rollup rolled up from their subtree.
+          if (containerRollup) {
+            return (
+              <Box>
+                <ContainerRollupIndicator rollup={containerRollup} compact />
+              </Box>
             );
           }
           const statusIcon = getStatusIcon();

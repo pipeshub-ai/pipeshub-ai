@@ -265,11 +265,24 @@ function KnowledgeBasePageContent() {
       : tableData?.items ?? [];
   }, [isAllRecordsMode, allRecordsTableData?.items, tableData?.items]);
 
+  // The container currently being browsed (its own aggregate is shown in the
+  // header). Its rollup keeps polling alive during a reindex even when no child
+  // row is individually active yet.
+  const currentNodeRollup = useMemo(
+    () =>
+      (isAllRecordsMode ? allRecordsTableData : tableData)?.currentNode?.indexingRollup ?? null,
+    [isAllRecordsMode, allRecordsTableData, tableData],
+  );
+
   // Auto-poll for indexing status only while a visible record is still in
-  // flight (QUEUED/IN_PROGRESS). Gating on this boolean keeps the polling effect
-  // (and its backoff) alive across refetches and stops the moment everything
-  // reaches a terminal state, so settled views never poll.
-  const hasActiveRecords = useMemo(() => hasActiveIndexing(tableItems), [tableItems]);
+  // flight (QUEUED/IN_PROGRESS), or the container being viewed is still
+  // aggregating. Gating on this boolean keeps the polling effect (and its
+  // backoff) alive across refetches and stops the moment everything reaches a
+  // terminal state, so settled views never poll.
+  const hasActiveRecords = useMemo(
+    () => hasActiveIndexing(tableItems) || currentNodeRollup?.isActive === true,
+    [tableItems, currentNodeRollup],
+  );
 
   const collectionRootNodes = useMemo(
     () => [
@@ -1304,7 +1317,7 @@ function KnowledgeBasePageContent() {
       const data = nodeType && nodeId
         ? await KnowledgeHubApi.loadFolderData(nodeType as NodeType, nodeId, params)
         : await KnowledgeHubApi.getAllRootItems(params);
-      patchVisibleRecordProgress(data.items);
+      patchVisibleRecordProgress(data.items, data.currentNode);
       return;
     }
 
@@ -1320,7 +1333,7 @@ function KnowledgeBasePageContent() {
     const data = await KnowledgeHubApi.loadFolderData(nodeType as NodeType, nodeId, params, {
       suppressErrorToast: true,
     });
-    patchVisibleRecordProgress(data.items);
+    patchVisibleRecordProgress(data.items, data.currentNode);
   }, [isAllRecordsMode, patchVisibleRecordProgress, searchParams, selectedNode]);
 
   const pollProgressRef = useRef(pollVisibleRecordProgress);
@@ -2730,6 +2743,7 @@ function KnowledgeBasePageContent() {
               pageViewMode={pageViewMode}
               breadcrumbs={isAllRecordsMode ? allRecordsBreadcrumbs : tableData?.breadcrumbs?.slice(1)}
               currentTitle={currentTitle}
+              currentNodeRollup={currentNodeRollup}
               onBreadcrumbClick={handleBreadcrumbClick}
               onInfoClick={handleFolderInfoClick}
               onFind={handleFind}

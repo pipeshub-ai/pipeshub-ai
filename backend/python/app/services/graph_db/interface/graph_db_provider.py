@@ -1485,6 +1485,26 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_indexing_rollups(
+        self,
+        org_id: str,
+        containers: list[dict],
+    ) -> dict:
+        """
+        Aggregate indexing status of indexable leaf records for each container.
+
+        Args:
+            org_id: Organization ID
+            containers: list of ``{"id": str, "type": "app"|"recordGroup"|"folder"}``
+
+        Returns:
+            Dict mapping container id -> list of ``{"status", "stage", "cnt"}``
+            groupings for the indexable leaf records in that container's subtree
+            (folder and internal placeholder records excluded).
+        """
+        pass
+
+    @abstractmethod
     async def get_users(
         self,
         org_id: str,

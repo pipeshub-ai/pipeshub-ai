@@ -213,7 +213,10 @@ interface KnowledgeBaseActions {
   setTableDataError: (error: string | null) => void;
   setSelectedNode: (node: { nodeType: string; nodeId: string } | null) => void;
   clearTableData: () => void;
-  patchVisibleRecordProgress: (items: KnowledgeHubNode[]) => void;
+  patchVisibleRecordProgress: (
+    items: KnowledgeHubNode[],
+    currentNode?: KnowledgeHubApiResponse['currentNode'],
+  ) => void;
 
   // Collections pagination actions
   setCollectionsPagination: (pagination: AllRecordsPagination) => void;
@@ -721,7 +724,7 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
           state.selectedNode = null;
         }),
 
-      patchVisibleRecordProgress: (items) =>
+      patchVisibleRecordProgress: (items, currentNode) =>
         set((state) => {
           const byId = new Map(items.map((item) => [item.id, item]));
           const patchItem = (item: KnowledgeHubNode) => {
@@ -733,6 +736,7 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
               indexingStage: fresh.indexingStage,
               lastActivityTimestamp: fresh.lastActivityTimestamp,
               indexingProgress: fresh.indexingProgress,
+              indexingRollup: fresh.indexingRollup,
               reason: fresh.reason,
             };
           };
@@ -742,6 +746,16 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
           }
           if (state.allRecordsTableData?.items) {
             state.allRecordsTableData.items = state.allRecordsTableData.items.map(patchItem);
+          }
+
+          // Keep the header aggregate (the container you're inside) live too.
+          if (currentNode?.id) {
+            if (state.tableData?.currentNode?.id === currentNode.id) {
+              state.tableData.currentNode.indexingRollup = currentNode.indexingRollup;
+            }
+            if (state.allRecordsTableData?.currentNode?.id === currentNode.id) {
+              state.allRecordsTableData.currentNode.indexingRollup = currentNode.indexingRollup;
+            }
           }
         }),
 

@@ -7588,6 +7588,80 @@ class Neo4jProvider(IGraphDBProvider):
                 "data": None
             }
 
+    async def get_indexing_rollups(
+        self,
+        org_id: str,
+        containers: list[dict],
+        transaction: str | None = None,
+    ) -> dict:
+        """Aggregate indexable-leaf-record status counts per container subtree.
+
+        Runs at most one query per container type (app / recordGroup / folder).
+        Folder and internal placeholder records are excluded from the counts.
+        """
+        rollups: dict[str, list[dict]] = {}
+        if not containers:
+            return rollups
+
+        ids_by_type: dict[str, list[str]] = {"app": [], "recordGroup": [], "folder": []}
+        for c in containers:
+            c_id = c.get("id")
+            c_type = c.get("type")
+            if c_id and c_type in ids_by_type:
+                ids_by_type[c_type].append(c_id)
+
+        # Common leaf-record eligibility: not internal, and not a folder-record.
+        leaf_filter = (
+            "coalesce(r.isInternal, false) = false "
+            "AND NOT EXISTS { MATCH (r)-[:IS_OF_TYPE]->(f:File) WHERE f.isFile = false }"
+        )
+        ret = "RETURN cid AS id, r.indexingStatus AS status, r.indexingStage AS stage, count(*) AS cnt"
+
+        queries = {
+            "app": f"""
+            UNWIND $ids AS cid
+            MATCH (app:App {{id: cid}})<-[:BELONGS_TO*1..10]-(rg:RecordGroup)<-[:BELONGS_TO]-(r:Record)
+            WHERE {leaf_filter}
+            {ret}
+            """,
+            "recordGroup": f"""
+            UNWIND $ids AS cid
+            MATCH (rg0:RecordGroup {{id: cid}})<-[:BELONGS_TO*0..10]-(rg:RecordGroup)<-[:BELONGS_TO]-(r:Record)
+            WHERE {leaf_filter}
+            {ret}
+            """,
+            "folder": f"""
+            UNWIND $ids AS cid
+            MATCH path = (folder:Record {{id: cid}})-[:RECORD_RELATION*1..100]->(r:Record)
+            WHERE all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+              AND {leaf_filter}
+            {ret}
+            """,
+        }
+
+        for c_type, ids in ids_by_type.items():
+            if not ids:
+                continue
+            try:
+                results = await self.client.execute_query(
+                    queries[c_type],
+                    parameters={"ids": ids},
+                    txn_id=transaction,
+                )
+                for row in results or []:
+                    c_id = row.get("id")
+                    if not c_id:
+                        continue
+                    rollups.setdefault(c_id, []).append({
+                        "status": row.get("status"),
+                        "stage": row.get("stage"),
+                        "cnt": row.get("cnt") or 0,
+                    })
+            except Exception as e:
+                self.logger.warning(f"⚠️ Failed to compute indexing rollup for {c_type} containers: {str(e)}")
+
+        return rollups
+
     async def reindex_single_record(
         self,
         record_id: str,

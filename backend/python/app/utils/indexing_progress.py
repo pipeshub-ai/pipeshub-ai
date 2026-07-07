@@ -100,6 +100,95 @@ def stage_for_status(status: ProgressStatus) -> IndexingStage | None:
     return _STATUS_TO_STAGE.get(status)
 
 
+# Per-record weight contributed to a container's weighted-average progress.
+# Terminal statuses (done or intentionally-not-indexed) count as fully "resolved"
+# so a container can reach 100% even when some records failed or were skipped;
+# the failed/skipped counts are surfaced separately for visibility.
+_RESOLVED_STATUSES = frozenset({
+    ProgressStatus.COMPLETED.value,
+    ProgressStatus.FAILED.value,
+    ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+    ProgressStatus.AUTO_INDEX_OFF.value,
+    ProgressStatus.EMPTY.value,
+    ProgressStatus.ENABLE_MULTIMODAL_MODELS.value,
+})
+_QUEUED_STATUSES = frozenset({
+    ProgressStatus.QUEUED.value,
+    ProgressStatus.NOT_STARTED.value,
+    ProgressStatus.PAUSED.value,
+    None,
+})
+# Partial credit for an IN_PROGRESS record, refined by its coarse stage.
+_STAGE_WEIGHT: dict[str | None, float] = {
+    IndexingStage.QUEUED.value: 0.10,
+    IndexingStage.EXTRACTING.value: 0.35,
+    IndexingStage.INDEXING.value: 0.80,
+    IndexingStage.COMPLETED.value: 0.95,
+}
+_IN_PROGRESS_DEFAULT_WEIGHT = 0.5
+
+
+def build_container_rollup(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Aggregate per-status/stage leaf-record counts into a container rollup.
+
+    ``rows`` are ``{"status", "stage", "cnt"}`` groupings for the indexable leaf
+    records in a container's subtree (folders and internal records already
+    excluded by the provider query). Returns ``None`` when the subtree has no
+    indexable records, so containers without files show no progress bar.
+
+    Weighting is equal per record (each record contributes a fraction of one),
+    with in-progress records earning partial credit from their stage.
+    """
+    total = 0
+    completed = in_progress = queued = failed = skipped = 0
+    weighted = 0.0
+
+    for row in rows:
+        cnt = int(row.get("cnt") or 0)
+        if cnt <= 0:
+            continue
+        status = row.get("status")
+        stage = row.get("stage")
+        total += cnt
+
+        if status == ProgressStatus.COMPLETED.value:
+            completed += cnt
+            weighted += cnt
+        elif status == ProgressStatus.FAILED.value:
+            failed += cnt
+            weighted += cnt
+        elif status in _RESOLVED_STATUSES:
+            skipped += cnt
+            weighted += cnt
+        elif status == ProgressStatus.IN_PROGRESS.value:
+            in_progress += cnt
+            weighted += cnt * _STAGE_WEIGHT.get(stage, _IN_PROGRESS_DEFAULT_WEIGHT)
+        else:  # QUEUED / NOT_STARTED / PAUSED / unknown
+            queued += cnt
+
+    if total == 0:
+        return None
+
+    percent = max(0, min(100, round(100.0 * weighted / total)))
+    is_active = in_progress > 0 or queued > 0
+    if is_active:
+        status_label = "IN_PROGRESS" if in_progress > 0 else "QUEUED"
+    else:
+        status_label = "COMPLETED_WITH_ERRORS" if failed > 0 else "COMPLETED"
+
+    return {
+        "total": total,
+        "completed": completed,
+        "inProgress": in_progress,
+        "queued": queued,
+        "failed": failed,
+        "skipped": skipped,
+        "percent": percent,
+        "status": status_label,
+        "isActive": is_active,
+    }
+
+
 def normalize_indexing_progress(value: Any) -> dict[str, Any] | None:
     """Coerce a stored ``indexingProgress`` value into a dict (or ``None``).
 

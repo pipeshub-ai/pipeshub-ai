@@ -1,11 +1,26 @@
 import { describe, it, expect } from 'vitest';
+import type { IndexingRollup } from '../../types';
 import {
   extractionDurationMs,
   formatProgressDetail,
   getIndexingProgressView,
+  getRollupProgressView,
   hasActiveIndexing,
   isActiveIndexingStatus,
 } from '../indexing-progress';
+
+const makeRollup = (over: Partial<IndexingRollup> = {}): IndexingRollup => ({
+  total: 0,
+  completed: 0,
+  inProgress: 0,
+  queued: 0,
+  failed: 0,
+  skipped: 0,
+  percent: 0,
+  status: 'COMPLETED',
+  isActive: false,
+  ...over,
+});
 
 const NOW = 1_000_000_000_000;
 const MB = 1024 * 1024;
@@ -47,6 +62,52 @@ describe('hasActiveIndexing', () => {
 
   it('returns false for an empty list', () => {
     expect(hasActiveIndexing([])).toBe(false);
+  });
+
+  it('stays active for a container whose rollup is still aggregating', () => {
+    expect(
+      hasActiveIndexing([
+        { indexingStatus: null, indexingRollup: makeRollup({ isActive: true, total: 5, inProgress: 2 }) },
+      ]),
+    ).toBe(true);
+  });
+
+  it('is not kept alive by a settled rollup', () => {
+    expect(
+      hasActiveIndexing([
+        { indexingStatus: null, indexingRollup: makeRollup({ isActive: false, total: 5, completed: 5, percent: 100 }) },
+      ]),
+    ).toBe(false);
+  });
+});
+
+describe('getRollupProgressView', () => {
+  it('shows live progress with an "N of M indexed" label while active', () => {
+    const view = getRollupProgressView(
+      makeRollup({ total: 96, completed: 40, inProgress: 6, queued: 50, percent: 45, status: 'IN_PROGRESS', isActive: true }),
+    );
+    expect(view.isActive).toBe(true);
+    expect(view.percent).toBe(45);
+    expect(view.label).toBe('40 of 96 indexed');
+    expect(view.hasErrors).toBe(false);
+  });
+
+  it('summarizes a clean completed container without error styling', () => {
+    const view = getRollupProgressView(
+      makeRollup({ total: 12, completed: 12, percent: 100, status: 'COMPLETED', isActive: false }),
+    );
+    expect(view.isActive).toBe(false);
+    expect(view.hasErrors).toBe(false);
+    expect(view.label).toBe('12 indexed');
+    expect(view.detail).toBeUndefined();
+  });
+
+  it('surfaces failed/skipped counts on a settled container with errors', () => {
+    const view = getRollupProgressView(
+      makeRollup({ total: 10, completed: 7, failed: 2, skipped: 1, percent: 100, status: 'COMPLETED_WITH_ERRORS', isActive: false }),
+    );
+    expect(view.hasErrors).toBe(true);
+    expect(view.detail).toBe('2 failed · 1 skipped');
   });
 });
 

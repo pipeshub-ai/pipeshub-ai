@@ -37,6 +37,7 @@ class IncludeOption(str, Enum):
     COUNTS = "counts"
     AVAILABLE_FILTERS = "availableFilters"
     PERMISSIONS = "permissions"
+    INDEXING_ROLLUP = "indexingRollup"
 
 # Request Models
 class DateRangeFilter(BaseModel):
@@ -65,6 +66,19 @@ class IndexingProgressMetrics(BaseModel):
     phase: str = Field(..., description="Substage phase, e.g. embedding")
     message: Optional[str] = Field(None, description="Human-readable progress message")
 
+class IndexingRollup(BaseModel):
+    """Aggregated indexing progress for a container node (folder / recordGroup / app),
+    rolled up from all indexable leaf records in its subtree."""
+    total: int = Field(..., description="Total indexable leaf records in the subtree")
+    completed: int = Field(0, description="Records fully indexed (COMPLETED)")
+    inProgress: int = Field(0, description="Records currently indexing (IN_PROGRESS)")
+    queued: int = Field(0, description="Records waiting to be indexed (QUEUED / NOT_STARTED / PAUSED)")
+    failed: int = Field(0, description="Records that failed indexing (FAILED)")
+    skipped: int = Field(0, description="Records not indexed by design (unsupported type / manual / empty)")
+    percent: int = Field(0, description="Weighted completion percentage (0-100) across leaf records")
+    status: str = Field(..., description="Aggregate status: COMPLETED, IN_PROGRESS, QUEUED, COMPLETED_WITH_ERRORS")
+    isActive: bool = Field(False, description="True while any descendant record is queued or in progress")
+
 class NodeItem(BaseModel):
     """Response model for a single node in the knowledge hub hierarchy"""
     id: str = Field(..., description="Unique identifier for the node")
@@ -80,6 +94,7 @@ class NodeItem(BaseModel):
     indexingStage: Optional[str] = Field(None, description="Coarse pipeline phase within IN_PROGRESS (QUEUED, EXTRACTING, INDEXING, COMPLETED, FAILED)")
     lastActivityTimestamp: Optional[int] = Field(None, description="Heartbeat timestamp (epoch ms) of the last pipeline activity; used to detect stalled records")
     indexingProgress: Optional[IndexingProgressMetrics] = Field(None, description="Fine-grained progress within the current indexing stage")
+    indexingRollup: Optional[IndexingRollup] = Field(None, description="Aggregated indexing progress across the subtree (only for container nodes: folder, recordGroup, app)")
     createdAt: int = Field(..., description="Creation timestamp (epoch ms)")
     updatedAt: int = Field(..., description="Update timestamp (epoch ms)")
     sizeInBytes: Optional[int] = Field(None, description="File size in bytes (only for file records)")
@@ -102,6 +117,7 @@ class CurrentNode(BaseModel):
     name: str = Field(..., description="Current node name")
     nodeType: str = Field(..., description="Current node type (app, recordGroup, folder, record)")
     subType: Optional[str] = Field(None, description="Sub-type: connector name for apps/recordGroups, recordType for records")
+    indexingRollup: Optional[IndexingRollup] = Field(None, description="Aggregated indexing progress across this container's subtree")
 
     class Config:
         exclude_none = True

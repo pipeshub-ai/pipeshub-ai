@@ -147,6 +147,23 @@ export interface IndexingProgressMetrics {
   phase: string;
   message?: string | null;
 }
+
+/**
+ * Aggregated indexing progress for a container node (folder / recordGroup / app),
+ * rolled up from all indexable leaf records in its subtree. Only present on
+ * container rows when the API is asked for `include=indexingRollup`.
+ */
+export interface IndexingRollup {
+  total: number;
+  completed: number;
+  inProgress: number;
+  queued: number;
+  failed: number;
+  skipped: number;
+  percent: number;
+  status: 'COMPLETED' | 'IN_PROGRESS' | 'QUEUED' | 'COMPLETED_WITH_ERRORS';
+  isActive: boolean;
+}
 export type SharingStatus = 'private' | 'team' | 'personal' | 'shared';
 
 /**
@@ -226,6 +243,7 @@ export interface KnowledgeHubNode {
   indexingStage?: IndexingStage | null;
   lastActivityTimestamp?: number | null;
   indexingProgress?: IndexingProgressMetrics | null;
+  indexingRollup?: IndexingRollup | null;
   sizeInBytes?: number | null;
   mimeType?: string | null;
   extension?: string | null;
@@ -321,6 +339,7 @@ export interface KnowledgeHubApiResponse {
     subType?: string;
     origin?: string;
     indexingStatus?: string;
+    indexingRollup?: IndexingRollup | null;
     version?: number;
     createdAt?: number;
     updatedAt?: number;

@@ -16,6 +16,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     CurrentNode,
     FilterOption,
     FiltersInfo,
+    IndexingRollup,
     ItemPermission,
     KnowledgeHubNodesResponse,
     NodeItem,
@@ -28,7 +29,19 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
 )
 from app.models.entities import RecordType
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.utils.indexing_progress import normalize_indexing_progress
+from app.utils.indexing_progress import build_container_rollup, normalize_indexing_progress
+
+# Maps a node type to the container type understood by the rollup aggregation,
+# or None when the node is not a container that can carry a rollup. 'kb' (the
+# Collection app) aggregates like any other app node.
+def _rollup_container_type(node_type: str | None) -> str | None:
+    if node_type in (NodeType.APP.value, 'kb'):
+        return NodeType.APP.value
+    if node_type == NodeType.RECORD_GROUP.value:
+        return NodeType.RECORD_GROUP.value
+    if node_type == NodeType.FOLDER.value:
+        return NodeType.FOLDER.value
+    return None
 
 FOLDER_MIME_TYPES = [
     'application/vnd.folder',
@@ -300,6 +313,9 @@ class KnowledgeHubService:
                     response.permissions = await self._get_permissions(
                         user_key, org_id, parent_id, parent_type
                     )
+
+                if 'indexingRollup' in include:
+                    await self._attach_indexing_rollups(items, org_id, current_node=current_node)
 
             return response
 
@@ -814,6 +830,56 @@ class KnowledgeHubService:
             isInternal=bool(doc.get('isInternal', False)),
         )
 
+
+    async def _attach_indexing_rollups(
+        self,
+        items: list[NodeItem],
+        org_id: str,
+        current_node: CurrentNode | None = None,
+    ) -> None:
+        """Compute and attach an aggregated indexing rollup to each container item
+        and, when browsing inside a container, to that current node itself (so the
+        folder/collection you are viewing shows its own aggregate in the header —
+        not just its child rows).
+
+        Best-effort: a rollup failure must never break the node listing, so any
+        error is swallowed and the affected nodes simply carry no rollup.
+        """
+        containers: list[dict] = []
+
+        for item in items:
+            rollup_type = _rollup_container_type(_get_node_type_value(item.nodeType))
+            if rollup_type and item.id:
+                containers.append({"id": item.id, "type": rollup_type})
+
+        current_rollup_type = (
+            _rollup_container_type(current_node.nodeType) if current_node else None
+        )
+        if current_node and current_rollup_type and current_node.id:
+            containers.append({"id": current_node.id, "type": current_rollup_type})
+
+        if not containers:
+            return
+
+        try:
+            raw = await self.graph_provider.get_indexing_rollups(org_id=org_id, containers=containers)
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to attach indexing rollups: {str(e)}")
+            return
+
+        for item in items:
+            rows = raw.get(item.id)
+            if rows:
+                rollup = build_container_rollup(rows)
+                if rollup is not None:
+                    item.indexingRollup = IndexingRollup(**rollup)
+
+        if current_node and current_rollup_type:
+            rows = raw.get(current_node.id)
+            if rows:
+                rollup = build_container_rollup(rows)
+                if rollup is not None:
+                    current_node.indexingRollup = IndexingRollup(**rollup)
 
     def _role_to_permission(self, role: str) -> ItemPermission:
         """

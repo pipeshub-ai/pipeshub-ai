@@ -137,7 +137,7 @@ export const KnowledgeHubApi = {
         params: {
           page: 1,
           limit: DEFAULT_PAGE_SIZE,
-          include: 'counts,permissions,breadcrumbs,availableFilters',
+          include: 'counts,permissions,breadcrumbs,availableFilters,indexingRollup',
           // Data area: Never use onlyContainers (we need both folders AND files)
           ...params,
         },
@@ -280,7 +280,7 @@ export const KnowledgeHubApi = {
         params: {
           page: 1,
           limit: DEFAULT_PAGE_SIZE,
-          include: 'counts,permissions,breadcrumbs,availableFilters',
+          include: 'counts,permissions,breadcrumbs,availableFilters,indexingRollup',
           // Data area: Never use onlyContainers (we need all root items including records)
           ...params,
         },

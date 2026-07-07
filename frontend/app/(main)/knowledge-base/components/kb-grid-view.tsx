@@ -12,7 +12,7 @@ import {
   shouldShowDownloadForTableItem,
 } from '../utils/kb-table-item-actions';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
-import { IndexingProgressIndicator } from './indexing-progress-indicator';
+import { ContainerRollupIndicator, IndexingProgressIndicator } from './indexing-progress-indicator';
 import { useTranslation } from 'react-i18next';
 import {
   getReindexMenuState,
@@ -155,6 +155,7 @@ function GridCard({
   const isFolder = isHubNode
     ? ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType)
     : item.type === 'folder';
+  const containerRollup = isHubNode ? item.indexingRollup ?? null : null;
 
   // Status badge component (only shown for files)
   const getStatusBadge = () => {
@@ -638,7 +639,9 @@ function GridCard({
 
         {/* Bottom section: status badge or placeholder */}
         <Flex align="center" style={{ minHeight: '20px' }}>
-          {isFolder ? null : shouldHideIndexingStatusForHubRecord(item) ? (
+          {isFolder ? (
+            containerRollup ? <ContainerRollupIndicator rollup={containerRollup} compact /> : null
+          ) : shouldHideIndexingStatusForHubRecord(item) ? (
             <Text
               size="2"
               weight="medium"

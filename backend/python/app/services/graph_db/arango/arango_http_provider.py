@@ -31,6 +31,7 @@ from app.config.constants.arangodb import (
     IndexingStage,
     OriginTypes,
     ProgressStatus,
+    RecordRelations,
     RecordTypes,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
@@ -15959,6 +15960,133 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "message": str(e),
                 "data": None,
             }
+
+    async def get_indexing_rollups(
+        self,
+        org_id: str,
+        containers: list[dict],
+        transaction: str | None = None,
+    ) -> dict:
+        """Aggregate indexable-leaf-record status counts per container subtree.
+
+        Runs at most one AQL per container type. Folder-records and internal
+        placeholder records are excluded from the counts. Nested recordGroups
+        are not descended into here (direct membership only); the graph-DB
+        deployments that need nested rollups use the Neo4j provider.
+        """
+        rollups: dict[str, list[dict]] = {}
+        if not containers:
+            return rollups
+
+        ids_by_type: dict[str, list[str]] = {"app": [], "recordGroup": [], "folder": []}
+        for c in containers:
+            c_id = c.get("id")
+            c_type = c.get("type")
+            if c_id and c_type in ids_by_type:
+                ids_by_type[c_type].append(c_id)
+
+        # Reused by every branch: drop folder-records (isOfType -> file with isFile=false).
+        leaf_filter = """
+                LET targetInfo = doc.recordType == @file_record_type ? FIRST(
+                    FOR e IN @@is_of_type
+                        FILTER e._from == doc._id
+                        LIMIT 1
+                        LET t = DOCUMENT(e._to)
+                        RETURN t == null ? null : { id: t._id, isFile: t.isFile }
+                ) : null
+                FILTER targetInfo == null
+                    OR PARSE_IDENTIFIER(targetInfo.id).collection != @files_collection
+                    OR targetInfo.isFile == true
+        """
+        group_return = """
+                COLLECT id = cid, status = doc.indexingStatus, stage = doc.indexingStage WITH COUNT INTO cnt
+                RETURN { id, status, stage, cnt }
+        """
+
+        base_bind = {
+            "org_id": org_id,
+            "@records": CollectionNames.RECORDS.value,
+            "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+            "file_record_type": RecordTypes.FILE.value,
+            "files_collection": CollectionNames.FILES.value,
+        }
+
+        queries: dict[str, tuple[str, dict[str, Any]]] = {}
+
+        if ids_by_type["app"]:
+            queries["app"] = (
+                f"""
+                FOR cid IN @ids
+                FOR doc IN @@records
+                    FILTER doc.connectorId == cid
+                    FILTER doc.orgId == @org_id
+                    FILTER doc.isInternal != true
+                    {leaf_filter}
+                    {group_return}
+                """,
+                {**base_bind, "ids": ids_by_type["app"]},
+            )
+
+        if ids_by_type["recordGroup"]:
+            queries["recordGroup"] = (
+                f"""
+                FOR cid IN @ids
+                FOR edge IN @@belongs_to
+                    FILTER edge._to == CONCAT(@record_group_prefix, cid)
+                    FILTER STARTS_WITH(edge._from, @record_prefix)
+                    LET doc = DOCUMENT(edge._from)
+                    FILTER doc != null
+                    FILTER doc.orgId == @org_id
+                    FILTER doc.isInternal != true
+                    {leaf_filter}
+                    {group_return}
+                """,
+                {
+                    **base_bind,
+                    "@belongs_to": CollectionNames.BELONGS_TO.value,
+                    "record_group_prefix": f"{CollectionNames.RECORD_GROUPS.value}/",
+                    "record_prefix": f"{CollectionNames.RECORDS.value}/",
+                    "ids": ids_by_type["recordGroup"],
+                },
+            )
+
+        if ids_by_type["folder"]:
+            queries["folder"] = (
+                f"""
+                FOR cid IN @ids
+                FOR doc, edge, path IN 1..100 OUTBOUND CONCAT(@record_prefix, cid) @@record_relations
+                    FILTER path.edges[*].relationshipType ALL IN @rel_types
+                    FILTER doc.isInternal != true
+                    {leaf_filter}
+                    {group_return}
+                """,
+                {
+                    **base_bind,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "record_prefix": f"{CollectionNames.RECORDS.value}/",
+                    "rel_types": [RecordRelations.PARENT_CHILD.value, RecordRelations.ATTACHMENT.value],
+                    "ids": ids_by_type["folder"],
+                },
+            )
+
+        for c_type, (query, bind_vars) in queries.items():
+            try:
+                rows = await self.http_client.execute_aql(
+                    query, bind_vars=bind_vars, txn_id=transaction
+                )
+                for row in rows or []:
+                    c_id = row.get("id")
+                    if not c_id:
+                        continue
+                    rollups.setdefault(c_id, []).append({
+                        "status": row.get("status"),
+                        "stage": row.get("stage"),
+                        "cnt": row.get("cnt") or 0,
+                    })
+            except Exception as e:
+                self.logger.warning(f"⚠️ Failed to compute indexing rollup for {c_type} containers: {str(e)}")
+
+        return rollups
 
     def _get_app_children_subquery(self, app_id: str, org_id: str, user_key: str) -> tuple[str, dict[str, Any]]:
         """Generate AQL sub-query to fetch RecordGroups for an App.
