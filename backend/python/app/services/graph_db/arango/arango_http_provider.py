@@ -10027,6 +10027,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         indexingStatus: record.indexingStatus,
                         indexingStage: record.indexingStage,
                         lastActivityTimestamp: record.lastActivityTimestamp,
+                        indexingProgress: record.indexingProgress,
                         version: record.version,
                         isLatestVersion: record.isLatestVersion,
                         createdAtTimestamp: record.createdAtTimestamp,
@@ -10310,6 +10311,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         indexingStatus: record.indexingStatus,
                         indexingStage: record.indexingStage,
                         lastActivityTimestamp: record.lastActivityTimestamp,
+                        indexingProgress: record.indexingProgress,
                         version: record.version,
                         isLatestVersion: record.isLatestVersion,
                         createdAtTimestamp: record.createdAtTimestamp,
@@ -12445,7 +12447,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 SORT record.{sort_field} {sort_order.upper()}
                 LIMIT @skip, @limit
                 LET fileRecord = FIRST(FOR fileEdge IN @@is_of_type FILTER fileEdge._from == record._id LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }})
-                RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, indexingStage: record.indexingStage, lastActivityTimestamp: record.lastActivityTimestamp, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb: {{ id: item.kb_id || null, name: item.kb_name || null }} }}
+                RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, indexingStage: record.indexingStage, lastActivityTimestamp: record.lastActivityTimestamp, indexingProgress: record.indexingProgress, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb: {{ id: item.kb_id || null, name: item.kb_name || null }} }}
             """
             bind = {
                 "user_from": user_from,
@@ -12615,7 +12617,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 LET fileRecord = FIRST(FOR f IN all_files FILTER f.record_id == record._id RETURN f.file)
                 SORT record.{sort_by or "recordName"} {(sort_order or "asc").upper()}
                 LIMIT @skip, @limit
-                RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, indexingStage: record.indexingStage, lastActivityTimestamp: record.lastActivityTimestamp, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb_id: item.kb_id, folder: {{ id: item.folder_id, name: item.folder_name }} }}
+                RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, indexingStage: record.indexingStage, lastActivityTimestamp: record.lastActivityTimestamp, indexingProgress: record.indexingProgress, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb_id: item.kb_id, folder: {{ id: item.folder_id, name: item.folder_name }} }}
             """
             records = await self.execute_query(main_query, bind_vars=filter_bind)
             count_query = f"""
@@ -14579,6 +14581,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     indexingStatus: record.indexingStatus,
                     indexingStage: record.indexingStage,
                     lastActivityTimestamp: record.lastActivityTimestamp,
+                    indexingProgress: record.indexingProgress,
                     createdAt: record.sourceCreatedAtTimestamp != null ? record.sourceCreatedAtTimestamp : 0,
                     updatedAt: record.sourceLastModifiedTimestamp != null ? record.sourceLastModifiedTimestamp : 0,
                     sizeInBytes: {size_expr},
@@ -14675,6 +14678,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         reason: record.reason,
                         indexingStage: record.indexingStage,
                         lastActivityTimestamp: record.lastActivityTimestamp,
+                        indexingProgress: record.indexingProgress,
                         createdAt: record.sourceCreatedAtTimestamp != null ? record.sourceCreatedAtTimestamp : 0,
                         updatedAt: record.sourceLastModifiedTimestamp != null ? record.sourceLastModifiedTimestamp : 0,
                         sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : (file_info ? file_info.fileSizeInBytes : null),
@@ -16133,6 +16137,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     reason: record.reason,
                     indexingStage: record.indexingStage,
                     lastActivityTimestamp: record.lastActivityTimestamp,
+                    indexingProgress: record.indexingProgress,
                     createdAt: record.sourceCreatedAtTimestamp != null ? record.sourceCreatedAtTimestamp : 0,
                     updatedAt: record.sourceLastModifiedTimestamp != null ? record.sourceLastModifiedTimestamp : 0,
                     sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
@@ -16294,6 +16299,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     reason: record.reason,
                     indexingStage: record.indexingStage,
                     lastActivityTimestamp: record.lastActivityTimestamp,
+                    indexingProgress: record.indexingProgress,
                     createdAt: record.sourceCreatedAtTimestamp != null ? record.sourceCreatedAtTimestamp : 0,
                     updatedAt: record.sourceLastModifiedTimestamp != null ? record.sourceLastModifiedTimestamp : 0,
                     sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
@@ -16399,6 +16405,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     reason: record.reason,
                     indexingStage: record.indexingStage,
                     lastActivityTimestamp: record.lastActivityTimestamp,
+                    indexingProgress: record.indexingProgress,
                     createdAt: record.sourceCreatedAtTimestamp != null ? record.sourceCreatedAtTimestamp : 0,
                     updatedAt: record.sourceLastModifiedTimestamp != null ? record.sourceLastModifiedTimestamp : 0,
                     sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
@@ -16540,6 +16547,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     reason: record.reason,
                     indexingStage: record.indexingStage,
                     lastActivityTimestamp: record.lastActivityTimestamp,
+                    indexingProgress: record.indexingProgress,
                     createdAt: record.sourceCreatedAtTimestamp != null ? record.sourceCreatedAtTimestamp : 0,
                     updatedAt: record.sourceLastModifiedTimestamp != null ? record.sourceLastModifiedTimestamp : 0,
                     sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
@@ -16634,6 +16642,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     reason: record.reason,
                     indexingStage: record.indexingStage,
                     lastActivityTimestamp: record.lastActivityTimestamp,
+                    indexingProgress: record.indexingProgress,
                     createdAt: record.sourceCreatedAtTimestamp != null ? record.sourceCreatedAtTimestamp : 0,
                     updatedAt: record.sourceLastModifiedTimestamp != null ? record.sourceLastModifiedTimestamp : 0,
                     sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,

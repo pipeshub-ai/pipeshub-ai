@@ -140,6 +140,13 @@ export type IndexingStage =
   | 'INDEXING'
   | 'COMPLETED'
   | 'FAILED';
+export interface IndexingProgressMetrics {
+  current: number;
+  total: number;
+  unit: string;
+  phase: string;
+  message?: string | null;
+}
 export type SharingStatus = 'private' | 'team' | 'personal' | 'shared';
 
 /**
@@ -218,6 +225,7 @@ export interface KnowledgeHubNode {
   reason?: string | null;
   indexingStage?: IndexingStage | null;
   lastActivityTimestamp?: number | null;
+  indexingProgress?: IndexingProgressMetrics | null;
   sizeInBytes?: number | null;
   mimeType?: string | null;
   extension?: string | null;
@@ -498,6 +506,7 @@ export interface RecordDetailsResponse {
     reason?: string;
     indexingStage?: IndexingStage | null;
     lastActivityTimestamp?: number | null;
+    indexingProgress?: IndexingProgressMetrics | null;
     connectorName?: string;
     hideWeburl?: boolean;
     previewRenderable?: boolean;

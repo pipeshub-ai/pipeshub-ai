@@ -14,7 +14,7 @@ from qdrant_client.http.models import PointStruct
 from spacy.language import Language
 from spacy.tokens import Doc
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import CollectionNames, IndexingStage
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
@@ -36,6 +36,10 @@ from app.utils.aimodels import (
     get_embedding_model,
 )
 from app.utils.llm import get_llm_for_role
+from app.utils.indexing_progress import (
+    build_indexing_progress,
+    build_indexing_substage_progress,
+)
 
 # Module-level shared spaCy pipeline to avoid repeated heavy loads
 _SHARED_NLP: Optional[Language] = None
@@ -933,8 +937,48 @@ class VectorStore(Transformer):
             or self.embedding_provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value
         )
 
+    async def _update_indexing_progress(
+        self,
+        record_id: str,
+        *,
+        current: int,
+        total: int,
+        unit: str = "chunks",
+        phase: str = "embedding",
+    ) -> None:
+        try:
+            progress = build_indexing_substage_progress(
+                current=current,
+                total=total,
+                unit=unit,
+                phase=phase,
+            )
+            await self.graph_provider.batch_update_nodes(
+                [
+                    {
+                        "id": record_id,
+                        **build_indexing_progress(
+                            IndexingStage.INDEXING,
+                            progress=progress,
+                        ),
+                    }
+                ],
+                CollectionNames.RECORDS.value,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Failed to update indexing progress for record %s: %s",
+                record_id,
+                str(e),
+            )
+
     async def _process_document_chunks(
-        self, langchain_document_chunks: List[Document], record_id: str
+        self,
+        langchain_document_chunks: List[Document],
+        record_id: str,
+        *,
+        progress_offset: int = 0,
+        progress_total: int | None = None,
     ) -> None:
         """Process and store document chunks in the vector store."""
         time.perf_counter()
@@ -945,13 +989,25 @@ class VectorStore(Transformer):
             _LOCAL_CPU_DOCUMENT_BATCH_SIZE if use_local_sequential else _DEFAULT_DOCUMENT_BATCH_SIZE
         )
 
+        completed_documents = progress_offset
+        total_documents = progress_total or len(langchain_document_chunks)
+        progress_lock = asyncio.Lock()
+
         async def process_document_batch(batch_start: int, batch_documents: List[Document]) -> int:
             """Process a single batch of documents."""
+            nonlocal completed_documents
             try:
                 await self.vector_store.aadd_documents(batch_documents)
                 self.logger.debug(
                     f"✅ Processed document batch starting at {batch_start}: {len(batch_documents)} documents"
                 )
+                async with progress_lock:
+                    completed_documents += len(batch_documents)
+                    await self._update_indexing_progress(
+                        record_id,
+                        current=completed_documents,
+                        total=total_documents,
+                    )
                 return len(batch_documents)
             except Exception as batch_error:
                 self.logger.warning(
@@ -1042,6 +1098,13 @@ class VectorStore(Transformer):
             self.logger.info(
                 f"📊 Processing {len(langchain_document_chunks)} langchain document chunks and {len(image_chunks)} image chunks"
             )
+            total_chunks = len(langchain_document_chunks) + len(image_chunks)
+            completed_chunks = 0
+            await self._update_indexing_progress(
+                record_id,
+                current=completed_chunks,
+                total=total_chunks,
+            )
 
             # Process image chunks if any
             if image_chunks:
@@ -1050,12 +1113,21 @@ class VectorStore(Transformer):
                     image_chunks, image_base64s, record_id
                 )
                 await self._store_image_points(points)
+                completed_chunks += len(image_chunks)
+                await self._update_indexing_progress(
+                    record_id,
+                    current=completed_chunks,
+                    total=total_chunks,
+                )
 
             # Process document chunks if any
             if langchain_document_chunks:
                 try:
                     await self._process_document_chunks(
-                        langchain_document_chunks, record_id
+                        langchain_document_chunks,
+                        record_id,
+                        progress_offset=completed_chunks,
+                        progress_total=total_chunks,
                     )
                 except Exception as e:
                     raise VectorStoreError(
@@ -1459,15 +1531,34 @@ class VectorStore(Transformer):
             if is_reconciliation:
                 langchain_docs = [d for d in documents_to_embed if isinstance(d, Document)]
                 image_chunks = [d for d in documents_to_embed if not isinstance(d, Document)]
+                total_chunks = len(langchain_docs) + len(image_chunks)
+                completed_chunks = 0
+                await self._update_indexing_progress(
+                    record_id,
+                    current=completed_chunks,
+                    total=total_chunks,
+                )
 
                 if langchain_docs:
-                    await self._process_document_chunks(langchain_docs, record_id)
+                    await self._process_document_chunks(
+                        langchain_docs,
+                        record_id,
+                        progress_offset=completed_chunks,
+                        progress_total=total_chunks,
+                    )
+                    completed_chunks += len(langchain_docs)
                 if image_chunks:
                     image_base64s = [c.get("image_uri") for c in image_chunks]
                     points = await self._process_image_embeddings(
                         image_chunks, image_base64s, record_id
                     )
                     await self._store_image_points(points)
+                    completed_chunks += len(image_chunks)
+                    await self._update_indexing_progress(
+                        record_id,
+                        current=completed_chunks,
+                        total=total_chunks,
+                    )
             else:
                 await self._create_embeddings(documents_to_embed, record_id, virtual_record_id)
 

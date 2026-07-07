@@ -1891,12 +1891,10 @@ class TestKbUploadedCodeFileHandling:
 
         assert len(events) == 2
         mock_dl.assert_awaited_once()
-        # parsing_complete now triggers a best-effort stage heartbeat write.
-        gp.batch_update_nodes.assert_called_once()
-        stage_doc = gp.batch_update_nodes.call_args[0][0][0]
-        assert stage_doc["id"] == "r1"
-        assert stage_doc["indexingStage"] == "INDEXING"
-        assert "lastActivityTimestamp" in stage_doc
+        # The stage stays EXTRACTING until the vector store flips it to INDEXING at
+        # embedding time; the record handler no longer writes a stage on
+        # parsing_complete, so with a mocked pipeline there is no stage write here.
+        gp.batch_update_nodes.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_non_code_mime_still_rejected(self):

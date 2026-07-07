@@ -250,6 +250,11 @@ function TableRow({
   const isFolder = isHubNode
     ? ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType)
     : item.type === 'folder';
+  const activeProgressView =
+    isKnowledgeHubNode(item) && (item.indexingStatus === 'IN_PROGRESS' || item.indexingStatus === 'QUEUED')
+      ? getIndexingProgressView(item)
+      : null;
+  const rowHeight = activeProgressView ? '76px' : '60px';
 
   // Status label for tooltip
   const getStatusLabel = (): string => {
@@ -270,7 +275,7 @@ function TableRow({
         case 'COMPLETED': baseLabel = 'Completed'; showReason = false; break;
         case 'IN_PROGRESS': {
           const view = getIndexingProgressView(item);
-          return view.isStalled && view.detail ? `${view.label} — ${view.detail}` : view.label;
+          return view.detail ? `${view.label} — ${view.detail}` : view.label;
         }
         case 'FAILED': baseLabel = 'Failed'; break;
         case 'FILE_TYPE_NOT_SUPPORTED': baseLabel = 'File Type Not Supported'; break;
@@ -310,12 +315,8 @@ function TableRow({
       switch (item.indexingStatus) {
         case 'COMPLETED':
           return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--emerald-11)" />;
-        case 'IN_PROGRESS': {
-          const view = getIndexingProgressView(item);
-          return view.isStalled
-            ? <MaterialIcon name="error_outline" size={16} color="var(--orange-9)" />
-            : <LapTimerIcon size={20} color="var(--amber-9)" />;
-        }
+        case 'IN_PROGRESS':
+          return <LapTimerIcon size={20} color="var(--amber-9)" />;
         case 'FAILED':
           return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
         case 'FILE_TYPE_NOT_SUPPORTED':
@@ -374,7 +375,7 @@ function TableRow({
       aria-selected={isSelected}
       aria-label={item.name}
       style={{
-        height: '60px',
+        minHeight: rowHeight,
         backgroundColor: isSelected
           ? 'var(--accent-3)'
           : isHovered

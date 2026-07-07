@@ -56,6 +56,15 @@ class ItemPermission(BaseModel):
     canEdit: bool = Field(..., description="Whether user can edit this item")
     canDelete: bool = Field(..., description="Whether user can delete this item")
 
+
+class IndexingProgressMetrics(BaseModel):
+    """Fine-grained progress within the current indexing stage."""
+    current: int = Field(..., description="Completed units")
+    total: int = Field(..., description="Total units")
+    unit: str = Field(..., description="Unit being counted within one record, e.g. chunks or pages")
+    phase: str = Field(..., description="Substage phase, e.g. embedding")
+    message: Optional[str] = Field(None, description="Human-readable progress message")
+
 class NodeItem(BaseModel):
     """Response model for a single node in the knowledge hub hierarchy"""
     id: str = Field(..., description="Unique identifier for the node")
@@ -70,6 +79,7 @@ class NodeItem(BaseModel):
     reason: Optional[str] = Field(None, description="Reason for current indexing status (e.g. failure reason)")
     indexingStage: Optional[str] = Field(None, description="Coarse pipeline phase within IN_PROGRESS (QUEUED, EXTRACTING, INDEXING, COMPLETED, FAILED)")
     lastActivityTimestamp: Optional[int] = Field(None, description="Heartbeat timestamp (epoch ms) of the last pipeline activity; used to detect stalled records")
+    indexingProgress: Optional[IndexingProgressMetrics] = Field(None, description="Fine-grained progress within the current indexing stage")
     createdAt: int = Field(..., description="Creation timestamp (epoch ms)")
     updatedAt: int = Field(..., description="Update timestamp (epoch ms)")
     sizeInBytes: Optional[int] = Field(None, description="File size in bytes (only for file records)")

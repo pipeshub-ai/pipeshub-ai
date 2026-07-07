@@ -11,7 +11,6 @@ from app.config.constants.arangodb import (
     CollectionNames,
     EventTypes,
     ExtensionTypes,
-    IndexingStage,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
@@ -490,8 +489,6 @@ class RecordEventHandler(BaseEventService):
                     on_event_gen = self.event_processor.on_event(event_data_for_processor)
                     try:
                         async for event in on_event_gen:
-                            if event.event == IndexingEvent.PARSING_COMPLETE and record_id:
-                                await self._mark_indexing_stage(record_id, IndexingStage.INDEXING)
                             yield event
                     finally:
                         await on_event_gen.aclose()
@@ -545,8 +542,6 @@ class RecordEventHandler(BaseEventService):
                     on_event_gen = self.event_processor.on_event(event_data_for_processor)
                     try:
                         async for event in on_event_gen:
-                            if event.event == IndexingEvent.PARSING_COMPLETE and record_id:
-                                await self._mark_indexing_stage(record_id, IndexingStage.INDEXING)
                             yield event
                     finally:
                         await on_event_gen.aclose()
@@ -611,26 +606,6 @@ class RecordEventHandler(BaseEventService):
                         await self._trigger_next_queued_duplicate(record_id, virtual_record_id)
                 else:
                     self.logger.warning(f"Record {record_id} not found in database")
-
-    async def _mark_indexing_stage(self, record_id: str, stage: IndexingStage) -> None:
-        """Best-effort write of the pipeline stage + heartbeat for a record.
-
-        Does not touch ``indexingStatus`` (which is owned by the start/terminal
-        writes); a failure here must never abort processing, so errors are only
-        logged. File-type/model agnostic — called from the shared event loop.
-        """
-        try:
-            # Generic partial-update format: graph providers translate `id` → `_key`
-            # (Arango) or match on `id` (Neo4j).
-            doc = {"id": record_id, **build_indexing_progress(stage)}
-            await self.event_processor.graph_provider.batch_update_nodes(
-                [doc], CollectionNames.RECORDS.value
-            )
-        except Exception as e:
-            self.logger.warning(
-                "⚠️ Failed to mark indexing stage %s for record %s: %s",
-                stage.value, record_id, repr(e),
-            )
 
     async def __update_document_status(
         self,

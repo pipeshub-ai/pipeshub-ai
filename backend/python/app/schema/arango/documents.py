@@ -253,6 +253,17 @@ record_schema = {
             "indexingStage": {"type": ["string", "null"]},
             # Heartbeat updated at each pipeline checkpoint; UI flags stalled records from it.
             "lastActivityTimestamp": {"type": ["number", "null"]},
+            "indexingProgress": {
+                "type": ["object", "null"],
+                "properties": {
+                    "current": {"type": "number"},
+                    "total": {"type": "number"},
+                    "unit": {"type": "string"},
+                    "phase": {"type": "string"},
+                    "message": {"type": ["string", "null"]},
+                },
+                "additionalProperties": False,
+            },
             "summaryDocumentId": {"type": ["string", "null"]},
             "virtualRecordId": {"type": ["string", "null"], "default": None},
             "previewRenderable": {"type": ["boolean", "null"], "default": True},

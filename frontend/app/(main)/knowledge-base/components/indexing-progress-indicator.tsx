@@ -1,14 +1,13 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
-import { getIndexingProgressView, type IndexingProgressInput } from '../utils/indexing-progress';
-
-const STEPS = [
-  { label: 'Queued', percent: 5 },
-  { label: 'Extract', percent: 35 },
-  { label: 'Index', percent: 75 },
-  { label: 'Done', percent: 100 },
-] as const;
+import {
+  PROGRESS_STEPS,
+  getIndexingProgressView,
+  isActiveIndexingStatus,
+  type IndexingProgressInput,
+} from '../utils/indexing-progress';
 
 export function IndexingProgressIndicator({
   record,
@@ -17,28 +16,39 @@ export function IndexingProgressIndicator({
   record: IndexingProgressInput;
   compact?: boolean;
 }) {
-  const view = getIndexingProgressView(record);
-  const activeColor = view.isStalled ? 'var(--orange-9)' : 'var(--blue-9)';
-  const activeText = view.isStalled ? 'var(--orange-11)' : 'var(--blue-11)';
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!isActiveIndexingStatus(record.indexingStatus)) return undefined;
+    const interval = window.setInterval(() => setNow(Date.now()), 2000);
+    return () => window.clearInterval(interval);
+  }, [record.indexingStatus]);
+
+  const view = getIndexingProgressView(record, now);
+  const activeColor = 'var(--blue-9)';
+  const activeText = 'var(--blue-11)';
+  const isMoving = view.isActive;
+  const barBackground = isMoving
+    ? `linear-gradient(90deg, ${activeColor} 0%, ${activeColor} 35%, var(--blue-7) 50%, ${activeColor} 65%, ${activeColor} 100%)`
+    : activeColor;
 
   return (
-    <Flex direction="column" gap="1" style={{ minWidth: compact ? 180 : 240, maxWidth: compact ? 220 : 320 }}>
+    <Flex direction="column" gap="1" style={{ minWidth: compact ? 180 : 240, maxWidth: compact ? 240 : 320 }}>
       <Flex align="center" justify="between" gap="2">
         <Text size="1" weight="medium" style={{ color: activeText, whiteSpace: 'nowrap' }}>
-          {view.isStalled ? 'Stalled' : 'In progress'}
+          In progress
         </Text>
         <Text size="1" weight="medium" style={{ color: activeText, whiteSpace: 'nowrap' }}>
           {view.percent}%
         </Text>
       </Flex>
       <Flex align="center" gap="1" style={{ minWidth: 0 }}>
-        {STEPS.map((step) => {
-          const isReached = view.percent >= step.percent;
-          const isCurrent = !view.isStalled && view.percent === step.percent;
-          const color = isReached || isCurrent ? activeColor : 'var(--slate-6)';
-          const textColor = isReached || isCurrent ? activeText : 'var(--slate-9)';
+        {PROGRESS_STEPS.map((label, index) => {
+          const isReached = index <= view.stepIndex;
+          const color = isReached ? activeColor : 'var(--slate-6)';
+          const textColor = isReached ? activeText : 'var(--slate-9)';
           return (
-            <Flex key={step.label} align="center" gap="1" style={{ minWidth: 0 }}>
+            <Flex key={label} align="center" gap="1" style={{ minWidth: 0 }}>
               <Box
                 style={{
                   width: compact ? 6 : 7,
@@ -56,7 +66,7 @@ export function IndexingProgressIndicator({
                   whiteSpace: 'nowrap',
                 }}
               >
-                {step.label}
+                {label}
               </Text>
             </Flex>
           );
@@ -68,13 +78,26 @@ export function IndexingProgressIndicator({
             width: `${view.percent}%`,
             height: '100%',
             borderRadius: '9999px',
-            background: activeColor,
+            background: barBackground,
+            backgroundSize: isMoving ? '200% 100%' : undefined,
+            animation: isMoving ? 'shimmer-sweep 1.4s linear infinite' : undefined,
             transition: 'width 0.25s ease',
           }}
         />
       </Box>
       {view.detail ? (
-        <Text size="1" style={{ color: activeText }}>
+        <Text
+          size="1"
+          style={{
+            color: activeText,
+            display: '-webkit-box',
+            lineHeight: '13px',
+            overflow: 'hidden',
+            WebkitBoxOrient: 'vertical',
+            WebkitLineClamp: 2,
+            whiteSpace: 'normal',
+          }}
+        >
           {view.detail}
         </Text>
       ) : null}

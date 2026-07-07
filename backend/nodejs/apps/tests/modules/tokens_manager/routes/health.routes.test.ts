@@ -997,8 +997,7 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.status).to.equal('unhealthy')
     })
 
-    it('should handle unexpected error in overall try-catch', async () => {
-      // Make Promise.allSettled itself throw by breaking axiosModule
+    it('should return per-service starting details when service checks throw synchronously', async () => {
       sinon.stub(axiosModule, 'get').throws(new Error('Unexpected'))
 
       const handler = findHandler('/services', 'get')
@@ -1010,8 +1009,10 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(res.status.calledWith(200)).to.be.true
       const jsonArg = res.json.firstCall.args[0]
       expect(jsonArg.status).to.equal('unhealthy')
-      expect(jsonArg.services.query).to.equal('unknown')
-      expect(jsonArg.services.connector).to.equal('unknown')
+      expect(jsonArg.services.query).to.equal('unhealthy')
+      expect(jsonArg.services.connector).to.equal('unhealthy')
+      expect(jsonArg.details.query.status).to.equal('starting')
+      expect(jsonArg.details.query.message).to.equal('Waiting for Query Service')
     })
 
     it('should still be healthy when only indexing is down (non-critical)', async () => {

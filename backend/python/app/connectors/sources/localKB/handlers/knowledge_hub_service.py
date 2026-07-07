@@ -28,6 +28,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
 )
 from app.models.entities import RecordType
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.indexing_progress import normalize_indexing_progress
 
 FOLDER_MIME_TYPES = [
     'application/vnd.folder',
@@ -799,6 +800,7 @@ class KnowledgeHubService:
             reason=doc.get('reason'),
             indexingStage=doc.get('indexingStage'),
             lastActivityTimestamp=doc.get('lastActivityTimestamp'),
+            indexingProgress=normalize_indexing_progress(doc.get('indexingProgress')),
             createdAt=doc.get('createdAt', 0),
             updatedAt=doc.get('updatedAt', 0),
             sizeInBytes=doc.get('sizeInBytes'),

@@ -732,6 +732,7 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
               indexingStatus: fresh.indexingStatus,
               indexingStage: fresh.indexingStage,
               lastActivityTimestamp: fresh.lastActivityTimestamp,
+              indexingProgress: fresh.indexingProgress,
               reason: fresh.reason,
             };
           };

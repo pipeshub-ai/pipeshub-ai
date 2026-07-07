@@ -39,6 +39,7 @@ class GraphDBTransformer(Transformer):
                         "isDirty": False,
                         "virtualRecordId": virtual_record_id,
                         "lastIndexTimestamp": timestamp,
+                        **build_indexing_progress(IndexingStage.COMPLETED, timestamp=timestamp),
                     }
                     self.logger.info(
                         "🎯 Updating indexing status metadata for document"

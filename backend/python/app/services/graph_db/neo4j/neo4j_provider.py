@@ -681,7 +681,27 @@ class Neo4jProvider(IGraphDBProvider):
         # Remove _id if present (we'll reconstruct it if needed)
         neo4j_node.pop("_id", None)
 
+        # Neo4j node properties must be primitives or arrays of primitives; it
+        # rejects nested maps (e.g. ``indexingProgress``) and arrays of maps.
+        # JSON-encode those so writes don't fail; readers decode as needed.
+        for key, value in list(neo4j_node.items()):
+            if isinstance(value, dict) or (
+                isinstance(value, list)
+                and any(isinstance(item, (dict, list)) for item in value)
+            ):
+                neo4j_node[key] = json.dumps(value)
+
         return neo4j_node
+
+    def _prepare_neo4j_node_for_write(self, arango_node: dict, collection: str) -> dict:
+        """Validate against the Arango-shaped schema, then encode for Neo4j storage.
+
+        Nested fields like ``indexingProgress`` are validated as objects here and
+        JSON-encoded in ``_arango_to_neo4j_node`` because Neo4j properties must
+        be primitives.
+        """
+        self.validator.validate_node_update(collection, arango_node)
+        return self._arango_to_neo4j_node(arango_node, collection)
 
     def _neo4j_to_arango_node(self, neo4j_node: dict, collection: str) -> dict:
         """
@@ -912,15 +932,13 @@ class Neo4jProvider(IGraphDBProvider):
             # Convert nodes to Neo4j format
             neo4j_nodes = []
             for node in nodes:
-                neo4j_node = self._arango_to_neo4j_node(node, collection)
+                neo4j_node = self._prepare_neo4j_node_for_write(node, collection)
                 # Ensure id exists
                 if "id" not in neo4j_node:
                     if "_key" in neo4j_node:
                         neo4j_node["id"] = neo4j_node.pop("_key")
                     else:
                         neo4j_node["id"] = str(uuid.uuid4())
-                # Validate nodes before writing
-                self.validator.validate_node_update(collection, neo4j_node)
                 neo4j_nodes.append(neo4j_node)
 
             # Use UNWIND for batch upsert
@@ -1008,10 +1026,8 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             label = collection_to_label(collection)
 
-            # Convert updates to Neo4j format
-            updates = self._arango_to_neo4j_node(node_updates, collection)
-            # Validate updates before writing
-            self.validator.validate_node_update(collection, updates)
+            # Validate against the object schema, then encode nested fields for Neo4j.
+            updates = self._prepare_neo4j_node_for_write(node_updates, collection)
 
             query = f"""
             MATCH (n:{label} {{id: $key}})
@@ -1060,9 +1076,7 @@ class Neo4jProvider(IGraphDBProvider):
             # Convert nodes to Neo4j format and validate
             neo4j_nodes = []
             for node in nodes:
-                neo4j_node = self._arango_to_neo4j_node(node, collection)
-                self.validator.validate_node_update(collection, neo4j_node)
-                neo4j_nodes.append(neo4j_node)
+                neo4j_nodes.append(self._prepare_neo4j_node_for_write(node, collection))
 
             # Use UNWIND to batch update multiple nodes
             # MATCH ensures we only update existing nodes (no CREATE)
@@ -11687,6 +11701,7 @@ class Neo4jProvider(IGraphDBProvider):
                 indexingStatus: record.indexingStatus,
                 indexingStage: record.indexingStage,
                 lastActivityTimestamp: record.lastActivityTimestamp,
+                indexingProgress: record.indexingProgress,
                 createdAtTimestamp: record.createdAtTimestamp,
                 updatedAtTimestamp: record.updatedAtTimestamp,
                 sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
@@ -12019,6 +12034,7 @@ class Neo4jProvider(IGraphDBProvider):
                 indexingStatus: record.indexingStatus,
                 indexingStage: record.indexingStage,
                 lastActivityTimestamp: record.lastActivityTimestamp,
+                indexingProgress: record.indexingProgress,
                 createdAtTimestamp: record.createdAtTimestamp,
                 updatedAtTimestamp: record.updatedAtTimestamp,
                 sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
@@ -12071,6 +12087,7 @@ class Neo4jProvider(IGraphDBProvider):
                 indexingStatus: record.indexingStatus,
                 indexingStage: record.indexingStage,
                 lastActivityTimestamp: record.lastActivityTimestamp,
+                indexingProgress: record.indexingProgress,
                 createdAtTimestamp: record.createdAtTimestamp,
                 updatedAtTimestamp: record.updatedAtTimestamp,
                 sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
@@ -12354,6 +12371,7 @@ class Neo4jProvider(IGraphDBProvider):
                 indexingStatus: record.indexingStatus,
                 indexingStage: record.indexingStage,
                 lastActivityTimestamp: record.lastActivityTimestamp,
+                indexingProgress: record.indexingProgress,
                 version: record.version,
                 isLatestVersion: COALESCE(record.isLatestVersion, true),
                 createdAtTimestamp: record.createdAtTimestamp,
@@ -12572,6 +12590,7 @@ class Neo4jProvider(IGraphDBProvider):
                 indexingStatus: record.indexingStatus,
                 indexingStage: record.indexingStage,
                 lastActivityTimestamp: record.lastActivityTimestamp,
+                indexingProgress: record.indexingProgress,
                 version: record.version,
                 isLatestVersion: COALESCE(record.isLatestVersion, true),
                 createdAtTimestamp: record.createdAtTimestamp,
@@ -14709,6 +14728,7 @@ class Neo4jProvider(IGraphDBProvider):
                 reason: record.reason,
                 indexingStage: record.indexingStage,
                 lastActivityTimestamp: record.lastActivityTimestamp,
+                indexingProgress: record.indexingProgress,
                 createdAt: coalesce(record.sourceCreatedAtTimestamp, record.createdAtTimestamp, 0),
                 updatedAt: coalesce(record.sourceLastModifiedTimestamp, record.updatedAtTimestamp, 0),
                 sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
@@ -14871,6 +14891,7 @@ class Neo4jProvider(IGraphDBProvider):
                 reason: record.reason,
                 indexingStage: record.indexingStage,
                 lastActivityTimestamp: record.lastActivityTimestamp,
+                indexingProgress: record.indexingProgress,
                 createdAt: coalesce(record.sourceCreatedAtTimestamp, record.createdAtTimestamp, 0),
                 updatedAt: coalesce(record.sourceLastModifiedTimestamp, record.updatedAtTimestamp, 0),
                 sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
@@ -14962,6 +14983,7 @@ class Neo4jProvider(IGraphDBProvider):
             reason: record.reason,
             indexingStage: record.indexingStage,
             lastActivityTimestamp: record.lastActivityTimestamp,
+            indexingProgress: record.indexingProgress,
             createdAt: coalesce(record.sourceCreatedAtTimestamp, 0),
             updatedAt: coalesce(record.sourceLastModifiedTimestamp, 0),
             sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
@@ -15853,7 +15875,8 @@ class Neo4jProvider(IGraphDBProvider):
                                         CASE WHEN file_info IS NOT NULL THEN file_info.sizeInBytes ELSE null END),
                    indexingStatus: record.indexingStatus,
                    indexingStage: record.indexingStage,
-                   lastActivityTimestamp: record.lastActivityTimestamp
+                   lastActivityTimestamp: record.lastActivityTimestamp,
+                   indexingProgress: record.indexingProgress
                  }
                ELSE null END
              ) AS record_nodes_with_nulls
@@ -16116,6 +16139,7 @@ class Neo4jProvider(IGraphDBProvider):
                    reason: record.reason,
                    indexingStage: record.indexingStage,
                    lastActivityTimestamp: record.lastActivityTimestamp,
+                   indexingProgress: record.indexingProgress,
                    createdAt: COALESCE(record.sourceCreatedAtTimestamp, 0),
                    updatedAt: COALESCE(record.sourceLastModifiedTimestamp, 0),
                    sizeInBytes: COALESCE(record.sizeInBytes,
