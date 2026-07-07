@@ -2896,6 +2896,120 @@ export const getAvailableModelsByType =
     }
   };
 
+// Mirrors the huggingface_hub repo-id shape (`owner/name` or a bare model
+// id) that the embedding server accepts, so a malformed value fails fast in
+// Node.js instead of reaching the Python service or the filesystem cache.
+const MODEL_NAME_PATTERN = /^[\w.-]+(\/[\w.-]+)?$/;
+
+function resolveEmbeddingServerUrl(): string {
+  return (process.env.EMBEDDING_SERVER_URL || 'http://localhost:8002').replace(
+    /\/v1\/?$/,
+    '',
+  );
+}
+
+// Kicks off a non-blocking download/load on the embedding server and
+// returns immediately with its status. Callers then poll
+// `streamEmbeddingDownloadProgress` instead of blocking a single request on
+// a multi-GB download — that is what previously tripped both the axios
+// timeout here and the health-check timeout downstream.
+export const prepareEmbeddingModel =
+  () =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { model, trustRemoteCode = false } = req.body;
+
+      if (!model || typeof model !== 'string' || !MODEL_NAME_PATTERN.test(model)) {
+        res.status(400).json({
+          status: 'error',
+          message: 'A valid model name is required',
+        });
+        return;
+      }
+
+      const embeddingServerUrl = resolveEmbeddingServerUrl();
+      const response = await axios.post(
+        `${embeddingServerUrl}/prepare-model`,
+        { model, trust_remote_code: Boolean(trustRemoteCode) },
+        { timeout: 5000 },
+      );
+
+      res.status(response.status).json(response.data);
+    } catch (error: any) {
+      logger.error('Error preparing embedding model', { error });
+      if (error.response) {
+        res.status(error.response.status).json(error.response.data);
+        return;
+      }
+      next(error);
+    }
+  };
+
+// Server-Sent Events proxy: polls the embedding server's download-progress
+// endpoint and forwards each snapshot to the browser so the config dialog
+// can render a live progress bar instead of an opaque spinner.
+export const streamEmbeddingDownloadProgress =
+  () =>
+  async (req: AuthenticatedUserRequest, res: Response, _next: NextFunction) => {
+    const model = req.query.model;
+    if (!model || typeof model !== 'string' || !MODEL_NAME_PATTERN.test(model)) {
+      res.status(400).json({
+        status: 'error',
+        message: 'A valid model query parameter is required',
+      });
+      return;
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+
+    const embeddingServerUrl = resolveEmbeddingServerUrl();
+    const encodedModel = encodeURIComponent(model);
+    let closed = false;
+
+    req.on('close', () => {
+      closed = true;
+    });
+
+    while (!closed) {
+      try {
+        const response = await axios.get(
+          `${embeddingServerUrl}/download-progress/${encodedModel}`,
+          { timeout: 5000 },
+        );
+        const payload = { ...response.data, timestamp: Date.now() };
+        res.write(`event: progress\ndata: ${JSON.stringify(payload)}\n\n`);
+
+        if (payload.status === 'ready' || payload.status === 'failed') {
+          break;
+        }
+      } catch (error: any) {
+        logger.error('Error streaming embedding download progress', { error });
+        res.write(
+          `event: progress\ndata: ${JSON.stringify({
+            model,
+            status: 'failed',
+            progress: 0,
+            downloaded_bytes: 0,
+            total_bytes: 0,
+            error: 'Lost connection to embedding server',
+            timestamp: Date.now(),
+          })}\n\n`,
+        );
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+
+    if (!closed) {
+      res.end();
+    }
+  };
+
 export const addAIModelProvider =
   (
     keyValueStoreService: KeyValueStoreService,
