@@ -138,12 +138,16 @@ def _measure_blobs_dir_bytes(blobs_dir: str) -> int:
     if not os.path.isdir(blobs_dir):
         return 0
     total = 0
-    for entry in os.scandir(blobs_dir):
-        try:
-            if entry.is_file(follow_symlinks=False):
-                total += entry.stat(follow_symlinks=False).st_size
-        except OSError:
-            continue
+    try:
+        with os.scandir(blobs_dir) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    continue
+    except OSError:
+        return 0
     return total
 
 

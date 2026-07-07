@@ -290,7 +290,7 @@ export function ModelConfigDialog({
 
       const trustRemoteCode = Boolean(currentValues.trustRemoteCode);
       const prepareResult = await AIModelsApi.prepareModel(modelNameForDownload, trustRemoteCode);
-      if (prepareResult.status === 'ready') return true;
+      if (prepareResult?.status === 'ready') return true;
 
       return waitForModelDownload(modelNameForDownload, trustRemoteCode);
     },

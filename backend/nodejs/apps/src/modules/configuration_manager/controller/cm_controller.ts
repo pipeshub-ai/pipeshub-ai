@@ -2964,6 +2964,7 @@ export const streamEmbeddingDownloadProgress =
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
     });
 
     const embeddingServerUrl = resolveEmbeddingServerUrl();
@@ -2981,24 +2982,30 @@ export const streamEmbeddingDownloadProgress =
           { timeout: 5000 },
         );
         const payload = { ...response.data, timestamp: Date.now() };
-        res.write(`event: progress\ndata: ${JSON.stringify(payload)}\n\n`);
+        if (!closed) {
+          res.write(`event: progress\ndata: ${JSON.stringify(payload)}\n\n`);
+        }
 
         if (payload.status === 'ready' || payload.status === 'failed') {
           break;
         }
       } catch (error: any) {
         logger.error('Error streaming embedding download progress', { error });
-        res.write(
-          `event: progress\ndata: ${JSON.stringify({
-            model,
-            status: 'failed',
-            progress: 0,
-            downloaded_bytes: 0,
-            total_bytes: 0,
-            error: 'Lost connection to embedding server',
-            timestamp: Date.now(),
-          })}\n\n`,
-        );
+        // The client may have disconnected while the request above was in
+        // flight — writing to an already-closed response throws.
+        if (!closed) {
+          res.write(
+            `event: progress\ndata: ${JSON.stringify({
+              model,
+              status: 'failed',
+              progress: 0,
+              downloaded_bytes: 0,
+              total_bytes: 0,
+              error: 'Lost connection to embedding server',
+              timestamp: Date.now(),
+            })}\n\n`,
+          );
+        }
         break;
       }
 
