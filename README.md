@@ -48,8 +48,7 @@
 
 <h2 id="about-pipeshub">PipesHub - Explainable & Extensible</h2>
 
-<strong>[PipesHub](https://www.pipeshub.com/)</strong> is an open-source, self-hosted AI-native execution layer that connects enterprise knowledge, delivers explainable search with citations, and automates workflows across your systems.
-
+<strong>[PipesHub](https://www.pipeshub.com/)</strong> is the open-source Context Layer for Enterprise AI. Connect enterprise knowledge across your organization, preserve access permissions, generate trustworthy citations, and build AI agents, enterprise search, RAG applications, MCP servers, and agentic workflows on a single governed context layer.
 
 ## Features
 
