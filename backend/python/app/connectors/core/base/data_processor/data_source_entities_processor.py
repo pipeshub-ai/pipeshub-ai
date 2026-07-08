@@ -827,6 +827,23 @@ class DataSourceEntitiesProcessor:
                         record.record_name,
                     )
                     await self._process_record(record, [], tx_store)
+                elif record.is_shared_with_me and record.shared_with_me_record_group_id is not None:
+                    # The record already has BELONGS_TO edges (e.g. to the owner's "My Drive"), but
+                    # the shared-with-me edge for *this* user may still be missing because
+                    # _process_record is skipped in the belongs_to_edges branch above.
+                    self.logger.debug(f"Creating shared-with-me record group relation for record {record.record_name} and record group {record.shared_with_me_record_group_id}")
+                    shared_with_me_rg = await tx_store.get_record_group_by_external_id(
+                        connector_id=record.connector_id,
+                        external_id=record.shared_with_me_record_group_id,
+                    )
+                    if shared_with_me_rg:
+                        await tx_store.create_record_group_relation(record.id, shared_with_me_rg.id)
+                    else:
+                        self.logger.warning(
+                            "Shared-with-me record group %s not found for record %s",
+                            record.shared_with_me_record_group_id,
+                            record.id,
+                        )
 
                 # Step 1: Delete all existing permission edges that point TO this record.
                 deleted_count = await tx_store.delete_edges_to(
