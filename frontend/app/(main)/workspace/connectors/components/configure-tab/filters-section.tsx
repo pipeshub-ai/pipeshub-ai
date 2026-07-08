@@ -647,25 +647,6 @@ function ManualIndexingSection({ field }: { field: FilterSchemaField }) {
   const row = getRow(field, raw);
   const checked = row.value === true || row.value === 'true';
 
-  // Tooltip body is a <p>; only phrasing content is valid (no div/Flex inside).
-  const tooltipContent = (
-    <Text
-      as="span"
-      size="1"
-      style={{
-        display: 'block',
-        maxWidth: 300,
-        whiteSpace: 'pre-line',
-        color: 'var(--gray-12)',
-        lineHeight: 1.55,
-      }}
-    >
-      {`OFF (default): Records are automatically indexed based on the indexing filters below.
-
-ON: No records are automatically indexed. You manually choose which records to index from the knowledge base.`}
-    </Text>
-  );
-
   return (
     <Box
       style={{
@@ -695,7 +676,13 @@ ON: No records are automatically indexed. You manually choose which records to i
               <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
                 {field.displayName}
               </Text>
-              <Tooltip content={tooltipContent}>
+              <Tooltip
+                maxWidth="300px"
+                style={{ whiteSpace: 'pre-line', lineHeight: 1.55 }}
+                content={`OFF (default): Records are automatically indexed based on the indexing filters below.
+
+ON: No records are automatically indexed. You manually choose which records to index from the knowledge base.`}
+              >
                 <IconButton
                   type="button"
                   size="1"
