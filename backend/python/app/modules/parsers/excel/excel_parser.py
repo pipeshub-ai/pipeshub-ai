@@ -34,14 +34,11 @@ from app.modules.parsers.excel.prompt_template import (
     TableHeaders,
     excel_header_detection_prompt,
     excel_header_generation_prompt,
-    row_text_prompt,
-    row_text_prompt_for_csv,
     sheet_summary_prompt,
     table_summary_prompt,
 )
-from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
+from app.utils.indexing_helpers import generate_simple_row_text
 from app.utils.streaming import (
-    invoke_with_row_descriptions_and_reflection,
     invoke_with_structured_output_and_reflection,
 )
 
@@ -346,7 +343,6 @@ class ExcelParser:
         # Store prompts
         self.sheet_summary_prompt = sheet_summary_prompt
         self.table_summary_prompt = table_summary_prompt
-        self.row_text_prompt = row_text_prompt
 
         # Configure retry parameters
         self.max_retries = 3
@@ -1126,10 +1122,14 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             raise
 
     async def get_table_summary(self, table: dict[str, Any]) -> str:
-        """Get a natural language summary of a specific table"""
+        """Build a deterministic table summary from parsed cell values.
+
+        This summary is indexed as factual context, so it must not be rewritten by
+        an LLM. Spreadsheet row values are especially sensitive because generated
+        summaries can corrupt names and amounts before retrieval.
+        """
         self.logger.info(f"Getting summary for table with {len(table['headers'])} columns and {len(table['data'])} rows")
         try:
-            # Prepare sample data
             sample_data = [
                 {
                     cell["header"]: (
@@ -1142,15 +1142,13 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 for row in table["data"][:3]  # Use first 3 rows as sample
             ]
 
-            # Get summary from LLM with retry
-            messages = self.table_summary_prompt.format_messages(
-                headers=table["headers"], sample_data=json.dumps(sample_data, indent=2)
+            summary = (
+                f"Excel table with {len(table['headers'])} columns and {len(table['data'])} rows. "
+                f"Headers: {', '.join(str(header) for header in table['headers'])}. "
+                f"Sample rows: {json.dumps(sample_data, ensure_ascii=False, default=str)}"
             )
-            response = await self._call_llm(messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
-            self.logger.info("Table summary generated")
-            return response.content
+            self.logger.info("Deterministic table summary generated")
+            return summary
 
         except Exception as e:
             self.logger.error(f"Error getting table summary: {e}", exc_info=True)
@@ -1159,10 +1157,9 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
     async def get_rows_text(
         self, rows: list[list[dict[str, Any]]], table_summary: str
     ) -> list[str]:
-        """Convert multiple rows into natural language text using context from summaries in a single prompt"""
-        self.logger.info(f"Converting {len(rows)} rows to natural language text")
+        """Convert rows into exact, deterministic text without LLM rewriting."""
+        self.logger.info(f"Converting {len(rows)} rows to deterministic row text")
         try:
-            # Prepare rows data
             rows_data = [
                 {
                     cell["header"]: (
@@ -1175,31 +1172,9 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 for row in rows
             ]
 
-            # Get natural language text from LLM with count validation
-            # Use CSV prompt which includes explicit row count validation
-            messages = row_text_prompt_for_csv.format_messages(
-                table_summary=table_summary,
-                numbered_rows_data=format_rows_with_index(rows_data),
-                row_count=len(rows_data)
-            )
-
-            # Default to simple text representations of rows
-            descriptions = [generate_simple_row_text(row) for row in rows_data]
-
-            # Use centralized utility with reflection and count validation
-            parsed_response = await invoke_with_row_descriptions_and_reflection(
-                self.llm, messages, expected_count=len(rows_data)
-            )
-
-            if parsed_response is not None and parsed_response.descriptions:
-                descriptions = parsed_response.descriptions
-                self.logger.info(f"Successfully generated natural language descriptions for {len(descriptions)} rows")
-            else:
-                self.logger.warning(f"LLM failed to generate descriptions, using fallback for {len(rows_data)} rows")
-
-            return descriptions
+            return [generate_simple_row_text(row) for row in rows_data]
         except Exception as e:
-            self.logger.error(f"Error converting rows to natural language text: {e}", exc_info=True)
+            self.logger.error(f"Error converting rows to deterministic text: {e}", exc_info=True)
             raise
 
     async def process_sheet_with_summaries(
@@ -1247,7 +1222,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             processed_rows = []
 
             if use_llm_for_rows:
-                self.logger.info(f"Using LLM for row processing (under threshold of {threshold})")
+                self.logger.info(f"Using deterministic row processing (under threshold of {threshold})")
                 # Process rows in batches of 50 in parallel using LLM
                 batch_size = 50
 
@@ -1274,7 +1249,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
                 # Wait for all batches to complete (max 10 running concurrently)
                 task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
-                self.logger.info(f"Completed processing {len(batch_tasks)} batches with LLM")
+                self.logger.info(f"Completed processing {len(batch_tasks)} batches with deterministic row text")
 
                 # Combine results with their metadata and process
                 for i, (_start_idx, batch, _) in enumerate(batch_tasks):
@@ -1430,5 +1405,3 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
         self.logger.info(f"Workbook processing complete. Total: {len(blocks)} blocks, {len(block_groups)} block groups")
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
-
-

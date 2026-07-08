@@ -700,12 +700,22 @@ class Processor:
                     self.logger.warning(f"No table_markdown found for table group {table_group.index}")
                     continue
 
-                # Get LLM-enhanced summary and column headers
+                existing_headers = []
+                if table_group.data:
+                    raw_headers = table_group.data.get("column_headers") or []
+                    if isinstance(raw_headers, list):
+                        existing_headers = [
+                            str(header)
+                            for header in raw_headers
+                            if str(header).strip()
+                        ]
+
+                # Get LLM-enhanced summary and fallback column headers.
                 response = await get_table_summary_n_headers(self.config_service, table_markdown)
 
                 if response:
                     table_summary = response.summary or ""
-                    column_headers = response.headers or []
+                    column_headers = existing_headers or response.headers or []
 
                     # Update BlockGroup with enhanced data
                     table_group.description = table_summary
@@ -2027,4 +2037,3 @@ class Processor:
         except Exception as e:
             self.logger.error(f"❌ Error processing {record_type} document: {str(e)}")
             raise
-

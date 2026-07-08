@@ -5,7 +5,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from jinja2 import Template
 from pydantic import BaseModel, Field
 
-from app.modules.parsers.excel.prompt_template import RowDescriptions, row_text_prompt
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
@@ -111,7 +110,7 @@ async def get_table_summary_n_headers(config, table_data) -> Optional[TableSumma
 async def get_rows_text(
     config, table_data: dict, table_summary: str, column_headers: list[str]
 ) -> Tuple[List[str], List[List[dict]]]:
-    """Convert multiple rows into natural language text using context from summaries in a single prompt"""
+    """Convert multiple rows into deterministic text from exact cell values."""
     table = table_data.get("grid")
     if table:
         try:
@@ -131,24 +130,7 @@ async def get_rows_text(
                 for row in table_rows
             ]
 
-            # Get natural language text from LLM with retry
-            messages = row_text_prompt.format_messages(
-                table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2)
-            )
-            llm, _ = await get_llm_for_role(config, "indexing")
-
-            # Default to string representations of rows
-            descriptions = [str(row) for row in rows_data]
-
-            # Use centralized utility with reflection
-            parsed_response = await invoke_with_structured_output_and_reflection(
-                llm, messages, RowDescriptions
-            )
-
-            if parsed_response is not None and parsed_response.descriptions:
-                descriptions = parsed_response.descriptions
-
-            return descriptions, table_rows
+            return [generate_simple_row_text(row) for row in rows_data], table_rows
         except Exception:
             raise
     else:
@@ -183,8 +165,6 @@ def format_rows_with_index(rows: list[dict]) -> str:
     for i, row in enumerate(rows, 1):
         numbered_rows.append(f"Row {i}: {json.dumps(row, indent=2)}")
     return "\n".join(numbered_rows)
-
-
 
 
 
