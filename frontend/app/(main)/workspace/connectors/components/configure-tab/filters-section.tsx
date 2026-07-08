@@ -10,11 +10,11 @@ import {
   Badge,
   DropdownMenu,
   Switch,
-  Tooltip,
   IconButton,
   Checkbox,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { HelpTooltip } from '@/app/components/ui/help-tooltip';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { FilterDropdown } from '@/app/components/ui/filter-dropdown';
 import { DateRangePicker } from '@/app/components/ui/date-range-picker';
@@ -23,6 +23,7 @@ import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import type { FilterSchemaField } from '../../types';
 import { isMeaningfulFilterRow } from '../../utils/sync-filter-save-guards';
+import { MANUAL_INDEXING_TOOLTIP_TEXT } from '../../utils/manual-indexing-tooltip';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 
 type FilterSection = 'sync' | 'indexing';
@@ -676,13 +677,7 @@ function ManualIndexingSection({ field }: { field: FilterSchemaField }) {
               <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
                 {field.displayName}
               </Text>
-              <Tooltip
-                maxWidth="300px"
-                style={{ whiteSpace: 'pre-line', lineHeight: 1.55 }}
-                content={`OFF (default): Records are automatically indexed based on the indexing filters below.
-
-ON: No records are automatically indexed. You manually choose which records to index from the knowledge base.`}
-              >
+              <HelpTooltip content={MANUAL_INDEXING_TOOLTIP_TEXT}>
                 <IconButton
                   type="button"
                   size="1"
@@ -693,7 +688,7 @@ ON: No records are automatically indexed. You manually choose which records to i
                 >
                   <MaterialIcon name="info" size={16} color="var(--gray-10)" />
                 </IconButton>
-              </Tooltip>
+              </HelpTooltip>
             </Flex>
           </Flex>
           {field.description ? (
