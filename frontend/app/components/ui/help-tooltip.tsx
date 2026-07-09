@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { Tooltip } from '@radix-ui/themes';
-import { buildHelpTooltipProps } from './help-tooltip';
+import { buildHelpTooltipProps } from './help-tooltip-props';
 
 export type HelpTooltipProps = {
   /** Plain text only — Radix tooltips set their own text/background colors. */
