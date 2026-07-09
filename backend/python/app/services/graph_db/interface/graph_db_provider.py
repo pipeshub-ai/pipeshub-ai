@@ -2372,6 +2372,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def check_vrids_accessible(
+        self,
+        user_id: str,
+        org_id: str,
+        virtual_record_ids: list[str],
+    ) -> dict[str, str]:
+        """
+        Check which virtual record IDs are accessible to a user.
+
+        Unlike get_accessible_virtual_record_ids which scans ALL records for
+        given apps/filters, this checks only the specified virtualRecordIds —
+        much cheaper when the candidate set is small (e.g. pattern match results).
+
+        Args:
+            user_id (str): The userId field value in users collection
+            org_id (str): Organization ID
+            virtual_record_ids (list[str]): Specific virtualRecordIds to check
+
+        Returns:
+            Dict[str, str]: Mapping of virtualRecordId -> recordId for accessible records only
+        """
+        pass
+
+    @abstractmethod
     async def get_records_by_record_ids(
         self,
         record_ids: list[str],

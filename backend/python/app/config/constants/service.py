@@ -102,6 +102,8 @@ class Routes(Enum):
     STORAGE_DOWNLOAD = "/api/v1/document/internal/{documentId}/download"
     STORAGE_DOWNLOAD_EXTERNAL = "/api/v1/document/{documentId}/download"
     STORAGE_BUFFER = "/api/v1/document/internal/{documentId}/buffer"
+    STORAGE_GET = "/api/v1/document/internal/{documentId}"
+    STORAGE_MOVE_TREE = "/api/v1/document/internal/move-tree"
 
 
 class WebhookConfig(Enum):

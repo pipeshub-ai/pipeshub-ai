@@ -229,4 +229,5 @@ class SinkOrchestrator(Transformer):
                 record.id,
                 record.virtual_record_id,
                 ctx.reconciliation_context.new_metadata,
+                document_path=ctx.settings.get("storage_path"),
             )

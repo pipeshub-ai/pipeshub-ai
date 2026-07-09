@@ -267,7 +267,7 @@ class TestHandleUpdatedRecord:
         record = _make_record(version=2)
         existing = _make_record(version=1)
 
-        await proc._handle_updated_record(record, existing, tx_store)
+        await proc._handle_updated_record(record, existing, tx_store, old_path=None)
 
         tx_store.batch_upsert_records.assert_awaited_once_with([record])
 
@@ -360,10 +360,11 @@ class TestProcessRecord:
         tx_store = _make_tx_store()
         record = _make_record()
 
-        result = await proc._process_record(record, [], tx_store)
+        result, pending_moves = await proc._process_record(record, [], tx_store)
 
         assert result is not None
         assert result.org_id == "org-1"
+        assert pending_moves == []
         tx_store.batch_upsert_records.assert_awaited()
 
     @pytest.mark.asyncio
@@ -380,7 +381,7 @@ class TestProcessRecord:
         record = _make_record(version=2)
         record.external_revision_id = "rev-2"
 
-        result = await proc._process_record(record, [], tx_store)
+        result, pending_moves = await proc._process_record(record, [], tx_store)
 
         assert result.id == "existing-id"
         # Should have been called at least once for initial upsert
@@ -400,7 +401,7 @@ class TestProcessRecord:
         record = _make_record(version=1)
         record.external_revision_id = "rev-1"
 
-        result = await proc._process_record(record, [], tx_store)
+        result, _ = await proc._process_record(record, [], tx_store)
 
         assert result.id == "existing-id"
 
