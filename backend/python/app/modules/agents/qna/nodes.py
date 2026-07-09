@@ -2579,6 +2579,14 @@ Examples of retrieval queries:
 - Query is **AMBIGUOUS** and could be answered from indexed knowledge
 - No service tool description matches the request
 
+**Use PATTERN MATCH** (via `command` parameter on `search_internal_knowledge`) when:
+- User wants **EXACT TEXT SEARCH** or **REGEX MATCHING** in stored records
+- User asks "which files mention X", "find all records containing Y"
+- Semantic search alone may miss exact keyword matches
+- **HOW**: Add `command` parameter to `search_internal_knowledge`:
+  `search_internal_knowledge(query="Asana Q3", command='grep -rilZ "asana" . | xargs -0 grep -il "Q3"')`
+  This runs both semantic and pattern match in a single call.
+
 **Key Distinction:**
 - **LIVE data requests (explicit):** "list/get/show/fetch [items] from [service]" → Use service tools
 - **LIVE data requests (implicit — SERVICE NOUN):** "[topic] tickets", "[topic] issues", "[topic] bugs", "[topic] pages" — service resource noun used → **Use BOTH the matching service search tool AND retrieval (if that service is indexed).** This rule takes priority over the "ambiguous → retrieval only" default.
@@ -5304,14 +5312,42 @@ def _create_fallback_plan(query: str, state: "ChatState | None" = None) -> dict[
 
     # ── 3. Retrieval not yet done — use it if knowledge is configured ─────────
     if has_knowledge:
-        return {
-            "intent": "Fallback: Search internal knowledge",
-            "reasoning": "Planner failed; searching knowledge base",
-            "can_answer_directly": False,
-            "needs_clarification": False,
-            "clarifying_question": "",
-            "tools": [{"name": "retrieval.search_internal_knowledge", "args": {"query": query}}],
-        }
+        # Determine which search tool is available
+        try:
+            from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+            available = {getattr(t, "name", "") for t in get_agent_tools_with_schemas(state)} if state else set()
+        except Exception:
+            available = set()
+
+        retrieval_name = "retrieval.search_internal_knowledge"
+
+        if retrieval_name in available or any(retrieval_name.replace(".", "_") in n for n in available):
+            fallback_args: dict[str, Any] = {"query": query}
+            keywords = [w for w in query.split() if len(w) > 2][:4]
+            if keywords:
+                first = keywords[0].replace('"', '\\"').replace('$', '')
+                cmd = f'grep -rilZ "{first}" .'
+                for kw in keywords[1:]:
+                    safe = kw.replace('"', '\\"').replace('$', '')
+                    cmd += f' | xargs -0 grep -ilZ "{safe}"'
+                fallback_args["command"] = cmd
+            return {
+                "intent": "Fallback: Search internal knowledge",
+                "reasoning": "Planner failed; searching knowledge base with semantic + pattern match",
+                "can_answer_directly": False,
+                "needs_clarification": False,
+                "clarifying_question": "",
+                "tools": [{"name": retrieval_name, "args": fallback_args}],
+            }
+        else:
+            return {
+                "intent": "Fallback: Search internal knowledge",
+                "reasoning": "Planner failed; searching knowledge base",
+                "can_answer_directly": False,
+                "needs_clarification": False,
+                "clarifying_question": "",
+                "tools": [{"name": retrieval_name, "args": {"query": query}}],
+            }
 
     # ── 4. No knowledge, no context — answer directly ────────────────────────
     return {
@@ -6787,7 +6823,7 @@ async def respond_node(
     # The formatted content is stored in state["qna_message_content"]
     # and consumed by create_response_messages() below.
     # ================================================================
-    if final_results and virtual_record_map:
+    if virtual_record_map:
         from app.utils.chat_helpers import get_message_content as _get_msg_content
 
         # Build user_data string (same logic as chatbot's askAIStream)
@@ -6924,24 +6960,21 @@ async def respond_node(
         else:
             all_queries = [query]
 
-        # Create the agent-specific fetch_full_record tool (mirrors the chatbot
-        # pipeline: returns raw record dicts so execute_tool_calls in streaming.py
-        # formats them via record_to_message_content() — identical to chatbot).
+        # Create the agent-specific fetch_full_record tool — always available so the
+        # agent can fetch records by ID (from retrieval context or find_records output).
         tools = []
-        if virtual_record_map:
-            from app.utils.fetch_full_record import (
-                create_fetch_full_record_tool,
-            )
-            fetch_tool = create_fetch_full_record_tool(
-                virtual_record_map,
-                org_id=org_id,
-                graph_provider=graph_provider,
-            )
-            tools = [fetch_tool]
-            log.debug(
-                f"Added agent fetch_full_record tool "
-                f"({len(virtual_record_map)} records available, "
-            )
+        from app.utils.fetch_full_record import (
+            create_fetch_full_record_tool,
+        )
+        fetch_tool = create_fetch_full_record_tool(
+            virtual_record_map,
+            org_id=org_id,
+            graph_provider=graph_provider,
+        )
+        tools = [fetch_tool]
+        log.debug(
+            "Added agent fetch_full_record tool (%d records in map)", len(virtual_record_map)
+        )
 
         # Add web tools when agent has web search configured in the builder
         has_web_search_tool = False
@@ -7063,7 +7096,7 @@ async def respond_node(
             # the complete event, re-run extraction here with web_records support.
             if (
                 event_type == "complete"
-                and (final_results or _captured_web_records)
+                and (final_results or virtual_record_map or _captured_web_records)
                 and not event_data.get("citations")
             ):
                 _raw_answer = event_data.get("answer", "")

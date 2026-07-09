@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import time
 from typing import Any, Dict, TypedDict
 
@@ -18,6 +19,7 @@ from app.config.constants.service import (
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.request_context import inject_request_headers
+from app.utils.storage_path import build_hierarchical_storage_path
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -49,6 +51,7 @@ class BlobStorage(Transformer):
         self.logger = logger
         self.config_service = config_service
         self.graph_provider = graph_provider
+        self.compression_enabled = os.environ.get("BLOB_STORAGE_COMPRESSION", "true").lower() in ("true", "1", "yes")
 
     async def _get_auth_and_config(self, org_id: str) -> tuple[dict, str, str]:
         """
@@ -435,6 +438,123 @@ class BlobStorage(Transformer):
         """Detect Node storage errors for legacy documents that are not version-enabled."""
         return "cannot be versioned" in str(error).lower()
 
+    async def _build_hierarchical_storage_path(
+        self,
+        record: Any,
+        virtual_record_id: str,
+    ) -> str:
+        """Build filesystem-like storage path for a record.
+
+        Delegates to the shared ``build_hierarchical_storage_path`` utility
+        so the same algorithm is used by both the writer (here) and the mover
+        (``StorageCleanupHelper``).  Always returns a usable path — falls back
+        to ``records/<virtual_record_id>`` when the hierarchy can't be computed.
+        """
+        try:
+            path = await build_hierarchical_storage_path(
+                record,
+                self.graph_provider,
+                virtual_record_id=virtual_record_id,
+                logger=self.logger,
+            )
+            return path or f"records/{virtual_record_id}"
+        except Exception as e:
+            self.logger.warning(
+                "Failed to build hierarchical path for record, falling back to flat path: %s", str(e)
+            )
+            return f"records/{virtual_record_id}"
+
+    async def update_record_buffer(
+        self,
+        org_id: str,
+        document_id: str,
+        record_dict: dict,
+        virtual_record_id: str,
+    ) -> tuple[str | None, int | None]:
+        """Override the current blob content in place without creating a new version.
+
+        Uses PUT /buffer which accepts multipart/form-data with field 'file'.
+        Works on both versioned and non-versioned storage documents.
+        """
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+
+            use_compression = False
+            compressed_record = None
+            if self.compression_enabled:
+                try:
+                    compressed_record = self._compress_record(record_dict)
+                    use_compression = True
+                except Exception as e:
+                    self.logger.warning("⚠️ Compression failed for buffer update, uploading uncompressed: %s", str(e))
+
+            upload_data = {
+                "isCompressed": use_compression,
+                "record": compressed_record if use_compression else record_dict,
+                "virtualRecordId": virtual_record_id,
+            }
+            json_bytes = json.dumps(upload_data).encode("utf-8")
+            file_size_bytes = len(json_bytes)
+
+            buffer_url = f"{nodejs_endpoint}{Routes.STORAGE_BUFFER.value.format(documentId=document_id)}"
+            self.logger.info("📤 Overriding record buffer for document: %s", document_id)
+
+            async with aiohttp.ClientSession() as session:
+                form_data = aiohttp.FormData()
+                form_data.add_field(
+                    "file",
+                    json_bytes,
+                    filename=f"record_{virtual_record_id}.json",
+                    content_type="application/json",
+                )
+                async with session.put(buffer_url, data=form_data, headers=headers) as resp:
+                    if resp.status != HttpStatusCode.SUCCESS.value:
+                        error_text = await resp.text()
+                        self.logger.error(
+                            "❌ Failed to update buffer for document %s. Status: %d, Response: %s",
+                            document_id, resp.status, error_text[:200],
+                        )
+                        raise Exception(
+                            f"Failed to update buffer: {resp.status} {error_text[:200]}"
+                        )
+
+            self.logger.info("✅ Successfully overrode buffer for document: %s", document_id)
+            return document_id, file_size_bytes
+
+        except Exception as e:
+            self.logger.error("❌ Error in update_record_buffer for document %s: %s", document_id, str(e))
+            raise
+
+    @staticmethod
+    def _strip_org_prefix(org_id: str, document_path: str) -> str:
+        """Node stores documentPath as '<orgId>/PipesHub/<relative>'; Python
+        builds relative paths ('records/...'). Strip the prefix so the two
+        forms are comparable."""
+        prefix = f"{org_id}/PipesHub/"
+        if document_path.startswith(prefix):
+            return document_path[len(prefix):]
+        return document_path
+
+    async def _get_current_document_path(self, org_id: str, document_id: str) -> str | None:
+        """Fetch the ACTUAL currently-stored documentPath for a document via
+        Node's internal document-info endpoint -- not recomputed/guessed."""
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+            get_url = f"{nodejs_endpoint}{Routes.STORAGE_GET.value.format(documentId=document_id)}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(get_url, headers=headers) as response:
+                    if response.status == 404:
+                        return None
+                    if response.status != HttpStatusCode.SUCCESS.value:
+                        return None
+                    doc = await response.json()
+                    return doc.get("documentPath")
+        except Exception as e:
+            self.logger.warning(
+                "Could not fetch current document path for %s: %s", document_id, str(e)
+            )
+            return None
+
     async def apply(self, ctx: TransformContext) -> TransformContext:
         record = ctx.record
         org_id = record.org_id
@@ -444,42 +564,85 @@ class BlobStorage(Transformer):
         record_dict = record.model_dump(mode='json', exclude_none=True)
         record_dict = self._clean_empty_values(record_dict)
 
+        storage_path = await self._build_hierarchical_storage_path(record, virtual_record_id)
+        self.logger.info(
+            "📄 Built storage path for vrid %s: %s",
+            virtual_record_id, storage_path
+        )
+
         existing_lookup = None
         if self.graph_provider:
-            existing_lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+            try:
+                existing_lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+            except Exception as e:
+                self.logger.warning(
+                    "⚠️ Failed to look up existing doc for vrid %s, will create new: %s",
+                    virtual_record_id, str(e)
+                )
+                existing_lookup = None
 
         if existing_lookup and existing_lookup.get("record_doc_id"):
             existing_doc_id = existing_lookup["record_doc_id"]
-            self.logger.info(
-                "📄 Existing storage doc found for vrid %s (doc_id=%s), uploading next version",
-                virtual_record_id, existing_doc_id
+            # Whether to relocate is decided by the record's ACTUAL current
+            # documentPath, not by whether a hierarchical path happens to be
+            # computable right now -- nearly every record has a
+            # connector_id, so recomputing fresh would treat almost every
+            # legacy flat record as eligible for migration on every reindex,
+            # which is exactly the unwanted behavior this check exists to
+            # stop. Unknown/unreachable current path defaults to "flat" (the
+            # safe choice: don't move something we can't verify).
+            current_path = await self._get_current_document_path(org_id, existing_doc_id)
+            relative_current = (
+                self._strip_org_prefix(org_id, current_path) if current_path else None
             )
-            try:
-                document_id, file_size_bytes = await self.upload_next_version(
-                    org_id, record_id, existing_doc_id, record_dict, virtual_record_id
-                )
-            except Exception as e:
-                if not self._is_non_versioned_exception(e):
-                    raise
-                self.logger.warning(
-                    "⚠️ Existing storage doc %s is not version-enabled; creating replacement document",
-                    existing_doc_id,
+            currently_flat = (
+                relative_current == f"records/{virtual_record_id}"
+                if relative_current
+                else True
+            )
+
+            if not currently_flat and relative_current != storage_path:
+                # Hierarchical and the path changed — recreate at the updated location.
+                self.logger.info(
+                    "📄 Doc %s for vrid %s moved (%s -> %s), recreating at new location",
+                    existing_doc_id, virtual_record_id, relative_current, storage_path
                 )
                 document_id, file_size_bytes = await self.save_record_to_storage(
-                    org_id, record_id, virtual_record_id, record_dict
+                    org_id, record_id, virtual_record_id, record_dict, document_path=storage_path
                 )
+            else:
+                # Flat, unknown, or hierarchical-but-unchanged — override the
+                # buffer in place. Recreating here would orphan the existing
+                # Mongo doc + blob on every reindex.
+                self.logger.info(
+                    "📄 Overriding buffer in place for vrid %s (doc_id=%s, path=%s)",
+                    virtual_record_id, existing_doc_id, relative_current
+                )
+                try:
+                    document_id, file_size_bytes = await self.update_record_buffer(
+                        org_id, existing_doc_id, record_dict, virtual_record_id
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        "⚠️ Failed to update buffer for doc %s, falling back to new upload: %s",
+                        existing_doc_id, str(e)
+                    )
+                    document_id, file_size_bytes = await self.save_record_to_storage(
+                        org_id, record_id, virtual_record_id, record_dict, document_path=storage_path
+                    )
         else:
             self.logger.info(
-                "📄 No existing storage doc for vrid %s, creating new document",
-                virtual_record_id
+                "📄 No existing storage doc for vrid %s, creating new document at path: %s",
+                virtual_record_id, storage_path
             )
             document_id, file_size_bytes = await self.save_record_to_storage(
-                org_id, record_id, virtual_record_id, record_dict
+                org_id, record_id, virtual_record_id, record_dict, document_path=storage_path
             )
 
         if document_id and self.graph_provider:
             await self.store_virtual_record_mapping(virtual_record_id, document_id, file_size_bytes)
 
+        ctx.settings["storage_path"] = storage_path
         ctx.record = record
         return ctx
 
@@ -670,7 +833,7 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Unexpected error creating placeholder: %s", str(e))
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
-    async def save_record_to_storage(self, org_id: str, record_id: str, virtual_record_id: str, record: dict) -> tuple[str | None, int | None]:
+    async def save_record_to_storage(self, org_id: str, record_id: str, virtual_record_id: str, record: dict, document_path: str | None = None) -> tuple[str | None, int | None]:
         """
         Save document to storage using FormData upload
         Returns:
@@ -682,18 +845,17 @@ class BlobStorage(Transformer):
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
             self.logger.info("🚀 Storage type: %s", storage_type)
 
-            # Compress record for both local and S3 storage
-            try:
-                start_time = time.time()
-                compressed_record = self._compress_record(record)
-                compression_time_ms = (time.time() - start_time) * 1000
-                self.logger.debug("⏱️ Compression completed in %.0fms", compression_time_ms)
-
-                use_compression = True
-            except Exception as e:
-                self.logger.warning("⚠️ Compression failed, uploading uncompressed: %s", str(e))
-                compressed_record = None
-                use_compression = False
+            use_compression = False
+            compressed_record = None
+            if self.compression_enabled:
+                try:
+                    start_time = time.time()
+                    compressed_record = self._compress_record(record)
+                    compression_time_ms = (time.time() - start_time) * 1000
+                    self.logger.debug("⏱️ Compression completed in %.0fms", compression_time_ms)
+                    use_compression = True
+                except Exception as e:
+                    self.logger.warning("⚠️ Compression failed, uploading uncompressed: %s", str(e))
 
             self.logger.debug("Used compression: %s", use_compression)
 
@@ -718,11 +880,11 @@ class BlobStorage(Transformer):
                                         json_data,
                                         filename=f'record_{virtual_record_id}.json',
                                         content_type='application/json')
+                        effective_path = document_path or f'records/{virtual_record_id}'
                         form_data.add_field('documentName', f'record_{virtual_record_id}')
-                        form_data.add_field('documentPath', f'records/{virtual_record_id}')
-                        form_data.add_field('isVersionedFile', 'true')
+                        form_data.add_field('documentPath', effective_path)
+                        form_data.add_field('isVersionedFile', 'false')
                         form_data.add_field('extension', 'json')
-                        form_data.add_field('recordId', record_id)
                         if use_compression:
                             compression_metadata = [
                                 {
@@ -778,15 +940,14 @@ class BlobStorage(Transformer):
                     self.logger.exception("❌ Unexpected error during upload process: %s", str(e))
                     raise e
             else:
-                # Prepare placeholder for S3 storage
+                # Prepare placeholder for S3/Azure storage
+                effective_path = document_path or f'records/{virtual_record_id}'
                 if use_compression:
-                    # Prepare placeholder with compression metadata for MongoDB
                     placeholder_data = {
                         "documentName": f"record_{virtual_record_id}",
-                        "documentPath": f"records/{virtual_record_id}",
+                        "documentPath": effective_path,
                         "extension": "json",
-                        "isVersionedFile": True,
-                        "recordId": record_id,
+                        "isVersionedFile": False,
                         "customMetadata": [
                             {
                                 "key": "compression",
@@ -801,13 +962,11 @@ class BlobStorage(Transformer):
                         ]
                     }
                 else:
-                    # Fallback to uncompressed placeholder
                     placeholder_data = {
                         "documentName": f"record_{virtual_record_id}",
-                        "documentPath": f"records/{virtual_record_id}",
+                        "documentPath": effective_path,
                         "extension": "json",
-                        "isVersionedFile": True,
-                        "recordId": record_id,
+                        "isVersionedFile": False,
                     }
 
                 try:
@@ -1165,7 +1324,9 @@ class BlobStorage(Transformer):
 
             mapping_document = {
                 "id": mapping_key,
+                "virtualRecordId": virtual_record_id,
                 "documentId": document_id,
+                "record_doc_id": document_id,
                 "updatedAt": get_epoch_timestamp_in_ms()
             }
 
@@ -1217,17 +1378,18 @@ class BlobStorage(Transformer):
 
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
 
-            # Compress record for upload
-            try:
-                start_time = time.time()
-                compressed_record = self._compress_record(record)
-                compression_time_ms = (time.time() - start_time) * 1000
-                self.logger.info("⏱️ Compression completed in %.0fms (upload_next_version)", compression_time_ms)
-                use_compression = True
-            except Exception as e:
-                self.logger.warning("⚠️ Compression failed, uploading uncompressed: %s", str(e))
-                compressed_record = None
-                use_compression = False
+            use_compression = False
+            compressed_record = None
+            if self.compression_enabled:
+                try:
+                    start_time = time.time()
+                    compressed_record = self._compress_record(record)
+                    compression_time_ms = (time.time() - start_time) * 1000
+                    self.logger.info("⏱️ Compression completed in %.0fms (upload_next_version)", compression_time_ms)
+                    use_compression = True
+                except Exception as e:
+                    self.logger.warning("⚠️ Compression failed, uploading uncompressed: %s", str(e))
+
 
             upload_data = {
                 "isCompressed": use_compression,
@@ -1296,10 +1458,11 @@ class BlobStorage(Transformer):
             raise e
 
     async def save_reconciliation_metadata(
-        self, org_id: str, record_id: str, virtual_record_id: str, metadata_dict: dict
+        self, org_id: str, record_id: str, virtual_record_id: str, metadata_dict: dict,
+        document_path: str | None = None,
     ) -> str | None:
         """
-        On first call, creates a new document. On subsequent calls, uploads next version.
+        On first call, creates a new document. On subsequent calls, overrides in place.
 
         The metadata document ID is stored in the same virtual-record-to-doc mapping
         under the field 'record_metadata_doc_id', alongside the record's own 'record_doc_id'.
@@ -1309,6 +1472,8 @@ class BlobStorage(Transformer):
             record_id: Record ID
             virtual_record_id: Virtual record ID
             metadata_dict: Reconciliation metadata dictionary
+            document_path: Storage path (same as record content path) so metadata
+                lives alongside the record. Falls back to records/<vrid> if None.
 
         Returns:
             str | None: metadata document_id if successful
@@ -1316,7 +1481,8 @@ class BlobStorage(Transformer):
         try:
             self.logger.info("🚀 Saving reconciliation metadata for record: %s", record_id)
 
-            # Check if metadata document already exists in the same mapping doc
+            effective_path = document_path or f"records/{virtual_record_id}"
+
             existing_metadata_doc_id = None
             if self.graph_provider:
                 try:
@@ -1332,24 +1498,21 @@ class BlobStorage(Transformer):
             metadata_document_id = None
             if existing_metadata_doc_id:
                 try:
-                    doc_id, _ = await self.upload_next_version(
-                        org_id, record_id, existing_metadata_doc_id,
-                        metadata_dict, virtual_record_id
+                    doc_id, _ = await self._update_metadata_buffer(
+                        org_id, existing_metadata_doc_id, metadata_dict, virtual_record_id
                     )
                     metadata_document_id = doc_id
                 except Exception as e:
-                    if not self._is_non_versioned_exception(e):
-                        raise
                     self.logger.warning(
-                        "⚠️ Existing metadata doc %s is not version-enabled; creating replacement metadata document",
-                        existing_metadata_doc_id,
+                        "⚠️ Failed to update metadata buffer for doc %s; creating replacement: %s",
+                        existing_metadata_doc_id, str(e),
                     )
                     metadata_document_id = await self._create_metadata_document(
-                        org_id, record_id, virtual_record_id, metadata_dict
+                        org_id, record_id, virtual_record_id, metadata_dict, effective_path
                     )
             else:
                 metadata_document_id = await self._create_metadata_document(
-                    org_id, record_id, virtual_record_id, metadata_dict
+                    org_id, record_id, virtual_record_id, metadata_dict, effective_path
                 )
 
             if metadata_document_id and self.graph_provider:
@@ -1373,27 +1536,59 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Error saving reconciliation metadata: %s", str(e))
             raise e
 
+    async def _update_metadata_buffer(
+        self,
+        org_id: str,
+        document_id: str,
+        metadata_dict: dict,
+        virtual_record_id: str,
+    ) -> tuple[str | None, int | None]:
+        """Override metadata content in place without compression."""
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+
+            json_bytes = json.dumps(metadata_dict).encode("utf-8")
+            file_size_bytes = len(json_bytes)
+
+            buffer_url = f"{nodejs_endpoint}{Routes.STORAGE_BUFFER.value.format(documentId=document_id)}"
+            self.logger.info("📤 Overriding metadata buffer for document: %s", document_id)
+
+            async with aiohttp.ClientSession() as session:
+                form_data = aiohttp.FormData()
+                form_data.add_field(
+                    "file",
+                    json_bytes,
+                    filename=f"metadata_{virtual_record_id}.json",
+                    content_type="application/json",
+                )
+                async with session.put(buffer_url, data=form_data, headers=headers) as resp:
+                    if resp.status != HttpStatusCode.SUCCESS.value:
+                        error_text = await resp.text()
+                        self.logger.error(
+                            "❌ Failed to update metadata buffer for document %s. Status: %d, Response: %s",
+                            document_id, resp.status, error_text[:200],
+                        )
+                        raise Exception(
+                            f"Failed to update metadata buffer: {resp.status} {error_text[:200]}"
+                        )
+
+            self.logger.info("✅ Successfully overrode metadata buffer for document: %s", document_id)
+            return document_id, file_size_bytes
+
+        except Exception as e:
+            self.logger.error("❌ Error in _update_metadata_buffer for document %s: %s", document_id, str(e))
+            raise
+
     async def _create_metadata_document(
-        self, org_id: str, record_id: str, virtual_record_id: str, metadata_dict: dict
+        self, org_id: str, record_id: str, virtual_record_id: str,
+        metadata_dict: dict, document_path: str | None = None,
     ) -> str | None:
-        """Create a new metadata document in blob storage."""
+        """Create a new metadata document in blob storage (uncompressed plain JSON)."""
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
 
-            try:
-                compressed_metadata = self._compress_record(metadata_dict)
-                use_compression = True
-            except Exception as e:
-                self.logger.warning("⚠️ Metadata compression failed, uploading uncompressed: %s", str(e))
-                compressed_metadata = None
-                use_compression = False
-
-            upload_data = {
-                "isCompressed": use_compression,
-                "record": compressed_metadata if use_compression else metadata_dict,
-                "virtualRecordId": virtual_record_id,
-            }
-            json_data = json.dumps(upload_data).encode('utf-8')
+            effective_path = document_path or f"records/{virtual_record_id}"
+            json_data = json.dumps(metadata_dict).encode('utf-8')
 
             if storage_type == "local":
                 async with aiohttp.ClientSession() as session:
@@ -1403,30 +1598,9 @@ class BlobStorage(Transformer):
                                     filename=f'metadata_{virtual_record_id}.json',
                                     content_type='application/json')
                     form_data.add_field('documentName', f'metadata_{virtual_record_id}')
-                    form_data.add_field('documentPath', f'records/{virtual_record_id}')
-                    form_data.add_field('isVersionedFile', 'true')
+                    form_data.add_field('documentPath', effective_path)
+                    form_data.add_field('isVersionedFile', 'false')
                     form_data.add_field('extension', 'json')
-                    form_data.add_field('recordId', record_id)
-                    if use_compression:
-                        compression_metadata = [
-                            {
-                                "key": "compression",
-                                "value": {
-                                    "algorithm": "zstd",
-                                    "level": 10,
-                                    "format": "msgspec",
-                                    "version": "v1",
-                                    "compressed": True,
-                                },
-                            },
-                        ]
-                        for i, meta in enumerate(compression_metadata):
-                            form_data.add_field(f'customMetadata[{i}][key]', meta['key'])
-                            form_data.add_field(f'customMetadata[{i}][value][algorithm]', meta['value']['algorithm'])
-                            form_data.add_field(f'customMetadata[{i}][value][level]', str(meta['value']['level']))
-                            form_data.add_field(f'customMetadata[{i}][value][format]', meta['value']['format'])
-                            form_data.add_field(f'customMetadata[{i}][value][version]', meta['value']['version'])
-                            form_data.add_field(f'customMetadata[{i}][value][compressed]', str(meta['value']['compressed']).lower())
 
                     upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
                     self.logger.info("📤 Creating metadata document (local) for record: %s", record_id)
@@ -1452,40 +1626,14 @@ class BlobStorage(Transformer):
                         self.logger.info("✅ Created metadata document: %s", document_id)
                         return document_id
             else:
-
-                if use_compression:
-                    # Prepare placeholder with compression metadata for MongoDB
-                    placeholder_data = {
-                        "documentName": f"metadata_{virtual_record_id}",
-                        "documentPath": f"records/{virtual_record_id}",
-                        "extension": "json",
-                        "isVersionedFile": True,
-                        "recordId": record_id,
-                        "customMetadata": [
-                            {
-                                "key": "compression",
-                                "value": {
-                                    "algorithm": "zstd",
-                                    "level": 10,
-                                    "format": "msgspec",
-                                    "version": "v1",
-                                    "compressed": True
-                                }
-                            },
-                        ]
-                    }
-                else:
-
-                    placeholder_data = {
-                        "documentName": f"metadata_{virtual_record_id}",
-                        "documentPath": f"records/{virtual_record_id}",
-                        "extension": "json",
-                        "isVersionedFile": True,
-                        "recordId": record_id,
-                    }
+                placeholder_data = {
+                    "documentName": f"metadata_{virtual_record_id}",
+                    "documentPath": effective_path,
+                    "extension": "json",
+                    "isVersionedFile": False,
+                }
 
                 async with aiohttp.ClientSession() as session:
-                    # Step 1: Create placeholder
                     self.logger.info("📝 Creating metadata placeholder for record: %s", record_id)
                     placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
                     document = await self._create_placeholder(session, placeholder_url, placeholder_data, headers)
@@ -1496,7 +1644,6 @@ class BlobStorage(Transformer):
 
                     self.logger.info("📄 Created metadata placeholder with ID: %s", document_id)
 
-                    # Step 2: Get signed URL
                     self.logger.info("🔑 Getting signed URL for metadata document: %s", document_id)
                     upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
                     upload_result = await self._get_signed_url(session, upload_url, {}, headers)
@@ -1505,9 +1652,8 @@ class BlobStorage(Transformer):
                     if not signed_url:
                         raise Exception("No signed URL in response for metadata document")
 
-                    # Step 3: Upload to signed URL using httpx (preserves URL encoding)
                     self.logger.info("📤 Uploading metadata to storage for document: %s", document_id)
-                    await self._upload_to_signed_url(session, signed_url, upload_data)
+                    await self._upload_to_signed_url(session, signed_url, metadata_dict)
 
                     self.logger.info("✅ Created metadata document: %s", document_id)
                     return document_id

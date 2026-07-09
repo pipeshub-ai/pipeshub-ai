@@ -447,6 +447,161 @@ class AmazonS3Adapter implements StorageServiceInterface {
   }
 
   /**
+   * Lists all objects under a prefix, following pagination via ContinuationToken.
+   * @param prefix - The S3 key prefix to list.
+   * @returns A promise resolving to all matching S3 objects across all pages.
+   */
+  private async _listAllObjects(prefix: string): Promise<S3.Object[]> {
+    const allObjects: S3.Object[] = [];
+    let continuationToken: string | undefined;
+    do {
+      const params: S3.ListObjectsV2Request = {
+        Bucket: this.bucketName,
+        Prefix: prefix,
+        ...(continuationToken && { ContinuationToken: continuationToken }),
+      };
+      const response = await this.s3.listObjectsV2(params).promise();
+      if (response.Contents) {
+        allObjects.push(...response.Contents);
+      }
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
+    return allObjects;
+  }
+
+  async deleteObject(storagePath: string): Promise<StorageServiceResponse<void>> {
+    try {
+      // List all objects with this prefix (across all pages) then delete them in batches
+      const prefix = storagePath.endsWith('/') ? storagePath : `${storagePath}/`;
+      const allObjects = await this._listAllObjects(prefix);
+
+      // Batch delete in chunks of 1000 (S3 DeleteObjects API limit)
+      for (let i = 0; i < allObjects.length; i += 1000) {
+        const batch = allObjects.slice(i, i + 1000);
+        await this.s3
+          .deleteObjects({
+            Bucket: this.bucketName,
+            Delete: { Objects: batch.map((o) => ({ Key: o.Key! })) },
+          })
+          .promise();
+      }
+
+      // Also try to delete the exact key in case storagePath itself is a file
+      try {
+        await this.s3.deleteObject({ Bucket: this.bucketName, Key: storagePath }).promise();
+      } catch {
+        // ignore; the key may not exist as a standalone object
+      }
+
+      this.logger.info('S3 delete successful', { path: storagePath });
+      return { statusCode: 200, data: undefined };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to delete object from S3', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async copyObject(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<StorageServiceResponse<string>> {
+    try {
+      const copySource = `${this.bucketName}/${sourcePath}`;
+      await this.s3
+        .copyObject({ Bucket: this.bucketName, CopySource: copySource, Key: destinationPath })
+        .promise();
+      const destUrl = this.getS3Url(destinationPath);
+      this.logger.info('S3 copy successful', { src: sourcePath, dst: destinationPath });
+      return { statusCode: 200, data: destUrl };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to copy object in S3', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * Recursively copies all objects under sourcePrefix to destinationPrefix.
+   * An empty source prefix (zero objects) is a no-op success, not an error.
+   * @param sourcePrefix - The source path / key prefix.
+   * @param destinationPrefix - The destination path / key prefix.
+   */
+  async copyTree(
+    sourcePrefix: string,
+    destinationPrefix: string,
+  ): Promise<StorageServiceResponse<void>> {
+    try {
+      const srcPrefix = sourcePrefix.endsWith('/') ? sourcePrefix : `${sourcePrefix}/`;
+      const dstPrefix = destinationPrefix.endsWith('/')
+        ? destinationPrefix
+        : `${destinationPrefix}/`;
+      const allObjects = await this._listAllObjects(srcPrefix);
+
+      for (const obj of allObjects) {
+        if (!obj.Key) continue;
+        const relativePath = obj.Key.substring(srcPrefix.length);
+        const destKey = `${dstPrefix}${relativePath}`;
+        await this.s3
+          .copyObject({
+            Bucket: this.bucketName,
+            CopySource: `${this.bucketName}/${obj.Key}`,
+            Key: destKey,
+          })
+          .promise();
+      }
+
+      this.logger.info('S3 tree copy successful', { src: sourcePrefix, dst: destinationPrefix });
+      return { statusCode: 200, data: undefined };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to copy tree in S3', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async renameObject(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<StorageServiceResponse<string>> {
+    try {
+      const copySource = `${this.bucketName}/${sourcePath}`;
+      await this.s3
+        .copyObject({ Bucket: this.bucketName, CopySource: copySource, Key: destinationPath })
+        .promise();
+      await this.s3.deleteObject({ Bucket: this.bucketName, Key: sourcePath }).promise();
+      const destUrl = this.getS3Url(destinationPath);
+      this.logger.info('S3 rename successful', { src: sourcePath, dst: destinationPath });
+      return { statusCode: 200, data: destUrl };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to rename object in S3', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async renameTree(
+    sourcePrefix: string,
+    destinationPrefix: string,
+  ): Promise<StorageServiceResponse<void>> {
+    try {
+      await this.copyTree(sourcePrefix, destinationPrefix);
+      await this.deleteObject(sourcePrefix);
+      this.logger.info('S3 tree rename successful', { src: sourcePrefix, dst: destinationPrefix });
+      return { statusCode: 200, data: undefined };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to rename tree in S3', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
    * Validates and sanitizes AWS region input to prevent invalid region values.
    * Implements defense-in-depth for AWS SDK v2 region validation advisory.
    * @param region - The AWS region string to validate
@@ -536,6 +691,10 @@ class AmazonS3Adapter implements StorageServiceInterface {
    * @param key - The S3 key (path) to convert to a URL
    * @returns The full S3 URL for the object
    */
+  getObjectUrl(storageKey: string): string {
+    return this.getS3Url(storageKey);
+  }
+
   private getS3Url(key: string): string {
     // Ensure the key is URL-encoded (except for forward slashes)
     const encodedKey = key

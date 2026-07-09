@@ -649,6 +649,224 @@ describe('AmazonS3Adapter', () => {
       expect(params.Expires).to.equal(7200)
     })
   })
+
+  // -------------------------------------------------------------------------
+  // deleteObject
+  // -------------------------------------------------------------------------
+  describe('deleteObject', () => {
+    it('should paginate listObjectsV2 when IsTruncated is true', async () => {
+      const adapter = createAdapter()
+      const s3 = (adapter as any).s3
+
+      const keys1 = Array.from({ length: 1000 }, (_, i) => ({ Key: `prefix/file${i}` }))
+      const keys2 = [{ Key: 'prefix/file1000' }]
+
+      const listStub = sinon.stub(s3, 'listObjectsV2')
+      listStub.onFirstCall().returns({
+        promise: sinon.stub().resolves({
+          Contents: keys1,
+          IsTruncated: true,
+          NextContinuationToken: 'page2',
+        }),
+      })
+      listStub.onSecondCall().returns({
+        promise: sinon.stub().resolves({
+          Contents: keys2,
+          IsTruncated: false,
+        }),
+      })
+
+      const deleteStub = sinon.stub(s3, 'deleteObjects').returns({
+        promise: sinon.stub().resolves({}),
+      })
+      sinon.stub(s3, 'deleteObject').returns({
+        promise: sinon.stub().resolves({}),
+      })
+
+      await adapter.deleteObject('prefix')
+
+      expect(listStub.callCount).to.equal(2)
+      expect(deleteStub.callCount).to.equal(2)
+      expect(deleteStub.firstCall.args[0].Delete.Objects.length).to.equal(1000)
+      expect(deleteStub.secondCall.args[0].Delete.Objects.length).to.equal(1)
+    })
+
+    it('should list objects with prefix and batch delete them', async () => {
+      const adapter = createAdapter()
+      const s3 = (adapter as any).s3
+
+      const listStub = sinon.stub(s3, 'listObjectsV2').returns({
+        promise: () => Promise.resolve({ Contents: [{ Key: 'records/conn-1/file.json' }] }),
+      })
+      const deleteObjectsStub = sinon.stub(s3, 'deleteObjects').returns({
+        promise: () => Promise.resolve({}),
+      })
+      // single-key delete (best-effort)
+      sinon.stub(s3, 'deleteObject').returns({ promise: () => Promise.resolve() })
+
+      const result = await adapter.deleteObject('records/conn-1')
+
+      expect(result.statusCode).to.equal(200)
+      expect(listStub.calledOnce).to.be.true
+      expect(deleteObjectsStub.calledOnce).to.be.true
+    })
+
+    it('should skip batch delete when prefix has no objects', async () => {
+      const adapter = createAdapter()
+      const s3 = (adapter as any).s3
+
+      sinon.stub(s3, 'listObjectsV2').returns({
+        promise: () => Promise.resolve({ Contents: [] }),
+      })
+      const deleteObjectsStub = sinon.stub(s3, 'deleteObjects').returns({
+        promise: () => Promise.resolve({}),
+      })
+      sinon.stub(s3, 'deleteObject').returns({ promise: () => Promise.resolve() })
+
+      await adapter.deleteObject('records/conn-1/file.json')
+
+      expect(deleteObjectsStub.called).to.be.false
+    })
+
+    it('should throw StorageUploadError on SDK failure', async () => {
+      const adapter = createAdapter()
+      const s3 = (adapter as any).s3
+
+      sinon.stub(s3, 'listObjectsV2').returns({
+        promise: () => Promise.reject(new Error('S3 error')),
+      })
+
+      try {
+        await adapter.deleteObject('records/conn-1')
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(StorageUploadError)
+      }
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // copyObject
+  // -------------------------------------------------------------------------
+  describe('copyObject', () => {
+    it('should call s3.copyObject with correct CopySource', async () => {
+      const adapter = createAdapter()
+      const s3 = (adapter as any).s3
+
+      const copyStub = sinon.stub(s3, 'copyObject').returns({
+        promise: () => Promise.resolve({}),
+      })
+
+      const result = await adapter.copyObject('records/src/file.json', 'records/dst/file.json')
+
+      expect(result.statusCode).to.equal(200)
+      expect(copyStub.calledOnce).to.be.true
+      const params = copyStub.firstCall.args[0]
+      expect(params.CopySource).to.equal('my-bucket/records/src/file.json')
+      expect(params.Key).to.equal('records/dst/file.json')
+    })
+
+    it('should return a destination URL on success', async () => {
+      const adapter = createAdapter()
+      const s3 = (adapter as any).s3
+
+      sinon.stub(s3, 'copyObject').returns({ promise: () => Promise.resolve({}) })
+
+      const result = await adapter.copyObject('records/src/file.json', 'records/dst/file.json')
+
+      expect(result.data).to.be.a('string')
+      expect(result.data).to.include('records/dst/file.json')
+    })
+
+    it('should throw StorageUploadError on S3 failure', async () => {
+      const adapter = createAdapter()
+      const s3 = (adapter as any).s3
+
+      sinon.stub(s3, 'copyObject').returns({
+        promise: () => Promise.reject(new Error('access denied')),
+      })
+
+      try {
+        await adapter.copyObject('records/src/file.json', 'records/dst/file.json')
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(StorageUploadError)
+      }
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // copyTree
+  // -------------------------------------------------------------------------
+  describe('copyTree', () => {
+    it('should list objects by prefix and copy each to new prefix', async () => {
+      const adapter = createAdapter()
+      const s3 = (adapter as any).s3
+
+      sinon.stub(s3, 'listObjectsV2').returns({
+        promise: sinon.stub().resolves({
+          Contents: [
+            { Key: 'org1/old/doc1/current/file.pdf' },
+            { Key: 'org1/old/doc1/versions/v0.pdf' },
+          ],
+          IsTruncated: false,
+        }),
+      })
+
+      const copyStub = sinon.stub(s3, 'copyObject').returns({
+        promise: sinon.stub().resolves({}),
+      })
+
+      const result = await adapter.copyTree('org1/old/doc1', 'org1/new/doc1')
+      expect(result.statusCode).to.equal(200)
+      expect(copyStub.callCount).to.equal(2)
+
+      const destKeys = copyStub.getCalls().map(c => c.args[0].Key)
+      expect(destKeys).to.include('org1/new/doc1/current/file.pdf')
+      expect(destKeys).to.include('org1/new/doc1/versions/v0.pdf')
+    })
+
+    it('should handle pagination with IsTruncated', async () => {
+      const adapter = createAdapter()
+      const s3 = (adapter as any).s3
+
+      const listStub = sinon.stub(s3, 'listObjectsV2')
+      listStub.onFirstCall().returns({
+        promise: sinon.stub().resolves({
+          Contents: [{ Key: 'org1/old/doc1/file1.pdf' }],
+          IsTruncated: true,
+          NextContinuationToken: 'token-2',
+        }),
+      })
+      listStub.onSecondCall().returns({
+        promise: sinon.stub().resolves({
+          Contents: [{ Key: 'org1/old/doc1/file2.pdf' }],
+          IsTruncated: false,
+        }),
+      })
+
+      const copyStub = sinon.stub(s3, 'copyObject').returns({
+        promise: sinon.stub().resolves({}),
+      })
+
+      await adapter.copyTree('org1/old/doc1', 'org1/new/doc1')
+      expect(listStub.callCount).to.equal(2)
+      expect(listStub.secondCall.args[0].ContinuationToken).to.equal('token-2')
+      expect(copyStub.callCount).to.equal(2)
+    })
+
+    it('should succeed as no-op when source prefix has no objects', async () => {
+      const adapter = createAdapter()
+      const s3 = (adapter as any).s3
+
+      sinon.stub(s3, 'listObjectsV2').returns({
+        promise: sinon.stub().resolves({ Contents: [], IsTruncated: false }),
+      })
+
+      const result = await adapter.copyTree('org1/empty', 'org1/dst')
+      expect(result.statusCode).to.equal(200)
+    })
+  })
 })
 
 // We can't easily import the actual S3 adapter because it creates a real S3 client,

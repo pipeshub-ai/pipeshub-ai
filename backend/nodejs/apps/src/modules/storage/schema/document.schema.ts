@@ -71,6 +71,7 @@ const DocumentSchema = new Schema(
     documentPath: {
       type: String,
       trim: true,
+      index: true,
     },
     isVersionedFile: {
       type: Boolean,

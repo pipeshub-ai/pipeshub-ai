@@ -346,6 +346,147 @@ class LocalStorageAdapter implements StorageServiceInterface {
     }
   }
 
+  async deleteObject(storagePath: string): Promise<StorageServiceResponse<void>> {
+    try {
+      const relativePath = this.sanitizePath(storagePath);
+      const fullPath = path.join(this.mountPath, relativePath);
+      await fs.rm(fullPath, { recursive: true, force: true });
+      this.logger.info('Local storage delete successful', { path: relativePath });
+      return { statusCode: 200, data: undefined };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to delete object from local storage', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async copyObject(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<StorageServiceResponse<string>> {
+    try {
+      const srcRelative = this.sanitizePath(sourcePath);
+      const dstRelative = this.sanitizePath(destinationPath);
+      const srcFull = path.join(this.mountPath, srcRelative);
+      const dstFull = path.join(this.mountPath, dstRelative);
+      await fs.mkdir(path.dirname(dstFull), { recursive: true });
+      await fs.copyFile(srcFull, dstFull);
+      const destUrl = this.getFileUrl(dstRelative);
+      this.logger.info('Local storage copy successful', { src: srcRelative, dst: dstRelative });
+      return { statusCode: 200, data: destUrl };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to copy object in local storage', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async renameObject(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<StorageServiceResponse<string>> {
+    try {
+      const srcRelative = this.sanitizePath(sourcePath);
+      const dstRelative = this.sanitizePath(destinationPath);
+      const srcFull = path.join(this.mountPath, srcRelative);
+      const dstFull = path.join(this.mountPath, dstRelative);
+      await fs.mkdir(path.dirname(dstFull), { recursive: true });
+      try {
+        await fs.rename(srcFull, dstFull);
+      } catch (renameError: any) {
+        // EXDEV: source and destination are on different mounted volumes --
+        // the OS can't rename across devices, only copy. Fall back to the
+        // same copy-then-delete behavior this method exists to avoid on the
+        // common case (same volume).
+        if (renameError?.code === 'EXDEV') {
+          await fs.copyFile(srcFull, dstFull);
+          await fs.rm(srcFull, { force: true });
+        } else {
+          throw renameError;
+        }
+      }
+      const destUrl = this.getFileUrl(dstRelative);
+      this.logger.info('Local storage rename successful', { src: srcRelative, dst: dstRelative });
+      return { statusCode: 200, data: destUrl };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to rename object in local storage', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async copyTree(
+    sourcePrefix: string,
+    destinationPrefix: string,
+  ): Promise<StorageServiceResponse<void>> {
+    try {
+      const srcRelative = this.sanitizePath(sourcePrefix);
+      const dstRelative = this.sanitizePath(destinationPrefix);
+      const srcFull = path.join(this.mountPath, srcRelative);
+      const dstFull = path.join(this.mountPath, dstRelative);
+      await fs.mkdir(path.dirname(dstFull), { recursive: true });
+      await fs.cp(srcFull, dstFull, { recursive: true });
+      this.logger.info('Local storage tree copy successful', { src: srcRelative, dst: dstRelative });
+      return { statusCode: 200, data: undefined };
+    } catch (error) {
+      // A missing source tree means there was nothing to copy - treat as a no-op success.
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        this.logger.info('Local storage tree copy skipped: source prefix does not exist', {
+          src: sourcePrefix,
+        });
+        return { statusCode: 200, data: undefined };
+      }
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to copy tree in local storage', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async renameTree(
+    sourcePrefix: string,
+    destinationPrefix: string,
+  ): Promise<StorageServiceResponse<void>> {
+    try {
+      const srcRelative = this.sanitizePath(sourcePrefix);
+      const dstRelative = this.sanitizePath(destinationPrefix);
+      const srcFull = path.join(this.mountPath, srcRelative);
+      const dstFull = path.join(this.mountPath, dstRelative);
+      await fs.mkdir(path.dirname(dstFull), { recursive: true });
+      try {
+        await fs.rename(srcFull, dstFull);
+      } catch (renameError: any) {
+        // EXDEV: source and destination are on different mounted volumes --
+        // fall back to a recursive copy of the whole subtree, then remove
+        // the original. Not atomic, but this is the same fallback already
+        // accepted for the single-file renameObject case above.
+        if (renameError?.code === 'EXDEV') {
+          await fs.cp(srcFull, dstFull, { recursive: true });
+          await fs.rm(srcFull, { recursive: true, force: true });
+        } else {
+          throw renameError;
+        }
+      }
+      this.logger.info('Local storage tree rename successful', { src: srcRelative, dst: dstRelative });
+      return { statusCode: 200, data: undefined };
+    } catch (error) {
+      // A missing source tree means there was nothing to rename - treat as a no-op success.
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        this.logger.info('Local storage tree rename skipped: source prefix does not exist', {
+          src: sourcePrefix,
+        });
+        return { statusCode: 200, data: undefined };
+      }
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to rename tree in local storage', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
   /**
    * Utility methods
    */
@@ -359,6 +500,10 @@ class LocalStorageAdapter implements StorageServiceInterface {
         },
       });
     }
+  }
+
+  getObjectUrl(storageKey: string): string {
+    return this.getFileUrl(this.sanitizePath(storageKey));
   }
 
   private getFileUrl(filePath: string): string {

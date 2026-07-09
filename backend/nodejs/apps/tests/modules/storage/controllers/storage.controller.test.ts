@@ -2699,6 +2699,320 @@ describe('StorageController', () => {
       expect(calledPath).to.equal('org/PipesHub/doc-1/report.pdf')
     })
   })
+
+  // -------------------------------------------------------------------------
+  // deleteDocumentById - purge=true
+  // -------------------------------------------------------------------------
+  describe('deleteDocumentById - purge', () => {
+    it('should call adapter.deleteObject and DocumentModel.deleteOne when purge=true', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        orgId: 'org-1',
+        documentPath: 'records/conn-1/space',
+        isDeleted: false,
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(DocumentModel, 'findOne').resolves(mockDoc as any)
+      sinon.stub(DocumentModel, 'deleteOne').resolves({ deletedCount: 1 } as any)
+
+      const mockAdapter = {
+        deleteObject: sinon.stub().resolves({ statusCode: 200, data: undefined }),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        query: { purge: 'true' },
+        user: { orgId: 'org-1', userId: 'user-1' },
+      } as any
+
+      await controller.deleteDocumentById(req, mockRes, mockNext)
+
+      expect(mockAdapter.deleteObject.calledOnce).to.be.true
+      expect((DocumentModel.deleteOne as sinon.SinonStub).calledOnce).to.be.true
+      expect(mockRes.status.calledWith(200)).to.be.true
+      const body = mockRes.json.firstCall.args[0]
+      expect(body.purged).to.be.true
+    })
+
+    it('should respond with purged:true in the JSON body', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        orgId: 'org-1',
+        documentPath: 'records/conn-1',
+      }
+      sinon.stub(DocumentModel, 'findOne').resolves(mockDoc as any)
+      sinon.stub(DocumentModel, 'deleteOne').resolves({ deletedCount: 1 } as any)
+
+      const mockAdapter = {
+        deleteObject: sinon.stub().resolves({ statusCode: 200 }),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        query: { purge: 'true' },
+        user: { orgId: 'org-1', userId: 'user-1' },
+      } as any
+
+      await controller.deleteDocumentById(req, mockRes, mockNext)
+
+      const body = mockRes.json.firstCall.args[0]
+      expect(body.documentId).to.equal('doc-1')
+      expect(body.purged).to.be.true
+    })
+
+    it('should still delete MongoDB doc when blob delete fails', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        orgId: 'org-1',
+        documentPath: 'records/conn-1',
+      }
+      sinon.stub(DocumentModel, 'findOne').resolves(mockDoc as any)
+      sinon.stub(DocumentModel, 'deleteOne').resolves({ deletedCount: 1 } as any)
+
+      const mockAdapter = {
+        deleteObject: sinon.stub().rejects(new Error('storage down')),
+      }
+      sinon.stub(controller, 'initializeStorageAdapter').resolves(mockAdapter as any)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        query: { purge: 'true' },
+        user: { orgId: 'org-1', userId: 'user-1' },
+      } as any
+
+      await controller.deleteDocumentById(req, mockRes, mockNext)
+
+      expect((DocumentModel.deleteOne as sinon.SinonStub).calledOnce).to.be.true
+      expect(mockRes.status.calledWith(200)).to.be.true
+    })
+
+    it('should soft-delete (isDeleted=true) when purge is absent', async () => {
+      const mockDoc = {
+        _id: 'doc-1',
+        orgId: 'org-1',
+        isDeleted: false,
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(DocumentModel, 'findOne').resolves(mockDoc as any)
+
+      const req = {
+        params: { documentId: 'doc-1' },
+        query: {},
+        user: { orgId: 'org-1', userId: '507f1f77bcf86cd799439011' },
+      } as any
+
+      await controller.deleteDocumentById(req, mockRes, mockNext)
+
+      expect(mockDoc.isDeleted).to.be.true
+      expect(mockDoc.save.calledOnce).to.be.true
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // moveTree
+  // -------------------------------------------------------------------------
+  describe('moveTree', () => {
+    const baseReq = () => ({
+      body: { oldPath: 'records/conn1/p1/c1', newPath: 'records/conn1/p2/c1' },
+      user: { orgId: 'org1' },
+    })
+
+    it('returns 400 when oldPath is missing', async () => {
+      const req = { body: { newPath: 'x' }, user: { orgId: 'org1' } } as any
+      await controller.moveTree(req, mockRes, mockNext)
+      expect(mockNext.calledOnce).to.be.true
+      expect(mockNext.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+    })
+
+    it('returns 400 when newPath is missing', async () => {
+      const req = { body: { oldPath: 'x' }, user: { orgId: 'org1' } } as any
+      await controller.moveTree(req, mockRes, mockNext)
+      expect(mockNext.calledOnce).to.be.true
+      expect(mockNext.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+    })
+
+    it('is a no-op when nothing matches oldPath', async () => {
+      sinon.stub(DocumentModel, 'find').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves([]),
+      } as any)
+      const req = baseReq() as any
+      await controller.moveTree(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+      expect(mockNext.called).to.be.false
+    })
+
+    it('local storage: renames the whole prefix once, then bulk-updates matched docs', async () => {
+      const matched = [
+        { _id: 'doc1', documentPath: 'org1/PipesHub/records/conn1/p1/c1', documentName: 'c1doc', extension: 'json', isVersionedFile: false },
+        { _id: 'doc2', documentPath: 'org1/PipesHub/records/conn1/p1/c1/c2', documentName: 'c2doc', extension: 'json', isVersionedFile: false },
+      ]
+      sinon.stub(DocumentModel, 'find').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves(matched),
+      } as any)
+      const updateManyStub = sinon.stub(DocumentModel, 'updateMany').resolves({} as any)
+      const updateOneStub = sinon.stub(DocumentModel, 'updateOne').resolves({} as any)
+      const renameTreeStub = sinon.stub().resolves({ statusCode: 200, data: undefined })
+      const getObjectUrlStub = sinon.stub().returns('file:///mount/new/path')
+      sinon.stub(controller, 'initializeStorageAdapter').resolves({
+        renameTree: renameTreeStub,
+        getObjectUrl: getObjectUrlStub,
+      } as any)
+      sinon.stub(controller as any, 'getConfiguredStorageType').resolves('local')
+
+      const req = baseReq() as any
+      await controller.moveTree(req, mockRes, mockNext)
+
+      expect(renameTreeStub.calledOnce).to.be.true
+      expect(updateManyStub.calledOnce).to.be.true
+      // Each matched doc's stored blob location (local.localPath) is rewritten
+      // so downloads resolve to the relocated files, not the old path.
+      expect(updateOneStub.callCount).to.equal(2)
+      expect(getObjectUrlStub.called).to.be.true
+      const localSet = (updateOneStub.firstCall.args[1] as any).$set
+      expect(localSet).to.have.property('local.localPath')
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+    })
+
+    it('S3/Azure: batches copies and scopes each Mongo update to that batch', async () => {
+      const matched = Array.from({ length: 3 }, (_, i) => ({
+        _id: `doc${i}`,
+        documentPath: i === 0
+          ? 'org1/PipesHub/records/conn1/p1/c1'
+          : `org1/PipesHub/records/conn1/p1/c1/child${i}`,
+        documentName: `name${i}`,
+        extension: 'json',
+        isVersionedFile: false,
+      }))
+      sinon.stub(DocumentModel, 'find').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves(matched),
+      } as any)
+      // Shared call-log lets us assert relative ordering across the two stubs,
+      // not just that each was called.
+      const callLog: string[] = []
+      const updateManyStub = sinon.stub(DocumentModel, 'updateMany').callsFake((async () => {
+        callLog.push('updateMany')
+        return {} as any
+      }) as any)
+      sinon.stub(DocumentModel, 'updateOne').callsFake((async () => {
+        callLog.push('updateOne')
+        return {} as any
+      }) as any)
+      const renameObjectStub = sinon.stub().resolves({ statusCode: 200, data: 'url' })
+      const deleteObjectStub = sinon.stub().callsFake(async () => {
+        callLog.push('deleteObject')
+        return { statusCode: 200, data: undefined }
+      })
+      sinon.stub(controller, 'initializeStorageAdapter').resolves({
+        renameObject: renameObjectStub,
+        deleteObject: deleteObjectStub,
+        getObjectUrl: sinon.stub().returns('https://bucket.s3.region.amazonaws.com/new/key'),
+      } as any)
+      sinon.stub(controller as any, 'getConfiguredStorageType').resolves('s3')
+
+      const req = baseReq() as any
+      await controller.moveTree(req, mockRes, mockNext)
+
+      expect(renameObjectStub.callCount).to.equal(3)
+      expect(updateManyStub.callCount).to.be.greaterThan(0)
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+
+      // Crash-consistency guarantee: old objects must only be deleted once this
+      // batch's Mongo rows already point at the new path (documentPath bulk
+      // update, then per-doc URL rewrite) -- deleting first would leave a row
+      // pointing nowhere if the process died between the calls.
+      expect(deleteObjectStub.callCount).to.equal(3)
+      expect(callLog).to.deep.equal([
+        'updateMany',
+        'updateOne',
+        'updateOne',
+        'updateOne',
+        'deleteObject',
+        'deleteObject',
+        'deleteObject',
+      ])
+    })
+
+    it('S3/Azure: 250 matched docs span two real 200-sized batches, each scoped correctly', async () => {
+      // Controller batch size (moveTreeRemote) is a hardcoded 200 — use enough
+      // matched docs (250) to force the for-loop to run twice: [200, 50].
+      const matched = Array.from({ length: 250 }, (_, i) => ({
+        _id: `doc${i}`,
+        documentPath: i === 0
+          ? 'org1/PipesHub/records/conn1/p1/c1'
+          : `org1/PipesHub/records/conn1/p1/c1/child${i}`,
+        documentName: `name${i}`,
+        extension: 'json',
+        isVersionedFile: false,
+      }))
+      sinon.stub(DocumentModel, 'find').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves(matched),
+      } as any)
+      const updateManyStub = sinon.stub(DocumentModel, 'updateMany').resolves({} as any)
+      sinon.stub(DocumentModel, 'updateOne').resolves({} as any)
+      const renameObjectStub = sinon.stub().resolves({ statusCode: 200, data: 'url' })
+      sinon.stub(controller, 'initializeStorageAdapter').resolves({
+        renameObject: renameObjectStub,
+        getObjectUrl: sinon.stub().returns('https://bucket.s3.region.amazonaws.com/new/key'),
+      } as any)
+      sinon.stub(controller as any, 'getConfiguredStorageType').resolves('s3')
+
+      const req = baseReq() as any
+      await controller.moveTree(req, mockRes, mockNext)
+
+      // Every matched doc must have been physically relocated, in every batch —
+      // not just the first one.
+      expect(renameObjectStub.callCount).to.equal(250)
+
+      // A single bulk update would call updateMany once; real batching calls it
+      // once per batch (2 batches: 200 + 50).
+      expect(updateManyStub.callCount).to.equal(2)
+
+      const batchedIds = updateManyStub.getCalls().map(
+        (call) => (call.args[0] as { _id: { $in: string[] } })._id.$in,
+      )
+      expect(batchedIds[0]).to.have.lengthOf(200)
+      expect(batchedIds[1]).to.have.lengthOf(50)
+
+      // Every batch is a distinct, non-overlapping subset that together covers
+      // all 250 matched documents — proves per-batch scoping, not one giant update.
+      const allIds = batchedIds.flat()
+      expect(allIds).to.have.lengthOf(250)
+      expect(new Set(allIds).size).to.equal(250)
+      expect(new Set(allIds)).to.deep.equal(new Set(matched.map((m) => m._id)))
+      expect(new Set(batchedIds[0]).size + new Set(batchedIds[1]).size).to.equal(250)
+      const intersection = batchedIds[0].filter((id: string) => batchedIds[1].includes(id))
+      expect(intersection).to.have.lengthOf(0)
+
+      expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+    })
+
+    it('rejects when newPath is a descendant of oldPath', async () => {
+      const req = {
+        body: { oldPath: 'records/conn1/p1', newPath: 'records/conn1/p1/nested' },
+        user: { orgId: 'org1' },
+      } as any
+      await controller.moveTree(req, mockRes, mockNext)
+      expect(mockNext.calledOnce).to.be.true
+      expect(mockNext.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+    })
+
+    it('rejects paths containing ".." segments', async () => {
+      const req = {
+        body: { oldPath: 'records/../../etc', newPath: 'records/conn1/p1' },
+        user: { orgId: 'org1' },
+      } as any
+      await controller.moveTree(req, mockRes, mockNext)
+      expect(mockNext.calledOnce).to.be.true
+      expect(mockNext.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+    })
+
+  })
 })
 
 describe('StorageController - coverage', () => {

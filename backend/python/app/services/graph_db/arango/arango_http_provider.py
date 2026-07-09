@@ -18418,6 +18418,181 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Get accessible virtual record IDs failed: {e}", exc_info=True)
             return {}
 
+    async def check_vrids_accessible(
+        self,
+        user_id: str,
+        org_id: str,
+        virtual_record_ids: list[str],
+    ) -> dict[str, str]:
+        """
+        Check which virtual record IDs are accessible to a user.
+
+        Targeted permission check: instead of scanning all records for an app,
+        this checks only the specified virtualRecordIds via the same 8 permission
+        paths as get_accessible_virtual_record_ids but anchor-filtered to a small
+        candidate set.
+
+        Args:
+            user_id: The userId field value
+            org_id: Organization ID
+            virtual_record_ids: Specific virtualRecordIds to check (typically 5-10)
+
+        Returns:
+            Dict mapping virtualRecordId -> recordId for accessible records only
+        """
+        if not virtual_record_ids:
+            return {}
+
+        start_time = time.time()
+        try:
+            user_app_ids = await self._get_user_app_ids(user_id)
+
+            query = f"""
+            LET userDoc = FIRST(
+                FOR user IN @@users
+                FILTER user.userId == @userId
+                RETURN user
+            )
+
+            FOR record IN @@records
+                FILTER record.virtualRecordId IN @vrids
+                FILTER record.indexingStatus == @completedStatus
+                FILTER record.origin != "CONNECTOR" OR record.connectorId IN @userAppIds
+
+                LET directAccess = (
+                    FOR v IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER v._id == record._id
+                    LIMIT 1 RETURN true
+                )
+
+                LET groupBelongsAccess = (
+                    FOR grp IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                    FOR v IN 1..1 ANY grp._id {CollectionNames.PERMISSION.value}
+                    FILTER v._id == record._id
+                    LIMIT 1 RETURN true
+                )
+
+                LET groupPermAccess = (
+                    FOR grp IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("groups", grp) OR IS_SAME_COLLECTION("roles", grp)
+                    FOR v IN 1..1 ANY grp._id {CollectionNames.PERMISSION.value}
+                    FILTER v._id == record._id
+                    LIMIT 1 RETURN true
+                )
+
+                LET orgAccess = (
+                    FOR org IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION("organizations", org)
+                    FOR v IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                    FILTER v._id == record._id
+                    LIMIT 1 RETURN true
+                )
+
+                LET orgRecordGroupAccess = (
+                    FOR org IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION("organizations", org)
+                    FOR rg IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("recordGroups", rg)
+                    FOR v IN 0..2 INBOUND rg._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                    FILTER v._id == record._id
+                    LIMIT 1 RETURN true
+                )
+
+                LET recordGroupAccess = (
+                    FOR grp IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("groups", grp) OR IS_SAME_COLLECTION("roles", grp)
+                    FOR rg IN 1..1 ANY grp._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("recordGroups", rg)
+                    FOR v IN 0..5 INBOUND rg._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                    FILTER v._id == record._id
+                    LIMIT 1 RETURN true
+                )
+
+                LET inheritedRecordGroupAccess = (
+                    FOR rg IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("recordGroups", rg)
+                    FOR v IN 0..5 INBOUND rg._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                    FILTER v._id == record._id
+                    LIMIT 1 RETURN true
+                )
+
+                LET kbDirectAccess = record.connectorName == @kbConnectorName ? (
+                    FOR kb IN 1..1 OUTBOUND record._id {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                    FOR perm IN {CollectionNames.PERMISSION.value}
+                        FILTER perm._from == userDoc._id AND perm._to == kb._id
+                        FILTER perm.type == "USER"
+                        LIMIT 1 RETURN true
+                ) : []
+
+                LET kbTeamAccess = record.connectorName == @kbConnectorName ? (
+                    FOR kb IN 1..1 OUTBOUND record._id {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                    FOR teamPerm IN {CollectionNames.PERMISSION.value}
+                        FILTER teamPerm._to == kb._id AND teamPerm.type == "TEAM"
+                        FOR userTeamPerm IN {CollectionNames.PERMISSION.value}
+                            FILTER userTeamPerm._from == userDoc._id
+                            FILTER userTeamPerm._to == teamPerm._from
+                            FILTER userTeamPerm.type == "USER"
+                            LIMIT 1 RETURN true
+                ) : []
+
+                LET anyoneAccess = (
+                    FOR a IN @@anyone
+                    FILTER a.file_key == record._key
+                    FILTER a.organization == @orgId
+                    LIMIT 1 RETURN true
+                )
+
+                FILTER LENGTH(directAccess) > 0
+                    OR LENGTH(groupBelongsAccess) > 0
+                    OR LENGTH(groupPermAccess) > 0
+                    OR LENGTH(orgAccess) > 0
+                    OR LENGTH(orgRecordGroupAccess) > 0
+                    OR LENGTH(recordGroupAccess) > 0
+                    OR LENGTH(inheritedRecordGroupAccess) > 0
+                    OR LENGTH(kbDirectAccess) > 0
+                    OR LENGTH(kbTeamAccess) > 0
+                    OR LENGTH(anyoneAccess) > 0
+
+                COLLECT virtualRecordId = record.virtualRecordId INTO groups
+                LET recordId = FIRST(groups).record._key
+                RETURN {{virtualRecordId: virtualRecordId, recordId: recordId}}
+            """
+
+            bind_vars = {
+                "userId": user_id,
+                "orgId": org_id,
+                "vrids": virtual_record_ids,
+                "userAppIds": user_app_ids or [],
+                "completedStatus": ProgressStatus.COMPLETED.value,
+                "kbConnectorName": Connectors.KNOWLEDGE_BASE.value,
+                "@users": CollectionNames.USERS.value,
+                "@records": CollectionNames.RECORDS.value,
+                "@anyone": CollectionNames.ANYONE.value,
+            }
+
+            result = await self.execute_query(query, bind_vars=bind_vars)
+
+            virtual_id_to_record_id: dict[str, str] = {}
+            if result:
+                for row in result:
+                    vid = row.get("virtualRecordId")
+                    rid = row.get("recordId")
+                    if vid and rid:
+                        virtual_id_to_record_id[vid] = rid
+
+            total_time = time.time() - start_time
+            self.logger.debug(
+                "check_vrids_accessible: %d/%d accessible in %.3fs",
+                len(virtual_id_to_record_id), len(virtual_record_ids), total_time,
+            )
+            return virtual_id_to_record_id
+
+        except Exception as e:
+            self.logger.error(f"check_vrids_accessible failed: {e}", exc_info=True)
+            return {}
+
     async def get_records_by_record_ids(
         self,
         record_ids: list[str],

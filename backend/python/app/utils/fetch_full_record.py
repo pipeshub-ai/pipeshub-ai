@@ -25,10 +25,9 @@ class FetchFullRecordArgs(BaseModel):
     record_ids: list[str] = Field(
         ...,
         description=(
-            "List of Record IDs to fetch. Each Record ID is shown in the 'Record ID :' line "
-            "of the record's context metadata in the conversation. "
-            "Use ONLY the exact Record IDs from the context — do NOT invent, guess, or reuse example IDs. "
-            "Pass ALL record IDs in a single call."
+            "List of Record IDs to fetch (max 5). These come from "
+            "the 'Record ID :' line in retrieval context metadata. "
+            "Use ONLY exact IDs from the context — do NOT invent or guess IDs."
         )
     )
     reason: str = Field(
@@ -246,6 +245,48 @@ async def _fetch_multiple_records_impl(
                                 blob_record = await _enrich_sql_table_with_fk_relations(blob_record, graph_provider)
                             found_records.append(blob_record)
                             continue
+                else:
+                    # record_id might be a virtual_record_id (UUID from find_records).
+                    # Try resolving: virtualRecordId → record _key → fetch.
+                    if hasattr(graph_provider, "get_records_by_virtual_record_id"):
+                        record_keys = await graph_provider.get_records_by_virtual_record_id(record_id)
+                        if record_keys:
+                            actual_record_id = record_keys[0]
+                            graphDb_record = await graph_provider.get_document(
+                                document_key=actual_record_id,
+                                collection=CollectionNames.RECORDS.value,
+                            )
+                            if graphDb_record:
+                                indexing_status = graphDb_record.get("indexingStatus")
+                                if indexing_status == ProgressStatus.COMPLETED.value:
+                                    vrid = graphDb_record.get("virtualRecordId") or record_id
+                                    blob_store = BlobStorage(logger=logger, config_service=graph_provider.config_service, graph_provider=graph_provider)
+                                    frontend_url = None
+                                    try:
+                                        endpoints_config = await blob_store.config_service.get_config(
+                                            config_node_constants.ENDPOINTS.value,
+                                            default={}
+                                        )
+                                        if isinstance(endpoints_config, dict):
+                                            frontend_url = endpoints_config.get("frontend", {}).get("publicEndpoint")
+                                    except Exception:
+                                        pass
+                                    virtual_to_record_map = {vrid: graphDb_record}
+                                    await get_record(vrid, virtual_record_id_to_result, blob_store, org_id, virtual_to_record_map, graph_provider, frontend_url)
+                                    blob_record = virtual_record_id_to_result.get(vrid)
+                                    if blob_record:
+                                        blob_record["virtual_record_id"] = vrid
+                                        await _apply_live_ticket_context_metadata(
+                                            blob_record,
+                                            config_service=config_service,
+                                            graph_provider=graph_provider,
+                                            frontend_url=frontend_url,
+                                        )
+                                        record_type = blob_record.get("record_type") or blob_record.get("recordType")
+                                        if record_type == "SQL_TABLE" and graph_provider:
+                                            blob_record = await _enrich_sql_table_with_fk_relations(blob_record, graph_provider)
+                                        found_records.append(blob_record)
+                                        continue
             except Exception:
                 pass
 
@@ -285,15 +326,17 @@ def create_fetch_full_record_tool(
     """
     @tool("fetch_full_record", args_schema=FetchFullRecordArgs)
     async def fetch_full_record_tool(record_ids: list[str], reason: str = "Fetching full record content for comprehensive answer") -> dict[str, Any]:
-        """Fetch the complete content of one or more records when the provided blocks are insufficient to answer the query. Pass ALL record IDs in a SINGLE call using the record_ids parameter.
+        """Fetch the complete content of one or more records. Pass relevant record IDs in a SINGLE call.
 
-        IMPORTANT: record_ids must be taken directly from the 'Record ID :' field shown in the context metadata for each record. Do NOT use invented IDs, example IDs that are not present in the current context.
+        Accepts record IDs from retrieval context 'Record ID :' field.
+        Maximum 5 record IDs per call.
 
         For SQL_TABLE records, also returns fk_parent_record_ids and fk_child_record_ids
         which can be used to fetch related tables for nested FK relationships.
 
         Args:
-            record_ids: List of Record IDs to fetch — use the exact 'Record ID :' values from the context
+            record_ids: List of Record IDs to fetch (max 5).
+                        Source: 'Record ID :' in retrieval context.
             reason: Brief explanation of why the full records are needed
 
         Returns: Complete content of the records or {"ok": false, "error": "..."}.
@@ -303,6 +346,7 @@ def create_fetch_full_record_tool(
             record_ids,
             reason,
         )
+
         try:
             return await _fetch_multiple_records_impl(
                 record_ids,

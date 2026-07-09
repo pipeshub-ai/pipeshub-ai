@@ -2902,6 +2902,7 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Get record path failed: {str(e)}")
             return None
+
     # ==================== Record Group Operations ====================
 
     async def get_record_group_by_external_id(
@@ -4431,6 +4432,135 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Get accessible virtual record IDs failed: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return {}
+
+    async def check_vrids_accessible(
+        self,
+        user_id: str,
+        org_id: str,
+        virtual_record_ids: list[str],
+    ) -> dict[str, str]:
+        """Targeted permission check for specific virtualRecordIds.
+
+        Instead of scanning all records for a connector, checks only the
+        specified vrids via EXISTS subqueries that short-circuit on first
+        match — orders of magnitude cheaper for large connectors.
+        """
+        if not virtual_record_ids:
+            return {}
+
+        start_time = time.time()
+        try:
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                self.logger.warning(f"User not found for userId: {user_id}")
+                return {}
+
+            user_key = user.get("id") or user.get("_key")
+            user_app_ids = await self._get_user_app_ids(user_key)
+
+            query = """
+            MATCH (u:User {id: $userKey})
+
+            // Find candidate records by virtualRecordId
+            UNWIND $vrids AS targetVrid
+            OPTIONAL MATCH (r:Record {virtualRecordId: targetVrid})
+            WHERE r.indexingStatus = $completedStatus
+              AND (r.origin <> "CONNECTOR" OR r.connectorId IN $userAppIds)
+            WITH u, r, targetVrid
+            WHERE r IS NOT NULL
+
+            // Check all permission paths via EXISTS (short-circuits on first match)
+            WITH u, r, targetVrid
+            WHERE
+                // Path 1: Direct user → record permission
+                EXISTS { MATCH (u)-[:PERMISSION]->(r) }
+                OR
+                // Path 2: User → group (BELONGS_TO) → record
+                EXISTS { MATCH (u)-[:BELONGS_TO]->(:Group)-[:PERMISSION]->(r) }
+                OR
+                // Path 3: User → group/role (PERMISSION) → record
+                EXISTS {
+                    MATCH (u)-[:PERMISSION]->(g)-[:PERMISSION]->(r)
+                    WHERE g:Group OR g:Role
+                }
+                OR
+                // Path 4: User → organization → record
+                EXISTS {
+                    MATCH (u)-[:BELONGS_TO]->(o:Organization)-[:PERMISSION]->(r)
+                }
+                OR
+                // Path 5: User → organization → recordGroup → record (inherit 0..2)
+                EXISTS {
+                    MATCH (u)-[:BELONGS_TO]->(o:Organization)-[:PERMISSION]->(rg:RecordGroup),
+                          (r)-[:INHERIT_PERMISSIONS*0..2]->(rg)
+                }
+                OR
+                // Path 6: User → group/role → recordGroup → record (inherit 0..5)
+                EXISTS {
+                    MATCH (u)-[:PERMISSION]->(g)-[:PERMISSION]->(rg:RecordGroup),
+                          (r)-[:INHERIT_PERMISSIONS*0..5]->(rg)
+                    WHERE g:Group OR g:Role
+                }
+                OR
+                // Path 7: User → recordGroup (direct) → record (inherit 0..5)
+                EXISTS {
+                    MATCH (u)-[:PERMISSION]->(rg:RecordGroup),
+                          (r)-[:INHERIT_PERMISSIONS*0..5]->(rg)
+                }
+                OR
+                // Path 8: KB direct access
+                EXISTS {
+                    MATCH (r)-[:BELONGS_TO]->(kb:RecordGroup),
+                          (u)-[:PERMISSION]->(kb)
+                    WHERE r.connectorName = $kbConnectorName
+                }
+                OR
+                // Path 9: KB team access
+                EXISTS {
+                    MATCH (r)-[:BELONGS_TO]->(kb:RecordGroup),
+                          (team:Teams)-[:PERMISSION {type: "TEAM"}]->(kb),
+                          (u)-[:PERMISSION]->(team)
+                    WHERE r.connectorName = $kbConnectorName
+                }
+                OR
+                // Path 10: Anyone access
+                EXISTS {
+                    MATCH (a:Anyone {organization: $orgId, file_key: r.id})
+                }
+
+            RETURN r.virtualRecordId AS virtualRecordId, r.id AS recordId
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "userKey": user_key,
+                    "orgId": org_id,
+                    "vrids": virtual_record_ids,
+                    "userAppIds": user_app_ids or [],
+                    "completedStatus": ProgressStatus.COMPLETED.value,
+                    "kbConnectorName": Connectors.KNOWLEDGE_BASE.value,
+                },
+            )
+
+            virtual_id_to_record_id: dict[str, str] = {}
+            if results:
+                for row in results:
+                    vid = row.get("virtualRecordId")
+                    rid = row.get("recordId")
+                    if vid and rid and vid not in virtual_id_to_record_id:
+                        virtual_id_to_record_id[vid] = rid
+
+            total_time = time.time() - start_time
+            self.logger.debug(
+                "check_vrids_accessible: %d/%d accessible in %.3fs",
+                len(virtual_id_to_record_id), len(virtual_record_ids), total_time,
+            )
+            return virtual_id_to_record_id
+
+        except Exception as e:
+            self.logger.error(f"check_vrids_accessible failed: {e}", exc_info=True)
             return {}
 
     async def get_records_by_record_ids(
