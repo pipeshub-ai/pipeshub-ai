@@ -1,7 +1,9 @@
 import { apiClient } from '@/lib/api';
+import { streamSSEGet, type SSEEvent } from '@/lib/api/streaming';
 import type {
   AllModelsResponse,
   CapabilitiesResponse,
+  DownloadProgressPayload,
   ModelRoleAssignment,
   ModelRolesResponse,
   ModelsByTypeResponse,
@@ -100,6 +102,28 @@ export const AIModelsApi = {
     );
     return data;
   },
+
+  // Local embedding model download progress
+  prepareModel: async (model: string, trustRemoteCode = false) => {
+    const { data } = await apiClient.post<DownloadProgressPayload>(
+      `${BASE}/ai-models/prepare-model`,
+      { model, trustRemoteCode }
+    );
+    return data;
+  },
+
+  streamDownloadProgress: (
+    model: string,
+    options: {
+      onEvent: (event: SSEEvent<DownloadProgressPayload>) => void;
+      onError: (error: Error) => void;
+      signal?: AbortSignal;
+    }
+  ) =>
+    streamSSEGet<DownloadProgressPayload>(
+      `${BASE}/ai-models/download-progress?model=${encodeURIComponent(model)}`,
+      options
+    ),
 
   // Model roles endpoints
   getRoles: async () => {
