@@ -10,11 +10,11 @@ import {
   Badge,
   DropdownMenu,
   Switch,
-  Tooltip,
   IconButton,
   Checkbox,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { HelpTooltip } from '@/app/components/ui/help-tooltip';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { FilterDropdown } from '@/app/components/ui/filter-dropdown';
 import { DateRangePicker } from '@/app/components/ui/date-range-picker';
@@ -23,6 +23,7 @@ import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import type { FilterSchemaField } from '../../types';
 import { isMeaningfulFilterRow } from '../../utils/sync-filter-save-guards';
+import { MANUAL_INDEXING_TOOLTIP_TEXT } from '../../utils/manual-indexing-tooltip';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 
 type FilterSection = 'sync' | 'indexing';
@@ -647,25 +648,6 @@ function ManualIndexingSection({ field }: { field: FilterSchemaField }) {
   const row = getRow(field, raw);
   const checked = row.value === true || row.value === 'true';
 
-  // Tooltip body is a <p>; only phrasing content is valid (no div/Flex inside).
-  const tooltipContent = (
-    <Text
-      as="span"
-      size="1"
-      style={{
-        display: 'block',
-        maxWidth: 300,
-        whiteSpace: 'pre-line',
-        color: 'var(--gray-12)',
-        lineHeight: 1.55,
-      }}
-    >
-      {`OFF (default): Records are automatically indexed based on the indexing filters below.
-
-ON: No records are automatically indexed. You manually choose which records to index from the knowledge base.`}
-    </Text>
-  );
-
   return (
     <Box
       style={{
@@ -695,7 +677,7 @@ ON: No records are automatically indexed. You manually choose which records to i
               <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
                 {field.displayName}
               </Text>
-              <Tooltip content={tooltipContent}>
+              <HelpTooltip content={MANUAL_INDEXING_TOOLTIP_TEXT}>
                 <IconButton
                   type="button"
                   size="1"
@@ -706,7 +688,7 @@ ON: No records are automatically indexed. You manually choose which records to i
                 >
                   <MaterialIcon name="info" size={16} color="var(--gray-10)" />
                 </IconButton>
-              </Tooltip>
+              </HelpTooltip>
             </Flex>
           </Flex>
           {field.description ? (

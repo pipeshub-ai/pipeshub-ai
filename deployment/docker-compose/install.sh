@@ -370,7 +370,7 @@ fi
 # ==============================================================================
 if ! $FLAG_UPGRADE; then
 
-  # System RAM — minimum 16 GB required
+  # System RAM — minimum 15 GB required
   TOTAL_RAM_MB=0
   if $IS_LINUX || $IS_WSL; then
     if [[ -r /proc/meminfo ]]; then
@@ -393,8 +393,8 @@ if ! $FLAG_UPGRADE; then
     _RAM_MIN_MB=10240
     _RAM_MIN_LABEL="10 GB"
   else
-    _RAM_MIN_MB=16384
-    _RAM_MIN_LABEL="16 GB"
+    _RAM_MIN_MB=15360
+    _RAM_MIN_LABEL="15 GB"
   fi
 
   if (( TOTAL_RAM_MB > 0 && TOTAL_RAM_MB < _RAM_MIN_MB )); then

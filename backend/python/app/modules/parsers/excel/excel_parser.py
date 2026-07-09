@@ -966,7 +966,7 @@ class ExcelParser:
                 formatted_samples.append(formatted_row)
 
             # Format as JSON string for prompt
-            sample_data_str = json.dumps(formatted_samples, indent=2)
+            sample_data_str = json.dumps(formatted_samples, indent=2, ensure_ascii=False)
 
             # Initial messages
             messages = excel_header_generation_prompt.format_messages(
@@ -1009,7 +1009,7 @@ class ExcelParser:
                             messages_list = list(messages)
 
                             # Add the failed response to context
-                            failed_response = json.dumps({"headers": generated_headers}, indent=2)
+                            failed_response = json.dumps({"headers": generated_headers}, indent=2, ensure_ascii=False)
                             messages_list.append(AIMessage(content=failed_response))
 
                             # Add reflection prompt
@@ -1145,7 +1145,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
             # Get summary from LLM with retry
             messages = self.table_summary_prompt.format_messages(
-                headers=table["headers"], sample_data=json.dumps(sample_data, indent=2)
+                headers=table["headers"], sample_data=json.dumps(sample_data, indent=2, ensure_ascii=False)
             )
             response = await self._call_llm(messages)
             # Gemini and similar return content as a list of blocks, not a string.
@@ -1433,5 +1433,4 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
         self.logger.info(f"Workbook processing complete. Total: {len(blocks)} blocks, {len(block_groups)} block groups")
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
-
 
