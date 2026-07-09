@@ -24,9 +24,15 @@ import pytest
 
 from app.agent_loop_lib.agent.loops import PlanExecuteLoop, ReActLoop
 from app.agent_loop_lib.modules.pipeline.planner.plan_ahead import PlanAheadPlanner
+from app.agent_loop_lib.transport.opik_tracing import OpikTracingTransport
 from app.agents.agent_loop.intent import IntentRouteDecision
+from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.loops.orchestrator import OrchestratorLoop
-from app.agents.agent_loop.router import _build_goal, _loop_for_route, select_loop_and_goal
+from app.agents.agent_loop.router import (
+    _build_goal,
+    _loop_for_route,
+    select_loop_and_goal,
+)
 from tests.unit.agents.adapter.conftest import FakeChatModel, make_context
 
 
@@ -61,6 +67,19 @@ class TestLoopForRoute:
     def test_quick_route_threads_sandbox_has_network_into_planner(self) -> None:
         loop = _loop_for_route("quick", FakeChatModel(), sandbox_has_network=True)
         assert loop._planner._sandbox_has_network is True
+
+    def test_quick_route_wraps_planner_transport_with_opik_when_active(self) -> None:
+        loop = _loop_for_route(
+            "quick", FakeChatModel(), opik_active=True, opik_project_name="proj",
+        )
+        transport = loop._planner._model.transport
+        assert isinstance(transport, OpikTracingTransport)
+
+    def test_quick_route_leaves_planner_transport_unwrapped_when_opik_inactive(self) -> None:
+        loop = _loop_for_route("quick", FakeChatModel(), opik_active=False)
+        transport = loop._planner._model.transport
+        assert isinstance(transport, LangChainTransport)
+        assert not isinstance(transport, OpikTracingTransport)
 
 
 class TestBuildGoal:
@@ -186,6 +205,27 @@ class TestSelectLoopAndGoal:
 
         assert isinstance(loop, PlanExecuteLoop)
         assert loop._planner._sandbox_has_network is True
+
+    async def test_quick_mode_threads_opik_flags_into_planner_transport(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def _fake_parse_intent(*_args: Any, **_kwargs: Any) -> IntentRouteDecision:
+            return IntentRouteDecision(reasoning="r", rewritten_query="q")
+
+        monkeypatch.setattr("app.agents.agent_loop.router.parse_intent_and_route", _fake_parse_intent)
+        context = make_context(llm=FakeChatModel())
+
+        loop, _goal, _clarifying = await select_loop_and_goal(
+            chat_mode="quick",
+            query="q",
+            llm=context.llm,
+            context=context,
+            opik_active=True,
+            opik_project_name="proj",
+        )
+
+        assert isinstance(loop, PlanExecuteLoop)
+        assert isinstance(loop._planner._model.transport, OpikTracingTransport)
 
     async def test_deep_mode_returns_orchestrator_loop_and_skips_routing(
         self, monkeypatch: pytest.MonkeyPatch,

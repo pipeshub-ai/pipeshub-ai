@@ -1,15 +1,18 @@
-"""`RespondPipeline` (`app/agents/agent_loop/respond.py`) — Phase 6:
-post-agent response synthesis. Heavily mocks the content-bearing helpers it
-reuses unchanged from the legacy path (`create_response_messages`,
-`stream_llm_response_with_tools`, citation normalization) since those already
-have their own test coverage; these tests validate RespondPipeline's OWN
-logic — event sequencing, completion_data shape, and the empty-answer /
+"""`RespondPipeline` (`app/agents/agent_loop/respond.py`) — Phase 6: formats
+the agent's OWN final-turn answer with citations and streams it out. No
+longer a second LLM call (see `respond.py`'s module docstring) — this test
+suite mocks `stream_llm_response_with_tools` (already covered by its own
+tests) to validate RespondPipeline's OWN logic: it must NOT run tools, must
+feed the agent's raw output through as the last message, and must correctly
+handle event sequencing, completion_data shape, and the empty-answer /
 agent-failure fallback paths."""
 
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
+
+from langchain_core.messages import AIMessage
 
 from app.agents.agent_loop.hooks.citations import CitationCollector
 from app.agents.agent_loop.respond import RespondPipeline
@@ -25,24 +28,14 @@ class _RecordingSink:
         return True
 
 
-def _empty_web_tools(_state: dict) -> list:
-    return []
-
-
-def _patches(*, stream_events: list[dict[str, Any]], messages: list | None = None):
-    async def _fake_stream(**_kwargs):
+def _patch_stream(stream_events: list[dict[str, Any]], captured_kwargs: dict[str, Any] | None = None):
+    async def _fake_stream(**kwargs):
+        if captured_kwargs is not None:
+            captured_kwargs.update(kwargs)
         for event in stream_events:
             yield event
 
-    return (
-        patch("app.agents.agent_loop.respond.create_response_messages", new=AsyncMock(return_value=messages or [])),
-        patch("app.agents.agent_loop.respond._ensure_attachment_blocks", new=AsyncMock(return_value=[])),
-        patch("app.agents.agent_loop.respond._inject_attachment_blocks", new=MagicMock()),
-        patch("app.agents.agent_loop.respond._extract_web_records_from_tool_results", return_value=[]),
-        patch("app.agents.agent_loop.respond._tool_names_and_results_from_state", return_value={"tool_results": []}),
-        patch("app.agents.agent_loop.respond.stream_llm_response_with_tools", new=_fake_stream),
-        patch("app.modules.agents.qna.tool_system._create_web_tools", new=_empty_web_tools),
-    )
+    return patch("app.agents.agent_loop.respond.stream_llm_response_with_tools", new=_fake_stream)
 
 
 class TestErrorPath:
@@ -97,11 +90,12 @@ class TestSuccessPath:
 
         complete_event = {
             "event": "complete",
-            "data": {"answer": "The answer is 42.", "citations": [], "reason": "found it", "confidence": "High"},
+            "data": {"answer": "The answer is 42.", "citations": [], "confidence": "High"},
         }
-        patches = _patches(stream_events=[complete_event])
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
-            result = await pipeline.run(agent_success=True, agent_error=None, event_sink=sink)
+        with _patch_stream([complete_event]):
+            result = await pipeline.run(
+                agent_success=True, agent_error=None, agent_output="The answer is 42.", event_sink=sink,
+            )
 
         assert result["answer"] == "The answer is 42."
         assert result["confidence"] == "High"
@@ -109,15 +103,51 @@ class TestSuccessPath:
         assert event_types == ["status", "complete"]
         assert context.tool_state["completion_data"] == result
 
+    async def test_agent_output_passed_through_as_last_message_with_no_tools(self) -> None:
+        """The whole point of this fix: no tools, no second LLM call — just
+        the agent's own output text streamed through as the final AI
+        message."""
+        context = make_context()
+        pipeline = RespondPipeline(context, CitationCollector(context))
+        sink = _RecordingSink()
+        captured: dict[str, Any] = {}
+
+        complete_event = {"event": "complete", "data": {"answer": "final answer", "citations": []}}
+        with _patch_stream([complete_event], captured):
+            await pipeline.run(
+                agent_success=True, agent_error=None, agent_output="final answer", event_sink=sink,
+            )
+
+        assert captured["tools"] is None
+        assert captured["tool_runtime_kwargs"] is None
+        assert captured["mode"] == "simple"
+        messages = captured["messages"]
+        assert len(messages) == 1
+        assert isinstance(messages[0], AIMessage)
+        assert messages[0].content == "final answer"
+
+    async def test_none_agent_output_coerced_to_empty_string(self) -> None:
+        context = make_context()
+        pipeline = RespondPipeline(context, CitationCollector(context))
+        sink = _RecordingSink()
+        captured: dict[str, Any] = {}
+
+        complete_event = {"event": "complete", "data": {"answer": "", "citations": []}}
+        with _patch_stream([complete_event], captured):
+            await pipeline.run(agent_success=True, agent_error=None, agent_output=None, event_sink=sink)
+
+        assert captured["messages"][0].content == ""
+
     async def test_empty_answer_falls_back_to_default_response(self) -> None:
         context = make_context()
         pipeline = RespondPipeline(context, CitationCollector(context))
         sink = _RecordingSink()
 
         complete_event = {"event": "complete", "data": {"answer": "", "citations": []}}
-        patches = _patches(stream_events=[complete_event])
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
-            result = await pipeline.run(agent_success=True, agent_error=None, event_sink=sink)
+        with _patch_stream([complete_event]):
+            result = await pipeline.run(
+                agent_success=True, agent_error=None, agent_output="", event_sink=sink,
+            )
 
         assert result["answerMatchType"] == "Fallback Response"
         event_types = [e["event"] for e in sink.events]
@@ -126,36 +156,96 @@ class TestSuccessPath:
         # "complete" pair once it notices the answer was empty.
         assert event_types == ["status", "complete", "answer_chunk", "complete"]
 
-    async def test_exception_during_synthesis_yields_error_response(self) -> None:
+    async def test_exception_during_streaming_yields_error_response(self) -> None:
         context = make_context()
         pipeline = RespondPipeline(context, CitationCollector(context))
         sink = _RecordingSink()
 
         with patch(
-            "app.agents.agent_loop.respond.create_response_messages",
-            new=AsyncMock(side_effect=RuntimeError("boom")),
+            "app.agents.agent_loop.respond.stream_llm_response_with_tools",
+            side_effect=RuntimeError("boom"),
         ):
-            result = await pipeline.run(agent_success=True, agent_error=None, event_sink=sink)
+            result = await pipeline.run(
+                agent_success=True, agent_error=None, agent_output="hi", event_sink=sink,
+            )
 
         assert result["answerMatchType"] == "Error"
         assert result["answer"] == "I encountered an issue while processing your request. Please try again."
 
-    async def test_reference_data_normalized_when_present(self) -> None:
+    async def test_citations_and_confidence_passed_through_from_complete_event(self) -> None:
         context = make_context()
         pipeline = RespondPipeline(context, CitationCollector(context))
         sink = _RecordingSink()
 
         complete_event = {
             "event": "complete",
-            "data": {"answer": "42", "citations": [{"id": "c1"}], "referenceData": [{"raw": "item"}]},
+            "data": {"answer": "42", "citations": [{"id": "c1"}], "confidence": "Medium"},
         }
-        patches = _patches(stream_events=[complete_event])
-        normalize_patch = patch(
-            "app.agents.agent_loop.respond.normalize_reference_data_items",
-            return_value=[{"normalized": "item"}],
-        )
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], normalize_patch as norm_mock:
-            result = await pipeline.run(agent_success=True, agent_error=None, event_sink=sink)
+        with _patch_stream([complete_event]):
+            result = await pipeline.run(
+                agent_success=True, agent_error=None, agent_output="42", event_sink=sink,
+            )
 
-        norm_mock.assert_called_once_with([{"raw": "item"}])
-        assert result["referenceData"] == [{"normalized": "item"}]
+        assert result["citations"] == [{"id": "c1"}]
+        assert result["confidence"] == "Medium"
+        # The old structured-JSON-only fields no longer appear on the
+        # success path (see respond.py's module docstring).
+        assert "referenceData" not in result
+        assert "answerMatchType" not in result
+
+    async def test_answer_chunk_events_forwarded_before_complete(self) -> None:
+        context = make_context()
+        pipeline = RespondPipeline(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        events = [
+            {"event": "answer_chunk", "data": {"chunk": "42", "accumulated": "42", "citations": []}},
+            {"event": "complete", "data": {"answer": "42", "citations": []}},
+        ]
+        with _patch_stream(events):
+            await pipeline.run(agent_success=True, agent_error=None, agent_output="42", event_sink=sink)
+
+        event_types = [e["event"] for e in sink.events]
+        assert event_types == ["status", "answer_chunk", "complete"]
+
+
+class TestAskUserQuestionFallback:
+    async def test_emits_ask_user_question_when_ui_client_and_not_already_emitted(self) -> None:
+        context = make_context(has_ui_client=True)
+        context.tool_state["all_tool_results"] = [
+            {
+                "tool_name": "internaltools_ask_user_question",
+                "status": "success",
+                "result": '{"question": "which one?"}',
+            }
+        ]
+        pipeline = RespondPipeline(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        complete_event = {"event": "complete", "data": {"answer": "42", "citations": []}}
+        with _patch_stream([complete_event]):
+            await pipeline.run(agent_success=True, agent_error=None, agent_output="42", event_sink=sink)
+
+        ask_events = [e for e in sink.events if e["event"] == "ask_user_question"]
+        assert len(ask_events) == 1
+        assert ask_events[0]["data"]["toolData"] == {"question": "which one?"}
+        assert context.tool_state["ask_user_question_emitted"] is True
+
+    async def test_skips_when_already_emitted(self) -> None:
+        context = make_context(has_ui_client=True)
+        context.tool_state["ask_user_question_emitted"] = True
+        context.tool_state["all_tool_results"] = [
+            {
+                "tool_name": "internaltools_ask_user_question",
+                "status": "success",
+                "result": "{}",
+            }
+        ]
+        pipeline = RespondPipeline(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        complete_event = {"event": "complete", "data": {"answer": "42", "citations": []}}
+        with _patch_stream([complete_event]):
+            await pipeline.run(agent_success=True, agent_error=None, agent_output="42", event_sink=sink)
+
+        assert not [e for e in sink.events if e["event"] == "ask_user_question"]

@@ -37,6 +37,11 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.agent_loop_lib.transport.opik_tracing import (
+    is_opik_configured,
+    maybe_start_named_span,
+    record_named_span_output,
+)
 from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
 from app.modules.agents.qna.router import (
     build_capability_context,
@@ -143,7 +148,6 @@ async def parse_intent_and_route(
     graph_provider: Any = None,
     is_multimodal_llm: bool = False,
     org_id: str = "",
-    opik_tracer: Any = None,
 ) -> IntentRouteDecision:
     """Single structured-output call that understands/reorganizes the query
     and, when `include_routing=True`, also picks the execution tier.
@@ -156,6 +160,19 @@ async def parse_intent_and_route(
     fallback path too — a broken intent call must never surprise-pause the
     request for a "clarification" nobody asked for; it degrades to running
     with the raw query instead, same as before this field existed.
+
+    Traced with its own Opik span (`intent.parse_intent_and_route`) rather
+    than a `callbacks=[opik_tracer]` LangChain config — no caller ever
+    actually passed a tracer through the old (now-removed) `opik_tracer`
+    parameter, so this call was never actually traced despite accepting
+    the argument. This still runs BEFORE `PipesHubAgentFactory.create()`
+    constructs the `Agent` (`router.py::select_loop_and_goal()` calls it
+    synchronously first to resolve the `Goal`/`LoopStrategy`), i.e. before
+    `Agent.run()` opens the conversation's root trace — so this span has
+    no active trace/span to nest under and becomes its own standalone
+    root trace (see `transport/opik_tracing.py`'s module docstring), still
+    showing up in Opik as `intent.parse_intent_and_route` rather than not
+    being traced at all.
     """
     user_query = query_info.get("query", "").strip()
     if not user_query:
@@ -209,11 +226,20 @@ async def parse_intent_and_route(
         from langchain_core.messages import HumanMessage, SystemMessage
 
         structured_llm = llm.with_structured_output(IntentRouteDecision)
-        invoke_config = {"callbacks": [opik_tracer]} if opik_tracer else {}
-        decision: IntentRouteDecision = await structured_llm.ainvoke(
-            [SystemMessage(content=system_prompt), *prior_messages, HumanMessage(content=human_content)],
-            config=invoke_config,
-        )
+        with maybe_start_named_span(
+            enabled=is_opik_configured(),
+            name="intent.parse_intent_and_route",
+            span_input={
+                "system_prompt": system_prompt,
+                "query": user_query,
+                "include_routing": include_routing,
+                "human_content": human_content,
+            },
+        ) as span:
+            decision: IntentRouteDecision = await structured_llm.ainvoke(
+                [SystemMessage(content=system_prompt), *prior_messages, HumanMessage(content=human_content)],
+            )
+            record_named_span_output(span, decision.model_dump(mode="json"))
         if not decision.rewritten_query.strip():
             decision.rewritten_query = user_query
         logger.info(

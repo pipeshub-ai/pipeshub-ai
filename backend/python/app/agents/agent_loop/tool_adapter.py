@@ -69,22 +69,119 @@ def _resolve_parameter_type(raw_type: str) -> ParameterType:
     return _JSON_TYPE_TO_PARAMETER_TYPE.get((raw_type or "").lower(), ParameterType.STRING)
 
 
-def _params_from_schema(schema: Any) -> list[ToolParameter]:  # noqa: ANN401
-    """Shared by both adapters: flattens a tool's Pydantic `args_schema`
-    (or JSON-schema dict) into agent-loop's `ToolParameter` list via the
-    same extraction already used for the ReAct planner's tool-description
-    text (`_extract_parameters_from_schema`), so the two stay in sync
-    instead of drifting apart with a second hand-rolled schema walker.
+def _resolve_json_refs(node: Any, defs: dict[str, Any]) -> Any:  # noqa: ANN401
+    """Inline every `$ref`/`$defs` in a Pydantic `model_json_schema()`
+    output — LLM function-calling APIs expect a single self-contained
+    schema per tool, not JSON Schema's `$ref`-to-`$defs` indirection (which
+    Pydantic v2 always emits for nested `BaseModel` fields)."""
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if ref:
+            resolved = _resolve_json_refs(defs.get(ref.rsplit("/", 1)[-1], {}), defs)
+            # Sibling keys (e.g. a field-level `description` next to the
+            # `$ref`) take precedence over the referenced definition's own.
+            return {**resolved, **{k: v for k, v in node.items() if k != "$ref"}}
+        return {k: _resolve_json_refs(v, defs) for k, v in node.items() if k != "$defs"}
+    if isinstance(node, list):
+        return [_resolve_json_refs(item, defs) for item in node]
+    return node
 
-    Note: this only reproduces the flat parameter shape (name/type/
-    required/description) — deeply nested object/array-of-object fields
-    lose their inner structure exactly as they already do in the planner's
-    tool-description text. Full JSON-schema fidelity would require
-    extending `agent_loop.tools.base.ToolParameter` itself, which is out of
-    scope for this adapter layer.
+
+def _unwrap_any_of(prop_schema: dict[str, Any]) -> dict[str, Any]:
+    """Pydantic v2 emits `anyOf: [<real type>, {"type": "null"}]` for
+    `Optional[X]`/`X | None` fields instead of a flat `type: X` — pick the
+    first non-null variant so downstream type/nesting resolution sees the
+    real shape, mirroring what `_get_field_type_name` already does for the
+    plain-text tool-description path by unwrapping `Union`/`Optional`."""
+    variants = prop_schema.get("anyOf") or prop_schema.get("oneOf")
+    if not variants:
+        return prop_schema
+    non_null = [v for v in variants if v.get("type") != "null"]
+    chosen = dict(non_null[0] if non_null else variants[0])
+    if "description" not in chosen and "description" in prop_schema:
+        chosen["description"] = prop_schema["description"]
+    return chosen
+
+
+def _json_schema_dict_from_source(schema: Any) -> dict[str, Any] | None:  # noqa: ANN401
+    """Normalize a tool's `args_schema` — a Pydantic v1/v2 model class, or
+    an already-plain JSON-schema dict — into a plain, `$ref`-free JSON
+    schema dict. Returns `None` for anything else (e.g. no schema at all)."""
+    if schema is None:
+        return None
+    if isinstance(schema, dict):
+        raw = schema
+    elif hasattr(schema, "model_json_schema"):
+        raw = schema.model_json_schema()
+    elif hasattr(schema, "schema"):
+        raw = schema.schema()
+    else:
+        return None
+    defs = raw.get("$defs") or raw.get("definitions") or {}
+    return _resolve_json_refs(raw, defs) if defs else raw
+
+
+def _tool_parameter_from_json_schema(name: str, prop_schema: dict[str, Any], required: bool) -> ToolParameter:
+    """One JSON-schema `properties` entry -> one `ToolParameter`, recursing
+    into `items`/`properties` for arrays and objects so nested structure
+    (e.g. an array of Jira-filter objects) survives into the schema the LLM
+    actually sees, instead of collapsing to a bare `object`/`array`."""
+    prop_schema = _unwrap_any_of(prop_schema)
+    raw_type = prop_schema.get("type")
+    param_type = _resolve_parameter_type(raw_type if isinstance(raw_type, str) else "string")
+
+    items: dict[str, Any] | None = None
+    properties: dict[str, Any] | None = None
+    required_properties: list[str] | None = None
+    if param_type == ParameterType.ARRAY:
+        items = prop_schema.get("items") or {"type": "string"}
+    elif param_type == ParameterType.OBJECT:
+        properties = prop_schema.get("properties") or None
+        nested_required = prop_schema.get("required")
+        required_properties = list(nested_required) if nested_required else None
+
+    enum = prop_schema.get("enum")
+    return ToolParameter(
+        name=name,
+        type=param_type,
+        description=prop_schema.get("description") or name,
+        required=required,
+        enum=list(enum) if enum else None,
+        items=items,
+        properties=properties,
+        required_properties=required_properties,
+    )
+
+
+def _params_from_schema(schema: Any) -> list[ToolParameter]:  # noqa: ANN401
+    """Shared by both adapters: converts a tool's Pydantic `args_schema`
+    (or JSON-schema dict) into agent-loop's `ToolParameter` list with full
+    JSON-schema fidelity — deeply nested object/array-of-object fields keep
+    their inner `properties`/`items` structure (see
+    `_tool_parameter_from_json_schema`), unlike the flat, text-only
+    extraction `_extract_parameters_from_schema` does for the ReAct
+    planner's prompt description (a lossy summary is fine there; it's never
+    used as the actual function-calling schema the LLM must produce
+    arguments against).
+
+    Falls back to the old flat extraction if the schema can't be resolved
+    this way (e.g. an exotic non-Pydantic `args_schema`) — a degraded but
+    still-usable schema beats a hard failure to load the tool at all.
     """
     if schema is None:
         return []
+    try:
+        json_schema = _json_schema_dict_from_source(schema)
+        if json_schema is not None:
+            properties = json_schema.get("properties") or {}
+            required = set(json_schema.get("required") or [])
+            return [
+                _tool_parameter_from_json_schema(param_name, prop_schema, param_name in required)
+                for param_name, prop_schema in properties.items()
+            ]
+    except Exception:
+        logger.debug("Full JSON-schema extraction failed for %r, falling back to flat extraction", schema, exc_info=True)
+
     extracted = _extract_parameters_from_schema(schema, logger)
     return [
         ToolParameter(

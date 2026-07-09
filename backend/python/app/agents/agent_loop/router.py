@@ -44,6 +44,7 @@ from app.agent_loop_lib.agent.loops import LoopStrategy, PlanExecuteLoop, ReActL
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.models.transport import TransportModel
 from app.agent_loop_lib.modules.pipeline.planner.plan_ahead import PlanAheadPlanner
+from app.agent_loop_lib.transport.opik_tracing import wrap_if_enabled
 from app.agents.agent_loop.intent import IntentRouteDecision, parse_intent_and_route
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.loops.orchestrator import OrchestratorLoop
@@ -87,10 +88,19 @@ def _loop_for_route(
     tool_names: list[str] | None = None,
     *,
     sandbox_has_network: bool = False,
+    opik_active: bool = False,
+    opik_project_name: str | None = None,
 ) -> LoopStrategy:
     if route == "quick":
+        # Same `wrap_if_enabled` gate `PipesHubAgentFactory.create()` applies to
+        # the main transport — this planner's upfront-plan call runs inside
+        # `PlanExecuteLoop`, i.e. inside `Agent.run()`'s trace scope, so without
+        # this it would be the one LLM call in the request invisible to Opik.
+        planner_transport = wrap_if_enabled(
+            LangChainTransport(llm), enabled=opik_active, project_name=opik_project_name,
+        )
         planner = PlanAheadPlanner(
-            TransportModel(LangChainTransport(llm)),
+            TransportModel(planner_transport),
             tool_names=tool_names,
             sandbox_has_network=sandbox_has_network,
         )
@@ -138,6 +148,8 @@ async def select_loop_and_goal(
     context: "AgentContext",
     tool_names: list[str] | None = None,
     sandbox_has_network: bool = False,
+    opik_active: bool = False,
+    opik_project_name: str | None = None,
 ) -> tuple[LoopStrategy, Goal, list[AskUserQuestionItemInput]]:
     """Single entry point `PipesHubAgentFactory.create()` calls to resolve
     `chatMode` to a concrete `LoopStrategy` AND the `Goal` the agent runs
@@ -193,7 +205,11 @@ async def select_loop_and_goal(
     if normalized in _DIRECT_MODES:
         return ReActLoop(), goal, clarifying_questions
     if normalized in _EXPLICIT_ROUTE_MODES:
-        loop = _loop_for_route(normalized, llm, tool_names, sandbox_has_network=sandbox_has_network)
+        loop = _loop_for_route(
+            normalized, llm, tool_names,
+            sandbox_has_network=sandbox_has_network,
+            opik_active=opik_active, opik_project_name=opik_project_name,
+        )
         return loop, goal, clarifying_questions
 
     # "auto" (or any unrecognized mode -- same fallback `_select_agent_graph_
@@ -202,7 +218,9 @@ async def select_loop_and_goal(
     # fall back to "react" defensively (mirrors `classify_route()`'s own
     # failure fallback) in case a caller ever reaches here without it.
     loop = _loop_for_route(
-        decision.route or "react", llm, tool_names, sandbox_has_network=sandbox_has_network,
+        decision.route or "react", llm, tool_names,
+        sandbox_has_network=sandbox_has_network,
+        opik_active=opik_active, opik_project_name=opik_project_name,
     )
     return loop, goal, clarifying_questions
 

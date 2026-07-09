@@ -89,18 +89,22 @@ class LangChainTransport(LLMTransport):
         return model or self._model
 
     def _bind_tools(self, tools: list[ToolSchema] | None) -> BaseChatModel:
-        """Mirrors `app.utils.streaming.bind_tools_for_llm`'s
-        fail-soft behavior: a provider/model that can't bind tools should
-        degrade to a plain completion, not blow up the whole turn.
+        """Binds `tools` onto the underlying `BaseChatModel`, or raises a
+        `TransportError` if binding fails.
 
-        The degrade path used to be a silent `except: pass` — from the
-        outside that looked identical to "the model just chose not to call
-        a tool", which made "why didn't the agent use run_code/etc." reports
-        impossible to diagnose from logs alone. Both branches now log at a
-        level that survives production (INFO for the normal count, WARNING
-        with the traceback for the fail-soft path) so a tool that silently
-        vanished from a turn is visible in the logs instead of only in the
-        model's behavior.
+        This USED to fail-soft (`except: pass`, then later a bare WARNING
+        log) and silently continue the turn with the model's tools stripped
+        — from the outside, that looked identical to "the model just chose
+        not to call a tool", which made "why didn't the agent use
+        run_code/etc." reports impossible to diagnose from logs alone, and
+        worse, let a turn that explicitly needed a tool (e.g. `task_complete`)
+        run to `max_turns` with no way to ever satisfy it. When the caller
+        asked for tools, a provider/model that can't bind them is a hard
+        failure for this call, not a degraded-but-still-valid one — raising
+        here lets it flow through the same `TransportError` handling every
+        other transport failure already goes through (retry middleware,
+        `_wrap_error`'s callers, the adapter's error-response path), instead
+        of a distinct silent-degradation code path nothing else knows about.
         """
         if not tools:
             logger.debug("LangChainTransport: no tools offered for this turn")
@@ -109,18 +113,21 @@ class LangChainTransport(LLMTransport):
         lc_tools = convert_tool_schemas_to_langchain(tools)
         try:
             bound = self._llm.bind_tools(lc_tools)
-            logger.info(
-                "LangChainTransport: bound %d tool(s) to LLM call: %s",
-                len(tool_names), tool_names,
-            )
-            return bound
-        except Exception:
-            logger.warning(
+        except Exception as exc:
+            logger.error(
                 "LangChainTransport: bind_tools() failed for %d tool(s) %s — "
-                "degrading to a plain completion with NO tools available this turn",
+                "refusing to silently run this turn without them",
                 len(tool_names), tool_names, exc_info=True,
             )
-            return self._llm
+            raise TransportError(
+                f"bind_tools() failed for {len(tool_names)} tool(s) {tool_names}: {exc}",
+                retryable=False,
+            ) from exc
+        logger.info(
+            "LangChainTransport: bound %d tool(s) to LLM call: %s",
+            len(tool_names), tool_names,
+        )
+        return bound
 
     def _wrap_error(self, exc: Exception, context: str) -> TransportError:
         status_code = getattr(exc, "status_code", None)

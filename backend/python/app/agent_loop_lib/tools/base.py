@@ -109,7 +109,16 @@ class ToolParameter:
     """Declarative description of a single tool argument.
 
     ``items`` describes the element schema for ``ParameterType.ARRAY``
-    parameters (e.g. ``{"type": "string"}``); ignored for other types.
+    parameters (e.g. ``{"type": "string"}``, or a nested ``{"type":
+    "object", "properties": {...}}`` for an array of objects); ignored for
+    other types.
+
+    ``properties``/``required_properties`` describe the field schema for
+    ``ParameterType.OBJECT`` parameters — each value in ``properties`` is
+    itself a full JSON-schema fragment (which may recursively nest further
+    ``properties``/``items``, e.g. an object field containing another
+    object or an array of objects). Both are ``None`` for a schema-less
+    (untyped) object parameter; ignored for other types.
     """
 
     name: str
@@ -119,6 +128,8 @@ class ToolParameter:
     default: Any = None
     enum: list[str] | None = None
     items: dict[str, Any] | None = None
+    properties: dict[str, Any] | None = None
+    required_properties: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -288,6 +299,10 @@ class Tool(ABC):
             }
             if param.items is not None:
                 prop["items"] = param.items
+            if param.properties is not None:
+                prop["properties"] = param.properties
+                if param.required_properties:
+                    prop["required"] = param.required_properties
             if param.enum is not None:
                 prop["enum"] = param.enum
             properties[param.name] = prop
