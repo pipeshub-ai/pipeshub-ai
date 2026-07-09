@@ -804,7 +804,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                         # A "file"-type entry means this user was granted access directly on this
                         # item, as opposed to inheriting it via Shared Drive membership ("member").
-                        permission_details = perm_data.get("permissionDetails", [])
+                        permission_details = perm_data.get("permissionDetails") or []
                         if entity_type == EntityType.USER and email and any(
                             detail.get("permissionType") == "file" for detail in permission_details
                         ):
