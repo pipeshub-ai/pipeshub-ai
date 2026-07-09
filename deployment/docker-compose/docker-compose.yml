@@ -233,16 +233,31 @@ services:
   # ---------------------------------------------------------------------------
 
   mongodb:
-    image: mongo:8.0.17
+    # Pin via MONGO_IMAGE_TAG to recover from host-specific MongoDB 8.x crashes.
+    image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
     container_name: mongodb
     restart: always
+    # Quickstart targets a 16 GB-class shared Docker host running MongoDB beside
+    # the app, Qdrant, graph DB, Redis, and optional broker services. WiredTiger
+    # otherwise reserves roughly half of host RAM; cap cache at 1 GB by default
+    # and keep the container limit at 2 GB to leave room for process overhead.
+    command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-}
+      # Keep the official image's rseq=0 default for TCMalloc performance; set
+      # MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1 if MongoDB exits 139 on newer kernels.
+      - GLIBC_TUNABLES=${MONGO_GLIBC_TUNABLES:-glibc.pthread.rseq=0}
     volumes:
       - mongodb_data:/data/db
     networks:
       - pipeshub
+    deploy:
+      resources:
+        limits:
+          memory: ${MONGO_MEMORY_LIMIT:-2G}
+        reservations:
+          memory: 512M
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 5s

@@ -7,10 +7,16 @@ from typing import Optional
 from app.agents.tools.config import ToolDiscoveryConfig
 from app.agents.tools.factories.base import ClientFactory
 from app.agents.tools.factories.clickup import ClickUpClientFactory
-from app.agents.tools.factories.confluence import ConfluenceClientFactory
+from app.agents.tools.factories.confluence import (
+    ConfluenceClientFactory,
+    ConfluenceDataCenterClientFactory,
+)
 from app.agents.tools.factories.dropbox import DropboxClientFactory
 from app.agents.tools.factories.google import GoogleClientFactory
-from app.agents.tools.factories.jira import JiraClientFactory
+from app.agents.tools.factories.jira import (
+    JiraClientFactory,
+    JiraDataCenterClientFactory,
+)
 from app.agents.tools.factories.linear import LinearClientFactory
 from app.agents.tools.factories.lumos import LumosClientFactory
 from app.agents.tools.factories.microsoft import MSGraphClientFactory
@@ -134,8 +140,14 @@ class ClientFactoryRegistry:
             elif app_name == "jira":
                 cls.register(app_name, JiraClientFactory())
 
+            elif app_name == "jiradatacenter":
+                cls.register(app_name, JiraDataCenterClientFactory())
+
             elif app_name == "confluence":
                 cls.register(app_name, ConfluenceClientFactory())
+
+            elif app_name == "confluencedatacenter":
+                cls.register(app_name, ConfluenceDataCenterClientFactory())
 
             elif app_name == "slack":
                 cls.register(app_name, SlackClientFactory())

@@ -8446,10 +8446,12 @@ components:
         - calendar
         - clickup
         - confluence
+        - confluencedatacenter
         - drive
         - github
         - gmail
         - jira
+        - jiradatacenter
         - lumos
         - mariadb
         - onedrive
@@ -11878,6 +11880,119 @@ components:
           enum: [error]
         message:
           type: string
+
+    PrepareEmbeddingModelRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - model
+      properties:
+        model:
+          type: string
+          description: |
+            HuggingFace repo id of the local embedding model to prepare, in
+            `owner/name` or bare-model-id form. Must match
+            `^[\w.-]+(\/[\w.-]+)?$`.
+          example: "BAAI/bge-m3"
+        trustRemoteCode:
+          type: boolean
+          default: false
+          description: |
+            Forwarded to the embedding server as `trust_remote_code`.
+            Rejected with 403 unless the server has
+            `EMBEDDING_SERVER_ALLOW_REMOTE_CODE=true` set.
+
+    EmbeddingDownloadStatus:
+      type: string
+      description: |
+        Lifecycle state of a model load/download on the embedding server.
+        Transitions: `checking` -> `downloading` -> `loading` -> `ready`, or
+        -> `failed` from any state. `not_found` is only returned by
+        `GET .../download-progress` when no download has ever been tracked
+        for the model and it is not currently loaded.
+      enum:
+        - checking
+        - downloading
+        - loading
+        - ready
+        - failed
+        - not_found
+
+    EmbeddingDownloadProgressPayload:
+      type: object
+      additionalProperties: false
+      description: |
+        Status snapshot for a single model's load/download, proxied from the
+        embedding server's `DownloadStatus.to_dict()`.
+      required:
+        - model
+        - status
+        - progress
+        - downloaded_bytes
+        - total_bytes
+        - error
+      properties:
+        model:
+          type: string
+          description: Model repo id this snapshot refers to.
+        status:
+          $ref: '#/components/schemas/EmbeddingDownloadStatus'
+        progress:
+          type: number
+          format: float
+          description: |
+            Percent complete (0-100), rounded to 1 decimal place. Capped at
+            99 while downloading — 100 is only reported once the load is
+            fully `ready`. Stays 0 when the Hub size lookup failed and no
+            bytes have been measured on disk yet.
+        downloaded_bytes:
+          type: integer
+          description: |
+            Bytes currently on disk for this repo's HuggingFace cache blobs,
+            including in-progress `.incomplete` files.
+        total_bytes:
+          type: integer
+          description: |
+            Best-effort expected total size in bytes from the Hub metadata
+            API. `0` when the lookup failed (offline, private/gated repo) or
+            no download has been tracked for this model.
+        error:
+          type: string
+          nullable: true
+          description: Failure detail when `status` is `failed`; `null` otherwise.
+        started_at:
+          type: number
+          format: float
+          description: |
+            Unix timestamp (seconds) when this load/download attempt
+            started. Omitted from the synthesized `ready`/`not_found`
+            snapshot that `GET .../download-progress` returns when no
+            `DownloadStatus` has ever been tracked for the model.
+        updated_at:
+          type: number
+          format: float
+          description: |
+            Unix timestamp (seconds) of the last status update. Same
+            omission rule as `started_at`.
+
+    EmbeddingDownloadProgressSSEEvent:
+      type: object
+      description: |
+        SSE event envelope for
+        `GET /configurationManager/ai-models/download-progress`. Every frame
+        uses the `progress` event name; `data` is a JSON-encoded
+        `EmbeddingDownloadProgressPayload` with one extra `timestamp` field
+        (epoch milliseconds) added by the Node.js proxy on each poll.
+      properties:
+        event:
+          type: string
+          enum:
+            - progress
+        data:
+          type: string
+          description: |
+            JSON-encoded `EmbeddingDownloadProgressPayload` plus a
+            `timestamp` (epoch ms) field.
 
     AIModelProviderHealthCheckBackendDetails:
       type: object
@@ -32887,6 +33002,191 @@ paths:
           description: Admin access required
         '404':
           description: Model not found
+
+  /configurationManager/ai-models/prepare-model:
+    post:
+      tags:
+        - AI Models Providers
+      summary: Prepare (download) a local embedding model
+      description: |
+        Kicks off a non-blocking load/download of a local (SentenceTransformer
+        / HuggingFace) embedding model on the embedding server and returns
+        immediately with the current status snapshot — it does not wait for
+        the download to finish. Poll
+        `GET /configurationManager/ai-models/download-progress` (SSE) with the
+        same `model` to observe progress until `status` reaches `ready` or
+        `failed`.
+
+        This decouples model preparation from health checks: previously, a
+        multi-GB first-time download running synchronously inside a health
+        check could exceed both the frontend's request timeout and the health
+        check's own timeout. Calling this endpoint first, and only proceeding
+        once the SSE stream reports `ready`, avoids both.
+
+        Requires org admin privileges in addition to the OAuth scope below.
+      operationId: prepareEmbeddingModel
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PrepareEmbeddingModelRequest'
+      responses:
+        '202':
+          description: |
+            Model load/download accepted (or already `ready`/in-progress).
+            Returns the current status snapshot; continue polling
+            `GET .../download-progress` until `status` is `ready` or `failed`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbeddingDownloadProgressPayload'
+              example:
+                model: "BAAI/bge-m3"
+                status: downloading
+                progress: 0
+                downloaded_bytes: 0
+                total_bytes: 2270000000
+                error: null
+                started_at: 1751900000.123
+                updated_at: 1751900000.123
+        '400':
+          description: |
+            Either `model` is missing or fails the
+            `^[\w.-]+(\/[\w.-]+)?$` repo-id pattern check performed by
+            Node.js before proxying to the embedding server, or (via the
+            shared `userAdminCheck` middleware) the caller is not an org
+            admin.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [status, message]
+                    additionalProperties: false
+                    properties:
+                      status:
+                        type: string
+                        enum: [error]
+                      message:
+                        type: string
+                        example: "A valid model name is required"
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Either the caller's OAuth token lacks the `config:write` scope,
+            or the embedding server rejected the request under its own
+            policy: `model` is not in `EMBEDDING_SERVER_ALLOWED_MODELS`, or
+            `trustRemoteCode: true` was requested while
+            `EMBEDDING_SERVER_ALLOW_REMOTE_CODE` is disabled on the server.
+            The embedding-server rejection is proxied verbatim using
+            FastAPI's `{"detail": ...}` envelope, not the Node.js
+            `ErrorResponse` shape used for the scope failure.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - type: object
+                    required: [detail]
+                    properties:
+                      detail:
+                        type: string
+                        example: "trust_remote_code is disabled on this server. Set environment variable EMBEDDING_SERVER_ALLOW_REMOTE_CODE=true to enable it."
+        '500':
+          description: |
+            The embedding server could not be reached, or returned an error
+            with no response body (network failure).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /configurationManager/ai-models/download-progress:
+    get:
+      tags:
+        - AI Models Providers
+      summary: Stream embedding model download progress (SSE)
+      description: |
+        Server-Sent Events stream that polls the embedding server's download
+        status internally (every ~2s) and forwards each snapshot to the
+        client as a `progress` event, until `status` reaches `ready` or
+        `failed`, at which point the stream closes.
+
+        Pair this with `POST .../prepare-model`: call that first to kick off
+        the load/download, then open this stream with the same `model` to
+        observe progress.
+
+        If the embedding server becomes unreachable mid-stream, one final
+        `progress` event with `status: "failed"` and
+        `error: "Lost connection to embedding server"` is emitted before the
+        stream closes. If the client disconnects, polling stops and no
+        further events are written to the response.
+      operationId: streamEmbeddingDownloadProgress
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      parameters:
+        - name: model
+          in: query
+          required: true
+          description: |
+            HuggingFace repo id to track, matching `^[\w.-]+(\/[\w.-]+)?$`.
+            Should match the `model` passed to `POST .../prepare-model`.
+          schema:
+            type: string
+          example: "BAAI/bge-m3"
+      responses:
+        '200':
+          description: |
+            SSE stream (`text/event-stream`). Every frame uses the
+            `progress` event name; `data` is a JSON-encoded
+            `EmbeddingDownloadProgressPayload` plus a `timestamp` field.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/EmbeddingDownloadProgressSSEEvent'
+        '400':
+          description: |
+            `model` query parameter missing or not a valid HuggingFace repo
+            id, or (via the shared `userAdminCheck` middleware) the caller is
+            not an org admin.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [status, message]
+                    additionalProperties: false
+                    properties:
+                      status:
+                        type: string
+                        enum: [error]
+                      message:
+                        type: string
+                        example: "A valid model query parameter is required"
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Insufficient OAuth scope — token lacks `config:read`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Web Search --------------------
   /configurationManager/web-search:

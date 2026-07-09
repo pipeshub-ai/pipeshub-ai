@@ -43,3 +43,39 @@ class JiraClientFactory(ClientFactory):
             logger=logger,
             config_service=config_service,
         )
+
+
+class JiraDataCenterClientFactory(JiraClientFactory):
+    """Factory for creating Jira Data Center / Server clients.
+
+    Shares ``JiraClient.build_from_toolset`` with the Cloud factory (the toolset
+    config store, ``/services/toolsets/...``, is per-user — unlike the connector's
+    ``build_from_services`` which reads ``/services/connectors/...``). The only
+    Data-Center specialization is a guardrail that mirrors the DC *connector*'s
+    ``init`` (connector.py: authType required, restricted to API_TOKEN/BASIC_AUTH):
+    it rejects any auth type that would route through the Cloud OAuth / cloud-id
+    proxy, so a DC instance always resolves to PAT→Bearer or username/password→Basic
+    against the plain instance ``baseUrl``.
+    """
+
+    _SUPPORTED_AUTH_TYPES = {"API_TOKEN", "BASIC_AUTH"}
+
+    async def create_client(
+        self,
+        config_service: object,
+        logger: Optional[object],
+        toolset_config: dict[str, Any],
+        state: Optional[ChatState] = None
+    ) -> JiraClient:
+        auth_type = str(toolset_config.get("authType", "")).strip().upper()
+        if auth_type not in self._SUPPORTED_AUTH_TYPES:
+            raise ValueError(
+                "Jira Data Center toolset requires authType API_TOKEN (Personal Access "
+                f"Token) or BASIC_AUTH (username/password), got '{auth_type or 'missing'}'"
+            )
+        return await super().create_client(
+            config_service=config_service,
+            logger=logger,
+            toolset_config=toolset_config,
+            state=state,
+        )
