@@ -4,9 +4,13 @@ Client factories for Jira.
 
 from typing import Any, Optional
 
-from app.agents.tools.factories.base import ClientFactory
+from app.agents.tools.factories.base import ClientFactory, ToolsetAuthError
 from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.jira.jira import JiraClient
+from app.sources.external.common.atlassian import (
+    AtlassianMultiSiteError,
+    resolve_preferred_site_with_fallback,
+)
 
 # ============================================================================
 # Jira Client Factory
@@ -18,6 +22,9 @@ class JiraClientFactory(ClientFactory):
 
     - Toolset-based authentication (new architecture): Uses toolset config from etcd
     """
+
+    # Notification heading for setup failures (the OAuth callback passes it through).
+    _AUTH_ERROR_TITLE = "Jira action: Resource-restricted OAuth required"
 
     async def create_client(
         self,
@@ -38,11 +45,35 @@ class JiraClientFactory(ClientFactory):
         Returns:
             JiraClient instance
         """
-        return await JiraClient.build_from_toolset(
-            toolset_config=toolset_config,
-            logger=logger,
-            config_service=config_service,
-        )
+        try:
+            return await JiraClient.build_from_toolset(
+                toolset_config=toolset_config,
+                logger=logger,
+                config_service=config_service,
+            )
+        except AtlassianMultiSiteError as e:
+            # Translate the provider-specific error to the generic toolset error the
+            # wrapper handles, so no Atlassian knowledge leaks into generic code.
+            raise ToolsetAuthError(str(e), title=self._AUTH_ERROR_TITLE) from e
+
+    async def test_connection(
+        self,
+        *,
+        access_token: str,
+        auth_config: dict,
+        config_service: object,
+        logger: Optional[object],
+    ) -> None:
+        """Reject an OAuth token that can reach multiple Jira sites when no specific
+        site (``baseUrl``) is configured — the agent can't know which one to use."""
+        base_url = ((auth_config or {}).get("baseUrl") or "").strip()
+        try:
+            await resolve_preferred_site_with_fallback(
+                base_url, access_token, JiraClient.get_accessible_resources,
+                logger, "Jira",
+            )
+        except AtlassianMultiSiteError as e:
+            raise ToolsetAuthError(str(e), title=self._AUTH_ERROR_TITLE) from e
 
 
 class JiraDataCenterClientFactory(JiraClientFactory):

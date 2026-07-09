@@ -322,6 +322,30 @@ class TestInitCoverage:
             assert result is False
 
     @pytest.mark.asyncio
+    async def test_init_multi_site_raises_connector_init_error(self):
+        """Multi-site OAuth token → init() propagates ConnectorInitError with the
+        actionable message (so the API surfaces it), not a generic False."""
+        from app.connectors.core.base.connector.connector_service import ConnectorInitError
+        from app.sources.external.common.atlassian import AtlassianMultiSiteError
+
+        connector = _make_connector()
+        with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
+            MockJiraClient.build_from_services = AsyncMock(
+                side_effect=AtlassianMultiSiteError(
+                    "This OAuth app has access to multiple Jira sites. "
+                    "Create a single-site (resource-restricted) OAuth app in the "
+                    "Atlassian Developer Console, then reconnect."
+                )
+            )
+            connector.config_service.get_config = AsyncMock(return_value={
+                "auth": {"authType": "OAUTH"},
+                "credentials": {"access_token": "test-token"},
+            })
+
+            with pytest.raises(ConnectorInitError, match="multiple Jira sites"):
+                await connector.init()
+
+    @pytest.mark.asyncio
     async def test_init_api_token_strips_trailing_slash(self):
         connector = _make_connector()
 

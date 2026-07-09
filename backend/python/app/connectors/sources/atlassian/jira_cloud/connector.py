@@ -27,13 +27,17 @@ from app.config.constants.arangodb import (
     normalize_file_extension,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint
-from app.connectors.core.constants import IconPaths, OAuthConfigKeys, CONNECTOR_EMAIL_IDENTITY_INFO
+from app.connectors.core.constants import (
+    CONNECTOR_EMAIL_IDENTITY_INFO,
+    IconPaths,
+    OAuthConfigKeys,
+)
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -90,10 +94,18 @@ from app.models.entities import (
     RelatedExternalRecord,
     TicketRecord,
 )
-from app.services.notification.types import NotificationType, NotificationSeverity, NotificationRecipientRole
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import (
+    NotificationRecipientRole,
+    NotificationSeverity,
+    NotificationType,
+)
 from app.sources.client.jira.jira import JiraClient
-from app.sources.external.common.atlassian import match_atlassian_cloud_resource
+from app.sources.external.common.atlassian import (
+    AtlassianMultiSiteError,
+    dedupe_atlassian_cloud_resources,
+    match_atlassian_cloud_resource,
+)
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.oauth_config import fetch_oauth_config_by_id
@@ -696,16 +708,6 @@ async def adf_to_text_with_images(
                     field_type="PASSWORD",
                     is_secret=True
                 ),
-                AuthField(
-                    name="baseUrl",
-                    display_name="Atlassian site URL",
-                    placeholder="https://yourcompany.atlassian.net",
-                    description="Atlassian site URL to use. Must match the Jira site you want to sync.",
-                    field_type="URL",
-                    required=True,
-                    max_length=2000,
-                    is_secret=False,
-                ),
             ],
             icon_path=IconPaths.connector_icon(Connectors.JIRA.value),
             app_group="Atlassian",
@@ -924,13 +926,23 @@ class JiraConnector(BaseConnector):
                 if not site_url:
                     if not resources:
                         raise ValueError(
-                            "Atlassian site URL (baseUrl) missing and OAuth token has no accessible Jira sites"
+                            "Jira: No accessible Atlassian sites for this OAuth token."
                         )
-                    self.logger.warning(
-                        "Jira connector %s: baseUrl missing; using accessible-resources[0] (%s)",
-                        self.connector_id, resources[0].url,
+                    # build_from_services() above already rejects multi-site OAuth tokens;
+                    # guard here too so this path never silently picks an arbitrary site.
+                    # Dedupe first: Atlassian may return the same cloud site twice.
+                    unique_resources = dedupe_atlassian_cloud_resources(resources)
+                    if len(unique_resources) > 1:
+                        raise AtlassianMultiSiteError(
+                            "This OAuth app has access to multiple Jira sites. "
+                            "Create a single-site (resource-restricted) OAuth app in the "
+                            "Atlassian Developer Console, then reconnect."
+                        )
+                    self.logger.info(
+                        "Jira connector %s: using single accessible site (%s)",
+                        self.connector_id, unique_resources[0].url,
                     )
-                    picked = resources[0]
+                    picked = unique_resources[0]
                 else:
                     picked = match_atlassian_cloud_resource(resources, site_url, product="Jira")
                 self.cloud_id = picked.id
@@ -953,9 +965,33 @@ class JiraConnector(BaseConnector):
 
             return True
 
+        except AtlassianMultiSiteError as e:
+            # Propagate the actionable reason so the API surfaces it instead of the
+            # generic "Failed to initialize connector" message.
+            await self._notify_multi_site_ambiguity(e)
+            raise ConnectorInitError(str(e)) from e
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Jira client: {e}")
             return False
+
+    async def _notify_multi_site_ambiguity(self, error: AtlassianMultiSiteError) -> None:
+        """Notify admin: account-level app reaches multiple sites — needs a new
+        Resource-restricted OAuth app (grants cannot be changed on an existing app)."""
+        self.logger.error(
+            "❌ Jira connector %s: OAuth app can access multiple Atlassian sites: %s",
+            self.connector_id, error,
+        )
+        await self.notify(
+            type=NotificationType.CONNECTOR_AUTH_ERROR,
+            severity=NotificationSeverity.ERROR,
+            title="Jira connector: Resource-restricted OAuth required",
+            message=(
+                "This OAuth app has access to multiple Jira sites. "
+                "Create a single-site (resource-restricted) OAuth app in the "
+                "Atlassian Developer Console, then reconnect."
+            ),
+            recipient_roles=[NotificationRecipientRole.ADMIN],
+        )
 
     # ============================================================================
     # Authentication & Token Management
@@ -4756,7 +4792,8 @@ class JiraConnector(BaseConnector):
         """Test connection and access to Jira using DataSource"""
         try:
             if not self.data_source:
-                await self.init()
+                if not await self.init():
+                    return False
 
             # Test by fetching user info (simple API call)
             datasource = await self._get_fresh_datasource()

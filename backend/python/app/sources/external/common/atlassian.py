@@ -4,6 +4,12 @@ from typing import Awaitable, Callable
 from urllib.parse import urlparse
 
 
+class AtlassianMultiSiteError(ValueError):
+    """OAuth token can reach multiple Atlassian sites. A single-site
+    (resource-restricted) OAuth app is required. Subclasses ``ValueError`` so
+    existing broad handlers keep working."""
+
+
 @dataclass
 class AtlassianCloudResource:
     """Represents an Atlassian Cloud resource (site)
@@ -32,6 +38,25 @@ def atlassian_site_hostname(site_url: str) -> str:
     if not s.startswith(("http://", "https://")):
         s = f"https://{s}"
     return (urlparse(s).hostname or "").lower()
+
+
+def dedupe_atlassian_cloud_resources(
+    resources: list[AtlassianCloudResource],
+) -> list[AtlassianCloudResource]:
+    """Collapse duplicate accessible-resources entries for the same cloud site.
+
+    Atlassian sometimes returns the same site more than once (same cloud id /
+    hostname) when multiple products share that site. Count unique sites only.
+    """
+    unique: list[AtlassianCloudResource] = []
+    seen: set[str] = set()
+    for r in resources:
+        key = (r.id or "").strip() or atlassian_site_hostname(r.url)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(r)
+    return unique
 
 
 def match_atlassian_cloud_resource(
@@ -65,19 +90,36 @@ async def resolve_preferred_site_with_fallback(
     logger: logging.Logger,
     product: str,
 ) -> str:
-    """Return ``preferred_site`` if set; otherwise fall back to the first accessible
-    resource returned by the OAuth token. Raises ValueError only if the token has
-    zero accessible sites. Unblocks legacy connectors/toolsets whose configs predate
-    the ``baseUrl`` requirement."""
+    """Return ``preferred_site`` if set; otherwise resolve the site from the OAuth
+    token's accessible resources.
+
+    With no ``baseUrl`` configured we only auto-resolve when the token is scoped to
+    exactly one site (resource-restricted OAuth apps, and the SaaS default app). A
+    token that can reach multiple sites is ambiguous without a ``baseUrl``, so we
+    raise instead of silently picking an arbitrary site. Raises ValueError if the
+    token has zero accessible sites."""
     if preferred_site:
         return preferred_site
     resources = await get_accessible_resources(access_token)
+    logger.debug(
+        "%s: accessible-resources returned %d site(s): %s",
+        product,
+        len(resources),
+        [{"id": r.id, "name": r.name, "url": r.url} for r in resources],
+    )
+    resources = dedupe_atlassian_cloud_resources(resources)
     if not resources:
         raise ValueError(
-            f"Atlassian site URL (baseUrl) missing and OAuth token has no accessible {product} sites"
+            f"{product}: No accessible Atlassian sites for this OAuth token."
         )
-    logger.warning(
-        "%s baseUrl missing from config; using accessible-resources[0] (%s)",
+    if len(resources) > 1:
+        raise AtlassianMultiSiteError(
+            f"This OAuth app has access to multiple {product} sites. "
+            "Create a single-site (resource-restricted) OAuth app in the Atlassian "
+            "Developer Console, then reconnect."
+        )
+    logger.info(
+        "%s: using single accessible site (%s)",
         product, resources[0].url,
     )
     return resources[0].url

@@ -361,16 +361,6 @@ class GetCreateIssueFieldsInput(BaseModel):
             fields=[
                 CommonFields.client_id("Atlassian Developer Console"),
                 CommonFields.client_secret("Atlassian Developer Console"),
-                AuthField(
-                    name="baseUrl",
-                    display_name="Atlassian site URL",
-                    placeholder="https://yourcompany.atlassian.net",
-                    description="Atlassian site URL the Jira agent should work with.",
-                    field_type="URL",
-                    required=True,
-                    max_length=2000,
-                    is_secret=False,
-                ),
             ],
             icon_path=IconPaths.connector_icon("jira"),
             app_group="Project Management",
