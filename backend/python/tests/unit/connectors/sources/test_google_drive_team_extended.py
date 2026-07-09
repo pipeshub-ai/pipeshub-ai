@@ -341,7 +341,7 @@ class TestFetchPermissionsExtended:
             {"permissions": [{"id": "p1", "role": "owner", "type": "user", "emailAddress": "a@example.com"}], "nextPageToken": "p2"},
             {"permissions": [{"id": "p2", "role": "reader", "type": "user", "emailAddress": "b@example.com"}]},
         ])
-        perms, is_fallback = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert len(perms) == 2
         assert is_fallback is False
 
@@ -352,7 +352,7 @@ class TestFetchPermissionsExtended:
                 {"id": "p1", "role": "reader", "type": "anyone", "emailAddress": None},
             ],
         })
-        perms, is_fallback = await connector._fetch_permissions(
+        perms, is_fallback, _ = await connector._fetch_permissions(
             "file-1", is_drive=False, user_email="user@example.com"
         )
         assert is_fallback is True
@@ -367,7 +367,7 @@ class TestFetchPermissionsExtended:
                 {"id": "p2", "role": "writer", "type": "user", "emailAddress": "user@example.com"},
             ],
         })
-        perms, is_fallback = await connector._fetch_permissions(
+        perms, is_fallback, _ = await connector._fetch_permissions(
             "file-1", is_drive=False, user_email="user@example.com"
         )
         assert is_fallback is False
@@ -380,7 +380,7 @@ class TestFetchPermissionsExtended:
                 {"id": "p1", "role": "organizer", "type": "group", "emailAddress": "group@example.com"},
             ],
         })
-        perms, _ = await connector._fetch_permissions("drive-1", is_drive=True)
+        perms, _, _ = await connector._fetch_permissions("drive-1", is_drive=True)
         call_kwargs = connector.drive_data_source.permissions_list.call_args[1]
         assert call_kwargs.get("useDomainAdminAccess") is True
 
@@ -402,7 +402,7 @@ class TestFetchPermissionsExtended:
         http_error = HttpError(mock_resp, b"forbidden")
         http_error.error_details = [{"reason": "otherReason"}]
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
-        perms, is_fallback = await connector._fetch_permissions(
+        perms, is_fallback, _ = await connector._fetch_permissions(
             "file-1", is_drive=False, user_email="user@example.com"
         )
         assert is_fallback is False
@@ -415,7 +415,7 @@ class TestFetchPermissionsExtended:
         mock_resp.status = 500
         http_error = HttpError(mock_resp, b"server error")
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
-        perms, is_fallback = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert len(perms) == 0
 
     async def test_generic_error_for_file_returns_empty(self, connector):
@@ -423,7 +423,7 @@ class TestFetchPermissionsExtended:
         connector.drive_data_source.permissions_list = AsyncMock(
             side_effect=Exception("network error")
         )
-        perms, is_fallback = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert len(perms) == 0
 
     async def test_generic_error_for_drive_raises(self, connector):
@@ -441,7 +441,7 @@ class TestFetchPermissionsExtended:
                 {"id": "p1", "role": "reader", "type": "group", "emailAddress": "group@example.com"},
             ],
         })
-        perms, _ = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, _, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert perms[0].entity_type == EntityType.GROUP
         assert perms[0].external_id == "group@example.com"
 
@@ -452,7 +452,7 @@ class TestFetchPermissionsExtended:
                 {"id": "p1", "role": "reader", "type": "domain", "domain": "example.com"},
             ],
         })
-        perms, _ = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, _, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert perms[0].entity_type == EntityType.DOMAIN
 
     async def test_custom_drive_data_source(self, connector):
@@ -463,7 +463,7 @@ class TestFetchPermissionsExtended:
                 {"id": "p1", "role": "owner", "type": "user", "emailAddress": "owner@example.com"},
             ],
         })
-        perms, _ = await connector._fetch_permissions("file-1", is_drive=False, drive_data_source=custom_ds)
+        perms, _, _ = await connector._fetch_permissions("file-1", is_drive=False, drive_data_source=custom_ds)
         assert len(perms) == 1
         custom_ds.permissions_list.assert_called_once()
 
@@ -765,7 +765,7 @@ class TestTeamProcessDriveItemExtended:
             drive_id="drive-1", is_shared_drive=True,
         )
         assert result is not None
-        # _fetch_permissions returns ([], False) for non-drive generic errors (doesn't raise),
+        # _fetch_permissions returns ([], False, []) for non-drive generic errors (doesn't raise),
         # so permissions_changed is True (non-fallback)
         assert result.permissions_changed is True
 

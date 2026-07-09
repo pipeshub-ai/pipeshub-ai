@@ -116,9 +116,9 @@ fields:
   semantic_metadata:
     required: false
     type: object
-  shared_with_me_record_group_id:
+  shared_with_me_record_group_ids:
     required: false
-    type: string
+    type: array
   signed_url:
     required: false
     type: string

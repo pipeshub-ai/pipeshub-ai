@@ -901,7 +901,7 @@ class TestFetchPermissions:
                 {"id": "p2", "role": "reader", "type": "group", "emailAddress": "grp@x.com"},
             ],
         })
-        perms, is_fallback = await conn._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False)
         assert len(perms) == 2
         assert is_fallback is False
 
@@ -913,7 +913,7 @@ class TestFetchPermissions:
                 {"id": "p1", "role": "organizer", "type": "user", "emailAddress": "admin@x.com"},
             ],
         })
-        perms, _ = await conn._fetch_permissions("drive-1", is_drive=True)
+        perms, _, _ = await conn._fetch_permissions("drive-1", is_drive=True)
         assert len(perms) == 1
 
     @pytest.mark.asyncio
@@ -924,7 +924,7 @@ class TestFetchPermissions:
                 {"id": "p1", "role": "owner", "type": "user", "emailAddress": "x@x.com", "deleted": True},
             ],
         })
-        perms, _ = await conn._fetch_permissions("file-1")
+        perms, _, _ = await conn._fetch_permissions("file-1")
         assert len(perms) == 0
 
     @pytest.mark.asyncio
@@ -939,7 +939,7 @@ class TestFetchPermissions:
                 "permissions": [{"id": "p2", "role": "writer", "type": "user", "emailAddress": "b@x.com"}],
             },
         ])
-        perms, _ = await conn._fetch_permissions("file-1")
+        perms, _, _ = await conn._fetch_permissions("file-1")
         assert len(perms) == 2
 
     @pytest.mark.asyncio
@@ -953,7 +953,7 @@ class TestFetchPermissions:
         http_error.error_details = [{"reason": "insufficientFilePermissions"}]
         conn.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
 
-        perms, is_fallback = await conn._fetch_permissions("file-1", is_drive=False, user_email="u@x.com")
+        perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False, user_email="u@x.com")
         assert is_fallback is True
         assert len(perms) == 1
         assert perms[0].email == "u@x.com"
@@ -970,7 +970,7 @@ class TestFetchPermissions:
         http_error.error_details = [{"reason": "insufficientFilePermissions"}]
         conn.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
 
-        perms, is_fallback = await conn._fetch_permissions("file-1", is_drive=False, user_email=None)
+        perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False, user_email=None)
         assert is_fallback is False
 
     @pytest.mark.asyncio
@@ -984,7 +984,7 @@ class TestFetchPermissions:
         http_error.error_details = [{"reason": "someOtherReason"}]
         conn.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
 
-        perms, is_fallback = await conn._fetch_permissions("file-1", is_drive=False, user_email="u@x.com")
+        perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False, user_email="u@x.com")
         assert is_fallback is False
 
     @pytest.mark.asyncio
@@ -997,7 +997,7 @@ class TestFetchPermissions:
         http_error = HttpError(mock_resp, b"server error")
         conn.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
 
-        perms, is_fallback = await conn._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False)
         assert is_fallback is False
 
     @pytest.mark.asyncio
@@ -1018,7 +1018,7 @@ class TestFetchPermissions:
     async def test_generic_error_for_file_returns_empty(self):
         conn = _make_connector()
         conn.drive_data_source.permissions_list = AsyncMock(side_effect=Exception("fail"))
-        perms, is_fallback = await conn._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False)
         assert is_fallback is False
 
     @pytest.mark.asyncio
@@ -1036,7 +1036,7 @@ class TestFetchPermissions:
                 {"id": "p1", "role": "reader", "type": "anyone", "emailAddress": None},
             ],
         })
-        perms, is_fallback = await conn._fetch_permissions("file-1", is_drive=False, user_email="u@x.com")
+        perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False, user_email="u@x.com")
         assert is_fallback is True
         assert len(perms) == 1
         assert perms[0].email == "u@x.com"
@@ -1050,7 +1050,7 @@ class TestFetchPermissions:
                 {"id": "p2", "role": "writer", "type": "user", "emailAddress": "u@x.com"},
             ],
         })
-        perms, is_fallback = await conn._fetch_permissions("file-1", is_drive=False, user_email="u@x.com")
+        perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False, user_email="u@x.com")
         # User already has permission, so no fallback
         assert is_fallback is False
         assert len(perms) == 2
@@ -1062,7 +1062,7 @@ class TestFetchPermissions:
         custom_ds.permissions_list = AsyncMock(return_value={
             "permissions": [{"id": "p1", "role": "reader", "type": "user", "emailAddress": "c@x.com"}],
         })
-        perms, _ = await conn._fetch_permissions("file-1", drive_data_source=custom_ds)
+        perms, _, _ = await conn._fetch_permissions("file-1", drive_data_source=custom_ds)
         custom_ds.permissions_list.assert_called_once()
         assert len(perms) == 1
 
@@ -1075,7 +1075,7 @@ class TestFetchPermissions:
                 {"id": "p2"},  # Missing role/type will cause processing but default handling
             ],
         })
-        perms, _ = await conn._fetch_permissions("file-1")
+        perms, _, _ = await conn._fetch_permissions("file-1")
         # Both should be processed (second defaults to reader/user)
         assert len(perms) == 2
 
@@ -1091,7 +1091,7 @@ class TestFetchPermissions:
         http_error.error_details = "not a list"
         conn.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
 
-        perms, is_fallback = await conn._fetch_permissions("file-1", is_drive=False, user_email="u@x.com")
+        perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False, user_email="u@x.com")
         assert is_fallback is False
 
 

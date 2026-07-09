@@ -730,7 +730,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         is_drive: bool = False,
         user_email: Optional[str] = None,
         drive_data_source: Optional[GoogleDriveDataSource] = None
-    ) -> Tuple[List[Permission], bool]:
+    ) -> Tuple[List[Permission], bool, List[str]]:
         """
         Fetch all permissions for a Google Drive resource (file or shared drive) with pagination.
 
@@ -741,9 +741,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             drive_data_source: Optional drive data source to use (if None, uses self.drive_data_source)
 
         Returns:
-            List of Permission objects and a boolean indicating if the permissions were fallback permissions
+            Tuple of (list of Permission objects, whether the permissions were fallback permissions,
+            list of user emails that have a direct "file"-type grant per `permissionDetails` - only
+            populated for items inside a Shared Drive, since Google omits `permissionDetails` elsewhere)
         """
         permissions: List[Permission] = []
+        individually_shared_emails: set[str] = set()
         page_token: Optional[str] = None
         anyone_with_link_permission_type: Optional[PermissionType] = None
 
@@ -758,7 +761,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     "pageSize": 100,  # Maximum allowed by Google Drive API
                     "pageToken": page_token,
                     "supportsAllDrives": True,
-                    "fields": "permissions(id, displayName, type, role, domain, emailAddress, deleted)"
+                    "fields": "permissions(id, displayName, type, role, domain, emailAddress, deleted, permissionDetails)"
                 }
 
                 # Only use domain admin access for shared drives
@@ -798,6 +801,14 @@ class GoogleDriveTeamConnector(BaseConnector):
                             entity_type=entity_type
                         )
                         permissions.append(permission)
+
+                        # A "file"-type entry means this user was granted access directly on this
+                        # item, as opposed to inheriting it via Shared Drive membership ("member").
+                        permission_details = perm_data.get("permissionDetails", [])
+                        if entity_type == EntityType.USER and email and any(
+                            detail.get("permissionType") == "file" for detail in permission_details
+                        ):
+                            individually_shared_emails.add(email)
 
                         # Track "anyone with link" permission type for fallback
                         if entity_type == EntityType.ANYONE:
@@ -847,18 +858,18 @@ class GoogleDriveTeamConnector(BaseConnector):
                         self.logger.info(
                             f"Added single user permission for file {resource_id}: {user_email}"
                         )
-                        return ([fallback_permission], True)
+                        return ([fallback_permission], True, [])
                     else:
                         self.logger.error(
                             f"Error fetching permissions for file {resource_id}: {http_error}",
                             exc_info=True
                         )
                         # Return empty list if no fallback available
-                        return (permissions, False)
+                        return (permissions, False, [])
                 else:
                     # For other HttpErrors, log and return empty list
                     self.logger.error(f"Error fetching permissions for file {resource_id}: {http_error}", exc_info=True)
-                    return (permissions, False)
+                    return (permissions, False, [])
             except Exception as e:
                 resource_type = "drive" if is_drive else "file"
                 if is_drive:
@@ -868,7 +879,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 else:
                     # For files, return empty list on error instead of raising, to allow processing to continue
                     self.logger.error(f"Error fetching permissions for {resource_type} {resource_id}: {e}", exc_info=True)
-                    return (permissions, False)
+                    return (permissions, False, [])
 
         # If we found an "anyone with link" permission and have a user_email, create a fallback permission
         if anyone_with_link_permission_type is not None and user_email:
@@ -884,9 +895,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                     entity_type=EntityType.USER
                 )
                 self.logger.info("Anyone with link permission found for file")
-                return ([fallback_permission], True)
+                return ([fallback_permission], True, list(individually_shared_emails))
 
-        return (permissions, False)
+        return (permissions, False, list(individually_shared_emails))
 
     async def _create_and_sync_shared_drive_record_group(self, drive: Dict) -> None:
         """
@@ -905,7 +916,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             # Fetch permissions for this drive
             self.logger.debug(f"Fetching permissions for drive '{drive_name}' ({drive_id})")
-            permissions, _ = await self._fetch_permissions(drive_id, is_drive=True)
+            permissions, _, _ = await self._fetch_permissions(drive_id, is_drive=True)
 
             self.logger.info(
                 f"Fetched {len(permissions)} permissions for drive '{drive_name}'"
@@ -1536,7 +1547,6 @@ class GoogleDriveTeamConnector(BaseConnector):
                 md5_hash=metadata.get("md5Checksum", None),
                 is_shared=is_shared,
                 is_shared_with_me=is_shared_with_me,
-                shared_with_me_record_group_id=f"0S:{user_email}" if is_shared_with_me else None,
             )
 
             if existing_record and not content_changed:
@@ -1544,17 +1554,21 @@ class GoogleDriveTeamConnector(BaseConnector):
                 file_record.indexing_status = existing_record.indexing_status
                 file_record.extraction_status = existing_record.extraction_status
 
-            if is_shared_with_me:
+            # Shared Drive items always keep their drive as external_record_group_id -
+            # individual shares on them are layered on via shared_with_me_record_group_ids below,
+            # not by detaching them from the drive.
+            if is_shared_with_me and not is_shared_drive:
                 file_record.external_record_group_id = None
 
             # Handle Permissions - fetch new permissions
             new_permissions = []
             old_permissions = []
+            individually_shared_emails: List[str] = []
 
             try:
                 # Fetch permissions for this file using the provided drive_data_source
                 # If drive_data_source is provided, use it; otherwise fall back to service account
-                new_permissions, is_fallback_permissions = await self._fetch_permissions(
+                new_permissions, is_fallback_permissions, individually_shared_emails = await self._fetch_permissions(
                     file_id,
                     is_drive=False,
                     user_email=user_email,
@@ -1576,6 +1590,21 @@ class GoogleDriveTeamConnector(BaseConnector):
                     f"Failed to fetch permissions for file {file_id} ({metadata.get('name', 'unknown')}): {e}"
                 )
                 # permissions_changed remains False if fetching fails
+
+            # Build the set of "Shared with Me" record groups this record belongs to: the current
+            # user's own group (personal-drive share) plus, for Shared Drive items, one group per
+            # user who was individually granted a "file"-type permission on this item.
+            shared_with_me_record_group_ids: List[str] = []
+            if is_shared_with_me:
+                shared_with_me_record_group_ids.append(f"0S:{user_email}")
+            if is_shared_drive:
+                for shared_email in individually_shared_emails:
+                    group_id = f"0S:{shared_email}"
+                    if group_id not in shared_with_me_record_group_ids:
+                        shared_with_me_record_group_ids.append(group_id)
+
+            file_record.shared_with_me_record_group_ids = shared_with_me_record_group_ids
+            file_record.is_shared_with_me = bool(shared_with_me_record_group_ids)
 
             return RecordUpdate(
                 record=file_record,
@@ -2228,10 +2257,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                                     f"Processed {total_changes} changes."
                                 )
                             else:
-                                self.logger.warning(
-                                    f"⚠️ Sync point not updated for drive '{drive_name}' "
-                                    f"(token unchanged or invalid)"
-                                )
+                                self.logger.info(f"Sync point not updated for drive '{drive_name}' ")
 
                     except Exception as e:
                         error_reason = None

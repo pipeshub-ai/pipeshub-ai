@@ -597,14 +597,14 @@ class TestCreateAndSyncSharedDriveRecordGroupComprehensive:
     @pytest.mark.asyncio
     async def test_creates_record_group(self, connector):
         drive = {"id": "sd-1", "name": "SharedDrive1", "createdTime": "2025-01-01T00:00:00Z"}
-        connector._fetch_permissions = AsyncMock(return_value=([], False))
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         await connector._create_and_sync_shared_drive_record_group(drive)
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_drive_with_description(self, connector):
         drive = {"id": "sd-2", "name": "SharedDrive2", "description": "Test Drive"}
-        connector._fetch_permissions = AsyncMock(return_value=([], False))
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         await connector._create_and_sync_shared_drive_record_group(drive)
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
 
