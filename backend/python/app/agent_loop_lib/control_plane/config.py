@@ -176,6 +176,22 @@ class CodingSandboxConfig(BaseModel):
     allow_url_packages: bool = False
 
 
+class OpikConfig(BaseModel):
+    """Control-plane-level knobs for Opik LLM-call tracing (see
+    `transport/opik_tracing.py`). `enabled=True` (the default) only takes
+    effect when Opik credentials are actually present in the environment
+    (`OPIK_API_KEY` for Opik Cloud, or `OPIK_URL_OVERRIDE` for a
+    self-hosted instance — see `is_opik_configured()`); with neither set,
+    `ControlPlane.start()` silently skips wrapping transports, same
+    "configure via env, no-op otherwise" convention the legacy
+    `OpikTracer` singletons used. Set `enabled=False` to force tracing off
+    even when credentials are present.
+    """
+
+    enabled: bool = True
+    project_name: str | None = None
+
+
 class LazyToolsetsConfig(BaseModel):
     """Control-plane-level knobs for Phase 1 progressive tool disclosure
     (see tools/registry.py's Toolset grouping + tools/builtin/lazy_toolsets.py).
@@ -312,6 +328,11 @@ class ControlPlaneConfig(BaseModel):
     retry_config: RetryHookConfig = Field(default_factory=RetryHookConfig)
     context_engine: ContextEngineConfig = Field(default_factory=ContextEngineConfig)
     lazy_toolsets: LazyToolsetsConfig = Field(default_factory=LazyToolsetsConfig)
+
+    # Opik LLM-call tracing (see transport/opik_tracing.py) — applies to
+    # every transport this ControlPlane registers, not gated by `hooks`
+    # since it wraps the transport layer itself rather than the hook kernel.
+    opik: OpikConfig = Field(default_factory=OpikConfig)
 
     # Budget
     budget: BudgetConfig | None = None

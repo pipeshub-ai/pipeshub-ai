@@ -56,6 +56,13 @@ class AgentRuntime:
     event_emitter: EventEmitter | None = None
     budget: BudgetManager | None = None
     cancellation_token: CancellationToken | None = None
+    # Set by `ControlPlane.start()` when `ControlPlaneConfig.opik` is active
+    # (see `transport/opik_tracing.py`) — read by `Agent.run()` to decide
+    # whether a ROOT run (no parent) should open its own Opik trace so every
+    # turn's LLM-call span in that run nests under one trace instead of each
+    # becoming its own standalone root trace.
+    opik_enabled: bool = False
+    opik_project_name: str | None = None
 
     memory: MemoryProvider | None = None
     knowledge: KnowledgeProvider | None = None
@@ -135,6 +142,10 @@ class AgentRuntime:
         """
         from app.agent_loop_lib.agent import Agent
         from app.agent_loop_lib.context.manager import ContextManager
+        from app.agent_loop_lib.transport.opik_tracing import (
+            maybe_start_agent_span,
+            record_agent_span_result,
+        )
 
         current_depth = getattr(parent_run_ctx, "spawn_depth", 0)
         if current_depth >= MAX_SPAWN_DEPTH:
@@ -160,4 +171,12 @@ class AgentRuntime:
             child._run_ctx.team_id = team_id
         child._parent_scope = parent_scope
 
-        return await child.run(goal)
+        with maybe_start_agent_span(
+            enabled=self.opik_enabled,
+            role_name=spec.name,
+            goal=goal,
+            project_name=self.opik_project_name,
+        ) as span:
+            result = await child.run(goal)
+            record_agent_span_result(span, result=result)
+            return result

@@ -6,7 +6,7 @@ from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 _MARKER = "\n[…truncated"
 
 
-def shape_budget_reduction(max_result_chars: int = 4_000):
+def shape_budget_reduction(max_result_chars: int = 64_000):
     """Layer 1 (cheapest) context shaper: caps every individual TOOL message's
     content at `max_result_chars`.
 

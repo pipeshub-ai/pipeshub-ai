@@ -1258,14 +1258,23 @@ async def stream_llm_response_with_tools(
     initial_web_records: list[dict[str, Any]] | None = None,
     defer_tool_until_called_name: str | None = None,
     deferred_tool: Any | None = None,
+    initial_records: list[dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
     Incrementally stream the answer portion of an LLM JSON response.
     For each chunk we also emit the citations visible so far.
     Now supports tool calls before generating the final answer.
+
+    `initial_records`/`initial_web_records` let a caller that already ran
+    its own tool-calling phase upstream (e.g. agent-loop's ReAct loop, via
+    `RespondPipeline`) seed the record/web-record lists this function
+    otherwise only populates from its OWN `execute_tool_calls()` pass —
+    pass `tools=None` in that case to skip re-running tools here entirely
+    and go straight to citation formatting + streaming of the caller's
+    already-final answer text.
     """
-    records = []
+    records: list[dict[str, Any]] = list(initial_records) if initial_records else []
     web_records: list[dict[str, Any]] = list(initial_web_records) if initial_web_records else []
 
     if tools and tool_runtime_kwargs and mode != "no_tools":

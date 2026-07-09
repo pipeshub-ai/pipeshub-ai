@@ -83,7 +83,7 @@ def _use_agent_loop() -> bool:
     so it needs no admin UI or persisted schema; flipping it per-deployment
     (or per-process, for A/B canary runs) is a restart away either way.
     """
-    return os.getenv("PIPESHUB_USE_AGENT_LOOP", "false").strip().lower() == "true"
+    return os.getenv("PIPESHUB_USE_AGENT_LOOP", "true").strip().lower() == "true"
 
 
 # Opik tracer initialization

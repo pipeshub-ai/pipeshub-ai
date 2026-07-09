@@ -103,7 +103,12 @@ class Agent:
         # PRE_TOOL_USE/POST_TOOL_USE middleware sees every tool call from
         # every agent sharing this runtime — including children spawned via
         # `AgentRuntime.run_child()`.
-        self._executor = ToolExecutor(runtime.tool_registry, runtime.hooks)
+        self._executor = ToolExecutor(
+            runtime.tool_registry,
+            runtime.hooks,
+            opik_enabled=runtime.opik_enabled,
+            opik_project_name=runtime.opik_project_name,
+        )
         self._hooks = self._executor.kernel
 
         # Deterministic per-turn guards (budget/cancellation/deadline-
@@ -418,26 +423,47 @@ class Agent:
             from app.agent_loop_lib.core.scope import known_persisted_slots
             self._scope.restore_extensions(_resume_extensions, known_persisted_slots())
 
-        if _skip_start:
-            self._scope.started_at = _resume_started_at or _now()
-        else:
-            await self.emit(EventType.AGENT_START, {"goal": goal.description})
-            self._scope.started_at = _now()
-            await obs.write_state(self, goal, "starting", turn_index=0, started_at=self.started_at)
-            await obs.append_timeline(self, "agent_start", f"Agent started: {goal.description[:80]}", "starting", {"goal": goal.description})
+        # Opik trace for this run (see transport/opik_tracing.py) — a no-op
+        # context manager unless tracing is enabled AND this is a ROOT run
+        # (no parent_run_id); every LLM-call span made anywhere during the
+        # `with` block, including by sub-agents awaited inline below, nests
+        # under this one trace automatically via Opik's own context storage.
+        from app.agent_loop_lib.transport.opik_tracing import maybe_start_run_trace
 
+        with maybe_start_run_trace(
+            enabled=self._runtime.opik_enabled, run_ctx=self._run_ctx,
+            goal=goal, project_name=self._runtime.opik_project_name,
+        ) as trace:
+            if _skip_start:
+                self._scope.started_at = _resume_started_at or _now()
+            else:
+                await self.emit(EventType.AGENT_START, {"goal": goal.description})
+                self._scope.started_at = _now()
+                await obs.write_state(self, goal, "starting", turn_index=0, started_at=self.started_at)
+                await obs.append_timeline(self, "agent_start", f"Agent started: {goal.description[:80]}", "starting", {"goal": goal.description})
+
+                try:
+                    await hooks.dispatch_pre_agent(self._hooks, goal, scope=self._scope)
+                except HookBlocked as e:
+                    result = AgentResult(goal=goal, turns=[], success=False, error=f"Blocked before start: {e}")
+                    await obs.write_state(self, goal, "failed", turn_index=0, started_at=self.started_at)
+                    await obs.append_timeline(self, "agent_blocked", f"pre_agent hook blocked run: {e}", "failed", {"error": str(e)})
+                    await self._post_agent(result)
+                    return result
+
+                await self._context.add(UserMessage(content=goal.description))
+
+            result = await self._spec.loop.run(self, goal)
             try:
-                await hooks.dispatch_pre_agent(self._hooks, goal, scope=self._scope)
-            except HookBlocked as e:
-                result = AgentResult(goal=goal, turns=[], success=False, error=f"Blocked before start: {e}")
-                await obs.write_state(self, goal, "failed", turn_index=0, started_at=self.started_at)
-                await obs.append_timeline(self, "agent_blocked", f"pre_agent hook blocked run: {e}", "failed", {"error": str(e)})
-                await self._post_agent(result)
-                return result
-
-            await self._context.add(UserMessage(content=goal.description))
-
-        return await self._spec.loop.run(self, goal)
+                trace.output = {
+                    "success": result.success,
+                    "output": str(result.output) if result.output is not None else None,
+                    "error": result.error,
+                    "turns": len(result.turns),
+                }
+            except Exception:
+                pass
+            return result
 
     # ---- the step primitive ----
 

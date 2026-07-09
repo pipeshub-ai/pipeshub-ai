@@ -10,9 +10,11 @@ stream_mode="custom")` does for the legacy LangGraph path. `QueueEventSink`
 gives hooks/`SSEEventEmitter` somewhere to push events to in real time;
 `run_agent_loop_stream()` runs the whole agent-loop + respond-pipeline flow
 as a background task and concurrently drains that queue into SSE-formatted
-strings, so the two phases (tool orchestration, then response synthesis)
-stream through the exact same connection the legacy `stream_response()`
-generator writes to — same SSE format, same event names.
+strings, so the two phases (tool orchestration, then citation formatting of
+the agent's own final answer — see `respond.py`'s module docstring for why
+this is no longer a second LLM call) stream through the exact same
+connection the legacy `stream_response()` generator writes to — same SSE
+format, same event names.
 """
 
 from __future__ import annotations
@@ -78,7 +80,8 @@ async def run_agent_loop_stream(
     dict the legacy path builds (`build_initial_state`, reused unchanged for
     byte-for-byte parity of every derived field), wraps it as `AgentContext`,
     then drives `PipesHubAgentFactory` + `Agent.run()` + `RespondPipeline`
-    through one shared `QueueEventSink`.
+    (which formats `Agent.run()`'s own final answer rather than making a
+    second LLM call — see `respond.py`) through one shared `QueueEventSink`.
     """
     from app.modules.agents.qna.chat_state import build_initial_state
     from app.utils.execute_query import has_sql_connector_configured
@@ -130,7 +133,7 @@ async def run_agent_loop_stream(
                 respond = RespondPipeline(context, CitationCollector(context))
                 await respond.run(
                     agent_success=result.success, agent_error=result.error,
-                    event_sink=context.event_sink,
+                    agent_output=result.output, event_sink=context.event_sink,
                 )
         except Exception as exc:
             log.error("agent-loop stream: run failed: %s", exc, exc_info=True)

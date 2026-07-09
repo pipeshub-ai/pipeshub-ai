@@ -28,15 +28,29 @@ of agent-loop's optional persistence stores apply here.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
-from app.agent_loop_lib.core.messages import AssistantMessage, UserMessage
+from app.agent_loop_lib.core.messages import (
+    AssistantMessage,
+    Message,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+)
 from app.agent_loop_lib.hooks.events import HookEvent
+from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import shape_budget_reduction
+from app.agent_loop_lib.hooks.middleware.builtin.sliding_window import shape_sliding_window
+from app.agent_loop_lib.hooks.middleware.builtin.tool_result_clearing import (
+    shape_tool_result_clearing,
+)
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
+from app.agent_loop_lib.transport.opik_tracing import is_opik_configured, wrap_if_enabled
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.agent_loop.hooks import (
     CitationCollector,
@@ -71,7 +85,6 @@ from app.modules.agents.qna.tool_system import code_execution_enabled
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
-    from app.agent_loop_lib.core.messages import Message
     from app.agent_loop_lib.core.types import Goal
     from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
     from app.agents.agent_loop.context import AgentContext
@@ -114,9 +127,24 @@ class PipesHubAgentFactory:
         `clarification.emit_pre_run_clarification()` instead. See
         `stream_bridge.py`.
         """
+        # Same "configure via env, no-op otherwise" gate `ControlPlane.start()`
+        # uses for its own transports (see `OpikConfig`'s docstring) — this
+        # adapter path builds its own `TransportRegistry`/`AgentRuntime`
+        # directly rather than going through `ControlPlane`, so it has to
+        # replicate the gate rather than inherit it. `OPIK_PROJECT_NAME` is
+        # optional; Opik falls back to its default project when unset, same
+        # as the legacy `OpikTracer()` call site (`utils/streaming.py`).
+        opik_active = is_opik_configured()
+        opik_project_name = os.getenv("OPIK_PROJECT_NAME")
+
         transport_registry = TransportRegistry()
         transport_registry.register(
-            "langchain", lambda: LangChainTransport(llm, model_name=model_name)
+            "langchain",
+            lambda: wrap_if_enabled(
+                LangChainTransport(llm, model_name=model_name),
+                enabled=opik_active,
+                project_name=opik_project_name,
+            ),
         )
 
         # Gate on the SAME resolution the legacy LangGraph path uses
@@ -179,6 +207,8 @@ class PipesHubAgentFactory:
             context=context,
             tool_names=tool_registry.names(),
             sandbox_has_network=network_enabled,
+            opik_active=opik_active,
+            opik_project_name=opik_project_name,
         )
 
         # Phase 10: the deep agent's top-level `Agent` is a pure
@@ -214,6 +244,8 @@ class PipesHubAgentFactory:
             hooks=hooks,
             event_emitter=SSEEventEmitter(context.event_sink) if context.event_sink is not None else None,
             spec_factory=spec_factory,
+            opik_enabled=opik_active,
+            opik_project_name=opik_project_name,
         )
 
         prompt_builder = PipesHubPromptBuilder(context, ToolGuidanceProvider())
@@ -243,6 +275,25 @@ class PipesHubAgentFactory:
         per-request instances matter for `ToolErrorTracker`/`CitationCollector`
         state isolation across concurrent requests)."""
         hooks = HookRegistry()
+
+        # Context-shaping (PRE_MODEL, cheapest-first — same ordering
+        # `ControlPlane.start()` uses for its own `context_engine` hooks):
+        # this adapter path builds its own `HookRegistry` directly rather
+        # than going through `ControlPlane`, so none of that pipeline
+        # applies unless wired here too. Multi-tool turns with large
+        # results (e.g. a Jira search returning 50+ tickets) would
+        # otherwise grow the outgoing context unbounded within a single
+        # request. `offload`/`auto_compact` are deliberately NOT wired
+        # here — `auto_compact` needs an LLM summarizer bound to this
+        # request's transport, which would need threading the transport
+        # registry/model name into this staticmethod; these three (all
+        # pure-Python, no LLM call) already cover the common blow-up cases.
+        # `ContextBudget` itself needs no wiring here — `Agent.step()`
+        # (`agent/__init__.py`) computes it fresh every turn via
+        # `ContextBudget.for_model(spec.model.model)` regardless of caller.
+        hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction())
+        hooks.on(HookEvent.PRE_MODEL).use(shape_tool_result_clearing())
+        hooks.on(HookEvent.PRE_MODEL).use(shape_sliding_window())
 
         # LLM transport retry (429/5xx/network) with SSE "retrying..." status
         # feedback — see retry_with_status.py's docstring for why this lives
@@ -281,19 +332,27 @@ class PipesHubAgentFactory:
         (called from `_build_planner_messages`, which both the legacy
         planner AND `react_agent_node` use to seed multi-turn context).
 
-        Text-only: unlike `_build_conversation_messages`, this does not
-        re-fetch/interleave historical PDF or image attachment blocks —
-        `conversation_enrichment` (Phase 5, PRE_TURN) already covers the
-        practical "reuse what the previous turn fetched" signal via
-        `goal.constraints`, and the current turn's OWN attachments are
-        still resolved in full by `RespondPipeline`/the tool adapters.
+        Text-only for attachments: unlike `_build_conversation_messages`,
+        this does not re-fetch/interleave historical PDF or image
+        attachment blocks — `conversation_enrichment` (Phase 5, PRE_TURN)
+        already covers the practical "reuse what the previous turn fetched"
+        signal via `goal.constraints`. The current turn's OWN attachments
+        are NOT resolved into multimodal blocks anywhere on this path today
+        — `RespondPipeline` used to do that right before its own
+        (now-removed, see `respond.py`) second LLM call, but the ReAct
+        loop's tool-calling turns never saw them either, so this was always
+        a synthesis-only capability, not a general one. Wiring current-turn
+        attachments into this method (agent-loop's `UserMessage` already
+        supports multimodal `Part` lists — see `agent_loop_lib/core/
+        messages.py` and `converters.py`) is a tracked follow-up.
+
+        NOT text-only for tool calls, though: see `_convert_conversation_turn`.
         """
         from app.agent_loop_lib.context.manager import ContextManager
 
         ctx = ContextManager()
         for turn in previous_conversations:
-            message = _convert_conversation_turn(turn)
-            if message is not None:
+            for message in _convert_conversation_turn(turn):
                 await ctx.add(message)
         # `Agent.run()` only builds its own `ContextManager` when `self.
         # _context is None` (see agent/__init__.py) — pre-seeding here,
@@ -302,16 +361,67 @@ class PipesHubAgentFactory:
         agent._context = ctx
 
 
-def _convert_conversation_turn(turn: dict[str, Any]) -> "Message | None":
+def _convert_conversation_turn(turn: dict[str, Any]) -> list[Message]:
+    """One `previousConversations` entry -> zero or more agent-loop
+    `Message`s. `user_query` is always a single `UserMessage`.
+
+    `bot_response` used to always collapse to one plain-text
+    `AssistantMessage`, silently dropping any tool calls that turn made —
+    the model would see a past answer with no record of HOW it was
+    produced, unlike the ReAct loop's OWN live turns (which always thread
+    `AssistantMessage(tool_calls=[...])` -> `ToolMessage`s -> final
+    `AssistantMessage`). If the turn dict carries a `tool_results` list in
+    the SAME shape `result_accumulation.py` already appends to
+    `all_tool_results` (`tool_name`/`result`/`status`/`tool_id`/`args` —
+    also what `completion_data["tool_results"]` sends the frontend every
+    turn, on both the agent-loop and legacy paths, so no new wire format is
+    invented here), it's reconstructed as that same tool_calls/ToolMessage
+    sequence before the final answer.
+
+    `tool_results` is NOT populated in `previousConversations` today — the
+    frontend/conversation-storage layer doesn't persist or resend it yet,
+    so every turn falls back to the old plain-text-only path in practice.
+    This makes the Python side ready for when that data is wired through,
+    without waiting on it (tracked as a follow-up: persisting
+    `completion_data["tool_results"]` per bot_response message and
+    resending it as `previousConversations[i]["tool_results"]`).
+    """
     role = turn.get("role", "")
     content = str(turn.get("content", "")).strip()
-    if not content:
-        return None
+
     if role == "user_query":
-        return UserMessage(content=content)
-    if role == "bot_response":
-        return AssistantMessage(content=content)
-    return None
+        return [UserMessage(content=content)] if content else []
+
+    if role != "bot_response":
+        return []
+
+    messages: list[Message] = []
+    tool_results = turn.get("tool_results") or []
+    tool_calls: list[ToolCall] = []
+    tool_messages: list[ToolMessage] = []
+    for i, entry in enumerate(tool_results):
+        if not isinstance(entry, dict):
+            continue
+        call_id = str(entry.get("tool_id") or f"history_{i}")
+        args = entry.get("args")
+        result = entry.get("result", "")
+        tool_calls.append(ToolCall(
+            id=call_id,
+            name=str(entry.get("tool_name") or "unknown_tool"),
+            arguments=args if isinstance(args, dict) else {},
+        ))
+        tool_messages.append(ToolMessage(
+            content=result if isinstance(result, str) else json.dumps(result, default=str),
+            tool_call_id=call_id,
+            is_error=entry.get("status") == "error",
+        ))
+
+    if tool_calls:
+        messages.append(AssistantMessage(content=[], tool_calls=tool_calls))
+        messages.extend(tool_messages)
+    if content:
+        messages.append(AssistantMessage(content=content))
+    return messages
 
 
 __all__ = ["PipesHubAgentFactory"]

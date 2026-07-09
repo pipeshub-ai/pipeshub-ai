@@ -234,26 +234,42 @@ class ControlPlane:
         model = cfg.model
         max_tokens = cfg.max_tokens
         base_url = cfg.base_url
+
+        # Opik LLM-call tracing (see transport/opik_tracing.py) — wraps
+        # whichever transport gets registered below so every LLM call this
+        # ControlPlane's agents make is traced identically, regardless of
+        # provider. `opik_active` also drives `AgentRuntime.opik_enabled`
+        # further down, so `Agent.run()` knows to open a per-run trace.
+        from app.agent_loop_lib.transport.opik_tracing import is_opik_configured, wrap_if_enabled
+
+        opik_active = cfg.opik.enabled and is_opik_configured()
+
+        def _traced(factory):
+            return lambda: wrap_if_enabled(
+                factory(), enabled=opik_active, project_name=cfg.opik.project_name
+            )
+
         if cfg.transport == "anthropic":
             transport_registry.register(
                 "anthropic",
-                lambda: AnthropicTransport(api_key=api_key, model=model, max_tokens=max_tokens),
+                _traced(lambda: AnthropicTransport(api_key=api_key, model=model, max_tokens=max_tokens)),
             )
         elif cfg.transport == "openai":
             transport_registry.register(
                 "openai",
-                lambda: OpenAITransport(api_key=api_key or "", model=model, base_url=base_url),
+                _traced(lambda: OpenAITransport(api_key=api_key or "", model=model, base_url=base_url)),
             )
         elif cfg.transport == "ollama":
             transport_registry.register(
                 "ollama",
-                lambda: OllamaTransport(base_url=base_url or OllamaTransport.DEFAULT_BASE_URL, model=model),
+                _traced(lambda: OllamaTransport(base_url=base_url or OllamaTransport.DEFAULT_BASE_URL, model=model)),
             )
         else:
             raise ValueError(
                 f"Unknown transport backend: {cfg.transport!r}. Supported: 'anthropic', 'openai', 'ollama'"
             )
         self._transport_registry = transport_registry
+        self._opik_enabled = opik_active
 
         # 2. Memory provider
         if cfg.memory == "in_memory":

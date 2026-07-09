@@ -161,7 +161,7 @@ class TestRunAgentLoopStream:
             agent.run = AsyncMock(return_value=MagicMock(success=True, error=None))
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_respond_run(self, *, agent_success, agent_error, event_sink):
+        async def _fake_respond_run(self, *, agent_success, agent_error, event_sink, agent_output=None):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -325,7 +325,7 @@ class TestRunAgentLoopStream:
             agent.run = AsyncMock(return_value=MagicMock(success=True, error=None))
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_respond_run(self, *, agent_success, agent_error, event_sink):
+        async def _fake_respond_run(self, *, agent_success, agent_error, event_sink, agent_output=None):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -400,7 +400,7 @@ class TestRunAgentLoopStream:
             agent.run = AsyncMock(return_value=MagicMock(success=True, error=None))
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_respond_run(self, *, agent_success, agent_error, event_sink):
+        async def _fake_respond_run(self, *, agent_success, agent_error, event_sink, agent_output=None):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
@@ -442,7 +442,7 @@ class TestRunAgentLoopStream:
             agent.run = AsyncMock(return_value=MagicMock(success=True, error=None))
             return agent, MagicMock(), MagicMock(), []
 
-        async def _fake_respond_run(self, *, agent_success, agent_error, event_sink):
+        async def _fake_respond_run(self, *, agent_success, agent_error, event_sink, agent_output=None):
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 

@@ -45,9 +45,22 @@ OverrideExecute = Callable[[], Awaitable[CoreToolResult]]
 class ToolExecutor:
     """Resolves a tool by name and dispatches it through the hook pipelines."""
 
-    def __init__(self, registry: ToolRegistry, kernel: HookRegistry | None = None) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        kernel: HookRegistry | None = None,
+        *,
+        opik_enabled: bool = False,
+        opik_project_name: str | None = None,
+    ) -> None:
         self._registry = registry
         self._kernel = kernel or HookRegistry()
+        # See `transport/opik_tracing.py::maybe_start_tool_span` — set from
+        # `AgentRuntime.opik_enabled` by `Agent.__init__` so every tool call
+        # (including special routes dispatched via `override_execute`) gets
+        # an Opik "tool" span nested under the active agent/LLM span.
+        self._opik_enabled = opik_enabled
+        self._opik_project_name = opik_project_name
 
     @property
     def registry(self) -> ToolRegistry:
@@ -116,7 +129,19 @@ class ToolExecutor:
                 await on_denied(reason)
             return CoreToolResult(tool_call_id=call.id, name=call.name, content=reason, is_error=True)
 
-        tool_result = await self._run(call, pre_ctx.tool_input, override_execute)
+        from app.agent_loop_lib.transport.opik_tracing import (
+            maybe_start_tool_span,
+            record_tool_span_output,
+        )
+
+        with maybe_start_tool_span(
+            enabled=self._opik_enabled,
+            name=call.name,
+            arguments=dict(call.arguments),
+            project_name=self._opik_project_name,
+        ) as span:
+            tool_result = await self._run(call, pre_ctx.tool_input, override_execute)
+            record_tool_span_output(span, result=tool_result)
 
         post_ctx = ToolResultContext(
             tool_path=pre_ctx.tool_path,
