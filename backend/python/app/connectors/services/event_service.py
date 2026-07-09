@@ -393,9 +393,12 @@ class EventService:
             raw_status_filters = payload.get("statusFilters")
             connector_id = payload.get("connectorId")
             user_key = payload.get("userKey")
-            # Parent-scoped modes: optional filter; connector-wide mode: default FAILED
+            # Parent-scoped modes: optional filter; connector-wide mode: default FAILED,
+            # except for KB connectors, where a KB-wide reindex means "reindex everything".
             status_filters: list[str] | None = None
             if record_id is not None or record_group_id is not None:
+                status_filters = raw_status_filters if raw_status_filters else None
+            elif connector_name == Connectors.KNOWLEDGE_BASE.value.lower():
                 status_filters = raw_status_filters if raw_status_filters else None
             else:
                 status_filters = raw_status_filters if raw_status_filters else ["FAILED"]

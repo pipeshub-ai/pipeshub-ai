@@ -35,6 +35,8 @@ interface ApiErrorResponse {
   detail?: string | Array<string | { msg?: string }>;
   /** Retrieval/search and other services: machine-readable outcome (e.g. `accessible_records_not_found`). */
   status?: string;
+  /** Python backend error responses (e.g., KB service permission errors). */
+  reason?: string;
 }
 
 /**
@@ -53,6 +55,9 @@ export function extractApiErrorMessage(data: unknown): string | null {
 
   if (typeof d.message === 'string' && d.message.trim()) {
     return d.message.trim();
+  }
+  if (typeof d.reason === 'string' && d.reason.trim()) {
+    return d.reason.trim();
   }
   if (nestedErrorMessage.trim()) {
     return nestedErrorMessage.trim();
@@ -118,7 +123,9 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
       : (data?.error as Record<string, string> | undefined)?.message;
   // Also check `detail` for FastAPI-style error responses.
   const detailField = typeof data?.detail === 'string' ? data.detail : undefined;
-  const message = data?.message || errorField || detailField || error.message || 'An error occurred';
+  // Check `reason` for Python backend error responses (e.g., KB permission errors).
+  const reasonField = typeof (data as { reason?: string })?.reason === 'string' ? (data as { reason: string }).reason : undefined;
+  const message = data?.message || reasonField || errorField || detailField || error.message || 'An error occurred';
 
   // Map HTTP status codes to error types
   switch (status) {

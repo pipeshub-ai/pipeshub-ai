@@ -39,6 +39,9 @@ export const configPaths = {
   aiModels: '/services/aiModels',
   connectorSyncScheduledJobsMigration:
     '/migrations/connector_sync_scheduled_jobs',
+  chatKbFiltersMigration: '/migrations/chat_kb_filters_v1',
+  // Python-owned flag (backend/python/app/migrations/kb_apps_migration.py) — read-only from Node.
+  kbAppsMigrationDone: '/migrations/kb_apps_v1',
   webSearch: '/services/webSearch',
   slackBot: '/services/slackBot',
   db: {

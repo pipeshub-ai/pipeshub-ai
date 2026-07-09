@@ -81,6 +81,18 @@ function GridCard({
     ? item.nodeType === 'record'
     : item.type === 'file';
 
+  // Per-item permission (Knowledge Hub nodes only) — a shared item can have a
+  // lower role than the folder it's listed in, so gate actions on the item's
+  // own permission rather than just whether the parent passed a callback.
+  const canEditItem = isKnowledgeHubNode(item)
+    ? (item.permission?.canEdit ?? false)
+    : true;
+  const canDeleteItem = isKnowledgeHubNode(item)
+    ? (item.permission?.canDelete ?? false)
+    : true;
+  // Root-level collection/app node — has no parent collection to move within.
+  const isCollectionNode = isKnowledgeHubNode(item) && item.nodeType === 'app';
+
   // Split name into base and extension for files
   const getNameParts = (name: string) => {
     if (!isFile) return { baseName: name, extension: '' };
@@ -496,7 +508,7 @@ function GridCard({
                       Download
                     </DropdownMenu.Item>
                   )}
-                  {onRename && (
+                  {onRename && canEditItem && (
                     <DropdownMenu.Item onClick={() => startEditing()}>
                       <MaterialIcon name="edit" size={16} />
                       Rename
@@ -515,19 +527,20 @@ function GridCard({
                         {action.label}
                       </DropdownMenu.Item>
                     ))}
-                  {!isFolder && onReplace && (
+                  {!isFolder && onReplace && canEditItem && (
                     <DropdownMenu.Item onClick={() => onReplace(item)}>
                       <MaterialIcon name="swap_horiz" size={16} />
                       Replace
                     </DropdownMenu.Item>
                   )}
-                  {onMove && (
+                  {onMove && canEditItem && !isCollectionNode && (
                     <DropdownMenu.Item onClick={() => onMove(item)}>
                       <MaterialIcon name="drive_file_move" size={16} />
                       Move
                     </DropdownMenu.Item>
                   )}
-                  {onDelete && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && (
+                  {/* Collections can only be deleted by OWNER */}
+                  {onDelete && canDeleteItem && !(isCollectionNode && item.permission?.role !== 'OWNER') && (
                       <DropdownMenu.Item onClick={() => onDelete(item)} color="red">
                         <MaterialIcon name="delete" size={16} />
                         Delete
@@ -587,7 +600,7 @@ function GridCard({
               <Text
                 size="2"
                 weight="medium"
-                onClick={onRename ? (e: React.MouseEvent) => {
+                onClick={onRename && canEditItem ? (e: React.MouseEvent) => {
                   e.stopPropagation();
                   startEditing();
                 } : undefined}
@@ -598,7 +611,7 @@ function GridCard({
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
                   lineHeight: 'var(--line-height-2)',
-                  cursor: onRename ? 'text' : 'default',
+                  cursor: onRename && canEditItem ? 'text' : 'default',
                   padding: 'var(--space-1) var(--space-2)',
                   border: '1px solid transparent',
                 }}

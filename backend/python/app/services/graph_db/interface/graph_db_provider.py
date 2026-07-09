@@ -989,7 +989,7 @@ class IGraphDBProvider(ABC):
         self,
         org_id: str,
         connector_id: str,
-        status_filters: list[str],
+        status_filters: list[str] | None,
         limit: int | None = None,
         offset: int = 0,
         transaction: str | None = None
@@ -1000,7 +1000,8 @@ class IGraphDBProvider(ABC):
         Args:
             org_id (str): Organization ID
             connector_id (str): Connector ID
-            status_filters (List[str]): List of status values to filter by
+            status_filters (Optional[List[str]]): List of status values to filter by.
+                        A None or empty list returns records regardless of status.
             limit (Optional[int]): Maximum number of records to return
             offset (int): Number of records to skip
             transaction (Optional[Any]): Optional transaction context
@@ -1670,9 +1671,40 @@ class IGraphDBProvider(ABC):
         kb_id: str,
         folder_name: str,
         parent_folder_id: str | None = None,
+        exclude_folder_id: str | None = None,
         transaction: str | None = None,
     ) -> dict | None:
-        """Find a folder by name within a specific parent (KB root or folder)."""
+        """Find a folder by name within a specific parent (KB root or folder).
+        
+        Args:
+            kb_id: Knowledge base ID
+            folder_name: Name to search for
+            parent_folder_id: Parent folder ID, or None for KB root
+            exclude_folder_id: Optional folder ID to exclude from results (for rename operations)
+            transaction: Optional transaction ID
+        """
+        pass
+
+    @abstractmethod
+    async def find_file_by_name_in_parent(
+        self,
+        kb_id: str,
+        file_name: str,
+        mime_type: str,
+        parent_folder_id: str | None = None,
+        exclude_record_id: str | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """Find a file by name and mime type within a specific parent (KB root or folder).
+        
+        Args:
+            kb_id: Knowledge base ID
+            file_name: Name to search for
+            mime_type: MIME type to match
+            parent_folder_id: Parent folder ID, or None for KB root
+            exclude_record_id: Optional record ID to exclude from results (for rename/move operations)
+            transaction: Optional transaction ID
+        """
         pass
 
     @abstractmethod
@@ -2085,6 +2117,113 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of apps
+        """
+        pass
+
+    # ==================== KB Apps Migration (legacy recordGroup -> app) ====================
+
+    @abstractmethod
+    async def get_legacy_kb_record_groups(self, org_id: str) -> list[dict]:
+        """
+        Get every legacy KB stored as a recordGroups document for this org
+        (groupType == "KB" / connectorName == "KB"), from the pre-migration
+        data model where each KB was a recordGroup under a shared per-org hub
+        app instead of its own app instance.
+
+        Args:
+            org_id (str): Organization ID
+
+        Returns:
+            List[Dict]: Legacy KB recordGroup documents (full docs, including
+                        _key/id, groupName, createdBy, createdAtTimestamp,
+                        updatedAtTimestamp).
+        """
+        pass
+
+    @abstractmethod
+    async def migrate_legacy_kb_to_app(
+        self,
+        kb_record_group: dict,
+        org_id: str,
+        resolved_creator_key: str | None,
+    ) -> dict:
+        """
+        Migrate a single legacy KB from a recordGroups document to its own
+        apps document, reusing the same key. Retargets every PERMISSION,
+        BELONGS_TO, and INHERIT_PERMISSIONS edge that pointed at the old
+        recordGroup to point at the new app instead, updates every record's
+        connectorId to the KB's own app key, creates the new
+        orgAppRelation/userAppRelation edges, and deletes the old recordGroup
+        document plus its own outbound belongsTo edge to the old shared hub
+        app.
+
+        Args:
+            kb_record_group (dict): The legacy recordGroup document (from
+                        get_legacy_kb_record_groups).
+            org_id (str): Organization ID.
+            resolved_creator_key (Optional[str]): The creator's graph user
+                        key, already resolved from whichever identifier space
+                        the old `createdBy` value was in. If None, the app
+                        doc is still created but no userAppRelation edge is
+                        added for the creator.
+
+        Returns:
+            Dict: {"success": bool, "reason": Optional[str]}
+        """
+        pass
+
+    @abstractmethod
+    async def count_legacy_kb_record_groups(self, org_id: str) -> int:
+        """
+        Count remaining legacy KB recordGroups for this org — used to decide
+        whether it's safe to delete the org's old shared hub app (only once
+        this returns 0).
+
+        Args:
+            org_id (str): Organization ID
+
+        Returns:
+            int: Number of remaining legacy KB recordGroups.
+        """
+        pass
+
+    @abstractmethod
+    async def delete_kb_hub_app(self, org_id: str) -> bool:
+        """
+        Delete the org's legacy shared KB hub app (apps/knowledgeBase_{orgId})
+        plus its orgAppRelation edge and every userAppRelation edge pointing
+        to it. Only call once count_legacy_kb_record_groups(org_id) == 0.
+        Safety-checks that nothing still references the hub app before
+        deleting; logs and skips the delete (returns False) if something
+        unexpected still points at it.
+
+        Args:
+            org_id (str): Organization ID
+
+        Returns:
+            bool: True if the hub app was deleted (or didn't exist), False if
+                        the delete was skipped due to unexpected references.
+        """
+        pass
+
+    @abstractmethod
+    async def migrate_agent_hub_knowledge(self, org_id: str) -> dict:
+        """
+        Expand any agent knowledge source that still points at the legacy
+        shared KB hub app (apps/knowledgeBase_{orgId}) into one knowledge
+        source per current per-KB app for this org, preserving the original
+        "search across all my collections" intent. migrate_legacy_kb_to_app
+        only retargets edges owned by the recordGroup being migrated — it
+        never touches AgentKnowledge nodes, which reference apps by a plain
+        connectorId string rather than a graph edge, so this is a separate
+        step. Must run before delete_kb_hub_app removes the hub app, or the
+        reference becomes unrecoverable.
+
+        Args:
+            org_id (str): Organization ID
+
+        Returns:
+            Dict: {"agents_migrated": int, "knowledge_nodes_created": int}
         """
         pass
 
@@ -3390,6 +3529,8 @@ class IGraphDBProvider(ABC):
         sort_dir: str,
         *,
         only_containers: bool,
+        origins: list[str] | None = None,
+        node_types: list[str] | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """
@@ -3404,6 +3545,12 @@ class IGraphDBProvider(ABC):
             sort_field: Field to sort by
             sort_dir: Sort direction (ASC/DESC)
             only_containers: Only return nodes with children
+            origins: Optional filter — e.g. ["COLLECTION"] to return only KB
+                        apps, ["CONNECTOR"] for external connector apps only.
+                        Filtering (and pagination) happens server-side so
+                        results are correctly paginated.
+            node_types: Optional filter on node type (currently only "app"
+                        is meaningful at root level).
             transaction: Optional transaction context
 
         Returns:

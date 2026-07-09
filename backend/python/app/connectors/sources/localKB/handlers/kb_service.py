@@ -2,7 +2,9 @@ import uuid
 from typing import Dict, List, Optional, Union
 
 from app.config.constants.arangodb import (
+    AppGroups,
     CollectionNames,
+    ConnectorScopes,
     Connectors,
 )
 from app.connectors.services.kafka_service import KafkaService
@@ -142,6 +144,64 @@ class KnowledgeBaseService:
         except ValueError as e:
             return None, {"success": False, "reason": str(e), "code": 400}
 
+    async def _assert_no_folder_sibling_conflict(
+        self,
+        kb_id: str,
+        parent_folder_id: Optional[str],
+        folder_name: str,
+        exclude_record_id: str,
+    ) -> Optional[Dict]:
+        """
+        Check for folder name conflicts with siblings in the same parent.
+        
+        Returns error dict with 409 if conflict exists, None if no conflict.
+        """
+        existing_folder = await self.graph_provider.find_folder_by_name_in_parent(
+            kb_id=kb_id,
+            folder_name=folder_name,
+            parent_folder_id=parent_folder_id,
+            exclude_folder_id=exclude_record_id,
+        )
+        
+        if existing_folder:
+            location = "this folder" if parent_folder_id else "collection root"
+            return {
+                "success": False,
+                "code": 409,
+                "reason": f"Folder '{folder_name}' already exists in {location}",
+            }
+        return None
+
+    async def _assert_no_file_sibling_conflict(
+        self,
+        kb_id: str,
+        parent_folder_id: Optional[str],
+        file_name: str,
+        mime_type: str,
+        exclude_record_id: str,
+    ) -> Optional[Dict]:
+        """
+        Check for file name conflicts with siblings in the same parent.
+        
+        Returns error dict with 409 if conflict exists, None if no conflict.
+        """
+        existing_file = await self.graph_provider.find_file_by_name_in_parent(
+            kb_id=kb_id,
+            file_name=file_name,
+            mime_type=mime_type,
+            parent_folder_id=parent_folder_id,
+            exclude_record_id=exclude_record_id,
+        )
+        
+        if existing_file:
+            location = "this folder" if parent_folder_id else "this location"
+            return {
+                "success": False,
+                "code": 409,
+                "reason": f"A file named '{file_name}' already exists in {location}",
+            }
+        return None
+
     async def create_knowledge_base(
         self,
         user_id: str,
@@ -177,11 +237,9 @@ class KnowledgeBaseService:
                 txn_id = await self.graph_provider.begin_transaction(
                     read=[],
                     write=[
-                        CollectionNames.RECORD_GROUPS.value,
-                        CollectionNames.RECORDS.value,
-                        CollectionNames.FILES.value,
-                        CollectionNames.IS_OF_TYPE.value,
-                        CollectionNames.BELONGS_TO.value,
+                        CollectionNames.APPS.value,
+                        CollectionNames.ORG_APP_RELATION.value,
+                        CollectionNames.USER_APP_RELATION.value,
                         CollectionNames.PERMISSION.value,
                     ],
                 )
@@ -194,15 +252,23 @@ class KnowledgeBaseService:
                     "reason": f"Transaction creation failed: {str(tx_error)}"
                 }
 
-            kb_connector_id = f"knowledgeBase_{org_id}"
             kb_data = {
                 "id": kb_key,
-                "createdBy": user_key,
+                # External user id (not the graph user_key) — matches every
+                # other connector type's createdBy convention, which
+                # connector_registry._can_access_connector compares against.
+                "createdBy": user_id,
                 "orgId": org_id,
-                "groupName": name,
-                "groupType": Connectors.KNOWLEDGE_BASE.value,
-                "connectorName": Connectors.KNOWLEDGE_BASE.value,
-                "connectorId": kb_connector_id,  # Link KB to the app
+                "name": name,
+                "type": Connectors.KNOWLEDGE_BASE.value,
+                "appGroup": AppGroups.LOCAL_STORAGE.value,
+                "authType": "NONE",
+                "scope": ConnectorScopes.PERSONAL.value,
+                "isActive": True,
+                "isAgentActive": True,
+                "isConfigured": True,
+                "isAuthenticated": True,
+                "hideConnector": True,  # Excluded from main connector management UI
                 "createdAtTimestamp": timestamp,
                 "updatedAtTimestamp": timestamp,
             }
@@ -211,7 +277,7 @@ class KnowledgeBaseService:
                 "from_id": user_key,
                 "from_collection": CollectionNames.USERS.value,
                 "to_id": kb_key,
-                "to_collection": CollectionNames.RECORD_GROUPS.value,
+                "to_collection": CollectionNames.APPS.value,
                 "externalPermissionId": "",
                 "type": "USER",
                 "role": "OWNER",
@@ -220,13 +286,27 @@ class KnowledgeBaseService:
                 "lastUpdatedTimestampAtSource": timestamp,
             }
 
-            # Create belongs_to edge from record group to app
-            belongs_to_edge = {
-                "from_id": kb_key,
-                "from_collection": CollectionNames.RECORD_GROUPS.value,
-                "to_id": kb_connector_id,
+            # ORG_APP_RELATION is validated against basic_edge_schema in Arango
+            # (additionalProperties: False — only _from/_to/createdAtTimestamp
+            # allowed), so no entityType/updatedAtTimestamp here.
+            org_app_edge = {
+                "from_id": org_id,
+                "from_collection": CollectionNames.ORGS.value,
+                "to_id": kb_key,
                 "to_collection": CollectionNames.APPS.value,
-                "entityType": Connectors.KNOWLEDGE_BASE.value,
+                "createdAtTimestamp": timestamp,
+            }
+
+            # USER_APP_RELATION is validated against user_app_relation_schema
+            # in Arango, which requires syncState/lastSyncUpdate — same
+            # convention as every other connector's user-app edge.
+            user_app_edge = {
+                "from_id": user_key,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": kb_key,
+                "to_collection": CollectionNames.APPS.value,
+                "syncState": "NOT_STARTED",
+                "lastSyncUpdate": timestamp,
                 "createdAtTimestamp": timestamp,
                 "updatedAtTimestamp": timestamp,
             }
@@ -235,7 +315,7 @@ class KnowledgeBaseService:
             self.logger.info("💾 Executing database operations...")
             await self.graph_provider.batch_upsert_nodes(
                 [kb_data],
-                CollectionNames.RECORD_GROUPS.value,
+                CollectionNames.APPS.value,
                 transaction=txn_id,
             )
             await self.graph_provider.batch_create_edges(
@@ -244,8 +324,13 @@ class KnowledgeBaseService:
                 transaction=txn_id,
             )
             await self.graph_provider.batch_create_edges(
-                [belongs_to_edge],
-                CollectionNames.BELONGS_TO.value,
+                [org_app_edge],
+                CollectionNames.ORG_APP_RELATION.value,
+                transaction=txn_id,
+            )
+            await self.graph_provider.batch_create_edges(
+                [user_app_edge],
+                CollectionNames.USER_APP_RELATION.value,
                 transaction=txn_id,
             )
             await self.graph_provider.commit_transaction(txn_id)
@@ -254,7 +339,7 @@ class KnowledgeBaseService:
             if result and result.get("success"):
                 response = {
                     "id": kb_data["id"],
-                    "name": kb_data["groupName"],
+                    "name": kb_data["name"],
                     "createdAtTimestamp": kb_data["createdAtTimestamp"],
                     "updatedAtTimestamp": kb_data["updatedAtTimestamp"],
                     "success": True,
@@ -585,7 +670,7 @@ class KnowledgeBaseService:
                     "reason": f"Parent folder {parent_folder_id} not found in KB {kb_id}"
                 }
 
-            # Check for name conflicts in KB root
+            # Check for name conflicts in parent location
             existing_folder = await self.graph_provider.find_folder_by_name_in_parent(
                 kb_id=kb_id,
                 folder_name=name,
@@ -593,10 +678,11 @@ class KnowledgeBaseService:
             )
 
             if existing_folder:
+                location = "this folder" if parent_folder_id else "KB root"
                 return {
                     "success": False,
                     "code": 409,
-                    "reason": f"Folder '{name}' already exists in KB root"
+                    "reason": f"Folder '{name}' already exists in {location}"
                 }
 
             # Create folder using unified method
@@ -679,25 +765,49 @@ class KnowledgeBaseService:
                     "code": 404
                 }
 
-            updates = {
-                "name": name
-                # "updatedAtTimestamp": timestamp
-            }
+            # Get current folder details to check if name actually changed
+            current_folder = await self.graph_provider.get_document(folder_id, "records")
+            if not current_folder:
+                return {
+                    "success": False,
+                    "reason": "Folder not found",
+                    "code": 404
+                }
+            
+            current_name = current_folder.get("recordName", "")
+            
+            # Early exit if name hasn't changed
+            if current_name.lower() == name.lower():
+                self.logger.info(f"↩️ Folder name unchanged, skipping update")
+                return {
+                    "success": True,
+                    "code": 200,
+                    "reason": "Folder name unchanged"
+                }
 
-            # Check for name conflicts in KB root
+            # Resolve parent to check siblings in correct location
+            parent_info = await self.graph_provider.get_record_parent_info(folder_id)
+            parent_folder_id = parent_info.get("id") if parent_info and parent_info.get("type") == "record" else None
+            
+            # Check for name conflicts with sibling folders
             existing_folder = await self.graph_provider.find_folder_by_name_in_parent(
                 kb_id=kb_id,
                 folder_name=name,
-                parent_folder_id=None,  # KB root
+                parent_folder_id=parent_folder_id,
+                exclude_folder_id=folder_id,
             )
 
             if existing_folder:
+                location = "this folder" if parent_folder_id else "collection root"
                 return {
                     "success": False,
                     "code": 409,
-                    "reason": f"Folder '{name}' already exists in KB root"
+                    "reason": f"Folder '{name}' already exists in {location}"
                 }
 
+            updates = {
+                "name": name
+            }
 
             # Update in database
             result = await self.graph_provider.update_folder(
@@ -737,7 +847,7 @@ class KnowledgeBaseService:
         try:
             self.logger.info(f" Deleting folder {folder_id} in  knowledge base {kb_id}")
             user_key, user_role, err = await self._resolve_user_and_kb_access(
-                kb_id, user_id, required_roles=["OWNER"],
+                kb_id, user_id, required_roles=["OWNER", "WRITER"],
                 permission_denied_reason="User lacks permission to delete folder",
             )
             if err:
@@ -821,6 +931,49 @@ class KnowledgeBaseService:
                     "code": 403,
                     "reason": "User lacks permission to edit records",
                 }
+
+            # Check for file rename duplicate conflicts
+            if "recordName" in updates:
+                new_name = updates["recordName"]
+                
+                # Get current record details
+                current_record = await self.graph_provider.get_document(record_id, "records")
+                if not current_record:
+                    return {
+                        "success": False,
+                        "code": 404,
+                        "reason": "Record not found",
+                    }
+                
+                # Get file metadata to check if this is a file (not a folder)
+                file_doc = await self.graph_provider.get_document(record_id, "files")
+                if file_doc and file_doc.get("isFile"):
+                    # This is a file - check for duplicate file names
+                    current_name = current_record.get("recordName", "")
+                    
+                    # Skip check if name unchanged
+                    if current_name.lower() != new_name.lower():
+                        # Resolve parent
+                        parent_info = await self.graph_provider.get_record_parent_info(record_id)
+                        parent_folder_id = parent_info.get("id") if parent_info and parent_info.get("type") == "record" else None
+                        
+                        # Check for sibling file with same name + mime
+                        mime_type = file_doc.get("mimeType", "")
+                        existing_file = await self.graph_provider.find_file_by_name_in_parent(
+                            kb_id=kb_context.get("kb_id"),
+                            file_name=new_name,
+                            mime_type=mime_type,
+                            parent_folder_id=parent_folder_id,
+                            exclude_record_id=record_id,
+                        )
+                        
+                        if existing_file:
+                            location = "this folder" if parent_folder_id else "this location"
+                            return {
+                                "success": False,
+                                "code": 409,
+                                "reason": f"A file named '{new_name}' already exists in {location}",
+                            }
 
             # Call update method
             result = await self.graph_provider.update_record(
@@ -1096,12 +1249,65 @@ class KnowledgeBaseService:
                     "skipped_teams": skipped_teams
                 }
 
+            # Fetch KB document to get creator information
+            kb_doc = await self.graph_provider.get_document(
+                document_key=kb_id,
+                collection=CollectionNames.APPS.value
+            )
+            if not kb_doc:
+                return {"success": False, "reason": "KB not found", "code": 404}
+
+            creator_mongo_id = kb_doc.get("createdBy")
+            creator_graph_key = None
+
+            # Resolve creator's MongoDB ID to graph key
+            if creator_mongo_id:
+                requester = await self.graph_provider.get_user_by_user_id(user_id=requester_id)
+                org_id = requester.get("orgId") if requester else None
+                if org_id:
+                    creator_mapping = await self.graph_provider.get_graph_user_keys_by_mongo_user_ids(
+                        [creator_mongo_id],
+                        org_id,
+                        chunk_size=1
+                    )
+                    creator_graph_key = creator_mapping.get(creator_mongo_id) if creator_mapping else None
+                    if creator_graph_key:
+                        self.logger.info(f"🔑 KB creator identified: {creator_graph_key} (Mongo ID: {creator_mongo_id})")
+
             owners_being_updated = []
+            creator_being_updated = []
 
             for user_id in valid_user_ids:
                 current_role = current_permissions["users"].get(user_id)
                 if current_role == "OWNER":
                     owners_being_updated.append(user_id)
+                    # Check if this owner is the creator
+                    if user_id == creator_graph_key:
+                        creator_being_updated.append(user_id)
+
+            # Block changes to creator (unless requester IS the creator attempting self-modification)
+            if creator_being_updated and requester_key != creator_graph_key:
+                return {
+                    "success": False,
+                    "reason": "Cannot change permissions for the collection creator.",
+                    "code": 403,
+                    "creator": creator_being_updated
+                }
+
+            # Non-creator owners cannot touch another owner's role/access
+            # But the creator CAN change other owners' permissions
+            if requester_key != creator_graph_key:
+                # Requester is NOT the creator - apply standard owner protection
+                other_owners_being_updated = [
+                    owner_user_id for owner_user_id in owners_being_updated
+                    if owner_user_id != requester_key
+                ]
+                if other_owners_being_updated:
+                    return {
+                        "success": False,
+                        "reason": "Cannot change permission for other owners.",
+                        "code": 403
+                    }
 
             # Bulk Operation Prevention: Cannot perform bulk operations on Owner permissions
             if len(valid_user_ids) > 1 and owners_being_updated:
@@ -1246,8 +1452,58 @@ class KnowledgeBaseService:
                     "skipped_teams": skipped_teams
                 }
 
+            # Fetch KB document to get creator information
+            kb_doc = await self.graph_provider.get_document(
+                document_key=kb_id,
+                collection=CollectionNames.APPS.value
+            )
+            if not kb_doc:
+                return {"success": False, "reason": "KB not found", "code": 404}
+
+            creator_mongo_id = kb_doc.get("createdBy")
+            creator_graph_key = None
+
+            # Resolve creator's MongoDB ID to graph key
+            if creator_mongo_id:
+                requester = await self.graph_provider.get_user_by_user_id(user_id=requester_id)
+                org_id = requester.get("orgId") if requester else None
+                if org_id:
+                    creator_mapping = await self.graph_provider.get_graph_user_keys_by_mongo_user_ids(
+                        [creator_mongo_id],
+                        org_id,
+                        chunk_size=1
+                    )
+                    creator_graph_key = creator_mapping.get(creator_mongo_id) if creator_mapping else None
+                    if creator_graph_key:
+                        self.logger.info(f"🔑 KB creator identified: {creator_graph_key} (Mongo ID: {creator_mongo_id})")
+
             # Check for owner removal restrictions
             if owner_users_to_remove:
+                # Block removing creator entirely (even by themselves)
+                if creator_graph_key in owner_users_to_remove:
+                    return {
+                        "success": False,
+                        "reason": "Cannot remove the collection creator. The creator must always retain access.",
+                        "code": 403,
+                        "creator": creator_graph_key
+                    }
+
+                # Non-creator owners cannot remove another owner's access
+                # But the creator CAN remove other owners
+                if requester_key != creator_graph_key:
+                    # Requester is NOT the creator - apply standard owner protection
+                    other_owners_to_remove = [
+                        owner_user_id for owner_user_id in owner_users_to_remove
+                        if owner_user_id != requester_key
+                    ]
+                    if other_owners_to_remove:
+                        return {
+                            "success": False,
+                            "reason": "Cannot remove other owners.",
+                            "code": 403,
+                            "owner_users": other_owners_to_remove
+                        }
+
                 # Count total owners in the KB
                 owner_count = await self.graph_provider.count_kb_owners(kb_id)
                 if owner_count <= len(owner_users_to_remove):
@@ -1577,8 +1833,8 @@ class KnowledgeBaseService:
                 "role": user_role,
                 "canUpload": user_role in ["OWNER", "WRITER"],
                 "canCreateFolders": user_role in ["OWNER", "WRITER"],
-                "canEdit": user_role in ["OWNER", "WRITER", "FILEORGANIZER"],
-                "canDelete": user_role in ["OWNER"],
+                "canEdit": user_role in ["OWNER", "WRITER"],
+                "canDelete": user_role in ["OWNER", "WRITER"],
                 "canManagePermissions": user_role in ["OWNER"]
             }
 
@@ -1678,8 +1934,8 @@ class KnowledgeBaseService:
                 "role": user_role,
                 "canUpload": user_role in ["OWNER", "WRITER"],
                 "canCreateFolders": user_role in ["OWNER", "WRITER"],
-                "canEdit": user_role in ["OWNER", "WRITER", "FILEORGANIZER"],
-                "canDelete": user_role in ["OWNER"],
+                "canEdit": user_role in ["OWNER", "WRITER"],
+                "canDelete": user_role in ["OWNER", "WRITER"],
                 "canManagePermissions": user_role in ["OWNER"]
             }
 
@@ -1839,6 +2095,44 @@ class KnowledgeBaseService:
                             "code": 400,
                             "reason": "Cannot move a folder into one of its own sub-folders (circular reference)",
                         }
+
+            # ── 6.5. Check for destination sibling name conflicts ────────────
+            # Load the record's name and determine if it's a folder or file
+            moving_record = await self.graph_provider.get_document(record_id, "records")
+            if not moving_record:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"Record {record_id} not found",
+                }
+            
+            record_name = moving_record.get("recordName", "")
+            is_folder = await self.graph_provider.is_record_folder(record_id)
+            
+            if is_folder:
+                # Check for folder name conflict in destination
+                conflict_err = await self._assert_no_folder_sibling_conflict(
+                    kb_id=kb_id,
+                    parent_folder_id=new_parent_id,
+                    folder_name=record_name,
+                    exclude_record_id=record_id,
+                )
+                if conflict_err:
+                    return conflict_err
+            else:
+                # Check for file name conflict in destination
+                file_doc = await self.graph_provider.get_document(record_id, "files")
+                if file_doc and file_doc.get("isFile"):
+                    mime_type = file_doc.get("mimeType", "")
+                    conflict_err = await self._assert_no_file_sibling_conflict(
+                        kb_id=kb_id,
+                        parent_folder_id=new_parent_id,
+                        file_name=record_name,
+                        mime_type=mime_type,
+                        exclude_record_id=record_id,
+                    )
+                    if conflict_err:
+                        return conflict_err
 
             # ── 7. Transactional graph update ────────────────────────────────
             txn_id = await self.graph_provider.begin_transaction(

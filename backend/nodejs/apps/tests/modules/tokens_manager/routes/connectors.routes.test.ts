@@ -968,6 +968,66 @@ describe('Connector Routes', () => {
       expect(mockNext.calledOnce).to.be.true
     })
   })
+
+  describe('POST /:connectorId/reindex scope enforcement', () => {
+    function findRouteScopeMiddleware(router: any, path: string, method: string) {
+      const layer = router.stack.find(
+        (l: any) => l.route && l.route.path === path && l.route.methods[method],
+      )
+      if (!layer) return undefined
+      // Middleware order: authenticate, requireScopes(...), metrics, validation, handler
+      return layer.route.stack[1].handle
+    }
+
+    it('should register POST /:connectorId/reindex route', () => {
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const routes = (router as any).stack
+      const reindexRoute = routes.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/:connectorId/reindex' &&
+          layer.route.methods.post,
+      )
+      expect(reindexRoute).to.not.be.undefined
+    })
+
+    it('allows a token scoped only "connector:sync" (non-KB reindex, e.g. Google Drive) to pass', () => {
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const scopeMiddleware = findRouteScopeMiddleware(router, '/:connectorId/reindex', 'post')
+      expect(scopeMiddleware).to.not.be.undefined
+
+      const req: any = { user: { isOAuth: true, oauthScopes: ['connector:sync'] } }
+      const next = sinon.stub()
+      scopeMiddleware(req, {}, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.undefined
+    })
+
+    it('allows a token scoped only "kb:write" (KB reindex) to pass', () => {
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const scopeMiddleware = findRouteScopeMiddleware(router, '/:connectorId/reindex', 'post')
+
+      const req: any = { user: { isOAuth: true, oauthScopes: ['kb:write'] } }
+      const next = sinon.stub()
+      scopeMiddleware(req, {}, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.undefined
+    })
+
+    it('rejects a token with neither "connector:sync" nor "kb:write"', () => {
+      const router = createConnectorRouter(container, mockCrawlingContainer, mockConnectorContainer)
+      const scopeMiddleware = findRouteScopeMiddleware(router, '/:connectorId/reindex', 'post')
+
+      const req: any = { user: { isOAuth: true, oauthScopes: ['user:read'] } }
+      const next = sinon.stub()
+      scopeMiddleware(req, {}, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(Error)
+    })
+  })
 })
 
 describe('Connector Routes - handler coverage', () => {

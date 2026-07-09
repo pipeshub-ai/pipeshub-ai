@@ -32,7 +32,7 @@ KB_ENTRY  = {"displayName": "Company Wiki", "type": "KB"}
 KB_ENTRY_WITH_IDS = {
     "displayName": "Vishwjeet's Private",
     "type": "KB",
-    "filters": {"recordGroups": ["rg-id-aaa", "rg-id-bbb"]},
+    "connectorId": "kb-app-id-1",
 }
 KB_ENTRY2 = {"name": "HR Policies", "type": "KB"}
 
@@ -48,7 +48,7 @@ _C_UNK   = {"label": "MyApp",        "type_key": "myapp",      "connector_id": "
 
 # Pre-classified KB source dicts
 _KB_NO_IDS   = {"label": "Company Wiki",        "collection_ids": []}
-_KB_WITH_IDS = {"label": "Vishwjeet's Private", "collection_ids": ["rg-id-aaa", "rg-id-bbb"]}
+_KB_WITH_IDS = {"label": "Vishwjeet's Private", "collection_ids": ["kb-app-id-1"]}
 
 
 # ===========================================================================
@@ -97,27 +97,27 @@ class TestClassifyKnowledgeSources:
         kb, _ = classify_knowledge_sources([{"name": "Legal KB", "type": "KB"}])
         assert kb[0]["label"] == "Legal KB"
 
-    # ── KB-only (with collection_ids from filters.recordGroups) ─────────────
+    # ── KB-only (with collection_ids from the KB's own connectorId) ─────────
 
-    def test_kb_extracts_collection_ids_from_filters(self):
+    def test_kb_extracts_collection_id_from_connector_id(self):
         kb, _ = classify_knowledge_sources([KB_ENTRY_WITH_IDS])
         assert len(kb) == 1
         assert kb[0]["label"] == "Vishwjeet's Private"
-        assert "rg-id-aaa" in kb[0]["collection_ids"]
-        assert "rg-id-bbb" in kb[0]["collection_ids"]
+        assert kb[0]["collection_ids"] == ["kb-app-id-1"]
 
-    def test_kb_with_json_string_filters(self):
-        import json
+    def test_kb_legacy_record_groups_filter_is_ignored(self):
+        """KB id now comes from connectorId; legacy filters.recordGroups is no longer read."""
         entry = {
             "displayName": "Docs KB",
             "type": "KB",
-            "filters": json.dumps({"recordGroups": ["rg-json-id"]}),
+            "connectorId": "kb-app-id-2",
+            "filters": {"recordGroups": ["stale-legacy-rg"]},
         }
         kb, _ = classify_knowledge_sources([entry])
-        assert kb[0]["collection_ids"] == ["rg-json-id"]
+        assert kb[0]["collection_ids"] == ["kb-app-id-2"]
 
-    def test_kb_with_empty_record_groups(self):
-        entry = {"displayName": "Empty KB", "type": "KB", "filters": {"recordGroups": []}}
+    def test_kb_without_connector_id_has_no_collection_ids(self):
+        entry = {"displayName": "Empty KB", "type": "KB"}
         kb, _ = classify_knowledge_sources([entry])
         assert kb[0]["collection_ids"] == []
 
@@ -159,7 +159,7 @@ class TestClassifyKnowledgeSources:
 
     def test_kb_with_ids_and_multiple_connectors(self):
         kb, apps = classify_knowledge_sources([KB_ENTRY_WITH_IDS, JIRA, CONF])
-        assert "rg-id-aaa" in kb[0]["collection_ids"]
+        assert "kb-app-id-1" in kb[0]["collection_ids"]
         assert {a["type_key"] for a in apps} == {"jira", "confluence"}
 
     def test_multiple_kbs_and_multiple_connectors(self):
@@ -197,7 +197,7 @@ class TestBuildConnectorRoutingRulesKBOnly:
 
     def test_kb_with_ids_shows_collection_ids_in_output(self):
         result = build_connector_routing_rules([], kb_sources=[_KB_WITH_IDS])
-        assert "rg-id-aaa" in result
+        assert "kb-app-id-1" in result
         assert "collection_ids" in result
 
     def test_kb_without_ids_shows_omit_guidance(self):
@@ -212,7 +212,7 @@ class TestBuildConnectorRoutingRulesKBOnly:
     def test_kb_only_example_uses_collection_ids(self):
         result = build_connector_routing_rules([], kb_sources=[_KB_WITH_IDS],
                                                call_format="planner")
-        assert "rg-id-aaa" in result
+        assert "kb-app-id-1" in result
         assert "collection_ids" in result
 
     def test_kb_only_orchestrator_task_uses_collection_ids(self):
@@ -220,7 +220,7 @@ class TestBuildConnectorRoutingRulesKBOnly:
                                                call_format="orchestrator")
         assert "retrieval_kb_" in result
         assert "collection_ids" in result
-        assert "rg-id-aaa" in result
+        assert "kb-app-id-1" in result
 
 
 class TestBuildConnectorRoutingRulesSingleConnector:
@@ -288,7 +288,7 @@ class TestBuildConnectorRoutingRulesMixed:
 
     def test_collection_ids_in_identity_block(self):
         result = build_connector_routing_rules([_C_JIRA], kb_sources=[_KB_WITH_IDS])
-        assert "rg-id-aaa" in result
+        assert "kb-app-id-1" in result
         assert "KB Collections" in result
 
     def test_connector_ids_in_identity_block(self):
@@ -300,7 +300,7 @@ class TestBuildConnectorRoutingRulesMixed:
         result = build_connector_routing_rules(
             [_C_JIRA, _C_CONF], kb_sources=[_KB_WITH_IDS], call_format="planner"
         )
-        assert "rg-id-aaa" in result      # KB call with collection_ids
+        assert "kb-app-id-1" in result      # KB call with collection_ids
         assert "jira-cid-1" in result     # Jira connector call
         assert "conf-cid-2" in result     # Confluence connector call
 

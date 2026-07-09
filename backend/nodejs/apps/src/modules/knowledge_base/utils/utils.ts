@@ -236,6 +236,7 @@ export type UploadStreamPublish = (
 export const processUploadsInBackground = async (
   placeholderResults: PlaceholderResultWithMetadata[],
   orgId: string,
+  kbId: string,
   currentTime: number,
   pythonServiceUrl: string,
   headers: Record<string, string>,
@@ -372,7 +373,7 @@ export const processUploadsInBackground = async (
         externalRecordId: placeholderResult.documentId,
         recordType: RECORD_TYPE.FILE,
         origin: ORIGIN_TYPE.UPLOAD,
-        connectorId: `knowledgeBase_${orgId}`,
+        connectorId: kbId,
         createdAtTimestamp: currentTime,
         updatedAtTimestamp: currentTime,
         sourceCreatedAtTimestamp: validLastModified,

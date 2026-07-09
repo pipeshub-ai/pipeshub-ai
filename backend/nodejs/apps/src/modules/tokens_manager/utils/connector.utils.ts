@@ -22,6 +22,30 @@ const logger = Logger.getInstance({
 const CONNECTOR_SERVICE_UNAVAILABLE_MESSAGE =
   'Connector Service is currently unavailable. Please check your network connection or try again later.';
 
+/**
+ * FastAPI validation errors (422) send `detail` as an array of
+ * `{loc, msg, type}` objects rather than a string. Stringifying that array
+ * directly (e.g. in a template literal) yields "[object Object]" since
+ * Array.prototype.toString calls the default Object.toString on each entry.
+ * This extracts a readable message instead.
+ */
+const stringifyErrorDetail = (detail: unknown): string => {
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((entry) =>
+        entry && typeof entry === 'object' && 'msg' in entry
+          ? String((entry as { msg: unknown }).msg)
+          : JSON.stringify(entry),
+      )
+      .join('; ');
+  }
+  if (detail && typeof detail === 'object') {
+    return JSON.stringify(detail);
+  }
+  return 'Unknown error';
+};
+
 export const handleBackendError = (error: any, operation: string): Error => {
   if (error) {
     if (
@@ -36,12 +60,9 @@ export const handleBackendError = (error: any, operation: string): Error => {
     }
 
     const { statusCode, data, message } = error;
-    const errorDetail =
-      data?.detail ||
-      data?.reason ||
-      data?.message ||
-      message ||
-      'Unknown error';
+    const errorDetail = stringifyErrorDetail(
+      data?.detail || data?.reason || data?.message || message || 'Unknown error',
+    );
 
     logger.error(`Backend error during ${operation}`, {
       statusCode,
@@ -67,6 +88,8 @@ export const handleBackendError = (error: any, operation: string): Error => {
         return new NotFoundError(errorDetail);
       case 409:
         return new ConflictError(errorDetail);
+      case 422:
+        return new BadRequestError(errorDetail);
       case 500:
         return new InternalServerError(errorDetail);
       default:

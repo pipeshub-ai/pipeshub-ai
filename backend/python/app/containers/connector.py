@@ -16,6 +16,7 @@ from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.health.health import Health
 from app.migrations.all_team_migration import run_all_team_migration
+from app.migrations.kb_apps_migration import run_kb_apps_migration
 from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.logger import create_logger
@@ -175,6 +176,36 @@ async def initialize_container(container) -> bool:
                 logger.error(f"❌ All team migration failed: {error_msg}")
         except Exception as e:
             logger.error(f"❌ All team migration error: {e}")
+
+        # Run KB apps migration (legacy recordGroup-based KBs -> per-KB app
+        # instances). Must run after the graph provider/schema are ready;
+        # must complete before connectors_main.py's resume_sync_services()
+        # so newly-migrated KB apps get a KnowledgeBaseConnector instance
+        # registered on the same boot that migrates them.
+        try:
+            logger.info("🔄 Running KB apps migration...")
+
+            kb_migration_result = await run_kb_apps_migration(
+                graph_provider=data_store.graph_provider,
+                config_service=config_service,
+                logger=logger
+            )
+
+            if kb_migration_result.get("success"):
+                if kb_migration_result.get("skipped"):
+                    logger.info("✅ KB apps migration already completed")
+                else:
+                    orgs_processed = kb_migration_result.get("orgs_processed", 0)
+                    kbs_migrated = kb_migration_result.get("kbs_migrated", 0)
+                    logger.info(
+                        f"✅ KB apps migration completed: "
+                        f"{orgs_processed} orgs processed, {kbs_migrated} KB(s) migrated"
+                    )
+            else:
+                error_msg = kb_migration_result.get("error", "Unknown error")
+                logger.error(f"❌ KB apps migration failed: {error_msg}")
+        except Exception as e:
+            logger.error(f"❌ KB apps migration error: {e}")
 
         return True
 

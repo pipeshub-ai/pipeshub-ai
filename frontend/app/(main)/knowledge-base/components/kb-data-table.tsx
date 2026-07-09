@@ -17,6 +17,7 @@ import type {
   PageViewMode,
 } from '../types';
 import { AlertSquareIcon, EmptyIcon, NotFoundIcon } from '@/app/components/ui';
+import { resolveRootKbIdFromContext } from '../utils/resolve-root-kb-id';
 
 // Union type for items that can be displayed
 type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
@@ -142,13 +143,16 @@ export function KbDataTable({
   const handleDeleteConfirm = async () => {
     if (!itemToDelete) return;
 
-    // Get KB ID - we need it for folder deletion and root-collection detection
-    const storeBreadcrumbs = useKnowledgeBaseStore.getState().tableData?.breadcrumbs;
-    const kbId = storeBreadcrumbs && storeBreadcrumbs.length > 1
-      ? storeBreadcrumbs[1].id
-      : isKnowledgeHubNode(itemToDelete) && 'parentId' in itemToDelete
-      ? itemToDelete.parentId
-      : undefined;
+    const storeState = useKnowledgeBaseStore.getState();
+    const kbId = resolveRootKbIdFromContext({
+      breadcrumbs: storeState.tableData?.breadcrumbs,
+      categorizedNodes: storeState.categorizedNodes,
+      parentId:
+        isKnowledgeHubNode(itemToDelete) && 'parentId' in itemToDelete
+          ? itemToDelete.parentId
+          : undefined,
+      nodeId: itemToDelete.id,
+    });
 
     const isFolder = isKnowledgeHubNode(itemToDelete)
       ? ['kb', 'app', 'folder', 'recordGroup'].includes(itemToDelete.nodeType)
@@ -160,9 +164,11 @@ export function KbDataTable({
       kbId === itemToDelete.id;
 
     const nodeType = isKnowledgeHubNode(itemToDelete)
-      ? itemToDelete.nodeType === 'kb' || isRootCollection
-        ? 'kb'
-        : isFolder
+      ? itemToDelete.nodeType === 'record'
+        ? 'record'
+        : itemToDelete.nodeType === 'app' || itemToDelete.nodeType === 'kb' || isRootCollection
+        ? 'app'
+        : ['folder', 'recordGroup'].includes(itemToDelete.nodeType)
         ? 'folder'
         : 'record'
       : itemToDelete.type === 'folder'
@@ -230,7 +236,13 @@ export function KbDataTable({
 
   // Show empty state when no node selected (no breadcrumbs) - Collections mode only
   const hasBreadcrumbs = !!storeTableData?.breadcrumbs?.length;
-  if (items.length === 0 && !hasBreadcrumbs && pageViewMode === 'collections') {
+  if (
+    items.length === 0 &&
+    !hasBreadcrumbs &&
+    pageViewMode === 'collections' &&
+    !hasActiveFilters &&
+    !hasSearchQuery
+  ) {
     // While the sidebar's collections list is still being fetched, show a
     // loading spinner rather than the "No collection selected" empty state,
     // so the user doesn't think they have no collections while the API is

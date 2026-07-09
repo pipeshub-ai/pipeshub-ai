@@ -105,6 +105,12 @@ export const getKnowledgeHubNodes =
         queryParams.append('only_containers', String(req.query.onlyContainers));
       }
 
+      // Tri-state flag (true/false/omitted) — must be forwarded even when
+      // explicitly `false`, so `!== undefined` rather than a truthy check.
+      if (req.query.flattened !== undefined) {
+        queryParams.append('flattened', String(req.query.flattened));
+      }
+
       const { parentType, parentId } = req.params;
       let url = `${appConfig.connectorBackend}/api/v1/knowledge-hub/nodes`;
 
@@ -428,7 +434,7 @@ export const updateKnowledgeBase =
         HttpMethod.PUT,
         req.headers as Record<string, string>,
         {
-          groupName: kbName,
+          name: kbName,
         },
       );
 
@@ -702,6 +708,7 @@ const streamKbUpload = async (opts: {
   fileBuffers: FileBufferInfo[];
   rejectedFiles: RejectedFileInfo[];
   orgId: string;
+  kbId: string;
   isVersioned: boolean;
   keyValueStoreService: KeyValueStoreService;
   appConfig: AppConfig;
@@ -713,6 +720,7 @@ const streamKbUpload = async (opts: {
     fileBuffers,
     rejectedFiles,
     orgId,
+    kbId,
     isVersioned,
     keyValueStoreService,
     appConfig,
@@ -858,6 +866,7 @@ const streamKbUpload = async (opts: {
       const counts = await processUploadsInBackground(
         placeholderResults,
         orgId,
+        kbId,
         currentTime,
         pythonServiceUrl,
         req.headers as Record<string, string>,
@@ -1014,6 +1023,7 @@ export const uploadRecords =
         fileBuffers,
         rejectedFiles,
         orgId,
+        kbId,
         isVersioned,
         keyValueStoreService,
         appConfig,

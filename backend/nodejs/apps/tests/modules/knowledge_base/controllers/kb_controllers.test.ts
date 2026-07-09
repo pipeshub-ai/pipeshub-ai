@@ -33,7 +33,7 @@ import {
 } from '../../../../src/modules/knowledge_base/controllers/kb_controllers'
 import {
   getConnectorStats,
-  reindexFailedRecords,
+  reindexConnector,
   resyncConnectorRecords,
 } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
 
@@ -122,7 +122,6 @@ function createMockRecordRelationService(): any {
     createNewRecordEventPayload: sinon.stub().resolves({}),
     createUpdateRecordEventPayload: sinon.stub().resolves({}),
     createDeleteRecordEvent: sinon.stub().resolves(),
-    reindexFailedRecords: sinon.stub().resolves({ success: true }),
     resyncConnectorRecords: sinon.stub().resolves({ success: true }),
     eventProducer: {
       start: sinon.stub().resolves(),
@@ -1011,21 +1010,15 @@ describe('Knowledge Base Controller', () => {
   // -----------------------------------------------------------------------
   // Reindex / Resync
   // -----------------------------------------------------------------------
-  describe('reindexFailedRecords', () => {
+  describe('reindexConnector', () => {
     it('should return a handler function', () => {
-      const handler = reindexFailedRecords(
-        createMockRecordRelationService(),
-        createMockAppConfig(),
-      )
+      const handler = reindexConnector(createMockAppConfig())
       expect(handler).to.be.a('function')
     })
 
     it('should call next when user not authenticated', async () => {
-      const handler = reindexFailedRecords(
-        createMockRecordRelationService(),
-        createMockAppConfig(),
-      )
-      const req = createMockRequest({ user: undefined })
+      const handler = reindexConnector(createMockAppConfig())
+      const req = createMockRequest({ user: undefined, params: { connectorId: 'c1' } })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -1035,11 +1028,11 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when userId is missing', async () => {
-      const handler = reindexFailedRecords(
-        createMockRecordRelationService(),
-        createMockAppConfig(),
-      )
-      const req = createMockRequest({ user: { orgId: 'org-1' } })
+      const handler = reindexConnector(createMockAppConfig())
+      const req = createMockRequest({
+        user: { orgId: 'org-1' },
+        params: { connectorId: 'c1' },
+      })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -1822,24 +1815,17 @@ describe('Knowledge Base Controller', () => {
     })
   })
 
-  describe('reindexFailedRecords (happy path)', () => {
-    it('should reindex failed records successfully', async () => {
-      const mockRecordRelation = createMockRecordRelationService()
-      // Stub connector commands for validateActiveConnector and validateConnectorNotLocked
-      const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute')
-      executeStub.onFirstCall().resolves({
+  describe('reindexConnector (happy path)', () => {
+    it('should reindex connector successfully', async () => {
+      const handler = reindexConnector(createMockAppConfig())
+      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
-        data: { connectors: [{ _key: 'c1' }] },
-      })
-      executeStub.onSecondCall().resolves({
-        statusCode: 200,
-        data: { connector: { isLocked: false } },
+        data: { message: 'Connector reindexed' },
       })
 
-      const handler = reindexFailedRecords(mockRecordRelation, createMockAppConfig())
       const req = createMockRequest({
         params: { connectorId: 'c1' },
-        body: { app: 'Google Drive', statusFilters: ['failed'] },
+        body: { statusFilters: ['FAILED'] },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -1848,7 +1834,27 @@ describe('Knowledge Base Controller', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
-        expect(mockRecordRelation.reindexFailedRecords.calledOnce).to.be.true
+      }
+    })
+
+    it('should reindex connector with no statusFilters (reindex all)', async () => {
+      const handler = reindexConnector(createMockAppConfig())
+      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { message: 'Connector reindexed' },
+      })
+
+      const req = createMockRequest({
+        params: { connectorId: 'c1' },
+        body: {},
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
       }
     })
   })
@@ -3186,14 +3192,13 @@ describe('Knowledge Base Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('should call next when reindexFailedRecords connector throws', async () => {
-      const mockRecordRelation = createMockRecordRelationService()
+    it('should call next when reindexConnector connector throws', async () => {
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').rejects(new Error('Service down'))
 
-      const handler = reindexFailedRecords(mockRecordRelation, createMockAppConfig())
+      const handler = reindexConnector(createMockAppConfig())
       const req = createMockRequest({
         params: { connectorId: 'c1' },
-        body: { app: 'Google Drive', statusFilters: ['failed'] },
+        body: { statusFilters: ['FAILED'] },
       })
       const res = createMockResponse()
       const next = createMockNext()
@@ -3318,36 +3323,6 @@ describe('Knowledge Base Controller', () => {
 
       const req = createMockRequest({
         params: { connectorId: 'c1' },
-      })
-      const res = createMockResponse()
-      const next = createMockNext()
-
-      await handler(req, res, next)
-
-      expect(next.calledOnce).to.be.true
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // reindexFailedRecords - connector locked
-  // -----------------------------------------------------------------------
-  describe('reindexFailedRecords (connector locked)', () => {
-    it('should call next when connector is locked', async () => {
-      const mockRecordRelation = createMockRecordRelationService()
-      const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute')
-      executeStub.onFirstCall().resolves({
-        statusCode: 200,
-        data: { connectors: [{ _key: 'c1' }] },
-      })
-      executeStub.onSecondCall().resolves({
-        statusCode: 200,
-        data: { connector: { isLocked: true } },
-      })
-
-      const handler = reindexFailedRecords(mockRecordRelation, createMockAppConfig())
-      const req = createMockRequest({
-        params: { connectorId: 'c1' },
-        body: { app: 'Google Drive', statusFilters: ['failed'] },
       })
       const res = createMockResponse()
       const next = createMockNext()

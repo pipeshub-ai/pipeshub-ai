@@ -267,6 +267,7 @@ export function ShareSidebar({
     async (memberId: string, memberType: 'user' | 'team', newRole: ShareRole) => {
       if (!adapter.updateRole) return;
       const member = existingMembers.find((m) => m.id === memberId);
+      // Users cannot change their own permission
       if (member?.isCurrentUser) return;
       try {
         await adapter.updateRole(memberId, memberType, newRole);
@@ -279,9 +280,9 @@ export function ShareSidebar({
           description: `${member?.name ?? 'Member'} is now a ${newRole.toLowerCase()}`,
         });
       } catch (error) {
-        const message =
-          (error as { response?: { data?: { message?: string } }; message?: string })?.response?.data?.message
-          ?? 'Could not update role. Please try again.';
+        // Error is already processed by apiClient interceptor
+        const processedError = error as { message?: string };
+        const message = processedError?.message ?? 'Could not update role. Please try again.';
         toast.error('Failed to update role', { description: message });
       }
     },
@@ -293,6 +294,7 @@ export function ShareSidebar({
   const handleRemoveMember = useCallback(
     async (memberId: string, memberType: 'user' | 'team') => {
       const member = existingMembers.find((m) => m.id === memberId);
+      // Users cannot remove themselves (use the leave/revoke own access flow instead)
       if (member?.isCurrentUser) return;
       try {
         await adapter.removeMember(memberId, memberType);
@@ -302,9 +304,9 @@ export function ShareSidebar({
         });
         onShareSuccess?.();
       } catch (error) {
-        const message =
-          (error as { response?: { data?: { message?: string } }; message?: string })?.response?.data?.message
-          ?? 'Could not remove access. Please try again.';
+        // Error is already processed by apiClient interceptor
+        const processedError = error as { message?: string };
+        const message = processedError?.message ?? 'Could not remove access. Please try again.';
         toast.error('Failed to revoke access', { description: message });
       }
     },
@@ -636,6 +638,7 @@ export function ShareSidebar({
                           isCurrentUser={member.isCurrentUser}
                           isOwner={member.isOwner}
                           role={member.role}
+                          // Allow changing permissions for all users except yourself. Backend enforces creator protection.
                           showRoleDropdown={!member.isCurrentUser}
                           noRolesInfo={
                             !adapter.supportsRoles && member.type === 'user'

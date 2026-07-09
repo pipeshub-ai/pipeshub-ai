@@ -52,16 +52,6 @@ class KnowledgeHubService:
         self.logger = logger
         self.graph_provider = graph_provider
 
-    def _has_search_filters(self, q: str | None, node_types: list[str] | None,
-                             record_types: list[str] | None, origins: list[str] | None,
-                             connector_ids: list[str] | None,
-                             indexing_status: list[str] | None,
-                             created_at: dict | None, updated_at: dict | None,
-                             size: dict | None) -> bool:
-        """Check if any search/filter parameters are provided."""
-        return any([q, node_types, record_types, origins, connector_ids,
-                    indexing_status, created_at, updated_at, size])
-
     def _has_flattening_filters(self, q: str | None, node_types: list[str] | None,
                                  record_types: list[str] | None, origins: list[str] | None,
                                  connector_ids: list[str] | None,
@@ -74,6 +64,9 @@ class KnowledgeHubService:
         - q, nodeTypes, recordTypes, origins, connectorIds,
           createdAt, updatedAt, size, indexingStatus
         Note: sortBy and sortOrder are NOT included as they don't trigger flattening.
+
+        This is only the FALLBACK computation used when the caller doesn't pass
+        an explicit `flattened` flag — see get_nodes() for the precedence rule.
         """
         return any([q, node_types, record_types, origins, connector_ids,
                     indexing_status, created_at, updated_at, size])
@@ -98,20 +91,19 @@ class KnowledgeHubService:
         created_at: dict[str, int | None] | None = None,
         updated_at: dict[str, int | None] | None = None,
         size: dict[str, int | None] | None = None,
-        flattened: bool = False,
+        flattened: bool | None = None,
         include: list[str] | None = None,
         record_group_ids: list[str] | None = None,
     ) -> KnowledgeHubNodesResponse:
         """
         Get nodes for the Knowledge Hub unified browse API
+
+        `flattened` precedence: if the caller passes it explicitly (True or
+        False), it always decides search-vs-browse mode. Only when it's
+        omitted (None) do we fall back to computing it from which filters
+        are present (see _has_flattening_filters).
         """
         try:
-            # Determine if this is a search request
-            is_search = self._has_search_filters(
-                q, node_types, record_types, origins, connector_ids,
-                indexing_status, created_at, updated_at, size
-            )
-
             # Validate pagination
             page = max(1, page)
             limit = min(max(1, limit), 200)  # Max 200
@@ -133,21 +125,23 @@ class KnowledgeHubService:
                 )
             user_key = user.get('_key')
 
-            # Get nodes based on request type
-            # If parent_id is provided with flattening filters or flattened=true, do recursive search
-            # If parent_id is provided without filters, browse direct children only
-            # If no parent_id with search filters, do global search
-
-            # Check if flattening filters are applied (these should return flattened results)
-            has_flattening_filters = self._has_flattening_filters(
-                q, node_types, record_types, origins, connector_ids,
-                indexing_status, created_at, updated_at, size
-            )
+            # Get nodes based on request type.
+            # `flattened`, when explicitly passed by the caller, always wins.
+            # Otherwise fall back to computing it from which filters are present
+            # (any of q/nodeTypes/recordTypes/origins/connectorIds/indexingStatus/
+            # createdAt/updatedAt/size triggers the flattened/recursive search).
+            if flattened is not None:
+                use_search_mode = flattened
+            else:
+                use_search_mode = self._has_flattening_filters(
+                    q, node_types, record_types, origins, connector_ids,
+                    indexing_status, created_at, updated_at, size
+                )
 
             # Initialize available_filters
             available_filters = None
 
-            if (parent_id and (has_flattening_filters or flattened)) or (is_search and parent_id is None):
+            if use_search_mode:
                 # Search mode: Global search (no parent) or scoped search (within parent and descendants)
                 items, total_count, available_filters = await self._search_nodes(
                     user_key=user_key,
@@ -417,8 +411,13 @@ class KnowledgeHubService:
     ) -> tuple[list[NodeItem], int, AvailableFilters | None]:
         """Get root level nodes (Apps, including Collection App)"""
         try:
-            # Get user's accessible apps
-            user_apps_ids = await self.graph_provider.get_user_app_ids(user_key)
+            # Get user's accessible apps: owned/created (USER_APP_RELATION) plus
+            # shared-with, direct or via team (PERMISSION) — otherwise a KB
+            # shared with this user would never show up here even though the
+            # sharing itself succeeded.
+            owned_app_ids = await self.graph_provider.get_user_app_ids(user_key)
+            shared_app_ids = await self.graph_provider.get_user_permission_app_ids(user_key, org_id)
+            user_apps_ids = list(dict.fromkeys([*owned_app_ids, *shared_app_ids]))
 
             # Filter apps by connector_ids if provided
             if connector_ids:
@@ -443,6 +442,8 @@ class KnowledgeHubService:
                 sort_field=sort_field,
                 sort_dir=sort_dir,
                 only_containers=only_containers,
+                origins=origins,
+                node_types=node_types,
             )
 
             nodes_data = result.get('nodes', [])
@@ -816,15 +817,16 @@ class KnowledgeHubService:
         Convert a user role string to ItemPermission object with computed flags.
 
         Permission hierarchy:
-        - OWNER, ADMIN: Full control (edit + delete)
-        - EDITOR, WRITER: Can edit but not delete
+        - OWNER: Full control (edit + delete all)
+        - EDITOR: Can edit content
+        - WRITER: Can edit and delete folders/records
         - COMMENTER, READER: Read-only (no edit, no delete)
         """
         role_upper = role.upper() if role else ''
 
         # Determine edit and delete permissions based on role
-        can_edit = role_upper in ['OWNER', 'ADMIN', 'EDITOR', 'WRITER']
-        can_delete = role_upper in ['OWNER', 'ADMIN']
+        can_edit = role_upper in ['OWNER', 'WRITER']
+        can_delete = role_upper in ['OWNER', 'WRITER']
 
         return ItemPermission(
             role=role,

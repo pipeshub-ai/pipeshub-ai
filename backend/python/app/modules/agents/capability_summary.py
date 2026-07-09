@@ -32,11 +32,11 @@ async def fetch_connector_configs(
 
     Returns:
         {connector_id: {"sync": {...}, "indexing": {...}}}
-    Skips knowledgeBase_* pseudo-IDs. Per-connector errors yield {}.
+    Per-connector errors yield {}.
     """
     ids = [
         c for c in (connector_ids or [])
-        if c and isinstance(c, str) and not c.startswith("knowledgeBase_")
+        if c and isinstance(c, str)
     ]
     if not ids or not config_service:
         return {}
@@ -134,9 +134,8 @@ def classify_knowledge_sources(
     Returns:
         (kb_sources, indexed_connectors) where:
         - kb_sources: list of dicts {"label": str, "collection_ids": list[str]}
-          collection_ids is extracted from filters.recordGroups and passed as the
+          collection_ids is the KB's own app id (connectorId), passed as the
           `collection_ids` parameter in search_internal_knowledge calls.
-          An empty collection_ids list means no specific filter (search full KB).
         - indexed_connectors: list of dicts
           {"label": str, "type_key": str, "connector_id": str, optional "filters": dict}
           representing app connectors whose content is indexed and
@@ -154,24 +153,10 @@ def classify_knowledge_sources(
         connector_id = (k.get("connectorId") or "").strip()
 
         if ktype.upper() == "KB":
-            # Extract record group IDs from filters — these are passed as
-            # collection_ids in search_internal_knowledge calls.
-            filters_data = k.get("filters", {})
-            if isinstance(filters_data, str):
-                import json as _json
-                try:
-                    filters_data = _json.loads(filters_data)
-                except (ValueError, _json.JSONDecodeError):
-                    filters_data = {}
-            record_groups = (
-                [g for g in filters_data.get("recordGroups", []) if g]
-                if isinstance(filters_data, dict)
-                else []
-            )
             kb_sources.append({
                 "label": name or "Knowledge Base",
                 "type": "Collection",
-                "collection_ids": record_groups,
+                "collection_ids": [connector_id] if connector_id else [],
             })
         elif connector_id:
             type_key = ktype.lower().split()[0] if ktype else ""
@@ -664,23 +649,11 @@ def _build_knowledge_section(
             else:
                 parts.append(f"\n🔗 **{kb_name}**")
 
-            # Extract record group IDs from filters
-            filters_data = kb.get("filters", {})
-            if isinstance(filters_data, str):
-                import json as _json
-                try:
-                    filters_data = _json.loads(filters_data)
-                except (ValueError, _json.JSONDecodeError):
-                    filters_data = {}
-            record_groups = filters_data.get("recordGroups", []) if isinstance(filters_data, dict) else []
-
-            # Sub-bullets: browse + search parameters, then indexed scope/content
-            if is_kb and record_groups:
-                for rg_id in record_groups:
-                    parts.append(
-                        f'  - Browse: `list_files(parent_id="{rg_id}", parent_type="recordGroup")`'
-                    )
-                    parts.append(f'  - Search: `record_group_ids=["{rg_id}"]`')
+            if is_kb and connector_id:
+                parts.append(
+                    f'  - Browse: `list_files(parent_id="{connector_id}", parent_type="recordGroup")`'
+                )
+                parts.append(f'  - Search: `record_group_ids=["{connector_id}"]`')
             elif connector_id:
                 parts.append(
                     f'  - Browse: `list_files(parent_id="{connector_id}", parent_type="app")`'

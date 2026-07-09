@@ -156,12 +156,12 @@ class TestRoleToPermission:
     def test_editor(self, service):
         perm = service._role_to_permission("EDITOR")
         assert perm.canEdit is True
-        assert perm.canDelete is False
+        assert perm.canDelete is True
 
     def test_writer(self, service):
         perm = service._role_to_permission("WRITER")
         assert perm.canEdit is True
-        assert perm.canDelete is False
+        assert perm.canDelete is True
 
     def test_reader(self, service):
         perm = service._role_to_permission("READER")

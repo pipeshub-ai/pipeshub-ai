@@ -6,7 +6,7 @@ import pytest
 
 from app.modules.agents.qna.chat_state import (
     _build_tool_to_toolset_map,
-    _extract_kb_record_groups,
+    _extract_kb_app_ids,
     _extract_knowledge_connector_ids,
     _extract_tools_from_toolsets,
     build_initial_state,
@@ -603,49 +603,40 @@ class TestExtractKnowledgeConnectorIds:
 
 
 # ===================================================================
-# _extract_kb_record_groups
+# _extract_kb_app_ids
 # ===================================================================
-class TestExtractKbRecordGroups:
+class TestExtractKbAppIds:
     def test_empty(self):
-        assert _extract_kb_record_groups([]) == []
-        assert _extract_kb_record_groups(None) == []
+        assert _extract_kb_app_ids([]) == []
+        assert _extract_kb_app_ids(None) == []
 
-    def test_extracts_record_groups(self):
+    def test_extracts_kb_app_ids(self):
         knowledge = [
-            {"filters": {"recordGroups": ["kb-1", "kb-2"]}},
-            {"filters": {"recordGroups": ["kb-3"]}},
+            {"type": "KB", "connectorId": "kb-1"},
+            {"type": "KB", "connectorId": "kb-2"},
         ]
-        assert _extract_kb_record_groups(knowledge) == ["kb-1", "kb-2", "kb-3"]
+        assert _extract_kb_app_ids(knowledge) == ["kb-1", "kb-2"]
 
-    def test_handles_string_filters_json(self):
-        import json
+    def test_type_check_is_case_insensitive(self):
+        knowledge = [{"type": "kb", "connectorId": "kb-1"}]
+        assert _extract_kb_app_ids(knowledge) == ["kb-1"]
+
+    def test_ignores_legacy_record_groups_field(self):
+        # filters.recordGroups is legacy-only and no longer the id source.
+        knowledge = [{"type": "KB", "connectorId": "kb-1", "filters": {"recordGroups": ["stale-rg"]}}]
+        assert _extract_kb_app_ids(knowledge) == ["kb-1"]
+
+    def test_non_kb_entries_excluded(self):
         knowledge = [
-            {"filters": json.dumps({"recordGroups": ["kb-j1"]})},
+            {"type": "KB", "connectorId": "kb-1"},
+            {"type": "GOOGLE_DRIVE", "connectorId": "conn-1"},
         ]
-        assert _extract_kb_record_groups(knowledge) == ["kb-j1"]
+        assert _extract_kb_app_ids(knowledge) == ["kb-1"]
 
-    def test_handles_invalid_json_string_filters(self):
-        knowledge = [
-            {"filters": "not-json"},
-        ]
-        assert _extract_kb_record_groups(knowledge) == []
-
-    def test_handles_empty_filters(self):
-        knowledge = [
-            {"filters": {}},
-            {"filters": None},
-            {},
-        ]
-        assert _extract_kb_record_groups(knowledge) == []
-
-    def test_handles_empty_record_groups(self):
-        knowledge = [{"filters": {"recordGroups": []}}]
-        assert _extract_kb_record_groups(knowledge) == []
-
-    def test_non_list_record_groups_skipped(self):
-        knowledge = [{"filters": {"recordGroups": "not-a-list"}}]
-        assert _extract_kb_record_groups(knowledge) == []
+    def test_kb_entry_missing_connector_id_skipped(self):
+        knowledge = [{"type": "KB"}]
+        assert _extract_kb_app_ids(knowledge) == []
 
     def test_non_dict_knowledge_entry_skipped(self):
-        knowledge = [{"filters": {"recordGroups": ["kb-1"]}}, "bad", None]
-        assert _extract_kb_record_groups(knowledge) == ["kb-1"]
+        knowledge = [{"type": "KB", "connectorId": "kb-1"}, "bad", None]
+        assert _extract_kb_app_ids(knowledge) == ["kb-1"]

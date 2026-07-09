@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pydantic import ValidationError
 
 from app.api.middlewares.auth import require_scopes
 from app.config.constants.service import OAuthScopes
@@ -21,6 +22,7 @@ from app.connectors.sources.localKB.api.models import (
     ListRecordsResponse,
     RemovePermissionResponse,
     SuccessResponse,
+    UpdateKnowledgeBaseRequest,
     UpdatePermissionResponse,
     UpdateRecordResponse,
     UploadRecordsinFolderResponse,
@@ -227,13 +229,26 @@ async def update_knowledge_base(
     try:
         user_id = request.state.user.get("userId")
         try:
-            body = await request.json()
+            raw_body = await request.json()
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid request body"
             )
-        result = await kb_service.update_knowledge_base(kb_id=kb_id, user_id=user_id, updates=body)
+        try:
+            body = UpdateKnowledgeBaseRequest(**raw_body)
+        except ValidationError as ve:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=ve.errors()
+            )
+        updates = body.model_dump(exclude_none=True)
+        if not updates:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No fields to update"
+            )
+        result = await kb_service.update_knowledge_base(kb_id=kb_id, user_id=user_id, updates=updates)
         if not result or result.get("success") is False:
             error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
             error_reason = result.get("reason", "Unknown error")

@@ -1435,6 +1435,56 @@ def _parse_reindex_body(request_body: dict | None) -> tuple[int, list[str] | Non
     return depth, raw_filters if raw_filters else None
 
 
+def _parse_status_filters(request_body: dict | None) -> list[str] | None:
+    """Parse optional statusFilters from a reindex request body (no depth)."""
+    if not request_body:
+        return None
+    raw_filters = request_body.get("statusFilters")
+    if raw_filters is None:
+        return None
+    if not isinstance(raw_filters, list) or not all(isinstance(s, str) for s in raw_filters):
+        raise HTTPException(
+            status_code=400,
+            detail="statusFilters must be an array of strings",
+        )
+    return raw_filters if raw_filters else None
+
+
+def _build_reindex_event(
+    *,
+    event_type: str,
+    org_id: str,
+    connector_id: str,
+    connector_name: str | None = None,
+    record_id: str | None = None,
+    record_group_id: str | None = None,
+    depth: int | None = None,
+    user_key: str | None = None,
+    status_filters: list[str] | None = None,
+) -> dict:
+    """Build the {eventType, topic, payload} envelope for a '*.reindex' sync-event.
+
+    Shared by the record-group and connector-wide reindex routes so the payload
+    shape stays consistent (single-record reindex builds its own payload inside
+    reindex_single_record, which has a KB depth==0 'newRecord' special-case that
+    doesn't fit this generic shape).
+    """
+    payload: dict[str, Any] = {"orgId": org_id, "connectorId": connector_id}
+    if connector_name is not None:
+        payload["connector"] = connector_name
+    if record_id is not None:
+        payload["recordId"] = record_id
+    if record_group_id is not None:
+        payload["recordGroupId"] = record_group_id
+    if depth is not None:
+        payload["depth"] = depth
+    if user_key is not None:
+        payload["userKey"] = user_key
+    if status_filters:
+        payload["statusFilters"] = status_filters
+    return {"eventType": event_type, "topic": "sync-events", "payload": payload}
+
+
 @router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked_for_record)])
 @inject
 async def reindex_single_record(
@@ -1595,24 +1645,25 @@ async def reindex_record_group(
             connector_normalized = connector_name.replace(" ", "").lower()
             event_type = f"{connector_normalized}.reindex"
 
-            payload = {
-                "orgId": org_id,
-                "recordGroupId": record_group_id,
-                "depth": depth,
-                "connectorId": connector_id,
-                "userKey": user_key,
-            }
-            if status_filters:
-                payload["statusFilters"] = status_filters
+            event_data = _build_reindex_event(
+                event_type=event_type,
+                org_id=org_id,
+                connector_id=connector_id,
+                connector_name=connector_normalized,
+                record_group_id=record_group_id,
+                depth=depth,
+                user_key=user_key,
+                status_filters=status_filters,
+            )
 
             # Publish event directly using KafkaService
             timestamp = get_epoch_timestamp_in_ms()
             event = {
-                "eventType": event_type,
+                "eventType": event_data["eventType"],
                 "timestamp": timestamp,
-                "payload": payload
+                "payload": event_data["payload"]
             }
-            await kafka_service.publish_event("sync-events", event)
+            await kafka_service.publish_event(event_data["topic"], event)
             logger.info(f"✅ Published {event_type} event for record group {record_group_id}")
 
             return {
@@ -1620,7 +1671,8 @@ async def reindex_record_group(
                 "message": f"Reindex initiated for record group {record_group_id} with depth {depth}",
                 "recordGroupId": record_group_id,
                 "depth": depth,
-                "connector": connector_id,
+                "connectorId": connector_id,
+                "connector": connector_normalized,
                 "eventPublished": True
             }
         except Exception as event_error:
@@ -1638,6 +1690,143 @@ async def reindex_record_group(
             status_code=500,
             detail=f"Internal server error while reindexing record group: {str(e)}"
         ) from e
+
+
+@router.post("/api/v1/connectors/{connector_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked)])
+@inject
+async def reindex_connector(
+    connector_id: str,
+    request: Request,
+    kafka_service: KafkaService = Depends(get_kafka_service),
+) -> dict:
+    """
+    Reindex all records for a connector instance (connector-wide reindex).
+
+    This covers both external connectors (reindex by status, e.g. FAILED) and
+    KB app instances (a KB is itself a connector instance; omitting
+    statusFilters means "reindex everything" for a KB — see event_service.py's
+    _handle_reindex status-filter defaulting).
+
+    Request Body (optional):
+        statusFilters: list[str] - indexing statuses to reindex (e.g. ["FAILED"]).
+                       Omit to reindex everything.
+    """
+    try:
+        container = request.app.container
+        logger = container.logger()
+        connector_registry = request.app.state.connector_registry
+        user_id = request.state.user.get("userId")
+        org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
+        if not user_id or not org_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
+        request_body: dict | None = None
+        try:
+            request_body = await request.json()
+        except (json.JSONDecodeError, TypeError):
+            request_body = None
+        status_filters = _parse_status_filters(request_body)
+
+        instance = await connector_registry.get_connector_instance(
+            connector_id=connector_id,
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin,
+        )
+        
+        # KB permission fallback: if instance not found via registry, check if it's a
+        # KB collection and the user has OWNER/WRITER/READER role
+        if not instance:
+            graph_provider = request.app.state.graph_provider
+            app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+            
+            if app_doc and app_doc.get("type") == Connectors.KNOWLEDGE_BASE.value:
+                # This is a KB collection, check KB permissions
+                user = await graph_provider.get_user_by_user_id(user_id=user_id)
+                if not user:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"User not found for user_id: {user_id}",
+                    )
+                user_key = user.get("_key")
+                
+                user_role = await graph_provider.get_user_kb_permission(connector_id, user_key)
+                if user_role in ("OWNER", "WRITER", "READER"):
+                    # Build minimal instance dict from app doc to continue
+                    instance = {
+                        "type": app_doc.get("type"),
+                        "isActive": app_doc.get("isActive", False),
+                        "name": app_doc.get("name", connector_id),
+                    }
+                else:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Insufficient KB permissions for connector {connector_id}. Required: OWNER, WRITER, or READER",
+                    )
+        
+        if not instance:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Connector instance {connector_id} not found or access denied",
+            )
+        if not instance.get("isActive", False):
+            raise HTTPException(
+                status_code=409,
+                detail=f"The connector '{instance.get('name', connector_id)}' is currently disabled. Enable it and try again.",
+            )
+
+        connector_type = instance.get("type", "")
+        connector_normalized = connector_type.replace(" ", "").lower()
+        event_type = f"{connector_normalized}.reindex"
+
+        logger.info(
+            f"🔄 Attempting to reindex connector {connector_id} ({connector_normalized}), "
+            f"status_filters={status_filters}"
+        )
+
+        event_data = _build_reindex_event(
+            event_type=event_type,
+            org_id=org_id,
+            connector_id=connector_id,
+            connector_name=connector_normalized,
+            status_filters=status_filters,
+        )
+
+        try:
+            timestamp = get_epoch_timestamp_in_ms()
+            event = {
+                "eventType": event_data["eventType"],
+                "timestamp": timestamp,
+                "payload": event_data["payload"],
+            }
+            await kafka_service.publish_event(event_data["topic"], event)
+            logger.info(f"✅ Published {event_type} event for connector {connector_id}")
+        except Exception as event_error:
+            logger.error(f"❌ Failed to publish reindex event: {str(event_error)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to publish reindex event: {str(event_error)}",
+            ) from event_error
+
+        return {
+            "success": True,
+            "message": f"Reindex initiated for connector {connector_id}",
+            "connectorId": connector_id,
+            "connector": connector_normalized,
+            "eventPublished": True,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error reindexing connector {connector_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error while reindexing connector: {str(e)}"
+        ) from e
+
 
 _MAX_AGENT_NAMES_DISPLAY = 3
 

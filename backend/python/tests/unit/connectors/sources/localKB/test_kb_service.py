@@ -89,6 +89,24 @@ class TestCreateKnowledgeBase:
         assert result["userRole"] == "OWNER"
 
     @pytest.mark.asyncio
+    async def test_created_by_stores_external_user_id_not_graph_key(self, service):
+        """createdBy must be the external user_id (matches every other connector
+        type's convention, and what connector_registry._can_access_connector
+        compares against) — not the internal graph user_key."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={
+            "id": "graph-key-uk1", "_key": "graph-key-uk1", "fullName": "Test User"
+        })
+        service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
+        service.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        service.graph_provider.batch_create_edges = AsyncMock(return_value=True)
+        service.graph_provider.commit_transaction = AsyncMock()
+
+        await service.create_knowledge_base("external-user-1", "org1", "My KB")
+
+        kb_data = service.graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert kb_data["createdBy"] == "external-user-1"
+
+    @pytest.mark.asyncio
     async def test_user_not_found(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
 

@@ -587,6 +587,45 @@ export function handleFlowCanvasDrop(
     return;
   }
 
+  // Check for duplicates: prevent adding the same connector app or KB multiple times.
+  // For individual connector apps (type starts with 'app-'), check connectorInstanceId.
+  // For individual KBs (type starts with 'kb-' but not 'kb-group'), check kbId.
+  if (template.type.startsWith('app-') && connectorId) {
+    const duplicate = nodes.find(
+      (n) =>
+        n.data?.type?.startsWith('app-') &&
+        n.data.config?.connectorInstanceId === connectorId
+    );
+    if (duplicate) {
+      const connector = findConnector();
+      onError?.(
+        t('agentBuilder.dropDuplicateConnector', {
+          name: connector?.name || connectorName || template.label,
+        })
+      );
+      return;
+    }
+  }
+
+  // Check for duplicate KB nodes
+  const kbId = event.dataTransfer.getData('kbId') || template.defaultConfig?.kbId;
+  if (template.type.startsWith('kb-') && !template.type.startsWith('kb-group') && kbId) {
+    const duplicate = nodes.find(
+      (n) =>
+        n.data?.type?.startsWith('kb-') &&
+        !n.data.type.startsWith('kb-group') &&
+        n.data.config?.kbId === kbId
+    );
+    if (duplicate) {
+      onError?.(
+        t('agentBuilder.dropDuplicateKB', {
+          name: template.label,
+        })
+      );
+      return;
+    }
+  }
+
   const fallbackId = `${type}-${Date.now()}`;
   appendNodeWithAutoConnect({
     id: fallbackId,

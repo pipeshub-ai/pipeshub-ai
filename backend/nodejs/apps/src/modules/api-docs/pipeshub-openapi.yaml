@@ -4262,21 +4262,16 @@ components:
           description: |
             When set, only records matching these indexing statuses are reindexed.
 
-    ReindexFailedConnectorRequestBody:
+    ReindexConnectorRequestBody:
       type: object
-      required:
-        - app
       properties:
-        app:
-          type: string
-          description: Connector app name (e.g. `KB`, `DRIVE`).
-          example: "DRIVE"
         statusFilters:
           type: array
           items:
             $ref: '#/components/schemas/IndexingStatusFilter'
           description: |
-            Statuses to reindex. Defaults to `FAILED` when omitted (connector-wide reindex).
+            Statuses to reindex. Omitting this reindexes everything for a KB
+            connector; other connector types default server-side to `FAILED`.
 
     ResyncConnectorRequestBody:
       type: object
@@ -4973,18 +4968,15 @@ components:
             type: string
           description: |
             Connector instance ids to scope retrieval for this turn. Each element
-            must be a UUID (connector instance id, record-group id, etc.) or the
-            org knowledge-base collection sentinel `knowledgeBase_<orgId>`
-            (pattern `knowledgeBase_[a-zA-Z0-9_-]+`). Gateway validation matches
-            Zod `appOrKbIdSchema`.
+            must be a valid UUID (connector app id, KB app id, record-group id, etc.).
+            Gateway validation matches Zod `appOrKbIdSchema`.
         kb:
           type: array
           items:
             type: string
           description: |
-            Knowledge-base / record-group ids to scope retrieval for this turn.
-            Each element uses the same accepted formats as `apps`: a UUID or
-            `knowledgeBase_<orgId>` (pattern `knowledgeBase_[a-zA-Z0-9_-]+`).
+            Knowledge-base app ids to scope retrieval for this turn.
+            Each element must be a valid UUID.
 
     AppliedFilterNode:
       type: object
@@ -5270,9 +5262,8 @@ components:
             - $ref: '#/components/schemas/Filters'
           description: |
             Optional retrieval scope (`apps` / `kb`) for this turn. Each id must
-            be a UUID or a `knowledgeBase_<orgId>` collection id. Omit for
-            agent defaults; send `{ "apps": [], "kb": [] }` to force no
-            knowledge sources for this turn.
+            be a valid UUID. Omit for agent defaults; send `{ "apps": [], "kb": [] }`
+            to force no knowledge sources for this turn.
         appliedFilters:
           allOf:
             - $ref: '#/components/schemas/AppliedFilters'
@@ -5570,9 +5561,8 @@ components:
             - $ref: '#/components/schemas/Filters'
           description: |
             Optional retrieval scope (`apps` / `kb`) for this turn. Each id must
-            be a UUID or a `knowledgeBase_<orgId>` collection id. Omit to let
-            the agent use its stored defaults; send `{ "apps": [], "kb": [] }`
-            to force no knowledge sources for this turn.
+            be a valid UUID. Omit to let the agent use its stored defaults;
+            send `{ "apps": [], "kb": [] }` to force no knowledge sources for this turn.
         appliedFilters:
           allOf:
             - $ref: '#/components/schemas/AppliedFilters'
@@ -7857,16 +7847,19 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Indexed scope for a knowledge connector: record-group ids (collections /
-        KB roots) and individual record ids. First-party create/update flows set
-        `recordGroups` and `records`. On GET, `filtersParsed` is this shape
-        parsed from the stored `filters` JSON string.
+        Indexed scope for a knowledge connector: record-group ids and
+        individual record ids. On GET, `filtersParsed` is this shape parsed
+        from the stored `filters` JSON string.
       properties:
         recordGroups:
           type: array
           items:
             type: string
-          description: Record-group ids (e.g. knowledge-base roots) in scope.
+          description: >-
+            Deprecated/legacy: record-group ids for connector record-group
+            scoping (e.g. Confluence spaces, Jira projects). No longer set for
+            KB (Collection) entries — a KB is identified by its own
+            `connectorId`, not by an id in this list.
         records:
           type: array
           items:
@@ -22239,6 +22232,18 @@ paths:
           schema:
             type: string
           example: "gte:0,lte:10485760"
+        - name: flattened
+          in: query
+          required: false
+          description: |
+            Force flattened/recursive search (`true`) or direct top-level
+            listing (`false`). When omitted, it's computed from whether any
+            of `q`, `nodeTypes`, `recordTypes`, `origins`, `connectorIds`,
+            `indexingStatus`, `createdAt`, `updatedAt`, or `size` are present —
+            if any are, results are flattened automatically; otherwise only
+            top-level nodes are returned.
+          schema:
+            type: boolean
         - name: include
           in: query
           required: false
@@ -22276,11 +22281,11 @@ paths:
                     currentNode: null
                     parentNode: null
                     items:
-                      - id: "knowledgeBase_org123"
-                        name: "Collections"
+                      - id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                        name: "My Knowledge Base"
                         nodeType: "app"
                         parentId: null
-                        origin: "COLLECTION"
+                        origin: "UPLOAD"
                         connector: null
                         recordType: null
                         recordGroupType: null
@@ -22291,7 +22296,7 @@ paths:
                         sizeInBytes: null
                         mimeType: null
                         extension: null
-                        webUrl: "/app/knowledgeBase_org123"
+                        webUrl: "/app/a1b2c3d4-e5f6-7890-abcd-ef1234567890"
                         hasChildren: true
                         previewRenderable: null
                         permission: null
@@ -22533,8 +22538,7 @@ paths:
         **Parent identification**
 
         - `parentType` must be one of: `app`, `recordGroup`, `folder`, `record`
-        - `parentId` is either a standard UUID or the Collection app sentinel
-          `knowledgeBase_<orgId>` (e.g. `knowledgeBase_org123`)
+        - `parentId` must be a standard UUID
 
         **Filtering and searching**
 
@@ -22575,15 +22579,13 @@ paths:
           in: path
           required: true
           description: |
-            Identifier of the parent node. Accepts two formats:
-            - A standard UUID (e.g. `f3a4b5b6-5b6c-4e85-9097-3202cfe696fc`)
-            - The Collection app sentinel `knowledgeBase_<orgId>`
-              (e.g. `knowledgeBase_org123`)
+            Identifier of the parent node. Must be a valid UUID
+            (e.g. `f3a4b5b6-5b6c-4e85-9097-3202cfe696fc`).
 
-            Any value that does not match either format returns a 400 error.
+            Any value that does not match this format returns a 400 error.
           schema:
             type: string
-            pattern: '^(knowledgeBase_[a-zA-Z0-9_-]+|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$'
+            pattern: '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
         - name: onlyContainers
           in: query
           required: false
@@ -22736,6 +22738,18 @@ paths:
           schema:
             type: string
           example: "gte:0,lte:10485760"
+        - name: flattened
+          in: query
+          required: false
+          description: |
+            Force flattened/recursive search (`true`) or direct top-level
+            listing (`false`). When omitted, it's computed from whether any
+            of `q`, `nodeTypes`, `recordTypes`, `origins`, `connectorIds`,
+            `indexingStatus`, `createdAt`, `updatedAt`, or `size` are present —
+            if any are, results are flattened automatically; otherwise only
+            top-level nodes are returned.
+          schema:
+            type: boolean
         - name: include
           in: query
           required: false
@@ -22768,28 +22782,28 @@ paths:
                   value:
                     success: true
                     error: null
-                    id: "knowledgeBase_org123"
+                    id: "c3d4e5f6-a7b8-9012-cdef-012345678901"
                     currentNode:
-                      id: "knowledgeBase_org123"
-                      name: "Collections"
+                      id: "c3d4e5f6-a7b8-9012-cdef-012345678901"
+                      name: "My Knowledge Base"
                       nodeType: "app"
                       subType: null
                     parentNode: null
                     items:
                       - id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
                         name: "Engineering Docs"
-                        nodeType: "recordGroup"
-                        parentId: "knowledgeBase_org123"
-                        origin: "COLLECTION"
+                        nodeType: "record"
+                        parentId: "c3d4e5f6-a7b8-9012-cdef-012345678901"
+                        origin: "UPLOAD"
                         connector: null
-                        recordType: null
-                        recordGroupType: "KNOWLEDGE_BASE"
+                        recordType: "FILE"
+                        recordGroupType: null
                         indexingStatus: null
                         reason: null
                         createdAt: 1700000000000
                         updatedAt: 1709500000000
                         sizeInBytes: null
-                        mimeType: null
+                        mimeType: "application/vnd.folder"
                         extension: null
                         webUrl: null
                         hasChildren: true
@@ -22799,18 +22813,18 @@ paths:
                         isInternal: false
                       - id: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
                         name: "HR Policies"
-                        nodeType: "recordGroup"
-                        parentId: "knowledgeBase_org123"
-                        origin: "COLLECTION"
+                        nodeType: "record"
+                        parentId: "c3d4e5f6-a7b8-9012-cdef-012345678901"
+                        origin: "UPLOAD"
                         connector: null
-                        recordType: null
-                        recordGroupType: "KNOWLEDGE_BASE"
+                        recordType: "FILE"
+                        recordGroupType: null
                         indexingStatus: null
                         reason: null
                         createdAt: 1700100000000
                         updatedAt: 1709400000000
                         sizeInBytes: null
-                        mimeType: null
+                        mimeType: "application/vnd.folder"
                         extension: null
                         webUrl: null
                         hasChildren: true
@@ -22829,7 +22843,7 @@ paths:
                       applied:
                         q: null
                         nodeTypes:
-                          - "recordGroup"
+                          - "record"
                         recordTypes: null
                         origins: null
                         connectorIds: null
@@ -22841,8 +22855,8 @@ paths:
                         sortOrder: "asc"
                       available: null
                     breadcrumbs:
-                      - id: "knowledgeBase_org123"
-                        name: "Collections"
+                      - id: "c3d4e5f6-a7b8-9012-cdef-012345678901"
+                        name: "My Knowledge Base"
                         nodeType: "app"
                         subType: null
                     counts: null
@@ -22880,7 +22894,7 @@ paths:
                       code: HTTP_BAD_REQUEST
                       message: "Invalid parent_type. Must be one of: app, recordGroup, folder, record"
                 invalid_parent_id:
-                  summary: parentId is neither a UUID nor knowledgeBase_<orgId>
+                  summary: parentId is not a valid UUID
                   value:
                     error:
                       code: HTTP_BAD_REQUEST
@@ -29062,15 +29076,18 @@ paths:
         '404':
           description: Connector not found
 
-  /connectors/{connectorId}/reindex-failed:
+  /connectors/{connectorId}/reindex:
     post:
       tags:
         - Connector Instances
-      summary: Reindex failed records for connector
+      summary: Reindex a connector instance
       description: |
-        Trigger reindexing for a connector instance, scoped by indexing status. When
-        `statusFilters` is omitted, only `FAILED` records are reindexed.
-      operationId: reindexFailedRecords
+        Trigger reindexing for a connector instance, optionally scoped by
+        indexing status. Covers both external connectors and KB app
+        instances (a KB is itself a connector instance). Omitting
+        `statusFilters` reindexes everything for a KB connector; other
+        connector types default server-side to `FAILED`-only.
+      operationId: reindexConnector
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -29082,12 +29099,12 @@ paths:
           schema:
             type: string
       requestBody:
-        required: true
+        required: false
         description: Request payload
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ReindexFailedConnectorRequestBody'
+              $ref: '#/components/schemas/ReindexConnectorRequestBody'
       responses:
         '200':
           description: Reindex triggered successfully
@@ -29096,9 +29113,17 @@ paths:
               schema:
                 type: object
                 properties:
-                  reindexResponse:
-                    type: object
-                    description: Connector reindex job acknowledgement from the relation service.
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  connectorId:
+                    type: string
+                  connector:
+                    type: string
+                    description: Normalized connector type/name.
+                  eventPublished:
+                    type: boolean
         '401':
           description: Unauthorized
         '404':

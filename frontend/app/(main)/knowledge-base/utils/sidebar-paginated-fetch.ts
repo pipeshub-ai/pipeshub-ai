@@ -1,8 +1,7 @@
 import { KnowledgeHubApi } from '../api';
 import { useKnowledgeBaseStore } from '../store';
 import { SIDEBAR_PAGINATION_PAGE_SIZE } from '../constants';
-import { buildConnectorAppSidebarTree, categorizeNodes, treeHasNodeWithId } from './tree-builder';
-import { isKbCollectionsHubApp } from './all-records-transformer';
+import { buildConnectorAppSidebarTree, treeHasNodeWithId } from './tree-builder';
 import { sidebarNodeChildrenMetaAfterPage } from './sidebar-child-pagination-meta';
 import { toast } from '@/lib/store/toast-store';
 import type { KnowledgeHubNode } from '../types';
@@ -76,11 +75,8 @@ export async function loadMoreAppChildPage(appId: string): Promise<void> {
     cacheAppChildren,
     setAppChildPagination,
     setAppLoading,
-    setNodes,
-    setCategorizedNodes,
     setConnectorAppTree,
     addNodes,
-    reMergeCachedChildrenIntoTree,
   } = useKnowledgeBaseStore.getState();
 
   setAppLoading(appId, true);
@@ -108,22 +104,10 @@ export async function loadMoreAppChildPage(appId: string): Promise<void> {
         : { hasNext: false, nextPage: 1 }
     );
 
-    const isKbApp = isKbCollectionsHubApp(app);
-    if (isKbApp) {
-      // Same as initial app-child fetch: table/sidebar use full merged list
-      setNodes(merged);
-      const { nodeChildrenCache: freshNodeChildren, addNodes: addNodesFresh } =
-        useKnowledgeBaseStore.getState();
-      const cachedSubfolderNodes = Array.from(freshNodeChildren.values()).flat();
-      if (cachedSubfolderNodes.length > 0) {
-        addNodesFresh(cachedSubfolderNodes);
-      }
-      setCategorizedNodes(categorizeNodes(merged, `apps/${appId}`));
-      reMergeCachedChildrenIntoTree();
-    } else {
-      addNodes(response.items);
-      setConnectorAppTree(appId, buildConnectorAppSidebarTree(appId, merged));
-    }
+    // Build the tree for BOTH KB and connector apps — see
+    // fetch-app-direct-children.ts for why KB apps must not be skipped here.
+    addNodes(response.items);
+    setConnectorAppTree(appId, buildConnectorAppSidebarTree(appId, merged));
   } catch (error) {
     console.error('loadMoreAppChildPage failed:', { appId, error });
     toast.error('Could not load more items', {

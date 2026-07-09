@@ -4215,3 +4215,29 @@ class TestListUserKnowledgeBases:
         assert kbs == []
         assert total == 0
         assert filters["permissions"] == []
+
+
+class TestGetAppPermissionRoleCypher:
+    def test_returns_string(self, neo4j_provider: Neo4jProvider):
+        """Verify _get_app_permission_role_cypher returns a string"""
+        rpm = {"OWNER": 4, "WRITER": 3, "READER": 2, "COMMENTER": 1}
+        cypher = neo4j_provider._get_app_permission_role_cypher("node", "u", rpm)
+        assert isinstance(cypher, str)
+
+    def test_contains_team_kb_permission_path(self, neo4j_provider: Neo4jProvider):
+        """Verify Cypher contains team KB sharing logic (user→team PERMISSION + team→app PERMISSION TEAM)"""
+        rpm = {"OWNER": 4, "WRITER": 3, "READER": 2, "COMMENTER": 1}
+        cypher = neo4j_provider._get_app_permission_role_cypher("node", "u", rpm)
+        
+        # Check for team KB pattern: user→team (PERMISSION USER) + team→app (PERMISSION TEAM)
+        assert "PERMISSION {type: 'USER'}" in cypher
+        assert "PERMISSION {type: 'TEAM'}" in cypher
+        assert 'team:Teams' in cypher
+        assert 'ut.role' in cypher or 'ut:PERMISSION' in cypher
+        
+        # Check for team KB role variable
+        assert 'team_kb_role' in cypher
+        
+        # Check it's in the CASE priority chain
+        assert 'WHEN team_kb_role IS NOT NULL THEN team_kb_role' in cypher
+

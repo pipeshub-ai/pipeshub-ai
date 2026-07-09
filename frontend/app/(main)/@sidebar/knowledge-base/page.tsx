@@ -59,7 +59,6 @@ function KnowledgeBaseSidebarSlotContent() {
     setCurrentFolderId,
     setAllRecordsSidebarSelection,
     clearNodeCacheEntries,
-    reMergeCachedChildrenIntoTree,
     setPendingSidebarAction,
   } = useKnowledgeBaseStore();
 
@@ -252,7 +251,7 @@ function KnowledgeBaseSidebarSlotContent() {
 
   const handleAllRecordsSelectCollection = useCallback(
     (id: string) => {
-      router.push(buildNavUrl(isAllRecordsMode, { nodeType: 'recordGroup', nodeId: id }));
+      router.push(buildNavUrl(isAllRecordsMode, { nodeType: 'app', nodeId: id }));
       closeOnMobile();
     },
     [router, isAllRecordsMode, closeOnMobile]
@@ -283,14 +282,19 @@ function KnowledgeBaseSidebarSlotContent() {
       indexingStatus?: string | null,
       hasChildren?: boolean,
     ) => {
+      const state = useKnowledgeBaseStore.getState();
+      const { node } = findNodeInCategorized(state.categorizedNodes, nodeId);
+      const appNode = state.appNodes.find((n) => n.id === nodeId);
       setPendingSidebarAction({
         type: 'reindex',
         nodeId,
-        nodeName: name,
-        nodeType,
+        nodeName: node?.name ?? name,
+        nodeType: node?.nodeType ?? nodeType,
         statusFilters,
-        indexingStatus,
-        hasChildren,
+        indexingStatus: node?.indexingStatus ?? indexingStatus,
+        hasChildren: hasChildren ?? node?.hasDescendants ?? node?.hasChildren,
+        connector: node?.connector ?? appNode?.connector,
+        subType: node?.subType ?? appNode?.subType,
       });
     },
     [setPendingSidebarAction]
@@ -323,13 +327,13 @@ function KnowledgeBaseSidebarSlotContent() {
         clearNodeCacheEntries(cacheIdsToClear);
       }
 
-      await refreshKbTree(reMergeCachedChildrenIntoTree);
+      await refreshKbTree();
     } catch (error: unknown) {
       const httpError = error as { response?: { data?: { message?: string } }; message?: string };
       toast.error(httpError?.response?.data?.message || 'Failed to rename');
       throw error;
     }
-  }, [clearNodeCacheEntries, reMergeCachedChildrenIntoTree]);
+  }, [clearNodeCacheEntries]);
 
   const handleSidebarDelete = useCallback((nodeId: string) => {
     const state = useKnowledgeBaseStore.getState();
