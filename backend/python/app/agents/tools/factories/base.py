@@ -118,9 +118,9 @@ class ClientFactory(ABC):
         self,
         *,
         access_token: str,
-        auth_config: Dict[str, Any],
+        auth_config: dict[str, Any],
         config_service: object,
-        logger: Optional[object],
+        logger: object | None,
     ) -> None:
         """Optionally validate a freshly authenticated OAuth setup for this toolset.
 
