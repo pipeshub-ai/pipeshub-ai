@@ -37,6 +37,11 @@ from app.connectors.core.base.token_service.oauth_service import (
 from app.connectors.core.registry.auth_builder import OAuthScopeType
 from app.containers.connector import ConnectorAppContainer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.notification.types import (
+    NotificationOrigin,
+    NotificationSeverity,
+    NotificationType,
+)
 from app.utils.oauth_config import extract_oauth_error_message, get_oauth_config
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -2293,11 +2298,6 @@ async def _notify_toolset_auth_error(
     if not notification_service:
         return
     try:
-        from app.services.notification.types import (
-            NotificationOrigin,
-            NotificationSeverity,
-            NotificationType,
-        )
         resolved_title = title or f"{(toolset_type or 'Toolset').capitalize()} action needs attention"
         await notification_service.publish_notification(
             org_id=str(org_id or ""),

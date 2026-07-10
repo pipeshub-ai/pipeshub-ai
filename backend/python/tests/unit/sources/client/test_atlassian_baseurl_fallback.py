@@ -100,6 +100,23 @@ class TestJiraBuildFromServicesOAuthFallback:
         assert kwargs["connector_type"] == "Jira"
 
     @pytest.mark.asyncio
+    async def test_build_exposes_stripped_site_url(self, logger):
+        """build_from_services surfaces the resolved site URL on the client (trailing
+        slash stripped) so the connector reads it instead of re-resolving."""
+        config_service = AsyncMock()
+        instance_cfg = _oauth_instance_config(base_url="https://company.atlassian.net/")
+        with patch.object(
+            JiraClient, "_get_connector_config",
+            new_callable=AsyncMock, return_value=instance_cfg,
+        ), patch.object(
+            JiraClient, "get_jira_base_url",
+            new_callable=AsyncMock,
+            return_value="https://api.atlassian.com/ex/jira/cloud-x",
+        ):
+            client = await JiraClient.build_from_services(logger, config_service, "inst")
+        assert client.get_site_url() == "https://company.atlassian.net"
+
+    @pytest.mark.asyncio
     async def test_raises_when_no_oauth_config_id_and_no_baseurl(self, logger):
         """No baseUrl, no oauthConfigId, and token has zero accessible sites → error."""
         config_service = AsyncMock()

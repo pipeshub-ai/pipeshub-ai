@@ -241,78 +241,23 @@ def _make_issue(
 class TestInitCoverage:
 
     @pytest.mark.asyncio
-    async def test_init_oauth_success(self):
+    async def test_init_success_reads_site_url_from_client(self):
+        """init() surfaces the site URL that build_from_services resolved on the client;
+        it no longer re-resolves the site or tracks cloud_id (auth-type resolution lives
+        in the client)."""
         connector = _make_connector()
-        mock_resource = MagicMock()
-        mock_resource.id = "cloud-123"
-        mock_resource.url = "https://company.atlassian.net"
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
             mock_client = MagicMock()
+            mock_client.get_site_url.return_value = "https://company.atlassian.net"
             MockJiraClient.build_from_services = AsyncMock(return_value=mock_client)
-            MockJiraClient.get_accessible_resources = AsyncMock(return_value=[mock_resource])
-
-            connector.config_service.get_config = AsyncMock(return_value={
-                "auth": {"authType": "OAUTH", "baseUrl": "https://company.atlassian.net"},
-                "credentials": {"access_token": "test-token"},
-            })
 
             result = await connector.init()
             assert result is True
-            assert connector.cloud_id == "cloud-123"
             assert connector.site_url == "https://company.atlassian.net"
 
     @pytest.mark.asyncio
-    async def test_init_api_token_success(self):
-        connector = _make_connector()
-
-        with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
-            mock_client = MagicMock()
-            MockJiraClient.build_from_services = AsyncMock(return_value=mock_client)
-
-            connector.config_service.get_config = AsyncMock(return_value={
-                "auth": {"authType": "API_TOKEN", "baseUrl": "https://mycompany.atlassian.net"},
-            })
-
-            result = await connector.init()
-            assert result is True
-            assert connector.cloud_id is None
-            assert connector.site_url == "https://mycompany.atlassian.net"
-
-    @pytest.mark.asyncio
-    async def test_init_api_token_no_base_url(self):
-        connector = _make_connector()
-
-        with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
-            mock_client = MagicMock()
-            MockJiraClient.build_from_services = AsyncMock(return_value=mock_client)
-
-            connector.config_service.get_config = AsyncMock(return_value={
-                "auth": {"authType": "API_TOKEN", "baseUrl": ""},
-            })
-
-            result = await connector.init()
-            assert result is False
-
-    @pytest.mark.asyncio
-    async def test_init_oauth_no_resources(self):
-        connector = _make_connector()
-
-        with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
-            mock_client = MagicMock()
-            MockJiraClient.build_from_services = AsyncMock(return_value=mock_client)
-            MockJiraClient.get_accessible_resources = AsyncMock(return_value=[])
-
-            connector.config_service.get_config = AsyncMock(return_value={
-                "auth": {"authType": "OAUTH", "baseUrl": "https://company.atlassian.net"},
-                "credentials": {"access_token": "test-token"},
-            })
-
-            result = await connector.init()
-            assert result is False
-
-    @pytest.mark.asyncio
-    async def test_init_exception(self):
+    async def test_init_returns_false_on_build_error(self):
         connector = _make_connector()
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
@@ -344,22 +289,6 @@ class TestInitCoverage:
 
             with pytest.raises(ConnectorInitError, match="multiple Jira sites"):
                 await connector.init()
-
-    @pytest.mark.asyncio
-    async def test_init_api_token_strips_trailing_slash(self):
-        connector = _make_connector()
-
-        with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
-            mock_client = MagicMock()
-            MockJiraClient.build_from_services = AsyncMock(return_value=mock_client)
-
-            connector.config_service.get_config = AsyncMock(return_value={
-                "auth": {"authType": "API_TOKEN", "baseUrl": "https://mycompany.atlassian.net/ "},
-            })
-
-            result = await connector.init()
-            assert result is True
-            assert connector.site_url == "https://mycompany.atlassian.net"
 
 
 # ===========================================================================

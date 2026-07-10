@@ -36,7 +36,6 @@ from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, Sy
 from app.connectors.core.constants import (
     CONNECTOR_EMAIL_IDENTITY_INFO,
     IconPaths,
-    OAuthConfigKeys,
 )
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
@@ -101,14 +100,9 @@ from app.services.notification.types import (
     NotificationType,
 )
 from app.sources.client.jira.jira import JiraClient
-from app.sources.external.common.atlassian import (
-    AtlassianMultiSiteError,
-    dedupe_atlassian_cloud_resources,
-    match_atlassian_cloud_resource,
-)
+from app.sources.external.common.atlassian import AtlassianMultiSiteError
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -824,7 +818,6 @@ class JiraConnector(BaseConnector):
         )
         self.external_client: Optional[JiraClient] = None
         self.data_source: Optional[JiraDataSource] = None
-        self.cloud_id: Optional[str] = None
         self.site_url: Optional[str] = None
         self.connector_id = connector_id
         self.connector_name = Connectors.JIRA
@@ -893,61 +886,12 @@ class JiraConnector(BaseConnector):
             # Create DataSource from client
             self.data_source = JiraDataSource(client)
 
-            # Get connector config to determine auth type
-            config_path = OAUTH_JIRA_CONFIG_PATH.format(connector_id=self.connector_id)
-            config = await self.config_service.get_config(config_path)
-            auth_config = config.get("auth", {}) if config else {}
-            auth_type = auth_config.get("authType", "OAUTH")
-
-            if auth_type == "API_TOKEN":
-                # For API Token auth, use the base URL directly from config
-                base_url = auth_config.get("baseUrl", "").strip().rstrip('/')
-                if not base_url:
-                    raise ValueError("Base URL is required for API_TOKEN auth")
-                self.site_url = base_url
-                # Cloud ID is not needed for API Token auth (direct URL access)
-                self.cloud_id = None
-                self.logger.info("✅ Jira client initialized with API Token authentication")
-            else:
-                access_token = await self._get_access_token()
-                resources = await JiraClient.get_accessible_resources(access_token)
-                site_url = (auth_config.get("baseUrl") or "").strip()
-                if not site_url:
-                    oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
-                    if oauth_config_id:
-                        shared = await fetch_oauth_config_by_id(
-                            oauth_config_id=oauth_config_id,
-                            connector_type="Jira",
-                            config_service=self.config_service,
-                            logger=self.logger,
-                        )
-                        if shared:
-                            site_url = (shared.get(OAuthConfigKeys.CONFIG, {}).get("baseUrl") or "").strip()
-                if not site_url:
-                    if not resources:
-                        raise ValueError(
-                            "Jira: No accessible Atlassian sites for this OAuth token."
-                        )
-                    # build_from_services() above already rejects multi-site OAuth tokens;
-                    # guard here too so this path never silently picks an arbitrary site.
-                    # Dedupe first: Atlassian may return the same cloud site twice.
-                    unique_resources = dedupe_atlassian_cloud_resources(resources)
-                    if len(unique_resources) > 1:
-                        raise AtlassianMultiSiteError(
-                            "This OAuth app has access to multiple Jira sites. "
-                            "Create a single-site (resource-restricted) OAuth app in the "
-                            "Atlassian Developer Console, then reconnect."
-                        )
-                    self.logger.info(
-                        "Jira connector %s: using single accessible site (%s)",
-                        self.connector_id, unique_resources[0].url,
-                    )
-                    picked = unique_resources[0]
-                else:
-                    picked = match_atlassian_cloud_resource(resources, site_url, product="Jira")
-                self.cloud_id = picked.id
-                self.site_url = picked.url
-                self.logger.info("✅ Jira client initialized with OAuth authentication")
+            # build_from_services already resolved the site (rejecting multi-site OAuth
+            # tokens) and built the client with the correct base URL. Just surface the
+            # site URL for browse-link building; the cloud_id is baked into the client's
+            # base URL, so the connector doesn't track it separately.
+            self.site_url = client.get_site_url()
+            self.logger.info("✅ Jira client initialized (site: %s)", self.site_url or "unknown")
 
             if self.created_by:
                 try:
@@ -4791,9 +4735,12 @@ class JiraConnector(BaseConnector):
     async def test_connection_and_access(self) -> bool:
         """Test connection and access to Jira using DataSource"""
         try:
+            # init() always runs (and must succeed) before this in the connector setup
+            # flow, so the client/datasource are already built — fail fast if not,
+            # rather than re-initializing (mirrors the Confluence connector).
             if not self.data_source:
-                if not await self.init():
-                    return False
+                self.logger.error("Jira connector not initialized")
+                return False
 
             # Test by fetching user info (simple API call)
             datasource = await self._get_fresh_datasource()
