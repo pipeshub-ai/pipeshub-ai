@@ -12,6 +12,7 @@ from typing import AsyncGenerator, Dict, List, Optional, Tuple
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from googleapiclient.errors import HttpError
+from httplib2 import HttpLib2Error
 from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
@@ -2926,12 +2927,16 @@ class GoogleDriveTeamConnector(BaseConnector):
                 q=q,
                 useDomainAdminAccess=True,
             )
-        except Exception as e:
-            self.logger.error(f"Error fetching shared drive filter options: {e}")
-            return FilterOptionsResponse(
-                success=False, options=[], page=page,
-                limit=limit, has_more=False, message=str(e),
+        except HttpError as e:
+            self.logger.error("HTTP error returned status %s while fetching shared drive filter options: %s",
+                e.resp.status, 
+                e,
             )
+            raise
+        except HttpLib2Error as e:
+            self.logger.error("httplib2 error while fetching shared drive filter options: %s", e)
+            raise
+
         drives = result.get("drives", [])
         next_token = result.get("nextPageToken")
         options = [

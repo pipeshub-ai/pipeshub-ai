@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
 import pytest
 from fastapi import HTTPException
 from googleapiclient.errors import HttpError
+from httplib2 import HttpLib2Error
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -1315,6 +1316,13 @@ class TestPassDriveIdsFilter:
         assert connector._pass_drive_ids_filter("drive-1") is True
 
 
+def _make_http_error(status: int, content: bytes = b"error") -> HttpError:
+    mock_resp = MagicMock()
+    mock_resp.status = status
+    mock_resp.reason = "Error"
+    return HttpError(mock_resp, content)
+
+
 class TestGetSharedDriveOptions:
     @pytest.mark.asyncio
     async def test_success_no_pagination(self, connector):
@@ -1391,15 +1399,35 @@ class TestGetSharedDriveOptions:
         assert result.options[0].label == "drv-no-name"
 
     @pytest.mark.asyncio
-    async def test_api_error_returns_failure_response(self, connector):
+    async def test_http_error_is_logged_and_reraised(self, connector, caplog):
+        http_error = _make_http_error(HttpStatusCode.FORBIDDEN.value)
+        connector.drive_data_source.drives_list = AsyncMock(side_effect=http_error)
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(HttpError):
+                await connector._get_shared_drive_options(page=1, limit=20, search=None)
+
+        assert "HTTP error returned status 403" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_httplib2_error_is_logged_and_reraised(self, connector, caplog):
+        transport_error = HttpLib2Error("connection failed")
+        connector.drive_data_source.drives_list = AsyncMock(side_effect=transport_error)
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(HttpLib2Error):
+                await connector._get_shared_drive_options(page=1, limit=20, search=None)
+
+        assert "httplib2 error while fetching shared drive filter options" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_unexpected_error_propagates(self, connector):
         connector.drive_data_source.drives_list = AsyncMock(
-            side_effect=Exception("API quota exceeded")
+            side_effect=RuntimeError("API quota exceeded")
         )
-        result = await connector._get_shared_drive_options(page=1, limit=20, search=None)
-        assert result.success is False
-        assert result.options == []
-        assert result.has_more is False
-        assert "API quota exceeded" in result.message
+
+        with pytest.raises(RuntimeError, match="API quota exceeded"):
+            await connector._get_shared_drive_options(page=1, limit=20, search=None)
 
     @pytest.mark.asyncio
     async def test_empty_drives_list(self, connector):
