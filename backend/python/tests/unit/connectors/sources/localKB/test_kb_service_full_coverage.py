@@ -579,8 +579,10 @@ class TestUpdateFolder:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Old Name"})
+        service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.update_folder = AsyncMock(return_value=True)
+        service.graph_provider.update_folder = AsyncMock(return_value={"success": True, "updatedCount": 1})
 
         result = await service.updateFolder("f1", "kb1", "user1", "New Name")
         assert result["success"] is True
@@ -607,8 +609,10 @@ class TestUpdateFolder:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Old Name"})
+        service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.update_folder = AsyncMock(return_value=True)
+        service.graph_provider.update_folder = AsyncMock(return_value={"success": True, "updatedCount": 1})
 
         result = await service.updateFolder("f1", "kb1", "user1", "Name")
         assert result["success"] is True
@@ -628,6 +632,8 @@ class TestUpdateFolder:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Old Name"})
+        service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value={"id": "x"})
 
         result = await service.updateFolder("f1", "kb1", "user1", "Existing")
@@ -639,8 +645,10 @@ class TestUpdateFolder:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Old Name"})
+        service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.update_folder = AsyncMock(return_value=False)
+        service.graph_provider.update_folder = AsyncMock(return_value={"success": False, "reason": "DB error"})
 
         result = await service.updateFolder("f1", "kb1", "user1", "Name")
         assert result["success"] is False
@@ -1666,7 +1674,12 @@ class TestMoveRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value={"id": "old_parent"})
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(side_effect=[
+            {"recordName": "myfile.pdf"},  # For moving_record
+            {"isFile": True, "mimeType": "application/pdf"}  # For file_doc
+        ])
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
+        service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
         service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
         service.graph_provider.delete_parent_child_edge_to_record = AsyncMock(return_value=True)
         service.graph_provider.create_parent_child_edge = AsyncMock(return_value=True)
@@ -1683,6 +1696,12 @@ class TestMoveRecord:
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value={"id": "old_parent"})
+        service.graph_provider.get_document = AsyncMock(side_effect=[
+            {"recordName": "myfile.pdf"},
+            {"isFile": True, "mimeType": "application/pdf"}
+        ])
+        service.graph_provider.is_record_folder = AsyncMock(return_value=False)
+        service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
         service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
         service.graph_provider.delete_parent_child_edge_to_record = AsyncMock(return_value=True)
         service.graph_provider.update_record_external_parent_id = AsyncMock(return_value=True)
@@ -1698,6 +1717,12 @@ class TestMoveRecord:
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value={"id": "old_parent"})
+        service.graph_provider.get_document = AsyncMock(side_effect=[
+            {"recordName": "myfile.pdf"},
+            {"isFile": True, "mimeType": "application/pdf"}
+        ])
+        service.graph_provider.is_record_folder = AsyncMock(return_value=False)
+        service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
         service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
         service.graph_provider.delete_parent_child_edge_to_record = AsyncMock(return_value=True)
         service.graph_provider.update_record_external_parent_id = AsyncMock(return_value=True)
@@ -1809,7 +1834,12 @@ class TestMoveRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value={"id": "old"})
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(side_effect=[
+            {"recordName": "myfile.pdf"},
+            {"isFile": True, "mimeType": "application/pdf"}
+        ])
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
+        service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
         service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
         service.graph_provider.delete_parent_child_edge_to_record = AsyncMock(return_value=False)
         service.graph_provider.rollback_transaction = AsyncMock()
@@ -1826,7 +1856,12 @@ class TestMoveRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value={"id": "old"})
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(side_effect=[
+            {"recordName": "myfile.pdf"},
+            {"isFile": True, "mimeType": "application/pdf"}
+        ])
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
+        service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
         service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
         service.graph_provider.delete_parent_child_edge_to_record = AsyncMock(return_value=True)
         service.graph_provider.create_parent_child_edge = AsyncMock(return_value=False)
@@ -1843,7 +1878,12 @@ class TestMoveRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(side_effect=[
+            {"recordName": "myfile.pdf"},
+            {"isFile": True, "mimeType": "application/pdf"}
+        ])
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
+        service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
         service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
         service.graph_provider.create_parent_child_edge = AsyncMock(return_value=True)
         service.graph_provider.update_record_external_parent_id = AsyncMock(return_value=False)
@@ -1860,7 +1900,12 @@ class TestMoveRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(side_effect=[
+            {"recordName": "myfile.pdf"},
+            {"isFile": True, "mimeType": "application/pdf"}
+        ])
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
+        service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
         service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
         service.graph_provider.create_parent_child_edge = AsyncMock(return_value=True)
         service.graph_provider.update_record_external_parent_id = AsyncMock(side_effect=Exception("boom"))
@@ -1877,7 +1922,12 @@ class TestMoveRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(side_effect=[
+            {"recordName": "myfile.pdf"},
+            {"isFile": True, "mimeType": "application/pdf"}
+        ])
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
+        service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
         service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
         service.graph_provider.create_parent_child_edge = AsyncMock(return_value=True)
         service.graph_provider.update_record_external_parent_id = AsyncMock(return_value=True)
@@ -1951,7 +2001,7 @@ class TestDuplicateNameValidation:
         service.graph_provider.get_document = AsyncMock(return_value={"recordName": "OldName"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.update_folder = AsyncMock(return_value=True)
+        service.graph_provider.update_folder = AsyncMock(return_value={"success": True, "updatedCount": 1})
         
         result = await service.updateFolder("folder1", "kb1", "user1", "Reports")
         assert result["success"] is True

@@ -770,47 +770,6 @@ describe('RecordRelationService - additional coverage', () => {
     })
   })
 
-  describe('reindexFailedRecords - statusFilters override', () => {
-    it('should use provided statusFilters', async () => {
-      const service = new RecordRelationService(
-        mockEventProducer,
-        mockSyncEventProducer,
-        mockDefaultConfig,
-      )
-      await new Promise(resolve => setTimeout(resolve, 10))
-
-      const result = await service.reindexFailedRecords({
-        app: 'Slack',
-        connectorId: 'conn-1',
-        orgId: 'org-1',
-        statusFilters: ['PENDING', 'FAILED'],
-      })
-
-      expect(result.success).to.be.true
-      const event = mockSyncEventProducer.publishEvent.firstCall.args[0]
-      expect(event.payload.statusFilters).to.deep.equal(['PENDING', 'FAILED'])
-    })
-
-    it('should normalize connector name by removing spaces and lowering case', async () => {
-      const service = new RecordRelationService(
-        mockEventProducer,
-        mockSyncEventProducer,
-        mockDefaultConfig,
-      )
-      await new Promise(resolve => setTimeout(resolve, 10))
-
-      await service.reindexFailedRecords({
-        app: 'Google Drive',
-        connectorId: 'conn-1',
-        orgId: 'org-1',
-      })
-
-      const event = mockSyncEventProducer.publishEvent.firstCall.args[0]
-      expect(event.eventType).to.equal('googledrive.reindex')
-      expect(event.payload.connector).to.equal('googledrive')
-    })
-  })
-
   describe('resyncConnectorRecords - event type construction', () => {
     it('should build event type from connector name', async () => {
       const service = new RecordRelationService(

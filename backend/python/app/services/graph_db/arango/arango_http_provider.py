@@ -12077,7 +12077,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         folder_id: str,
         updates: dict,
         transaction: str | None = None,
-    ) -> bool:
+    ) -> dict:
         """Update folder."""
         try:
             query = """
@@ -12103,10 +12103,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
                 await self.batch_upsert_nodes([updates_for_record], CollectionNames.RECORDS.value, transaction=transaction)
-            return bool(result)
+                return {"success": True, "updatedCount": 1}
+            return {"success": False, "reason": "Folder not found"}
         except Exception as e:
             self.logger.error(f"❌ Failed to update folder: {str(e)}")
-            raise
+            return {"success": False, "reason": str(e)}
 
     async def delete_folder(
         self,
@@ -14630,9 +14631,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     @staticmethod
     def _knowledge_hub_rg_projected_created_at_expr(var: str) -> str:
-        """Match minimal/hydration node.createdAt for record groups (KB vs connector)."""
+        """Match minimal/hydration node.createdAt for record groups. Uses parent app type."""
+        # Note: This assumes parent app is already looked up as {var}_parent_app in the query context
         return (
-            f'{var}.connectorName == "KB"'
+            f'({var}_parent_app != null AND {var}_parent_app.type == "KB")'
             f" ? ({var}.createdAtTimestamp != null ? {var}.createdAtTimestamp : 0)"
             f" : ({var}.sourceCreatedAtTimestamp != null ? {var}.sourceCreatedAtTimestamp"
             f" : ({var}.createdAtTimestamp != null ? {var}.createdAtTimestamp : 0))"
@@ -14640,9 +14642,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     @staticmethod
     def _knowledge_hub_rg_projected_updated_at_expr(var: str) -> str:
-        """Match minimal/hydration node.updatedAt for record groups (KB vs connector)."""
+        """Match minimal/hydration node.updatedAt for record groups. Uses parent app type."""
+        # Note: This assumes parent app is already looked up as {var}_parent_app in the query context
         return (
-            f'{var}.connectorName == "KB"'
+            f'({var}_parent_app != null AND {var}_parent_app.type == "KB")'
             f" ? ({var}.updatedAtTimestamp != null ? {var}.updatedAtTimestamp : 0)"
             f" : ({var}.sourceLastModifiedTimestamp != null ? {var}.sourceLastModifiedTimestamp"
             f" : ({var}.updatedAtTimestamp != null ? {var}.updatedAtTimestamp : 0))"
@@ -14650,9 +14653,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     @staticmethod
     def _knowledge_hub_record_projected_created_at_expr(var: str) -> str:
-        """Match minimal record node.createdAt."""
+        """Match minimal record node.createdAt. Uses parent app type to determine timestamp field."""
+        # Note: This assumes parent app is already looked up as {var}_parent_app in the query context
         return (
-            f'{var}.connectorName == "KB"'
+            f'({var}_parent_app != null AND {var}_parent_app.type == "KB")'
             f" ? ({var}.createdAtTimestamp != null ? {var}.createdAtTimestamp : 0)"
             f" : ({var}.sourceCreatedAtTimestamp != null ? {var}.sourceCreatedAtTimestamp"
             f" : ({var}.createdAtTimestamp != null ? {var}.createdAtTimestamp : 0))"
@@ -14660,9 +14664,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     @staticmethod
     def _knowledge_hub_record_projected_updated_at_expr(var: str) -> str:
-        """Match minimal record node.updatedAt (see created_at note above)."""
+        """Match minimal record node.updatedAt. Uses parent app type to determine timestamp field."""
+        # Note: This assumes parent app is already looked up as {var}_parent_app in the query context
         return (
-            f'{var}.connectorName == "KB"'
+            f'({var}_parent_app != null AND {var}_parent_app.type == "KB")'
             f" ? ({var}.updatedAtTimestamp != null ? {var}.updatedAtTimestamp : 0)"
             f" : ({var}.sourceLastModifiedTimestamp != null ? {var}.sourceLastModifiedTimestamp"
             f" : ({var}.updatedAtTimestamp != null ? {var}.updatedAtTimestamp : 0))"
@@ -14776,11 +14781,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
         return """
                         LET record_app = is_record ? DOCUMENT(CONCAT("apps/", inherited_node.connectorId)) : null
                         LET record_rg = is_record ? DOCUMENT(CONCAT("recordGroups/", inherited_node.connectorId)) : null
+                        LET rg_parent_app = is_rg ? DOCUMENT(CONCAT("apps/", inherited_node.connectorId)) : null
                         FILTER (
-                            (is_rg AND (inherited_node.connectorName == "KB" OR inherited_node.connectorId IN user_accessible_apps)) OR
+                            (is_rg AND ((rg_parent_app != null AND rg_parent_app.type == "KB") OR inherited_node.connectorId IN user_accessible_apps)) OR
                             (is_record AND (
                                 (record_app != null AND record_app._key IN user_accessible_apps) OR
-                                (record_rg != null AND (record_rg.connectorName == "KB" OR record_rg.connectorId IN user_accessible_apps))
+                                (record_rg != null AND ((record_app != null AND record_app.type == "KB") OR record_rg.connectorId IN user_accessible_apps))
                             ))
                         )"""
 
@@ -14857,8 +14863,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER perm._from == user_from AND perm.type == "USER"
                 FILTER STARTS_WITH(perm._to, "recordGroups/")
                 LET rg = DOCUMENT(perm._to)
+                LET rg_parent_app = DOCUMENT(CONCAT("apps/", rg.connectorId))
                 FILTER rg != null AND rg.orgId == @org_id
-                FILTER rg.connectorName == "KB" OR rg.connectorId IN user_accessible_apps
+                FILTER (rg_parent_app != null AND rg_parent_app.type == "KB") OR rg.connectorId IN user_accessible_apps
                 {scope_filter_rg}
                 {rg_seed_prefilter}
                 RETURN rg
@@ -14871,8 +14878,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR rg, groupEdge IN 1..1 ANY group._id permission
                     FILTER groupEdge.type == "GROUP" OR groupEdge.type == "ROLE"
                     FILTER IS_SAME_COLLECTION("recordGroups", rg)
+                    LET rg_parent_app = DOCUMENT(CONCAT("apps/", rg.connectorId))
                     FILTER rg.orgId == @org_id
-                    FILTER rg.connectorName == "KB" OR rg.connectorId IN user_accessible_apps
+                    FILTER (rg_parent_app != null AND rg_parent_app.type == "KB") OR rg.connectorId IN user_accessible_apps
                     {scope_filter_rg}
                     {rg_seed_prefilter}
                     RETURN rg
@@ -14884,8 +14892,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR rg, orgPerm IN 1..1 ANY org._id permission
                     FILTER orgPerm.type == "ORG"
                     FILTER IS_SAME_COLLECTION("recordGroups", rg)
+                    LET rg_parent_app = DOCUMENT(CONCAT("apps/", rg.connectorId))
                     FILTER rg.orgId == @org_id
-                    FILTER rg.connectorName == "KB" OR rg.connectorId IN user_accessible_apps
+                    FILTER (rg_parent_app != null AND rg_parent_app.type == "KB") OR rg.connectorId IN user_accessible_apps
                     {scope_filter_rg}
                     {rg_seed_prefilter}
                     RETURN rg
@@ -14957,7 +14966,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 LET record_rg = DOCUMENT(CONCAT("recordGroups/", record.connectorId))
                 FILTER (
                     (record_app != null AND record_app._key IN user_accessible_apps) OR
-                    (record_rg != null AND (record_rg.connectorName == "KB" OR record_rg.connectorId IN user_accessible_apps))
+                    (record_rg != null AND ((record_app != null AND record_app.type == "KB") OR record_rg.connectorId IN user_accessible_apps))
                 )
                 {scope_filter_record}
                 {record_prefilter}
@@ -14976,7 +14985,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     LET record_rg = DOCUMENT(CONCAT("recordGroups/", record.connectorId))
                     FILTER (
                         (record_app != null AND record_app._key IN user_accessible_apps) OR
-                        (record_rg != null AND (record_rg.connectorName == "KB" OR record_rg.connectorId IN user_accessible_apps))
+                        (record_rg != null AND ((record_app != null AND record_app.type == "KB") OR record_rg.connectorId IN user_accessible_apps))
                     )
                     {scope_filter_record}
                     {record_prefilter}
@@ -14994,7 +15003,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     LET record_rg = DOCUMENT(CONCAT("recordGroups/", record.connectorId))
                     FILTER (
                         (record_app != null AND record_app._key IN user_accessible_apps) OR
-                        (record_rg != null AND (record_rg.connectorName == "KB" OR record_rg.connectorId IN user_accessible_apps))
+                        (record_rg != null AND ((record_app != null AND record_app.type == "KB") OR record_rg.connectorId IN user_accessible_apps))
                     )
                     {scope_filter_record}
                     {record_prefilter}
@@ -15136,21 +15145,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
         return f"""
         LET rg_nodes = (
             FOR rg IN final_accessible_rgs
+                LET rg_parent_app = DOCUMENT(CONCAT("apps/", rg.connectorId))
                 {has_children_block}
                 RETURN {{
                     id: rg._key,
                     name: rg.groupName,
                     nodeType: "recordGroup",
-                    origin: rg.connectorName == "KB" ? "COLLECTION" : "CONNECTOR",
+                    origin: (rg_parent_app != null AND rg_parent_app.type == "KB") ? "COLLECTION" : "CONNECTOR",
                     connector: rg.connectorName,
-                    connectorId: rg.connectorName != "KB" ? rg.connectorId : null,
+                    connectorId: (rg_parent_app != null AND rg_parent_app.type == "KB") ? null : rg.connectorId,
                     recordType: null,
                     recordGroupType: rg.groupType,
                     indexingStatus: null,
-                    createdAt: rg.connectorName == "KB"
+                    createdAt: (rg_parent_app != null AND rg_parent_app.type == "KB")
                         ? (rg.createdAtTimestamp != null ? rg.createdAtTimestamp : 0)
                         : (rg.sourceCreatedAtTimestamp != null ? rg.sourceCreatedAtTimestamp : (rg.createdAtTimestamp != null ? rg.createdAtTimestamp : 0)),
-                    updatedAt: rg.connectorName == "KB"
+                    updatedAt: (rg_parent_app != null AND rg_parent_app.type == "KB")
                         ? (rg.updatedAtTimestamp != null ? rg.updatedAtTimestamp : 0)
                         : (rg.sourceLastModifiedTimestamp != null ? rg.sourceLastModifiedTimestamp : (rg.updatedAtTimestamp != null ? rg.updatedAtTimestamp : 0)),
                     sizeInBytes: null,
@@ -15198,9 +15208,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         return f"""
         LET record_nodes = (
             FOR record IN final_accessible_records
+                LET record_parent_app = DOCUMENT(CONCAT("apps/", record.connectorId))
                 {file_info_block}
                 {has_children_block}
-                LET source = record.connectorName == "KB" ? "COLLECTION" : "CONNECTOR"
+                LET source = (record_parent_app != null AND record_parent_app.type == "KB") ? "COLLECTION" : "CONNECTOR"
                 RETURN {{
                     id: record._key,
                     name: record.recordName,
@@ -15225,6 +15236,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR ref IN @paginated_refs
                 LET rg = ref.nodeType == "recordGroup" ? DOCUMENT(CONCAT("recordGroups/", ref.id)) : null
                 LET record = ref.nodeType != "recordGroup" ? DOCUMENT(CONCAT("records/", ref.id)) : null
+                LET rg_parent_app = rg != null ? DOCUMENT(CONCAT("apps/", rg.connectorId)) : null
+                LET record_parent_app = record != null ? DOCUMENT(CONCAT("apps/", record.connectorId)) : null
 
                 LET rg_node = rg != null ? (
                     LET has_children = LENGTH(
@@ -15233,7 +15246,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             LIMIT 1
                             RETURN 1
                     ) > 0
-                    LET sharingStatus = rg.connectorName == "KB" ? (
+                    LET sharingStatus = (rg_parent_app != null AND rg_parent_app.type == "KB") ? (
                         LET user_perm_count = LENGTH(
                             FOR perm IN permission
                                 FILTER perm._to == rg._id
@@ -15254,17 +15267,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         name: rg.groupName,
                         nodeType: "recordGroup",
                         parentId: rg.parentId,
-                        origin: rg.connectorName == "KB" ? "COLLECTION" : "CONNECTOR",
+                        origin: (rg_parent_app != null AND rg_parent_app.type == "KB") ? "COLLECTION" : "CONNECTOR",
                         connector: rg.connectorName,
-                        connectorId: rg.connectorName != "KB" ? rg.connectorId : null,
+                        connectorId: (rg_parent_app != null AND rg_parent_app.type == "KB") ? null : rg.connectorId,
                         externalGroupId: rg.externalGroupId,
                         recordType: null,
                         recordGroupType: rg.groupType,
                         indexingStatus: null,
-                        createdAt: rg.connectorName == "KB"
+                        createdAt: (rg_parent_app != null AND rg_parent_app.type == "KB")
                             ? (rg.createdAtTimestamp != null ? rg.createdAtTimestamp : 0)
                             : (rg.sourceCreatedAtTimestamp != null ? rg.sourceCreatedAtTimestamp : (rg.createdAtTimestamp != null ? rg.createdAtTimestamp : 0)),
-                        updatedAt: rg.connectorName == "KB"
+                        updatedAt: (rg_parent_app != null AND rg_parent_app.type == "KB")
                             ? (rg.updatedAtTimestamp != null ? rg.updatedAtTimestamp : 0)
                             : (rg.sourceLastModifiedTimestamp != null ? rg.sourceLastModifiedTimestamp : (rg.updatedAtTimestamp != null ? rg.updatedAtTimestamp : 0)),
                         sizeInBytes: null,
@@ -15291,7 +15304,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             LIMIT 1
                             RETURN 1
                     ) > 0
-                    LET source = record.connectorName == "KB" ? "COLLECTION" : "CONNECTOR"
+                    LET source = (record_parent_app != null AND record_parent_app.type == "KB") ? "COLLECTION" : "CONNECTOR"
                     RETURN {
                         id: record._key,
                         name: record.recordName,
@@ -15305,10 +15318,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         recordGroupType: null,
                         indexingStatus: record.indexingStatus,
                         reason: record.reason,
-                        createdAt: record.connectorName == "KB"
+                        createdAt: (record_parent_app != null AND record_parent_app.type == "KB")
                             ? (record.createdAtTimestamp != null ? record.createdAtTimestamp : 0)
                             : (record.sourceCreatedAtTimestamp != null ? record.sourceCreatedAtTimestamp : (record.createdAtTimestamp != null ? record.createdAtTimestamp : 0)),
-                        updatedAt: record.connectorName == "KB"
+                        updatedAt: (record_parent_app != null AND record_parent_app.type == "KB")
                             ? (record.updatedAtTimestamp != null ? record.updatedAtTimestamp : 0)
                             : (record.sourceLastModifiedTimestamp != null ? record.sourceLastModifiedTimestamp : (record.updatedAtTimestamp != null ? record.updatedAtTimestamp : 0)),
                         sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : (file_info ? file_info.fileSizeInBytes : null),

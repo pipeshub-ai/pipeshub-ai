@@ -1146,6 +1146,75 @@ describe('Knowledge Base Controller', () => {
       }
     })
 
+    it('should forward flattened=true query parameter to connector backend', async () => {
+      const handler = getKnowledgeHubNodes(createMockAppConfig())
+      const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { nodes: [] },
+      })
+
+      const req = createMockRequest({
+        query: { flattened: 'true' },
+        params: {},
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      if (!next.called) {
+        expect(executeStub.calledOnce).to.be.true
+        const uri = executeStub.firstCall.thisValue.uri as string
+        expect(uri).to.include('flattened=true')
+      }
+    })
+
+    it('should forward flattened=false query parameter to connector backend', async () => {
+      const handler = getKnowledgeHubNodes(createMockAppConfig())
+      const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { nodes: [] },
+      })
+
+      const req = createMockRequest({
+        query: { flattened: 'false' },
+        params: {},
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      if (!next.called) {
+        expect(executeStub.calledOnce).to.be.true
+        const uri = executeStub.firstCall.thisValue.uri as string
+        expect(uri).to.include('flattened=false')
+      }
+    })
+
+    it('should not include flattened parameter when omitted from query', async () => {
+      const handler = getKnowledgeHubNodes(createMockAppConfig())
+      const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { nodes: [] },
+      })
+
+      const req = createMockRequest({
+        query: {},
+        params: {},
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      if (!next.called) {
+        expect(executeStub.calledOnce).to.be.true
+        const uri = executeStub.firstCall.thisValue.uri as string
+        expect(uri).to.not.include('flattened')
+      }
+    })
+
     it('should call next with error when connector fails', async () => {
       const handler = getKnowledgeHubNodes(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').rejects(new Error('Connection failed'))
@@ -1305,6 +1374,30 @@ describe('Knowledge Base Controller', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
+      }
+    })
+
+    it('should send "name" field (not "groupName") to connector backend', async () => {
+      const handler = updateKnowledgeBase(createMockAppConfig())
+      const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { _key: 'kb-1', name: 'Updated KB' },
+      })
+
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { kbName: 'Updated KB' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      if (!next.called) {
+        expect(executeStub.calledOnce).to.be.true
+        const requestBody = JSON.parse(executeStub.firstCall.thisValue.body as string)
+        expect(requestBody).to.have.property('name', 'Updated KB')
+        expect(requestBody).to.not.have.property('groupName')
       }
     })
   })

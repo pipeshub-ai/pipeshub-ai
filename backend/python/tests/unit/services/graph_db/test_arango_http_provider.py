@@ -937,10 +937,11 @@ class TestGetAccessibleVirtualRecordIds:
 
     @pytest.mark.asyncio
     async def test_knowledgebase_prefix_skipped(self, connected_provider):
-        """Apps starting with 'knowledgeBase_' are skipped in connector queries."""
+        """KB apps now use UUID format and are processed like regular apps with type=KB"""
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440300"
         with patch.object(
             connected_provider, "_get_user_app_ids",
-            new_callable=AsyncMock, return_value=["knowledgeBase_kb1"]
+            new_callable=AsyncMock, return_value=[kb_uuid]
         ), patch.object(
             connected_provider, "_get_virtual_ids_for_connector",
             new_callable=AsyncMock, return_value={}
@@ -949,8 +950,8 @@ class TestGetAccessibleVirtualRecordIds:
             new_callable=AsyncMock, return_value={}
         ):
             await connected_provider.get_accessible_virtual_record_ids("u1", "o1")
-            # _get_virtual_ids_for_connector should NOT be called for knowledgeBase_ apps
-            mock_connector.assert_not_awaited()
+            # KB apps with UUIDs should be processed (not skipped like old knowledgeBase_ format)
+            mock_connector.assert_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -10594,7 +10595,10 @@ class TestDeleteKnowledgeBase:
                 [],  # is_of_type edge deletes
                 [],  # belongs_to collect+delete
                 [],  # permission collect+delete
-                [],  # KB document REMOVE
+                [],  # delete_nodes for FILES (internally calls execute_query)
+                [],  # delete_nodes for RECORDS (internally calls execute_query)
+                [],  # org/user app relation edges delete
+                [],  # KB app document REMOVE
             ]
         ), patch.object(
             connected_provider, "commit_transaction",
@@ -10976,16 +10980,17 @@ class TestUpdateFolder:
             new_callable=AsyncMock, return_value=[]
         ):
             result = await connected_provider.update_folder("missing", {"name": "X"})
-            assert result is False
+            assert result == {"success": False, "reason": "Folder not found"}
 
     @pytest.mark.asyncio
-    async def test_exception_raises(self, connected_provider):
+    async def test_exception_returns_error_dict(self, connected_provider):
         with patch.object(
             connected_provider, "execute_query",
             new_callable=AsyncMock, side_effect=Exception("fail")
         ):
-            with pytest.raises(Exception):
-                await connected_provider.update_folder("f1", {"name": "X"})
+            result = await connected_provider.update_folder("f1", {"name": "X"})
+            assert result["success"] is False
+            assert "fail" in result["reason"]
 
 
 # ---------------------------------------------------------------------------
@@ -13211,19 +13216,20 @@ class TestUpdateFolderExtended:
         )
         connected_provider.batch_upsert_nodes = AsyncMock()
         result = await connected_provider.update_folder("f1", {"name": "Updated"})
-        assert result is True
+        assert result == {"success": True, "updatedCount": 1}
 
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
         connected_provider.execute_query = AsyncMock(return_value=[])
         result = await connected_provider.update_folder("f999", {"name": "X"})
-        assert result is False
+        assert result == {"success": False, "reason": "Folder not found"}
 
     @pytest.mark.asyncio
-    async def test_exception_raises(self, connected_provider):
+    async def test_exception_returns_error_dict(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        with pytest.raises(Exception):
-            await connected_provider.update_folder("f1", {"name": "X"})
+        result = await connected_provider.update_folder("f1", {"name": "X"})
+        assert result["success"] is False
+        assert "fail" in result["reason"]
 
 
 # ---------------------------------------------------------------------------
@@ -15222,13 +15228,13 @@ class TestGetKnowledgeHubRootNodes:
         connected_provider.http_client.execute_aql = AsyncMock(
             return_value=[{"nodes": [], "total": 0}]
         )
-        await connected_provider.get_knowledge_hub_root_nodes(
+        result = await connected_provider.get_knowledge_hub_root_nodes(
             "uk1", "org1", ["app1"], skip=0, limit=10,
             sort_field="name", sort_dir="ASC", only_containers=False
         )
         query = connected_provider.http_client.execute_aql.call_args[0][0]
         assert 'app.type == "KB" OR NOT (app.hideConnector == true)' in query
-        assert len(result["nodes"]) == 1
+        assert len(result["nodes"]) == 0  # Empty result from mock
 
     @pytest.mark.asyncio
     async def test_empty(self, connected_provider):
@@ -15326,6 +15332,7 @@ class TestKnowledgeHubSearchTwoPhase:
         )
         connected_provider._build_children_intersection_aql = MagicMock(return_value="")
         connected_provider.get_user_app_ids = AsyncMock(return_value=[])
+        connected_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
 
         async def execute_side_effect(query, **kwargs):
             if "paginated_refs" in (kwargs.get("bind_vars") or {}):

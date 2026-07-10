@@ -485,8 +485,10 @@ class TestUpdateFolder:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Old Name"})
+        service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.update_folder = AsyncMock(return_value=True)
+        service.graph_provider.update_folder = AsyncMock(return_value={"success": True, "updatedCount": 1})
 
         result = await service.updateFolder("f1", "kb1", "user1", "New Name")
         assert result["success"] is True
@@ -513,6 +515,8 @@ class TestUpdateFolder:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Old Name"})
+        service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value={"id": "existing"})
 
         result = await service.updateFolder("f1", "kb1", "user1", "Existing")

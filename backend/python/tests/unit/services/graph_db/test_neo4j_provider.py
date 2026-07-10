@@ -2750,8 +2750,13 @@ class TestVirtualAccessAndRecordLookup:
         self, neo4j_provider: Neo4jProvider
     ):
         neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
-        neo4j_provider._get_user_app_ids = AsyncMock(  # type: ignore[method-assign]
-            return_value=["conn-1", "knowledgeBase_auto", "conn-2"]
+        # Mock get_user_apps to return app documents with type information
+        neo4j_provider.get_user_apps = AsyncMock(  # type: ignore[method-assign]
+            return_value=[
+                {"id": "conn-1", "type": "google"},
+                {"id": "kb-uuid-auto", "type": "KB"},  # KB app with proper type
+                {"id": "conn-2", "type": "jira"},
+            ]
         )
         neo4j_provider._get_virtual_ids_for_connector = AsyncMock(  # type: ignore[method-assign]
             side_effect=[{"v1": "r1"}, {"v1": "r1-overwrite", "v2": "r2"}]
@@ -2796,8 +2801,12 @@ class TestVirtualAccessAndRecordLookup:
         self, neo4j_provider: Neo4jProvider
     ):
         neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "u1"})  # type: ignore[method-assign]
-        neo4j_provider._get_user_app_ids = AsyncMock(  # type: ignore[method-assign]
-            return_value=["conn-1", "knowledgeBase_sys"]
+        # Mock get_user_apps to return both regular connector and KB app
+        neo4j_provider.get_user_apps = AsyncMock(  # type: ignore[method-assign]
+            return_value=[
+                {"id": "conn-1", "type": "google"},
+                {"id": "kb-uuid-sys", "type": "KB"},  # KB app with proper type
+            ]
         )
         neo4j_provider._get_virtual_ids_for_connector = AsyncMock(return_value={"v1": "r1"})  # type: ignore[method-assign]
         neo4j_provider._get_kb_virtual_ids = AsyncMock()  # type: ignore[method-assign]
@@ -2805,7 +2814,7 @@ class TestVirtualAccessAndRecordLookup:
         result = await neo4j_provider.get_accessible_virtual_record_ids(
             "user-1",
             "org-1",
-            filters={"apps": ["conn-1"]},
+            filters={"apps": ["conn-1"]},  # Only connector filter, no KB filter
         )
 
         assert result == {"v1": "r1"}
@@ -3040,6 +3049,7 @@ class TestKnowledgeHubSearchThreePhase:
             ]
         )
         neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+        neo4j_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
 
         result = await neo4j_provider.get_knowledge_hub_search(
             org_id="org1",
@@ -3065,6 +3075,7 @@ class TestKnowledgeHubSearchThreePhase:
             return_value=[{"total": 0}]
         )
         neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+        neo4j_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
 
         result = await neo4j_provider.get_knowledge_hub_search(
             org_id="org1",
@@ -3090,6 +3101,7 @@ class TestKnowledgeHubSearchThreePhase:
             ]
         )
         neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+        neo4j_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
 
         result = await neo4j_provider.get_knowledge_hub_search(
             org_id="org1",
@@ -3138,6 +3150,7 @@ class TestKnowledgeHubSearchThreePhase:
             ]
         )
         neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+        neo4j_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
 
         result = await neo4j_provider.get_knowledge_hub_search(
             org_id="org1",
@@ -3170,6 +3183,7 @@ class TestKnowledgeHubSearchThreePhase:
             ]
         )
         neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+        neo4j_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
 
         result = await neo4j_provider.get_knowledge_hub_search(
             org_id="org1",
@@ -3204,6 +3218,7 @@ class TestKnowledgeHubSearchThreePhase:
             ]
         )
         neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+        neo4j_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
 
         result = await neo4j_provider.get_knowledge_hub_search(
             org_id="org1",
@@ -3295,6 +3310,7 @@ class TestKnowledgeHubSearchThreePhase:
             ]
         )
         neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+        neo4j_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
 
         result = await neo4j_provider.get_knowledge_hub_search(
             org_id="org1",
@@ -4184,12 +4200,14 @@ class TestListUserKnowledgeBases:
         assert "permissions" in filters
 
     @pytest.mark.asyncio
-    async def test_query_includes_connector_id_projection(
+    @pytest.mark.asyncio
+    async def test_query_includes_id_projection(
         self, neo4j_provider: Neo4jProvider
     ):
+        """Verify KB query projects the id field (KB app UUID)"""
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
-                [{"result": {"id": "kb1", "name": "KB1", "connectorId": "knowledgeBase_org1"}}],
+                [{"result": {"id": "kb-uuid-1", "name": "KB1"}}],
                 [{"total": 1}],
                 [],
             ]
@@ -4200,7 +4218,8 @@ class TestListUserKnowledgeBases:
         )
 
         main_query = neo4j_provider.client.execute_query.call_args_list[0][0][0]
-        assert "connectorId: kb.connectorId" in main_query
+        # With new KB architecture, id field is projected (not connectorId)
+        assert "id: kb.id" in main_query
 
     @pytest.mark.asyncio
     async def test_exception_returns_empty(self, neo4j_provider: Neo4jProvider):

@@ -51,35 +51,43 @@ class TestFilterKnowledgeByEnabledSources:
         assert result[0]["connectorId"] == "app1"
 
     def test_kb_filter_with_matching_record_groups(self):
+        """KB apps filtered by UUID"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440050"
         knowledge = [
-            {"connectorId": "knowledgeBase_1", "filters": {"recordGroups": ["rg1", "rg2"]}},
+            {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg1"]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
         assert len(result) == 1
 
     def test_kb_filter_no_matching_record_groups(self):
+        """KB apps filtered out when not in apps list"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440051"
         knowledge = [
-            {"connectorId": "knowledgeBase_1", "filters": {"recordGroups": ["rg3"]}},
+            {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg1"]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
         assert len(result) == 0
 
     def test_kb_filter_with_json_string_filters(self):
+        """KB apps filtered by UUID"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440052"
         knowledge = [
-            {"connectorId": "knowledgeBase_1", "filters": '{"recordGroups": ["rg1"]}'},
+            {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg1"]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
         assert len(result) == 1
 
     def test_kb_filter_invalid_json_filters(self):
+        """KB apps filtered by UUID, not by invalid filters"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440053"
         knowledge = [
-            {"connectorId": "knowledgeBase_1", "filters": "not json"},
+            {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg1"]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
         assert len(result) == 0
 
     def test_non_dict_skipped(self):

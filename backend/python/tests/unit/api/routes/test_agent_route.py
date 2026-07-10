@@ -304,33 +304,43 @@ class TestFilterKnowledgeByEnabledSources:
         assert len(result) == 1
 
     def test_kb_filter_matching(self) -> None:
+        """KB apps filtered by UUID"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
-        knowledge = [{"connectorId": "knowledgeBase_1", "filters": {"recordGroups": ["rg1"]}}]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg1"]})
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440060"
+        knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
         assert len(result) == 1
 
     def test_kb_filter_no_match(self) -> None:
+        """KB apps filtered out when not in apps list"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
-        knowledge = [{"connectorId": "knowledgeBase_1", "filters": {"recordGroups": ["rg3"]}}]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg1"]})
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440061"
+        knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
         assert len(result) == 0
 
     def test_kb_filter_with_json_string(self) -> None:
+        """KB apps filtered by UUID"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
-        knowledge = [{"connectorId": "knowledgeBase_1", "filters": '{"recordGroups": ["rg1"]}'}]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg1"]})
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440062"
+        knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
         assert len(result) == 1
 
     def test_kb_filter_invalid_json_string(self) -> None:
+        """KB apps filtered by UUID, not by invalid filters"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
-        knowledge = [{"connectorId": "knowledgeBase_1", "filters": "not json"}]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg1"]})
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440063"
+        knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
         assert len(result) == 0
 
     def test_kb_filter_with_filtersParsed_key(self) -> None:
+        """KB apps filtered by UUID"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
-        knowledge = [{"connectorId": "knowledgeBase_1", "filtersParsed": {"recordGroups": ["rg1"]}}]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg1"]})
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440064"
+        knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
         assert len(result) == 1
 
     def test_non_dict_entries_skipped(self) -> None:
@@ -339,15 +349,19 @@ class TestFilterKnowledgeByEnabledSources:
         assert len(result) == 0
 
     def test_kb_connector_not_matching_no_kb_filter(self) -> None:
+        """KB apps must be in apps list to be included"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
-        knowledge = [{"connectorId": "knowledgeBase_1", "filters": {"recordGroups": ["rg1"]}}]
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440065"
+        knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other"]})
         assert len(result) == 0
 
     def test_non_list_filters_data(self) -> None:
+        """KB apps filtered by UUID regardless of filters data type"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
-        knowledge = [{"connectorId": "knowledgeBase_1", "filters": 42}]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg1"]})
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440066"
+        knowledge = [{"connectorId": kb_uuid, "type": "KB", "filters": 42}]
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
         assert len(result) == 0
 
 
@@ -869,14 +883,14 @@ class TestGetAssistantAgentHelper:
 
     @pytest.mark.asyncio
     async def test_one_knowledge_item_per_accessible_record_group(self) -> None:
-        """Each org KB (record group) is a separate knowledge entry, like a normal agent."""
+        """Each KB app is returned as a separate knowledge entry with its own UUID"""
         config_service = AsyncMock()
         graph_provider = AsyncMock()
         toolset_registry = MagicMock()
         logger = MagicMock()
         kbs = [
-            {"id": "rg-1", "name": "Alpha"},
-            {"id": "rg-2", "name": "Beta"},
+            {"id": "550e8400-e29b-41d4-a716-446655440200", "name": "Alpha"},
+            {"id": "550e8400-e29b-41d4-a716-446655440201", "name": "Beta"},
         ]
         with patch("app.api.routes.toolsets.get_authenticated_toolsets", new_callable=AsyncMock) as mock_get_toolsets:
             mock_get_toolsets.return_value = []
@@ -891,16 +905,16 @@ class TestGetAssistantAgentHelper:
 
         kn = result["knowledge"]
         assert len(kn) == 2
+        # Each KB app has its own UUID as connectorId
         for i, (expected_id, name) in enumerate(
-            (("rg-1", "Alpha"), ("rg-2", "Beta"))
+            (("550e8400-e29b-41d4-a716-446655440200", "Alpha"), 
+             ("550e8400-e29b-41d4-a716-446655440201", "Beta"))
         ):
             item = kn[i]
-            assert item["connectorId"] == "knowledgeBase_o1"
+            assert item["connectorId"] == expected_id  # UUID of the KB app
             assert item["name"] == name
             assert item["displayName"] == name
             assert item["type"] == "KB"
-            assert item["filters"]["recordGroups"] == [expected_id]
-            assert item["filtersParsed"]["recordGroups"] == [expected_id]
 
     @pytest.mark.asyncio
     async def test_handles_errors_gracefully(self) -> None:

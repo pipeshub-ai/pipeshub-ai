@@ -1396,7 +1396,7 @@ class TestBuildKnowledgeContextRoutingMatrix:
     _KB  = {"displayName": "Company Wiki", "type": "KB"}
     _KBI = {
         "displayName": "Private Docs", "type": "KB",
-        "filters": {"recordGroups": ["rg-private-1"]},
+        "connectorId": "kb-app-uuid-1",  # KB app UUID becomes collection_id
     }
     _J   = {"displayName": "Jira Project", "type": "jira",       "connectorId": "jira-cid-1"}
     _C   = {"displayName": "Confluence",   "type": "confluence", "connectorId": "conf-cid-2"}
@@ -1420,9 +1420,9 @@ class TestBuildKnowledgeContextRoutingMatrix:
         assert "Company Wiki" in result
 
     def test_kb_only_with_ids_shows_collection_ids(self) -> None:
-        """KB-only with filters: collection_ids must appear in routing block."""
+        """KB with connectorId: collection_ids must appear in routing block."""
         result = self._ctx([self._KBI])
-        assert "rg-private-1" in result
+        assert "kb-app-uuid-1" in result
         assert "collection_ids" in result
 
     def test_kb_only_routing_block_present(self) -> None:

@@ -1745,7 +1745,7 @@ class IGraphDBProvider(ABC):
         folder_id: str,
         updates: dict,
         transaction: str | None = None,
-    ) -> bool:
+    ) -> dict[str, Any]:
         """Update folder."""
         pass
 

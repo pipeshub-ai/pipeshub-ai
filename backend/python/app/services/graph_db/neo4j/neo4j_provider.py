@@ -9700,7 +9700,7 @@ class Neo4jProvider(IGraphDBProvider):
         folder_id: str,
         updates: dict,
         transaction: str | None = None
-    ) -> bool:
+    ) -> dict:
         """
         Update folder details in both FILES and RECORDS collections.
 
@@ -9723,7 +9723,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             if not nodes_check:
                 self.logger.warning(f"⚠️ File node not found for folder {folder_id}")
-                return False
+                return {"success": False, "reason": "Folder not found"}
 
             # Get existing File name to preserve if not in updates (required by Neo4j constraint)
             file_name = nodes_check[0].get("file_name") if nodes_check else None
@@ -9758,7 +9758,7 @@ class Neo4jProvider(IGraphDBProvider):
 
                 if not file_result:
                     self.logger.warning(f"⚠️ Failed to update File node for folder {folder_id}")
-                    return False
+                    return {"success": False, "reason": "Failed to update file node"}
 
             # Step 2: Update RECORDS collection (matching Arango behavior)
             # Arango does: recordName = updates.get("name") - can be None if name not in updates
@@ -9799,14 +9799,14 @@ class Neo4jProvider(IGraphDBProvider):
 
             if results:
                 self.logger.debug("✅ Folder updated successfully")
-                return True
+                return {"success": True, "updatedCount": 1}
 
             self.logger.warning("⚠️ Record node not found")
-            return False
+            return {"success": False, "reason": "Record not found"}
 
         except Exception as e:
             self.logger.error(f"❌ Failed to update folder: {str(e)}")
-            raise
+            return {"success": False, "reason": str(e)}
 
     async def delete_folder(
         self,

@@ -269,12 +269,14 @@ def _extract_tools_from_toolsets(toolsets: list[dict[str, Any]]) -> list[str]:
 def _extract_knowledge_connector_ids(knowledge: list[dict[str, Any]]) -> list[str]:
     """
     Extract connector IDs from knowledge array for retrieval filtering.
+    
+    Excludes KB apps (type="KB") since they are handled separately by _extract_kb_app_ids.
 
     Args:
         knowledge: List of knowledge objects with connectorId and filters
 
     Returns:
-        List of connector IDs to use for knowledge retrieval
+        List of connector IDs to use for knowledge retrieval (excludes KB apps)
     """
     if not knowledge:
         return []
@@ -283,6 +285,10 @@ def _extract_knowledge_connector_ids(knowledge: list[dict[str, Any]]) -> list[st
     seen: set[str] = set()
     for k in knowledge:
         if isinstance(k, dict):
+            # Skip KB apps - they are handled by _extract_kb_app_ids
+            if (k.get("type") or "").strip().upper() == "KB":
+                continue
+                
             connector_id = k.get("connectorId")
             if (
                 connector_id

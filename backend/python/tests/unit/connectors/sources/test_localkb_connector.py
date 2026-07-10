@@ -421,11 +421,11 @@ class TestKnowledgeHubService:
 
     def test_has_search_filters_with_query(self):
         svc = _make_knowledge_hub_service()
-        assert svc._has_search_filters("search", None, None, None, None, None, None, None, None) is True
+        assert svc._has_flattening_filters("search", None, None, None, None, None, None, None, None) is True
 
     def test_has_search_filters_all_none(self):
         svc = _make_knowledge_hub_service()
-        assert svc._has_search_filters(None, None, None, None, None, None, None, None, None) is False
+        assert svc._has_flattening_filters(None, None, None, None, None, None, None, None, None) is False
 
     def test_has_flattening_filters_with_node_types(self):
         svc = _make_knowledge_hub_service()

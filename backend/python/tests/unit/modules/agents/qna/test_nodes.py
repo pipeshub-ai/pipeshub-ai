@@ -12319,7 +12319,7 @@ class TestPlannerKnowledgeContextRoutingMatrix:
     _KB2  = {"displayName": "HR Policies",   "type": "KB"}
     _KBI  = {
         "displayName": "Private Docs", "type": "KB",
-        "filters": {"recordGroups": ["rg-private-1"]},
+        "connectorId": "kb-app-uuid-1",  # KB app UUID becomes collection_id
     }
     _J    = {"displayName": "Jira Project",  "type": "jira",       "connectorId": "jira-cid-1"}
     _C    = {"displayName": "Confluence",    "type": "confluence", "connectorId": "conf-cid-2"}
@@ -12358,9 +12358,9 @@ class TestPlannerKnowledgeContextRoutingMatrix:
         assert "RETRIEVAL CONNECTOR RULE" in result
 
     def test_kb_with_ids_shows_collection_ids(self):
-        """KB with collection_ids: collection_ids appear in the routing block."""
+        """KB with connectorId: collection_ids appear in the routing block."""
         result = self._ctx([self._KBI])
-        assert "rg-private-1" in result
+        assert "kb-app-uuid-1" in result
         assert "collection_ids" in result
 
     def test_kb_only_multiple_kbs_all_listed(self):

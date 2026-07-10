@@ -815,7 +815,7 @@ class KnowledgeBaseService:
                 updates=updates
             )
 
-            if result:
+            if result and result.get("success"):
                 self.logger.info(f"✅ Folder updated successfully: {folder_id} by user {user_id}")
                 return {
                     "success": True,
@@ -827,7 +827,7 @@ class KnowledgeBaseService:
                 return {
                     "success": False,
                     "code": 500,
-                    "reason": "Failed to update the folder"
+                    "reason": result.get("reason", "Failed to update the folder") if result else "Failed to update the folder"
                 }
         except Exception as e:
             self.logger.error(f"Failed to update folder {folder_id} for knowledge base {kb_id}: {str(e)}")
@@ -2053,7 +2053,7 @@ class KnowledgeBaseService:
             self.logger.info(f"Parent info: {parent_info}")
             # parent_info = {"parentId": str, "parentType": "record"|"recordGroup", "edgeKey": str} | None
             # None  →  record is already at KB root (no PARENT_CHILD edge exists)
-            current_parent_id = parent_info.get("id") if parent_info else ""
+            current_parent_id = parent_info.get("id") if parent_info else None
             self.logger.info(f"Current parent id: {current_parent_id}")
             self.logger.info(
                 f"📍 Record {record_id} current parent: {current_parent_id or 'KB root'}"

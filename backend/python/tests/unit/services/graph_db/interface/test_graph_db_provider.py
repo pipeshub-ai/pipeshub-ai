@@ -280,6 +280,13 @@ class TestAbstractMethodInventory:
         "list_kb_permissions",
         "list_all_records",
         "list_kb_records",
+        # KB migration and legacy operations
+        "find_file_by_name_in_parent",
+        "get_legacy_kb_record_groups",
+        "migrate_legacy_kb_to_app",
+        "count_legacy_kb_record_groups",
+        "delete_kb_hub_app",
+        "migrate_agent_hub_knowledge",
         # Group operations
         "get_user_group_by_external_id",
         "get_user_groups",

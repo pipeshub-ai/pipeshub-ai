@@ -138,9 +138,11 @@ class TestExtractKnowledgeConnectorIds:
         assert result == ["conn1"]
 
     def test_kb_prefix_excluded(self):
+        """KB apps have type=KB and are not extracted as regular connectors"""
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440102"
         knowledge = [
             {"connectorId": "conn1"},
-            {"connectorId": "knowledgeBase_kb1"},
+            {"connectorId": kb_uuid, "type": "KB"},
         ]
         result = _extract_knowledge_connector_ids(knowledge)
         assert result == ["conn1"]
