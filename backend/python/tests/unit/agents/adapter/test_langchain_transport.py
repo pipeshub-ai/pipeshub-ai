@@ -41,12 +41,12 @@ class _FakeModel:
         self.bind_tools_called_with = tools
         return self
 
-    async def ainvoke(self, messages: list) -> AIMessage:
+    async def ainvoke(self, messages: list, config: Any = None) -> AIMessage:
         if self._raise is not None:
             raise self._raise
         return self._response
 
-    async def astream(self, messages: list) -> AsyncIterator[AIMessageChunk]:
+    async def astream(self, messages: list, config: Any = None) -> AsyncIterator[AIMessageChunk]:
         if self._raise_on_stream is not None:
             raise self._raise_on_stream
         for chunk in self._stream_chunks or []:
@@ -64,7 +64,7 @@ class _FakeStructuredModel:
         self._parsed = parsed
         self._raw = raw
 
-    async def ainvoke(self, messages: list) -> dict:
+    async def ainvoke(self, messages: list, config: Any = None) -> dict:
         return {"parsed": self._parsed, "raw": self._raw}
 
 

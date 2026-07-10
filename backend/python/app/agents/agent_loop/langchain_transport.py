@@ -12,6 +12,20 @@ We deliberately keep using LangChain's `BaseChatModel` + `StructuredTool`
 here (not agent-loop's own Anthropic/OpenAI transports) per the migration's
 design constraint: 18 providers are already wired and etcd-configured
 through LangChain, and re-implementing that is out of scope.
+
+Opik note: `OpikTracingTransport` (see `transport/opik_tracing.py`) wraps
+THIS class and records its own manual `"llm"` span with a hand-built
+message JSON blob — good enough for tool calls/usage, but Opik's frontend
+"Pretty" message view is keyed off providers it recognizes from raw
+LangChain callback data, which is how the legacy `chatbot.py`/
+`utils/streaming.py` path (confirmed rendering the system prompt
+correctly) actually gets traced. `_langchain_config()` below attaches
+that same native `OpikTracer` callback (see
+`opik_tracing.py::build_langchain_opik_callbacks`) to every `ainvoke`/
+`astream` call here so agent-loop's LLM calls get that same
+well-supported rendering, nested under whatever Opik span/trace is
+already active via `opik.context_storage` — additional detail alongside,
+not a replacement for, `OpikTracingTransport`'s own summary span.
 """
 
 from __future__ import annotations
@@ -34,6 +48,7 @@ from app.agent_loop_lib.core.streaming import (
     TextDeltaEvent,
 )
 from app.agent_loop_lib.transport.base import LLMTransport
+from app.agent_loop_lib.transport.opik_tracing import build_langchain_opik_callbacks
 from app.agents.agent_loop.converters import (
     convert_assistant_message_from_langchain,
     convert_messages_to_langchain,
@@ -77,9 +92,19 @@ def _is_network_error(exc: Exception) -> bool:
 class LangChainTransport(LLMTransport):
     """Bridges a LangChain `BaseChatModel` to agent-loop's `LLMTransport`."""
 
-    def __init__(self, chat_model: BaseChatModel, model_name: str = "") -> None:
+    def __init__(
+        self, chat_model: BaseChatModel, model_name: str = "", opik_project_name: str | None = None,
+    ) -> None:
         self._llm = chat_model
         self._model = model_name
+        self._opik_callbacks = build_langchain_opik_callbacks(opik_project_name)
+
+    def _langchain_config(self) -> dict[str, Any]:
+        """`config=` kwarg for every `ainvoke`/`astream` call below — see
+        module docstring for why this attaches the native `OpikTracer`
+        callback rather than relying solely on `OpikTracingTransport`'s
+        own manual span."""
+        return {"callbacks": self._opik_callbacks} if self._opik_callbacks else {}
 
     @property
     def provider(self) -> str:
@@ -191,7 +216,7 @@ class LangChainTransport(LLMTransport):
         lc_llm = self._bind_tools(tools)
 
         try:
-            ai_message = await lc_llm.ainvoke(lc_messages)
+            ai_message = await lc_llm.ainvoke(lc_messages, config=self._langchain_config())
         except Exception as exc:
             raise self._wrap_error(exc, "complete") from exc
 
@@ -237,7 +262,7 @@ class LangChainTransport(LLMTransport):
         that require one — see the module docstring in `converters.py`."""
         try:
             structured_llm = self._llm.with_structured_output(output_schema, include_raw=True)
-            result = await structured_llm.ainvoke(lc_messages)
+            result = await structured_llm.ainvoke(lc_messages, config=self._langchain_config())
             parsed = result.get("parsed") if isinstance(result, dict) else None
             raw = result.get("raw") if isinstance(result, dict) else None
             if parsed is not None:
@@ -248,7 +273,7 @@ class LangChainTransport(LLMTransport):
         try:
             args_model = output_schema_to_pydantic_model(output_schema)
             structured_llm = self._llm.with_structured_output(args_model, include_raw=True)
-            result = await structured_llm.ainvoke(lc_messages)
+            result = await structured_llm.ainvoke(lc_messages, config=self._langchain_config())
         except Exception as exc:
             raise self._wrap_error(exc, "complete_structured") from exc
 
@@ -273,7 +298,7 @@ class LangChainTransport(LLMTransport):
 
         chunks: list[AIMessage] = []
         try:
-            async for chunk in lc_llm.astream(lc_messages):
+            async for chunk in lc_llm.astream(lc_messages, config=self._langchain_config()):
                 chunks.append(chunk)
                 text = getattr(chunk, "content", None)
                 if isinstance(text, str) and text:

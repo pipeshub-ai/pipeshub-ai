@@ -141,7 +141,7 @@ class PipesHubAgentFactory:
         transport_registry.register(
             "langchain",
             lambda: wrap_if_enabled(
-                LangChainTransport(llm, model_name=model_name),
+                LangChainTransport(llm, model_name=model_name, opik_project_name=opik_project_name),
                 enabled=opik_active,
                 project_name=opik_project_name,
             ),
