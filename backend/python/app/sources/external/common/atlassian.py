@@ -103,12 +103,6 @@ async def resolve_preferred_site_with_fallback(
     if preferred_site:
         return preferred_site
     resources = await get_accessible_resources(access_token)
-    logger.debug(
-        "%s: accessible-resources returned %d site(s): %s",
-        product,
-        len(resources),
-        [{"id": r.id, "name": r.name, "url": r.url} for r in resources],
-    )
     resources = dedupe_atlassian_cloud_resources(resources)
     if not resources:
         raise ValueError(
