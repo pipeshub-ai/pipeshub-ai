@@ -937,7 +937,7 @@ class TestProcessEventErrors:
         }
         gp.get_document = AsyncMock(return_value=record)
         gp.batch_update_nodes = AsyncMock(return_value=True)
-        gp.find_next_queued_duplicate = AsyncMock(return_value=None)
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
             "recordId": "r1",
@@ -961,6 +961,7 @@ class TestProcessEventErrors:
         # which calls get_document and batch_update_nodes
         assert gp.get_document.await_count >= 2
         assert gp.batch_update_nodes.awaited
+        gp.update_queued_duplicates_status.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_finally_block_completed_status_updates_queued_duplicates(self):
@@ -1140,6 +1141,56 @@ class TestProcessEventErrors:
 
         assert len(events) == 2
         gp.update_queued_duplicates_status.assert_not_awaited()
+
+
+# ===================================================================
+# _propagate_primary_failure_to_queued_duplicates
+# ===================================================================
+
+class TestPropagatePrimaryFailureToQueuedDuplicates:
+    """Tests for _propagate_primary_failure_to_queued_duplicates."""
+
+    @pytest.mark.asyncio
+    async def test_propagates_failure_with_reason(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.update_queued_duplicates_status = AsyncMock(return_value=2)
+
+        await handler._propagate_primary_failure_to_queued_duplicates(
+            "r1", "vr1", "Rate limit exceeded"
+        )
+
+        gp.update_queued_duplicates_status.assert_awaited_once_with(
+            "r1",
+            ProgressStatus.FAILED.value,
+            "vr1",
+            reason="Primary duplicate indexing failed: Rate limit exceeded",
+        )
+
+    @pytest.mark.asyncio
+    async def test_propagates_failure_without_reason(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.update_queued_duplicates_status = AsyncMock(return_value=1)
+
+        await handler._propagate_primary_failure_to_queued_duplicates("r1", "vr1", None)
+
+        gp.update_queued_duplicates_status.assert_awaited_once_with(
+            "r1",
+            ProgressStatus.FAILED.value,
+            "vr1",
+            reason="Primary duplicate indexing failed",
+        )
+
+    @pytest.mark.asyncio
+    async def test_propagation_error_is_swallowed(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.update_queued_duplicates_status = AsyncMock(side_effect=Exception("DB error"))
+
+        await handler._propagate_primary_failure_to_queued_duplicates("r1", "vr1", "oops")
+
+        handler.logger.warning.assert_called()
 
 
 # ===================================================================
