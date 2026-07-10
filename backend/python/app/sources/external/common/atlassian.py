@@ -98,6 +98,8 @@ async def resolve_preferred_site_with_fallback(
     token that can reach multiple sites is ambiguous without a ``baseUrl``, so we
     raise instead of silently picking an arbitrary site. Raises ValueError if the
     token has zero accessible sites."""
+    if logger is None:  # factories type their logger as optional; stay safe
+        logger = logging.getLogger(__name__)
     if preferred_site:
         return preferred_site
     resources = await get_accessible_resources(access_token)

@@ -58,9 +58,9 @@ class ConfluenceClientFactory(ClientFactory):
         self,
         *,
         access_token: str,
-        auth_config: dict,
+        auth_config: dict[str, Any],
         config_service: object,
-        logger: Optional[object],
+        logger: object | None,
     ) -> None:
         """Reject an OAuth token that can reach multiple Confluence sites when no
         specific site (``baseUrl``) is configured."""
