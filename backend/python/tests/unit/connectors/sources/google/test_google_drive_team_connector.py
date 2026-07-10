@@ -1950,6 +1950,46 @@ class TestProcessDriveItem:
         assert result.record.external_record_group_id == "sd-1"
 
     @pytest.mark.asyncio
+    async def test_shared_drive_individual_share_for_synced_user_is_linked(self):
+        conn = _make_connector()
+        conn.synced_user_emails = {"member@x.com"}
+        conn.drive_data_source.permissions_list = AsyncMock(return_value={
+            "permissions": [
+                {"id": "p1", "role": "writer", "type": "user", "emailAddress": "u@x.com"},
+                {
+                    "id": "p2", "role": "reader", "type": "user", "emailAddress": "member@x.com",
+                    "permissionDetails": [{"permissionType": "file"}],
+                },
+            ],
+        })
+        metadata = _make_file_metadata(parents=["sd-1"])
+        result = await conn._process_drive_item(metadata, "u1", "u@x.com", "sd-1", is_shared_drive=True)
+        assert result is not None
+        assert result.record.shared_with_me_record_group_ids == ["0S:member@x.com"]
+        assert result.record.is_shared_with_me is True
+        # Drive membership should still be the primary group, independent of the individual share.
+        assert result.record.external_record_group_id == "sd-1"
+
+    @pytest.mark.asyncio
+    async def test_shared_drive_individual_share_for_external_user_is_skipped(self):
+        conn = _make_connector()
+        conn.synced_user_emails = {"member@x.com"}  # external@x.com is not part of the workspace
+        conn.drive_data_source.permissions_list = AsyncMock(return_value={
+            "permissions": [
+                {"id": "p1", "role": "writer", "type": "user", "emailAddress": "u@x.com"},
+                {
+                    "id": "p2", "role": "reader", "type": "user", "emailAddress": "external@x.com",
+                    "permissionDetails": [{"permissionType": "file"}],
+                },
+            ],
+        })
+        metadata = _make_file_metadata(parents=["sd-1"])
+        result = await conn._process_drive_item(metadata, "u1", "u@x.com", "sd-1", is_shared_drive=True)
+        assert result is not None
+        assert result.record.shared_with_me_record_group_ids == []
+        assert result.record.is_shared_with_me is False
+
+    @pytest.mark.asyncio
     async def test_folder_type(self):
         conn = _make_connector()
         conn.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})

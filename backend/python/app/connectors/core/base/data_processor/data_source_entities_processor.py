@@ -842,9 +842,8 @@ class DataSourceEntitiesProcessor:
                             await tx_store.create_record_group_relation(record.id, shared_with_me_rg.id)
                         else:
                             self.logger.warning(
-                                "Shared-with-me record group %s not found for record %s",
+                                "Shared with me record group with external ID %s not found in database",
                                 external_group_id,
-                                record.id,
                             )
 
                 # Step 1: Delete all existing permission edges that point TO this record.

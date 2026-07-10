@@ -249,6 +249,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         # Store synced users for use in batch processing
         self.synced_users: List[AppUser] = []
+        self.synced_user_emails: set[str] = set() # to filter out non workspace emails during shared drive file share processing
 
     async def init(self) -> bool:
         """Initialize the Google Drive enterprise connector with service account credentials and services."""
@@ -473,6 +474,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             if not all_users:
                 self.logger.warning("No users found in Google Workspace")
                 self.synced_users = []
+                self.synced_user_emails = set()
                 return
 
             # Process all users through the data entities processor
@@ -481,6 +483,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             # Store users for use in batch processing
             self.synced_users = all_users
+            self.synced_user_emails = {user.email.lower() for user in all_users if user.email}
 
             self.logger.info(f"✅ Successfully synced {len(all_users)} users")
 
@@ -1599,6 +1602,16 @@ class GoogleDriveTeamConnector(BaseConnector):
                 shared_with_me_record_group_ids.append(f"0S:{user_email}")
             if is_shared_drive:
                 for shared_email in individually_shared_emails:
+                    # Only users in this Workspace domain ever get a "Shared with Me" record group
+                    # (created in _create_personal_record_group for self.synced_users). Emails
+                    # outside the domain (external/guest accounts) would never resolve, so skip
+                    # them here instead of letting every later sync log a permanent "not found".
+                    if shared_email.lower() not in self.synced_user_emails:
+                        self.logger.debug(
+                            "Skipping shared-with-me link for %s on file %s. User not part of the synced workspace",
+                            shared_email, file_record.record_name
+                        )
+                        continue
                     group_id = f"0S:{shared_email}"
                     if group_id not in shared_with_me_record_group_ids:
                         shared_with_me_record_group_ids.append(group_id)
