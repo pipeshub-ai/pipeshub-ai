@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.transport.opik_tracing import (
+    build_langchain_opik_callbacks,
     is_opik_configured,
     maybe_start_named_span,
     record_named_span_output,
@@ -236,8 +237,17 @@ async def parse_intent_and_route(
                 "human_content": human_content,
             },
         ) as span:
+            # Native LangChain callback alongside the manual span above —
+            # see `langchain_transport.py::_build_opik_callbacks`'s
+            # docstring for why this is what actually gets the system
+            # prompt rendering Opik's "Pretty" message view supports (this
+            # call bypasses `LangChainTransport` entirely, invoking
+            # `with_structured_output()` directly, so it needs its own
+            # callback rather than inheriting one).
+            opik_callbacks = build_langchain_opik_callbacks()
             decision: IntentRouteDecision = await structured_llm.ainvoke(
                 [SystemMessage(content=system_prompt), *prior_messages, HumanMessage(content=human_content)],
+                config={"callbacks": opik_callbacks} if opik_callbacks else {},
             )
             record_named_span_output(span, decision.model_dump(mode="json"))
         if not decision.rewritten_query.strip():

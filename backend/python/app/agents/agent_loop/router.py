@@ -97,7 +97,8 @@ def _loop_for_route(
         # `PlanExecuteLoop`, i.e. inside `Agent.run()`'s trace scope, so without
         # this it would be the one LLM call in the request invisible to Opik.
         planner_transport = wrap_if_enabled(
-            LangChainTransport(llm), enabled=opik_active, project_name=opik_project_name,
+            LangChainTransport(llm, opik_project_name=opik_project_name),
+            enabled=opik_active, project_name=opik_project_name,
         )
         planner = PlanAheadPlanner(
             TransportModel(planner_transport),

@@ -59,6 +59,7 @@ __all__ = [
     "OpikTracingTransport",
     "is_opik_configured",
     "wrap_if_enabled",
+    "build_langchain_opik_callbacks",
     "maybe_start_run_trace",
     "maybe_start_tool_span",
     "record_tool_span_output",
@@ -93,8 +94,49 @@ def wrap_if_enabled(
     return OpikTracingTransport(transport, project_name=project_name)
 
 
-def _serialize_messages(messages: "list[Message]") -> list[dict]:
-    return [m.model_dump(mode="json") for m in messages]
+def build_langchain_opik_callbacks(project_name: str | None = None) -> list[Any]:
+    """One `OpikTracer` (LangChain callback handler) when Opik is
+    configured, else `[]` — for the handful of adapter call sites
+    (`LangChainTransport`, `intent.py`) that invoke a raw LangChain
+    `BaseChatModel`/`Runnable` directly rather than through this module's
+    own manual span API.
+
+    Why both exist: our own `OpikTracingTransport`/`maybe_start_named_span`
+    spans record a hand-built JSON blob good enough for tool-call/usage
+    summaries, but Opik's frontend "Pretty" message view is keyed off
+    providers it recognizes from raw LangChain callback data — this is how
+    the legacy `chatbot.py`/`utils/streaming.py` path (confirmed rendering
+    the system prompt correctly) actually gets traced: it never builds its
+    own span JSON, it just hands `config={"callbacks": [opik_tracer]}` to
+    `astream()`/`ainvoke()` and lets LangChain's own `on_chat_model_start`
+    callback capture the exact `BaseMessage` list — including the
+    `SystemMessage` — it sent to the provider. Attaching the same native
+    callback at these call sites gets that same well-supported rendering
+    for agent-loop's LLM calls too, nested under whatever Opik span/trace
+    is already active via `opik.context_storage` (contextvar-based, shared
+    with our own manual spans) — `OpikTracer`'s own span is additional
+    detail alongside, not a replacement for, our manual spans.
+
+    Built fresh per call site (never a module-level singleton, unlike the
+    legacy `utils/streaming.py::opik_tracer`) to avoid one tracer's
+    internal per-run-id state bleeding across concurrent requests.
+    """
+    if not is_opik_configured():
+        return []
+    try:
+        from opik.integrations.langchain import OpikTracer
+
+        return [OpikTracer(project_name=project_name)]
+    except Exception:
+        _logger.debug("Failed to build LangChain OpikTracer callback", exc_info=True)
+        return []
+
+
+def _serialize_messages(messages: "list[Message]", system: str | None = None) -> list[dict]:
+    serialized = [m.model_dump(mode="json") for m in messages]
+    if system:
+        serialized = [{"role": "system", "content": system}, *serialized]
+    return serialized
 
 
 @contextlib.contextmanager
@@ -356,8 +398,7 @@ class OpikTracingTransport(LLMTransport):
         effort: str | None = None,
     ) -> "ModelResponse":
         span_input = {
-            "messages": _serialize_messages(messages),
-            "system": system,
+            "messages": _serialize_messages(messages, system),
             "tools": [t.model_dump(mode="json") for t in tools] if tools else None,
         }
         metadata = {
@@ -382,7 +423,7 @@ class OpikTracingTransport(LLMTransport):
         system: str | None = None,
         model: str | None = None,
     ) -> "StructuredResponse":
-        span_input = {"messages": _serialize_messages(messages), "system": system}
+        span_input = {"messages": _serialize_messages(messages, system)}
         metadata = {"output_schema": output_schema}
         with self._safe_span(
             f"{self.provider}.complete_structured", input=span_input, model=model or self.model_name,
@@ -417,8 +458,7 @@ class OpikTracingTransport(LLMTransport):
         from app.agent_loop_lib.core.streaming import StreamCompleteEvent
 
         span_input = {
-            "messages": _serialize_messages(messages),
-            "system": system,
+            "messages": _serialize_messages(messages, system),
             "tools": [t.model_dump(mode="json") for t in tools] if tools else None,
         }
         metadata = {
