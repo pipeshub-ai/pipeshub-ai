@@ -19,6 +19,21 @@ import {
 } from '@/app/components/ui/ConnectorIcon';
 import { i18n } from '@/lib/i18n';
 
+/**
+ * Backend page/paragraph arrays sometimes contain `null` entries (e.g. a
+ * chunk that spans an unnumbered page). Drop them — along with any
+ * non-numeric junk from malformed responses — so consumers never render a
+ * location badge with no number in it, or crash trying to `.filter()` a
+ * value that turned out not to be an array.
+ */
+function filterValidNumbers(values?: unknown): number[] | undefined {
+  if (!Array.isArray(values)) return undefined;
+  const filtered = values.filter(
+    (v): v is number => typeof v === 'number' && !Number.isNaN(v),
+  );
+  return filtered.length > 0 ? filtered : undefined;
+}
+
 /** Resolve connector key → display config. */
 export function getConnectorConfig(connector: string): ConnectorConfig {
   const resolved = resolveConnectorType(connector);
@@ -66,8 +81,8 @@ export function buildCitationMapsFromApi(
       webUrl: metadata.webUrl,
       mimeType: metadata.mimeType || '',
       extension: metadata.extension || '',
-      pageNum: metadata.pageNum,
-      blockNum: metadata.blockNum,
+      pageNum: filterValidNumbers(metadata.pageNum),
+      blockNum: filterValidNumbers(metadata.blockNum),
       previewRenderable: metadata.previewRenderable ?? false,
       hideWeburl: (metadata as Record<string, unknown>).hideWeburl as boolean ?? false,
       citationType: data.citationType || '',
@@ -116,8 +131,8 @@ export function buildCitationMapsFromStreaming(
       webUrl: metadata.webUrl,
       mimeType: metadata.mimeType || '',
       extension: metadata.extension || '',
-      pageNum: metadata.pageNum,
-      blockNum: metadata.blockNum,
+      pageNum: filterValidNumbers(metadata.pageNum),
+      blockNum: filterValidNumbers(metadata.blockNum),
       previewRenderable: metadata.previewRenderable ?? false,
       hideWeburl: metadata.hideWeburl ?? false,
       citationType: raw.citationType || '',

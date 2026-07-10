@@ -524,6 +524,37 @@ describe('ConfigurationManager Routes', () => {
       expect(updateDefault).to.exist
     })
 
+    it('should register embedding model download-progress routes', () => {
+      const router = createConfigurationManagerRouter(container)
+      const routes = router.stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods }))
+
+      const prepareModel = routes.find((r: any) => r.path === '/ai-models/prepare-model' && r.methods.post)
+      expect(prepareModel).to.exist
+
+      const downloadProgress = routes.find((r: any) => r.path === '/ai-models/download-progress' && r.methods.get)
+      expect(downloadProgress).to.exist
+    })
+
+    it('should register /ai-models/download-progress before the generic /ai-models/:modelType route', () => {
+      // Regression test: Express matches routes in registration order, so the
+      // literal "/ai-models/download-progress" GET route MUST come before the
+      // wildcard "/ai-models/:modelType" GET route. Otherwise Express treats
+      // "download-progress" as the :modelType param and the enum validator on
+      // that route rejects every request with a 400 before it ever reaches
+      // the SSE handler.
+      const router = createConfigurationManagerRouter(container)
+      const getLayers = router.stack.filter((layer: any) => layer.route && layer.route.methods.get)
+
+      const downloadProgressIndex = getLayers.findIndex((l: any) => l.route.path === '/ai-models/download-progress')
+      const wildcardModelTypeIndex = getLayers.findIndex((l: any) => l.route.path === '/ai-models/:modelType')
+
+      expect(downloadProgressIndex).to.be.greaterThanOrEqual(0)
+      expect(wildcardModelTypeIndex).to.be.greaterThanOrEqual(0)
+      expect(downloadProgressIndex).to.be.lessThan(wildcardModelTypeIndex)
+    })
+
     it('should register platform feature flags route', () => {
       const router = createConfigurationManagerRouter(container)
       const routes = router.stack

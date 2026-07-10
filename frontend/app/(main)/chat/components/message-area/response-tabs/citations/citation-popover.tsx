@@ -8,6 +8,7 @@ import { isLocalFsConnectorType } from '@/app/(main)/workspace/connectors/utils/
 import { openRecordSource } from '@/chat/utils/open-record-source';
 import { getConnectorConfig } from './utils';
 import { FileIcon } from '@/app/components/ui/file-icon';
+import { renderInlineMarkdown } from '@/app/components/ui/inline-markdown';
 import type { CitationData } from './types';
 
 interface CitationPopoverContentProps {
@@ -150,7 +151,7 @@ function CitationPopoverContentInner({
                 overflow: 'hidden',
               }}
             >
-              {citation.content}
+              {renderInlineMarkdown(citation.content)}
             </Text>
           </Box>
         )}
