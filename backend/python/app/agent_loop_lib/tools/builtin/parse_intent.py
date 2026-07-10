@@ -4,6 +4,8 @@ from typing import Any
 
 from app.agent_loop_lib.agent.goal import GoalBuilder
 from app.agent_loop_lib.agent.intent import IntentParser
+from app.agent_loop_lib.agent.single_shot_runner import build_task_complete_runtime
+from app.agent_loop_lib.agent.spec import ModelSpec
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
 
 """Intent-as-tool (closes the roadmap's final owner-notes gap): the
@@ -20,8 +22,8 @@ spawned sub-agent instead of the raw text.
 class ParseIntentTool(Tool):
     """Parses a raw message into a structured Intent, then a structured
     Goal (requirements/success_criteria/constraints/gaps), via the same
-    two LLM calls `Agent.run_from_message()` makes internally — exposed
-    here as an ordinary tool call instead of a separate entrypoint."""
+    single-shot `Agent` runs `Agent.run_from_message()` makes internally —
+    exposed here as an ordinary tool call instead of a separate entrypoint."""
 
     def __init__(self, transport_registry: Any, provider: str) -> None:
         self._transport_registry = transport_registry
@@ -59,12 +61,11 @@ class ParseIntentTool(Tool):
         ]
 
     async def execute(self, **kwargs: Any) -> ToolOutput:
-        from app.agent_loop_lib.models.transport import TransportModel
-
         message: str = kwargs["message"]
-        model = TransportModel(self._transport_registry.resolve(self._provider))
-        intent = await IntentParser(model).parse(message)
-        goal = await GoalBuilder(model).build(intent)
+        runtime = build_task_complete_runtime(self._transport_registry)
+        model_spec = ModelSpec(provider=self._provider)
+        intent = await IntentParser(runtime, model_spec).parse(message)
+        goal = await GoalBuilder(runtime, model_spec).build(intent)
         return ToolOutput(
             success=True,
             data={

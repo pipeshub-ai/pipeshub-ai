@@ -378,12 +378,18 @@ class Agent:
         from app.agent_loop_lib.agent.feasibility import FeasibilityChecker
         from app.agent_loop_lib.agent.goal import GoalBuilder
         from app.agent_loop_lib.agent.intent import IntentParser
+        from app.agent_loop_lib.agent.single_shot_runner import build_task_complete_runtime
 
         if self._model is None:
             self._resolve_model()
 
-        intent = await IntentParser(self._model).parse(message)
-        goal = await GoalBuilder(self._model).build(intent)
+        auxiliary_runtime = build_task_complete_runtime(
+            self._runtime.transport_registry,
+            opik_enabled=self._runtime.opik_enabled,
+            opik_project_name=self._runtime.opik_project_name,
+        )
+        intent = await IntentParser(auxiliary_runtime, self._spec.model).parse(message)
+        goal = await GoalBuilder(auxiliary_runtime, self._spec.model).build(intent)
         await FeasibilityChecker(self._runtime.tool_registry).check(goal)
         return await self.run(goal)
 

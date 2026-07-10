@@ -1,16 +1,10 @@
-"""Intent understanding: one structured LLM call that reorganizes the raw
-user query into a clear, self-contained restatement (resolving pronouns/
-follow-ups against conversation history, extracting requirements/success
-criteria) and — for `chatMode == "auto"` — reuses the exact SAME tier rubric
-`classify_route()` (`app.modules.agents.qna.router`) applies, so this one
-call can also pick quick/react/deep without a second LLM round-trip.
-
-This mirrors example `02_orchestrator.py`'s `intent_agent` (which classifies
-the goal's complexity before the `executor_agent` acts on it) but merges the
-intent step and the routing step into a single structured call rather than
-two separate agent-as-tool hops — see `router.py`'s module docstring for why
-`select_loop_and_goal()` calls this once per request instead of wiring a
-standalone `AgentSpec`/`AgentTool` for it.
+"""Intent understanding: one structured agent run (via `SingleShotLoop` +
+`task_complete`) that reorganizes the raw user query into a clear, self-
+contained restatement (resolving pronouns/follow-ups against conversation
+history, extracting requirements/success criteria) and — for `chatMode ==
+"auto"` — reuses the exact SAME tier rubric `classify_route()`
+(`app.modules.agents.qna.router`) applies, so this one call can also pick
+quick/react/deep without a second LLM round-trip.
 
 Deliberately reuses `build_capability_context()`, `build_prior_routing_
 messages()`, `build_tier_rubric()`, and `build_sql_verify_override()` from
@@ -32,18 +26,26 @@ gets turned into the actual SSE payload.
 
 from __future__ import annotations
 
-from logging import Logger
+import logging
+import os
 from typing import TYPE_CHECKING, Any, Literal
 
+from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
-from app.agent_loop_lib.transport.opik_tracing import (
-    build_langchain_opik_callbacks,
-    is_opik_configured,
-    maybe_start_named_span,
-    record_named_span_output,
+from app.agent_loop_lib.agent.single_shot_runner import (
+    StructuredSingleShotError,
+    build_task_complete_runtime,
+    run_structured_single_shot,
 )
+from app.agent_loop_lib.agent.spec import ModelSpec
+from app.agent_loop_lib.core.structured_output import coerce_list
+from app.agent_loop_lib.core.types import Goal
+from app.agent_loop_lib.transport.opik_tracing import is_opik_configured, wrap_if_enabled
+from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
+from app.agents.agent_loop.converters import convert_message_from_langchain
+from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.modules.agents.qna.router import (
     build_capability_context,
     build_prior_routing_messages,
@@ -124,6 +126,17 @@ _INTENT_INSTRUCTIONS = (
     "than one option, false for mutually-exclusive choices).\n\n"
 )
 
+_INTENT_OUTPUT_HINT = (
+    "\n\nYour JSON output must include these fields:\n"
+    '- "reasoning": string\n'
+    '- "rewritten_query": string\n'
+    '- "requirements": array of strings\n'
+    '- "success_criteria": array of strings\n'
+    '- "gaps": array of strings\n'
+    '- "clarifying_questions": array of objects with "question", "options" '
+    '(array of {"label": string}), and "multiSelect" boolean\n'
+)
+
 
 def _build_intent_prompt(include_routing: bool, capability_block: str, sql_verify_override: str, n_knowledge: int) -> str:
     if not include_routing:
@@ -136,6 +149,35 @@ def _build_intent_prompt(include_routing: bool, capability_block: str, sql_verif
         "populated (it's ignored if the request is paused for a reply, but "
         "costs nothing to fill in).\n\n"
         + build_tier_rubric(capability_block, sql_verify_override, n_knowledge)
+        + '\n\nInclude `"route"` in your JSON output as one of "quick", "react", or "deep".'
+    )
+
+
+def _decision_from_payload(payload: dict[str, Any], *, include_routing: bool) -> IntentRouteDecision:
+    clarifying = payload.get("clarifying_questions") or []
+    if not isinstance(clarifying, list):
+        clarifying = []
+    route = payload.get("route")
+    if not include_routing:
+        route = None
+    elif route not in ("quick", "react", "deep"):
+        route = None
+    return IntentRouteDecision(
+        reasoning=str(payload.get("reasoning") or ""),
+        rewritten_query=str(payload.get("rewritten_query") or ""),
+        requirements=[str(x) for x in coerce_list(payload.get("requirements"))],
+        success_criteria=[str(x) for x in coerce_list(payload.get("success_criteria"))],
+        gaps=[str(x) for x in coerce_list(payload.get("gaps"))],
+        clarifying_questions=[AskUserQuestionItemInput.model_validate(q) for q in clarifying if isinstance(q, dict)],
+        route=route,
+    )
+
+
+def _fallback_decision(user_query: str, *, include_routing: bool, reason: str) -> IntentRouteDecision:
+    return IntentRouteDecision(
+        reasoning=reason,
+        rewritten_query=user_query,
+        route="react" if include_routing else None,
     )
 
 
@@ -149,39 +191,20 @@ async def parse_intent_and_route(
     graph_provider: Any = None,
     is_multimodal_llm: bool = False,
     org_id: str = "",
+    model_name: str = "",
 ) -> IntentRouteDecision:
-    """Single structured-output call that understands/reorganizes the query
+    """Single structured agent run that understands/reorganizes the query
     and, when `include_routing=True`, also picks the execution tier.
 
-    Falls back to the raw query (route='react' when routing was requested)
-    if the query is empty or the LLM call/parsing fails — mirrors
-    `classify_route()`'s own fallback so a broken intent call never blocks
-    the agent from running with the raw user query, same as before this
-    module existed. `gaps`/`clarifying_questions` default to empty on every
-    fallback path too — a broken intent call must never surprise-pause the
-    request for a "clarification" nobody asked for; it degrades to running
-    with the raw query instead, same as before this field existed.
-
-    Traced with its own Opik span (`intent.parse_intent_and_route`) rather
-    than a `callbacks=[opik_tracer]` LangChain config — no caller ever
-    actually passed a tracer through the old (now-removed) `opik_tracer`
-    parameter, so this call was never actually traced despite accepting
-    the argument. This still runs BEFORE `PipesHubAgentFactory.create()`
-    constructs the `Agent` (`router.py::select_loop_and_goal()` calls it
-    synchronously first to resolve the `Goal`/`LoopStrategy`), i.e. before
-    `Agent.run()` opens the conversation's root trace — so this span has
-    no active trace/span to nest under and becomes its own standalone
-    root trace (see `transport/opik_tracing.py`'s module docstring), still
-    showing up in Opik as `intent.parse_intent_and_route` rather than not
-    being traced at all.
+    Runs through the shared `Agent` + `SingleShotLoop` + `task_complete`
+    path (`agent_loop_lib/agent/single_shot_runner.py`) — never a bespoke
+    `with_structured_output()` loop. Falls back to the raw query
+    (route='react' when routing was requested) if the query is empty or the
+    agent run/parsing fails.
     """
     user_query = query_info.get("query", "").strip()
     if not user_query:
-        return IntentRouteDecision(
-            reasoning="empty query",
-            rewritten_query=user_query,
-            route="react" if include_routing else None,
-        )
+        return _fallback_decision(user_query, include_routing=include_routing, reason="empty query")
 
     from app.modules.transformers.blob_storage import BlobStorage
     from app.utils.attachment_utils import resolve_attachments
@@ -223,33 +246,37 @@ async def parse_intent_and_route(
         except Exception as exc:
             logger.warning("Intent: failed to resolve attachments for intent context: %s", exc)
 
-    try:
-        from langchain_core.messages import HumanMessage, SystemMessage
+    seed_messages = [convert_message_from_langchain(m) for m in prior_messages]
+    seed_messages.append(convert_message_from_langchain(HumanMessage(content=human_content)))
 
-        structured_llm = llm.with_structured_output(IntentRouteDecision)
-        with maybe_start_named_span(
-            enabled=is_opik_configured(),
+    opik_active = is_opik_configured()
+    opik_project_name = os.getenv("OPIK_PROJECT_NAME")
+    transport_registry = TransportRegistry()
+    transport_registry.register(
+        "langchain",
+        lambda: wrap_if_enabled(
+            LangChainTransport(llm, model_name=model_name, opik_project_name=opik_project_name),
+            enabled=opik_active,
+            project_name=opik_project_name,
+        ),
+    )
+    runtime = build_task_complete_runtime(
+        transport_registry,
+        opik_enabled=opik_active,
+        opik_project_name=opik_project_name,
+    )
+
+    try:
+        payload = await run_structured_single_shot(
             name="intent.parse_intent_and_route",
-            span_input={
-                "system_prompt": system_prompt,
-                "query": user_query,
-                "include_routing": include_routing,
-                "human_content": human_content,
-            },
-        ) as span:
-            # Native LangChain callback alongside the manual span above —
-            # see `langchain_transport.py::_build_opik_callbacks`'s
-            # docstring for why this is what actually gets the system
-            # prompt rendering Opik's "Pretty" message view supports (this
-            # call bypasses `LangChainTransport` entirely, invoking
-            # `with_structured_output()` directly, so it needs its own
-            # callback rather than inheriting one).
-            opik_callbacks = build_langchain_opik_callbacks()
-            decision: IntentRouteDecision = await structured_llm.ainvoke(
-                [SystemMessage(content=system_prompt), *prior_messages, HumanMessage(content=human_content)],
-                config={"callbacks": opik_callbacks} if opik_callbacks else {},
-            )
-            record_named_span_output(span, decision.model_dump(mode="json"))
+            system_prompt=system_prompt,
+            goal=Goal(description=user_query),
+            runtime=runtime,
+            model_spec=ModelSpec(provider="langchain", model=model_name),
+            output_schema_hint=_INTENT_OUTPUT_HINT,
+            seed_messages=seed_messages,
+        )
+        decision = _decision_from_payload(payload, include_routing=include_routing)
         if not decision.rewritten_query.strip():
             decision.rewritten_query = user_query
         logger.info(
@@ -257,12 +284,19 @@ async def parse_intent_and_route(
             decision.rewritten_query[:120], decision.route, decision.reasoning[:120],
         )
         return decision
+    except StructuredSingleShotError as e:
+        logger.warning("Intent parse failed, falling back to raw query: %s", e)
+        return _fallback_decision(
+            user_query,
+            include_routing=include_routing,
+            reason=f"intent parse failed: {e}",
+        )
     except Exception as e:
         logger.warning("Intent parse failed, falling back to raw query: %s", e)
-        return IntentRouteDecision(
-            reasoning=f"intent parse failed: {e}",
-            rewritten_query=user_query,
-            route="react" if include_routing else None,
+        return _fallback_decision(
+            user_query,
+            include_routing=include_routing,
+            reason=f"intent parse failed: {e}",
         )
 
 

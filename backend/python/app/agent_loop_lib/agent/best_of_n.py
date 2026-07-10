@@ -9,7 +9,6 @@ from app.agent_loop_lib.core.types import (
     Goal,
     ToolCall,
     ToolResult,
-    UserMessage,
 )
 
 """Run-level best-of-N: the `best_of_n` special route in
@@ -30,17 +29,6 @@ _JUDGE_SYSTEM = (
     "criteria and whether the candidate actually achieved the goal — ignore "
     "style or length."
 )
-
-
-def _judge_schema(n: int) -> dict:
-    return {
-        "type": "object",
-        "properties": {
-            "winner_index": {"type": "integer", "minimum": 0, "maximum": max(n - 1, 0)},
-            "reason": {"type": "string"},
-        },
-        "required": ["winner_index", "reason"],
-    }
 
 
 async def _run_one_candidate(agent, candidate_spec, candidate_goal: Goal, team_id: str) -> AgentResult:
@@ -66,25 +54,38 @@ async def _judge(
     if len(successful) == 1:
         return 0, "Only one successful candidate — judge skipped."
 
-    model = None
-    if agent.runtime.transport_registry is not None:
-        try:
-            model = agent.spec.model.resolve(agent.runtime.transport_registry)
-        except Exception:
-            model = None
-    if model is None:
+    if agent.runtime.transport_registry is None:
         return 0, "No model available for judging; defaulting to the first successful candidate."
 
-    candidates_text = "\n\n".join(f"Candidate {i}:\n{c.output}" for i, (_, c) in enumerate(successful))
-    response = await model.complete_structured(
-        messages=[UserMessage(
-            content=f"Goal: {candidate_goal_desc}\n\nCriteria: {criteria}\n\n{candidates_text}",
-        )],
-        system=_JUDGE_SYSTEM,
-        output_schema=_judge_schema(len(successful)),
-        model=agent.spec.model.model,
+    from app.agent_loop_lib.agent.single_shot_runner import (
+        StructuredSingleShotError,
+        build_task_complete_runtime,
+        run_structured_single_shot,
     )
-    verdict = response.data
+
+    candidates_text = "\n\n".join(f"Candidate {i}:\n{c.output}" for i, (_, c) in enumerate(successful))
+    schema_hint = (
+        "\n\nYour JSON output must include:\n"
+        f'- "winner_index": integer from 0 to {len(successful) - 1}\n'
+        '- "reason": string explaining the choice\n'
+    )
+    runtime = build_task_complete_runtime(
+        agent.runtime.transport_registry,
+        opik_enabled=agent.runtime.opik_enabled,
+        opik_project_name=agent.runtime.opik_project_name,
+    )
+    try:
+        verdict = await run_structured_single_shot(
+            name="best-of-n-judge",
+            system_prompt=_JUDGE_SYSTEM,
+            goal=Goal(description=f"Goal: {candidate_goal_desc}\n\nCriteria: {criteria}\n\n{candidates_text}"),
+            runtime=runtime,
+            model_spec=agent.spec.model,
+            output_schema_hint=schema_hint,
+        )
+    except StructuredSingleShotError as exc:
+        return 0, f"Judge call failed ({exc}); defaulting to the first successful candidate."
+
     local_index = int(verdict.get("winner_index", 0))
     local_index = max(0, min(local_index, len(successful) - 1))
     return local_index, str(verdict.get("reason", ""))
