@@ -522,6 +522,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
     ) -> bool:
         parsing_held = False
         indexing_held = False
+        handler_invoked = False
 
         if not self.parsing_semaphore or not self.indexing_semaphore:
             self.logger.error("Semaphores not initialized for %s", message_id)
@@ -548,6 +549,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 return False
 
             if self.message_handler:
+                handler_invoked = True
                 # Carry the producer's trace id into indexing logs.
                 ctx = context_from_envelope({"requestId": parsed_message.requestId})
                 token = set_context(ctx.root_id)
@@ -569,8 +571,6 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                             indexing_held = False
                 finally:
                     reset_context(token)
-
-                await self._ack_message(stream_name, message_id)
             else:
                 self.logger.error("No message handler available for %s", message_id)
                 return False
@@ -587,3 +587,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 self.parsing_semaphore.release()
             if indexing_held and self.indexing_semaphore:
                 self.indexing_semaphore.release()
+            # Terminal indexing failures re-raise after persisting FAILED status.
+            # ACK anyway so the message leaves the PEL and is not redelivered on
+            # every indexing restart (Redis PEL zombie retry).
+            if handler_invoked:
+                await self._ack_message(stream_name, message_id)

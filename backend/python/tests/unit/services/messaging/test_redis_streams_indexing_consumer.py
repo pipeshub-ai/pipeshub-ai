@@ -825,22 +825,66 @@ class TestProcessMessageWrapper:
     async def test_handler_exception_releases_semaphores(self, consumer):
         consumer.parsing_semaphore = asyncio.Semaphore(1)
         consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.redis = AsyncMock()
+        mock_main_loop = MagicMock()
+        mock_main_loop.is_running.return_value = True
+        consumer.main_loop = mock_main_loop
 
         async def handler(msg):
             raise RuntimeError("handler exploded")
             yield  # noqa: unreachable
 
         consumer.message_handler = handler
-        result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+
+        ack_future = Future()
+        ack_future.set_result(1)
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
+            result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+
         assert result is False
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
+        consumer.redis.xack.assert_called_once_with(
+            "s", consumer.config.group_id, "1-0"
+        )
+
+    @pytest.mark.asyncio
+    async def test_handler_terminal_failure_is_acked(self, consumer):
+        """Regression: handler exceptions must XACK so failed jobs leave the PEL."""
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.redis = AsyncMock()
+        mock_main_loop = MagicMock()
+        mock_main_loop.is_running.return_value = True
+        consumer.main_loop = mock_main_loop
+
+        async def handler(msg):
+            raise RuntimeError("indexing failed after status update")
+            yield  # noqa: unreachable
+
+        consumer.message_handler = handler
+
+        ack_future = Future()
+        ack_future.set_result(1)
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
+            result = await consumer._process_message_wrapper(
+                "record-events", "99-1", _valid_fields()
+            )
+
+        assert result is False
+        consumer.redis.xack.assert_called_once_with(
+            "record-events", consumer.config.group_id, "99-1"
+        )
 
     @pytest.mark.asyncio
     async def test_handler_exception_after_parsing_released(self, consumer):
         """Handler raises after yielding PARSING_COMPLETE. Only indexing released in finally."""
         consumer.parsing_semaphore = asyncio.Semaphore(1)
         consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.redis = AsyncMock()
+        mock_main_loop = MagicMock()
+        mock_main_loop.is_running.return_value = True
+        consumer.main_loop = mock_main_loop
 
         async def handler(msg):
             yield PipelineEvent(
@@ -850,10 +894,18 @@ class TestProcessMessageWrapper:
             raise RuntimeError("late boom")
 
         consumer.message_handler = handler
-        result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+
+        ack_future = Future()
+        ack_future.set_result(1)
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
+            result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+
         assert result is False
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
+        consumer.redis.xack.assert_called_once_with(
+            "s", consumer.config.group_id, "1-0"
+        )
 
     @pytest.mark.asyncio
     async def test_xack_timeout_logged(self, consumer):
