@@ -17,7 +17,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import SystemMessage as LCSystemMessage
 from langchain_core.messages import ToolMessage as LCToolMessage
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field, create_model
@@ -25,10 +26,14 @@ from pydantic import BaseModel, Field, create_model
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     ImagePart,
+    ImageSource,
     MessageRole,
+    SystemMessage,
     TextPart,
     ThinkingPart,
     ToolCall,
+    ToolMessage,
+    UserMessage,
 )
 from app.agent_loop_lib.core.responses import TokenUsage
 
@@ -65,10 +70,65 @@ def _part_to_block(part: Part) -> dict[str, Any]:
     return {"type": "text", "text": str(part)}
 
 
+def _langchain_block_to_part(block: dict[str, Any]) -> Part | None:
+    block_type = block.get("type")
+    if block_type == "text":
+        text = block.get("text", "")
+        return TextPart(text=text) if text else None
+    if block_type == "image_url":
+        image_url = block.get("image_url") or {}
+        url = image_url.get("url", "") if isinstance(image_url, dict) else str(image_url)
+        if url:
+            return ImagePart(source=ImageSource(type="url", data=url))
+    return None
+
+
+def convert_message_from_langchain(message: BaseMessage) -> Message:
+    """Convert one LangChain message into agent-loop's message model."""
+    if isinstance(message, LCSystemMessage):
+        content = message.content
+        return SystemMessage(content=content if isinstance(content, str) else str(content))
+
+    if isinstance(message, HumanMessage):
+        content = message.content
+        if isinstance(content, str):
+            return UserMessage(content=content)
+        if isinstance(content, list):
+            parts: list[Part] = []
+            for block in content:
+                if isinstance(block, dict):
+                    part = _langchain_block_to_part(block)
+                    if part is not None:
+                        parts.append(part)
+                elif isinstance(block, str) and block:
+                    parts.append(TextPart(text=block))
+            return UserMessage(content=parts or "")
+        return UserMessage(content=str(content))
+
+    if isinstance(message, AIMessage):
+        text = message.content if isinstance(message.content, str) else str(message.content)
+        tool_calls = [convert_tool_call_from_langchain(c) for c in (message.tool_calls or [])]
+        return AssistantMessage(content=text, tool_calls=tool_calls or None)
+
+    if isinstance(message, LCToolMessage):
+        content = message.content
+        return ToolMessage(
+            content=content if isinstance(content, str) else str(content),
+            tool_call_id=message.tool_call_id,
+            is_error=getattr(message, "status", None) == "error",
+        )
+
+    raise ValueError(f"Unsupported LangChain message type: {type(message)!r}")
+
+
+def convert_messages_from_langchain(messages: list[BaseMessage]) -> list[Message]:
+    return [convert_message_from_langchain(m) for m in messages]
+
+
 def convert_message_to_langchain(message: Message) -> BaseMessage:
     """Convert one agent-loop `Message` to its LangChain equivalent."""
     if message.role == MessageRole.SYSTEM:
-        return SystemMessage(content=message.content)
+        return LCSystemMessage(content=message.content)
 
     if message.role == MessageRole.USER:
         content = message.content
@@ -104,7 +164,7 @@ def convert_messages_to_langchain(
     contract: `system` arrives as a separate kwarg, not inside `messages`)."""
     converted = [convert_message_to_langchain(m) for m in messages]
     if system:
-        return [SystemMessage(content=system), *converted]
+        return [LCSystemMessage(content=system), *converted]
     return converted
 
 
@@ -267,6 +327,8 @@ def convert_tool_schemas_to_langchain(
 
 
 __all__ = [
+    "convert_message_from_langchain",
+    "convert_messages_from_langchain",
     "convert_message_to_langchain",
     "convert_messages_to_langchain",
     "convert_tool_call_from_langchain",
