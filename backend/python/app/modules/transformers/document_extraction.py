@@ -354,7 +354,7 @@ class DocumentExtraction(Transformer):
             elif isinstance(response, str):
                 raw_content = response
             else:
-                raw_content = response
+                raw_content = None
 
             summary_text = coerce_message_content_to_text(raw_content).strip()
             if not summary_text:
