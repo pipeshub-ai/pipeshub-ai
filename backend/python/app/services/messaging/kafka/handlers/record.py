@@ -83,7 +83,7 @@ class RecordEventHandler(BaseEventService):
     async def _propagate_primary_failure_to_queued_duplicates(
         self,
         record_id: str,
-        virtual_record_id,
+        virtual_record_id: str | None,
         reason: str | None,
     ) -> None:
         """Mark same-MD5 QUEUED copies failed when the primary copy fails.
