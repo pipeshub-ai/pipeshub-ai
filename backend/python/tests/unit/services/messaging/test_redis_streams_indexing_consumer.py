@@ -720,10 +720,12 @@ class TestProcessMessageWrapper:
         consumer.parsing_semaphore = asyncio.Semaphore(1)
         consumer.indexing_semaphore = asyncio.Semaphore(1)
         consumer.message_handler = None
+        consumer.redis = AsyncMock()
         result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
         assert result is False
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
+        consumer.redis.xack.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_successful_processing_with_xack(self, consumer):
