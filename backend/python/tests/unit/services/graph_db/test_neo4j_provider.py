@@ -2567,6 +2567,28 @@ class TestDuplicateAndSyncOperations:
         assert empty_payload[0]["extractionStatus"] == "EMPTY"
 
     @pytest.mark.asyncio
+    async def test_update_queued_duplicates_status_includes_reason(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"record": {"id": "rec-1", "md5Checksum": "m1"}}],
+                [{"record": {"id": "rec-2"}}],
+            ]
+        )
+        neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "rec-2"})  # type: ignore[method-assign]
+        neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        await neo4j_provider.update_queued_duplicates_status(
+            "rec-1",
+            "FAILED",
+            reason="Primary duplicate indexing failed: Rate limit exceeded",
+        )
+
+        payload = neo4j_provider.batch_update_nodes.await_args.args[0]
+        assert payload[0]["reason"] == "Primary duplicate indexing failed: Rate limit exceeded"
+
+    @pytest.mark.asyncio
     async def test_update_queued_duplicates_status_returns_minus_one_on_exception(
         self, neo4j_provider: Neo4jProvider
     ):
