@@ -197,8 +197,10 @@ def _agent_create_payload(
     if kb_id and org_id:
         payload["knowledge"] = [
             {
-                "connectorId": f"knowledgeBase_{org_id}",
-                "filters": {"recordGroups": [kb_id], "records": []},
+                "connectorId": kb_id,  # KB UUID (not knowledgeBase_orgId)
+                "type": "KB",
+                "displayName": "Integration Test KB",
+                "filters": {},  # No recordGroups - KBs are now apps
             },
         ]
     return payload

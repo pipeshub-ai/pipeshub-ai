@@ -545,7 +545,7 @@ class TestDeleteFolder:
     @pytest.mark.asyncio
     async def test_not_owner(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
 
         result = await service.delete_folder("kb1", "f1", "user1")
         assert result["success"] is False

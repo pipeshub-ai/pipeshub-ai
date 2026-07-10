@@ -4701,8 +4701,8 @@ class Neo4jProvider(IGraphDBProvider):
 
                 # Query only filtered regular connectors (exclude KB apps)
                 connectors_to_query = [
-                    cid for cid in connector_app_ids_set
-                    if cid in connector_ids_filter
+                    cid for cid in connector_ids_filter
+                    if cid in connector_app_ids_set
                 ]
                 self.logger.debug(f"Querying {len(connectors_to_query)} filtered connectors")
 
@@ -4749,9 +4749,10 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.info("🔍 Scenario 4: Only connector filter applied - skipping KB")
 
                 # Query only filtered regular connectors (skip KB entirely)
+                # Preserve the order from the filter list
                 connectors_to_query = [
-                    cid for cid in connector_app_ids_set
-                    if cid in connector_ids_filter
+                    cid for cid in connector_ids_filter
+                    if cid in connector_app_ids_set
                 ]
                 self.logger.debug(f"Querying {len(connectors_to_query)} filtered connectors only")
 

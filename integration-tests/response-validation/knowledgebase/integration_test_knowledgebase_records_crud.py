@@ -31,6 +31,7 @@ class TestKnowledgeBaseRecordsCrud:
         self.reindex_group_url = (
             f"{self.client.base_url}/api/v1/knowledgeBase/reindex/record-group/"
         )
+        self.reindex_connector_url = f"{self.client.base_url}/api/v1/connectors/"
         self.stream_url = f"{self.client.base_url}/api/v1/knowledgeBase/stream/record/"
         self.headers = {
             "Authorization": f"Bearer {self.client._access_token}",
@@ -263,83 +264,58 @@ class TestKnowledgeBaseRecordsCrud:
         )
         assert resp.status_code == 400, resp.text
 
-    def test_reindex_record_group_success(
+    def test_reindex_kb_connector_success(
         self, six_kb_records: dict[str, object]
     ) -> None:
-        record_group_id = str(six_kb_records["kb_id"])
+        kb_id = str(six_kb_records["kb_id"])
 
         resp = requests.post(
-            f"{self.reindex_group_url}{record_group_id}",
+            f"{self.reindex_connector_url}{kb_id}/reindex",
             headers=self.headers,
             json={},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert_response_matches_openapi_operation(body, "reindexRecordGroup")
+        assert_response_matches_openapi_operation(body, "reindexConnector")
 
         assert body["success"] is True
-        assert body["recordGroupId"] == record_group_id
-        assert body["depth"] == 0
+        assert body["connectorId"] == kb_id
         assert "message" in body
+        assert body["eventPublished"] is True
 
-    def test_reindex_record_group_negative(
+    def test_reindex_kb_connector_negative(
         self, six_kb_records: dict[str, object]
     ) -> None:
         missing_id = str(uuid4())
-        reindex_group_url = f"{self.reindex_group_url}{missing_id}"
+        reindex_connector_url = f"{self.reindex_connector_url}{missing_id}/reindex"
 
         resp = requests.post(
-            reindex_group_url, json={}, timeout=self.client.timeout_seconds
+            reindex_connector_url, json={}, timeout=self.client.timeout_seconds
         )
         assert resp.status_code == 401, resp.text
-        assert_response_matches_openapi_operation(
-            resp.json(), "reindexRecordGroup", status_code="401"
-        )
 
         resp = requests.post(
-            reindex_group_url,
+            reindex_connector_url,
             headers={"Authorization": "Bearer invalid", "Content-Type": "application/json"},
             json={},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 401, resp.text
-        assert_response_matches_openapi_operation(
-            resp.json(), "reindexRecordGroup", status_code="401"
-        )
 
         resp = requests.post(
-            f"{self.reindex_group_url}{uuid4()}",
+            f"{self.reindex_connector_url}{uuid4()}/reindex",
             headers=self.headers,
             json={},
             timeout=self.client.timeout_seconds,
         )
         assert resp.status_code == 404, resp.text
-        assert_response_matches_openapi_operation(
-            resp.json(), "reindexRecordGroup", status_code="404"
-        )
 
-        record_group_id = str(six_kb_records["kb_id"])
-        group_reindex_url = f"{self.reindex_group_url}{record_group_id}"
+        kb_id = str(six_kb_records["kb_id"])
+        kb_reindex_url = f"{self.reindex_connector_url}{kb_id}/reindex"
 
         resp = requests.post(
-            group_reindex_url,
-            headers=self.headers,
-            json={"depth": 101},
-            timeout=self.client.timeout_seconds,
-        )
-        assert resp.status_code == 400, resp.text
-
-        resp = requests.post(
-            group_reindex_url,
-            headers=self.headers,
-            json={"depth": -2},
-            timeout=self.client.timeout_seconds,
-        )
-        assert resp.status_code == 400, resp.text
-
-        resp = requests.post(
-            group_reindex_url,
+            kb_reindex_url,
             headers=self.headers,
             json={"statusFilters": [1]},
             timeout=self.client.timeout_seconds,
