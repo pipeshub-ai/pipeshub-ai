@@ -32,7 +32,7 @@ class HTMLParserProtocol(Protocol):
         """Extract image URLs and replace alt-text with sequential ``Image_N`` labels."""
         ...
 
-    async def parse(
+    async def parse_to_blocks(
         self,
         html_content: str,
         caption_map: Dict[str, str] | None = None,

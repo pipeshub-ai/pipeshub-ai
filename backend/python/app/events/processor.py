@@ -984,7 +984,7 @@ class Processor:
         self.logger.debug(
             f"📄 Processing BlockGroup {block_group.index} ({block_group.name})"
         )
-        processed_blocks_container = await md_parser.parse(
+        processed_blocks_container = await md_parser.parse_to_blocks(
             modified_markdown,
             caption_map=caption_map or None,
             name=block_group.name or record_name,
@@ -1038,7 +1038,7 @@ class Processor:
                     f"converted {len([u for u in base64_urls if u])} to base64"
                 )
 
-        processed_blocks_container = await html_parser.parse(
+        processed_blocks_container = await html_parser.parse_to_blocks(
             modified_html,
             caption_map=caption_map or None,
             name=block_group.name or record_name,
@@ -1769,6 +1769,7 @@ class Processor:
             block_containers = await parser.parse_to_blocks(
                 modified_markdown,
                 caption_map=caption_map or None,
+                name=recordName,
             )
 
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))

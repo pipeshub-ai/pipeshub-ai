@@ -972,7 +972,7 @@ class TestProcessHtmlDocument:
                 )
             )
 
-        mock_html_parser.parse.assert_awaited_once_with(
+        mock_html_parser.parse_to_blocks.assert_awaited_once_with(
             "<p>Test</p>", caption_map=None, name="test.html"
         )
         mock_pipeline.return_value.apply.assert_awaited_once()
@@ -2502,7 +2502,7 @@ class TestProcessSingleBlockgroup:
 
     @pytest.mark.asyncio
     async def test_success_delegates_to_md_parser(self):
-        """Successful processing delegates to md_parser.parse with caption map."""
+        """Successful processing delegates to md_parser.parse_to_blocks with caption map."""
         proc, _, _, _ = _make_processor()
         proc._process_blockgroup_images = AsyncMock(
             return_value=("# Hello", {"Image_1": "data:image/png;base64,abc"})
@@ -2518,7 +2518,7 @@ class TestProcessSingleBlockgroup:
         result_container.block_groups = [MagicMock()]
 
         mock_md_parser = MagicMock()
-        mock_md_parser.parse = AsyncMock(return_value=result_container)
+        mock_md_parser.parse_to_blocks = AsyncMock(return_value=result_container)
 
         new_bgs, new_blocks = await proc._process_single_blockgroup(
             bg, "test.md", mock_md_parser
@@ -2526,7 +2526,7 @@ class TestProcessSingleBlockgroup:
 
         assert len(new_blocks) == 1
         assert len(new_bgs) == 1
-        mock_md_parser.parse.assert_awaited_once_with(
+        mock_md_parser.parse_to_blocks.assert_awaited_once_with(
             "# Hello",
             caption_map={"Image_1": "data:image/png;base64,abc"},
             name="test.md",
@@ -2548,7 +2548,7 @@ class TestProcessSingleBlockgroup:
         result_container.block_groups = []
 
         mock_md_parser = MagicMock()
-        mock_md_parser.parse = AsyncMock(return_value=result_container)
+        mock_md_parser.parse_to_blocks = AsyncMock(return_value=result_container)
 
         new_bgs, new_blocks = await proc._process_single_blockgroup(
             bg, "test_record", mock_md_parser
@@ -2556,7 +2556,7 @@ class TestProcessSingleBlockgroup:
 
         assert len(new_blocks) == 1
         assert new_bgs == []
-        mock_md_parser.parse.assert_awaited_once_with(
+        mock_md_parser.parse_to_blocks.assert_awaited_once_with(
             "# Hello",
             caption_map=None,
             name="test_record",

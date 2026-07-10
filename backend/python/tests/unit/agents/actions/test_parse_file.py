@@ -802,11 +802,11 @@ class TestMarkdownStringToBlocks:
             return_value=("# H", [])
         )
         expected = BlocksContainer(blocks=[], block_groups=[])
-        parser._md_parser.parse = AsyncMock(return_value=expected)
+        parser._md_parser.parse_to_blocks = AsyncMock(return_value=expected)
 
         result = await parser._markdown_string_to_blocks("# H", "myfile.md")
         assert result is expected
-        parser._md_parser.parse.assert_awaited_once_with(
+        parser._md_parser.parse_to_blocks.assert_awaited_once_with(
             "# H", caption_map=None, name="myfile.md"
         )
 
@@ -821,11 +821,11 @@ class TestMarkdownStringToBlocks:
         )
         parser._image_parser.urls_to_base64 = AsyncMock(return_value=["data:image/png;base64,QQ=="])
         expected = BlocksContainer(blocks=[], block_groups=[])
-        parser._md_parser.parse = AsyncMock(return_value=expected)
+        parser._md_parser.parse_to_blocks = AsyncMock(return_value=expected)
 
         result = await parser._markdown_string_to_blocks("# doc", "x.md")
         assert result is expected
-        parser._md_parser.parse.assert_awaited_once_with(
+        parser._md_parser.parse_to_blocks.assert_awaited_once_with(
             "# doc",
             caption_map={"cap1": "data:image/png;base64,QQ=="},
             name="x.md",
@@ -839,10 +839,10 @@ class TestMarkdownStringToBlocks:
         )
         parser._image_parser.urls_to_base64 = AsyncMock(return_value=[""])
         expected = BlocksContainer(blocks=[], block_groups=[])
-        parser._md_parser.parse = AsyncMock(return_value=expected)
+        parser._md_parser.parse_to_blocks = AsyncMock(return_value=expected)
 
         await parser._markdown_string_to_blocks("# x", "x.md")
-        parser._md_parser.parse.assert_awaited_once_with(
+        parser._md_parser.parse_to_blocks.assert_awaited_once_with(
             "# x", caption_map=None, name="x.md"
         )
 
@@ -854,10 +854,10 @@ class TestMarkdownStringToBlocks:
         )
         parser._image_parser.urls_to_base64 = AsyncMock(return_value=["data:x"])
         expected = BlocksContainer(blocks=[], block_groups=[])
-        parser._md_parser.parse = AsyncMock(return_value=expected)
+        parser._md_parser.parse_to_blocks = AsyncMock(return_value=expected)
 
         await parser._markdown_string_to_blocks("#", "x.md")
-        parser._md_parser.parse.assert_awaited_once_with(
+        parser._md_parser.parse_to_blocks.assert_awaited_once_with(
             "#",
             caption_map={"c1": "data:x"},
             name="x.md",

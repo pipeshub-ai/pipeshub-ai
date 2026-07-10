@@ -909,7 +909,7 @@ class TestProcessHtmlInputHandling:
                 proc.process_html_document("test.html", "r1", "1", "src", "o1", html_str, "vr1")
             )
 
-        html_parser.parse.assert_awaited_once_with(
+        html_parser.parse_to_blocks.assert_awaited_once_with(
             "<p>Hello</p>", caption_map=None, name="test.html"
         )
         assert any(e.event == "indexing_complete" for e in events)
@@ -997,6 +997,7 @@ class TestProcessMdImageUrlConversion:
         md_parser.parse_to_blocks.assert_awaited_once_with(
             "# Hello ![img](image_alt_text)",
             caption_map={"image_alt_text": "data:image/png;base64,abc123"},
+            name="test.md",
         )
 
 
@@ -1043,6 +1044,7 @@ class TestProcessMdImageBlockCaptionMapping:
         md_parser.parse_to_blocks.assert_awaited_once_with(
             "# Doc\n![cap1](cap1)",
             caption_map={"cap1": "data:image/png;base64,IMAGEDATA"},
+            name="test.md",
         )
 
     @pytest.mark.asyncio
@@ -1082,6 +1084,7 @@ class TestProcessMdImageBlockCaptionMapping:
         md_parser.parse_to_blocks.assert_awaited_once_with(
             "# Doc\n![missing_cap](missing_cap)",
             caption_map={"different_cap": "data:image/png;base64,DATA"},
+            name="test.md",
         )
 
     @pytest.mark.asyncio
@@ -1121,6 +1124,7 @@ class TestProcessMdImageBlockCaptionMapping:
         md_parser.parse_to_blocks.assert_awaited_once_with(
             "# Doc\n![cap1](cap1)",
             caption_map={"cap1": "data:image/png;base64,IMAGEDATA"},
+            name="test.md",
         )
 
 
@@ -1534,6 +1538,7 @@ class TestProcessorCoverageBranchesTo95:
         md_parser.parse_to_blocks.assert_awaited_once_with(
             "![pic](http://example.com/i.png)",
             caption_map={"pic": "data:image/png;base64,AAA"},
+            name="doc.md",
         )
         assert blk.data and blk.data.get("uri", "").startswith("data:")
 

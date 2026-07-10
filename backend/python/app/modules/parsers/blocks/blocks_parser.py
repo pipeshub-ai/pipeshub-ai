@@ -296,7 +296,7 @@ class BlocksParser:
             markdown_data
         )
 
-        processed_blocks_container = await md_parser.parse(
+        processed_blocks_container = await md_parser.parse_to_blocks(
             modified_markdown,
             caption_map=caption_map or None,
             name=block_group.name or record_name,

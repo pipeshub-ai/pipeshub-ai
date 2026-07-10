@@ -260,7 +260,7 @@ async def _build_text_blocks(file_content: bytes) -> BlocksContainer:
     except UnicodeDecodeError:
         text = file_content.decode("latin-1")
     parser = MarkdownItParser()
-    return await parser.parse(text)
+    return await parser.parse_to_blocks(text.strip())
 
 
 # Dependency injection functions

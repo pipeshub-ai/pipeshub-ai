@@ -24,14 +24,14 @@ class MarkdownParserProtocol(Protocol):
         """Extract images and normalise alt-text to sequential ``Image_N`` labels."""
         ...
 
-    async def parse(
+    async def parse_to_blocks(
         self,
         md_content: str,
         caption_map: Dict[str, str] | None = None,
         name: str | None = None,
         page_number: int | None = None,
     ) -> BlocksContainer:
-        """Parse Markdown content into a ``BlocksContainer``."""
+        """Parse preprocessed Markdown content into a ``BlocksContainer``."""
         ...
 
 

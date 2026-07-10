@@ -87,19 +87,20 @@ class SelectolaxHtmlParser:
     async def parse_to_blocks(
         self,
         html_content: str,
-        *,
-        base_url: str | None = None,
         caption_map: Dict[str, str] | None = None,
+        base_url: str | None = None,
+        name: str | None = None,
     ) -> BlocksContainer:
         """Convert HTML directly to a ``BlocksContainer``.
 
         Args:
             html_content: HTML source string.
-            base_url: Optional base URL for resolving relative image ``src``
-                attributes when no ``<base>`` tag is present.
             caption_map: Optional mapping of image alt-text labels to
                 base-64 data URIs (or any string value).  When provided,
                 matching image blocks will have their ``data["uri"]`` set.
+            base_url: Optional base URL for resolving relative image ``src``
+                attributes when no ``<base>`` tag is present.
+            name: Unused; kept for signature compatibility with other HTML backends.
 
         Returns:
             Populated ``BlocksContainer``.
@@ -131,32 +132,6 @@ class SelectolaxHtmlParser:
         except Exception as e:
             self._logger.warning("Failed to clean HTML: %s", e)
             return html_content
-
-    async def parse(
-        self,
-        html_content: str,
-        caption_map: Dict[str, str] | None = None,
-        base_url: str | None = None,
-        name: str | None = None,
-    ) -> BlocksContainer:
-        """Parse preprocessed HTML to ``BlocksContainer``.
-
-        Caller must run ``clean_html`` and ``replace_relative_image_urls`` first.
-
-        Args:
-            html_content: Preprocessed HTML source string.
-            caption_map: Optional mapping of image alt-text to base-64 data URIs.
-            base_url: Optional base URL for resolving relative image URLs.
-            name: Unused; kept for protocol signature compatibility.
-
-        Returns:
-            Populated ``BlocksContainer``.
-        """
-        return self.parse_to_blocks(
-            html_content,
-            base_url=base_url,
-            caption_map=caption_map,
-        )
 
     def extract_and_replace_images(
         self, html_content: str

@@ -2,7 +2,7 @@
 Parse supported file bytes into a ``BlocksContainer``, mirroring ``Processor`` flows.
 
 - PDF: ``PyMuPDFOpenCVProcessor.load_document`` (PyMuPDF + OpenCV), not Docling.
-- HTML: ``clean_html`` + ``replace_relative_image_urls``, extract images to base64, then ``HTMLParser.parse()``.
+- HTML: ``clean_html`` + ``replace_relative_image_urls``, extract images to base64, then ``HTMLParser.parse_to_blocks()``.
 - DOCX / PPTX / MD / TXT: ``DoclingProcessor`` parse + ``create_blocks``.
 - DOC / XLS / PPT: OLE2 → OOXML via existing converters, then same as DOCX / XLSX / PPTX.
 - CSV / TSV: decode → ``read_raw_rows`` → ``find_tables_in_csv`` →
@@ -407,7 +407,7 @@ class FileContentParser:
                 if base64_urls[i]:
                     caption_map[image["new_alt_text"]] = base64_urls[i]
 
-        return await self._md_parser.parse(
+        return await self._md_parser.parse_to_blocks(
             modified_markdown,
             caption_map=caption_map or None,
             name=file_name,
