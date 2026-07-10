@@ -60,7 +60,6 @@ export abstract class BaseCommand<T> implements ICommand<T> {
       'content-type',
       'authorization',
       'x-is-admin',
-      'x-oauth-user-id',
       HEADER_REQUEST_ID,
       'client-name'
     ]);

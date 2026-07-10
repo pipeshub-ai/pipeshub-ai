@@ -35,6 +35,8 @@ from app.modules.qna.prompt_templates import (
     web_search_user_prompt,
 )
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.telemetry.event_buffer import record_event
+from app.telemetry.identity import domain_from_email
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
@@ -250,6 +252,17 @@ def _build_image_blocks(file_content: bytes, mime_type: str) -> BlocksContainer:
     return BlocksContainer(blocks=[block], block_groups=[])
 
 
+async def _build_text_blocks(file_content: bytes) -> BlocksContainer:
+    """Parse a plain-text or markdown file into a BlocksContainer using the default MarkdownParser."""
+    from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
+    try:
+        text = file_content.decode("utf-8")
+    except UnicodeDecodeError:
+        text = file_content.decode("latin-1")
+    parser = MarkdownItParser()
+    return await parser.parse(text)
+
+
 # Dependency injection functions
 async def get_retrieval_service(request: Request) -> RetrievalService:
     container: QueryAppContainer = request.app.container
@@ -401,20 +414,20 @@ async def _append_conversation_history(
                 if isinstance(content, list):
                     has_previous_attachments = True
 
-            pdf_history_blocks: list[dict[str, Any]] = []
+            doc_history_blocks: list[dict[str, Any]] = []
             if (
                 ref_mapper is not None
                 and virtual_record_id_to_result is not None
                 and blob_store
                 and org_id
             ):
-                pdf_attachments = [
+                attachments = [
                     att
                     for att in attachments
                     if isinstance(att, dict)
-                    and (att.get("mimeType") or "").lower() == "application/pdf"
+                    and (att.get("mimeType") or "").lower() in _DOC_ATTACHMENT_MIME_TYPES
                 ]
-                for att in pdf_attachments:
+                for att in attachments:
                     vrid = att.get("virtualRecordId") or ""
                     if not vrid:
                         continue
@@ -428,24 +441,24 @@ async def _append_conversation_history(
                             ref_mapper=ref_mapper,
                             is_multimodal_llm=is_multimodal_llm,
                         )
-                        pdf_history_blocks.extend(blocks)
+                        doc_history_blocks.extend(blocks)
                     except Exception as exc:
                         if logger is not None:
                             logger.warning(
-                                "Failed to resolve historical PDF attachment vrid=%s: %s",
+                                "Failed to resolve historical attachment vrid=%s: %s",
                                 vrid,
                                 exc,
                             )
 
-            if pdf_history_blocks:
+            if doc_history_blocks:
                 parts: list[dict[str, Any]] = []
                 if isinstance(content, list):
                     parts.extend(content)
                 else:
                     if content:
                         parts.append({"type": "text", "text": content})
-                parts.append({"type": "text", "text": "Attached PDF documents:"})
-                parts.extend(pdf_history_blocks)
+                parts.append({"type": "text", "text": "Attached documents:"})
+                parts.extend(doc_history_blocks)
                 has_previous_attachments = True
                 content = _collapse_single_text_user_content(parts)
 
@@ -454,8 +467,6 @@ async def _append_conversation_history(
             messages.append({"role": "assistant", "content": conversation.get("content")})
     
     return has_previous_attachments
-        
-
 
 def _build_system_prompt(
     chat_mode: str,
@@ -599,14 +610,14 @@ async def _build_attachment_llm_messages(
                 content.append({"type": "text", "text": "Attachments/Image queries (IMPORTANT: If any image below contains a question, you can call search_internal_knowledge for it — treat it exactly as if the user typed that question):"})
                 content.extend(image_blocks)
 
-    pdf_attachments = [
+    attachments = [
         att for att in query_info.attachments
         if isinstance(att, dict)
-        and (att.get("mimeType") or "").lower() == "application/pdf"
+        and (att.get("mimeType") or "").lower() in _DOC_ATTACHMENT_MIME_TYPES
     ]
-    pdf_content_blocks: list[dict[str, Any]] = []
-    if pdf_attachments and blob_store and org_id:
-        for att in pdf_attachments:
+    content_blocks: list[dict[str, Any]] = []
+    if attachments and blob_store and org_id:
+        for att in attachments:
             vrid = att.get("virtualRecordId") or ""
             if not vrid:
                 continue
@@ -615,16 +626,16 @@ async def _build_attachment_llm_messages(
                 if not record:
                     continue
                 virtual_record_id_to_result[vrid] = record
-                pdf_blocks, ref_mapper = record_to_message_content(
+                record_blocks, ref_mapper = record_to_message_content(
                     record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm
                 )
-                pdf_content_blocks.extend(pdf_blocks)
+                content_blocks.extend(record_blocks)
             except Exception as exc:
-                logger.warning("Failed to resolve PDF attachment vrid=%s: %s", vrid, exc)
+                logger.warning("Failed to resolve attachment vrid=%s: %s", vrid, exc)
 
-    if pdf_content_blocks:
-        content.append({"type": "text", "text": "Attached PDF documents:"})
-        content.extend(pdf_content_blocks)
+    if content_blocks:
+        content.append({"type": "text", "text": "Attached documents:"})
+        content.extend(content_blocks)
 
     content.append({"type": "text", "text": "</queries>"})
     content.append({"type": "text", "text": qna_prompt_with_retrieval_tool_second_part})
@@ -1145,7 +1156,13 @@ _SUPPORTED_ATTACHMENT_MIME_TYPES = {
     "image/jpeg",
     "image/jpg",
     "image/png",
+    "text/plain",
+    "text/markdown",
+    "text/mdx",
 }
+
+_TEXT_ATTACHMENT_MIME_TYPES = {"text/plain", "text/markdown", "text/mdx"}
+_DOC_ATTACHMENT_MIME_TYPES = _TEXT_ATTACHMENT_MIME_TYPES | {"application/pdf"}
 
 
 def _is_supported_attachment_mime(mime_type: str) -> bool:
@@ -1154,6 +1171,10 @@ def _is_supported_attachment_mime(mime_type: str) -> bool:
 
 def _is_image_attachment(mime_type: str) -> bool:
     return mime_type.lower().startswith("image/")
+
+
+def _is_text_attachment(mime_type: str) -> bool:
+    return mime_type.lower() in _TEXT_ATTACHMENT_MIME_TYPES
 
 
 def _attachment_extension(file_name: str, mime_type: str) -> str:
@@ -1167,6 +1188,12 @@ def _attachment_extension(file_name: str, mime_type: str) -> str:
         return "jpg"
     if mime_lower == "image/png":
         return "png"
+    if mime_lower == "text/plain":
+        return "txt"
+    if mime_lower == "text/markdown":
+        return "md"
+    if mime_lower == "text/mdx":
+        return "mdx"
     return "bin"
 
 
@@ -1242,7 +1269,7 @@ async def upload_chat_attachments(
         if not _is_supported_attachment_mime(item.mimeType):
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported attachment type '{item.mimeType}': {item.fileName}. Supported: PDF, JPEG, PNG.",
+                detail=f"Unsupported attachment type '{item.mimeType}': {item.fileName}. Supported: PDF, JPEG, PNG, TXT, MD, MDX.",
             )
         if item.size <= 0:
             raise HTTPException(status_code=400, detail=f"Attachment size must be positive: {item.fileName}")
@@ -1251,6 +1278,7 @@ async def upload_chat_attachments(
         virtual_record_id = str(uuid4())
         extension = _attachment_extension(item.fileName, item.mimeType)
         is_image = _is_image_attachment(item.mimeType)
+        is_text = _is_text_attachment(item.mimeType)
 
         try:
             file_binary = base64.b64decode(item.contentBase64, validate=True)
@@ -1298,6 +1326,12 @@ async def upload_chat_attachments(
                 parsed_blocks_by_record[record_id] = block_containers
             except Exception as e:
                 raise HTTPException(status_code=400, detail=f"Failed to process image attachment {item.fileName}: {str(e)}")
+        elif is_text:
+            try:
+                block_containers = await _build_text_blocks(file_binary)
+                parsed_blocks_by_record[record_id] = block_containers
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to parse text attachment {item.fileName}: {str(e)}")
         else:
             try:
                 needs_ocr = await asyncio.to_thread(_pdf_has_any_ocr_page, file_binary)
@@ -1580,6 +1614,19 @@ async def askAIStream(
         query_info = ChatQuery(**body)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
+
+
+    _chat_user = getattr(request.state, "user", {}) or {}
+    _chat_email = _chat_user.get("email")
+    _search_type = "web_search" if query_info.chatMode == "web_search" else "internal_search"
+    record_event("chat_session_started", {
+        "orgId": _chat_user.get("orgId"),
+        "userId": _chat_user.get("userId"),
+        "email": _chat_email,
+        "domain": domain_from_email(_chat_email),
+        "mode": query_info.chatMode,
+        "search_type": _search_type,
+    })
 
     if query_info.chatMode == "web_search":
         stream = _generate_web_search_stream(

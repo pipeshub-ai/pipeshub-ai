@@ -1133,12 +1133,12 @@ async def _handle_direct_answer(
     system_content += f"\n\n{build_direct_answer_time_context(state)}"
 
     previous = state.get("previous_conversations", [])
-    _has_prev_pdf_attachments = any(
-        isinstance(att, dict) and (att.get("mimeType") or "").lower() == "application/pdf"
+    _has_prev_attachments = any(
+        isinstance(att, dict) and (att.get("mimeType") or "").lower() in ["application/pdf", "text/plain", "text/markdown", "text/mdx"]
         for conv in previous if conv.get("role") == "user_query"
         for att in (conv.get("attachments") or [])
     )
-    if state.get("attachments") or _has_prev_pdf_attachments:
+    if state.get("attachments") or _has_prev_attachments:
         system_content += (
             "\n\n### Citations for Attached Files\n"
             "The attached files contain blocks, each labelled with a **Citation ID** (e.g., `ref1`, `ref2`). "

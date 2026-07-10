@@ -44,6 +44,46 @@ def _raise_on_auth_error(response: Any, context: str) -> None:
             )
 
 
+_TRANSIENT_STATUS_CODES = {"429", "500", "502", "503", "504"}
+
+
+def _is_transient_error(response: Any) -> bool:
+    """Return True if the response looks like a transient Linear API failure."""
+    msg = getattr(response, "message", "") or ""
+    for code in _TRANSIENT_STATUS_CODES:
+        if code in msg:
+            return True
+    return False
+
+
+async def _api_call_with_retry(
+    fn: Callable[..., Awaitable[Any]],
+    *args: Any,
+    context: str,
+    max_retries: int = 3,
+    base_delay: float = 2.0,
+    **kwargs: Any,
+) -> Any:
+    """Call ``fn`` and retry on transient Linear API errors (503, 429, etc.)."""
+    last_response = None
+    for attempt in range(max_retries + 1):
+        response = await fn(*args, **kwargs)
+        if response.success:
+            return response
+        _raise_on_auth_error(response, context)
+        last_response = response
+        if not _is_transient_error(response) or attempt == max_retries:
+            break
+        delay = base_delay * (2 ** attempt)
+        logger.warning(
+            "%s: transient error (attempt %d/%d), retrying in %.1fs: %s",
+            context, attempt + 1, max_retries + 1,
+            delay, getattr(response, "message", ""),
+        )
+        await asyncio.sleep(delay)
+    raise RuntimeError(f"{context} failed after {max_retries + 1} attempts: {getattr(last_response, 'message', '')}")
+
+
 # ---------------------------------------------------------------------------
 # Timestamp helpers
 # ---------------------------------------------------------------------------
@@ -83,16 +123,12 @@ async def fetch_linear_team_issue_ids(
     cursor: Optional[str] = None
 
     for _ in range(max_pages):
-        response = await datasource.issues(
-            first=page_size,
-            after=cursor,
+        response = await _api_call_with_retry(
+            datasource.issues,
+            first=page_size, after=cursor,
             filter={"team": {"id": {"eq": team_id}}},
+            context=f"fetch_linear_team_issue_ids({team_id})",
         )
-        if not response.success:
-            _raise_on_auth_error(response, "fetch_linear_team_issue_ids")
-            raise RuntimeError(
-                f"Failed to fetch issues for team {team_id}: {response.message}"
-            )
         issues_data = response.data.get("issues", {}) if response.data else {}
         nodes = issues_data.get("nodes", [])
         for node in nodes:
@@ -135,16 +171,12 @@ async def count_linear_team_projects(
     cursor: Optional[str] = None
 
     for _ in range(max_pages):
-        response = await datasource.projects(
-            first=page_size,
-            after=cursor,
+        response = await _api_call_with_retry(
+            datasource.projects,
+            first=page_size, after=cursor,
             filter={"accessibleTeams": {"some": {"id": {"eq": team_id}}}},
+            context=f"count_linear_team_projects({team_id})",
         )
-        if not response.success:
-            _raise_on_auth_error(response, "count_linear_team_projects")
-            raise RuntimeError(
-                f"Failed to fetch projects for team {team_id}: {response.message}"
-            )
         data = response.data.get("projects", {}) if response.data else {}
         nodes = data.get("nodes", [])
         total += len(nodes)
@@ -162,13 +194,12 @@ async def fetch_first_issue_in_team(
     team_id: str,
 ) -> Optional[Dict[str, Any]]:
     """Return the first issue (by updatedAt DESC) in the given team, or None."""
-    response = await datasource.issues(
+    response = await _api_call_with_retry(
+        datasource.issues,
         first=1,
         filter={"team": {"id": {"eq": team_id}}},
+        context=f"fetch_first_issue_in_team({team_id})",
     )
-    if not response.success:
-        _raise_on_auth_error(response, "fetch_first_issue_in_team")
-        return None
     nodes = (response.data or {}).get("issues", {}).get("nodes", [])
     return nodes[0] if nodes else None
 
@@ -226,16 +257,12 @@ async def fetch_unique_projects_for_teams(
     for team_id in team_ids:
         cursor: Optional[str] = None
         for _ in range(max_pages):
-            response = await datasource.projects(
-                first=page_size,
-                after=cursor,
+            response = await _api_call_with_retry(
+                datasource.projects,
+                first=page_size, after=cursor,
                 filter={"accessibleTeams": {"some": {"id": {"eq": team_id}}}},
+                context=f"fetch_unique_projects_for_teams({team_id})",
             )
-            if not response.success:
-                _raise_on_auth_error(response, "fetch_unique_projects_for_teams")
-                raise RuntimeError(
-                    f"Failed to fetch projects for team {team_id}: {response.message}"
-                )
             data = (response.data or {}).get("projects", {})
             nodes = data.get("nodes", [])
             for node in nodes:
@@ -262,10 +289,11 @@ async def _paginate_attachments(
     cursor: Optional[str] = None
 
     for _ in range(max_pages):
-        response = await datasource.attachments(first=page_size, after=cursor)
-        if not response.success:
-            _raise_on_auth_error(response, "_paginate_attachments")
-            raise RuntimeError(f"Failed to fetch attachments: {response.message}")
+        response = await _api_call_with_retry(
+            datasource.attachments,
+            first=page_size, after=cursor,
+            context="_paginate_attachments",
+        )
         data = (response.data or {}).get("attachments", {})
         batch = data.get("nodes", [])
         nodes.extend(batch)
@@ -287,10 +315,11 @@ async def _paginate_documents(
     cursor: Optional[str] = None
 
     for _ in range(max_pages):
-        response = await datasource.documents(first=page_size, after=cursor)
-        if not response.success:
-            _raise_on_auth_error(response, "_paginate_documents")
-            raise RuntimeError(f"Failed to fetch documents: {response.message}")
+        response = await _api_call_with_retry(
+            datasource.documents,
+            first=page_size, after=cursor,
+            context="_paginate_documents",
+        )
         data = (response.data or {}).get("documents", {})
         batch = data.get("nodes", [])
         nodes.extend(batch)
@@ -313,16 +342,12 @@ async def _paginate_team_issues(
     cursor: Optional[str] = None
 
     for _ in range(max_pages):
-        response = await datasource.issues(
-            first=page_size,
-            after=cursor,
+        response = await _api_call_with_retry(
+            datasource.issues,
+            first=page_size, after=cursor,
             filter={"team": {"id": {"eq": team_id}}},
+            context=f"_paginate_team_issues({team_id})",
         )
-        if not response.success:
-            _raise_on_auth_error(response, "_paginate_team_issues")
-            raise RuntimeError(
-                f"Failed to fetch issues for team {team_id}: {response.message}"
-            )
         data = (response.data or {}).get("issues", {})
         batch = data.get("nodes", [])
         issues.extend(batch)
@@ -466,8 +491,12 @@ async def fetch_first_document_in_teams(
         project_id = project.get("id")
         if not project_id:
             continue
-        resp = await datasource.project(id=project_id)
-        if not resp.success:
+        try:
+            resp = await _api_call_with_retry(
+                datasource.project, id=project_id,
+                context=f"fetch_first_document_in_teams:project({project_id})",
+            )
+        except RuntimeError:
             continue
         proj = (resp.data or {}).get("project") or {}
         nodes = (proj.get("documents") or {}).get("nodes", [])
@@ -515,8 +544,12 @@ async def fetch_first_file_in_teams(
         project_id = project.get("id")
         if not project_id:
             continue
-        resp = await datasource.project(id=project_id)
-        if not resp.success:
+        try:
+            resp = await _api_call_with_retry(
+                datasource.project, id=project_id,
+                context=f"fetch_first_file_in_teams:project({project_id})",
+            )
+        except RuntimeError:
             continue
         proj = (resp.data or {}).get("project") or {}
         content = proj.get("content") or ""
@@ -580,13 +613,12 @@ async def fetch_first_project_in_team(
     team_id: str,
 ) -> Optional[Dict[str, Any]]:
     """Return the first project accessible to the given team, or None."""
-    response = await datasource.projects(
+    response = await _api_call_with_retry(
+        datasource.projects,
         first=1,
         filter={"accessibleTeams": {"some": {"id": {"eq": team_id}}}},
+        context=f"fetch_first_project_in_team({team_id})",
     )
-    if not response.success:
-        _raise_on_auth_error(response, "fetch_first_project_in_team")
-        return None
     nodes = (response.data or {}).get("projects", {}).get("nodes", [])
     return nodes[0] if nodes else None
 
@@ -601,12 +633,10 @@ async def get_linear_issue_updated_ms(
     issue_id: str,
 ) -> int:
     """Return ``updatedAt`` as epoch milliseconds for the given issue."""
-    resp = await datasource.issue(id=issue_id)
-    if not resp.success:
-        _raise_on_auth_error(resp, "get_linear_issue_updated_ms")
-        raise AssertionError(
-            f"get_linear_issue_updated_ms failed for issue {issue_id}: {resp.message}"
-        )
+    resp = await _api_call_with_retry(
+        datasource.issue, id=issue_id,
+        context=f"get_linear_issue_updated_ms({issue_id})",
+    )
     issue = (resp.data or {}).get("issue", {})
     raw = issue.get("updatedAt")
     return parse_linear_timestamp(raw)
@@ -680,10 +710,10 @@ async def count_linear_users_with_email(
     cursor: Optional[str] = None
 
     for _ in range(max_pages):
-        resp = await datasource.users(first=page_size, after=cursor)
-        if not resp.success:
-            _raise_on_auth_error(resp, "count_linear_users_with_email")
-            raise RuntimeError(f"Failed to fetch users: {resp.message}")
+        resp = await _api_call_with_retry(
+            datasource.users, first=page_size, after=cursor,
+            context="count_linear_users_with_email",
+        )
         users_data = (resp.data or {}).get("users", {})
         nodes = users_data.get("nodes", [])
         if not nodes:
@@ -720,14 +750,12 @@ async def fetch_teams_by_ids(
     cursor: Optional[str] = None
 
     while True:
-        resp = await datasource.teams(
-            first=page_size,
-            after=cursor,
+        resp = await _api_call_with_retry(
+            datasource.teams,
+            first=page_size, after=cursor,
             filter={"id": {"in": team_ids}},
+            context="fetch_teams_by_ids",
         )
-        if not resp.success:
-            _raise_on_auth_error(resp, "fetch_teams_by_ids")
-            raise RuntimeError(f"Failed to fetch teams: {resp.message}")
         data = (resp.data or {}).get("teams", {})
         nodes = data.get("nodes", [])
         if not nodes:

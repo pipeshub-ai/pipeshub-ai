@@ -35,9 +35,9 @@ import {
 } from '../services/entity_events.service';
 import { mailJwtGenerator } from '../../../libs/utils/createJwt';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { PrometheusService } from '../../../libs/services/prometheus/prometheus.service';
-import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
-import { ORG_CREATED_ACTIVITY } from '../constants/constants';
+import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
+import { domainFromEmail } from '../../../libs/services/telemetry/identity';
+import { ORG_CREATED_EVENT } from '../constants/constants';
 
 @injectable()
 export class OrgController {
@@ -157,12 +157,14 @@ export class OrgController {
       throw new NotFoundError('Container not found');
     }
 
-    const prometheusService =
-      container.get<PrometheusService>(PrometheusService);
-
     let session: mongoose.ClientSession | null = null;
     try {
-      const { contactEmail, adminFullName, password, sendEmail } = req.body;
+      const { contactEmail, adminFullName, password, sendEmail } = req.body as {
+        contactEmail: string;
+        adminFullName: string;
+        password: string;
+        sendEmail: boolean;
+      };
 
       if (!passwordValidator(password)) {
         throw new BadRequestError(
@@ -263,18 +265,14 @@ export class OrgController {
         await adminUserCredentials.save();
         await org.save();
       }
-      prometheusService.recordActivity(
-        ORG_CREATED_ACTIVITY,
-        adminUser._id?.toString(),
-        org._id?.toString(),
-        contactEmail,
-        adminFullName,
-        req.context?.requestId,
-        req.method,
-        req.path,
-        JSON.stringify(req.context),
-        HTTP_STATUS.OK,
-      );
+
+      recordEvent(ORG_CREATED_EVENT, {
+        orgId: (org._id as mongoose.Types.ObjectId).toString(),
+        userId: (adminUser._id as mongoose.Types.ObjectId).toString(),
+        email: contactEmail,
+        domain: domainFromEmail(contactEmail),
+        fullName: adminFullName,
+      });
 
       if (sendEmail) {
         await this.mailService.sendMail({

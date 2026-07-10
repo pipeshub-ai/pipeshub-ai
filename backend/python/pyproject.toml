@@ -202,6 +202,7 @@ dependencies = [
     "html-to-markdown==2.3.0",
     "markdownify==1.2.2",
     "httpx==0.28.1",
+    "prometheus-client==0.21.1",
     "PyGithub==2.8.1",
     "python-gitlab==6.4.0",
     "google-api-python-client==2.161.0",

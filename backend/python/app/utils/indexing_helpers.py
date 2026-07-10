@@ -133,7 +133,7 @@ async def get_rows_text(
 
             # Get natural language text from LLM with retry
             messages = row_text_prompt.format_messages(
-                table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2)
+                table_summary=table_summary, rows_data=json.dumps(rows_data, indent=2, ensure_ascii=False)
             )
             llm, _ = await get_llm_for_role(config, "indexing")
 
@@ -181,9 +181,8 @@ def format_rows_with_index(rows: list[dict]) -> str:
     """Format rows with explicit numbering for clarity."""
     numbered_rows = []
     for i, row in enumerate(rows, 1):
-        numbered_rows.append(f"Row {i}: {json.dumps(row, indent=2)}")
+        numbered_rows.append(f"Row {i}: {json.dumps(row, indent=2, ensure_ascii=False)}")
     return "\n".join(numbered_rows)
-
 
 
 

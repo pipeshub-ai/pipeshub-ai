@@ -1899,7 +1899,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Build AQL query for batch UPDATE (not UPSERT)
             # This will only update existing documents and skip non-existent ones
             bind_vars = {
-                "collection": collection,
                 "nodes": arango_nodes
             }
 
@@ -1912,12 +1911,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             bind_vars["@collection"] = collection
 
-            if transaction:
-                result = await self.http_client.execute_transaction_query(
-                    transaction, aql_query, bind_vars
-                )
-            else:
-                result = await self.http_client.execute_aql(aql_query, bind_vars)
+            result = await self.http_client.execute_aql(aql_query, bind_vars, txn_id=transaction)
 
             # Check if all updates succeeded
             if result and isinstance(result, list):

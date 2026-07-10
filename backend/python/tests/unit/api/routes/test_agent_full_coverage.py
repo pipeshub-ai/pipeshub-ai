@@ -1126,7 +1126,7 @@ class TestBuildPriorRoutingMessages:
                 },
             ]
         }
-        mock_mod = MagicMock(resolve_pdf_blocks_simple=MagicMock(return_value=[{"type": "text", "text": "pdf content"}]))
+        mock_mod = MagicMock(resolve_attachment_blocks_simple=MagicMock(return_value=[{"type": "text", "text": "pdf content"}]))
         with patch.dict("sys.modules", {"app.utils.attachment_utils": mock_mod}):
             result = await _build_prior_routing_messages(query_info, blob_store, "o1", True)
         assert len(result) == 1
@@ -1167,7 +1167,7 @@ class TestBuildPriorRoutingMessages:
             ]
         }
         mock_chat_helpers = MagicMock(is_base64_image=MagicMock(return_value=True))
-        mock_attachment_utils = MagicMock(resolve_pdf_blocks_simple=MagicMock(return_value=[]))
+        mock_attachment_utils = MagicMock(resolve_attachment_blocks_simple=MagicMock(return_value=[]))
         with patch.dict("sys.modules", {
             "app.utils.chat_helpers": mock_chat_helpers,
             "app.utils.attachment_utils": mock_attachment_utils,

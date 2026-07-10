@@ -22,6 +22,7 @@ from app.services.docling.docling_service import (
 from app.services.docling.docling_service import (
     app as docling_app,
 )
+from app.telemetry.setup import setup_telemetry
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -71,10 +72,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.error("❌ Failed to initialize Docling service: %s", str(e))
         raise
 
+    try:
+        await telemetry.bind(config_service, logger).start()
+    except Exception as e:
+        logger.warning(f"❌ Failed to start telemetry pusher: {e}")
+
     yield
 
     # Shutdown
     logger.info("🔄 Shutting down Docling service")
+    if telemetry.pusher is not None:
+        await telemetry.pusher.stop()
 
     # Close configuration service (stops Redis Pub/Sub subscription)
     try:
@@ -101,6 +109,9 @@ app.add_middleware(RequestContextMiddleware)
 
 # Mount the Docling service routes
 app.mount("/", docling_app)
+
+# Telemetry: metrics middleware + pusher (started/stopped in lifespan).
+telemetry = setup_telemetry(app, service_name="docling_service")
 
 @app.get("/health")
 async def health_check() -> JSONResponse:

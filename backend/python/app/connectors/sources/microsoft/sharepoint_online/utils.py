@@ -6,6 +6,7 @@ unnecessary attributes, empty elements, and vendor-specific styles.
 """
 
 import re
+from typing import Any, Dict, Optional, Tuple
 
 from bs4 import BeautifulSoup
 
@@ -173,3 +174,72 @@ def clean_html_output(soup: BeautifulSoup, logger=None) -> str:
     output_html = re.sub(r'\n\s*\n', '\n', output_html)
 
     return output_html
+
+
+def get_azure_error_payload(error: Exception) -> Dict[str, Any]:
+    """Return Azure error payload JSON when present."""
+    response = getattr(error, "response", None)
+    if response is None:
+        return {}
+    try:
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def sanitize_azure_error(error: Exception) -> str:
+    """Extract Azure `error_description` if available, else return full error."""
+    payload = get_azure_error_payload(error)
+    description = payload.get("error_description")
+    if isinstance(description, str) and description.strip():
+        return description.strip()
+    return str(error).strip()
+
+
+def get_aad_error_code(error: Exception) -> Optional[int]:
+    """Extract first AAD error code from Azure error payload."""
+    payload = get_azure_error_payload(error)
+    codes = payload.get("error_codes")
+    if isinstance(codes, list) and codes:
+        code = codes[0]
+        if isinstance(code, int):
+            return code
+        if isinstance(code, str) and code.isdigit():
+            return int(code)
+    return None
+
+
+def get_sharepoint_auth_notification(error: Exception) -> Tuple[str, str]:
+    """Map authentication exceptions to user-facing notification text."""
+    aad_error_code = get_aad_error_code(error)
+
+    if aad_error_code == 700027:
+        return (
+            "SharePoint certificate is invalid",
+            "The configured certificate is no longer valid or not registered in Microsoft Entra ID. "
+            "Update connector certificate settings and retry.",
+        )
+    if aad_error_code == 7000215:
+        return (
+            "SharePoint client secret is invalid",
+            "The configured client secret is invalid or expired. Update connector authentication "
+            "settings and retry.",
+        )
+    if aad_error_code in {70011, 500011}:
+        return (
+            "SharePoint host URL is invalid",
+            "Unable to acquire a token for the configured SharePoint host URL. Verify the "
+            "SharePoint domain in connector settings.",
+        )
+    if aad_error_code == 700016:
+        return (
+            "SharePoint app registration is invalid",
+            "The configured Microsoft app registration could not be found. Verify tenant ID and "
+            "client ID in connector settings.",
+        )
+    return (
+        "SharePoint authentication configuration error",
+        "Unable to acquire a SharePoint access token. Please verify SharePoint host URL and "
+        "connector authentication settings.",
+    )

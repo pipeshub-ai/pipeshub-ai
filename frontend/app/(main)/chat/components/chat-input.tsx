@@ -78,17 +78,18 @@ interface ChatInputProps {
   agentId?: string | null;
 }
 
-// Only PDF and images are supported by the chat attachment upload endpoint.
-const SUPPORTED_FILE_TYPES = ['PDF', 'PNG', 'JPEG', 'JPG'];
+const SUPPORTED_FILE_TYPES = ['PDF', 'PNG', 'JPEG', 'JPG', 'TXT', 'MD'];
 const ACCEPTED_MIME_TYPES = {
   'application/pdf': 'PDF',
   'image/png': 'PNG',
   'image/jpeg': 'JPEG',
   'image/jpg': 'JPEG',
+  'text/plain': 'TXT',
+  'text/markdown': 'MD',
 };
 // Extension fallback for files that arrive without a recognisable MIME type
 // (e.g. on some Windows setups the file.type may be empty).
-const ACCEPTED_EXTENSIONS = ['pdf', 'png', 'jpeg', 'jpg'];
+const ACCEPTED_EXTENSIONS = ['pdf', 'png', 'jpeg', 'jpg', 'txt', 'md'];
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -761,7 +762,7 @@ export function ChatInput({
     if (typeRejected.length > 0) {
       toast.error(
         t('chat.attachments.unsupportedType', {
-          defaultValue: `Unsupported file type: ${typeRejected.map((f) => f.name).join(', ')}. Only PDF, JPEG, and PNG files are supported.`,
+          defaultValue: `Unsupported file type: ${typeRejected.map((f) => f.name).join(', ')}. Supported types: ${SUPPORTED_FILE_TYPES.join(', ')}.`,
         })
       );
     }

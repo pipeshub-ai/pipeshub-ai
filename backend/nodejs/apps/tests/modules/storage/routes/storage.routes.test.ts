@@ -4,7 +4,6 @@ import sinon from 'sinon'
 import { Container } from 'inversify'
 import { createStorageRouter } from '../../../../src/modules/storage/routes/storage.routes'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
-import { PrometheusService } from '../../../../src/libs/services/prometheus/prometheus.service'
 
 describe('Storage Routes', () => {
   let container: Container
@@ -49,10 +48,6 @@ describe('Storage Routes', () => {
     container.bind<any>('StorageController').toConstantValue(mockStorageController)
     container.bind<any>('KeyValueStoreService').toConstantValue(mockKeyValueStoreService)
 
-    const mockPrometheusService = {
-      recordActivity: sinon.stub(),
-    }
-    container.bind<any>(PrometheusService).toConstantValue(mockPrometheusService)
   })
 
   afterEach(() => {

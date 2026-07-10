@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import nock from 'nock'
 import * as cmConfig from '../../../../src/modules/configuration_manager/config/config'
 import * as encryptorModule from '../../../../src/libs/encryptor/encryptor'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
@@ -69,6 +70,8 @@ import {
   createAIModelsConfig,
   addAIModelProvider,
   updateAIModelProvider,
+  prepareEmbeddingModel,
+  streamEmbeddingDownloadProgress,
   createGoogleWorkspaceCredentials,
   getGoogleWorkspaceCredentials,
   getGoogleWorkspaceBusinessCredentials,
@@ -963,6 +966,22 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('should fall back to the raw stored value when decryption fails (unencrypted config)', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(JSON.stringify({ enableMetricCollection: true })),
+      })
+      mockEncService.decrypt.throws(new Error('bad ciphertext'))
+      const handler = getMetricsCollection(kvs)
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.calledWith({ enableMetricCollection: true })).to.be.true
     })
   })
 
@@ -5986,6 +6005,268 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(400)).to.be.true
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // prepareEmbeddingModel
+  // -----------------------------------------------------------------------
+  describe('prepareEmbeddingModel', () => {
+    afterEach(() => {
+      nock.cleanAll()
+    })
+
+    it('should return 400 for a missing model name', async () => {
+      const handler = prepareEmbeddingModel()
+      const req = createMockRequest({ body: {} })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(next.called).to.be.false
+    })
+
+    it('should return 400 for a malformed model name', async () => {
+      const handler = prepareEmbeddingModel()
+      const req = createMockRequest({ body: { model: 'not a valid repo id!' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(400)).to.be.true
+    })
+
+    it('should proxy to the embedding server and return its status on success', async () => {
+      const scope = nock('http://localhost:8002')
+        .post('/prepare-model', { model: 'BAAI/bge-m3', trust_remote_code: false })
+        .reply(202, { model: 'BAAI/bge-m3', status: 'downloading', progress: 0 })
+
+      const handler = prepareEmbeddingModel()
+      const req = createMockRequest({ body: { model: 'BAAI/bge-m3' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(scope.isDone()).to.be.true
+      expect(res.status.calledWith(202)).to.be.true
+      expect(res.json.calledWith(sinon.match({ status: 'downloading' }))).to.be.true
+      expect(next.called).to.be.false
+    })
+
+    it('should pass trustRemoteCode through to the embedding server', async () => {
+      const scope = nock('http://localhost:8002')
+        .post('/prepare-model', { model: 'org/model', trust_remote_code: true })
+        .reply(202, { model: 'org/model', status: 'ready', progress: 100 })
+
+      const handler = prepareEmbeddingModel()
+      const req = createMockRequest({ body: { model: 'org/model', trustRemoteCode: true } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(scope.isDone()).to.be.true
+      expect(res.status.calledWith(202)).to.be.true
+    })
+
+    it('should relay the embedding server error response when the request fails', async () => {
+      nock('http://localhost:8002')
+        .post('/prepare-model')
+        .reply(403, { status: 'error', message: 'Model not allowed' })
+
+      const handler = prepareEmbeddingModel()
+      const req = createMockRequest({ body: { model: 'BAAI/bge-m3' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(403)).to.be.true
+      expect(res.json.calledWith(sinon.match({ message: 'Model not allowed' }))).to.be.true
+      expect(next.called).to.be.false
+    })
+
+    it('should call next(error) when the embedding server is unreachable', async () => {
+      nock('http://localhost:8002')
+        .post('/prepare-model')
+        .replyWithError('connection refused')
+
+      const handler = prepareEmbeddingModel()
+      const req = createMockRequest({ body: { model: 'BAAI/bge-m3' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.true
+      expect(res.status.called).to.be.false
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // streamEmbeddingDownloadProgress
+  // -----------------------------------------------------------------------
+  describe('streamEmbeddingDownloadProgress', () => {
+    function createMockSSEResponse(): any {
+      const res = createMockResponse()
+      res.writeHead = sinon.stub()
+      res.write = sinon.stub()
+      return res
+    }
+
+    function createMockSSERequest(overrides: Record<string, any> = {}): any {
+      return createMockRequest({
+        query: { model: 'BAAI/bge-m3' },
+        on: sinon.stub(),
+        ...overrides,
+      })
+    }
+
+    afterEach(() => {
+      nock.cleanAll()
+    })
+
+    it('should return 400 for a missing model query param', async () => {
+      const handler = streamEmbeddingDownloadProgress()
+      const req = createMockSSERequest({ query: {} })
+      const res = createMockSSEResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.writeHead.called).to.be.false
+    })
+
+    it('should set SSE headers, stream the terminal event, and end the response', async () => {
+      nock('http://localhost:8002')
+        .get('/download-progress/BAAI%2Fbge-m3')
+        .reply(200, {
+          model: 'BAAI/bge-m3',
+          status: 'ready',
+          progress: 100,
+          downloaded_bytes: 100,
+          total_bytes: 100,
+          error: null,
+        })
+
+      const handler = streamEmbeddingDownloadProgress()
+      const req = createMockSSERequest()
+      const res = createMockSSEResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.writeHead.calledWith(200, sinon.match({ 'Content-Type': 'text/event-stream' }))).to.be.true
+      expect(res.write.calledOnce).to.be.true
+      const written = res.write.firstCall.args[0] as string
+      expect(written).to.include('event: progress')
+      expect(written).to.include('"status":"ready"')
+      expect(res.end.calledOnce).to.be.true
+    })
+
+    it('should stream a failed event and stop when the embedding server errors', async () => {
+      nock('http://localhost:8002')
+        .get('/download-progress/BAAI%2Fbge-m3')
+        .reply(500, { message: 'boom' })
+
+      const handler = streamEmbeddingDownloadProgress()
+      const req = createMockSSERequest()
+      const res = createMockSSEResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.write.calledOnce).to.be.true
+      const written = res.write.firstCall.args[0] as string
+      expect(written).to.include('"status":"failed"')
+      expect(written).to.include('Lost connection to embedding server')
+      expect(res.end.calledOnce).to.be.true
+    })
+
+    it('should stop polling without writing once the client disconnects', async () => {
+      const handler = streamEmbeddingDownloadProgress()
+      let closeHandler: (() => void) | undefined
+      const req = createMockSSERequest({
+        on: sinon.stub().callsFake((event: string, cb: () => void) => {
+          if (event === 'close') {
+            closeHandler = cb
+            cb()
+          }
+        }),
+      })
+      const res = createMockSSEResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(closeHandler).to.not.be.undefined
+      expect(res.write.called).to.be.false
+      expect(res.end.called).to.be.false
+    })
+
+    it('should not write a success event if the client disconnects while the poll request is in flight', async () => {
+      nock('http://localhost:8002')
+        .get('/download-progress/BAAI%2Fbge-m3')
+        .delay(20)
+        .reply(200, {
+          model: 'BAAI/bge-m3',
+          status: 'ready',
+          progress: 100,
+          downloaded_bytes: 100,
+          total_bytes: 100,
+          error: null,
+        })
+
+      const handler = streamEmbeddingDownloadProgress()
+      let closeHandler: (() => void) | undefined
+      const req = createMockSSERequest({
+        on: sinon.stub().callsFake((event: string, cb: () => void) => {
+          if (event === 'close') {
+            closeHandler = cb
+          }
+        }),
+      })
+      const res = createMockSSEResponse()
+      const next = createMockNext()
+
+      const pending = handler(req, res, next)
+      // Simulate the client disconnecting while the in-flight axios.get() above is still pending.
+      closeHandler?.()
+      await pending
+
+      expect(res.write.called).to.be.false
+      expect(res.end.called).to.be.false
+    })
+
+    it('should not write a failed event if the client disconnects while the poll request is in flight', async () => {
+      nock('http://localhost:8002')
+        .get('/download-progress/BAAI%2Fbge-m3')
+        .delay(20)
+        .reply(500, { message: 'boom' })
+
+      const handler = streamEmbeddingDownloadProgress()
+      let closeHandler: (() => void) | undefined
+      const req = createMockSSERequest({
+        on: sinon.stub().callsFake((event: string, cb: () => void) => {
+          if (event === 'close') {
+            closeHandler = cb
+          }
+        }),
+      })
+      const res = createMockSSEResponse()
+      const next = createMockNext()
+
+      const pending = handler(req, res, next)
+      closeHandler?.()
+      await pending
+
+      expect(res.write.called).to.be.false
+      expect(res.end.called).to.be.false
     })
   })
 })

@@ -39,6 +39,17 @@ class TestAttachmentMimeHelpers:
 
         assert _is_supported_attachment_mime("application/pdf") is True
         assert _is_supported_attachment_mime("IMAGE/PNG") is True
+        assert _is_supported_attachment_mime("text/plain") is True
+        assert _is_supported_attachment_mime("text/markdown") is True
+        assert _is_supported_attachment_mime("text/mdx") is True
+
+    def test_text_attachment_detection(self):
+        from app.api.routes.chatbot import _is_text_attachment
+
+        assert _is_text_attachment("text/plain") is True
+        assert _is_text_attachment("TEXT/MARKDOWN") is True
+        assert _is_text_attachment("text/mdx") is True
+        assert _is_text_attachment("application/pdf") is False
 
     def test_image_detection(self):
         from app.api.routes.chatbot import _is_image_attachment
@@ -56,6 +67,9 @@ class TestAttachmentMimeHelpers:
         assert _attachment_extension("no_suffix", "application/pdf") == "pdf"
         assert _attachment_extension("x", "image/jpeg") == "jpg"
         assert _attachment_extension("x", "image/png") == "png"
+        assert _attachment_extension("x", "text/plain") == "txt"
+        assert _attachment_extension("x", "text/markdown") == "md"
+        assert _attachment_extension("x", "text/mdx") == "mdx"
         assert _attachment_extension("plain", "application/octet-stream") == "bin"
 
 
@@ -69,6 +83,18 @@ def test_build_image_blocks_mime_paths(mime, expected_subtype):
     raw = b"\x89PNG\r\n\x1a\n" if "png" in mime else b"\xff\xd8\xff\xd9"
     container = _build_image_blocks(raw, mime)
     assert container.blocks[0].data["uri"].startswith(f"data:{expected_subtype}")
+
+
+@pytest.mark.asyncio
+async def test_build_text_blocks_parses_markdown():
+    from app.api.routes.chatbot import _build_text_blocks
+
+    container = await _build_text_blocks(b"# Hello\n\nWorld")
+    assert container.blocks
+    assert any(
+        getattr(b, "type", None) == "text" or (isinstance(b, dict) and b.get("type") == "text")
+        for b in container.blocks
+    )
 
 
 @pytest.mark.parametrize("needs_ocr_per_page,len_pages,expect", [
@@ -346,7 +372,7 @@ async def test_build_attachment_llm_messages_pdf_and_image_captions():
     user_text_blob = "".join(
         str(p.get("text", "")) if isinstance(p, dict) else str(p) for p in user_parts
     )
-    assert "Attached PDF documents" in user_text_blob
+    assert "Attached documents" in user_text_blob
 
     q_img = ChatQuery(
         query="with images",
@@ -2215,7 +2241,7 @@ async def test_append_history_pdf_plain_user_text():
     assert "prior text" in flat
 
 
-    assert "Attached PDF documents" in flat
+    assert "Attached documents" in flat
 
 
 

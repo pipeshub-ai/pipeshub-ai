@@ -1389,7 +1389,7 @@ export class UserController {
           },
         });
         if (result.statusCode !== 200) {
-          throw new InternalServerError('Error sending invite');
+          throw new InternalServerError(result.data || 'Error sending invite');
         }
       } else {
         result = await this.mailService.sendMail({
@@ -1406,7 +1406,7 @@ export class UserController {
           },
         });
         if (result.statusCode !== 200) {
-          throw new InternalServerError('Error sending invite');
+          throw new InternalServerError(result.data || 'Error sending invite');
         }
       }
 

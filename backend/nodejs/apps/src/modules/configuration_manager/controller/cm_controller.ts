@@ -28,6 +28,9 @@ import {
   storageTypes,
 } from '../constants/constants';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
+import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/modules/collection-metrics';
+import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
+import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
 import { loadConfigurationManagerConfig } from '../config/config';
 import { Org } from '../../user_management/schema/org.schema';
 
@@ -2325,29 +2328,80 @@ export const setConnectorPublicUrl =
     }
   };
 
+const getMetricsCollectionConfig = async (
+  keyValueStoreService: KeyValueStoreService,
+): Promise<Record<string, any>> => {
+  const configManagerConfig = loadConfigurationManagerConfig();
+  const encrypted = await keyValueStoreService.get<string>(
+    configPaths.metricsCollection,
+  );
+  if (!encrypted) {
+    return {};
+  }
+  let decrypted: string;
+  try {
+    decrypted = EncryptionService.getInstance(
+      configManagerConfig.algorithm,
+      configManagerConfig.secretKey,
+    ).decrypt(encrypted);
+  } catch {
+    // Value may predate encryption (migration/local dev); try it as-is.
+    decrypted = encrypted;
+  }
+  try {
+    const parsed = JSON.parse(decrypted);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (error) {
+    logger.warn('Failed to parse metrics collection config, using empty config', {
+      error,
+    });
+    return {};
+  }
+};
+
+const setMetricsCollectionConfig = async (
+  keyValueStoreService: KeyValueStoreService,
+  config: Record<string, any>,
+): Promise<void> => {
+  const configManagerConfig = loadConfigurationManagerConfig();
+  const encrypted = EncryptionService.getInstance(
+    configManagerConfig.algorithm,
+    configManagerConfig.secretKey,
+  ).encrypt(JSON.stringify(config));
+  await keyValueStoreService.set<string>(
+    configPaths.metricsCollection,
+    encrypted,
+  );
+};
+
 export const toggleMetricsCollection =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { enableMetricCollection } = req.body;
-      const metricsCollection = JSON.parse(
-        (await keyValueStoreService.get<string>(
-          configPaths.metricsCollection,
-        )) || '{}',
+      const metricsCollection = await getMetricsCollectionConfig(
+        keyValueStoreService,
       );
+
+      const enabled = !(
+        enableMetricCollection === false || enableMetricCollection === 'false'
+      );
+      setMetricCollectionEnabled(normalizeOrgId(req.user?.orgId), enabled);
+
+      if (!enabled) {
+        await TelemetryService.current()?.flush();
+      }
 
       if (enableMetricCollection !== metricsCollection.enableMetricCollection) {
         metricsCollection.enableMetricCollection = enableMetricCollection;
-        await keyValueStoreService.set<string>(
-          configPaths.metricsCollection,
-          JSON.stringify(metricsCollection),
-        );
+        await setMetricsCollectionConfig(keyValueStoreService, metricsCollection);
       }
+
       res
         .status(200)
         .json({ message: 'Metrics collection toggled successfully' });
     } catch (error: any) {
-      logger.error('Error toggling metrics collection', { error });
+      logger.warn('Error toggling metrics collection', { error });
       next(error);
     }
   };
@@ -2356,14 +2410,12 @@ export const getMetricsCollection =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const metricsCollection = JSON.parse(
-        (await keyValueStoreService.get<string>(
-          configPaths.metricsCollection,
-        )) || '{}',
+      const metricsCollection = await getMetricsCollectionConfig(
+        keyValueStoreService,
       );
       res.status(200).json(metricsCollection).end();
     } catch (error: any) {
-      logger.error('Error getting metrics collection', { error });
+      logger.warn('Error getting metrics collection', { error });
       next(error);
     }
   };
@@ -2374,24 +2426,19 @@ export const setMetricsCollectionPushInterval =
     try {
       const { pushIntervalMs } = req.body;
 
-      const metricsCollection = JSON.parse(
-        (await keyValueStoreService.get<string>(
-          configPaths.metricsCollection,
-        )) || '{}',
+      const metricsCollection = await getMetricsCollectionConfig(
+        keyValueStoreService,
       );
 
       if (pushIntervalMs !== metricsCollection.pushIntervalMs) {
         metricsCollection.pushIntervalMs = pushIntervalMs;
-        await keyValueStoreService.set<string>(
-          configPaths.metricsCollection,
-          JSON.stringify(metricsCollection),
-        );
+        await setMetricsCollectionConfig(keyValueStoreService, metricsCollection);
       }
       res
         .status(200)
         .json({ message: 'Metrics collection push interval set successfully' });
     } catch (error: any) {
-      logger.error('Error setting metrics collection push interval', { error });
+      logger.warn('Error setting metrics collection push interval', { error });
       next(error);
     }
   };
@@ -2401,23 +2448,18 @@ export const setMetricsCollectionRemoteServer =
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { serverUrl } = req.body;
-      const metricsCollection = JSON.parse(
-        (await keyValueStoreService.get<string>(
-          configPaths.metricsCollection,
-        )) || '{}',
+      const metricsCollection = await getMetricsCollectionConfig(
+        keyValueStoreService,
       );
       if (serverUrl !== metricsCollection.serverUrl) {
         metricsCollection.serverUrl = serverUrl;
-        await keyValueStoreService.set<string>(
-          configPaths.metricsCollection,
-          JSON.stringify(metricsCollection),
-        );
+        await setMetricsCollectionConfig(keyValueStoreService, metricsCollection);
       }
       res
         .status(200)
         .json({ message: 'Metrics collection remote server set successfully' });
     } catch (error: any) {
-      logger.error('Error setting metrics collection remote server', { error });
+      logger.warn('Error setting metrics collection remote server', { error });
       next(error);
     }
   };
@@ -2851,6 +2893,127 @@ export const getAvailableModelsByType =
     } catch (error: any) {
       logger.error('Error getting available models by type', { error });
       next(error);
+    }
+  };
+
+// Mirrors the huggingface_hub repo-id shape (`owner/name` or a bare model
+// id) that the embedding server accepts, so a malformed value fails fast in
+// Node.js instead of reaching the Python service or the filesystem cache.
+const MODEL_NAME_PATTERN = /^[\w.-]+(\/[\w.-]+)?$/;
+
+function resolveEmbeddingServerUrl(): string {
+  return (process.env.EMBEDDING_SERVER_URL || 'http://localhost:8002').replace(
+    /\/v1\/?$/,
+    '',
+  );
+}
+
+// Kicks off a non-blocking download/load on the embedding server and
+// returns immediately with its status. Callers then poll
+// `streamEmbeddingDownloadProgress` instead of blocking a single request on
+// a multi-GB download — that is what previously tripped both the axios
+// timeout here and the health-check timeout downstream.
+export const prepareEmbeddingModel =
+  () =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { model, trustRemoteCode = false } = req.body;
+
+      if (!model || typeof model !== 'string' || !MODEL_NAME_PATTERN.test(model)) {
+        res.status(400).json({
+          status: 'error',
+          message: 'A valid model name is required',
+        });
+        return;
+      }
+
+      const embeddingServerUrl = resolveEmbeddingServerUrl();
+      const response = await axios.post(
+        `${embeddingServerUrl}/prepare-model`,
+        { model, trust_remote_code: Boolean(trustRemoteCode) },
+        { timeout: 5000 },
+      );
+
+      res.status(response.status).json(response.data);
+    } catch (error: any) {
+      logger.error('Error preparing embedding model', { error });
+      if (error.response) {
+        res.status(error.response.status).json(error.response.data);
+        return;
+      }
+      next(error);
+    }
+  };
+
+// Server-Sent Events proxy: polls the embedding server's download-progress
+// endpoint and forwards each snapshot to the browser so the config dialog
+// can render a live progress bar instead of an opaque spinner.
+export const streamEmbeddingDownloadProgress =
+  () =>
+  async (req: AuthenticatedUserRequest, res: Response, _next: NextFunction) => {
+    const model = req.query.model;
+    if (!model || typeof model !== 'string' || !MODEL_NAME_PATTERN.test(model)) {
+      res.status(400).json({
+        status: 'error',
+        message: 'A valid model query parameter is required',
+      });
+      return;
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    const embeddingServerUrl = resolveEmbeddingServerUrl();
+    const encodedModel = encodeURIComponent(model);
+    let closed = false;
+
+    req.on('close', () => {
+      closed = true;
+    });
+
+    while (!closed) {
+      try {
+        const response = await axios.get(
+          `${embeddingServerUrl}/download-progress/${encodedModel}`,
+          { timeout: 5000 },
+        );
+        const payload = { ...response.data, timestamp: Date.now() };
+        if (!closed) {
+          res.write(`event: progress\ndata: ${JSON.stringify(payload)}\n\n`);
+        }
+
+        if (payload.status === 'ready' || payload.status === 'failed') {
+          break;
+        }
+      } catch (error: any) {
+        logger.error('Error streaming embedding download progress', { error });
+        // The client may have disconnected while the request above was in
+        // flight — writing to an already-closed response throws.
+        if (!closed) {
+          res.write(
+            `event: progress\ndata: ${JSON.stringify({
+              model,
+              status: 'failed',
+              progress: 0,
+              downloaded_bytes: 0,
+              total_bytes: 0,
+              error: 'Lost connection to embedding server',
+              timestamp: Date.now(),
+            })}\n\n`,
+          );
+        }
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+
+    if (!closed) {
+      res.end();
     }
   };
 

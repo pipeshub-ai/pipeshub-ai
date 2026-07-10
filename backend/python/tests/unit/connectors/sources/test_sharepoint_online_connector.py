@@ -398,6 +398,7 @@ class TestInit:
             root_site.site_collection = MagicMock()
             root_site.site_collection.data_location_code = "NAM"
             mock_graph_inst.sites.by_site_id.return_value.get = AsyncMock(return_value=root_site)
+            c._get_sharepoint_access_token = AsyncMock(return_value="fake-sharepoint-token")
             result = await c.init()
             assert result is True
             assert c.certificate_path is None
@@ -449,6 +450,7 @@ class TestInit:
             org_collection.value = [MagicMock(country_letter_code="US")]
             mock_graph_inst.sites.by_site_id.return_value.get = AsyncMock(return_value=root_site)
             mock_graph_inst.organization.get = AsyncMock(return_value=org_collection)
+            c._get_sharepoint_access_token = AsyncMock(return_value="fake-sharepoint-token")
 
             result = await c.init()
             assert result is True
@@ -485,6 +487,7 @@ class TestInit:
             root_site.site_collection = MagicMock()
             root_site.site_collection.data_location_code = "EUR"
             mock_graph_inst.sites.by_site_id.return_value.get = AsyncMock(return_value=root_site)
+            c._get_sharepoint_access_token = AsyncMock(return_value="fake-sharepoint-token")
 
             result = await c.init()
             assert result is True
@@ -567,6 +570,7 @@ class TestInit:
             org_col = MagicMock()
             org_col.value = []
             mock_graph_inst.organization.get = AsyncMock(return_value=org_col)
+            c._get_sharepoint_access_token = AsyncMock(return_value="fake-sharepoint-token")
 
             result = await c.init()
             assert result is True
@@ -594,6 +598,7 @@ class TestInit:
             mock_graph_inst.sites.by_site_id.return_value.get = AsyncMock(
                 side_effect=Exception("region fetch failed")
             )
+            c._get_sharepoint_access_token = AsyncMock(return_value="fake-sharepoint-token")
 
             result = await c.init()
             assert result is True
@@ -2667,7 +2672,8 @@ class TestRunSync:
 
         with patch(f"{MODULE}.load_connector_filters", new_callable=AsyncMock) as mock_filters:
             mock_filters.return_value = (FilterCollection(), FilterCollection())
-            await c.run_sync()
+            with pytest.raises(Exception, match="user fail"):
+                await c.run_sync()
 
     @pytest.mark.asyncio
     async def test_group_sync_error(self):

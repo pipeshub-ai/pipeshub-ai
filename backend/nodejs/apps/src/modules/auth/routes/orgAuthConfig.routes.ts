@@ -10,7 +10,6 @@ import { AuthMethodType } from '../schema/orgAuthConfiguration.schema';
 import { AuthSessionRequest } from '../middlewares/types';
 import { attachContainerMiddleware } from '../middlewares/attachContainer.middleware';
 import { UserAccountController } from '../controller/userAccount.controller';
-import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 const authMethodSchema = z.object({
   type: z.nativeEnum(AuthMethodType),
 });
@@ -84,7 +83,6 @@ export function createOrgAuthConfigRouter(container: Container) {
     '/authMethods',
     userValidator,
     adminValidator,
-    metricsMiddleware(container),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         await userAccountController.getAuthMethod(req, res, next);
@@ -110,7 +108,6 @@ export function createOrgAuthConfigRouter(container: Container) {
     userValidator,
     adminValidator,
     ValidationMiddleware.validate(authMethodValidationSchema),
-    metricsMiddleware(container),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         await userAccountController.updateAuthMethod(req, res, next);

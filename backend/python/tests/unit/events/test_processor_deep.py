@@ -741,16 +741,17 @@ class TestProcessPdfWithDocling:
         assert any(e.event == "docling_failed" for e in events)
 
     @pytest.mark.asyncio
-    async def test_create_blocks_returns_none_raises(self):
-        """When docling create_blocks returns None, an exception is raised."""
+    async def test_create_blocks_returns_none_yields_docling_failed(self):
+        """When docling create_blocks returns None, yields docling_failed."""
         proc = _make_processor()
         proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
         proc.docling_client.create_blocks = AsyncMock(return_value=None)
 
-        with pytest.raises(Exception, match="failed to create blocks"):
-            await _collect_events(
-                proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
-            )
+        events = await _collect_events(
+            proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
+        )
+        assert any(e.event == "parsing_complete" for e in events)
+        assert any(e.event == "docling_failed" for e in events)
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
@@ -1087,6 +1088,22 @@ class TestConvertRecordDictToRecord:
         rec = convert_record_dict_to_record(d)
         assert rec.id == "id_fallback"
 
+    def test_group_ids_carried_through(self):
+        """recordGroupId/externalGroupId reach the Record (kb metric label)."""
+        from app.events.processor import convert_record_dict_to_record
+        rec = convert_record_dict_to_record(
+            _mock_record_dict(recordGroupId="rg1", externalGroupId="kb-uuid")
+        )
+        assert rec.record_group_id == "rg1"
+        assert rec.external_record_group_id == "kb-uuid"
+
+    def test_group_ids_default_none(self):
+        """KB docs without group fields stay None (metric label 'none')."""
+        from app.events.processor import convert_record_dict_to_record
+        rec = convert_record_dict_to_record(_mock_record_dict())
+        assert rec.record_group_id is None
+        assert rec.external_record_group_id is None
+
 
 # ============================================================================
 # _separate_block_groups_by_index
@@ -1387,7 +1404,7 @@ class TestRunIndexingPipeline:
 class TestProcessPdfWithDoclingAdditional:
     @pytest.mark.asyncio
     async def test_exception_in_pipeline(self):
-        """Exception during pipeline processing propagates."""
+        """Exception during pipeline processing yields docling_failed."""
         proc = _make_processor()
         proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
         proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
@@ -1401,10 +1418,11 @@ class TestProcessPdfWithDoclingAdditional:
                 side_effect=RuntimeError("pipeline boom")
             )
 
-            with pytest.raises(RuntimeError, match="pipeline boom"):
-                await _collect_events(
-                    proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
-                )
+            events = await _collect_events(
+                proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
+            )
+            assert any(e.event == "parsing_complete" for e in events)
+            assert any(e.event == "docling_failed" for e in events)
 
     @pytest.mark.asyncio
     async def test_appends_pdf_extension(self):

@@ -265,7 +265,7 @@ function TableRow({
       let baseLabel: string;
       let showReason = true;
       switch (item.indexingStatus) {
-        case 'COMPLETED': baseLabel = 'Completed'; break;
+        case 'COMPLETED': baseLabel = 'Completed'; showReason = false; break;
         case 'IN_PROGRESS': baseLabel = 'In Progress'; showReason = false; break;
         case 'FAILED': baseLabel = 'Failed'; break;
         case 'FILE_TYPE_NOT_SUPPORTED': baseLabel = 'File Type Not Supported'; break;
@@ -280,7 +280,7 @@ function TableRow({
     let baseLabel: string;
     let showReason = true;
     switch (item.status) {
-      case 'indexed': baseLabel = 'Completed'; break;
+      case 'indexed': baseLabel = 'Completed'; showReason = false; break;
       case 'processing': baseLabel = 'In Progress'; showReason = false; break;
       case 'pending': baseLabel = 'Pending'; showReason = false; break;
       case 'failed': baseLabel = 'Failed'; break;

@@ -83,6 +83,8 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         is_vlm_ocr_processed=record_dict.get("isVLMOcrProcessed", False),
         connector_id=record_dict.get("connectorId"),
         md5_hash=record_dict.get("md5Checksum"),
+        record_group_id=record_dict.get("recordGroupId"),
+        external_record_group_id=record_dict.get("externalGroupId"),
     )
 
 class Processor:
@@ -303,7 +305,8 @@ class Processor:
             block_containers = await self.docling_client.create_blocks(parse_result)
             if block_containers is None:
                 self.logger.error(f"❌ External Docling service failed to create blocks for {recordName}")
-                raise Exception(f"External Docling service failed to create blocks for {recordName}")
+                yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id=recordId))
+                return
 
             record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
@@ -329,7 +332,7 @@ class Processor:
             return
         except Exception as e:
             self.logger.error(f"❌ Error processing PDF document with external Docling service: {str(e)}")
-            raise
+            yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id=recordId))
 
     async def process_pdf_document_with_ocr(
         self, recordName, recordId, version, source, orgId, pdf_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None

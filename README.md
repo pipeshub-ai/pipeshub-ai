@@ -48,8 +48,7 @@
 
 <h2 id="about-pipeshub">PipesHub - Explainable & Extensible</h2>
 
-<strong>[PipesHub](https://www.pipeshub.com/)</strong> is an open-source, self-hosted AI-native execution layer that connects enterprise knowledge, delivers explainable search with citations, and automates workflows across your systems.
-
+<strong>[PipesHub](https://www.pipeshub.com/)</strong> is the open-source Context Layer for Enterprise AI. Connect enterprise knowledge across your organization, preserve access permissions, generate trustworthy citations, and build AI agents, enterprise search, RAG applications, MCP servers, and agentic workflows on a single governed context layer.
 
 ## Features
 
@@ -303,8 +302,12 @@ PipesHub supports image, diagram, and scanned-file understanding, plus voice-bas
 </p>
 
 <p>
-<a href="https://star-history.com/#pipeshub-ai/pipeshub-ai&amp;Date">
-<img src="https://api.star-history.com/svg?repos=pipeshub-ai/pipeshub-ai&amp;type=Date" alt="Star History" width="600"/>
+<a href="https://www.star-history.com/?repos=pipeshub-ai%2Fpipeshub-ai">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=pipeshub-ai/pipeshub-ai&amp;type=date&amp;theme=dark&amp;legend=top-left&amp;sealed_token=msbcJ843ZmXCld8-zgduwH9hV6yn69hyfrnwfkcWiRqe7htnO6pSbQJrkxdoarzriLW6aGAETT-iQ3m7yWN3BacAyPyHfNIiPGabl6r6CbXFjcvJ7n1NZw" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=pipeshub-ai/pipeshub-ai&amp;type=date&amp;legend=top-left&amp;sealed_token=msbcJ843ZmXCld8-zgduwH9hV6yn69hyfrnwfkcWiRqe7htnO6pSbQJrkxdoarzriLW6aGAETT-iQ3m7yWN3BacAyPyHfNIiPGabl6r6CbXFjcvJ7n1NZw" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=pipeshub-ai/pipeshub-ai&amp;type=date&amp;legend=top-left&amp;sealed_token=msbcJ843ZmXCld8-zgduwH9hV6yn69hyfrnwfkcWiRqe7htnO6pSbQJrkxdoarzriLW6aGAETT-iQ3m7yWN3BacAyPyHfNIiPGabl6r6CbXFjcvJ7n1NZw" width="600" />
+ </picture>
 </a>
 </p>
 

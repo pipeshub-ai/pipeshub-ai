@@ -46,6 +46,8 @@ import {
 import { inject, injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { generateAuthToken } from '../utils/generateAuthToken';
+import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
+import { domainFromEmail } from '../../../libs/services/telemetry/identity';
 import {
   AZURE_AD_AUTH_CONFIG_PATH,
   ConfigurationManagerService,
@@ -1518,7 +1520,17 @@ export class UserAccountController {
         await this.sessionService.completeAuthentication(sessionInfo);
         const accessToken = await generateAuthToken(user, this.config.jwtSecret);
 
-        if (!user.hasLoggedIn) {
+        const isFirstLogin = !user.hasLoggedIn;
+        recordEvent('login', {
+          orgId: user.orgId?.toString(),
+          userId: user._id?.toString(),
+          email: user.email,
+          domain: domainFromEmail(user.email),
+          first_login: isFirstLogin,
+          auth_method: method,
+        });
+
+        if (isFirstLogin) {
           await this.iamService.updateUser(user._id, { hasLoggedIn: true, email: user.email }, accessToken);
         }
 
@@ -1573,6 +1585,13 @@ export class UserAccountController {
         throw new InternalServerError('Error checking admin');
       }
       const updatedUser = updateUserResult.data;
+
+      recordEvent('signup', {
+        orgId: orgId?.toString(),
+        userId: userId?.toString(),
+        email,
+        domain: domainFromEmail(email),
+      });
 
       res.status(200).json(updatedUser);
       return;

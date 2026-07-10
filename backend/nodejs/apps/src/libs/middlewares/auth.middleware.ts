@@ -48,9 +48,6 @@ export class AuthMiddleware {
         throw new UnauthorizedError('No token provided');
       }
 
-      // Security: Strip internal headers that could be spoofed
-      delete req.headers['x-oauth-user-id'];
-
       // peek at the token payload to determine token type
       const rawDecoded = jwt.decode(token) as Record<string, any> | null;
 
@@ -221,12 +218,6 @@ export class AuthMiddleware {
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,
     };
-
-    // for client_credentials grants, the token's userId is the client_id (not a real user).
-    // pass the resolved app owner userId via header so Python services can use it.
-    if (isClientCredentials) {
-      req.headers['x-oauth-user-id'] = userId;
-    }
 
     this.logger.debug('OAuth user authenticated', {
       userId,

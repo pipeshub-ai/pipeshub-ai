@@ -1867,9 +1867,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 external_id=change.get("fileId")
                             )
 
-                        self.logger.info(f"Removing permission from record {existing_record.record_name} for user {user.email}")
-
                         if existing_record and existing_record.id:
+                            self.logger.info(f"Removing permission from record {existing_record.record_name} for user {user.email}")
+                            
                             await self.data_entities_processor.delete_permission_from_record(
                                     record_id=existing_record.id,
                                     user_email=user.email

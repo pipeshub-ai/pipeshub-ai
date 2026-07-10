@@ -18,7 +18,6 @@ from app.modules.agents.deep.context_manager import (
     build_conversation_messages,
     build_respond_conversation_context,
     build_sub_agent_context,
-    compact_conversation_history,
     compact_conversation_history_async,
     compact_tool_results,
     consolidate_batch_summaries,
@@ -390,36 +389,6 @@ class TestBuildRespondConversationContext:
         convs = [{"role": "user_query", "content": ""}]
         msgs = _run(build_respond_conversation_context(convs, None, log))
         assert len(msgs) == 0
-
-
-# ============================================================================
-# compact_conversation_history
-# ============================================================================
-
-class TestCompactConversationHistory:
-    def test_empty_returns_none_empty(self):
-        summary, recent = compact_conversation_history([], MagicMock(), log)
-        assert summary is None
-        assert recent == []
-
-    def test_short_history_no_summary(self):
-        convs = [
-            {"role": "user_query", "content": "q1"},
-            {"role": "bot_response", "content": "a1"},
-        ]
-        summary, recent = compact_conversation_history(convs, MagicMock(), log)
-        assert summary is None
-        assert recent == convs
-
-    def test_long_history_splits(self):
-        convs = []
-        for i in range(20):
-            convs.append({"role": "user_query", "content": f"q{i}"})
-            convs.append({"role": "bot_response", "content": f"a{i}"})
-        summary, recent = compact_conversation_history(convs, MagicMock(), log)
-        assert summary is not None
-        assert "Previous conversation summary" in summary
-        assert len(recent) == 10  # 5 pairs * 2
 
 
 # ============================================================================

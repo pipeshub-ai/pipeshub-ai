@@ -11,6 +11,8 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.telemetry.event_buffer import record_event
+from app.telemetry.identity import domain_from_email
 from app.utils.query_transform import setup_query_transformation
 
 if TYPE_CHECKING:
@@ -103,6 +105,17 @@ async def search(
         )
         custom_status_code = results.get("status_code", 500)
         logger.info(f"Custom status code: {custom_status_code}")
+
+        _su_email = request.state.user.get("email")
+        record_event("search_performed", {
+            "orgId": request.state.user.get("orgId"),
+            "userId": request.state.user.get("userId"),
+            "email": _su_email,
+            "domain": domain_from_email(_su_email),
+            "status_code": custom_status_code,
+            "num_queries": len(queries),
+            "search_type": "search",
+        })
 
         return JSONResponse(status_code=custom_status_code, content=results)
 

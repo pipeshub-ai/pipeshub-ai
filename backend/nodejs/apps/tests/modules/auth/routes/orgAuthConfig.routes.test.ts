@@ -5,13 +5,11 @@ import { Container } from 'inversify';
 import { createOrgAuthConfigRouter } from '../../../../src/modules/auth/routes/orgAuthConfig.routes';
 import { UserAccountController } from '../../../../src/modules/auth/controller/userAccount.controller';
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
-import { PrometheusService } from '../../../../src/libs/services/prometheus/prometheus.service';
 
 describe('createOrgAuthConfigRouter', () => {
   let container: Container;
   let mockUserAccountController: any;
   let mockConfig: any;
-  let mockPrometheusService: any;
 
   beforeEach(() => {
     container = new Container();
@@ -27,9 +25,6 @@ describe('createOrgAuthConfigRouter', () => {
       scopedJwtSecret: 'test-scoped',
     };
 
-    mockPrometheusService = {
-      recordActivity: sinon.stub(),
-    };
 
     container
       .bind<UserAccountController>('UserAccountController')
@@ -37,9 +32,6 @@ describe('createOrgAuthConfigRouter', () => {
     container
       .bind<AppConfig>('AppConfig')
       .toConstantValue(mockConfig as any);
-    container
-      .bind<PrometheusService>(PrometheusService)
-      .toConstantValue(mockPrometheusService as any);
   });
 
   afterEach(() => {

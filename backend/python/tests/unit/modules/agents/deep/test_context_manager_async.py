@@ -125,7 +125,7 @@ class TestSummarizeConversationsAsync:
                 "attachments": [{"mimeType": "application/pdf", "virtualRecordId": "vr1"}],
             },
         ]
-        with patch("app.utils.attachment_utils.resolve_pdf_blocks_simple", return_value=[{"type": "text", "text": "PDF content"}]):
+        with patch("app.utils.attachment_utils.resolve_attachment_blocks_simple", return_value=[{"type": "text", "text": "PDF content"}]):
             result = _run(_summarize_conversations_async(
                 convs, mock_llm, log,
                 blob_store=mock_blob_store,
@@ -365,7 +365,7 @@ class TestBuildSubAgentContext:
                 "attachments": [{"mimeType": "application/pdf", "virtualRecordId": "vr1"}],
             },
         ]
-        with patch("app.utils.attachment_utils.resolve_pdf_blocks_simple", return_value=[{"type": "text", "text": "PDF data"}]):
+        with patch("app.utils.attachment_utils.resolve_attachment_blocks_simple", return_value=[{"type": "text", "text": "PDF data"}]):
             result = _run(build_sub_agent_context(
                 query="Summarize",
                 task=task,

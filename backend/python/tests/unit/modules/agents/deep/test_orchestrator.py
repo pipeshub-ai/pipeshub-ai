@@ -820,7 +820,7 @@ class TestOrchestratorNode:
 
     @pytest.mark.asyncio
     async def test_conversation_summary_stored(self) -> None:
-        """When compact_conversation_history returns a summary, it's stored."""
+        """When compact_conversation_history_async returns a summary, it's stored."""
         from app.modules.agents.deep.orchestrator import orchestrator_node
 
         mock_response = MagicMock()

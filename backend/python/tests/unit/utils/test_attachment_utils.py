@@ -13,7 +13,7 @@ from app.utils.attachment_utils import (
     ensure_attachment_blocks,
     inject_attachment_blocks,
     resolve_attachments,
-    resolve_pdf_blocks_simple,
+    resolve_attachment_blocks_simple,
 )
 
 # ---------------------------------------------------------------------------
@@ -237,67 +237,67 @@ class TestExtractImageBlocks:
 
 
 # ---------------------------------------------------------------------------
-# resolve_pdf_blocks_simple
+# resolve_attachment_blocks_simple
 # ---------------------------------------------------------------------------
 
-class TestResolvePdfBlocksSimple:
+class TestResolveAttachmentBlocksSimple:
     def _record(self, blocks: list) -> dict:
         return {"block_containers": {"blocks": blocks}}
 
     def test_empty_record_returns_empty(self):
-        assert resolve_pdf_blocks_simple({}, False) == []
+        assert resolve_attachment_blocks_simple({}, False) == []
 
     def test_text_block_included(self):
         record = self._record([{"type": "text", "data": "hello world"}])
-        result = resolve_pdf_blocks_simple(record, False)
+        result = resolve_attachment_blocks_simple(record, False)
         assert result == [{"type": "text", "text": "hello world"}]
 
     def test_whitespace_only_text_skipped(self):
         record = self._record([{"type": "text", "data": "   "}])
-        result = resolve_pdf_blocks_simple(record, False)
+        result = resolve_attachment_blocks_simple(record, False)
         assert result == []
 
     def test_table_row_with_nl_text(self):
         record = self._record([{"type": "table_row", "data": {"row_natural_language_text": "col1: val"}}])
-        result = resolve_pdf_blocks_simple(record, False)
+        result = resolve_attachment_blocks_simple(record, False)
         assert result == [{"type": "text", "text": "col1: val"}]
 
     def test_table_row_without_nl_text_skipped(self):
         record = self._record([{"type": "table_row", "data": {}}])
-        assert resolve_pdf_blocks_simple(record, False) == []
+        assert resolve_attachment_blocks_simple(record, False) == []
 
     def test_table_row_non_dict_data_skipped(self):
         record = self._record([{"type": "table_row", "data": "not a dict"}])
-        assert resolve_pdf_blocks_simple(record, False) == []
+        assert resolve_attachment_blocks_simple(record, False) == []
 
     def test_image_block_included_when_multimodal(self):
         record = self._record([{"type": "image", "data": {"uri": _PNG_URI}}])
-        result = resolve_pdf_blocks_simple(record, is_multimodal_llm=True)
+        result = resolve_attachment_blocks_simple(record, is_multimodal_llm=True)
         assert len(result) == 1
         assert result[0]["type"] == "image_url"
 
     def test_image_block_skipped_when_not_multimodal(self):
         record = self._record([{"type": "image", "data": {"uri": _PNG_URI}}])
-        result = resolve_pdf_blocks_simple(record, is_multimodal_llm=False)
+        result = resolve_attachment_blocks_simple(record, is_multimodal_llm=False)
         assert result == []
 
     def test_image_block_non_base64_uri_skipped(self):
         record = self._record([{"type": "image", "data": {"uri": "ftp://invalid"}}])
-        result = resolve_pdf_blocks_simple(record, is_multimodal_llm=True)
+        result = resolve_attachment_blocks_simple(record, is_multimodal_llm=True)
         assert result == []
 
     def test_image_block_non_dict_data_skipped_when_multimodal(self):
         record = self._record([{"type": "image", "data": "not_a_dict"}])
-        result = resolve_pdf_blocks_simple(record, is_multimodal_llm=True)
+        result = resolve_attachment_blocks_simple(record, is_multimodal_llm=True)
         assert result == []
 
     def test_unknown_block_type_skipped(self):
         record = self._record([{"type": "unknown", "data": "something"}])
-        assert resolve_pdf_blocks_simple(record, False) == []
+        assert resolve_attachment_blocks_simple(record, False) == []
 
     def test_none_block_containers_returns_empty(self):
         record = {"block_containers": None}
-        assert resolve_pdf_blocks_simple(record, False) == []
+        assert resolve_attachment_blocks_simple(record, False) == []
 
     def test_mixed_blocks(self):
         blocks = [
@@ -306,12 +306,12 @@ class TestResolvePdfBlocksSimple:
             {"type": "image", "data": {"uri": _PNG_URI}},
         ]
         record = self._record(blocks)
-        result = resolve_pdf_blocks_simple(record, is_multimodal_llm=True)
+        result = resolve_attachment_blocks_simple(record, is_multimodal_llm=True)
         assert len(result) == 3
 
     def test_text_block_non_str_data_skipped(self):
         record = self._record([{"type": "text", "data": 42}])
-        assert resolve_pdf_blocks_simple(record, False) == []
+        assert resolve_attachment_blocks_simple(record, False) == []
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +333,7 @@ class TestResolveAttachments:
         assert result == []
 
     async def test_unsupported_mime_type_skipped(self, logger):
-        att = {"mimeType": "text/plain", "recordName": "file.txt", "virtualRecordId": "vrid1"}
+        att = {"mimeType": "application/octet-stream", "recordName": "file.bin", "virtualRecordId": "vrid1"}
         result = await resolve_attachments([att], None, "org1", True, logger)
         assert result == []
 
@@ -387,7 +387,7 @@ class TestResolveAttachments:
         result = await resolve_attachments([att], None, "org1", True, logger)
         assert len(result) == 1
         assert result[0]["type"] == "text"
-        assert "doc.pdf" in result[0]["text"]
+        assert "Document attached by user: doc.pdf" in result[0]["text"]
 
     async def test_pdf_blob_returns_none_skipped(self, logger):
         blob = AsyncMock()
@@ -463,6 +463,38 @@ class TestResolveAttachments:
         att = {"mimeType": "application/pdf", "recordName": "doc.pdf", "virtualRecordId": "vrid1"}
         result = await resolve_attachments([att], blob, "org1", True, logger)
         assert result == []
+
+    async def test_text_plain_blob_returns_record(self, logger):
+        text_record = {"block_containers": {"blocks": [{"type": "text", "data": "hello from txt"}]}}
+        blob = AsyncMock()
+        blob.get_record_from_storage.return_value = text_record
+        att = {"mimeType": "text/plain", "recordName": "notes.txt", "virtualRecordId": "vrid1"}
+        text_blocks = [{"type": "text", "text": "hello from txt"}]
+        with patch(
+            "app.utils.chat_helpers.record_to_message_content",
+            return_value=(text_blocks, None),
+        ):
+            result = await resolve_attachments([att], blob, "org1", False, logger)
+        assert result == text_blocks
+
+    async def test_text_markdown_no_blob_store_returns_text_hint(self, logger):
+        att = {"mimeType": "text/markdown", "recordName": "readme.md", "virtualRecordId": "vrid1"}
+        result = await resolve_attachments([att], None, "org1", True, logger)
+        assert len(result) == 1
+        assert "Document attached by user: readme.md" in result[0]["text"]
+
+    async def test_text_mdx_blob_returns_record(self, logger):
+        mdx_record = {"block_containers": {"blocks": [{"type": "text", "data": "# Title"}]}}
+        blob = AsyncMock()
+        blob.get_record_from_storage.return_value = mdx_record
+        att = {"mimeType": "text/mdx", "recordName": "page.mdx", "virtualRecordId": "vrid1"}
+        mdx_blocks = [{"type": "text", "text": "# Title"}]
+        with patch(
+            "app.utils.chat_helpers.record_to_message_content",
+            return_value=(mdx_blocks, None),
+        ):
+            result = await resolve_attachments([att], blob, "org1", False, logger)
+        assert result == mdx_blocks
 
     async def test_multiple_attachments_processed(self, logger):
         blob = AsyncMock()

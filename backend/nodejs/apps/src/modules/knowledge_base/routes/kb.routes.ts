@@ -24,7 +24,6 @@ import {
   getKnowledgeHubNodes,
   moveRecord,
 } from '../controllers/kb_controllers';
-import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
   getRecordByIdSchema,
@@ -167,7 +166,6 @@ export function createKnowledgeBaseRouter(
     '/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(createKBSchema),
     createKnowledgeBase(appConfig),
   );
@@ -177,7 +175,6 @@ export function createKnowledgeBaseRouter(
     '/',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(listKnowledgeBasesSchema),
     listKnowledgeBases(appConfig),
   );
@@ -187,7 +184,6 @@ export function createKnowledgeBaseRouter(
     '/knowledge-hub/nodes',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
     getKnowledgeHubNodes(appConfig),
   );
 
@@ -196,7 +192,6 @@ export function createKnowledgeBaseRouter(
     '/knowledge-hub/nodes/:parentType/:parentId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
     getKnowledgeHubNodes(appConfig),
   );
 
@@ -205,7 +200,6 @@ export function createKnowledgeBaseRouter(
     '/record/:recordId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(getRecordByIdSchema),
     getRecordById(appConfig),
   );
@@ -215,7 +209,6 @@ export function createKnowledgeBaseRouter(
     '/record/:recordId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
     ...createDynamicBufferUpload({
       fieldName: 'file',
       allowedMimeTypes: Object.values(extensionToMimeType),
@@ -234,7 +227,6 @@ export function createKnowledgeBaseRouter(
     '/record/:recordId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_DELETE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(deleteRecordSchema),
     deleteRecord(appConfig),
   );
@@ -244,7 +236,6 @@ export function createKnowledgeBaseRouter(
     '/stream/record/:recordId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(getRecordByIdSchema),
     getRecordBuffer(appConfig.connectorBackend),
   );
@@ -254,7 +245,6 @@ export function createKnowledgeBaseRouter(
     '/reindex/record/:recordId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(reindexRecordSchema),
     reindexRecord(appConfig),
   );
@@ -264,7 +254,6 @@ export function createKnowledgeBaseRouter(
     '/reindex/record-group/:recordGroupId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(reindexRecordGroupSchema),
     reindexRecordGroup(appConfig),
   );
@@ -274,7 +263,6 @@ export function createKnowledgeBaseRouter(
     '/limits',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
     async (
       _req: AuthenticatedUserRequest,
       res: Response,
@@ -300,7 +288,6 @@ export function createKnowledgeBaseRouter(
     '/:kbId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(getKBSchema),
     getKnowledgeBase(appConfig),
   );
@@ -310,7 +297,6 @@ export function createKnowledgeBaseRouter(
     '/:kbId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(updateKBSchema),
     updateKnowledgeBase(appConfig),
   );
@@ -320,7 +306,6 @@ export function createKnowledgeBaseRouter(
     '/:kbId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_DELETE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(deleteKBSchema),
     deleteKnowledgeBase(appConfig),
   );
@@ -330,7 +315,6 @@ export function createKnowledgeBaseRouter(
     '/:kbId/upload',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_UPLOAD),
-    metricsMiddleware(container),
     // File processing middleware (dynamic max size)
     ...createDynamicBufferUpload({
       fieldName: 'files',
@@ -359,7 +343,6 @@ export function createKnowledgeBaseRouter(
     '/:kbId/folder',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(createFolderSchema),
     createFolder(appConfig),
   );
@@ -369,7 +352,6 @@ export function createKnowledgeBaseRouter(
     '/:kbId/folder/:folderId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(updateFolderSchema),
     updateFolder(appConfig),
   );
@@ -379,7 +361,6 @@ export function createKnowledgeBaseRouter(
     '/:kbId/folder/:folderId',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_DELETE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(deleteFolderSchema),
     deleteFolder(appConfig),
   );
@@ -389,7 +370,6 @@ export function createKnowledgeBaseRouter(
     '/:kbId/permissions',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(kbPermissionSchema),
     createKBPermission(appConfig),
   );
@@ -399,7 +379,6 @@ export function createKnowledgeBaseRouter(
     '/:kbId/permissions',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_READ),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(getPermissionsSchema),
     listKBPermissions(appConfig),
   );
@@ -409,7 +388,6 @@ export function createKnowledgeBaseRouter(
     '/:kbId/permissions',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(updatePermissionsSchema),
     updateKBPermission(appConfig),
   );
@@ -418,7 +396,6 @@ export function createKnowledgeBaseRouter(
     '/:kbId/permissions',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_DELETE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(deletePermissionsSchema),
     removeKBPermission(appConfig),
   );
@@ -428,7 +405,6 @@ export function createKnowledgeBaseRouter(
     '/:kbId/record/:recordId/move',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
-    metricsMiddleware(container),
     ValidationMiddleware.validate(moveRecordSchema),
     moveRecord(appConfig),
   );

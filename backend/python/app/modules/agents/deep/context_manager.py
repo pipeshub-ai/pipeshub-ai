@@ -48,13 +48,16 @@ def _image_attachment_count(conv: Dict[str, Any]) -> int:
     )
 
 
-def _pdf_attachment_count(conv: Dict[str, Any]) -> int:
-    """Count PDF attachments on a conversation item (user_query)."""
+_DOC_ATTACHMENT_MIME_TYPES = {"application/pdf", "text/plain", "text/markdown", "text/mdx"}
+
+
+def _doc_attachment_count(conv: Dict[str, Any]) -> int:
+    """Count document (PDF / text / markdown) attachments on a conversation item."""
     attachments = conv.get("attachments") or []
     return sum(
         1
         for att in attachments
-        if isinstance(att, dict) and (att.get("mimeType") or "").lower() == "application/pdf"
+        if isinstance(att, dict) and (att.get("mimeType") or "").lower() in _DOC_ATTACHMENT_MIME_TYPES
     )
 
 
@@ -67,15 +70,15 @@ def _user_plain_summary_line(conv: Dict[str, Any], text_max: int) -> Optional[st
     content_raw = conv.get("content", "") or ""
     content = content_raw.strip()
     n_img = _image_attachment_count(conv)
-    n_pdf = _pdf_attachment_count(conv)
-    if not content and not n_img and not n_pdf:
+    n_doc = _doc_attachment_count(conv)
+    if not content and not n_img and not n_doc:
         return None
-    if not content_raw and (n_img or n_pdf):
+    if not content_raw and (n_img or n_doc):
         parts = []
         if n_img:
             parts.append(f"{n_img} image(s) attached")
-        if n_pdf:
-            parts.append(f"{n_pdf} PDF(s) attached")
+        if n_doc:
+            parts.append(f"{n_doc} document(s) attached")
         return f"User: [{', '.join(parts)}]"
     short = (
         content_raw[:text_max] + "..."
@@ -85,8 +88,8 @@ def _user_plain_summary_line(conv: Dict[str, Any], text_max: int) -> Optional[st
     attachment_parts = []
     if n_img:
         attachment_parts.append(f"{n_img} image(s)")
-    if n_pdf:
-        attachment_parts.append(f"{n_pdf} PDF(s)")
+    if n_doc:
+        attachment_parts.append(f"{n_doc} document(s)")
     suffix = f" [{', '.join(attachment_parts)} attached]" if attachment_parts else ""
     return f"User: {short}{suffix}"
 
@@ -218,18 +221,17 @@ async def build_conversation_messages(
                     content = await build_multimodal_user_content(
                         content, attachments, blob_store, org_id,
                     )
-                # Add PDF attachments from conversation history
-                pdf_attachments = [
+                doc_attachments = [
                     att for att in attachments
                     if isinstance(att, dict)
-                    and (att.get("mimeType") or "").lower() == "application/pdf"
+                    and (att.get("mimeType") or "").lower() in _DOC_ATTACHMENT_MIME_TYPES
                 ]
-                if pdf_attachments and blob_store and org_id:
+                if doc_attachments and blob_store and org_id:
                     from app.utils.chat_helpers import record_to_message_content, CitationRefMapper
                     if ref_mapper is None:
                         ref_mapper = CitationRefMapper()
-                    pdf_blocks: List[Dict[str, Any]] = []
-                    for att in pdf_attachments:
+                    doc_blocks: List[Dict[str, Any]] = []
+                    for att in doc_attachments:
                         vrid = att.get("virtualRecordId") or ""
                         if not vrid:
                             continue
@@ -240,15 +242,15 @@ async def build_conversation_messages(
                             if out_records is not None and vrid not in out_records:
                                 out_records[vrid] = record
                             blocks, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm)
-                            pdf_blocks.extend(blocks)
+                            doc_blocks.extend(blocks)
                         except Exception as exc:
-                            log.warning("Failed to resolve historical PDF attachment vrid=%s: %s", vrid, exc)
-                    if pdf_blocks:
+                            log.warning("Failed to resolve historical attachment vrid=%s: %s", vrid, exc)
+                    if doc_blocks:
                         parts: list = list(content) if isinstance(content, list) else (
                             [{"type": "text", "text": content}] if content else []
                         )
-                        parts.append({"type": "text", "text": "Attached PDF documents:"})
-                        parts.extend(pdf_blocks)
+                        parts.append({"type": "text", "text": "Attached documents:"})
+                        parts.extend(doc_blocks)
                         content = parts
                 messages.append(HumanMessage(content=content))
             elif role == "bot_response":
@@ -372,18 +374,17 @@ async def build_respond_conversation_context(
                 content = await build_multimodal_user_content(
                     content, attachments, blob_store, org_id,
                 )
-            # Add PDF attachments from conversation history
-            pdf_attachments = [
+            doc_attachments = [
                 att for att in attachments
                 if isinstance(att, dict)
-                and (att.get("mimeType") or "").lower() == "application/pdf"
+                and (att.get("mimeType") or "").lower() in _DOC_ATTACHMENT_MIME_TYPES
             ]
-            if pdf_attachments and blob_store and org_id:
+            if doc_attachments and blob_store and org_id:
                 from app.utils.chat_helpers import record_to_message_content, CitationRefMapper
                 if ref_mapper is None:
                     ref_mapper = CitationRefMapper()
-                pdf_blocks: List[Dict[str, Any]] = []
-                for att in pdf_attachments:
+                doc_blocks: List[Dict[str, Any]] = []
+                for att in doc_attachments:
                     vrid = att.get("virtualRecordId") or ""
                     if not vrid:
                         continue
@@ -394,15 +395,15 @@ async def build_respond_conversation_context(
                         if out_records is not None and vrid not in out_records:
                             out_records[vrid] = record
                         blocks, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm)
-                        pdf_blocks.extend(blocks)
+                        doc_blocks.extend(blocks)
                     except Exception as exc:
-                        log.warning("Failed to resolve historical PDF attachment vrid=%s: %s", vrid, exc)
-                if pdf_blocks:
+                        log.warning("Failed to resolve historical attachment vrid=%s: %s", vrid, exc)
+                if doc_blocks:
                     parts: list = list(content) if isinstance(content, list) else (
                         [{"type": "text", "text": content}] if content else []
                     )
-                    parts.append({"type": "text", "text": "Attached PDF documents:"})
-                    parts.extend(pdf_blocks)
+                    parts.append({"type": "text", "text": "Attached documents:"})
+                    parts.extend(doc_blocks)
                     content = parts
             messages.append(HumanMessage(content=content))
         elif role == "bot_response":
@@ -416,46 +417,6 @@ async def build_respond_conversation_context(
         )
 
     return messages
-
-
-# ---------------------------------------------------------------------------
-# Conversation Compaction
-# ---------------------------------------------------------------------------
-
-def compact_conversation_history(
-    previous_conversations: List[Dict[str, Any]],
-    llm: BaseChatModel,
-    log: logging.Logger,
-    max_recent_pairs: int = MAX_RECENT_PAIRS,
-) -> Tuple[Optional[str], List[Dict[str, Any]]]:
-    """
-    Split conversation history into a summary + recent messages.
-
-    previous_conversations uses the FLAT format from ChatState:
-        [{"role": "user_query", "content": "..."}, {"role": "bot_response", "content": "..."}, ...]
-
-    Each pair = 2 items (one user_query + one bot_response), so we keep
-    the last max_recent_pairs*2 items and summarize the rest.
-
-    Returns:
-        (summary_text_or_None, recent_messages)
-    """
-    if not previous_conversations:
-        return None, []
-
-    # Each pair = 2 flat items; compare by pair count
-    keep_count = max_recent_pairs * 2
-    if len(previous_conversations) <= keep_count:
-        return None, previous_conversations
-
-    # Split: older messages get summarized, recent ones kept verbatim
-    older = previous_conversations[:-keep_count]
-    recent = previous_conversations[-keep_count:]
-
-    # Build summary text from older messages
-    summary = _summarize_conversations_sync(older, log)
-    return summary, recent
-
 
 async def compact_conversation_history_async(
     previous_conversations: List[Dict[str, Any]],
@@ -546,7 +507,7 @@ async def _summarize_conversations_async(
 
 
     from app.utils.chat_helpers import build_multimodal_user_content
-    from app.utils.attachment_utils import resolve_pdf_blocks_simple
+    from app.utils.attachment_utils import resolve_attachment_blocks_simple
 
     summary_messages: list = [SystemMessage(content=SUMMARY_REPLAY_SYSTEM_INSTRUCTIONS)]
     has_any_turn = False
@@ -556,12 +517,12 @@ async def _summarize_conversations_async(
             content_raw = conv.get("content", "") or ""
             attachments = conv.get("attachments") or []
             n_img = _image_attachment_count(conv)
-            pdf_attachments = [
+            doc_attachments = [
                 att for att in attachments
                 if isinstance(att, dict)
-                and (att.get("mimeType") or "").lower() == "application/pdf"
+                and (att.get("mimeType") or "").lower() in _DOC_ATTACHMENT_MIME_TYPES
             ]
-            if not content_raw.strip() and not n_img and not pdf_attachments:
+            if not content_raw.strip() and not n_img and not doc_attachments:
                 continue
             has_any_turn = True
             text_part = content_raw
@@ -575,10 +536,9 @@ async def _summarize_conversations_async(
             else:
                 msg_content = text_part
 
-            # Append PDF blocks so the LLM captures document context in summary
-            if pdf_attachments:
-                pdf_blocks: List[Dict[str, Any]] = []
-                for att in pdf_attachments:
+            if doc_attachments:
+                doc_blocks: List[Dict[str, Any]] = []
+                for att in doc_attachments:
                     vrid = att.get("virtualRecordId") or ""
                     if not vrid:
                         continue
@@ -586,17 +546,17 @@ async def _summarize_conversations_async(
                         record = await blob_store.get_record_from_storage(vrid, org_id)
                         if not record:
                             continue
-                        pdf_blocks.extend(resolve_pdf_blocks_simple(record, is_multimodal_llm))
+                        doc_blocks.extend(resolve_attachment_blocks_simple(record, is_multimodal_llm))
                     except Exception as exc:
                         log.warning(
-                            "Failed to resolve PDF for summarization vrid=%s: %s", vrid, exc
+                            "Failed to resolve attachment for summarization vrid=%s: %s", vrid, exc
                         )
-                if pdf_blocks:
+                if doc_blocks:
                     parts: list = list(msg_content) if isinstance(msg_content, list) else (
                         [{"type": "text", "text": msg_content}] if msg_content else []
                     )
-                    parts.append({"type": "text", "text": "Attached PDF documents:"})
-                    parts.extend(pdf_blocks)
+                    parts.append({"type": "text", "text": "Attached documents:"})
+                    parts.extend(doc_blocks)
                     msg_content = parts
 
             summary_messages.append(HumanMessage(content=msg_content))
@@ -782,7 +742,7 @@ async def build_sub_agent_context(
         use_multimodal = bool(is_multimodal_llm and blob_store and org_id)
         if use_multimodal:
             from app.utils.chat_helpers import build_multimodal_user_content
-        from app.utils.attachment_utils import resolve_pdf_blocks_simple  # noqa: PLC0415
+        from app.utils.attachment_utils import resolve_attachment_blocks_simple  # noqa: PLC0415
 
         content_blocks.append({"type": "text", "text": "\nRecent conversation (for context):"})
 
@@ -808,15 +768,14 @@ async def build_sub_agent_context(
                                 if block.get("type") == "image_url":
                                     content_blocks.append(block)
 
-                # Attach PDF documents right after images
-                pdf_attachments = [
+                doc_attachments = [
                     att for att in attachments
                     if isinstance(att, dict)
-                    and (att.get("mimeType") or "").lower() == "application/pdf"
+                    and (att.get("mimeType") or "").lower() in _DOC_ATTACHMENT_MIME_TYPES
                 ]
-                if pdf_attachments and blob_store and org_id:
-                    pdf_blocks: List[Dict[str, Any]] = []
-                    for att in pdf_attachments:
+                if doc_attachments and blob_store and org_id:
+                    doc_blocks: List[Dict[str, Any]] = []
+                    for att in doc_attachments:
                         vrid = att.get("virtualRecordId") or ""
                         if not vrid:
                             continue
@@ -824,12 +783,12 @@ async def build_sub_agent_context(
                             record = await blob_store.get_record_from_storage(vrid, org_id)
                             if not record:
                                 continue
-                            pdf_blocks.extend(resolve_pdf_blocks_simple(record, is_multimodal_llm))
+                            doc_blocks.extend(resolve_attachment_blocks_simple(record, is_multimodal_llm))
                         except Exception as exc:
-                            log.warning("Failed to resolve historical PDF attachment vrid=%s: %s", vrid, exc)
-                    if pdf_blocks:
-                        content_blocks.append({"type": "text", "text": "Attached PDF documents:"})
-                        content_blocks.extend(pdf_blocks)
+                            log.warning("Failed to resolve historical attachment vrid=%s: %s", vrid, exc)
+                    if doc_blocks:
+                        content_blocks.append({"type": "text", "text": "Attached documents:"})
+                        content_blocks.extend(doc_blocks)
 
             elif role == "bot_response" and content:
                 content_blocks.append({"type": "text", "text": f"Assistant: {content}"})

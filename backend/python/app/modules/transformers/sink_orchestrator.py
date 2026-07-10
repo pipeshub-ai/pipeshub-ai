@@ -1,17 +1,23 @@
 import logging
 
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    ProgressStatus,
+)
 from app.models.blocks import (
     BlockGroupChildren,
     BlocksContainer,
     BlockType,
     GroupSubType,
 )
+from app.models.entities import Record, RecordGroupType
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -67,6 +73,26 @@ class SinkOrchestrator(Transformer):
         )
         return BlocksContainer(blocks=limited_blocks, block_groups=limited_block_groups)
 
+
+    @staticmethod
+    def _activity_labels(record: Record) -> tuple[str, str, str]:
+        """
+        Returns ``(connector, org, kb)``. ``kb`` is the Knowledge Base id for
+        KB-sourced records and ``"none"`` for everything else.
+
+        KB record docs don't carry ``recordGroupId`` — for KB uploads the
+        group is "external" to the connector framework, so the KB UUID is
+        stored as ``externalGroupId``.
+        """
+        connector = record.connector_name.value if record.connector_name else "unknown"
+        org = record.org_id or "unknown"
+        is_kb = (
+            record.connector_name == Connectors.KNOWLEDGE_BASE
+            or record.record_group_type == RecordGroupType.KB
+        )
+        kb_id = record.record_group_id or record.external_record_group_id
+        kb = kb_id if is_kb and kb_id else "none"
+        return connector, org, kb
 
     async def apply(self, ctx: TransformContext) -> None:
         """Legacy entry-point: runs both phases (index + enrich) sequentially.
@@ -144,13 +170,18 @@ class SinkOrchestrator(Transformer):
 
         indexing_status = record_doc.get("indexingStatus")
         if indexing_status != ProgressStatus.COMPLETED.value:
+            connector, org, kb = self._activity_labels(record)
             result = await self.vector_store.apply(ctx)
             if result is False:
+                record_service_activity("indexing_service", "document_indexed", connector=connector, status="failed", org=org, kb=kb, mimetype=record.mime_type or "none")
                 return
-            self.logger.info(
-                "✅ Vector store indexing succeeded for record %s", record_id
-            )
+
+            self.logger.info(f"✅ Vector store indexing succeeded for record {record_id}")
+            # Per-record indexing success counter (powers the Ingestion dashboard).
+            record_service_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type or "none")
+            self.logger.info(f"Saving reconciliation metadata for record {record_id}")
             await self._update_indexing_status(ctx)
+            # await self.graphdb.apply(ctx)
             await self._save_reconciliation_metadata(ctx)
 
     async def _update_indexing_status(self, ctx: TransformContext) -> None:

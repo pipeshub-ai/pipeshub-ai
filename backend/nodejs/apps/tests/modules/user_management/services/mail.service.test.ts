@@ -96,7 +96,6 @@ describe('MailService', () => {
     });
 
     it('should return statusCode 500 when usersMails is empty', async () => {
-      // The service catches all errors and returns statusCode 500
       const result = await mailService.sendMail({
         emailTemplateType: 'appuserInvite',
         initiator: { jwtAuthToken: 'test-token' },
@@ -104,7 +103,7 @@ describe('MailService', () => {
         subject: 'Test Subject',
       });
       expect(result.statusCode).to.equal(500);
-      expect(result.data).to.equal('Error sending mail. Check your SMTP configuration.');
+      expect(result.data).to.equal('usersMails is empty');
     });
 
     it('should return statusCode 500 when subject is empty', async () => {
@@ -115,7 +114,7 @@ describe('MailService', () => {
         subject: '',
       });
       expect(result.statusCode).to.equal(500);
-      expect(result.data).to.equal('Error sending mail. Check your SMTP configuration.');
+      expect(result.data).to.equal('subject is empty');
     });
 
     it('should return statusCode 500 when emailTemplateType is empty', async () => {
@@ -126,7 +125,7 @@ describe('MailService', () => {
         subject: 'Test Subject',
       });
       expect(result.statusCode).to.equal(500);
-      expect(result.data).to.equal('Error sending mail. Check your SMTP configuration.');
+      expect(result.data).to.equal('emailTemplateType is empty');
     });
 
     it('should handle axios error and return statusCode 500', async () => {
@@ -144,7 +143,7 @@ describe('MailService', () => {
       });
 
       expect(result.statusCode).to.equal(500);
-      expect(result.data).to.equal('Error sending mail. Check your SMTP configuration.');
+      expect(result.data).to.be.a('string');
     });
 
     it('should include attachments when provided', async () => {

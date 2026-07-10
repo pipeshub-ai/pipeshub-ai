@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import Iterator
 from urllib.parse import urljoin
 from uuid import uuid4
@@ -259,6 +260,25 @@ def _has_block_descendant(node: LexborNode, depth: int = 0) -> bool:
     return False
 
 
+def _has_wrapped_block_descendant(node: LexborNode) -> bool:
+    """True when node has block-level descendants other than direct-child ``<img>``.
+
+    Direct-child ``<img>`` tags are excluded because ``_element_to_segments``
+    already handles them as image segments. Only block wrappers (``<figure>``,
+    ``<div>``, nested ``<p>``, ``<table>``, etc.) require ``_walk_children``
+    recursion to preserve structure.
+    """
+    for child in _direct_children(node):
+        tag = _tag_name(child)
+        if not tag or tag in _SKIP_TAGS or tag == "img":
+            continue
+        if tag in _BLOCK_TAGS:
+            return True
+        if tag in _CONTAINER_TAGS and _has_block_descendant(child):
+            return True
+    return False
+
+
 def _is_shallow_text_container(node: LexborNode) -> bool:
     """True when a container holds text but no nested block-level children.
 
@@ -374,6 +394,46 @@ def _html_fragment_to_segments(
     return _split_raw_markdown_into_segments(markdown), DataFormat.MARKDOWN, markdown
 
 
+def _walk_inline_subtree(
+    node: LexborNode,
+    text_buf: list[str],
+    segments: list[_Segment],
+    image_nodes: list[LexborNode],
+    flush_text: Callable[[], None],
+    depth: int = 0,
+) -> None:
+    """Recursively walk *node*'s children, interleaving text and image segments.
+
+    Unlike the flat loop in ``_element_to_segments``, this handles wrapper
+    elements (``<span>``, ``<picture>``, ``<figure>``, etc.) that contain both
+    text and ``<img>`` tags at arbitrary depth.  Depth is capped at
+    ``_MAX_DOM_PROBE_DEPTH`` to avoid stack overflow on pathological markup.
+    """
+    if depth > _MAX_DOM_PROBE_DEPTH:
+        return
+    for child in _direct_children(node):
+        tag = _tag_name(child)
+        if tag == "img":
+            flush_text()
+            alt = ((child.attributes or {}).get("alt") or "").strip()
+            image_nodes.append(child)
+            segments.append(_Segment(kind="image", alt_text=alt))
+        elif tag is None:
+            fragment = child.text(deep=False, strip=False)
+            if fragment:
+                text_buf.append(fragment)
+        elif tag == "br":
+            text_buf.append("\n")
+        else:
+            if child.css("img"):
+                _walk_inline_subtree(child, text_buf, segments, image_nodes,
+                                     flush_text, depth + 1)
+            else:
+                rendered = _inline_text(child)
+                if rendered:
+                    text_buf.append(rendered)
+
+
 def _element_to_segments(
     node: LexborNode,
 ) -> tuple[list[_Segment], DataFormat, str, list[LexborNode]]:
@@ -428,9 +488,13 @@ def _element_to_segments(
         elif tag == "br":
             text_buf.append("\n")
         else:
-            rendered = _inline_text(child)
-            if rendered:
-                text_buf.append(rendered)
+            if child.css("img"):
+                _walk_inline_subtree(child, text_buf, segments, image_nodes,
+                                     flush_text)
+            else:
+                rendered = _inline_text(child)
+                if rendered:
+                    text_buf.append(rendered)
 
     flush_text()
     return segments, DataFormat.MARKDOWN, "", image_nodes
@@ -1264,8 +1328,11 @@ class _DomWalker:
                 self._emit_text_block(node, BlockSubType.HEADING)
             return
 
-        if tag in {"p", "address", "dt", "dd", "figcaption"}:
-            self._emit_text_block(node, BlockSubType.PARAGRAPH)
+        if tag in _PARAGRAPH_LIKE_TAGS:
+            if _has_wrapped_block_descendant(node):
+                self._walk_children(node, depth + 1)
+            else:
+                self._emit_text_block(node, BlockSubType.PARAGRAPH)
             return
 
         if tag == "pre":
@@ -1565,21 +1632,33 @@ class _DomWalker:
             return src
         return None
 
-    def _uri_from_markdown(self, alt_text: str, markdown_source: str) -> str | None:
+    def _uri_from_markdown(
+        self,
+        alt_text: str,
+        markdown_source: str,
+        skip: int = 0,
+    ) -> str | None:
         """Extract an inline ``data:image`` URI for *alt_text* from rendered markdown.
 
         Scans *markdown_source* for ``![alt_text](uri)`` patterns (via
         ``_MD_IMAGE_RE``) and returns the URI when it starts with
-        ``data:image``. Used for images discovered on the markdown extraction
-        path where no live ``<img>`` node is available.
+        ``data:image``. Uses case-insensitive, whitespace-normalised comparison
+        so minor ``markdownify`` transformations don't cause mismatches.
+        Also handles empty alt text (``![](data:image/...)``).
+        *skip* selects the Nth matching image when duplicate alts appear in
+        the same markdown source.
         """
-        if not alt_text or not markdown_source:
+        if not markdown_source:
             return None
+        normalized_alt = (alt_text or "").strip().lower()
+        matched = 0
         for match in _MD_IMAGE_RE.finditer(markdown_source):
-            if match.group(1) == alt_text:
+            if match.group(1).strip().lower() == normalized_alt:
                 src = match.group(2).strip()
                 if src.startswith("data:image"):
-                    return src
+                    if matched == skip:
+                        return src
+                    matched += 1
         return None
 
     def _resolve_image_uri(
@@ -1588,6 +1667,7 @@ class _DomWalker:
         *,
         img_node: LexborNode | None = None,
         markdown_source: str = "",
+        md_skip: int = 0,
     ) -> str | None:
         """Resolve a storable base64 URI for an image alt, trying all HTML sources.
 
@@ -1603,7 +1683,7 @@ class _DomWalker:
             uri = self._uri_from_img_node(img_node)
             if uri:
                 return uri
-        return self._uri_from_markdown(alt_text, markdown_source)
+        return self._uri_from_markdown(alt_text, markdown_source, skip=md_skip)
 
     def _build_image_block(
         self,
@@ -1612,6 +1692,7 @@ class _DomWalker:
         parent_block_index: int | None = None,
         img_node: LexborNode | None = None,
         markdown_source: str = "",
+        md_skip: int = 0,
         sub_type: BlockSubType | None = None,
     ) -> Block | None:
         """Build an ``BlockType.IMAGE`` block when a resolvable URI exists.
@@ -1632,6 +1713,7 @@ class _DomWalker:
             alt_text,
             img_node=img_node,
             markdown_source=markdown_source,
+            md_skip=md_skip,
         )
         if not uri:
             return None
@@ -1812,6 +1894,8 @@ class _DomWalker:
             )
             return
 
+        md_img_skip: dict[str, int] = {}
+
         if not self._uses_image_split_container():
             for seg in segments:
                 if seg.kind == "text":
@@ -1825,12 +1909,16 @@ class _DomWalker:
                     )
                 elif seg.kind == "image":
                     img_node = next(image_node_iter, None)
+                    norm_alt = (seg.alt_text or "").strip().lower()
+                    skip = md_img_skip.get(norm_alt, 0)
                     if image_block := self._build_image_block(
                         seg.alt_text,
                         img_node=img_node,
                         markdown_source=markdown_source,
+                        md_skip=skip,
                     ):
                         self._add_block(image_block)
+                    md_img_skip[norm_alt] = skip + 1
             return
 
         container = self._add_block(
@@ -1858,13 +1946,17 @@ class _DomWalker:
                 )
             elif seg.kind == "image":
                 img_node = next(image_node_iter, None)
+                norm_alt = (seg.alt_text or "").strip().lower()
+                skip = md_img_skip.get(norm_alt, 0)
                 if image_block := self._build_image_block(
                     seg.alt_text,
                     parent_block_index=container_index,
                     img_node=img_node,
                     markdown_source=markdown_source,
+                    md_skip=skip,
                 ):
                     self._append_block_only(image_block)
+                md_img_skip[norm_alt] = skip + 1
 
     def _row_has_images(self, row_cells: list[_TableCell]) -> bool:
         """Return ``True`` when any cell in *row_cells* contains an inline image.
@@ -1971,6 +2063,7 @@ class _DomWalker:
         self.blocks.append(container)
         row_block_indices.append(container.index)
         container_index = container.index
+        md_img_skip: dict[str, int] = {}
 
         for seg in segments:
             if seg.kind == "text":
@@ -1984,12 +2077,16 @@ class _DomWalker:
                     parent_block_index=container_index,
                 )
             elif seg.kind == "image":
+                norm_alt = (seg.alt_text or "").strip().lower()
+                skip = md_img_skip.get(norm_alt, 0)
                 if image_block := self._build_image_block(
                     seg.alt_text,
                     parent_block_index=container_index,
                     markdown_source=row_markdown,
+                    md_skip=skip,
                 ):
                     self._append_block_only(image_block)
+                md_img_skip[norm_alt] = skip + 1
 
     # ------------------------------------------------------------------ text
 

@@ -270,6 +270,16 @@ _CODE_EXECUTION_APPS: frozenset[str] = frozenset({
     "database_sandbox",
 })
 
+# Tools that require an interactive UI client (client-name header present).
+# Without one the tool cannot deliver its output to the user. More critically,
+# the mandatory llm_description on these tools instructs the LLM to NEVER answer
+# in text and to ONLY use this tool — which silences the LLM in simple text-mode
+# paths (like _generate_direct_response) where no tools are bound to the LLM call.
+_UI_ONLY_INTERNAL_TOOLS: frozenset[str] = frozenset({
+    "internaltools.ask_user_question",
+    "internaltools_ask_user_question",
+})
+
 
 def _code_execution_enabled(state: ChatState) -> bool:
     """Return whether this deployment/caller has access to code-execution tools.
@@ -397,6 +407,19 @@ def _load_all_tools(state: ChatState, blocked_tools: dict[str, int]) -> list[Reg
 
             # Check if internal (always included)
             is_internal = _is_internal_tool(full_name, registry_tool)
+
+            # Gate UI-only internal tools: without a UI client (client-name header)
+            # the tool cannot deliver its output. More critically, its mandatory
+            # llm_description tells the LLM to NEVER answer in text — causing empty
+            # answers in text-mode paths like _generate_direct_response where no
+            # tools are actually bound to the LLM call.
+            if is_internal and full_name in _UI_ONLY_INTERNAL_TOOLS:
+                if not state.get("has_ui_client"):
+                    if state_logger:
+                        state_logger.debug(
+                            f"Skipping tool {full_name} - no client (client-name header absent)"
+                        )
+                    continue
 
             # Retrieval tools are internal when knowledge is available
             if is_retrieval and has_knowledge:

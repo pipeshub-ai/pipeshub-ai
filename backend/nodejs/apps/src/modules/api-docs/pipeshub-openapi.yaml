@@ -17,7 +17,7 @@ info:
     ## Authentication
     Most endpoints require JWT Bearer token authentication. Some internal endpoints use scoped tokens for service-to-service communication.
 
-    **OAuth 2.0 Bearer tokens** from `POST /oauth2/token` use the same `Authorization: Bearer` header. For **`client_credentials`**, machine tokens may encode `userId === client_id` in the JWT; the **Node API gateway** resolves the OAuth **app creator**, sets the authenticated user accordingly, and forwards **`x-oauth-user-id`** to Python services on proxied calls. Do not send **`x-oauth-user-id`** yourself—the gateway removes untrusted values on ingress. See the **OAuth Provider** tag for full behavior.
+    **OAuth 2.0 Bearer tokens** from `POST /oauth2/token` use the same `Authorization: Bearer` header. For **`client_credentials`**, machine tokens may encode `userId === client_id` in the JWT; the **Node API gateway** resolves the OAuth **app creator** and sets the authenticated user accordingly. See the **OAuth Provider** tag for full behavior.
 
     ## Base URLs
     All endpoints use the `/api/v1` prefix unless otherwise noted.
@@ -71,9 +71,9 @@ tags:
       - Discovery endpoint for automatic configuration
 
       **Machine tokens (`client_credentials`) — gateway and downstream identity:**
-      Access tokens may encode **`userId === client_id`**. The **Node.js API gateway** resolves the effective user to the OAuth **app creator**: first using the JWT **`createdBy`** claim when present, otherwise by loading the OAuth app by **`client_id`** from the registry. After verification it sets the authenticated session to that creator and may attach **`x-oauth-user-id`** (resolved user id) on **outbound** HTTP calls to Python microservices so authorization and retrieval match the same principal. **Inbound** `x-oauth-user-id` from external clients is **removed** at the gateway to prevent spoofing.
+      Access tokens may encode **`userId === client_id`**. The **Node.js API gateway** resolves the effective user to the OAuth **app creator**: first using the JWT **`createdBy`** claim when present, otherwise by loading the OAuth app by **`client_id`** from the registry. After verification it sets the authenticated session to that creator.
 
-      **Python services:** Validate `Authorization: Bearer` as today. When **`x-oauth-user-id`** is present (normally only when the Node gateway added it), use it as the effective **`userId`** for scopes and user-scoped logic; otherwise use the JWT payload’s **`userId`** as-is (which may still equal **`client_id`** if the caller bypassed the gateway).
+      **Python services:** Validate `Authorization: Bearer` as today and use the JWT payload’s **`userId`** as-is for scopes and user-scoped logic (which may still equal **`client_id`** for machine tokens).
 
       **Operational note:** Prefer tokens whose JWT already carries the creator as **`userId`**; use **`POST /oauth-clients/{appId}/revoke-all-tokens`** and obtain new tokens from **`POST /oauth2/token`** when rotating integrations.
   - name: OAuth Apps
@@ -301,7 +301,7 @@ components:
         OAuth 2.0 authentication with fine-grained scopes.
         Supports authorization_code (with PKCE) and client_credentials flows.
         OAuth tokens are Bearer JWTs — use the same Authorization header as regular tokens.
-        For **client_credentials**, machine JWTs may use `userId === client_id`; the Node gateway resolves the OAuth app creator and forwards **`x-oauth-user-id`** to Python where applicable — see **OAuth Provider** tag.
+        For **client_credentials**, machine JWTs may use `userId === client_id`; the Node gateway resolves the OAuth app creator — see **OAuth Provider** tag.
       flows:
         authorizationCode:
           authorizationUrl: /api/v1/oauth2/authorize
@@ -5682,13 +5682,11 @@ components:
           enum: [user_query, bot_response, error, feedback, system]
           description: |
             Type of message:
-            <ul>
-            <li><code>user_query</code> - User's question or input</li>
-            <li><code>bot_response</code> - AI-generated response</li>
-            <li><code>error</code> - Error message from the system</li>
-            <li><code>feedback</code> - User feedback on a response</li>
-            <li><code>system</code> - System notification or status</li>
-            </ul>
+            - `user_query` - User's question or input
+            - `bot_response` - AI-generated response
+            - `error` - Error message from the system
+            - `feedback` - User feedback on a response
+            - `system` - System notification or status
         content:
           type: string
           description: The message text content
@@ -5708,6 +5706,8 @@ components:
           description: |
             AI confidence in the answer. Present only on `bot_response` messages,
             and only when the model emitted a trailing confidence block.
+
+            This field is now optional and nullable; it was previously always present and non-nullable. Treat a missing or `null` value as "no confidence reported" and guard before using it. Change effective in SDK v1.3.0 (v1.2.0 and earlier always populated it).
         followUpQuestions:
           type: array
           items:
@@ -5778,6 +5778,16 @@ components:
             `POST /conversations/attachments/upload`).
           items:
             $ref: '#/components/schemas/ChatAttachmentRef'
+        tools:
+          type: array
+          description: Tool call results invoked during this message turn.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              toolName:
+                type: string
+              toolResult: {}
         createdAt:
           type: string
           format: date-time
@@ -7863,7 +7873,7 @@ components:
             type: string
           description: Individual record ids in scope.
 
-    AgentToolset:
+    Toolset:
       type: object
       additionalProperties: false
       description: |
@@ -7926,7 +7936,19 @@ components:
                   (its `@tool` was removed). Read-only; ignored on create/update
                   bodies. Not stamped on the `GET /agents` list projection.
 
-    AgentKnowledge:
+    AgentFilters:
+      description: |
+        Knowledge scope filter as stored on the graph edge. The Node `getAgent`
+        handler proxies this field unchanged from the AI service (only `agent.id`
+        is stripped). May be a JSON string (typical graph storage) or an object.
+        Prefer `filtersParsed` on GET for a guaranteed parsed object with the
+        same keys as the object branch below.
+      oneOf:
+        - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
+        - type: string
+          description: JSON-encoded filter object (graph storage format).
+
+    Knowledge:
       type: object
       additionalProperties: false
       description: |
@@ -7944,16 +7966,7 @@ components:
         displayName:
           type: string
         filters:
-          description: |
-            Knowledge scope filter as stored on the graph edge. The Node `getAgent`
-            handler proxies this field unchanged from the AI service (only `agent.id`
-            is stripped). May be a JSON string (typical graph storage) or an object.
-            Prefer `filtersParsed` on GET for a guaranteed parsed object with the
-            same keys as the object branch below.
-          oneOf:
-            - $ref: '#/components/schemas/AgentKnowledgeFiltersParsed'
-            - type: string
-              description: JSON-encoded filter object (graph storage format).
+          $ref: '#/components/schemas/AgentFilters'
         filtersParsed:
           readOnly: true
           description: |
@@ -7994,6 +8007,7 @@ components:
           description: System instructions that define agent behavior
         createdBy:
           type: string
+          format: objectId
           description: MongoDB user ID of the agent creator
         startMessage:
           type: string
@@ -8048,12 +8062,12 @@ components:
             Multiple instances of the same integration type are distinguished by `instanceId`
             and optional `instanceName`.
           items:
-            $ref: '#/components/schemas/AgentToolset'
+            $ref: '#/components/schemas/Toolset'
         knowledge:
           type: array
           description: Knowledge connectors and indexed scopes linked to the agent
           items:
-            $ref: '#/components/schemas/AgentKnowledge'
+            $ref: '#/components/schemas/Knowledge'
         shareWithOrg:
           type: boolean
           description: Whether the agent is shared with the whole organization
@@ -8249,7 +8263,7 @@ components:
             `GET /agents/{agentKey}`; the backend builds it from the graph edges
             for each agent on the returned page.
           items:
-            $ref: '#/components/schemas/AgentToolset'
+            $ref: '#/components/schemas/Toolset'
         knowledge:
           type: array
           description: |
@@ -8257,7 +8271,7 @@ components:
             projection as `GET /agents/{agentKey}`; the backend builds it from
             the graph edges for each agent on the returned page.
           items:
-            $ref: '#/components/schemas/AgentKnowledge'
+            $ref: '#/components/schemas/Knowledge'
         can_view:
           type: boolean
           description: Effective permission to view the agent.
@@ -8432,10 +8446,12 @@ components:
         - calendar
         - clickup
         - confluence
+        - confluencedatacenter
         - drive
         - github
         - gmail
         - jira
+        - jiradatacenter
         - lumos
         - mariadb
         - onedrive
@@ -9429,6 +9445,8 @@ components:
           description: |
             AI confidence in the answer. Present only on `bot_response` messages,
             and only when the model emitted a trailing confidence block.
+
+            This field is now optional and nullable; it was previously always present and non-nullable. Treat a missing or `null` value as "no confidence reported" and guard before using it. Change effective in SDK v1.3.0 (v1.2.0 and earlier always populated it).
         followUpQuestions:
           type: array
           items:
@@ -9477,6 +9495,16 @@ components:
             `POST /agents/{agentKey}/conversations/attachments/upload`).
           items:
             $ref: '#/components/schemas/ChatAttachmentRef'
+        tools:
+          type: array
+          description: Tool call results invoked during this message turn.
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              toolName:
+                type: string
+              toolResult: {}
         modelInfo:
           $ref: '#/components/schemas/ConversationModelInfo'
         appliedFilters:
@@ -11853,6 +11881,119 @@ components:
         message:
           type: string
 
+    PrepareEmbeddingModelRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - model
+      properties:
+        model:
+          type: string
+          description: |
+            HuggingFace repo id of the local embedding model to prepare, in
+            `owner/name` or bare-model-id form. Must match
+            `^[\w.-]+(\/[\w.-]+)?$`.
+          example: "BAAI/bge-m3"
+        trustRemoteCode:
+          type: boolean
+          default: false
+          description: |
+            Forwarded to the embedding server as `trust_remote_code`.
+            Rejected with 403 unless the server has
+            `EMBEDDING_SERVER_ALLOW_REMOTE_CODE=true` set.
+
+    EmbeddingDownloadStatus:
+      type: string
+      description: |
+        Lifecycle state of a model load/download on the embedding server.
+        Transitions: `checking` -> `downloading` -> `loading` -> `ready`, or
+        -> `failed` from any state. `not_found` is only returned by
+        `GET .../download-progress` when no download has ever been tracked
+        for the model and it is not currently loaded.
+      enum:
+        - checking
+        - downloading
+        - loading
+        - ready
+        - failed
+        - not_found
+
+    EmbeddingDownloadProgressPayload:
+      type: object
+      additionalProperties: false
+      description: |
+        Status snapshot for a single model's load/download, proxied from the
+        embedding server's `DownloadStatus.to_dict()`.
+      required:
+        - model
+        - status
+        - progress
+        - downloaded_bytes
+        - total_bytes
+        - error
+      properties:
+        model:
+          type: string
+          description: Model repo id this snapshot refers to.
+        status:
+          $ref: '#/components/schemas/EmbeddingDownloadStatus'
+        progress:
+          type: number
+          format: float
+          description: |
+            Percent complete (0-100), rounded to 1 decimal place. Capped at
+            99 while downloading — 100 is only reported once the load is
+            fully `ready`. Stays 0 when the Hub size lookup failed and no
+            bytes have been measured on disk yet.
+        downloaded_bytes:
+          type: integer
+          description: |
+            Bytes currently on disk for this repo's HuggingFace cache blobs,
+            including in-progress `.incomplete` files.
+        total_bytes:
+          type: integer
+          description: |
+            Best-effort expected total size in bytes from the Hub metadata
+            API. `0` when the lookup failed (offline, private/gated repo) or
+            no download has been tracked for this model.
+        error:
+          type: string
+          nullable: true
+          description: Failure detail when `status` is `failed`; `null` otherwise.
+        started_at:
+          type: number
+          format: float
+          description: |
+            Unix timestamp (seconds) when this load/download attempt
+            started. Omitted from the synthesized `ready`/`not_found`
+            snapshot that `GET .../download-progress` returns when no
+            `DownloadStatus` has ever been tracked for the model.
+        updated_at:
+          type: number
+          format: float
+          description: |
+            Unix timestamp (seconds) of the last status update. Same
+            omission rule as `started_at`.
+
+    EmbeddingDownloadProgressSSEEvent:
+      type: object
+      description: |
+        SSE event envelope for
+        `GET /configurationManager/ai-models/download-progress`. Every frame
+        uses the `progress` event name; `data` is a JSON-encoded
+        `EmbeddingDownloadProgressPayload` with one extra `timestamp` field
+        (epoch milliseconds) added by the Node.js proxy on each poll.
+      properties:
+        event:
+          type: string
+          enum:
+            - progress
+        data:
+          type: string
+          description: |
+            JSON-encoded `EmbeddingDownloadProgressPayload` plus a
+            `timestamp` (epoch ms) field.
+
     AIModelProviderHealthCheckBackendDetails:
       type: object
       additionalProperties: false
@@ -13403,7 +13544,7 @@ paths:
         - `client_credentials`: Get tokens for machine-to-machine auth
         - `refresh_token`: Get new access token using refresh token
 
-        For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) and must not trust client-supplied **`x-oauth-user-id`** (stripped on ingress). Downstream Python services accept **`x-oauth-user-id`** only when set by the gateway — see **OAuth Provider** tag.
+        For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) — see **OAuth Provider** tag.
 
         **Client Authentication:**
         Can be provided via:
@@ -20416,6 +20557,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Internal server error while retrieving record details.
@@ -20463,6 +20610,7 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
+        - oauth2: [kb:write]
       parameters:
         - name: recordId
           in: path
@@ -20502,13 +20650,41 @@ paths:
                         $ref: '#/components/schemas/Record'
                   - $ref: '#/components/schemas/UpdateRecordEnrichment'
         '400':
-          description: Invalid request
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient permissions
+          description: OAuth token is missing the required kb:write scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while updating record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
@@ -20780,6 +20956,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while creating folder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /knowledgeBase/{kbId}/folder/{folderId}:
     put:
@@ -20866,6 +21054,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while updating folder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
@@ -20904,6 +21104,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FolderDeleteResponseSchema'
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
           content:
@@ -21025,18 +21231,45 @@ paths:
                 $ref: '#/components/schemas/UploadStreamSSEEvent'
         '400':
           description: Invalid request - Check file types and sizes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Insufficient permissions (requires WRITER or higher)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Knowledge base or folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '413':
           description: File size exceeds maximum allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
           description: Too many upload requests, or too many concurrent uploads for this user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Failed to verify knowledge base or folder access
+          content:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /knowledgeBase/limits:
     get:
@@ -21373,6 +21606,18 @@ paths:
             - Knowledge base does not exist
             - Record does not exist in the knowledge base
             - Target folder does not exist in the knowledge base
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while moving record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
           content:
             application/json:
               schema:
@@ -21786,8 +22031,13 @@ paths:
   # -------------------- Knowledge Hub --------------------
   /knowledgeBase/knowledge-hub/nodes:
     get:
+      deprecated: true
+      x-speakeasy-deprecation-message: >-
+        Use the Knowledge Base API instead.
+        This grouping will be removed in a future release
       tags:
         - Knowledge Base
+        - Knowledge Hub
       summary: Get knowledge hub root nodes
       description: |
         Returns root-level nodes (connector apps and Collection apps) or, when
@@ -22259,8 +22509,13 @@ paths:
 
   /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}:
     get:
+      deprecated: true
+      x-speakeasy-deprecation-message: >-
+        Use the Knowledge Base API instead.
+        This grouping will be removed in a future release
       tags:
         - Knowledge Base
+        - Knowledge Hub
       summary: Get knowledge hub child nodes
       description: |
         Returns the children of a specific node in the knowledge hub tree.
@@ -24157,7 +24412,10 @@ paths:
                               type: string
                               enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
                               nullable: true
-                              description: AI confidence in the answer. Present only on `bot_response` messages, and only when the model emitted a trailing confidence block.
+                              description: |
+                                AI confidence in the answer. Present only on `bot_response` messages, and only when the model emitted a trailing confidence block.
+
+                                This field is now optional and nullable; it was previously always present and non-nullable. Treat a missing or `null` value as "no confidence reported" and guard before using it. Change effective in SDK v1.2.0 (v1.1.0 and earlier always populated it).
                             citations:
                               type: array
                               description: Citations attached to this message. `citationData` is the populated citation document.
@@ -24958,6 +25216,8 @@ paths:
                                 AI confidence in the answer. Present only on
                                 `bot_response` messages, and only when the
                                 model emitted a trailing confidence block.
+
+                                This field is now optional and nullable; it was previously always present and non-nullable. Treat a missing or `null` value as "no confidence reported" and guard before using it. Change effective in SDK v1.3.0 (v1.2.0 and earlier always populated it).
                             citations:
                               type: array
                               description: |
@@ -27347,6 +27607,7 @@ paths:
                   items:
                     type: string
                     format: binary
+                    x-speakeasy-name-override: File
       responses:
         '200':
           description: >
@@ -32741,6 +33002,191 @@ paths:
           description: Admin access required
         '404':
           description: Model not found
+
+  /configurationManager/ai-models/prepare-model:
+    post:
+      tags:
+        - AI Models Providers
+      summary: Prepare (download) a local embedding model
+      description: |
+        Kicks off a non-blocking load/download of a local (SentenceTransformer
+        / HuggingFace) embedding model on the embedding server and returns
+        immediately with the current status snapshot — it does not wait for
+        the download to finish. Poll
+        `GET /configurationManager/ai-models/download-progress` (SSE) with the
+        same `model` to observe progress until `status` reaches `ready` or
+        `failed`.
+
+        This decouples model preparation from health checks: previously, a
+        multi-GB first-time download running synchronously inside a health
+        check could exceed both the frontend's request timeout and the health
+        check's own timeout. Calling this endpoint first, and only proceeding
+        once the SSE stream reports `ready`, avoids both.
+
+        Requires org admin privileges in addition to the OAuth scope below.
+      operationId: prepareEmbeddingModel
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PrepareEmbeddingModelRequest'
+      responses:
+        '202':
+          description: |
+            Model load/download accepted (or already `ready`/in-progress).
+            Returns the current status snapshot; continue polling
+            `GET .../download-progress` until `status` is `ready` or `failed`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmbeddingDownloadProgressPayload'
+              example:
+                model: "BAAI/bge-m3"
+                status: downloading
+                progress: 0
+                downloaded_bytes: 0
+                total_bytes: 2270000000
+                error: null
+                started_at: 1751900000.123
+                updated_at: 1751900000.123
+        '400':
+          description: |
+            Either `model` is missing or fails the
+            `^[\w.-]+(\/[\w.-]+)?$` repo-id pattern check performed by
+            Node.js before proxying to the embedding server, or (via the
+            shared `userAdminCheck` middleware) the caller is not an org
+            admin.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [status, message]
+                    additionalProperties: false
+                    properties:
+                      status:
+                        type: string
+                        enum: [error]
+                      message:
+                        type: string
+                        example: "A valid model name is required"
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Either the caller's OAuth token lacks the `config:write` scope,
+            or the embedding server rejected the request under its own
+            policy: `model` is not in `EMBEDDING_SERVER_ALLOWED_MODELS`, or
+            `trustRemoteCode: true` was requested while
+            `EMBEDDING_SERVER_ALLOW_REMOTE_CODE` is disabled on the server.
+            The embedding-server rejection is proxied verbatim using
+            FastAPI's `{"detail": ...}` envelope, not the Node.js
+            `ErrorResponse` shape used for the scope failure.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - type: object
+                    required: [detail]
+                    properties:
+                      detail:
+                        type: string
+                        example: "trust_remote_code is disabled on this server. Set environment variable EMBEDDING_SERVER_ALLOW_REMOTE_CODE=true to enable it."
+        '500':
+          description: |
+            The embedding server could not be reached, or returned an error
+            with no response body (network failure).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /configurationManager/ai-models/download-progress:
+    get:
+      tags:
+        - AI Models Providers
+      summary: Stream embedding model download progress (SSE)
+      description: |
+        Server-Sent Events stream that polls the embedding server's download
+        status internally (every ~2s) and forwards each snapshot to the
+        client as a `progress` event, until `status` reaches `ready` or
+        `failed`, at which point the stream closes.
+
+        Pair this with `POST .../prepare-model`: call that first to kick off
+        the load/download, then open this stream with the same `model` to
+        observe progress.
+
+        If the embedding server becomes unreachable mid-stream, one final
+        `progress` event with `status: "failed"` and
+        `error: "Lost connection to embedding server"` is emitted before the
+        stream closes. If the client disconnects, polling stops and no
+        further events are written to the response.
+      operationId: streamEmbeddingDownloadProgress
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      parameters:
+        - name: model
+          in: query
+          required: true
+          description: |
+            HuggingFace repo id to track, matching `^[\w.-]+(\/[\w.-]+)?$`.
+            Should match the `model` passed to `POST .../prepare-model`.
+          schema:
+            type: string
+          example: "BAAI/bge-m3"
+      responses:
+        '200':
+          description: |
+            SSE stream (`text/event-stream`). Every frame uses the
+            `progress` event name; `data` is a JSON-encoded
+            `EmbeddingDownloadProgressPayload` plus a `timestamp` field.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/EmbeddingDownloadProgressSSEEvent'
+        '400':
+          description: |
+            `model` query parameter missing or not a valid HuggingFace repo
+            id, or (via the shared `userAdminCheck` middleware) the caller is
+            not an org admin.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [status, message]
+                    additionalProperties: false
+                    properties:
+                      status:
+                        type: string
+                        enum: [error]
+                      message:
+                        type: string
+                        example: "A valid model query parameter is required"
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Insufficient OAuth scope — token lacks `config:read`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Web Search --------------------
   /configurationManager/web-search:

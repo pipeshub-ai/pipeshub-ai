@@ -27,6 +27,8 @@ import {
   runWithRequestContext,
   newSystemRoot,
 } from './libs/context/request-context';
+import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
+import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 
 import { createUserAccountRouter } from './modules/auth/routes/userAccount.routes';
@@ -44,7 +46,8 @@ import { MailServiceContainer } from './modules/mail/container/mailService.conta
 import { createMailServiceRouter } from './modules/mail/routes/mail.routes';
 import { createConnectorRouter } from './modules/tokens_manager/routes/connectors.routes';
 import { createOAuthRouter } from './modules/tokens_manager/routes/oauth.routes';
-import { PrometheusService } from './libs/services/prometheus/prometheus.service';
+import { startTelemetry } from './libs/services/telemetry/telemetry.service';
+import { KeyValueStoreService } from './libs/services/keyValueStore.service';
 import { StorageContainer } from './modules/storage/container/storage.container';
 import { NotificationContainer } from './modules/notification/container/notification.container';
 import { NotificationConsumer } from './modules/notification/service/notification.consumer';
@@ -191,60 +194,8 @@ export class Application {
 
       await this.addOAuthServicesToAuthMiddleware();
 
-
-      // binding prometheus to all services routes
-      this.logger.debug('Binding Prometheus Service with other services');
-      this.tokenManagerContainer
-        .bind<PrometheusService>(PrometheusService)
-        .toSelf()
-        .inSingletonScope();
-      this.entityManagerContainer
-        .bind<PrometheusService>(PrometheusService)
-        .toSelf()
-        .inSingletonScope();
-      this.authServiceContainer
-        .bind<PrometheusService>(PrometheusService)
-        .toSelf()
-        .inSingletonScope();
-      this.configurationManagerContainer
-        .bind<PrometheusService>(PrometheusService)
-        .toSelf()
-        .inSingletonScope();
       this.configurationManagerContainer
         .bind<MigrationService>(MigrationService)
-        .toSelf()
-        .inSingletonScope();
-      this.storageServiceContainer
-        .bind<PrometheusService>(PrometheusService)
-        .toSelf()
-        .inSingletonScope();
-      this.esAgentContainer
-        .bind<PrometheusService>(PrometheusService)
-        .toSelf()
-        .inSingletonScope();
-
-      this.knowledgeBaseContainer
-        .bind<PrometheusService>(PrometheusService)
-        .toSelf()
-        .inSingletonScope();
-
-      this.mailServiceContainer
-        .bind<PrometheusService>(PrometheusService)
-        .toSelf()
-        .inSingletonScope();
-
-      this.crawlingManagerContainer
-        .bind<PrometheusService>(PrometheusService)
-        .toSelf()
-        .inSingletonScope();
-
-      this.oauthProviderContainer
-        .bind<PrometheusService>(PrometheusService)
-        .toSelf()
-        .inSingletonScope();
-
-      this.toolsetsContainer
-        .bind<PrometheusService>(PrometheusService)
         .toSelf()
         .inSingletonScope();
 
@@ -260,6 +211,11 @@ export class Application {
       this.configureRoutes();
       this.setupApiDocs();
       this.configureErrorHandling();
+
+      startTelemetry(
+        KeyValueStoreService.getInstance(configurationManagerConfig),
+      );
+      startOrgMetricsRefresh(this.logger);
 
       this.notificationContainer
         .get<NotificationService>(NotificationService)
@@ -405,6 +361,7 @@ export class Application {
 
     // Global rate limiter - applies to all routes
     this.app.use(createGlobalRateLimiter(this.logger, appConfig.maxRequestsPerMinute));
+    this.app.use(metricsMiddleware());
   }
 
   private configureRoutes(): void {
