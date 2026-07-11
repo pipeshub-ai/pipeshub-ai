@@ -314,11 +314,6 @@ class VectorStore(Transformer):
         await self._process_document_chunks([summary_doc], record_id)
         self.logger.info("✅ Indexed record summary for record %s", record_id)
 
-    @Language.component("custom_sentence_boundary")
-    def custom_sentence_boundary(doc) -> Doc:
-        for token in doc[:-1]:  # Avoid out-of-bounds errors
-            next_token = doc[token.i + 1]
-
     async def describe_image_async(self, base64_string: str, vlm: BaseChatModel) -> str:
         message = HumanMessage(
             content=[
