@@ -2287,6 +2287,7 @@
     "defaultSystemPrompt": "You are a helpful assistant.",
     "defaultStartMessage": "Hello! I am ready to assist you. How can I help you today?",
     "nodeLabelChatInput": "Chat input",
+    "scheduledInput": "Scheduled Trigger",
     "nodeDescUserMessages": "User messages",
     "nodeLabelChatOutput": "Chat output",
     "nodeDescChatReply": "User-visible reply",

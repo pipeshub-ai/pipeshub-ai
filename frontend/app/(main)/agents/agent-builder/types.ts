@@ -1,4 +1,4 @@
-import type { Node } from '@xyflow/react';
+import type { Edge, Node } from '@xyflow/react';
 import type { AgentDetail } from '../types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
 
@@ -76,6 +76,9 @@ export interface AgentFormPayload {
   knowledge?: KnowledgeReference[];
   toolsets?: ToolsetReference[];
   webSearch?: AgentWebSearchAttachment | null;
+  flow?: { nodes: FlowNode[]; edges: Edge[] };
+  flowSchemaVersion?: number;
+  orchestrationMode?: 'single' | 'linear' | 'conditional';
 }
 
 /** Agent shape used when rebuilding the graph (extends API detail with optional legacy fields). */

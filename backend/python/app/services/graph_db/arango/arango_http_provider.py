@@ -64,12 +64,10 @@ from app.schema.arango.documents import (
     agent_template_schema,
     app_role_schema,
     app_schema,
-    code_file_record_schema,
     comment_record_schema,
     deal_record_schema,
     department_schema,
     file_record_schema,
-    knowledge_schema,
     link_record_schema,
     mail_record_schema,
     meeting_record_schema,
@@ -78,22 +76,19 @@ from app.schema.arango.documents import (
     people_schema,
     product_record_schema,
     project_record_schema,
-    pull_request_record_schema,
     record_group_schema,
     record_schema,
     team_schema,
     ticket_record_schema,
-    tool_schema,
-    toolset_schema,
     user_schema,
     webpage_record_schema,
     artifact_record_schema,
+    deal_record_schema,
+    product_record_schema,
     sql_table_record_schema,
     sql_view_record_schema,
 )
 from app.schema.arango.edges import (
-    agent_has_knowledge_schema,
-    agent_has_toolset_schema,
     basic_edge_schema,
     belongs_to_schema,
     contact_schema,
@@ -109,7 +104,6 @@ from app.schema.arango.edges import (
     prospect_schema,
     record_relations_schema,
     sold_in_schema,
-    toolset_has_tool_schema,
     user_app_relation_schema,
     user_drive_relation_schema,
 )
@@ -153,13 +147,9 @@ NODE_COLLECTIONS = [
     (CollectionNames.RECORD_GROUPS.value, record_group_schema),
     (CollectionNames.AGENT_INSTANCES.value, agent_schema),
     (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
-    (CollectionNames.AGENT_KNOWLEDGE.value, knowledge_schema),
-    (CollectionNames.AGENT_TOOLSETS.value, toolset_schema),
-    (CollectionNames.AGENT_TOOLS.value, tool_schema),
     (CollectionNames.TICKETS.value, ticket_record_schema),
     (CollectionNames.MEETINGS.value, meeting_record_schema),
     (CollectionNames.PROJECTS.value, project_record_schema),
-    (CollectionNames.PULLREQUESTS.value, pull_request_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
     (CollectionNames.TEAMS.value, team_schema),
     (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None),
@@ -167,8 +157,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.DEALS.value, deal_record_schema),
     (CollectionNames.ARTIFACTS.value, artifact_record_schema),
     (CollectionNames.SQL_TABLES.value, sql_table_record_schema),
-    (CollectionNames.SQL_VIEWS.value, sql_view_record_schema),
-    (CollectionNames.CODE_FILES.value, code_file_record_schema),
+    (CollectionNames.SQL_VIEWS.value, sql_view_record_schema)
 ]
 
 EDGE_COLLECTIONS = [
@@ -188,9 +177,6 @@ EDGE_COLLECTIONS = [
     (CollectionNames.BELONGS_TO_RECORD_GROUP.value, basic_edge_schema),
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
     (CollectionNames.PERMISSION.value, permissions_schema),
-    (CollectionNames.AGENT_HAS_KNOWLEDGE.value, agent_has_knowledge_schema),
-    (CollectionNames.AGENT_HAS_TOOLSET.value, agent_has_toolset_schema),
-    (CollectionNames.TOOLSET_HAS_TOOL.value, toolset_has_tool_schema),
     (CollectionNames.PROSPECT.value, prospect_schema),
     (CollectionNames.CUSTOMER.value, customer_schema),
     (CollectionNames.LEAD.value, lead_schema),
@@ -498,29 +484,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             self.logger.info("🚀 Ensuring ArangoDB schema (collections, graph, departments)...")
 
-            # Build a lookup: collection name → schema (None means no validation schema)
-            schema_by_collection: Dict[str, Any] = {}
-            for col_name, col_schema in NODE_COLLECTIONS:
-                schema_by_collection[col_name] = col_schema
-            for col_name, col_schema in EDGE_COLLECTIONS:
-                schema_by_collection[col_name] = col_schema
-
-            # 1. Create all collections (node + edge)
+            # 1. Create all collections (node + edge) and enforce schema for existing/new collections
             edge_collection_names = {ed["edge_collection"] for ed in EDGE_DEFINITIONS}
+            collection_schemas = {name: schema for name, schema in (NODE_COLLECTIONS + EDGE_COLLECTIONS)}
+
             for col in CollectionNames:
                 name = col.value
                 is_edge = name in edge_collection_names
-                col_schema = schema_by_collection.get(name)
+                schema = collection_schemas.get(name)
                 if not await self.http_client.has_collection(name):
                     if not await self.http_client.create_collection(
-                        name, edge=is_edge, schema=col_schema
+                        name,
+                        edge=is_edge,
+                        schema=schema,
                     ):
                         self.logger.warning(f"Failed to create collection '{name}', continuing")
                 else:
                     self.logger.debug(f"Collection '{name}' already exists")
-                    # Ensure schema is applied to pre-existing collections too
-                    if col_schema:
-                        await self.http_client.update_collection_schema(name, col_schema)
+                if schema and not await self.http_client.update_collection_schema(name, schema):
+                    self.logger.warning(f"Failed to ensure schema for collection '{name}', continuing")
 
             # 2. Create knowledge graph if it doesn't exist
             has_knowledge = await self.http_client.has_graph(GraphNames.KNOWLEDGE_GRAPH.value)
@@ -812,6 +794,79 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to get document: {str(e)}")
             return None
+
+    def _create_typed_record_from_arango(
+        self, record_dict: dict, type_doc: dict | None
+    ) -> Record:
+        """
+        Build a typed Record (FileRecord, MailRecord, etc.) from Arango record + type doc.
+        Matches BaseArangoService._create_typed_record_from_arango for same return type.
+        """
+        record_type = record_dict.get("recordType")
+
+        translated_record = self._translate_node_from_arango(record_dict)
+        record_candidates = self._record_payload_candidates(translated_record, record_dict)
+
+        if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
+            return self._build_base_record(record_candidates)
+
+        collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
+        translated_type_doc = self._translate_node_from_arango(type_doc)
+        type_doc_candidates = self._record_payload_candidates(translated_type_doc, type_doc)
+
+        factory_by_collection = {
+            CollectionNames.ARTIFACTS.value: ArtifactRecord,
+            CollectionNames.FILES.value: FileRecord,
+            CollectionNames.MAILS.value: MailRecord,
+            CollectionNames.WEBPAGES.value: WebpageRecord,
+            CollectionNames.TICKETS.value: TicketRecord,
+            CollectionNames.COMMENTS.value: CommentRecord,
+            CollectionNames.LINKS.value: LinkRecord,
+            CollectionNames.PROJECTS.value: ProjectRecord,
+            CollectionNames.MEETINGS.value: MeetingRecord,
+            CollectionNames.PRODUCTS.value: ProductRecord,
+            CollectionNames.DEALS.value: DealRecord,
+            CollectionNames.SQL_TABLES.value: SQLTableRecord,
+            CollectionNames.SQL_VIEWS.value: SQLViewRecord,
+        }
+        record_factory = factory_by_collection.get(collection)
+        if record_factory is None:
+            return self._build_base_record(record_candidates)
+
+        last_error: Exception | None = None
+        for typed_candidate in type_doc_candidates:
+            for record_candidate in record_candidates:
+                try:
+                    return record_factory.from_arango_record(typed_candidate, record_candidate)
+                except Exception as exc:  # noqa: PERF203
+                    last_error = exc
+
+        if last_error is not None:
+            self.logger.warning(
+                "Failed to create typed record for %s, falling back to base Record: %s",
+                record_type,
+                str(last_error),
+            )
+
+        return self._build_base_record(record_candidates)
+
+    def _record_payload_candidates(self, translated_doc: dict, raw_doc: dict) -> list[dict]:
+        if translated_doc == raw_doc:
+            return [translated_doc]
+        return [translated_doc, raw_doc]
+
+    def _build_base_record(self, record_candidates: list[dict]) -> Record:
+        last_error: Exception | None = None
+        for record_candidate in record_candidates:
+            try:
+                return Record.from_arango_base_record(record_candidate)
+            except Exception as exc:  # noqa: PERF203
+                last_error = exc
+
+        if last_error is not None:
+            raise last_error
+
+        raise ValueError("Unable to construct base record from empty candidate list")
 
     async def get_record_by_id(
         self,
@@ -3790,9 +3845,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Returns:
             Properly typed Record instance (FileRecord, MailRecord, etc.)
 
-        Raises:
-            ValueError: If type doc is missing, record type is unknown, or typed construction fails
-                (same behavior as the Neo4j provider typed record factory)
+        Falls back to a base Record when no type doc is available, the record type is
+        unmapped, or typed construction fails.
         """
         record_type = record_dict.get("recordType")
 
@@ -3843,11 +3897,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 raise ValueError(f"Invalid record type: {record_type}")
         except Exception as e:
             self.logger.warning(
-                f"Failed to create typed record for {record_type}: {str(e)}"
+                "Failed to create typed record for %s, falling back to base Record: %s",
+                record_type,
+                str(last_error),
             )
-            raise ValueError(
-                f"Failed to create typed record for {record_type}"
-            ) from e
+
+        return self._build_base_record(record_candidates)
 
     async def get_record_by_conversation_index(
         self,
@@ -9060,7 +9115,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Delete nodes and all their connected edges.
 
         This method dynamically discovers all edge collections in the graph
-        and deletes edges from all of them.
+        and deletes edges from all of them, matching the behavior of base_arango_service.
 
         Steps:
         1. Get all edge collections from the graph definition
@@ -20013,7 +20068,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Add only schema-allowed fields
             # Note: tools, connectors, kb, vectorDBs are handled via edges, not agent document
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive", "isServiceAccount", "webSearch"]
+            allowed_fields = [
+                "name",
+                "description",
+                "startMessage",
+                "systemPrompt",
+                "instructions",
+                "tags",
+                "isActive",
+                "isServiceAccount", "webSearch",
+                "flow",
+                "flowSchemaVersion",
+                "orchestrationMode",
+            ]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]
