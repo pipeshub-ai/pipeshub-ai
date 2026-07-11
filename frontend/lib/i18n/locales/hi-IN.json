@@ -2179,6 +2179,71 @@
       "discardMessage": "If you discard, your edits won't be saved",
       "discardConfirm": "Discard",
       "discardCancel": "Continue Editing"
+    },
+    "services": {
+      "pageTitle": "सेवाएँ",
+      "pageSubtitle": "प्लेटफ़ॉर्म सेवाओं की स्वास्थ्य स्थिति की निगरानी करें",
+      "infraSection": "इन्फ्रास्ट्रक्चर सेवाएँ",
+      "infraSubtitle": "प्लेटफ़ॉर्म को संचालित करने वाले मूल इन्फ्रास्ट्रक्चर घटक",
+      "appSection": "एप्लिकेशन सेवाएँ",
+      "appSubtitle": "खोज, अनुक्रमण और दस्तावेज़ प्रसंस्करण के लिए Python माइक्रोसर्विसेज",
+      "checkNow": "अभी जाँचें",
+      "checking": "जाँच हो रही है…",
+      "lastChecked": "अंतिम जाँच: {{time}}",
+      "loading": "सेवा स्थिति लोड हो रही है…",
+      "policyTitle": "सेवा स्वास्थ्य नीति",
+      "policyDescription": "क्वेरी और कनेक्टर सेवाएँ महत्वपूर्ण हैं — एप्लिकेशन लोड होने से पहले उनकी प्रतीक्षा करेगा। इंडेक्सिंग और डॉकलिंग सेवाएँ गैर-अवरोधक हैं और केवल पृष्ठभूमि प्रसंस्करण को प्रभावित करती हैं।",
+      "allHealthy": "सभी सेवाएँ सही हैं",
+      "someUnhealthy": "कुछ सेवाएँ सही नहीं हैं",
+      "fetchFailed": "सेवा स्वास्थ्य जाँचने में विफल",
+      "statusHealthy": "स्वस्थ",
+      "statusUnhealthy": "अस्वस्थ",
+      "statusUnknown": "अज्ञात",
+      "infra": {
+        "redis": {
+          "label": "Redis",
+          "descriptionWithKvStore": "कैशिंग, दर सीमा, और कॉन्फ़िगरेशन",
+          "description": "कैशिंग और दर सीमा"
+        },
+        "mongodb": {
+          "label": "MongoDB",
+          "description": "सत्र और उपयोगकर्ता मेटाडेटा"
+        },
+        "messageBroker": {
+          "label": "संदेश ब्रोकर",
+          "description": "वितरित इवेंट स्ट्रीमिंग"
+        },
+        "etcd": {
+          "label": "etcd",
+          "description": "वितरित कॉन्फ़िगरेशन"
+        },
+        "graphDb": {
+          "label": "ग्राफ डेटाबेस",
+          "description": "ज्ञान ग्राफ"
+        },
+        "vectorDb": {
+          "label": "वेक्टर डेटाबेस",
+          "description": "हाइब्रिड खोज — कीवर्ड और सिमेंटिक"
+        }
+      },
+      "app": {
+        "query": {
+          "label": "क्वेरी सेवा",
+          "description": "RAG, सिमेंटिक खोज, और LLM एकीकरण"
+        },
+        "connector": {
+          "label": "कनेक्टर सेवा",
+          "description": "OAuth, टोकन रिफ्रेश, और डेटा स्रोत एकीकरण"
+        },
+        "indexing": {
+          "label": "इंडेक्सिंग सेवा",
+          "description": "दस्तावेज़ पार्सिंग, एम्बेडिंग जनरेशन, और चंकिंग"
+        },
+        "docling": {
+          "label": "डॉकलिंग सेवा",
+          "description": "उन्नत दस्तावेज़ पार्सिंग और OCR"
+        }
+      }
     }
   },
   "filePreview": {

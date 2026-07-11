@@ -1155,12 +1155,13 @@ class TestExcludePaths:
 
         assert "/health" in EXCLUDE_PATHS
         assert "/health/graph-db" in EXCLUDE_PATHS
+        assert "/health/vector-db" in EXCLUDE_PATHS
         assert "/drive/webhook" in EXCLUDE_PATHS
         assert "/gmail/webhook" in EXCLUDE_PATHS
         assert "/admin/webhook" in EXCLUDE_PATHS
 
     def test_exclude_paths_length(self):
-        """EXCLUDE_PATHS has exactly 5 entries."""
+        """EXCLUDE_PATHS has exactly 6 entries."""
         from app.connectors_main import EXCLUDE_PATHS
 
-        assert len(EXCLUDE_PATHS) == 5
+        assert len(EXCLUDE_PATHS) == 6

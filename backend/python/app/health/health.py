@@ -428,25 +428,36 @@ class Health:
 
     @staticmethod
     async def health_check_vector_db(container) -> None:
-        """Health check method that verifies vector db service health"""
+        """Health check method that verifies vector db service health using provider health_check()."""
         logger = container.logger()
         logger.info("🔍 Starting vector db service health check...")
         try:
-            # Check if vector_db_service is available in the container
-            if not hasattr(container, 'vector_db_service'):
-                logger.info("⚠️ vector_db_service not available in this container, skipping health check")
+            if not hasattr(container, "vector_db_service"):
+                logger.info(
+                    "⚠️ vector_db_service not available in this container, skipping health check"
+                )
                 return
 
             vector_db_service = await container.vector_db_service()
-            try:
-                # Fetch collections to check connectivity
-                await vector_db_service.get_collections()
-                logger.info("✅ vector db service is healthy!")
-            except Exception as e:
-                error_msg = f"vector db service health check failed: {str(e)}"
+            provider_name = vector_db_service.get_service_name()
+
+            from app.services.vector_db.models import HealthStatus
+            result = await vector_db_service.health_check()
+
+            if result.status == HealthStatus.HEALTHY:
+                logger.info(
+                    f"✅ Vector DB ({provider_name}) is healthy! "
+                    f"version={result.server_version}, latency={result.latency_ms}ms, "
+                    f"message={result.message}"
+                )
+            else:
+                error_msg = (
+                    f"Vector DB ({provider_name}) health check returned "
+                    f"status={result.status.value}: {result.message}"
+                )
                 logger.error(f"❌ {error_msg}")
-                raise
+                raise Exception(error_msg)
         except Exception as e:
-            error_msg = f"vector db service health check failed: {str(e)}"
+            error_msg = f"Vector DB health check failed: {str(e)}"
             logger.error(f"❌ {error_msg}")
             raise

@@ -136,6 +136,7 @@ _OPTIONAL_PACKAGES = [
     "cv2",
     "spacy",
     "openpyxl",
+    "pdfplumber",
     "celery",
     "aiokafka",
     "github",
@@ -224,9 +225,23 @@ def mock_graph_provider():
 @pytest.fixture
 def mock_vector_db_service():
     """Mock IVectorDBService."""
+    from unittest.mock import MagicMock as _MagicMock
     service = AsyncMock()
-    service.filter_collection = AsyncMock(return_value=MagicMock())
+    service.filter_collection = AsyncMock(return_value=_MagicMock())
     service.query_nearest_points = AsyncMock(return_value=[])
+    # get_capabilities and get_service_name are synchronous in the interface
+    try:
+        from app.services.vector_db.models import VectorDBCapabilities
+        caps = VectorDBCapabilities(
+            supports_sparse_vectors=False,
+            supports_server_side_text_search=False,
+        )
+    except Exception:
+        caps = _MagicMock()
+        caps.supports_sparse_vectors = False
+        caps.supports_server_side_text_search = False
+    service.get_capabilities = _MagicMock(return_value=caps)
+    service.get_service_name = _MagicMock(return_value="mock")
     return service
 
 
