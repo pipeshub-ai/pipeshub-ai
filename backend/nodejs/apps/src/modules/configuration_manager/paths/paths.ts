@@ -39,6 +39,7 @@ export const configPaths = {
   aiModels: '/services/aiModels',
   connectorSyncScheduledJobsMigration:
     '/migrations/connector_sync_scheduled_jobs',
+  documentOrgIdBackfillMigration: '/migrations/document_orgid_backfill',
   webSearch: '/services/webSearch',
   slackBot: '/services/slackBot',
   db: {

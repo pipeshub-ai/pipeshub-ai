@@ -67,7 +67,7 @@ export class StorageController {
     private logger: Logger,
     @inject('KeyValueStoreService')
     private keyValueStoreService: KeyValueStoreService,
-  ) {}
+  ) { }
 
   async getStorageConfig(
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
@@ -282,7 +282,8 @@ export class StorageController {
       const orgId = extractOrgId(req);
       const doc = await DocumentModel.findOne({
         _id: documentId,
-        orgId: orgId,
+        orgId,
+        isDeleted: false,
       });
 
       if (!doc) {
@@ -307,6 +308,7 @@ export class StorageController {
       const document = await DocumentModel.findOne({
         _id: documentId,
         orgId,
+        isDeleted: false,
       });
 
       if (!document) {
@@ -316,8 +318,8 @@ export class StorageController {
       document.isDeleted = true;
       document.deletedByUserId = userId
         ? (new mongoose.Types.ObjectId(
-            userId,
-          ) as unknown as mongoose.Schema.Types.ObjectId)
+          userId,
+        ) as unknown as mongoose.Schema.Types.ObjectId)
         : undefined;
 
       await document.save();
@@ -561,8 +563,8 @@ export class StorageController {
           note: currentVersionNote,
           initiatedByUserId: userId
             ? (new mongoose.Types.ObjectId(
-                userId,
-              ) as unknown as mongoose.Schema.Types.ObjectId)
+              userId,
+            ) as unknown as mongoose.Schema.Types.ObjectId)
             : undefined,
           createdAt: Date.now(),
         });
@@ -577,53 +579,53 @@ export class StorageController {
 
         // If current document was modified since last version, save it as a new version first
         if (isDocumentChanged === true) {
-        const versionToSave = document.versionHistory?.length ?? 0;
-        const versionFilePath = getVersionFilePath(
-          basePath,
-          versionToSave,
-          ext,
-        );
-        const bufferResponse = await adapter.getBufferFromStorageService(
-          document,
-          undefined,
-        );
-
-        if (bufferResponse.statusCode !== 200) {
-          throw new InternalServerError(
-            `Some error occurred while uploading next version: ${bufferResponse.msg}`,
+          const versionToSave = document.versionHistory?.length ?? 0;
+          const versionFilePath = getVersionFilePath(
+            basePath,
+            versionToSave,
+            ext,
           );
-        }
-
-        const response = await this.cloneDocument(
-          document,
-          bufferResponse.data as Buffer,
-          versionFilePath,
-          next,
-          adapter,
-        );
-
-        if (!response || response.statusCode !== 200) {
-          throw new InternalServerError(
-            response?.data ?? 'Failed to save current version before update',
+          const bufferResponse = await adapter.getBufferFromStorageService(
+            document,
+            undefined,
           );
-        }
 
-        document.versionHistory?.push({
-          version: versionToSave,
-          [document.storageVendor]: {
-            url: response?.data,
-          },
-          mutationCount: document.mutationCount,
-          size: document.sizeInBytes,
-          extension: document.extension,
-          note: currentVersionNote,
-          initiatedByUserId: userId
-            ? (new mongoose.Types.ObjectId(
+          if (bufferResponse.statusCode !== 200) {
+            throw new InternalServerError(
+              `Some error occurred while uploading next version: ${bufferResponse.msg}`,
+            );
+          }
+
+          const response = await this.cloneDocument(
+            document,
+            bufferResponse.data as Buffer,
+            versionFilePath,
+            next,
+            adapter,
+          );
+
+          if (!response || response.statusCode !== 200) {
+            throw new InternalServerError(
+              response?.data ?? 'Failed to save current version before update',
+            );
+          }
+
+          document.versionHistory?.push({
+            version: versionToSave,
+            [document.storageVendor]: {
+              url: response?.data,
+            },
+            mutationCount: document.mutationCount,
+            size: document.sizeInBytes,
+            extension: document.extension,
+            note: currentVersionNote,
+            initiatedByUserId: userId
+              ? (new mongoose.Types.ObjectId(
                 userId,
               ) as unknown as mongoose.Schema.Types.ObjectId)
-            : undefined,
-          createdAt: Date.now(),
-        });
+              : undefined,
+            createdAt: Date.now(),
+          });
         }
       }
 
@@ -686,8 +688,8 @@ export class StorageController {
         note: nextVersionNote,
         initiatedByUserId: userId
           ? (new mongoose.Types.ObjectId(
-              userId,
-            ) as unknown as mongoose.Schema.Types.ObjectId)
+            userId,
+          ) as unknown as mongoose.Schema.Types.ObjectId)
           : undefined,
         createdAt: Date.now(),
       });
@@ -823,8 +825,8 @@ export class StorageController {
         size: document.versionHistory[versionNum]?.size,
         initiatedByUserId: userId
           ? (new mongoose.Types.ObjectId(
-              userId,
-            ) as unknown as mongoose.Schema.Types.ObjectId)
+            userId,
+          ) as unknown as mongoose.Schema.Types.ObjectId)
           : undefined,
         createdAt: Date.now(),
       });
@@ -850,6 +852,7 @@ export class StorageController {
       const document = await DocumentModel.findOne({
         _id: documentId,
         orgId: req.user?.orgId,
+        isDeleted: false,
       });
 
       if (!document || !document.documentPath) {

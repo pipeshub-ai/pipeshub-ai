@@ -16,7 +16,7 @@ export const accountTypeCheck = async (
     if (!orgId) {
       throw new NotFoundError('Account not found');
     }
-    const org = await Org.findOne({ orgId, isDeleted: false });
+    const org = await Org.findOne({ _id: orgId, isDeleted: false });
     if (!org) {
       throw new BadRequestError('Organisation not found');
     }
