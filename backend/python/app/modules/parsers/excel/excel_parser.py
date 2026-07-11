@@ -39,6 +39,7 @@ from app.modules.parsers.excel.prompt_template import (
     sheet_summary_prompt,
     table_summary_prompt,
 )
+from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
 from app.utils.streaming import (
     invoke_with_row_descriptions_and_reflection,
@@ -965,7 +966,7 @@ class ExcelParser:
                 formatted_samples.append(formatted_row)
 
             # Format as JSON string for prompt
-            sample_data_str = json.dumps(formatted_samples, indent=2)
+            sample_data_str = json.dumps(formatted_samples, indent=2, ensure_ascii=False)
 
             # Initial messages
             messages = excel_header_generation_prompt.format_messages(
@@ -1008,7 +1009,7 @@ class ExcelParser:
                             messages_list = list(messages)
 
                             # Add the failed response to context
-                            failed_response = json.dumps({"headers": generated_headers}, indent=2)
+                            failed_response = json.dumps({"headers": generated_headers}, indent=2, ensure_ascii=False)
                             messages_list.append(AIMessage(content=failed_response))
 
                             # Add reflection prompt
@@ -1144,13 +1145,15 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
             # Get summary from LLM with retry
             messages = self.table_summary_prompt.format_messages(
-                headers=table["headers"], sample_data=json.dumps(sample_data, indent=2)
+                headers=table["headers"], sample_data=json.dumps(sample_data, indent=2, ensure_ascii=False)
             )
             response = await self._call_llm(messages)
-            if '</think>' in response.content:
-                response.content = response.content.split('</think>')[-1]
+            # Gemini and similar return content as a list of blocks, not a string.
+            summary = coerce_message_content_to_text(response.content)
+            if '</think>' in summary:
+                summary = summary.split('</think>')[-1]
             self.logger.info("Table summary generated")
-            return response.content
+            return summary
 
         except Exception as e:
             self.logger.error(f"Error getting table summary: {e}", exc_info=True)
@@ -1430,5 +1433,4 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
         self.logger.info(f"Workbook processing complete. Total: {len(blocks)} blocks, {len(block_groups)} block groups")
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
-
 

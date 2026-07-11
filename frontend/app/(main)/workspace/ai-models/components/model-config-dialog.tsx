@@ -1,7 +1,7 @@
 'use client';
 
 import type { TFunction } from 'i18next';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Button, Callout, Flex, Switch, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -10,13 +10,29 @@ import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
 import type { SchemaField } from '@/app/(main)/workspace/connectors/types';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
-import { toast } from '@/lib/store/toast-store';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
 import type { AIModelProvider, AIModelProviderField, ConfiguredModel } from '../types';
 import { CAPABILITY_TO_MODEL_TYPE } from '../types';
 import { AIModelsApi } from '../api';
+import { EmbeddingDownloadProgress } from './embedding-download-progress';
 
 const COMPAT_FIELD_NAMES = ['isReasoning', 'isMultimodal', 'trustRemoteCode'] as const;
+
+// Providers whose model runs in-process on the embedding server (loaded via
+// SentenceTransformer) rather than calling a remote API — these are the only
+// ones that can trigger a slow, untracked Hub download on first use.
+const LOCAL_EMBEDDING_PROVIDERS = new Set(['default', 'sentenceTransformers', 'huggingFace']);
+
+function resolveLocalEmbeddingModelName(
+  provider: AIModelProvider,
+  values: Record<string, unknown>
+): string | null {
+  if (provider.providerId === 'default') {
+    return provider.modelName?.trim() || null;
+  }
+  const model = String(values.model ?? '').trim();
+  return model || null;
+}
 
 const READONLY_ROW_STYLE: React.CSSProperties = {
   display: 'flex',
@@ -169,6 +185,11 @@ export function ModelConfigDialog({
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [downloadTarget, setDownloadTarget] = useState<{
+    modelName: string;
+    trustRemoteCode: boolean;
+  } | null>(null);
+  const downloadResolverRef = useRef<((ready: boolean) => void) | null>(null);
 
   useEffect(() => {
     if (!open || !provider || !capability) {
@@ -227,6 +248,53 @@ export function ModelConfigDialog({
       setValues((prev) => ({ ...prev, [name]: next }));
     },
     [provider?.providerId]
+  );
+
+  const waitForModelDownload = useCallback(
+    (modelName: string, trustRemoteCode: boolean) =>
+      new Promise<boolean>((resolve) => {
+        downloadResolverRef.current = resolve;
+        setDownloadTarget({ modelName, trustRemoteCode });
+      }),
+    []
+  );
+
+  const handleDownloadReady = useCallback(() => {
+    downloadResolverRef.current?.(true);
+    downloadResolverRef.current = null;
+    setDownloadTarget(null);
+  }, []);
+
+  const handleDownloadCancel = useCallback(() => {
+    downloadResolverRef.current?.(false);
+    downloadResolverRef.current = null;
+    setDownloadTarget(null);
+  }, []);
+
+  /**
+   * For local embedding providers, both add AND edit hit the same backend
+   * health-check (POST/PUT .../providers) that loads the model — editing the
+   * `model` field to a not-yet-cached repo id is just as likely to trigger an
+   * untracked multi-minute download as adding a brand-new provider. Pre-empt
+   * it the same way: kick off `prepare-model` and block on the progress
+   * dialog until the model is ready, before calling add/updateProvider.
+   * Returns `false` if the user cancels the download.
+   */
+  const ensureLocalEmbeddingModelReady = useCallback(
+    async (currentProvider: AIModelProvider, currentValues: Record<string, unknown>) => {
+      if (capability !== 'embedding' || !LOCAL_EMBEDDING_PROVIDERS.has(currentProvider.providerId)) {
+        return true;
+      }
+      const modelNameForDownload = resolveLocalEmbeddingModelName(currentProvider, currentValues);
+      if (!modelNameForDownload) return true;
+
+      const trustRemoteCode = Boolean(currentValues.trustRemoteCode);
+      const prepareResult = await AIModelsApi.prepareModel(modelNameForDownload, trustRemoteCode);
+      if (prepareResult?.status === 'ready') return true;
+
+      return waitForModelDownload(modelNameForDownload, trustRemoteCode);
+    },
+    [capability, waitForModelDownload]
   );
 
   const handleSave = async () => {
@@ -302,12 +370,13 @@ export function ModelConfigDialog({
         // set-default endpoint runs a health check to prevent that, so the
         // only way to actually switch the default is via the explicit button.
         const shouldAutoDefault = existingModelsCount === 0;
-        if (provider.providerId === 'sentenceTransformers') {
-          toast.info(
-            t('workspace.aiModels.toastSentenceTransformerDownloading'),
-            { duration: 8000 }
-          );
+
+        const ready = await ensureLocalEmbeddingModelReady(provider, values);
+        if (!ready) {
+          setSaving(false);
+          return;
         }
+
         await AIModelsApi.addProvider({
           modelType,
           provider: provider.providerId,
@@ -319,6 +388,12 @@ export function ModelConfigDialog({
           contextLength: topLevel.contextLength ? Number(topLevel.contextLength) : null,
         });
       } else if (editModel) {
+        const ready = await ensureLocalEmbeddingModelReady(provider, values);
+        if (!ready) {
+          setSaving(false);
+          return;
+        }
+
         // Preserve the existing default flag on edit so that tweaking
         // dimensions / api key / etc. does not silently remove the model
         // from being the default.
@@ -434,6 +509,15 @@ export function ModelConfigDialog({
         error={error}
         onFieldChange={handleFieldChange}
       />
+      {downloadTarget && (
+        <EmbeddingDownloadProgress
+          open
+          modelName={downloadTarget.modelName}
+          trustRemoteCode={downloadTarget.trustRemoteCode}
+          onReady={handleDownloadReady}
+          onCancel={handleDownloadCancel}
+        />
+      )}
     </WorkspaceRightPanel>
   );
 }

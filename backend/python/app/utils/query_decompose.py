@@ -5,6 +5,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from pydantic import BaseModel, Field
 
+from app.utils.aimodels import coerce_message_content_to_text
+
 MIN_DECOMPOSE_AND_EXPAND_QUERIES = 1
 MAX_DECOMPOSE_AND_EXPAND_QUERIES = 5
 
@@ -150,22 +152,18 @@ class QueryDecompositionExpansionService:
     def _parse_decomposition_response(self, response: str) -> Dict[str, Any]:
         """Parse the LLM response to extract the JSON structure with confidence scores"""
         try:
-            # Handle different response formats
+            # Handle different response formats. LangChain message content may be
+            # a plain string or a list of blocks (e.g. Gemini), so coerce to text
+            # before any string handling to avoid 'list' has no attribute 'strip'.
             if hasattr(response, "content"):
-                if '</think>' in response.content:
-                    response.content = response.content.split('</think>')[-1]
-                    response.content = response.content.strip()
-                json_str = response.content
+                json_str = coerce_message_content_to_text(response.content)
             elif isinstance(response, dict):
-                if '</think>' in response.get("content", str(response)):
-                    response.content = response.content.split('</think>')[-1]
-                    response.content = response.content.strip()
-                json_str = response.get("content", str(response))
+                json_str = coerce_message_content_to_text(response.get("content", response))
             else:
-                if '</think>' in str(response):
-                    response = str(response).split('</think>')[-1]
-                    response = response.strip()
-                json_str = str(response)
+                json_str = coerce_message_content_to_text(response)
+
+            if '</think>' in json_str:
+                json_str = json_str.split('</think>')[-1]
 
             # Clean the JSON string
             json_str = json_str.strip()

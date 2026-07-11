@@ -35,6 +35,7 @@ from app.modules.qna.prompt_templates import (
 )
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
+from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
@@ -2008,7 +2009,9 @@ def cleanup_content(response_text: str) -> str:
             "[streaming cleanup_content] response_text is not str | type=%s repr=%s",
             type(response_text).__name__, repr(response_text)[:300],
         )
-        response_text = str(response_text)
+        # Providers like Gemini return list-of-blocks content; extract text
+        # rather than stringifying the Python repr.
+        response_text = coerce_message_content_to_text(response_text)
     response_text = response_text.strip()
     if '</think>' in response_text:
             response_text = response_text.split('</think>')[-1]

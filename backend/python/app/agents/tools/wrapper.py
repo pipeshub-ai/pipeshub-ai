@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.agents.tools.factories.registry import ClientFactoryRegistry
 from app.modules.agents.qna.chat_state import ChatState
+from app.agents.tools.factories.base import ToolsetAuthError
 
 # Constants
 TOOL_RESULT_TUPLE_LENGTH = 2
@@ -199,6 +200,13 @@ class ToolInstanceCreator:
                 return action_class(client, state=self.state)
 
             return action_class(client)
+        except ToolsetAuthError as e:
+            # Preserve the factory's actionable message. Must precede the generic
+            # handler below, which would otherwise misclassify it as "not
+            # authenticated" (the message may contain "OAuth").
+            if self.logger:
+                self.logger.error(f"{app_name} toolset setup error: {e}")
+            raise
         except Exception as e:
             if self.logger:
                 self.logger.error(

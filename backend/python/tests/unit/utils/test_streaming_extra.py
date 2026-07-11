@@ -94,6 +94,16 @@ class TestCleanupContentNonString:
         assert isinstance(result, str)
         assert "1" in result and "2" in result and "3" in result
 
+    def test_gemini_list_blocks_coerced(self):
+        """Gemini-style dict blocks are extracted, not stringified as Python repr."""
+        result = cleanup_content(
+            [
+                {"type": "text", "text": '{"answer": '},
+                {"type": "text", "text": '"hello"}'},
+            ]
+        )
+        assert result == '{"answer": "hello"}'
+
     def test_tuple_input_coerced(self):
         result = cleanup_content(("a", "b"))
         assert isinstance(result, str)

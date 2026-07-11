@@ -166,6 +166,24 @@ class TestJiraFactory:
             )
             assert result is not None
 
+    @pytest.mark.asyncio
+    async def test_create_client_translates_multi_site_to_toolset_auth_error(self):
+        """A provider-specific AtlassianMultiSiteError from build_from_toolset is
+        translated to the generic ToolsetAuthError the wrapper handles."""
+        from app.agents.tools.factories.base import ToolsetAuthError
+        from app.agents.tools.factories.jira import JiraClientFactory
+        from app.sources.external.common.atlassian import AtlassianMultiSiteError
+        factory = JiraClientFactory()
+        with patch("app.agents.tools.factories.jira.JiraClient") as MockClient:
+            MockClient.build_from_toolset = AsyncMock(
+                side_effect=AtlassianMultiSiteError("multiple Jira sites")
+            )
+            with pytest.raises(ToolsetAuthError, match="multiple Jira sites"):
+                await factory.create_client(
+                    config_service=MagicMock(), logger=MagicMock(),
+                    toolset_config={"key": "val"}, state=None
+                )
+
 
 class TestJiraDataCenterFactory:
     """The DC factory adds an auth-type guardrail before delegating to the shared

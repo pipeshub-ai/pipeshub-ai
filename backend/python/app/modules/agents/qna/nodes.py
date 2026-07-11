@@ -48,6 +48,7 @@ from app.modules.qna.response_prompt import (
     build_direct_answer_time_context,
     create_response_messages,
 )
+from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.streaming import stream_llm_response, stream_llm_response_with_tools
 from app.utils.time_conversion import build_llm_time_context
 
@@ -5102,25 +5103,9 @@ def _parse_planner_response_from_llm(response: Any, log: logging.Logger, using_s
     # AIMessage or other object — extract text content and parse JSON
     raw_content = response.content if hasattr(response, 'content') else str(response)
     return _parse_planner_response(
-        _normalize_llm_content(raw_content),
+        coerce_message_content_to_text(raw_content),
         log
     )
-
-
-def _normalize_llm_content(content: Any) -> str:
-    """Extract text from LLM response content that may be a str or list of content blocks."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, dict):
-                if block.get("type") == "text":
-                    parts.append(block.get("text", ""))
-            elif isinstance(block, str):
-                parts.append(block)
-        return "\n".join(parts)
-    return str(content)
 
 
 def _parse_planner_response(content: str, log: logging.Logger) -> dict[str, Any]:
@@ -6361,7 +6346,7 @@ async def reflect_node(
             with contextlib.suppress(asyncio.CancelledError):
                 await keepalive_task
 
-        reflection = _parse_reflection_response(_normalize_llm_content(response.content), log)
+        reflection = _parse_reflection_response(coerce_message_content_to_text(response.content), log)
 
     except asyncio.TimeoutError:
         log.warning("⏱️ Reflect timeout")
