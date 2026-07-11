@@ -17896,12 +17896,60 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             return False
 
+    @staticmethod
+    def _append_source_created_time_filters(
+        metadata_filter_clause: str,
+        time_range: dict[str, int] | None,
+        bind_vars: dict,
+    ) -> str:
+        """Append AQL time filters for source creation and/or last-modification timestamps.
+
+        Handles four optional keys in time_range:
+          source_created_after_ms / source_created_before_ms  → record.sourceCreatedAtTimestamp
+          source_updated_after_ms / source_updated_before_ms  → record.sourceLastModifiedTimestamp
+        """
+        time_filter_lines: list[str] = []
+        if time_range:
+            c_after = time_range.get("source_created_after_ms")
+            c_before = time_range.get("source_created_before_ms")
+            u_after = time_range.get("source_updated_after_ms")
+            u_before = time_range.get("source_updated_before_ms")
+
+            if c_after is not None:
+                time_filter_lines.append(
+                    "FILTER record.sourceCreatedAtTimestamp >= @sourceCreatedAfterMs"
+                )
+                bind_vars["sourceCreatedAfterMs"] = c_after
+            if c_before is not None:
+                time_filter_lines.append(
+                    "FILTER record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs"
+                )
+                bind_vars["sourceCreatedBeforeMs"] = c_before
+            if u_after is not None:
+                time_filter_lines.append(
+                    "FILTER record.sourceLastModifiedTimestamp >= @sourceUpdatedAfterMs"
+                )
+                bind_vars["sourceUpdatedAfterMs"] = u_after
+            if u_before is not None:
+                time_filter_lines.append(
+                    "FILTER record.sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs"
+                )
+                bind_vars["sourceUpdatedBeforeMs"] = u_before
+
+        if not time_filter_lines:
+            return metadata_filter_clause
+        time_filter_clause = "\n                    ".join(time_filter_lines)
+        if metadata_filter_clause:
+            return f"{metadata_filter_clause}\n                    {time_filter_clause}"
+        return time_filter_clause
+
     async def _get_virtual_ids_for_connector(
         self,
         user_id: str,
         org_id: str,
         connector_id: str,
-        metadata_filters: dict[str, list[str]] | None = None
+        metadata_filters: dict[str, list[str]] | None = None,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId for a specific connector covering all permission paths.
@@ -17976,6 +18024,36 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         ) > 0""")
 
             metadata_filter_clause = "\n".join(metadata_filter_lines)
+
+            bind_vars = {
+                "userId": user_id,
+                "orgId": org_id,
+                "connectorId": connector_id,
+                "completedStatus": ProgressStatus.COMPLETED.value,
+                "@users": CollectionNames.USERS.value,
+                "@records": CollectionNames.RECORDS.value,
+                "@anyone": CollectionNames.ANYONE.value,
+            }
+
+            if metadata_filters:
+                if metadata_filters.get("departments"):
+                    bind_vars["departmentNames"] = metadata_filters["departments"]
+                if metadata_filters.get("categories"):
+                    bind_vars["categoryNames"] = metadata_filters["categories"]
+                if metadata_filters.get("subcategories1"):
+                    bind_vars["subcat1Names"] = metadata_filters["subcategories1"]
+                if metadata_filters.get("subcategories2"):
+                    bind_vars["subcat2Names"] = metadata_filters["subcategories2"]
+                if metadata_filters.get("subcategories3"):
+                    bind_vars["subcat3Names"] = metadata_filters["subcategories3"]
+                if metadata_filters.get("languages"):
+                    bind_vars["languageNames"] = metadata_filters["languages"]
+                if metadata_filters.get("topics"):
+                    bind_vars["topicNames"] = metadata_filters["topics"]
+
+            metadata_filter_clause = self._append_source_created_time_filters(
+                metadata_filter_clause, time_range, bind_vars
+            )
 
             query = f"""
             LET userDoc = FIRST(
@@ -18082,32 +18160,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN {{virtualRecordId: virtualRecordId, recordId: recordId}}
             """
 
-            bind_vars = {
-                "userId": user_id,
-                "orgId": org_id,
-                "connectorId": connector_id,
-                "completedStatus": ProgressStatus.COMPLETED.value,
-                "@users": CollectionNames.USERS.value,
-                "@records": CollectionNames.RECORDS.value,
-                "@anyone": CollectionNames.ANYONE.value,
-            }
-
-            if metadata_filters:
-                if metadata_filters.get("departments"):
-                    bind_vars["departmentNames"] = metadata_filters["departments"]
-                if metadata_filters.get("categories"):
-                    bind_vars["categoryNames"] = metadata_filters["categories"]
-                if metadata_filters.get("subcategories1"):
-                    bind_vars["subcat1Names"] = metadata_filters["subcategories1"]
-                if metadata_filters.get("subcategories2"):
-                    bind_vars["subcat2Names"] = metadata_filters["subcategories2"]
-                if metadata_filters.get("subcategories3"):
-                    bind_vars["subcat3Names"] = metadata_filters["subcategories3"]
-                if metadata_filters.get("languages"):
-                    bind_vars["languageNames"] = metadata_filters["languages"]
-                if metadata_filters.get("topics"):
-                    bind_vars["topicNames"] = metadata_filters["topics"]
-
             query_start = time.time()
             results = await self.execute_query(query, bind_vars=bind_vars)
             elapsed = time.time() - query_start
@@ -18133,7 +18185,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_id: str,
         org_id: str,
         kb_ids: list[str] | None = None,
-        metadata_filters: dict[str, list[str]] | None = None
+        metadata_filters: dict[str, list[str]] | None = None,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId from Knowledge Bases (RecordGroups).
@@ -18210,6 +18263,35 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             metadata_filter_clause = "\n".join(metadata_filter_lines)
 
+            bind_vars: dict = {
+                "userId": user_id,
+                "completedStatus": ProgressStatus.COMPLETED.value,
+                "@users": CollectionNames.USERS.value,
+            }
+
+            if kb_ids:
+                bind_vars["kb_ids"] = kb_ids
+
+            if metadata_filters:
+                if metadata_filters.get("departments"):
+                    bind_vars["departmentNames"] = metadata_filters["departments"]
+                if metadata_filters.get("categories"):
+                    bind_vars["categoryNames"] = metadata_filters["categories"]
+                if metadata_filters.get("subcategories1"):
+                    bind_vars["subcat1Names"] = metadata_filters["subcategories1"]
+                if metadata_filters.get("subcategories2"):
+                    bind_vars["subcat2Names"] = metadata_filters["subcategories2"]
+                if metadata_filters.get("subcategories3"):
+                    bind_vars["subcat3Names"] = metadata_filters["subcategories3"]
+                if metadata_filters.get("languages"):
+                    bind_vars["languageNames"] = metadata_filters["languages"]
+                if metadata_filters.get("topics"):
+                    bind_vars["topicNames"] = metadata_filters["topics"]
+
+            metadata_filter_clause = self._append_source_created_time_filters(
+                metadata_filter_clause, time_range, bind_vars
+            )
+
             query = f"""
             LET userDoc = FIRST(
                 FOR user IN @@users
@@ -18254,31 +18336,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN {{virtualRecordId: virtualRecordId, recordId: recordId}}
             """
 
-            bind_vars = {
-                "userId": user_id,
-                "completedStatus": ProgressStatus.COMPLETED.value,
-                "@users": CollectionNames.USERS.value,
-            }
-
-            if kb_ids:
-                bind_vars["kb_ids"] = kb_ids
-
-            if metadata_filters:
-                if metadata_filters.get("departments"):
-                    bind_vars["departmentNames"] = metadata_filters["departments"]
-                if metadata_filters.get("categories"):
-                    bind_vars["categoryNames"] = metadata_filters["categories"]
-                if metadata_filters.get("subcategories1"):
-                    bind_vars["subcat1Names"] = metadata_filters["subcategories1"]
-                if metadata_filters.get("subcategories2"):
-                    bind_vars["subcat2Names"] = metadata_filters["subcategories2"]
-                if metadata_filters.get("subcategories3"):
-                    bind_vars["subcat3Names"] = metadata_filters["subcategories3"]
-                if metadata_filters.get("languages"):
-                    bind_vars["languageNames"] = metadata_filters["languages"]
-                if metadata_filters.get("topics"):
-                    bind_vars["topicNames"] = metadata_filters["topics"]
-
             query_start = time.time()
             results = await self.execute_query(query, bind_vars=bind_vars)
             elapsed = time.time() - query_start
@@ -18302,7 +18359,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         user_id: str,
         org_id: str,
-        filters: dict[str, list[str]] | None = None
+        filters: dict[str, list[str]] | None = None,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
@@ -18326,6 +18384,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     'kb': [kb_ids],
                     'apps': [connector_ids]
                 }
+            time_range (Optional[Dict[str, int]]): Optional source-creation bounds in epoch ms.
+                Keys: 'source_created_after_ms', 'source_created_before_ms'. Filters on
+                record.sourceCreatedAtTimestamp.
 
         Returns:
             Dict[str, str]: Mapping of virtualRecordId -> recordId
@@ -18362,21 +18423,37 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     if connector_id.startswith("knowledgeBase_"):
                         continue
                     tasks.append(
-                        self._get_virtual_ids_for_connector(user_id, org_id, connector_id, metadata_filters)
+                        self._get_virtual_ids_for_connector(
+                            user_id, org_id, connector_id, metadata_filters, time_range=time_range
+                        )
                     )
-                tasks.append(self._get_kb_virtual_ids(user_id, org_id, kb_ids, metadata_filters))
+                tasks.append(
+                    self._get_kb_virtual_ids(
+                        user_id, org_id, kb_ids, metadata_filters, time_range=time_range
+                    )
+                )
 
             elif not has_app_filter and has_kb_filter:
-                tasks.append(self._get_kb_virtual_ids(user_id, org_id, kb_ids, metadata_filters))
+                tasks.append(
+                    self._get_kb_virtual_ids(
+                        user_id, org_id, kb_ids, metadata_filters, time_range=time_range
+                    )
+                )
 
             elif not has_app_filter and not has_kb_filter:
                 for connector_id in user_apps_ids:
                     if connector_id.startswith("knowledgeBase_"):
                         continue
                     tasks.append(
-                        self._get_virtual_ids_for_connector(user_id, org_id, connector_id, metadata_filters)
+                        self._get_virtual_ids_for_connector(
+                            user_id, org_id, connector_id, metadata_filters, time_range=time_range
+                        )
                     )
-                tasks.append(self._get_kb_virtual_ids(user_id, org_id, None, metadata_filters))
+                tasks.append(
+                    self._get_kb_virtual_ids(
+                        user_id, org_id, None, metadata_filters, time_range=time_range
+                    )
+                )
 
             else:  # has_app_filter and not has_kb_filter
                 connectors_to_query = [
@@ -18387,7 +18464,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     if connector_id.startswith("knowledgeBase_"):
                         continue
                     tasks.append(
-                        self._get_virtual_ids_for_connector(user_id, org_id, connector_id, metadata_filters)
+                        self._get_virtual_ids_for_connector(
+                            user_id, org_id, connector_id, metadata_filters, time_range=time_range
+                        )
                     )
 
             if not tasks:
