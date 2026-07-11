@@ -13,6 +13,7 @@ import json
 import pytest
 
 from app.modules.transformers.blob_storage import BlobStorage
+from app.utils.storage_path import sanitize_path_segment
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +166,7 @@ class TestApplyUsesOverride:
             return_value={"record_doc_id": "doc-existing"}
         )
         bs._build_hierarchical_storage_path = AsyncMock(return_value="records/conn-1/Finance/doc.pdf")
-        bs._get_current_document_path = AsyncMock(return_value="records/conn-1/Finance/doc.pdf")
+        bs._get_current_document_path = AsyncMock(return_value="records/conn-1/Sales/doc.pdf")
         bs.update_record_buffer = AsyncMock(return_value=("doc-existing", 100))
         bs.save_record_to_storage = AsyncMock(return_value=("doc-new", 200))
         bs.store_virtual_record_mapping = AsyncMock()
@@ -321,8 +322,9 @@ class TestBuildHierarchicalStoragePath:
         assert path == "records/conn-3/General/My File"
 
     @pytest.mark.asyncio
-    async def test_graph_provider_error_falls_back_to_record_name(self):
-        """If get_record_path raises, record_name is used as fallback."""
+    async def test_graph_provider_error_falls_back_to_flat_vrid_path(self):
+        """If get_record_path raises, the safe flat vrid path is used -- not a
+        fabricated <group>/<record_name> path built from partial data."""
         bs = _make_bs()
         bs.graph_provider.get_record_group_by_id = AsyncMock(
             return_value={"groupName": "Space"}
@@ -332,8 +334,8 @@ class TestBuildHierarchicalStoragePath:
 
         path = await bs._build_hierarchical_storage_path(record, "vr-fallback")
 
-        # Should not raise; uses record_name as fallback for the leaf segment
-        assert path == "records/conn-4/Space/My Doc"
+        # Should not raise; short-circuits to the flat vrid path on traversal failure
+        assert path == "records/vr-fallback"
 
     @pytest.mark.asyncio
     async def test_no_graph_provider_returns_flat_path(self):
@@ -365,43 +367,35 @@ class TestBuildHierarchicalStoragePath:
 
 class TestSanitizePathSegment:
     def test_removes_forward_slash(self):
-        bs = _make_bs()
-        assert bs._sanitize_path_segment("foo/bar") == "foo_bar"
+        assert sanitize_path_segment("foo/bar") == "foo_bar"
 
     def test_removes_backslash(self):
-        bs = _make_bs()
-        assert bs._sanitize_path_segment("foo\\bar") == "foo_bar"
+        assert sanitize_path_segment("foo\\bar") == "foo_bar"
 
     def test_removes_colon(self):
-        bs = _make_bs()
-        assert bs._sanitize_path_segment("C:drive") == "C_drive"
+        assert sanitize_path_segment("C:drive") == "C_drive"
 
     def test_removes_asterisk_and_question_mark(self):
-        bs = _make_bs()
-        result = bs._sanitize_path_segment("file*?.txt")
+        result = sanitize_path_segment("file*?.txt")
         assert "*" not in result
         assert "?" not in result
 
     def test_removes_angle_brackets_and_pipe(self):
-        bs = _make_bs()
-        result = bs._sanitize_path_segment("a<b>c|d")
+        result = sanitize_path_segment("a<b>c|d")
         assert "<" not in result
         assert ">" not in result
         assert "|" not in result
 
     def test_truncates_at_100_chars(self):
-        bs = _make_bs()
         long_name = "a" * 150
-        result = bs._sanitize_path_segment(long_name)
+        result = sanitize_path_segment(long_name)
         assert len(result) == 100
 
     def test_preserves_normal_name(self):
-        bs = _make_bs()
-        assert bs._sanitize_path_segment("Engineering Space") == "Engineering Space"
+        assert sanitize_path_segment("Engineering Space") == "Engineering Space"
 
     def test_preserves_alphanumeric_and_dash(self):
-        bs = _make_bs()
-        assert bs._sanitize_path_segment("my-doc_2024") == "my-doc_2024"
+        assert sanitize_path_segment("my-doc_2024") == "my-doc_2024"
 
 
 # ---------------------------------------------------------------------------

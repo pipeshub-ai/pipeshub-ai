@@ -370,7 +370,7 @@ class TestBlobStorageApply:
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "legacy-doc"}
         )
-        bs.upload_next_version = AsyncMock(
+        bs.update_record_buffer = AsyncMock(
             side_effect=Exception("This document cannot be versioned")
         )
         bs.save_record_to_storage = AsyncMock(return_value=("new-doc", 2048))
@@ -382,7 +382,7 @@ class TestBlobStorageApply:
 
         await bs.apply(ctx)
 
-        bs.upload_next_version.assert_awaited_once()
+        bs.update_record_buffer.assert_awaited_once()
         bs.save_record_to_storage.assert_awaited_once()
         bs.store_virtual_record_mapping.assert_awaited_once_with(
             "vr-1", "new-doc", 2048

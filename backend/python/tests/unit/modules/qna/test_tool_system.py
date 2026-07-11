@@ -746,20 +746,32 @@ class TestGetAgentTools:
         result = get_agent_tools(state)
         assert result is mock_tools
 
-    @patch("app.modules.agents.qna.tool_system.ToolLoader.load_tools")
-    def test_adds_fetch_full_record_tool(self, mock_load):
-        """Adds fetch_full_record_tool when virtual_record_map exists."""
-        mock_tools = [MagicMock()]
-        mock_load.return_value = mock_tools.copy()
+    @patch("app.modules.agents.qna.tool_system.get_agent_tools")
+    def test_adds_fetch_full_record_tool(self, mock_get_tools):
+        """Adds fetch_full_record_tool when virtual_record_map exists.
+
+        The fetch-tool injection lives in get_agent_tools_with_schemas (the
+        ReAct/deep agent path) now, not in plain get_agent_tools.
+        """
+        mock_wrapper = MagicMock()
+        mock_wrapper.name = "some.tool"
+        mock_wrapper.description = "desc"
+        mock_wrapper.registry_tool = MagicMock()
+        mock_wrapper.registry_tool.args_schema = None
+        mock_get_tools.return_value = [mock_wrapper]
+
         state = {
             "virtual_record_id_to_result": {"vr1": {"content": "x"}},
             "record_label_to_uuid_map": {},
             "logger": logging.getLogger("test"),
         }
 
-        with patch("app.utils.fetch_full_record.create_fetch_full_record_tool") as mock_create:
+        with patch("app.modules.agents.qna.tool_system._create_web_tools", return_value=[]), \
+             patch("langchain_core.tools.StructuredTool") as MockST, \
+             patch("app.utils.fetch_full_record.create_fetch_full_record_tool") as mock_create:
+            MockST.from_function.return_value = MagicMock()
             mock_create.return_value = MagicMock(name="fetch_tool")
-            result = get_agent_tools(state)
+            result = get_agent_tools_with_schemas(state)
             assert len(result) == 2  # original + fetch tool
 
     @patch("app.modules.agents.qna.tool_system.ToolLoader.load_tools")
@@ -777,10 +789,14 @@ class TestGetAgentTools:
             result = get_agent_tools(state)
             assert len(result) == 1  # only original tools
 
-    @patch("app.modules.agents.qna.tool_system.ToolLoader.load_tools")
-    def test_fetch_tool_with_org_and_graph(self, mock_load):
-        """Passes org_id and graph_provider when creating fetch tool."""
-        mock_load.return_value = []
+    @patch("app.modules.agents.qna.tool_system.get_agent_tools")
+    def test_fetch_tool_with_org_and_graph(self, mock_get_tools):
+        """Passes org_id and graph_provider when creating fetch tool.
+
+        Retargeted at get_agent_tools_with_schemas, which now owns the
+        fetch-tool injection (org_id/graph_provider passthrough).
+        """
+        mock_get_tools.return_value = []
         state = {
             "virtual_record_id_to_result": {"vr1": {}},
             "org_id": "org-123",
@@ -788,9 +804,10 @@ class TestGetAgentTools:
             "logger": logging.getLogger("test"),
         }
 
-        with patch("app.utils.fetch_full_record.create_fetch_full_record_tool") as mock_create:
+        with patch("app.modules.agents.qna.tool_system._create_web_tools", return_value=[]), \
+             patch("app.utils.fetch_full_record.create_fetch_full_record_tool") as mock_create:
             mock_create.return_value = MagicMock()
-            get_agent_tools(state)
+            get_agent_tools_with_schemas(state)
             call_kwargs = mock_create.call_args
             assert call_kwargs[1]["org_id"] == "org-123"
 
@@ -802,14 +819,19 @@ class TestGetAgentTools:
         result = get_agent_tools(state)
         assert len(result) == 0
 
-    @patch("app.modules.agents.qna.tool_system.ToolLoader.load_tools")
-    def test_fetch_tool_without_logger(self, mock_load):
-        """Fetch tool works without logger."""
-        mock_load.return_value = []
+    @patch("app.modules.agents.qna.tool_system.get_agent_tools")
+    def test_fetch_tool_without_logger(self, mock_get_tools):
+        """Fetch tool works without logger.
+
+        Retargeted at get_agent_tools_with_schemas — get_agent_tools no
+        longer adds the fetch tool at all.
+        """
+        mock_get_tools.return_value = []
         state = {"virtual_record_id_to_result": {"vr1": {}}}
-        with patch("app.utils.fetch_full_record.create_fetch_full_record_tool") as mock_create:
+        with patch("app.modules.agents.qna.tool_system._create_web_tools", return_value=[]), \
+             patch("app.utils.fetch_full_record.create_fetch_full_record_tool") as mock_create:
             mock_create.return_value = MagicMock()
-            result = get_agent_tools(state)
+            result = get_agent_tools_with_schemas(state)
             assert len(result) == 1
 
 

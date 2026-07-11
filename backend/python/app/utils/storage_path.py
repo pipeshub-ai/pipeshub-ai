@@ -90,6 +90,7 @@ async def build_hierarchical_storage_path(
         except Exception as e:
             if logger:
                 logger.warning("Could not get record path hierarchy: %s", str(e))
+            return f"records/{virtual_record_id}" if virtual_record_id else None
 
     if not record_path_added:
         record_name = getattr(record, "record_name", None)

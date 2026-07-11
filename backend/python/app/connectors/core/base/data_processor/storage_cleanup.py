@@ -49,6 +49,7 @@ class StorageCleanupHelper:
         return await build_hierarchical_storage_path(
             record,
             self.graph_provider,
+            virtual_record_id=getattr(record, "virtual_record_id", None),
             transaction=transaction,
             logger=self.logger,
         )

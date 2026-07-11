@@ -478,18 +478,24 @@ class TestNeedsToolNameSanitization:
 
 
 class TestGetAgentToolsFetchRecordError:
-    """Cover lines 456-459: exception adding fetch_full_record tool."""
+    """Cover the exception path when adding the fetch_full_record tool.
+
+    The fetch-tool injection was moved from get_agent_tools into
+    get_agent_tools_with_schemas (the ReAct/deep agent path) — retargeted
+    here accordingly. plain get_agent_tools no longer touches this at all.
+    """
 
     def test_fetch_record_exception_logged(self):
-        from app.modules.agents.qna.tool_system import get_agent_tools
+        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
         state = _make_state(
             has_knowledge=True,
             virtual_record_id_to_result={"rec1": "data1"},
             _cached_agent_tools=None,
         )
         with patch("app.modules.agents.qna.tool_system.ToolLoader.load_tools", return_value=[]), \
+             patch("app.modules.agents.qna.tool_system._create_web_tools", return_value=[]), \
              patch("app.utils.fetch_full_record.create_fetch_full_record_tool", side_effect=RuntimeError("boom")):
-            result = get_agent_tools(state)
+            result = get_agent_tools_with_schemas(state)
         assert isinstance(result, list)
         state["logger"].warning.assert_called()
 

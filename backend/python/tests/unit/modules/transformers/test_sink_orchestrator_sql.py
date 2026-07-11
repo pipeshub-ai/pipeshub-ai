@@ -170,6 +170,7 @@ class TestSaveReconciliationMetadata:
 
         ctx = MagicMock(spec=TransformContext)
         ctx.record = record
+        ctx.settings = {}
         ctx.reconciliation_context = ReconciliationContext(
             new_metadata={"hash_to_block_ids": {"h": ["b"]}, "block_id_to_index": {"b": 0}}
         )
@@ -179,6 +180,7 @@ class TestSaveReconciliationMetadata:
         orch.blob_storage.save_reconciliation_metadata.assert_awaited_once_with(
             "org-rc", "rec-rc", "vr-rc",
             ctx.reconciliation_context.new_metadata,
+            document_path=ctx.settings.get("storage_path"),
         )
 
     @pytest.mark.asyncio

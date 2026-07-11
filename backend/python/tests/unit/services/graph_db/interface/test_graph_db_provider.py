@@ -301,6 +301,7 @@ class TestAbstractMethodInventory:
         "create_record_groups_relation",
         "create_inherit_permissions_relation_record_group",
         "get_accessible_virtual_record_ids",
+        "check_vrids_accessible",
         "get_records_by_record_ids",
         "batch_upsert_record_permissions",
         "get_file_permissions",
