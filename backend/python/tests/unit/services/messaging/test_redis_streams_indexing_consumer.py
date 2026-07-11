@@ -879,6 +879,29 @@ class TestProcessMessageWrapper:
         )
 
     @pytest.mark.asyncio
+    async def test_ack_failure_in_finally_does_not_mask_handler_error(self, consumer):
+        """Redis ACK errors in finally must be logged without masking handler failure."""
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+
+        async def handler(msg):
+            raise RuntimeError("indexing failed")
+            yield  # noqa: unreachable
+
+        consumer.message_handler = handler
+
+        with patch.object(
+            consumer,
+            "_ack_message",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("redis down"),
+        ):
+            result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+
+        assert result is False
+        consumer._ack_message.assert_awaited_once_with("s", "1-0")
+
+    @pytest.mark.asyncio
     async def test_handler_exception_after_parsing_released(self, consumer):
         """Handler raises after yielding PARSING_COMPLETE. Only indexing released in finally."""
         consumer.parsing_semaphore = asyncio.Semaphore(1)

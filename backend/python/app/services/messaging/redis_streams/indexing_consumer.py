@@ -591,4 +591,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # ACK anyway so the message leaves the PEL and is not redelivered on
             # every indexing restart (Redis PEL zombie retry).
             if handler_invoked:
-                await self._ack_message(stream_name, message_id)
+                try:
+                    await self._ack_message(stream_name, message_id)
+                except Exception as e:
+                    self.logger.error(
+                        "Failed to ACK message %s in finally block: %s",
+                        message_id,
+                        e,
+                    )
