@@ -19,6 +19,14 @@ every adapter-layer piece built in Phases 2-6:
   domain "role" string into a scoped child `AgentSpec` — see
   `loops/orchestrator.py` for the full Decompose/Critique/Dispatch/Verify
   design rationale.
+- Domain-agent composition (`domain_agents.py`): for every OTHER loop
+  (ReAct, quick/`PlanExecuteLoop`), the top-level `spec.tool_names` is
+  narrowed to a handful of `AgentTool` delegates (coding/web/internal-
+  search/calculator/calendar) plus whatever tools no domain claimed —
+  `plan_domain_agents()` runs BEFORE `select_loop_and_goal()` so the
+  quick-mode planner is steered with the same composed names the
+  executing agent ends up with, and `register_domain_agents()` runs after
+  the `AgentRuntime` exists to actually build/register the child specs.
 
 Deliberately minimal on the `AgentRuntime` side (`budget`/stores/etc. all
 left `None`) — this migration keeps PipesHub's existing storage backends
@@ -62,6 +70,7 @@ from app.agents.agent_loop.hooks import (
     retry_with_status,
     stash_tool_call_metadata,
 )
+from app.agents.agent_loop.domain_agents import plan_domain_agents, register_domain_agents
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.loops.orchestrator import (
     COORDINATION_TOOL_NAMES,
@@ -95,6 +104,14 @@ logger = logging.getLogger(__name__)
 # tool_system.py / react_agent_node's `recursion_limit`); kept as one named
 # constant here rather than a magic number in `create()`.
 _MAX_TURNS = 15
+
+
+def _composed_agents_enabled() -> bool:
+    """Kill-switch for domain-agent composition (see `domain_agents.py`) —
+    same env-var rollout pattern as `PIPESHUB_USE_AGENT_LOOP`: not a
+    customer-facing setting, exists so a deployment can fall back to the
+    flat all-tools agent without a code change."""
+    return os.getenv("PIPESHUB_USE_COMPOSED_AGENTS", "true").strip().lower() == "true"
 
 
 class PipesHubAgentFactory:
@@ -196,16 +213,30 @@ class PipesHubAgentFactory:
 
         hooks = self._build_hooks(context, sandbox_manager, allow_network=network_enabled)
 
-        # Pass the already-loaded registry names so the "quick" route's
-        # `PlanAheadPlanner` (see `select_loop_and_goal`) can reference real
-        # tools like `run_code` in its upfront plan instead of producing
-        # tool-agnostic phases the ReAct loop has no obligation to honor.
+        # Domain-agent composition, planning half (see domain_agents.py):
+        # decided HERE, before loop routing, purely by claiming registered
+        # tool names — no AgentSpec/AgentTool is built yet (that needs the
+        # AgentRuntime, which doesn't exist until below). This is load-
+        # bearing ordering, not a style choice: the "quick" route's
+        # `PlanAheadPlanner` (inside `select_loop_and_goal` below) must be
+        # steered with the SAME top-level names the executing agent will
+        # end up granted, or its upfront plan references tools (`run_code`,
+        # `web_search`, ...) the agent no longer has directly. Discarded
+        # entirely for `OrchestratorLoop` (deep mode keeps its own
+        # spawn_agent dispatch, never composed agent-tool delegates) —
+        # computed unconditionally anyway since the route itself isn't
+        # known until `select_loop_and_goal()` returns.
+        composition_plan = plan_domain_agents(tool_registry) if _composed_agents_enabled() else None
+        planning_tool_names = (
+            composition_plan.top_level_names if composition_plan is not None else tool_registry.names()
+        )
+
         loop, goal, clarifying_questions = await select_loop_and_goal(
             chat_mode=chat_mode,
             query=query,
             llm=llm,
             context=context,
-            tool_names=tool_registry.names(),
+            tool_names=planning_tool_names,
             sandbox_has_network=network_enabled,
             opik_active=opik_active,
             opik_project_name=opik_project_name,
@@ -215,7 +246,8 @@ class PipesHubAgentFactory:
         # planner/dispatcher — it must never call connector tools directly
         # (that's what spawned, domain-scoped sub-agents are for), so its
         # own `tool_names` is narrowed to the four coordination tools while
-        # every OTHER loop keeps the full, unrestricted registry.
+        # every OTHER loop keeps the composed (or, with composition off,
+        # full unrestricted) registry.
         spec_factory = None
         if isinstance(loop, OrchestratorLoop):
             register_coordination_tools(tool_registry)
@@ -229,13 +261,13 @@ class PipesHubAgentFactory:
                 context=context,
             )
         else:
-            tool_names = tool_registry.names()
+            tool_names = planning_tool_names
 
         logger.info(
             "PipesHubAgentFactory.create: loop=%s | %d tool(s) granted to agent spec "
             "(run_code available=%s)",
             loop.name if hasattr(loop, "name") else type(loop).__name__,
-            len(tool_names), "run_code" in tool_names,
+            len(tool_names), "run_code" in tool_registry.names(),
         )
 
         runtime = AgentRuntime(
@@ -247,6 +279,23 @@ class PipesHubAgentFactory:
             opik_enabled=opik_active,
             opik_project_name=opik_project_name,
         )
+
+        # Domain-agent composition, registration half: now that the
+        # AgentRuntime exists, actually build each claimed domain's child
+        # AgentSpec and register it as an AgentTool on the shared registry.
+        # Skipped for OrchestratorLoop (see above) even when composition is
+        # otherwise enabled for this request.
+        if composition_plan is not None and not isinstance(loop, OrchestratorLoop):
+            flat_count = len(tool_registry.names())
+            tool_names = register_domain_agents(
+                composition_plan, tool_registry, runtime, context,
+                provider="langchain", model_name=model_name,
+            )
+            logger.info(
+                "PipesHubAgentFactory.create: composed top-level agent — %d flat tool(s) -> %d "
+                "(domain agents + residual): %s",
+                flat_count, len(tool_names), tool_names,
+            )
 
         prompt_builder = PipesHubPromptBuilder(context, ToolGuidanceProvider())
 

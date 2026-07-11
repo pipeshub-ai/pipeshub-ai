@@ -29,9 +29,10 @@ class ReplanTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Regenerate your task list when the current plan no longer matches "
-            "reality (new information invalidates remaining steps, or the goal "
-            "turns out to need different work than planned). Explain why."
+            "Regenerate your plan when it no longer matches reality (new "
+            "information invalidates remaining steps, or the goal turns out to "
+            "need different work than planned). Explain why. Follow up with "
+            "write_todos to update your task list to match the revised plan."
         )
 
     @property
@@ -48,8 +49,6 @@ class ReplanTool(Tool):
         ]
 
     async def handle(self, call: ToolCall, ctx: RouteContext) -> CoreToolResult:
-        from app.agent_loop_lib.core.types import Confidence, Todo, TodoStatus
-        from app.agent_loop_lib.modules.pipeline.planner.base import Phase, Plan
         from app.agent_loop_lib.modules.pipeline.planner.replanner import Replanner
 
         agent = ctx.agent
@@ -62,23 +61,15 @@ class ReplanTool(Tool):
             except Exception:
                 model = None
 
-        prior_plan = Plan(
-            goal=goal,
-            phases=[Phase(name=f"todo_{i}", description=t.content) for i, t in enumerate(agent.todos)],
-            confidence=Confidence.MEDIUM,
-        )
+        prior_plan_text = "\n".join(f"- {t.content}" for t in agent.todos) or None
         reason = call.arguments.get("reason", "")
         replan_goal = goal.model_copy(update={
             "description": f"{goal.description}\n\nReplanning reason: {reason}" if reason else goal.description,
         })
 
         try:
-            new_plan = await Replanner(model=model, prior_plan=prior_plan).plan(replan_goal)
-            agent.todos = [Todo(content=p.description, status=TodoStatus.PENDING) for p in new_plan.phases]
-            tr_content: object = {
-                "todos": [t.model_dump() for t in agent.todos],
-                "confidence": new_plan.confidence.value,
-            }
+            new_plan = await Replanner(model=model, prior_plan_text=prior_plan_text).plan(replan_goal)
+            tr_content: object = new_plan.text
             tr_is_error = False
         except Exception as e:
             tr_content = str(e)
@@ -87,8 +78,8 @@ class ReplanTool(Tool):
         await obs.write_state(agent, goal, "running_tool", turn_index=ctx.turn_index, started_at=ctx.started_at, current_tool="replan")
         await obs.append_timeline(
             agent, "replan",
-            f"Replanned ({len(agent.todos)} item(s))" if not tr_is_error else "Replan failed",
-            "running_tool", {"reason": reason, "todos": [t.model_dump() for t in agent.todos]},
+            "Replanned" if not tr_is_error else "Replan failed",
+            "running_tool", {"reason": reason},
         )
         return CoreToolResult(tool_call_id=call.id, name=call.name, content=tr_content, is_error=tr_is_error)
 

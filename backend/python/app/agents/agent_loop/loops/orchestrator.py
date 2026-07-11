@@ -36,7 +36,7 @@ from app.agent_loop_lib.tools.builtin.coordination.spawn_agent import SpawnAgent
 from app.agent_loop_lib.tools.builtin.planning.create_plan import CreatePlanTool
 from app.agent_loop_lib.tools.builtin.planning.critique_plan import CritiquePlanTool
 from app.agent_loop_lib.tools.builtin.planning.verify_result import VerifyResultTool
-from app.utils.time_conversion import build_llm_time_context
+from app.agents.agent_loop.sub_agent_prompt import build_sub_agent_prompt
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -100,81 +100,6 @@ def register_coordination_tools(registry: "ToolRegistry") -> None:
         registry.register_tool(tool)
 
 
-def _build_sub_agent_prompt(domain: str, context: "AgentContext | None") -> str:
-    """Builds the sub-agent's system prompt with essential PipesHub context.
-
-    The legacy deep agent (`deep/sub_agent.py`) gives each sub-agent:
-    user identity, time context, tool guidance, scoped instructions, and
-    extensive data-completeness rules. Without at least user identity and
-    time context, the child can't resolve "my tickets", "last 2 months",
-    or any user-relative / time-relative query — causing it to flail with
-    wrong parameters for all its turns and appear stuck.
-    """
-    parts: list[str] = [
-        f"You are a focused sub-agent for the '{domain}' domain. "
-        "Complete the assigned task using ONLY the tools you were given.",
-        _SUB_AGENT_EXECUTION_RULES,
-    ]
-
-    if context is not None:
-        user_block = _build_user_context_block(context)
-        if user_block:
-            parts.append(user_block)
-        time_block = build_llm_time_context(
-            current_time=context.current_time,
-            time_zone=context.timezone,
-        )
-        if time_block:
-            parts.append(time_block)
-
-    return "\n\n".join(parts)
-
-
-_SUB_AGENT_EXECUTION_RULES = """\
-## Execution Rules
-
-### Tool Usage
-- **Parallelise independent calls**: issue ALL independent tool calls in a SINGLE turn.
-- **Maximise page size**: use the largest supported `maxResults`/`limit`/`pageSize`.
-- **Retry differently**: if a tool returns empty results, try a DIFFERENT query phrasing
-  or broader filter — do not repeat the same call.
-
-### Response Format
-- **Present ALL data**: every item returned by tools MUST appear in your response.
-- **Include ALL fields**: IDs, keys, URLs, names, dates, statuses, priorities.
-- **Date formatting**: render dates in human-readable form using the time zone from
-  the Time context below (e.g. "April 28, 2026 at 3:45 PM IST"). Never output raw
-  epoch numbers or ISO strings.
-- **Links are mandatory**: include `[Title](url)` for every item.
-- **Use tables** for lists of items.
-
-### Completion
-Once you have enough information, reply with your answer in plain text (no further
-tool calls). That text becomes your result for the orchestrator to synthesise."""
-
-
-def _build_user_context_block(context: "AgentContext") -> str:
-    """Mirrors `deep/sub_agent.py::_build_sub_agent_instructions` — the
-    child needs user identity to resolve 'my tickets', 'assigned to me'."""
-    user_info = context.user_info or {}
-    email = context.user_email or user_info.get("userEmail") or user_info.get("email") or ""
-    name = (
-        user_info.get("fullName")
-        or user_info.get("name")
-        or user_info.get("displayName")
-        or f"{user_info.get('firstName', '')} {user_info.get('lastName', '')}".strip()
-    )
-    if not name and not email:
-        return ""
-    lines = ["## Current User"]
-    if name:
-        lines.append(f"- Name: {name}")
-    if email:
-        lines.append(f"- Email: {email}")
-    lines.append('When the query says "my", "me", or "I", it refers to this user.')
-    return "\n".join(lines)
-
-
 def domain_spec_factory(
     *,
     provider: str,
@@ -197,7 +122,7 @@ def domain_spec_factory(
         model = overrides.get("model") or model_name
         return AgentSpec(
             name=f"pipeshub-subagent-{role_name}",
-            system_prompt=_build_sub_agent_prompt(role_name, context),
+            system_prompt=build_sub_agent_prompt(role_name, context),
             tool_names=list(tool_names),
             model=ModelSpec(provider=provider, model=model),
             loop=ReActLoop(),
@@ -266,8 +191,8 @@ class OrchestratorLoop(LoopStrategy):
             "Phase 1 -- PLAN: decompose this goal into single-domain phases "
             "(one phase per independent domain/workstream — never mix "
             "domains in one phase) by calling create_plan. Then call "
-            "critique_plan with those exact phases. If critique_plan "
-            "returns passed=false, revise the phases and call critique_plan "
+            "critique_plan with your plan. If critique_plan "
+            "returns passed=false, revise the plan and call critique_plan "
             "again. Do not dispatch any sub-agents until critique_plan "
             "passes.\n\n" + _domain_overview(agent)
         )

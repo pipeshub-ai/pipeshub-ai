@@ -30,8 +30,8 @@ class CritiquePlanTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Critique a proposed execution plan (phases) for feasibility, "
-            "completeness, and correctness against the current goal. Returns "
+            "Critique a proposed execution plan for feasibility, completeness, "
+            "and correctness against the current goal. Returns "
             "passed/confidence/issues — call this before executing a plan you "
             "are not fully confident in."
         )
@@ -44,21 +44,16 @@ class CritiquePlanTool(Tool):
     def parameters(self) -> list[ToolParameter]:
         return [
             ToolParameter(
-                name="phases",
-                type=ParameterType.ARRAY,
-                description=(
-                    'The plan\'s phases to critique, e.g. '
-                    '[{"name": "research", "description": "look stuff up"}].'
-                ),
+                name="plan",
+                type=ParameterType.STRING,
+                description="The plan to critique, as free-form text (e.g. your create_plan output).",
                 required=True,
-                items={"type": "object"},
             ),
         ]
 
     async def handle(self, call: ToolCall, ctx: RouteContext) -> CoreToolResult:
-        from app.agent_loop_lib.core.types import Confidence
         from app.agent_loop_lib.modules.pipeline.critic.plan_critic import PlanCritic
-        from app.agent_loop_lib.modules.pipeline.planner.base import Phase, Plan
+        from app.agent_loop_lib.modules.pipeline.planner.base import Plan
 
         model = None
         if ctx.runtime.transport_registry is not None:
@@ -67,13 +62,8 @@ class CritiquePlanTool(Tool):
             except Exception:
                 model = None
 
-        raw_phases = call.arguments.get("phases") or []
-        try:
-            phases = [Phase(name=p.get("name", ""), description=p.get("description", ""), tools=p.get("tools", [])) for p in raw_phases]
-        except Exception as e:
-            return CoreToolResult(tool_call_id=call.id, name=call.name, content=f"Invalid phases: {e}", is_error=True)
-
-        plan = Plan(goal=ctx.goal, phases=phases, confidence=Confidence.MEDIUM)
+        plan_text = call.arguments.get("plan") or ""
+        plan = Plan(goal=ctx.goal, text=plan_text)
         try:
             critique = await PlanCritic(model).critique(plan)
             content: object = critique.model_dump()

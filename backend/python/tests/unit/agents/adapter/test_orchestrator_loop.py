@@ -6,14 +6,17 @@ top-level orchestrator AND its spawned child (both resolve the same
 a real LLM.
 
 `ScriptedTransport.complete_structured()` always returns `data={}` (see its
-implementation) — this test relies on that: `create_plan`'s `DefaultPlanner`
-raises `PlanningError` on an empty dict (caught -> `is_error=True`, exercised
-implicitly since the plan's OWN phases never actually reach create_plan's
-result), while `critique_plan`/`verify_result`'s critics default
-`passed=True` when `raw.get("passed", True)` sees an empty dict — so every
-filler script slot consumed by a `complete_structured()` call can be any
-harmless value; only the `complete()` slots' tool-call arguments matter for
-this test's assertions.
+implementation) — `critique_plan`/`verify_result`'s critics default
+`passed=True` when `raw.get("passed", True)` sees an empty dict, so their
+filler script slots (still consumed via `complete_structured()`, which never
+appends to `transport.calls`) can be any harmless value.
+
+`create_plan`'s `DefaultPlanner`, unlike those critics, now calls
+`complete()` (markdown output, no JSON schema — see `planner/default.py`)
+— its filler slot IS a real `complete()` call and DOES land in
+`transport.calls`, one index earlier than every orchestrator turn after it;
+`_scripted_full_run()`'s comments and the index-based assertions below
+account for that extra call.
 """
 
 from __future__ import annotations
@@ -83,16 +86,16 @@ def _build_orchestrator(context, transport: ScriptedTransport, *, max_turns: int
 
 def _scripted_full_run() -> ScriptedTransport:
     """9 scripted steps consumed in exactly this order (see module
-    docstring): parent turn -> tool's own `complete_structured()` call (for
+    docstring): parent turn -> tool's own planner/critic call (for
     `create_plan`/`critique_plan`/`verify_result`) -> next parent turn, with
     the spawned child's single terminal turn interleaved between the
     dispatch and verify phases."""
     transport = ScriptedTransport()
     transport.add_tool_call(ToolCall(id="c1", name="create_plan", arguments={}))
-    transport.add_text("_")  # consumed by create_plan's complete_structured()
+    transport.add_text("_")  # consumed by create_plan's DefaultPlanner.complete() call
     transport.add_tool_call(ToolCall(
         id="c2", name="critique_plan",
-        arguments={"phases": [{"name": "jira", "description": "Look up open Jira issues"}]},
+        arguments={"plan": "1. jira: Look up open Jira issues"},
     ))
     transport.add_text("_")  # consumed by critique_plan's complete_structured()
     transport.add_tool_call(ToolCall(
@@ -133,10 +136,12 @@ class TestOrchestratorLoopFullRun:
 
         await agent.run(Goal(description="How many open Jira issues do I have?"))
 
-        # Call order: plan, critique, dispatch (all orchestrator turns) ->
-        # the spawned child's one turn -> verify, final (orchestrator again).
-        assert len(transport.calls) == 6
-        orchestrator_calls = [transport.calls[i] for i in (0, 1, 2, 4, 5)]
+        # Call order: plan (orchestrator turn) -> create_plan's own
+        # DefaultPlanner.complete() call -> critique, dispatch (orchestrator
+        # turns) -> the spawned child's one turn -> verify, final
+        # (orchestrator again).
+        assert len(transport.calls) == 7
+        orchestrator_calls = [transport.calls[i] for i in (0, 2, 3, 5, 6)]
         for call in orchestrator_calls:
             names = {schema.name for schema in (call["tools"] or [])}
             assert names <= set(COORDINATION_TOOL_NAMES)
@@ -149,8 +154,9 @@ class TestOrchestratorLoopFullRun:
 
         await agent.run(Goal(description="How many open Jira issues do I have?"))
 
-        # The 4th complete() call (index 3) is the spawned child's only turn.
-        child_call = transport.calls[3]
+        # The 5th complete() call (index 4) is the spawned child's only
+        # turn — index 1 is create_plan's own DefaultPlanner.complete() call.
+        child_call = transport.calls[4]
         names = {schema.name for schema in (child_call["tools"] or [])}
         assert names == {_JIRA_TOOL_NAME}
 
@@ -166,7 +172,7 @@ class TestOrchestratorLoopFullRun:
         transport.add_text("_")  # create_plan's complete_structured() filler
         transport.add_tool_call(ToolCall(
             id="c2", name="critique_plan",
-            arguments={"phases": [{"name": "jira", "description": "Look up open Jira issues"}]},
+            arguments={"plan": "1. jira: Look up open Jira issues"},
         ))
         transport.add_text("_")  # critique_plan's complete_structured() filler
         # Phase 2 (turn_index 2, 3 with max_turns=4 below): model keeps
@@ -196,9 +202,10 @@ class TestOrchestratorLoopFullRun:
 
         await agent.run(Goal(description="Show my Jira issues from last 2 months"))
 
-        # The 4th complete() call (index 3) is the child's turn — its
-        # system prompt should contain the user/time context.
-        child_call = transport.calls[3]
+        # The 5th complete() call (index 4) is the child's turn — its
+        # system prompt should contain the user/time context. Index 1 is
+        # create_plan's own DefaultPlanner.complete() call.
+        child_call = transport.calls[4]
         system = child_call.get("system") or ""
         assert "Alice Smith" in system
         assert "alice@example.com" in system

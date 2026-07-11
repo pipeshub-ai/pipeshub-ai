@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.agent_loop_lib.core.types import AgentResult, UserMessage
-from app.agent_loop_lib.modules.pipeline.planner.base import parse_confidence
+from app.agent_loop_lib.core.types import AgentResult, Confidence, UserMessage
 from app.agent_loop_lib.modules.pipeline.critic.base import (
     Critic,
     CritiqueIssue,
     CritiqueResult,
 )
+from app.agent_loop_lib.modules.pipeline.planner.base import parse_confidence
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.models.base import SupportsStructuredComplete

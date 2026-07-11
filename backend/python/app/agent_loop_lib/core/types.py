@@ -111,8 +111,8 @@ class TodoStatus(str, Enum):
 
 class Todo(BaseModel):
     """One item of the in-loop task list the `write_todos` tool maintains
-    (see tools/builtin/planning/todos.py) — the Planner's pre-loop `Plan`/`Phase`
-    replaced by an agent-driven, updatable-mid-run list. Lives on
+    (see tools/builtin/planning/todos.py) — the Planner's pre-loop, free-form
+    `Plan.text` replaced by an agent-driven, updatable-mid-run list. Lives on
     `Agent._todos`, rendered into the "todos" PromptTemplate section every
     turn, and carried across pause/resume via `AgentCheckpoint.todos`."""
 

@@ -2,21 +2,74 @@
 Phase 4: validates the builder's OWN assembly/gating logic (which sections
 appear, in what circumstances) by stubbing out the heavy content-bearing
 helpers it reuses unchanged from Phase 0's extracted modules (knowledge
-context, workflow patterns, capability summary, user context, tool
-descriptions, time context) — those have their own unit coverage; a
-byte-for-byte diff against `nodes.py`'s legacy prompt output is impractical
-to drive from a unit test without constructing a full `ChatState`, so this
-suite instead pins down every conditional branch `build()` itself owns."""
+context, workflow patterns, capability summary, user context, time
+context) — those have their own unit coverage; a byte-for-byte diff against
+`nodes.py`'s legacy prompt output is impractical to drive from a unit test
+without constructing a full `ChatState`, so this suite instead pins down
+every conditional branch `build()` itself owns.
+
+The "Available Tools" section and all composed-aware steering (code
+execution, web search, tool selection, hybrid strategy) are NOT stubbed —
+they're driven by a real `AgentRuntime`/`ToolRegistry` (see `_runtime_for`)
+so these tests exercise the actual registry-lookup and delegate-name
+substitution logic `domain_agents.py` composition depends on.
+"""
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.types import Goal
+from app.agent_loop_lib.runtime.runtime import AgentRuntime
+from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
+from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from app.agents.agent_loop.tool_guidance import ToolGuidanceProvider
 from tests.unit.agents.adapter.conftest import make_context
+
+
+class FakeTool(Tool):
+    """Minimal registrable tool with a real parameter schema, so the
+    "Available Tools" section has something concrete to render."""
+
+    def __init__(
+        self, name: str, *, description: str = "", parameters: list[ToolParameter] | None = None,
+    ) -> None:
+        self._name = name
+        self._description = description or f"fake {name}"
+        self._parameters = parameters or []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def short_description(self) -> str:
+        return self._description.splitlines()[0]
+
+    @property
+    def description(self) -> str:
+        return self._description
+
+    @property
+    def path(self) -> str:
+        return f"/fake/{self._name}"
+
+    @property
+    def parameters(self) -> list[ToolParameter]:
+        return self._parameters
+
+    async def execute(self, **kwargs: Any) -> ToolOutput:
+        return ToolOutput(success=True, data="ok")
+
+
+def _runtime_for(tools: list[Tool]) -> AgentRuntime:
+    registry = ToolRegistry()
+    for tool in tools:
+        registry.register_tool(tool)
+    return AgentRuntime(tool_registry=registry)
 
 
 def _build(
@@ -26,6 +79,7 @@ def _build(
     base_system_prompt: str = "BASE_REACT_PROMPT",
     tool_names: list[str] | None = None,
     sandbox_has_network: bool = False,
+    runtime: AgentRuntime | None = None,
 ) -> str:
     spec = AgentSpec(
         name="pipeshub-agent",
@@ -34,9 +88,13 @@ def _build(
         model=ModelSpec(provider="scripted", model="scripted-model"),
     )
     builder = PipesHubPromptBuilder(context, ToolGuidanceProvider())
+    # Empty by default: existing tests reference tool NAMES (`run_code`,
+    # `web_search`, ...) purely to drive the composed-aware steering
+    # branches below, not to assert "Available Tools" content — an empty
+    # registry makes every name unresolvable, so that section renders "".
+    runtime = runtime if runtime is not None else _runtime_for([])
     with patch.multiple(
         "app.agents.agent_loop.prompt_builder",
-        _get_cached_tool_descriptions=MagicMock(return_value=""),
         _build_workflow_patterns=MagicMock(return_value=""),
         _build_knowledge_context=MagicMock(return_value=""),
         build_llm_time_context=MagicMock(return_value=""),
@@ -44,7 +102,7 @@ def _build(
         _format_user_context=MagicMock(return_value=""),
         sandbox_network_enabled=MagicMock(return_value=sandbox_has_network),
     ):
-        return builder.build(spec, MagicMock(), goal or Goal(description="hello"), [], {})
+        return builder.build(spec, runtime, goal or Goal(description="hello"), [], {})
 
 
 class TestLayering:
@@ -254,3 +312,154 @@ class TestConnectorGuidance:
         context = make_context(agent_toolsets=[])
         result = _build(context)
         assert GUIDANCE_MAP["jira"] not in result
+
+
+class TestToolReferenceSection:
+    """"Available Tools" must reflect what `spec.tool_names` actually
+    grants (resolved against the real `AgentRuntime.tool_registry`), never
+    a flat dump of every tool the legacy ChatState tool list carried —
+    the regression this fix addresses (see the Opik trace in the plan)."""
+
+    def test_no_section_without_any_resolvable_tools(self) -> None:
+        context = make_context()
+        result = _build(context, tool_names=["run_code"])  # empty registry by default
+        assert "## Available Tools" not in result
+
+    def test_flat_tool_rendered_with_description_and_parameters(self) -> None:
+        context = make_context()
+        tool = FakeTool(
+            "jira_search_issues",
+            description="Search Jira issues by JQL.",
+            parameters=[ToolParameter(name="jql", type=ParameterType.STRING, description="JQL query", required=True)],
+        )
+        result = _build(context, tool_names=["jira_search_issues"], runtime=_runtime_for([tool]))
+        assert "## Available Tools" in result
+        assert "### jira_search_issues" in result
+        assert "Search Jira issues by JQL." in result
+        assert "`jql`" in result
+        assert "**required**" in result
+
+    def test_composed_delegate_rendered_instead_of_claimed_flat_tools(self) -> None:
+        """Only what `spec.tool_names` grants is rendered — a domain that
+        composition claimed (e.g. `run_code`, absent from `tool_names`
+        even though still registered on the shared registry) must NOT
+        appear, even though `coding_agent` (the delegate that claimed it)
+        does."""
+        context = make_context()
+        coding_agent = FakeTool(
+            "coding_agent",
+            description="Delegate a coding task to a focused sub-agent.",
+            parameters=[ToolParameter(name="goal", type=ParameterType.STRING, description="The goal.", required=True)],
+        )
+        run_code = FakeTool("run_code", description="Execute Python code in a sandbox.")
+        runtime = _runtime_for([coding_agent, run_code])
+
+        result = _build(context, tool_names=["coding_agent"], runtime=runtime)
+
+        assert "### coding_agent" in result
+        assert "### run_code" not in result
+
+    def test_unresolvable_tool_name_skipped_without_error(self) -> None:
+        """A name in `spec.tool_names` with nothing registered under it
+        (e.g. a stale reference) must be skipped, not raise."""
+        context = make_context()
+        tool = FakeTool("run_code", description="Execute Python code.")
+        result = _build(context, tool_names=["run_code", "ghost_tool"], runtime=_runtime_for([tool]))
+        assert "### run_code" in result
+        assert "ghost_tool" not in result
+
+    def test_optional_parameter_marked_optional_not_required(self) -> None:
+        context = make_context()
+        tool = FakeTool(
+            "calculator_evaluate",
+            description="Evaluate a math expression.",
+            parameters=[
+                ToolParameter(name="expression", type=ParameterType.STRING, description="Expr", required=True),
+                ToolParameter(name="precision", type=ParameterType.INTEGER, description="Digits", required=False),
+            ],
+        )
+        result = _build(context, tool_names=["calculator_evaluate"], runtime=_runtime_for([tool]))
+        section = result.split("## Available Tools", 1)[1]
+        assert "`expression` (**required**)" in section
+        assert "`precision` (optional)" in section
+
+
+class TestComposedCodeExecutionSteering:
+    """When domain-agent composition (`domain_agents.py`) claims `run_code`
+    into `coding_agent`, the mandatory code-execution steering must
+    reference the delegate the agent can actually call, not the tool it
+    no longer has direct access to."""
+
+    def test_coding_agent_referenced_instead_of_run_code(self) -> None:
+        context = make_context()
+        result = _build(context, tool_names=["coding_agent", "web_agent"])
+        section = result.split("## Code Execution", 1)[1]
+        assert "delegate to `coding_agent`" in section
+        assert "`run_code`" not in section
+
+    def test_composed_no_network_still_warns_and_names_web_agent(self) -> None:
+        context = make_context()
+        result = _build(context, tool_names=["coding_agent", "web_agent"], sandbox_has_network=False)
+        assert "coding_agent`'s sandbox has NO network access" in result
+        assert "delegate to `web_agent` FIRST" in result
+
+    def test_composed_network_variant_names_coding_agent(self) -> None:
+        context = make_context()
+        result = _build(context, tool_names=["coding_agent", "web_agent"], sandbox_has_network=True)
+        assert "coding_agent`'s sandbox CAN reach the network" in result
+        assert "prefer delegating to it over `web_agent`" in result
+
+    def test_flat_run_code_unaffected_when_not_composed(self) -> None:
+        context = make_context()
+        result = _build(context, tool_names=["run_code", "web_search"])
+        section = result.split("## Code Execution", 1)[1]
+        assert "use `run_code`" in section
+        assert "coding_agent" not in section
+
+
+class TestComposedWebAndToolSelection:
+    def test_web_search_rules_reference_web_agent_when_composed(self) -> None:
+        context = make_context()
+        context.tool_state["web_search_config"] = {"enabled": True}
+        result = _build(context, tool_names=["web_agent"])
+        section = result.split("## Web Search Rules", 1)[1]
+        assert "delegate" in section
+        assert "web_agent" in section
+        assert "`web_search`" not in section
+
+    def test_tool_selection_references_web_agent_when_composed(self) -> None:
+        context = make_context()
+        context.tool_state["web_search_config"] = {"enabled": True}
+        result = _build(context, tool_names=["web_agent"])
+        section = result.split("## Tool Selection Strategy", 1)[1]
+        assert "web_agent" in section
+        assert "`web_search`" not in section
+
+    def test_tool_selection_composed_live_api_names_both_delegates(self) -> None:
+        context = make_context()
+        context.tool_state["web_search_config"] = {"enabled": True}
+        result = _build(context, tool_names=["coding_agent", "web_agent"], sandbox_has_network=True)
+        section = result.split("## Tool Selection Strategy", 1)[1]
+        assert "coding_agent" in section
+        assert "web_agent" in section
+        assert "an API call IS the data" in section
+        assert "call BOTH in parallel" in section
+
+
+class TestComposedHybridStrategy:
+    def test_hybrid_strategy_references_internal_search_agent_when_composed(self) -> None:
+        context = make_context()
+        context.tool_state["has_knowledge"] = True
+        context.tool_state["agent_toolsets"] = [{"name": "jira-cloud"}]
+        result = _build(context, tool_names=["internal_search_agent"])
+        section = result.split("## Hybrid Search Strategy", 1)[1]
+        assert "internal_search_agent" in section
+        assert "retrieval.search_internal_knowledge" not in section
+
+    def test_hybrid_strategy_keeps_flat_retrieval_name_when_not_composed(self) -> None:
+        context = make_context()
+        context.tool_state["has_knowledge"] = True
+        context.tool_state["agent_toolsets"] = [{"name": "jira-cloud"}]
+        result = _build(context, tool_names=["retrieval_search_internal_knowledge"])
+        section = result.split("## Hybrid Search Strategy", 1)[1]
+        assert "retrieval.search_internal_knowledge" in section
