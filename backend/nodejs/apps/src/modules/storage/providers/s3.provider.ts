@@ -508,7 +508,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
     destinationPath: string,
   ): Promise<StorageServiceResponse<string>> {
     try {
-      const copySource = `${this.bucketName}/${sourcePath}`;
+      const copySource = this.encodeCopySource(sourcePath);
       await this.s3
         .copyObject({ Bucket: this.bucketName, CopySource: copySource, Key: destinationPath })
         .promise();
@@ -547,7 +547,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         await this.s3
           .copyObject({
             Bucket: this.bucketName,
-            CopySource: `${this.bucketName}/${obj.Key}`,
+            CopySource: this.encodeCopySource(obj.Key),
             Key: destKey,
           })
           .promise();
@@ -568,7 +568,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
     destinationPath: string,
   ): Promise<StorageServiceResponse<string>> {
     try {
-      const copySource = `${this.bucketName}/${sourcePath}`;
+      const copySource = this.encodeCopySource(sourcePath);
       await this.s3
         .copyObject({ Bucket: this.bucketName, CopySource: copySource, Key: destinationPath })
         .promise();
@@ -702,6 +702,21 @@ class AmazonS3Adapter implements StorageServiceInterface {
       .map((part) => encodeURIComponent(part))
       .join('/');
     return `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${encodedKey}`;
+  }
+
+  /**
+   * Builds a correctly percent-encoded CopySource value for S3's copyObject
+   * API. CopySource is sent as the raw `x-amz-copy-source` HTTP header --
+   * unlike `Key`, aws-sdk does NOT auto-encode it, so any special character
+   * in the source key (spaces, em-dashes, commas, non-ASCII) that isn't
+   * valid in a raw header value causes the request to be rejected outright.
+   */
+  private encodeCopySource(key: string): string {
+    const encodedKey = key
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+    return `${this.bucketName}/${encodedKey}`;
   }
 }
 
