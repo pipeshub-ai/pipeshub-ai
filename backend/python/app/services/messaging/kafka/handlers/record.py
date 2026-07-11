@@ -26,6 +26,7 @@ from app.services.messaging.config import (
     PipelineEventData,
 )
 from app.services.messaging.kafka.handlers.entity import BaseEventService
+from app.services.progress.progress_counter import bump_status
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jwt import generate_jwt
@@ -645,6 +646,7 @@ class RecordEventHandler(BaseEventService):
                     record_id,
                 )
                 return None
+            await bump_status(record, record.get("indexingStatus"), indexing_status)
             self.logger.info(f"✅ Updated document status for record {record_id}")
             return record
         except Exception as e:

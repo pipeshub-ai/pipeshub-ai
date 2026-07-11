@@ -540,6 +540,18 @@ class EventService:
                 f"Records: {result.get('deleted_records_count', 0)}"
             )
 
+            # Clear the progress-bar counters for this connector. The bulk graph
+            # delete above removes all its records at once, so the per-record
+            # on_record_deleted hook never fires — without this the widget keeps
+            # showing the deleted connector's counts. Best-effort/isolated.
+            try:
+                from app.services.progress.progress_counter import get_progress_counter
+                progress_counter = get_progress_counter()
+                if progress_counter is not None:
+                    await progress_counter.connector_removed(org_id, connector_id)
+            except Exception as e:  # noqa: BLE001 - isolation
+                self.logger.debug(f"progress connector_removed skipped: {e}")
+
             # Publish bulkDeleteRecords so the indexing service cleans up Qdrant embeddings
             virtual_record_ids = result.get("virtual_record_ids", [])
             if virtual_record_ids:

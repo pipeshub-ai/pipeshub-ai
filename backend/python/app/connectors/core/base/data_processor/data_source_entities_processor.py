@@ -43,6 +43,7 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.progress.progress_counter import get_progress_counter
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -960,6 +961,12 @@ class DataSourceEntitiesProcessor:
             record["indexingStatus"] = ProgressStatus.QUEUED.value
             await tx_store.batch_upsert_nodes([record], CollectionNames.RECORDS.value)
             self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
+            progress_counter = get_progress_counter()
+            if progress_counter is not None:
+                await progress_counter.status_changed(
+                    record.get("orgId"), record.get("connectorId"),
+                    current_status, ProgressStatus.QUEUED.value,
+                )
         except Exception as e:
             # Log but don't fail the main operation if status update fails
             self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
@@ -998,6 +1005,14 @@ class DataSourceEntitiesProcessor:
                             "record-events",
                             {"eventType": "newRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
                             key=record.id
+                        )
+
+                    progress_counter = get_progress_counter()
+                    if progress_counter is not None:
+                        conn_name = getattr(record, "connector_name", None)
+                        conn_name = getattr(conn_name, "value", conn_name)
+                        await progress_counter.record_discovered(
+                            record.org_id, record.connector_id, conn_name
                         )
         except Exception as e:
             self.logger.error(f"Transaction on_new_records failed: {str(e)}")
@@ -1159,7 +1174,21 @@ class DataSourceEntitiesProcessor:
     @retry_on_deadlock()
     async def on_record_deleted(self, record_id: str) -> None:
         async with self.data_store_provider.transaction() as tx_store:
+            # Capture the record's current status before deletion so the progress
+            # counter can decrement the right bucket (the id alone can't tell us).
+            deleted_doc = None
+            try:
+                deleted_doc = await tx_store.get_record_by_key(record_id)
+            except Exception as e:
+                self.logger.debug(f"Could not read record {record_id} before delete for progress: {e}")
             await tx_store.delete_record_by_key(record_id)
+        progress_counter = get_progress_counter()
+        if progress_counter is not None and deleted_doc is not None:
+            await progress_counter.record_deleted(
+                deleted_doc.get("orgId"),
+                deleted_doc.get("connectorId"),
+                deleted_doc.get("indexingStatus"),
+            )
 
     @retry_on_deadlock()
     async def on_folder_deleted(self, record_id: str) -> None:

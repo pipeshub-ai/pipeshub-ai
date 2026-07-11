@@ -17,6 +17,7 @@ from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.progress.progress_counter import bump_status
 from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -146,6 +147,7 @@ class SinkOrchestrator(Transformer):
                     record_id,
                 )
                 return
+            await bump_status(record_doc, record_doc.get("indexingStatus"), ProgressStatus.COMPLETED.value)
             self.logger.info(
                 "✅ Sink-only mode completed for record %s (vector indexing skipped)",
                 record_id,

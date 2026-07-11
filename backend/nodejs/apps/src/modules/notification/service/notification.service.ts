@@ -5,6 +5,7 @@ import { inject, injectable } from 'inversify';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { TYPES } from '../../../libs/types/container.types';
+import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
 
 interface CustomSocketData {
   userId: string;
@@ -95,6 +96,27 @@ export class NotificationService {
         // You can also join organization room if needed
         if (orgId) {
           socket.join(`org:${orgId}`);
+
+          // Admins additionally join an admin-only room so the org-wide indexing
+          // progress bar is pushed only to them. The connection callback is sync,
+          // so resolve membership out-of-band. The plain org room holds everyone,
+          // hence a separate room.
+          void isUserOrgAdmin(userId, orgId)
+            .then((isAdmin) => {
+              if (isAdmin) {
+                socket.join(`org:${orgId}:admins`);
+              }
+            })
+            .catch((error: unknown) => {
+              this.logger.warn(
+                'Failed to resolve admin membership for socket',
+                {
+                  userId,
+                  orgId,
+                  error: error instanceof Error ? error.message : String(error),
+                },
+              );
+            });
         }
       }
 
@@ -304,6 +326,16 @@ export class NotificationService {
   sendToOrg(orgId: string, event: string, data: any): boolean {
     if (this.io) {
       this.io.to(`org:${orgId}`).emit(event, data);
+      return true;
+    }
+    return false;
+  }
+
+  // Method to send a message to an arbitrary socket room (e.g. an admin-only
+  // room such as `org:{orgId}:admins`).
+  sendToRoom(room: string, event: string, data: any): boolean {
+    if (this.io) {
+      this.io.to(room).emit(event, data);
       return true;
     }
     return false;

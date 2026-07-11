@@ -23,6 +23,12 @@ from app.services.messaging.config import ConsumerType, IndexingEvent, StreamMes
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.services.progress.progress_counter import get_progress_counter
+from app.services.progress.seed_service import (
+    create_progress_counter,
+    progress_maintenance_loop,
+    seed_orgs,
+)
 from app.telemetry.setup import setup_telemetry
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -52,11 +58,14 @@ async def get_initialized_container() -> IndexingAppContainer:
                 setattr(get_initialized_container, "initialized", True)
     return container
 
-async def recover_in_progress_records(app_container: IndexingAppContainer, graph_provider: IGraphDBProvider) -> None:
+async def recover_in_progress_records(app_container: IndexingAppContainer, graph_provider: IGraphDBProvider) -> set[str]:
     """
     Recover only IN_PROGRESS records (re-run indexing for those left mid-way).
     QUEUED records are set to AUTO_INDEX_OFF so they are not auto-processed on startup.
     Records to recover are processed in parallel (5 at a time).
+
+    Returns the set of orgIds touched by recovery so the caller can seed the
+    progress bar to DB truth.
     """
     logger = app_container.logger()
     logger.info("🔄 Checking for in-progress records to recover and queued records to set to AUTO_INDEX_OFF...")
@@ -65,6 +74,7 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
     semaphore = asyncio.Semaphore(5)
     # Track results for final summary
     results = {"success": 0, "partial": 0, "incomplete": 0, "skipped": 0, "error": 0}
+    recovery_org_ids: set[str] = set()
 
     try:
         # Query for records that are in IN_PROGRESS status
@@ -91,8 +101,28 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
                 )
                 if not success:
                     logger.warning(f"⚠️ Failed to set some queued records to AUTO_INDEX_OFF - some records may not exist")
+                else:
+                    # This bulk write bypasses the funnel; tell the counter about
+                    # the QUEUED→AUTO_INDEX_OFF flip so the bar doesn't stick after
+                    # a restart. The boot seed below is the backstop.
+                    counter = get_progress_counter()
+                    if counter is not None:
+                        for record in queued_records:
+                            await counter.status_changed(
+                                record.get("orgId"),
+                                record.get("connectorId"),
+                                ProgressStatus.QUEUED.value,
+                                ProgressStatus.AUTO_INDEX_OFF.value,
+                            )
             except Exception as e:
                 logger.warning(f"⚠️ Failed to bulk set records to AUTO_INDEX_OFF: {e}")
+
+        # Orgs touched by this restart — seeded to DB truth after recovery.
+        recovery_org_ids = {
+            record.get("orgId")
+            for record in (in_progress_records or []) + (queued_records or [])
+            if record.get("orgId")
+        }
 
         # Recover only in-progress records
         all_records_to_recover = in_progress_records
@@ -100,7 +130,7 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
 
         if not total_records:
             logger.info("✅ No in-progress records to recover. Starting fresh.")
-            return
+            return recovery_org_ids
 
         logger.info(f"📋 Found {total_records} in-progress record(s) to recover")
         # Create the message handler that will process these records
@@ -237,6 +267,8 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
         # Don't raise - we want to continue starting the service even if recovery fails
         logger.warning("⚠️ Continuing to start message consumers despite recovery errors")
 
+    return recovery_org_ids
+
 async def start_kafka_consumers(app_container: IndexingAppContainer) -> list[Any]:
     """Start all message consumers at application level"""
     logger = app_container.logger()
@@ -335,12 +367,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
+    # Initialize the progress counter before recovery so the recover flip and
+    # the re-drive funnel are both counted. Best-effort — never blocks startup.
+    progress_counter = await create_progress_counter(app_container.config_service(), logger)
+
     # Recover in-progress records before starting message consumers
+    recovery_org_ids: set[str] = set()
     try:
-        await recover_in_progress_records(app_container, graph_provider)
+        recovery_org_ids = await recover_in_progress_records(app_container, graph_provider) or set()
     except Exception as e:
         logger.error(f"❌ Error during record recovery: {str(e)}")
         # Continue even if recovery fails
+
+    # Baseline seed: overwrite Redis counters for recovered orgs to DB truth so
+    # the bar is correct even for records that predate the counter (feature just
+    # deployed, or an in-flight sync). Then start the heartbeat loop.
+    app.state.progress_task = None
+    if progress_counter is not None:
+        try:
+            await seed_orgs(progress_counter, graph_provider, recovery_org_ids, logger)
+        except Exception as e:
+            logger.warning(f"⚠️ Progress boot seed failed: {e}")
+        app.state.progress_task = asyncio.create_task(
+            progress_maintenance_loop(progress_counter, logger)
+        )
 
     # Start all message consumers centrally
     try:
@@ -354,6 +404,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
+    progress_task = getattr(app.state, "progress_task", None)
+    if progress_task is not None:
+        progress_task.cancel()
+        try:
+            await progress_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.debug(f"Progress maintenance loop shutdown: {e}")
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
     # Stop message consumers

@@ -36,6 +36,7 @@ from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.services.progress.seed_service import create_progress_counter
 from app.telemetry.setup import setup_telemetry
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -392,6 +393,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Use the already-resolved graph_provider from data_store to avoid coroutine reuse
     logger = app_container.logger()
     graph_provider = data_store.graph_provider
+
+    # Install the progress counter so record discovery/deletion feed the org-wide
+    # progress bar. Best-effort — a Redis failure leaves the hooks as no-ops.
+    await create_progress_counter(app_container.config_service(), logger)
 
     try:
         await telemetry.bind(app_container.config_service(), logger).start()

@@ -1374,12 +1374,33 @@ async def delete_record(
         user_id = request.state.user.get("userId")
         logger.info(f"🗑️ Attempting to delete record {record_id}")
 
+        # Capture org/connector/status before deletion so the progress bar can
+        # decrement the right bucket — this API route (used by KB record delete)
+        # deletes the graph record directly and never hits on_record_deleted.
+        # Fully isolated: a failure here must never affect the deletion itself.
+        deleted_doc = None
+        try:
+            deleted_doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+        except Exception:  # noqa: BLE001 - progress read is best-effort
+            deleted_doc = None
+
         result = await graph_provider.delete_record(
             record_id=record_id,
             user_id=user_id
         )
 
         if result["success"]:
+            try:
+                from app.services.progress.progress_counter import get_progress_counter
+                progress_counter = get_progress_counter()
+                if progress_counter is not None and deleted_doc is not None:
+                    await progress_counter.record_deleted(
+                        deleted_doc.get("orgId"),
+                        deleted_doc.get("connectorId"),
+                        deleted_doc.get("indexingStatus"),
+                    )
+            except Exception as e:  # noqa: BLE001 - isolation
+                logger.debug(f"progress record_deleted skipped: {e}")
             # Publish deletion event
             event_data = result.get("eventData")
             if event_data and event_data.get("payload"):

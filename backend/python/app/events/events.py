@@ -33,6 +33,7 @@ from app.events.processor import Processor
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.progress.progress_counter import bump_status
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -133,6 +134,8 @@ class EventProcessor:
         try:
             record_id = _record_key(doc) or "unknown"
 
+            old_status = doc.get("indexingStatus")
+
             doc.update(
                 {
                     "indexingStatus": status.value,
@@ -150,6 +153,8 @@ class EventProcessor:
                     record_id, status.value
                 )
                 return
+
+            await bump_status(doc, old_status, status.value)
 
             self.logger.debug(
                 f"🔍 Record {record_id}: Successfully updated status to {status.value}"
@@ -326,6 +331,7 @@ class EventProcessor:
                 f"🚀 Duplicate record {_record_key(in_progress)} is being processed, "
                 "changing status to QUEUED."
             )
+            dup_old_status = doc.get("indexingStatus")
             doc.update({
                 "indexingStatus": ProgressStatus.QUEUED.value,
             })
@@ -335,6 +341,8 @@ class EventProcessor:
                     "⚠️ Failed to mark record %s as QUEUED - record may not exist",
                     _record_key(doc),
                 )
+            else:
+                await bump_status(doc, dup_old_status, ProgressStatus.QUEUED.value)
             return True  # Marked as queued (or record deleted — skip processing)
 
         self.logger.info(
