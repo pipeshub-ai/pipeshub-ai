@@ -3925,6 +3925,7 @@ class Neo4jProvider(IGraphDBProvider):
         new_indexing_status: str,
         virtual_record_id: str | None = None,
         transaction: str | None = None,
+        reason: str | None = None,
     ) -> int:
         """
         Find all QUEUED duplicate records with the same md5 hash and update their status.
@@ -4031,14 +4032,17 @@ class Neo4jProvider(IGraphDBProvider):
                 else:
                     extraction_status = ProgressStatus.FAILED.value
 
-                updated_records.append({
+                update_doc = {
                     "id": record_key,
                     "indexingStatus": new_indexing_status,
                     "lastIndexTimestamp": current_timestamp,
                     "isDirty": False,
                     "virtualRecordId": virtual_record_id,
                     "extractionStatus": extraction_status,
-                })
+                }
+                if reason:
+                    update_doc["reason"] = reason
+                updated_records.append(update_doc)
 
             if not updated_records:
                 return 0

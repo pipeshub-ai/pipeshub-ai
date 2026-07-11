@@ -10,7 +10,8 @@ from app.modules.parsers.csv.csv_parser import CSVParser
 
 @pytest.fixture
 def parser():
-    return CSVParser()
+    from unittest.mock import MagicMock
+    return CSVParser(config_service=MagicMock())
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +217,7 @@ class TestReadRawRows:
         assert result == [["a", "b", "c"], ["1", "2", "3"], ["4", "5", "6"]]
 
     def test_reads_with_custom_delimiter(self):
-        parser = CSVParser(delimiter=";")
+        parser = CSVParser(config_service=MagicMock(), delimiter=";")
         csv_data = "a;b;c\n1;2;3\n"
         stream = io.StringIO(csv_data)
         result = parser.read_raw_rows(stream)
@@ -240,7 +241,7 @@ class TestReadRawRows:
         assert result == [["a", "b", "c"]]
 
     def test_reads_with_custom_quotechar(self):
-        parser = CSVParser(quotechar="'")
+        parser = CSVParser(config_service=MagicMock(), quotechar="'")
         csv_data = "'hello, world',b,c\n"
         stream = io.StringIO(csv_data)
         result = parser.read_raw_rows(stream)
@@ -1573,3 +1574,32 @@ class TestFindTablesInCsvDeep:
         ]
         tables = parser.find_tables_in_csv(rows)
         assert len(tables) >= 1
+
+
+# ---------------------------------------------------------------------------
+# get_table_summary - list-shaped LLM content (Gemini)
+# ---------------------------------------------------------------------------
+
+
+class TestGetTableSummaryContentCoercion:
+    @pytest.mark.asyncio
+    async def test_list_content_blocks_coerced_to_text(self, parser):
+        """Gemini returns content as a list of blocks; must not crash on '</think>' check."""
+        response = MagicMock()
+        response.content = [
+            {"type": "text", "text": "Table of "},
+            {"type": "text", "text": "sales data"},
+        ]
+        parser._call_llm = AsyncMock(return_value=response)
+
+        result = await parser.get_table_summary(llm=MagicMock(), rows=[{"a": 1, "b": 2}])
+        assert result == "Table of sales data"
+
+    @pytest.mark.asyncio
+    async def test_list_content_with_think_tags_coerced_and_split(self, parser):
+        response = MagicMock()
+        response.content = ["<think>reasoning</think>", "Final summary"]
+        parser._call_llm = AsyncMock(return_value=response)
+
+        result = await parser.get_table_summary(llm=MagicMock(), rows=[{"a": 1}])
+        assert result == "Final summary"

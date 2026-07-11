@@ -145,7 +145,18 @@ _OPTIONAL_PACKAGES = [
     "msgraph",
     "msgraph_core",
     "slack_sdk",
+    "selectolax",
+    "trafilatura",
 ]
+
+# docling_parse embeds a native C extension (pdf_parsers) that terminates the
+# process with STATUS_ENTRYPOINT_NOT_FOUND on some Windows builds.  Python's
+# exception system cannot intercept a fatal OS-level exit, so _ensure_module()
+# would crash rather than mock.  Register the entire docling_parse namespace as
+# a mock *before* _ensure_module("docling") runs, so the MockFinder intercepts
+# every ``from docling_parse.xxx import ...`` before the native DLL is touched.
+_MOCK_PACKAGE_NAMES.add("docling_parse")
+_mock_finder.load_module("docling_parse")
 
 for _pkg in _OPTIONAL_PACKAGES:
     _ensure_module(_pkg)

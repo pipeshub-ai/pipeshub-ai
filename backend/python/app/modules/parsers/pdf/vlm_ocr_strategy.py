@@ -13,7 +13,7 @@ from PIL import Image
 from app.config.constants.service import config_node_constants
 from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_from_path_sync
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-from app.utils.aimodels import get_generator_model, is_multimodal_llm
+from app.utils.aimodels import coerce_message_content_to_text, get_generator_model, is_multimodal_llm
 from app.utils.llm import get_llm_for_role
 
 
@@ -210,6 +210,8 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         """Dispatch blocking pdfium rasterization off the event loop."""
         self._page_images = await asyncio.to_thread(self._render_all_pages_to_base64)
 
+    _coerce_content_to_text = staticmethod(coerce_message_content_to_text)
+
     async def _call_llm_for_markdown(self, image_base64: str, page_number: int) -> str:
         """
         Call LLM with page image to get markdown output
@@ -237,8 +239,11 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             self.logger.debug(f"📤 Calling LLM for page {page_number}")
             response = await self.llm.ainvoke([message])
 
-            # Extract content
-            markdown_content = response.content if hasattr(response, 'content') else str(response)
+            # Extract content. LangChain message content may be a plain string or
+            # a list of content blocks (e.g. Gemini returns the latter), so coerce
+            # to text before any string handling.
+            raw_content = getattr(response, "content", response)
+            markdown_content = self._coerce_content_to_text(raw_content)
 
             # Clean up: Remove markdown code block wrapper if present
             markdown_content = markdown_content.strip()

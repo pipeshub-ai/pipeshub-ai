@@ -378,11 +378,11 @@ class TestCommonFormatWhitelist:
 # ExcelParser helpers — instantiation
 # ---------------------------------------------------------------------------
 def _make_excel_parser():
-    """Create an ExcelParser instance with a mock logger."""
+    """Create an ExcelParser instance with a mock logger and config_service."""
     from unittest.mock import MagicMock
 
     from app.modules.parsers.excel.excel_parser import ExcelParser
-    return ExcelParser(logger=MagicMock())
+    return ExcelParser(logger=MagicMock(), config_service=MagicMock())
 
 
 # ---------------------------------------------------------------------------
@@ -1421,6 +1421,25 @@ class TestExcelGetTableSummary:
         result = await ep.get_table_summary(table)
         assert result == "Employee data."
         assert "<think>" not in result
+
+    @pytest.mark.asyncio
+    async def test_list_content_blocks_coerced_to_text(self):
+        """Gemini returns content as a list of blocks; must not crash on '</think>' check."""
+        ep = _make_excel_parser()
+        mock_response = MagicMock()
+        mock_response.content = [
+            {"type": "text", "text": "Table of "},
+            {"type": "text", "text": "employees"},
+        ]
+        ep.llm = AsyncMock()
+        ep.llm.ainvoke = AsyncMock(return_value=mock_response)
+
+        table = {
+            "headers": ["Name"],
+            "data": [[{"header": "Name", "value": "Alice", "row": 2, "data_type": "s"}]],
+        }
+        result = await ep.get_table_summary(table)
+        assert result == "Table of employees"
 
     @pytest.mark.asyncio
     async def test_exception_propagates(self):

@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from enum import Enum
@@ -20,6 +21,34 @@ from app.config.constants.ai_models import (
 )
 from app.utils.embedding_server_client import get_embedding_server_embeddings
 from app.utils.logger import create_logger
+
+
+def coerce_message_content_to_text(content: Any) -> str:
+    """Normalize a LangChain message ``content`` value to plain text.
+
+    Most providers return ``content`` as a string, but some (e.g. Gemini) return
+    a list of content blocks — strings and/or ``{"type": "text", "text": ...}``
+    dicts. Concatenate the textual parts so downstream string handling does not
+    break with ``'list' object has no attribute 'strip'``. Non-text blocks (such
+    as image parts) are ignored rather than stringified.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+            elif block is not None:
+                parts.append(str(block))
+        return "".join(parts)
+    if content is None:
+        return ""
+    return str(content)
 
 
 class ModelType(str, Enum):
@@ -798,6 +827,23 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
         )
 
     raise ValueError(f"Unsupported provider type: {provider}")
+
+
+async def get_generator_model_async(
+    provider: str,
+    config: dict[str, Any],
+    model_name: str | None = None,
+) -> BaseChatModel:
+    """Async-safe wrapper around :func:`get_generator_model`.
+
+    Most providers construct their LangChain model object with no I/O, so they
+    run inline.  AWS Bedrock is the exception: ``_create_bedrock_client`` may
+    hit the EC2 IMDS or ECS task-role metadata endpoint to resolve credentials
+    when no explicit keys are supplied, which would block the event loop.
+    """
+    if provider == LLMProvider.AWS_BEDROCK.value:
+        return await asyncio.to_thread(get_generator_model, provider, config, model_name)
+    return get_generator_model(provider, config, model_name)
 
 
 # ---------------------------------------------------------------------------

@@ -726,7 +726,7 @@ class TestHandleHtml:
         parser._html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         parser._html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
         parser._html_parser.extract_and_replace_images = MagicMock(return_value=(cleaned, []))
-        parser._html_parser.parse = AsyncMock(return_value=expected)
+        parser._html_parser.parse_to_blocks = AsyncMock(return_value=expected)
         html = b"<html><body><p>hello</p><script>bad()</script></body></html>"
         result = await parser.handle_html(html, "page.html")
         assert result is expected
@@ -735,7 +735,7 @@ class TestHandleHtml:
         )
         parser._html_parser.replace_relative_image_urls.assert_called_once()
         parser._html_parser.extract_and_replace_images.assert_called_once_with(cleaned)
-        parser._html_parser.parse.assert_awaited_once_with(cleaned, caption_map=None)
+        parser._html_parser.parse_to_blocks.assert_awaited_once_with(cleaned, caption_map=None)
 
     @pytest.mark.asyncio
     async def test_decodes_bytes_before_parse(self):
@@ -744,10 +744,10 @@ class TestHandleHtml:
         parser._html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         parser._html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
         parser._html_parser.extract_and_replace_images = MagicMock(return_value=("<html>ok", []))
-        parser._html_parser.parse = AsyncMock(return_value=expected)
+        parser._html_parser.parse_to_blocks = AsyncMock(return_value=expected)
         result = await parser.handle_html(b"<html>ok", "page.html")
         assert result is expected
-        parser._html_parser.parse.assert_awaited_once_with("<html>ok", caption_map=None)
+        parser._html_parser.parse_to_blocks.assert_awaited_once_with("<html>ok", caption_map=None)
 
     @pytest.mark.asyncio
     async def test_remote_images_converted_to_caption_map(self):
@@ -769,13 +769,13 @@ class TestHandleHtml:
         parser._image_parser.urls_to_base64 = AsyncMock(
             return_value=["data:image/png;base64,QQ=="]
         )
-        parser._html_parser.parse = AsyncMock(return_value=expected)
+        parser._html_parser.parse_to_blocks = AsyncMock(return_value=expected)
         result = await parser.handle_html(b"<html></html>", "page.html")
         assert result is expected
         parser._image_parser.urls_to_base64.assert_awaited_once_with(
             ["https://example.com/pic.png"]
         )
-        parser._html_parser.parse.assert_awaited_once_with(
+        parser._html_parser.parse_to_blocks.assert_awaited_once_with(
             cleaned,
             caption_map={"Image_1": "data:image/png;base64,QQ=="},
         )
@@ -802,11 +802,11 @@ class TestMarkdownStringToBlocks:
             return_value=("# H", [])
         )
         expected = BlocksContainer(blocks=[], block_groups=[])
-        parser._md_parser.parse = AsyncMock(return_value=expected)
+        parser._md_parser.parse_to_blocks = AsyncMock(return_value=expected)
 
         result = await parser._markdown_string_to_blocks("# H", "myfile.md")
         assert result is expected
-        parser._md_parser.parse.assert_awaited_once_with(
+        parser._md_parser.parse_to_blocks.assert_awaited_once_with(
             "# H", caption_map=None, name="myfile.md"
         )
 
@@ -821,11 +821,11 @@ class TestMarkdownStringToBlocks:
         )
         parser._image_parser.urls_to_base64 = AsyncMock(return_value=["data:image/png;base64,QQ=="])
         expected = BlocksContainer(blocks=[], block_groups=[])
-        parser._md_parser.parse = AsyncMock(return_value=expected)
+        parser._md_parser.parse_to_blocks = AsyncMock(return_value=expected)
 
         result = await parser._markdown_string_to_blocks("# doc", "x.md")
         assert result is expected
-        parser._md_parser.parse.assert_awaited_once_with(
+        parser._md_parser.parse_to_blocks.assert_awaited_once_with(
             "# doc",
             caption_map={"cap1": "data:image/png;base64,QQ=="},
             name="x.md",
@@ -839,10 +839,10 @@ class TestMarkdownStringToBlocks:
         )
         parser._image_parser.urls_to_base64 = AsyncMock(return_value=[""])
         expected = BlocksContainer(blocks=[], block_groups=[])
-        parser._md_parser.parse = AsyncMock(return_value=expected)
+        parser._md_parser.parse_to_blocks = AsyncMock(return_value=expected)
 
         await parser._markdown_string_to_blocks("# x", "x.md")
-        parser._md_parser.parse.assert_awaited_once_with(
+        parser._md_parser.parse_to_blocks.assert_awaited_once_with(
             "# x", caption_map=None, name="x.md"
         )
 
@@ -854,10 +854,10 @@ class TestMarkdownStringToBlocks:
         )
         parser._image_parser.urls_to_base64 = AsyncMock(return_value=["data:x"])
         expected = BlocksContainer(blocks=[], block_groups=[])
-        parser._md_parser.parse = AsyncMock(return_value=expected)
+        parser._md_parser.parse_to_blocks = AsyncMock(return_value=expected)
 
         await parser._markdown_string_to_blocks("#", "x.md")
-        parser._md_parser.parse.assert_awaited_once_with(
+        parser._md_parser.parse_to_blocks.assert_awaited_once_with(
             "#",
             caption_map={"c1": "data:x"},
             name="x.md",

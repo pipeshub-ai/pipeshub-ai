@@ -12,6 +12,8 @@ from typing import Any
 import json
 from uuid import uuid4
 
+from app.services.parsing.interface import ParserProvider
+from app.modules.transformers.pipeline import IndexingPipeline
 from bs4 import BeautifulSoup
 
 from io import BytesIO
@@ -104,14 +106,26 @@ def _detect_pdf_needs_ocr(file_content: bytes) -> bool:
 
         return ocr_pages >= threshold
 
-
 class EventProcessor:
-    def __init__(self, logger: logging.Logger, processor: Processor, graph_provider: IGraphDBProvider, config_service: ConfigurationService | None = None) -> None:
+    def __init__(
+        self,
+        logger: logging.Logger,
+        processor: Processor,
+        graph_provider: IGraphDBProvider,
+        config_service: ConfigurationService | None = None,
+        parsing_client=None,
+        extraction_client=None,
+        sink_orchestrator=None,
+    ) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing EventProcessor")
         self.processor = processor
         self.graph_provider = graph_provider
         self.config_service = config_service
+        # Optional HTTP service clients (used when USE_PARSING_SERVICE=true)
+        self.parsing_client = parsing_client
+        self.extraction_client = extraction_client
+        self.sink_orchestrator = sink_orchestrator
 
     async def _pdf_needs_ocr(self, file_content: bytes) -> bool:
         if PDF_OCR_DETECTION_WORKERS <= 1:
@@ -125,6 +139,159 @@ class EventProcessor:
         )
 
 
+
+    def _use_service_pipeline(self) -> bool:
+        """Return True when the new HTTP service pipeline should be used."""
+        return (
+            self.parsing_client is not None
+            and self.extraction_client is not None
+            and self.sink_orchestrator is not None
+            and os.environ.get("USE_PARSING_SERVICE", "false").lower() == "true"
+        )
+
+    async def _orchestrate_via_services(
+        self,
+        record_id: str,
+        org_id: str,
+        virtual_record_id: str,
+        record_name: str,
+        mime_type: str,
+        extension: str,
+        event_type: str,
+        prev_virtual_record_id: str | None,
+        file_content: bytes,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """New orchestration path: parse → index → enrich via standalone services.
+
+        1. POST /api/v1/parse → BlocksContainer (Parsing Service, port 8092)
+        2. VectorStore + BlobStorage via SinkOrchestrator.index()
+        3. POST /api/v1/extract/classify → SemanticMetadata (Extraction Service, port 8093)
+        4. GraphDB via SinkOrchestrator.enrich()
+
+        Documents are searchable after step 2 regardless of step 3/4 outcome.
+        """
+        from app.events.processor import convert_record_dict_to_record  # noqa: PLC0415
+        from app.modules.transformers.transformer import TransformContext  # noqa: PLC0415
+
+        # ── Step 1: Parse ────────────────────────────────────────────────────
+        self.logger.info(
+            "📤 Sending '%s' to Parsing Service (mime=%s ext=%s)", record_name, mime_type, extension
+        )
+        provider = ParserProvider(os.getenv("PARSER_BACKEND") or ParserProvider.DEFAULT.value)
+        parse_result = await self.parsing_client.parse(
+            file_content=file_content,
+            record_name=record_name,
+            mime_type=mime_type,
+            extension=extension,
+            org_id=org_id,
+            provider=provider,
+        )
+        block_container = parse_result.block_container
+        self.logger.info(
+            "✅ Parsing complete via provider '%s' (%d blocks)",
+            parse_result.provider_used.value if parse_result.provider_used else "unknown",
+            len(block_container.blocks),
+        )
+        yield PipelineEvent(
+            event=IndexingEvent.PARSING_COMPLETE,
+            data=PipelineEventData(record_id=record_id),
+        )
+
+        if not block_container.blocks and not block_container.block_groups:
+            self.logger.info(
+                "⚠️ Empty document for %s — marking EMPTY", record_id
+            )
+            record_doc = await self.graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
+            if record_doc:
+                record_doc.update({
+                    "indexingStatus": ProgressStatus.EMPTY.value,
+                    "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                    "isDirty": False,
+                })
+                await self.graph_provider.batch_upsert_nodes(
+                    [record_doc], CollectionNames.RECORDS.value
+                )
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id=record_id),
+            )
+            return
+
+        # ── Build Record + TransformContext ─────────────────────────────────
+        record_doc = await self.graph_provider.get_document(
+            record_id, CollectionNames.RECORDS.value
+        )
+        if record_doc is None:
+            self.logger.warning(f"❌ Record {record_id} not found after parsing")
+            return
+
+        record = convert_record_dict_to_record(record_doc)
+        record.block_containers = block_container
+        record.virtual_record_id = virtual_record_id
+        record.org_id = org_id
+
+        ctx = TransformContext(
+            record=record,
+            event_type=event_type,
+            prev_virtual_record_id=prev_virtual_record_id,
+        )
+
+        ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
+            ctx, self.logger, self.sink_orchestrator
+        )
+
+        # ── Step 2: Index (VectorStore + BlobStorage) ────────────────────────
+        self.logger.info("📥 Indexing record %s (making searchable)", record_id)
+        await self.sink_orchestrator.index(ctx)
+        self.logger.info("✅ Record %s is now searchable (indexingStatus=COMPLETED)", record_id)
+
+        # ── Step 3: Enrich (Extraction Service → GraphDB) ────────────────────
+        defer_extraction = (
+            ctx.settings.get("defer_extraction")
+            or os.environ.get("DEFER_EXTRACTION", "false").lower() == "true"
+        )
+        if defer_extraction:
+            self.logger.info(
+                "📨 Deferring graph enrichment for record %s", record_id
+            )
+        else:
+            try:
+                departments = await self.graph_provider.get_departments(org_id)
+                semantic_metadata = await self.extraction_client.classify(
+                    block_container=block_container,
+                    org_id=org_id,
+                    departments=departments or [],
+                )
+
+                record.semantic_metadata = semantic_metadata
+                if semantic_metadata and (semantic_metadata.summary or "").strip():
+                    await self.sink_orchestrator.vector_store.index_record_summary(
+                        record_id,
+                        virtual_record_id,
+                        org_id,
+                        semantic_metadata,
+                    )
+
+                if semantic_metadata:
+                    await self.sink_orchestrator.blob_storage.apply(ctx)
+
+                await self.sink_orchestrator.enrich(ctx)
+                self.logger.info(
+                    "✅ Graph enrichment completed for record %s", record_id
+                )
+            except Exception as enrich_exc:
+                self.logger.error(
+                    "❌ Enrichment failed for record %s (document remains searchable): %s",
+                    record_id,
+                    enrich_exc,
+                )
+
+        yield PipelineEvent(
+            event=IndexingEvent.INDEXING_COMPLETE,
+            data=PipelineEventData(record_id=record_id),
+        )
 
     async def mark_record_status(self, doc: dict[str, Any], status: ProgressStatus) -> None:
         """
@@ -425,11 +592,19 @@ class EventProcessor:
             except Exception as e:
                 self.logger.error(f"❌ Error in MD5/duplicate processing: {repr(e)}")
                 raise
+            if isinstance(file_content, str):
+                file_content = file_content.strip()
+
+            if not file_content or file_content == b"":
+                await self.mark_record_status(doc, ProgressStatus.EMPTY)
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                return
 
             await self.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
 
-            prev_virtual_record_id = None  
-            if event_type == EventTypes.UPDATE_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value :
+            prev_virtual_record_id = None
+            if event_type == EventTypes.UPDATE_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
                 # For reconciliation-enabled types, decide whether to keep or generate new vrid
                 from app.config.constants.arangodb import (
                     RECONCILIATION_ENABLED_EXTENSIONS,
@@ -467,6 +642,28 @@ class EventProcessor:
             if virtual_record_id is None:
                 virtual_record_id = str(uuid4())
 
+            # ── New service pipeline (opt-in via USE_PARSING_SERVICE=true) ──
+            if self._use_service_pipeline():
+                if isinstance(file_content, str):
+                    content_bytes = file_content.encode("utf-8")
+                else:
+                    content_bytes = file_content
+
+                async for event in self._orchestrate_via_services(
+                    record_id=record_id,
+                    org_id=org_id,
+                    virtual_record_id=virtual_record_id,
+                    record_name=record_name,
+                    mime_type=mime_type,
+                    extension=extension,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                    file_content=content_bytes,
+                ):
+                    yield event
+                return
+
+            # ── Legacy per-format dispatch (existing behaviour) ──────────────
             if mime_type == MimeTypes.GOOGLE_SLIDES.value:
                 self.logger.info("🚀 Processing Google Slides")
                 async for event in self.processor.process_pptx_document(

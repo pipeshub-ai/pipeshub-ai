@@ -1,13 +1,26 @@
 import os
 import subprocess
 import tempfile
+from typing import Any
+
+from app.modules.parsers.excel.excel_parser import ExcelParser
+from app.services.parsing.interface import ParseResult
 
 
 class XLSParser:
     """Parser for Microsoft Excel .xls files"""
 
-    def __init__(self) -> None:
-        pass
+    def __init__(self, excel_parser: ExcelParser) -> None:
+        self._excel_parser = excel_parser
+
+    async def parse(
+        self,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None = None,
+    ) -> ParseResult:
+        xlsx_bytes = self.convert_xls_to_xlsx(content)
+        return await self._excel_parser.parse(xlsx_bytes, record_name)
 
     def convert_xls_to_xlsx(self, binary: bytes) -> bytes:
         """

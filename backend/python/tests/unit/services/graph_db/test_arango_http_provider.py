@@ -3962,6 +3962,24 @@ class TestUpdateQueuedDuplicatesStatus:
             assert call_args[0]["extractionStatus"] == "EMPTY"
 
     @pytest.mark.asyncio
+    async def test_failed_status_includes_reason(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = [
+            [{"_key": "r1", "md5Checksum": "abc123"}],
+            [{"_key": "r2", "md5Checksum": "abc123"}],
+        ]
+        with patch.object(
+            connected_provider, "batch_update_nodes",
+            new_callable=AsyncMock, return_value=True
+        ) as mock_update:
+            await connected_provider.update_queued_duplicates_status(
+                "r1",
+                "FAILED",
+                reason="Primary duplicate indexing failed: timeout",
+            )
+            call_args = mock_update.call_args[0][0]
+            assert call_args[0]["reason"] == "Primary duplicate indexing failed: timeout"
+
+    @pytest.mark.asyncio
     async def test_exception_returns_negative_one(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
         result = await connected_provider.update_queued_duplicates_status("r1", "COMPLETED")

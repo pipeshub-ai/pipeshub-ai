@@ -1,13 +1,17 @@
 import re
+from typing import Any
+
+from app.modules.parsers.markdown.markdown_parser import MarkdownParser
+from app.services.parsing.interface import ParseResult
 
 
 class MDXParser:
     """Parser for MDX files to convert them to regular Markdown"""
 
-    def __init__(self) -> None:
+    def __init__(self, md_parser) -> None:
         # Tags to preserve with special handling
         self.allowed_tags = ['CodeGroup', 'Info', 'AccordionGroup', 'Accordion']
-
+        self.md_parser = md_parser
         # Regex for full JSX blocks (e.g., <Tag>...</Tag>)
         self.jsx_block_pattern = r'<(?P<tag>[A-Za-z][A-Za-z0-9]*)[^>]*>(?P<content>.*?)</\1>'
         self.self_closing_pattern = r'<[A-Za-z][A-Za-z0-9]*[^>]*/>'
@@ -60,3 +64,7 @@ class MDXParser:
 
         except Exception as e:
             raise Exception(f"Error converting MDX to Markdown: {str(e)}") from e
+
+    async def parse(self, content: bytes, record_name: str, config: dict[str, Any] | None = None) -> ParseResult:
+        md_bytes = self.convert_mdx_to_md(content)
+        return await self.md_parser.parse(md_bytes, record_name, config)

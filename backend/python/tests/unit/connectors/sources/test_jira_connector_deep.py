@@ -905,18 +905,17 @@ class TestTestConnectionAndAccess:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_no_datasource_inits(self):
+    async def test_no_datasource_returns_false_without_reinit(self):
+        """No datasource → fail fast, don't re-initialize. init() already runs (and
+        must succeed) before this in the connector setup flow, so a missing datasource
+        means it was called out of order — surface that rather than mask it."""
         c, *_ = _make_connector()
         c.data_source = None
         c.init = AsyncMock()
 
-        resp = _make_jira_response(200)
-        ds = AsyncMock()
-        ds.get_current_user = AsyncMock(return_value=resp)
-        c._get_fresh_datasource = AsyncMock(return_value=ds)
-
         result = await c.test_connection_and_access()
-        c.init.assert_called_once()
+        assert result is False
+        c.init.assert_not_called()
 
 
 # ===========================================================================

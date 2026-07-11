@@ -265,7 +265,7 @@ class TestConvertToPdf:
             patch("os.path.exists", return_value=True),
         ):
             result = await convert_to_pdf("/tmp/file.pptx", "/tmp")
-            assert result == "/tmp/file.pdf"
+            assert result == os.path.join("/tmp", "file.pdf")
 
     @pytest.mark.asyncio
     async def test_timeout_terminates_process(self):

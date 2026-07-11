@@ -95,7 +95,7 @@
     "marked": "^16.4.2",
     "mongodb": "^6.14.2",
     "mongoose": "^8.9.2",
-    "morgan": "^1.10.1",
+    "morgan": "^1.11.0",
     "multer": "^2.2.0",
     "nodemailer": "^8.0.5",
     "passport": "^0.7.0",

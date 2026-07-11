@@ -1,9 +1,27 @@
 """Unit tests for Selectolax HTML parsing (converter + parser wrapper)."""
 
+import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, NonCallableMock, patch
 
 import pytest
+
+
+def _selectolax_really_installed() -> bool:
+    """Return True only when selectolax is a genuine installed package.
+
+    The test conftest may insert a MagicMock stub into sys.modules to allow
+    collection.  importlib.util.find_spec hits that stub and returns non-None,
+    so we need to distinguish the real module from the mock explicitly.
+    """
+    mod = sys.modules.get("selectolax")
+    return mod is not None and not isinstance(mod, NonCallableMock)
+
+
+pytestmark = pytest.mark.skipif(
+    not _selectolax_really_installed(),
+    reason="selectolax is not installed",
+)
 
 from app.models.blocks import (
     Block,
@@ -1120,20 +1138,22 @@ class TestBlockContainerValidation:
 
 
 class TestSelectolaxHtmlParser:
-    def test_parse_to_blocks_delegates_to_converter(
+    @pytest.mark.asyncio
+    async def test_parse_to_blocks_delegates_to_converter(
         self,
         parser: SelectolaxHtmlParser,
     ) -> None:
-        container = parser.parse_to_blocks("<h1>Title</h1>")
+        container = await parser.parse_to_blocks("<h1>Title</h1>")
         _assert_all_blocks_have_data(container)
         assert container.blocks[0].sub_type == BlockSubType.HEADING
         assert container.blocks[0].data == "Title"
 
-    def test_parse_to_blocks_passes_base_url_and_caption_map(
+    @pytest.mark.asyncio
+    async def test_parse_to_blocks_passes_base_url_and_caption_map(
         self,
         parser: SelectolaxHtmlParser,
     ) -> None:
-        container = parser.parse_to_blocks(
+        container = await parser.parse_to_blocks(
             '<img alt="fig1" src="pic.png">',
             base_url="https://example.com",
             caption_map={"fig1": "data:image/png;base64,abc"},
@@ -1157,14 +1177,21 @@ class TestSelectolaxHtmlParser:
         self,
         parser: SelectolaxHtmlParser,
     ) -> None:
-        with patch.object(parser, "parse_to_blocks", return_value=MagicMock()) as mock_parse:
-            await parser.parse("<h1>Ready</h1>", caption_map={"a": "b"}, base_url="https://x.com")
+        expected = BlocksContainer(blocks=[], block_groups=[])
+        with patch.object(parser, "clean_html", side_effect=lambda x: x), \
+             patch.object(parser, "replace_relative_image_urls", side_effect=lambda x: x), \
+             patch.object(parser, "extract_and_replace_images", side_effect=lambda x: (x, [])), \
+             patch.object(
+                 parser, "parse_to_blocks", new_callable=AsyncMock, return_value=expected
+             ) as mock_parse:
+            result = await parser.parse(b"<h1>Ready</h1>", "test.html")
 
-        mock_parse.assert_called_once_with(
+        mock_parse.assert_awaited_once_with(
             "<h1>Ready</h1>",
-            base_url="https://x.com",
-            caption_map={"a": "b"},
+            caption_map=None,
         )
+        assert result.block_container is expected
+        assert result.metadata == {"record_name": "test.html"}
 
     def test_clean_before_extract_skips_header_images(
         self,

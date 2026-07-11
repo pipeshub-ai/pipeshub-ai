@@ -1,10 +1,14 @@
 import asyncio
 import csv
+import io
 import json
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TextIO, Tuple, Union
 
+from app.config.configuration_service import ConfigurationService
+from app.services.parsing.interface import ParseResult
+from app.utils.llm import get_llm_for_role
 from langchain_core.language_models.chat_models import BaseChatModel
 from tenacity import (
     retry,
@@ -30,6 +34,7 @@ from app.modules.parsers.excel.prompt_template import (
     row_text_prompt_for_csv,
     table_summary_prompt,
 )
+from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
 from app.utils.logger import create_logger
 from app.utils.streaming import (
@@ -50,7 +55,7 @@ MAX_HEADER_DETECTION_ROWS = 10  # CSV uses 6 rows (vs Excel's 4)
 
 class CSVParser:
     def __init__(
-        self, delimiter: str = ",", quotechar: str = '"', encoding: str = "utf-8"
+        self, config_service: ConfigurationService, delimiter: str = ",", quotechar: str = '"', encoding: str = "utf-8"
     ) -> None:
         """
         Initialize the CSV parser with configurable parameters.
@@ -67,14 +72,59 @@ class CSVParser:
         self.table_summary_prompt = table_summary_prompt
         self.excel_header_detection_prompt = excel_header_detection_prompt
         self.csv_header_generation_prompt = csv_header_generation_prompt
+        self.config_service = config_service
 
         # Configure retry parameters
         self.max_retries = 3
         self.min_wait = 1  # seconds
         self.max_wait = 10  # seconds
 
+    async def parse(
+        self,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None = None,
+    ) -> ParseResult:
+            llm, _ = await get_llm_for_role(self.config_service, "indexing")
 
+            # Try different encodings to decode binary data
+            encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
+            all_rows = None
+            for encoding in encodings:
+                try:
+                    # Decode binary data to string
+                    csv_text = content.decode(encoding)
 
+                    # Create string stream from decoded text
+                    csv_stream = io.StringIO(csv_text)
+
+                    # Read raw rows for table detection
+                    all_rows = self.read_raw_rows(csv_stream)
+                    break
+                except UnicodeDecodeError:
+                    continue
+                except Exception as e:
+                    continue
+
+            if all_rows is None or not all_rows:
+                return ParseResult(
+                    block_container=BlocksContainer(blocks=[], block_groups=[]),
+                    metadata={
+                        "record_name": record_name,
+                    },
+                )
+
+            # Detect multiple tables
+            tables = self.find_tables_in_csv(all_rows)
+
+            block_containers = await self.get_blocks_from_csv_with_multiple_tables(tables, llm)
+
+            return ParseResult(
+                block_container=block_containers,
+                metadata={
+                    "record_name": record_name,
+                },
+            )
 
     def _parse_value(self, value: str) -> int | float | bool | str | None:
         """
@@ -631,9 +681,11 @@ class CSVParser:
             # Use getattr to safely access .content attribute
             content = getattr(response, 'content', None)  # type: ignore
             if content is not None:
-                if '</think>' in content:
-                    content = content.split('</think>')[-1]
-                return content
+                # Gemini and similar return content as a list of blocks, not a string.
+                summary = coerce_message_content_to_text(content)
+                if '</think>' in summary:
+                    summary = summary.split('</think>')[-1]
+                return summary
             elif isinstance(response, str):
                 if '</think>' in response:
                     return response.split('</think>')[-1]

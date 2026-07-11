@@ -110,7 +110,7 @@ class TestApplyMetadataIsNone:
         call_args = tx_store.batch_update_nodes.call_args
         status_doc = call_args[0][0][0]
         assert status_doc["extractionStatus"] == "FAILED"
-        assert status_doc["indexingStatus"] == "COMPLETED"
+        assert "indexingStatus" not in status_doc
         assert status_doc["isDirty"] is False
         assert call_args[0][1] == CollectionNames.RECORDS.value
 
@@ -373,7 +373,7 @@ class TestSaveMetadataToDb:
         status_call = tx_store.batch_update_nodes.call_args
         status_doc = status_call[0][0][0]
         assert status_doc["extractionStatus"] == "COMPLETED"
-        assert status_doc["indexingStatus"] == "COMPLETED"
+        assert "indexingStatus" not in status_doc
         assert status_doc["isDirty"] is False
 
     @pytest.mark.asyncio

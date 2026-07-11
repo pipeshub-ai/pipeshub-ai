@@ -1449,6 +1449,85 @@ class TestHandleToolsetOAuthCallbackFlows:
         assert result["success"] is False
 
     @pytest.mark.asyncio
+    async def test_factory_test_connection(self):
+        """Jira/Confluence factory test_connection: base_url set or single site → no-op;
+        multiple sites without base_url → ToolsetAuthError."""
+        from app.agents.tools.factories.base import ToolsetAuthError
+        from app.agents.tools.factories.confluence import ConfluenceClientFactory
+        from app.agents.tools.factories.jira import JiraClientFactory
+        from app.sources.external.common.atlassian import AtlassianCloudResource
+        log = MagicMock()
+
+        # baseUrl set in auth_config → no accessible-resources call, no error
+        await JiraClientFactory().test_connection(
+            access_token="tok", auth_config={"baseUrl": "https://x.atlassian.net"},
+            config_service=None, logger=log,
+        )
+
+        two = [
+            AtlassianCloudResource(id="a", name="a", url="https://a.atlassian.net", scopes=[]),
+            AtlassianCloudResource(id="b", name="b", url="https://b.atlassian.net", scopes=[]),
+        ]
+        with patch("app.agents.tools.factories.jira.JiraClient.get_accessible_resources",
+                   new_callable=AsyncMock, return_value=two):
+            with pytest.raises(ToolsetAuthError, match="multiple Jira sites"):
+                await JiraClientFactory().test_connection(
+                    access_token="tok", auth_config={}, config_service=None, logger=log,
+                )
+
+        one = [AtlassianCloudResource(id="a", name="a", url="https://a.atlassian.net", scopes=[])]
+        with patch("app.agents.tools.factories.confluence.ConfluenceClient.get_accessible_resources",
+                   new_callable=AsyncMock, return_value=one):
+            # single site → no error
+            await ConfluenceClientFactory().test_connection(
+                access_token="tok", auth_config={}, config_service=None, logger=log,
+            )
+
+    @pytest.mark.asyncio
+    async def test_callback_setup_error_blocks_and_notifies(self):
+        """A factory's test_connection raising ToolsetAuthError → block auth, notify
+        user, error redirect (generic; no toolset-specific code in the route)."""
+        from app.agents.tools.factories.base import ToolsetAuthError
+        from app.api.routes.toolsets import handle_toolset_oauth_callback
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value={})
+        cs.set_config = AsyncMock()
+        encoded_state = self._encode_state("orig-state", "i1", "u1")
+        instances = [{"_id": "i1", "orgId": "o1", "toolsetType": "jira", "authType": "OAUTH", "oauthConfigId": "cfg-1"}]
+        oauth_cfg = {"_id": "cfg-1", "config": {"clientId": "cid", "clientSecret": "cs"}}
+
+        req = _make_request()
+        req.app.state.toolset_registry = _make_oauth_registry("jira")
+
+        mock_token = MagicMock()
+        mock_token.access_token = "token123"
+        mock_provider = AsyncMock()
+        mock_provider.handle_callback = AsyncMock(return_value=mock_token)
+        mock_provider.close = AsyncMock()
+
+        notif = AsyncMock()
+        fake_factory = MagicMock()
+        fake_factory.test_connection = AsyncMock(
+            side_effect=ToolsetAuthError("This OAuth app has access to multiple Jira sites.")
+        )
+
+        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._load_toolset_instances", new_callable=AsyncMock, return_value=instances), \
+             patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=oauth_cfg), \
+             patch("app.api.routes.toolsets._build_oauth_config", new_callable=AsyncMock, return_value={"clientId": "cid", "clientSecret": "cs"}), \
+             patch("app.api.routes.toolsets.OAuthProvider", return_value=mock_provider), \
+             patch("app.agents.tools.factories.registry.ClientFactoryRegistry.get_factory", return_value=fake_factory):
+            result = await handle_toolset_oauth_callback(
+                req, code="code", state=encoded_state, error=None, base_url=None,
+                config_service=cs, notification_service=notif,
+            )
+        assert result["success"] is False
+        assert result["error"] == "toolset_setup_error"
+        assert "multiple Jira sites" in result["error_message"]
+        notif.publish_notification.assert_awaited_once()
+        cs.set_config.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_callback_auth_status_update_exception_still_succeeds(self):
         """Lines 2390-2391 — auth status update exception doesn't block."""
         from app.api.routes.toolsets import handle_toolset_oauth_callback

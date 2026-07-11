@@ -7,6 +7,7 @@ including success paths, error paths, and all conditional branches.
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1730,7 +1731,7 @@ class TestConvertToPdf:
             mock_exec.return_value = mock_proc
 
             result = await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
-            assert result == "/tmp/test.pdf"
+            assert result == os.path.join("/tmp", "test.pdf")
 
     @pytest.mark.asyncio
     async def test_nonzero_return_code(self, connector):

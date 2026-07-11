@@ -8,7 +8,7 @@ from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import Block, BlockGroup, BlockType, DataFormat, GroupType
 from app.modules.transformers.pipeline import IndexingPipeline
-from app.modules.transformers.transformer import TransformContext
+from app.modules.transformers.transformer import ReconciliationContext, TransformContext
 
 _SENTINEL = object()
 
@@ -40,6 +40,10 @@ def _make_ctx(record):
     """Wrap a record in a mock TransformContext."""
     ctx = MagicMock()
     ctx.record = record
+    ctx.settings = {}
+    ctx.event_type = None
+    ctx.reconciliation_context = None
+    ctx.prev_virtual_record_id = None
     return ctx
 
 
@@ -87,9 +91,10 @@ class TestApplyEmpty:
         assert docs[0]["isDirty"] is False
         assert docs[0]["extractionStatus"] == ProgressStatus.NOT_STARTED.value
 
-        # Should NOT call document_extraction.apply or sink_orchestrator.apply
+        # Should NOT call document_extraction or sink index/enrich
         doc_extraction.apply.assert_not_awaited()
-        sink_orchestrator.apply.assert_not_awaited()
+        sink_orchestrator.index.assert_not_awaited()
+        sink_orchestrator.enrich.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_empty_blocks_update_failure_logs_warning(self, pipeline, doc_extraction, sink_orchestrator):
@@ -108,12 +113,14 @@ class TestApplyEmpty:
         """When blocks is None (not an empty list), the empty check should not trigger."""
         record = _make_record(blocks=None, block_groups=None)
         ctx = _make_ctx(record)
+        ctx.reconciliation_context = ReconciliationContext(new_metadata={})
 
         await pipeline.apply(ctx)
 
         # Should go through the normal path since None != len==0
+        sink_orchestrator.index.assert_awaited_once_with(ctx)
         doc_extraction.apply.assert_awaited_once_with(ctx)
-        sink_orchestrator.apply.assert_awaited_once_with(ctx)
+        sink_orchestrator.enrich.assert_awaited_once_with(ctx)
 
     @pytest.mark.asyncio
     async def test_block_containers_none_skips_validation(self, pipeline, doc_extraction, sink_orchestrator):
@@ -124,8 +131,9 @@ class TestApplyEmpty:
 
         await pipeline.apply(ctx)
 
+        sink_orchestrator.index.assert_awaited_once_with(ctx)
         doc_extraction.apply.assert_awaited_once_with(ctx)
-        sink_orchestrator.apply.assert_awaited_once_with(ctx)
+        sink_orchestrator.enrich.assert_awaited_once_with(ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -139,8 +147,9 @@ class TestApplyNonEmpty:
 
         await pipeline.apply(ctx)
 
+        sink_orchestrator.index.assert_awaited_once_with(ctx)
         doc_extraction.apply.assert_awaited_once_with(ctx)
-        sink_orchestrator.apply.assert_awaited_once_with(ctx)
+        sink_orchestrator.enrich.assert_awaited_once_with(ctx)
 
     @pytest.mark.asyncio
     async def test_non_empty_block_groups_calls_extraction_then_sink(self, pipeline, doc_extraction, sink_orchestrator):
@@ -149,8 +158,9 @@ class TestApplyNonEmpty:
 
         await pipeline.apply(ctx)
 
+        sink_orchestrator.index.assert_awaited_once_with(ctx)
         doc_extraction.apply.assert_awaited_once_with(ctx)
-        sink_orchestrator.apply.assert_awaited_once_with(ctx)
+        sink_orchestrator.enrich.assert_awaited_once_with(ctx)
 
     @pytest.mark.asyncio
     async def test_both_blocks_and_groups_calls_extraction_then_sink(self, pipeline, doc_extraction, sink_orchestrator):
@@ -162,29 +172,34 @@ class TestApplyNonEmpty:
 
         await pipeline.apply(ctx)
 
+        sink_orchestrator.index.assert_awaited_once_with(ctx)
         doc_extraction.apply.assert_awaited_once_with(ctx)
-        sink_orchestrator.apply.assert_awaited_once_with(ctx)
+        sink_orchestrator.enrich.assert_awaited_once_with(ctx)
 
     @pytest.mark.asyncio
-    async def test_extraction_called_before_sink(self, pipeline, doc_extraction, sink_orchestrator):
-        """Verify ordering: document_extraction.apply is called before sink_orchestrator.apply."""
+    async def test_index_called_before_enrich(self, pipeline, doc_extraction, sink_orchestrator):
+        """Verify ordering: index runs before extraction and enrich."""
         call_order = []
+
+        async def track_index(ctx):
+            call_order.append("index")
 
         async def track_extraction(ctx):
             call_order.append("extraction")
 
-        async def track_sink(ctx):
-            call_order.append("sink")
+        async def track_enrich(ctx):
+            call_order.append("enrich")
 
+        sink_orchestrator.index = track_index
         doc_extraction.apply = track_extraction
-        sink_orchestrator.apply = track_sink
+        sink_orchestrator.enrich = track_enrich
 
         record = _make_record(blocks=[_valid_text_block()], block_groups=[])
         ctx = _make_ctx(record)
 
         await pipeline.apply(ctx)
 
-        assert call_order == ["extraction", "sink"]
+        assert call_order == ["index", "extraction", "enrich"]
 
     @pytest.mark.asyncio
     async def test_exception_in_extraction_propagates(self, pipeline, doc_extraction, sink_orchestrator):
@@ -195,13 +210,14 @@ class TestApplyNonEmpty:
         with pytest.raises(RuntimeError, match="extraction boom"):
             await pipeline.apply(ctx)
 
-        sink_orchestrator.apply.assert_not_awaited()
+        sink_orchestrator.index.assert_awaited_once_with(ctx)
+        sink_orchestrator.enrich.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_exception_in_sink_propagates(self, pipeline, doc_extraction, sink_orchestrator):
-        sink_orchestrator.apply = AsyncMock(side_effect=RuntimeError("sink boom"))
+    async def test_exception_in_enrich_propagates(self, pipeline, doc_extraction, sink_orchestrator):
+        sink_orchestrator.enrich = AsyncMock(side_effect=RuntimeError("enrich boom"))
         record = _make_record(blocks=[_valid_text_block()], block_groups=[])
         ctx = _make_ctx(record)
 
-        with pytest.raises(RuntimeError, match="sink boom"):
+        with pytest.raises(RuntimeError, match="enrich boom"):
             await pipeline.apply(ctx)

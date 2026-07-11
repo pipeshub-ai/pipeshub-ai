@@ -343,7 +343,6 @@ class TestJiraConnectorInit:
         assert connector.connector_id == "conn-jira-1"
         assert connector.external_client is None
         assert connector.data_source is None
-        assert connector.cloud_id is None
         assert connector.site_url is None
 
     def test_sync_points_initialized(self):
@@ -363,15 +362,13 @@ class TestJiraConnectorInit:
 class TestJiraConnectorInitMethod:
 
     @pytest.mark.asyncio
-    async def test_init_with_api_token(self):
+    async def test_init_reads_site_url_from_client(self):
         connector = _make_connector()
-        connector.config_service.get_config = AsyncMock(return_value={
-            "auth": {"authType": "API_TOKEN", "baseUrl": "https://company.atlassian.net"},
-            "credentials": {"access_token": "token-123"},
-        })
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as mock_jira_client:
-            mock_jira_client.build_from_services = AsyncMock(return_value=MagicMock())
+            mock_client = MagicMock()
+            mock_client.get_site_url.return_value = "https://company.atlassian.net"
+            mock_jira_client.build_from_services = AsyncMock(return_value=mock_client)
             result = await connector.init()
 
         assert result is True

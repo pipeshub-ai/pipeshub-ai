@@ -68,7 +68,6 @@ SUPPORTED_CODE_FILE_EXTENSIONS = {
     "md"
 }
 
-
 class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
                 config_service: ConfigurationService,
@@ -79,6 +78,47 @@ class RecordEventHandler(BaseEventService):
         self.config_service = config_service
 
         self.event_processor : EventProcessor = event_processor
+
+    async def _propagate_primary_failure_to_queued_duplicates(
+        self,
+        record_id: str,
+        virtual_record_id: str | None,
+        reason: str | None,
+    ) -> None:
+        """Mark same-MD5 QUEUED copies failed when the primary copy fails.
+
+        Does not re-run indexing for queued copies. Re-OCR on identical content
+        would usually repeat the same failure (e.g. rate limits) and waste resources.
+        """
+        try:
+            propagated_reason = (
+                f"Primary duplicate indexing failed: {reason}"
+                if reason
+                else "Primary duplicate indexing failed"
+            )
+            updated = await self.event_processor.graph_provider.update_queued_duplicates_status(
+                record_id,
+                ProgressStatus.FAILED.value,
+                virtual_record_id,
+                reason=propagated_reason,
+            )
+            if updated > 0:
+                self.logger.info(
+                    "Propagated primary failure to %d queued duplicate(s) for record %s",
+                    updated,
+                    record_id,
+                )
+            else:
+                self.logger.info(
+                    "No queued duplicates to update after primary failure for record %s",
+                    record_id,
+                )
+        except Exception as e:
+            self.logger.warning(
+                "Failed to propagate primary failure to queued duplicates for %s: %s",
+                record_id,
+                e,
+            )
 
     async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id) -> None:
         try:
@@ -587,8 +627,12 @@ class RecordEventHandler(BaseEventService):
                 if record is None:
                     return
                 virtual_record_id = record.get("virtualRecordId")
-                self.logger.info(f"🔄 Current record {record_id} has failed, triggering next queued duplicate")
-                await self._trigger_next_queued_duplicate(record_id,virtual_record_id)
+                self.logger.info(
+                    f"🔄 Current record {record_id} has failed, propagating failure to queued duplicates"
+                )
+                await self._propagate_primary_failure_to_queued_duplicates(
+                    record_id, virtual_record_id, error_msg
+                )
             elif record is not None and event_type != EventTypes.DELETE_RECORD.value:
                 # Update queued duplicates for ALL record types (not just FILE)
                 record = await self.event_processor.graph_provider.get_document(

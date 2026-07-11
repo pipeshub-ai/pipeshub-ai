@@ -370,9 +370,7 @@ class DoclingDocToBlocksConverter():
             if not item or not isinstance(item, dict) or item_type not in [DOCLING_TEXT_BLOCK_TYPE, DOCLING_GROUP_BLOCK_TYPE, DOCLING_IMAGE_BLOCK_TYPE, DOCLING_TABLE_BLOCK_TYPE]:
                 self.logger.error(f"Invalid item type: {item_type} {item}")
                 return None
-
-            self.logger.debug(f"Processing item: {item_type} {ref_path}")
-
+                
             # Create block
             result = None
             if item_type == DOCLING_TEXT_BLOCK_TYPE:

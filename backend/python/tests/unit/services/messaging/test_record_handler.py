@@ -937,7 +937,7 @@ class TestProcessEventErrors:
         }
         gp.get_document = AsyncMock(return_value=record)
         gp.batch_update_nodes = AsyncMock(return_value=True)
-        gp.find_next_queued_duplicate = AsyncMock(return_value=None)
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
 
         payload = {
             "recordId": "r1",
@@ -961,6 +961,7 @@ class TestProcessEventErrors:
         # which calls get_document and batch_update_nodes
         assert gp.get_document.await_count >= 2
         assert gp.batch_update_nodes.awaited
+        gp.update_queued_duplicates_status.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_finally_block_completed_status_updates_queued_duplicates(self):
@@ -1140,6 +1141,95 @@ class TestProcessEventErrors:
 
         assert len(events) == 2
         gp.update_queued_duplicates_status.assert_not_awaited()
+
+
+# ===================================================================
+# _propagate_primary_failure_to_queued_duplicates
+# ===================================================================
+
+class TestPropagatePrimaryFailureToQueuedDuplicates:
+    """Tests for _propagate_primary_failure_to_queued_duplicates."""
+
+    @pytest.mark.asyncio
+    async def test_propagates_failure_with_reason(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.update_queued_duplicates_status = AsyncMock(return_value=2)
+
+        await handler._propagate_primary_failure_to_queued_duplicates(
+            "r1", "vr1", "Rate limit exceeded"
+        )
+
+        gp.update_queued_duplicates_status.assert_awaited_once_with(
+            "r1",
+            ProgressStatus.FAILED.value,
+            "vr1",
+            reason="Primary duplicate indexing failed: Rate limit exceeded",
+        )
+
+    @pytest.mark.asyncio
+    async def test_propagates_failure_without_reason(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.update_queued_duplicates_status = AsyncMock(return_value=1)
+
+        await handler._propagate_primary_failure_to_queued_duplicates("r1", "vr1", None)
+
+        gp.update_queued_duplicates_status.assert_awaited_once_with(
+            "r1",
+            ProgressStatus.FAILED.value,
+            "vr1",
+            reason="Primary duplicate indexing failed",
+        )
+
+    @pytest.mark.asyncio
+    async def test_propagation_error_is_swallowed(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.update_queued_duplicates_status = AsyncMock(side_effect=Exception("DB error"))
+
+        await handler._propagate_primary_failure_to_queued_duplicates("r1", "vr1", "oops")
+
+        handler.logger.warning.assert_called()
+
+
+    @pytest.mark.asyncio
+    async def test_process_event_failure_calls_propagate_not_trigger(self):
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "application/pdf",
+        }
+        gp.get_document = AsyncMock(return_value=record)
+        gp.batch_update_nodes = AsyncMock(return_value=True)
+        handler._propagate_primary_failure_to_queued_duplicates = AsyncMock()
+        handler._trigger_next_queued_duplicate = AsyncMock()
+
+        payload = {
+            "recordId": "r1",
+            "virtualRecordId": "vr1",
+            "orgId": "org-1",
+            "mimeType": "application/pdf",
+            "extension": "pdf",
+        }
+
+        with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt:
+            mock_jwt.return_value = "token"
+            with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as mock_api:
+                mock_api.side_effect = Exception("download failed")
+                handler.config_service.get_config = AsyncMock(
+                    return_value={"connectors": {"endpoint": "http://localhost:8088"}}
+                )
+                with pytest.raises(Exception, match="download failed"):
+                    await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        handler._propagate_primary_failure_to_queued_duplicates.assert_awaited_once_with(
+            "r1", "vr1", "download failed"
+        )
+        handler._trigger_next_queued_duplicate.assert_not_awaited()
 
 
 # ===================================================================

@@ -46,7 +46,7 @@ from app.config.constants.service import (
     OAuthScopes,
     config_node_constants,
 )
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthToken,
@@ -6129,7 +6129,19 @@ async def _ensure_connector_initialized(
 
         # Initialize connector
         logger.info(f"Calling init() for connector {connector_id}")
-        is_initialized = await connector.init()
+        try:
+            is_initialized = await connector.init()
+        except ConnectorInitError as init_error:
+            # Connector surfaced a specific, actionable reason (e.g. multi-site OAuth
+            # ambiguity). Show it to the user instead of the generic message.
+            error_msg = str(init_error)
+            logger.error(f"❌ {error_msg}")
+            with contextlib.suppress(Exception):
+                await connector.cleanup()
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=error_msg
+            ) from init_error
 
         if not is_initialized:
             error_msg = "Failed to initialize connector. Please check your credentials and configuration."

@@ -1960,7 +1960,6 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
         ref_mapper = CitationRefMapper()
 
     try:
-
         content = []
         context_metadata = record.get("context_metadata", "")
         content.append({

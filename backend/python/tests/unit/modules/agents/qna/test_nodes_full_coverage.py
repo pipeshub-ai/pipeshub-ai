@@ -1144,33 +1144,72 @@ class TestParsePlannerResponseFromLlm:
         result = _parse_planner_response_from_llm(resp, _log(), using_structured=True)
         assert len(result["tools"]) == 1
 
+    def test_aimessage_with_list_content_blocks(self):
+        """Gemini list content is coerced before JSON parse (no '.strip' crash)."""
+        from app.modules.agents.qna.nodes import _parse_planner_response_from_llm
+
+        resp = MagicMock()
+        resp.content = [
+            {"type": "text", "text": '{"intent": "search", "reasoning": "r", '},
+            {
+                "type": "text",
+                "text": '"can_answer_directly": false, "needs_clarification": false, '
+                '"tools": [{"name": "jira.search", "args": {"query": "bugs"}}]}',
+            },
+        ]
+        result = _parse_planner_response_from_llm(resp, _log(), using_structured=False)
+        assert result["intent"] == "search"
+        assert len(result["tools"]) == 1
+        assert result["tools"][0]["name"] == "jira.search"
+
 
 # ============================================================================
-# _normalize_llm_content — lines 5025-5034
+# reflect_node list-content coercion (via shared helper + _parse_reflection_response)
 # ============================================================================
 
 
-class TestNormalizeLlmContent:
+class TestReflectListContentCoercion:
+    def test_list_content_blocks_coerced_before_parse(self):
+        """Same pipeline as reflect_node: coerce list blocks, then parse JSON."""
+        import json
+
+        from app.modules.agents.qna.nodes import _parse_reflection_response
+        from app.utils.aimodels import coerce_message_content_to_text
+
+        raw = json.dumps({"decision": "respond_success", "reasoning": "All good"})
+        mid = len(raw) // 2
+        blocks = [
+            {"type": "text", "text": raw[:mid]},
+            {"type": "text", "text": raw[mid:]},
+        ]
+        result = _parse_reflection_response(coerce_message_content_to_text(blocks), _log())
+        assert result["decision"] == "respond_success"
+        assert result["reasoning"] == "All good"
+
+
+# ============================================================================
+# coerce_message_content_to_text — used by planner/reflection paths
+# ============================================================================
+
+
+class TestCoerceMessageContentForPlanner:
     def test_string_passthrough(self):
-        from app.modules.agents.qna.nodes import _normalize_llm_content
-        assert _normalize_llm_content("hello") == "hello"
+        from app.utils.aimodels import coerce_message_content_to_text
+        assert coerce_message_content_to_text("hello") == "hello"
 
     def test_list_of_blocks(self):
-        """Lines 5025-5033 — list content blocks."""
-        from app.modules.agents.qna.nodes import _normalize_llm_content
+        from app.utils.aimodels import coerce_message_content_to_text
         blocks = [
             {"type": "text", "text": "part1"},
             {"type": "image"},
             "raw_string",
         ]
-        result = _normalize_llm_content(blocks)
-        assert "part1" in result
-        assert "raw_string" in result
+        result = coerce_message_content_to_text(blocks)
+        assert result == "part1raw_string"
 
     def test_other_type(self):
-        """Line 5034 — fallback to str()."""
-        from app.modules.agents.qna.nodes import _normalize_llm_content
-        assert _normalize_llm_content(42) == "42"
+        from app.utils.aimodels import coerce_message_content_to_text
+        assert coerce_message_content_to_text(42) == "42"
 
 
 # ============================================================================

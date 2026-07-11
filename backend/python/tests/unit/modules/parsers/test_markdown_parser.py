@@ -6,7 +6,7 @@ Covers:
 - ``markdown_parser`` shim:  MarkdownParser defaults to MarkdownItParser
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -18,6 +18,7 @@ _DOCLING_MOCKS = {
 }
 
 with patch.dict("sys.modules", _DOCLING_MOCKS):
+    from app.models.blocks import BlocksContainer
     from app.modules.parsers.markdown.docling_markdown_parser import (
         DoclingMarkdownParser,
     )
@@ -303,7 +304,7 @@ class TestMarkdownItParserImageExtraction:
 
 class TestMarkdownParserShim:
     def test_markdown_parser_defaults_to_markdownit(self):
-        with patch.dict("os.environ", {"MARKDOWN_PARSER_BACKEND": "markdownit"}, clear=False):
+        with patch.dict("os.environ", {"PARSER_BACKEND": "markdownit"}, clear=False):
             import importlib
 
             import app.modules.parsers.markdown.markdown_parser as markdown_parser_module
@@ -317,7 +318,7 @@ class TestMarkdownParserShim:
         )
 
     def test_markdown_parser_can_select_docling_backend(self):
-        with patch.dict("os.environ", {"MARKDOWN_PARSER_BACKEND": "docling"}, clear=False):
+        with patch.dict("os.environ", {"PARSER_BACKEND": "docling"}, clear=False):
             with patch.dict("sys.modules", _DOCLING_MOCKS):
                 import importlib
 
@@ -332,12 +333,37 @@ class TestMarkdownParserShim:
         )
 
     @pytest.mark.asyncio
-    async def test_markdown_parser_has_parse(self):
+    async def test_markdown_parser_has_parse_to_blocks(self):
         parser = MarkdownItParser()
+        expected = BlocksContainer(blocks=[], block_groups=[])
         with patch.object(
             parser,
             "parse_to_blocks",
-            return_value=MagicMock(),
+            new_callable=AsyncMock,
+            return_value=expected,
         ) as mock_parse:
-            await parser.parse("# Hello\n")
-            mock_parse.assert_called_once_with("# Hello\n", None, page_number=None)
+            result = await parser.parse_to_blocks("# Hello\n", name="test.md")
+
+        assert result is expected
+        mock_parse.assert_awaited_once_with("# Hello\n", name="test.md")
+
+    @pytest.mark.asyncio
+    async def test_iparser_parse_returns_parse_result(self):
+        parser = MarkdownItParser()
+        expected = BlocksContainer(blocks=[], block_groups=[])
+        with patch.object(parser, "extract_and_replace_images", return_value=("# Hi", [])), \
+             patch.object(
+                 parser,
+                 "parse_to_blocks",
+                 new_callable=AsyncMock,
+                 return_value=expected,
+             ) as mock_parse:
+            result = await parser.parse(b"# Hi", "notes.md")
+
+        assert result.block_container is expected
+        assert result.metadata == {"record_name": "notes.md"}
+        mock_parse.assert_awaited_once_with(
+            "# Hi",
+            caption_map=None,
+            name="notes.md",
+        )

@@ -296,6 +296,8 @@ build-backend = "setuptools.build_meta"
 
 [project.scripts]
 module = "app.indexing_main:run"
+parsing-service = "app.parsing_main:app"
+extraction-service = "app.extraction_main:app"
 
 [project.optional-dependencies]
 dev = ["ruff==0.11.9", "pyright", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio"]

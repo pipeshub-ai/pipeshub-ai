@@ -162,6 +162,7 @@ class TestOCRHandlerInit:
 
             handler = OCRHandler(logger, OCRProvider.VLM_OCR.value, config={"key": "val"})
 
+            assert handler.provider == OCRProvider.VLM_OCR.value
             assert handler.strategy is mock_strategy
             mock_cls.assert_called_once_with(logger=logger, config={"key": "val"})
 

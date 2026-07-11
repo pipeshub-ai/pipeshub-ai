@@ -32,7 +32,7 @@ class HTMLParserProtocol(Protocol):
         """Extract image URLs and replace alt-text with sequential ``Image_N`` labels."""
         ...
 
-    async def parse(
+    async def parse_to_blocks(
         self,
         html_content: str,
         caption_map: Dict[str, str] | None = None,
@@ -46,7 +46,7 @@ class HTMLParserProtocol(Protocol):
         ...
 
 
-_BACKEND = os.getenv("HTML_PARSER_BACKEND", "selectolax").lower()
+_BACKEND = os.getenv("PARSER_BACKEND", "selectolax").lower()
 
 if _BACKEND == "docling":
     from app.modules.parsers.html_parser.docling_html_parser import (

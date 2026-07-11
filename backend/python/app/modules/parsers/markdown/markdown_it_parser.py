@@ -10,13 +10,15 @@ parsing), use :class:`DoclingMarkdownParser` instead.
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from app.models.blocks import BlocksContainer
 from app.modules.parsers.markdown.docling_markdown_parser import (
     _extract_and_replace_images,
 )
 from app.modules.parsers.markdown.markdown_to_blocks import MarkdownToBlocksConverter
+from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.services.parsing.interface import ParseResult
 
 
 class MarkdownItParser:
@@ -24,7 +26,9 @@ class MarkdownItParser:
 
     Responsibilities
     ----------------
-    * ``parse_to_blocks`` – convert a Markdown string directly to a
+    * ``parse`` – :class:`IParser` entry point: decode bytes, extract images,
+      fetch base64 URIs, return :class:`ParseResult`.
+    * ``parse_to_blocks`` – convert a preprocessed Markdown string directly to a
       ``BlocksContainer`` without involving Docling.  Accepts an optional
       ``caption_map`` so that image alt-text keys can be resolved to
       pre-fetched base-64 data URIs.
@@ -40,10 +44,45 @@ class MarkdownItParser:
     # Public API
     # ------------------------------------------------------------------
 
-    def parse_to_blocks(
+    async def parse(
+        self,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None = None,
+    ) -> ParseResult:
+        """Parse file bytes into a :class:`ParseResult` (:class:`IParser` contract)."""
+        if isinstance(content, bytes):
+            md_content = content.decode("utf-8")
+        else:
+            md_content = content
+
+        markdown = md_content.strip()
+
+        modified_markdown, images = self.extract_and_replace_images(markdown)
+        caption_map: Dict[str, str] = {}
+
+        urls_to_convert = [image["url"] for image in images]
+        if urls_to_convert:
+            base64_urls = await ImageParser.urls_to_base64(urls_to_convert)
+            for i, image in enumerate(images):
+                if base64_urls[i]:
+                    caption_map[image["new_alt_text"]] = base64_urls[i]
+
+        block_container = await self.parse_to_blocks(
+            modified_markdown,
+            caption_map=caption_map or None,
+            name=record_name,
+        )
+        return ParseResult(
+            block_container=block_container,
+            metadata={"record_name": record_name},
+        )
+
+    async def parse_to_blocks(
         self,
         md_content: str,
         caption_map: Dict[str, str] | None = None,
+        name: str | None = None,
         page_number: int | None = None,
     ) -> BlocksContainer:
         """Convert Markdown directly to a ``BlocksContainer``.
@@ -55,31 +94,20 @@ class MarkdownItParser:
 
                     modified_md, images = parser.extract_and_replace_images(md)
                     caption_map = {img["new_alt_text"]: base64_uri for img, base64_uri in ...}
-                    container = parser.parse_to_blocks(modified_md, caption_map)
+                    container = await parser.parse_to_blocks(modified_md, caption_map)
 
                 The ``extract_and_replace_images`` step normalises alt-text to
                 unique ``Image_N`` labels, ensuring no key collisions.
+            name: Unused; kept for signature compatibility with other Markdown backends.
+            page_number: Optional page number stamped on emitted blocks.
 
         Returns:
             Populated ``BlocksContainer``.
         """
+        del name  # structural parity with :class:`DoclingMarkdownParser`
         return self._converter.convert(
             md_content,
             caption_map=caption_map,
-            page_number=page_number,
-        )
-
-    async def parse(
-        self,
-        md_content: str,
-        caption_map: Dict[str, str] | None = None,
-        name: str | None = None,
-        page_number: int | None = None,
-    ) -> BlocksContainer:
-        """Async wrapper around ``parse_to_blocks`` for protocol conformance."""
-        return self.parse_to_blocks(
-            md_content,
-            caption_map,
             page_number=page_number,
         )
 

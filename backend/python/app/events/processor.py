@@ -167,7 +167,6 @@ class Processor:
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                     return
-
                 except DocumentProcessingError:
                     raise
                 except Exception as e:
@@ -206,7 +205,6 @@ class Processor:
         except Exception as e:
             self.logger.error(f"❌ Error processing image: {str(e)}")
             raise
-
 
 
     async def process_gmail_message(
@@ -367,17 +365,6 @@ class Processor:
                         self.logger,
                         OCRProvider.VLM_OCR.value,
                         config=self.config_service
-                    )
-                    break
-
-                elif provider == OCRProvider.AZURE_DI.value:
-                    self.logger.debug("☁️ Setting up Azure OCR handler")
-                    handler = OCRHandler(
-                        self.logger,
-                        OCRProvider.AZURE_DI.value,
-                        endpoint=config["configuration"]["endpoint"],
-                        key=config["configuration"]["apiKey"],
-                        model_id=AzureDocIntelligenceModel.PREBUILT_DOCUMENT.value,
                     )
                     break
 
@@ -997,7 +984,7 @@ class Processor:
         self.logger.debug(
             f"📄 Processing BlockGroup {block_group.index} ({block_group.name})"
         )
-        processed_blocks_container = await md_parser.parse(
+        processed_blocks_container = await md_parser.parse_to_blocks(
             modified_markdown,
             caption_map=caption_map or None,
             name=block_group.name or record_name,
@@ -1051,7 +1038,7 @@ class Processor:
                     f"converted {len([u for u in base64_urls if u])} to base64"
                 )
 
-        processed_blocks_container = await html_parser.parse(
+        processed_blocks_container = await html_parser.parse_to_blocks(
             modified_html,
             caption_map=caption_map or None,
             name=block_group.name or record_name,
@@ -1665,7 +1652,7 @@ class Processor:
                     f"converted {len([u for u in base64_urls if u])} to base64"
                 )
 
-            block_containers = await html_parser.parse(
+            block_containers = await html_parser.parse_to_blocks(
                 modified_html,
                 caption_map=caption_map if caption_map else None,
                 name=recordName,
@@ -1700,7 +1687,7 @@ class Processor:
             raise
 
     async def process_mdx_document(
-        self, recordName: str, recordId: str, version: str, source: str, orgId: str, mdx_content: str, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
+        self, recordName: str, recordId: str, version: str, source: str, orgId: str, mdx_content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process MDX document, yielding phase completion events.
 
@@ -1779,7 +1766,7 @@ class Processor:
                     if base64_urls[i]:
                         caption_map[image["new_alt_text"]] = base64_urls[i]
 
-            block_containers = await parser.parse(
+            block_containers = await parser.parse_to_blocks(
                 modified_markdown,
                 caption_map=caption_map or None,
                 name=recordName,
@@ -1961,9 +1948,6 @@ class Processor:
         self.logger.info(f"🚀 Starting {record_type} processing for record: {recordName}")
         
         try:
-            
-            
-            
             # Get the appropriate parser based on record type
             if record_type == "SQL_TABLE":
                 parser = self.parsers.get(ExtensionTypes.SQL_TABLE.value)

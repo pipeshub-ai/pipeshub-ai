@@ -2278,6 +2278,7 @@ class IGraphDBProvider(ABC):
         new_indexing_status: str,
         virtual_record_id: str | None = None,
         transaction: str | None = None,
+        reason: str | None = None,
     ) -> int:
         """
         Find all QUEUED duplicate records with the same md5 hash and update their status.
@@ -2287,6 +2288,7 @@ class IGraphDBProvider(ABC):
             new_indexing_status (str): The new indexing status to set
             virtual_record_id (Optional[str]): Optional virtual record ID to set
             transaction (Optional[str]): Optional transaction ID
+            reason (Optional[str]): Optional failure/status reason to set on duplicates
 
         Returns:
             int: Number of records updated

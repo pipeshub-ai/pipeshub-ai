@@ -829,7 +829,7 @@ def _load_is_internal_tool():
         / "qna"
         / "tool_system.py"
     )
-    tree = ast.parse(src_path.read_text())
+    tree = ast.parse(src_path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "_is_internal_tool":
             # Strip the string type annotation (``'Tool'``) so we can exec
