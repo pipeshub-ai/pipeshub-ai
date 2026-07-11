@@ -167,12 +167,12 @@ class PlanExecuteLoop(LoopStrategy):
 
     async def run(self, agent: "Agent", goal: Goal) -> AgentResult:
         plan = await self._planner.plan(goal)
-        if plan.phases:
-            phase_lines = "\n".join(
-                f"{i + 1}. **{p.name}**: {p.description}" for i, p in enumerate(plan.phases)
-            )
+        # Every `Planner` in `modules/pipeline/planner/` now returns the
+        # model's raw text, unparsed — inject it verbatim so nothing (its
+        # own formatting, caveats between steps, ...) is lossily re-joined.
+        if plan.text:
             await agent.inject_user_message(
-                f"## Execution Plan\n\n{phase_lines}\n\nExecute this plan step by step."
+                f"## Execution Plan\n\n{plan.text}\n\nExecute this plan step by step."
             )
         return await ReActLoop().run(agent, goal)
 
@@ -195,8 +195,8 @@ class PlanCritiqueExecuteLoop(LoopStrategy):
 
     async def run(self, agent: "Agent", goal: Goal) -> AgentResult:
         await agent.inject_user_message(
-            "Phase 1 — PLAN: call create_plan, then call critique_plan with those exact "
-            "phases. If critique_plan returns passed=false, revise the phases and call "
+            "Phase 1 — PLAN: call create_plan, then call critique_plan with your plan. "
+            "If critique_plan returns passed=false, revise the plan and call "
             "critique_plan again. Do not start executing until critique_plan passes."
         )
         turn_index = agent.start_turn_index

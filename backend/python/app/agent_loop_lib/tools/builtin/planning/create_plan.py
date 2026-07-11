@@ -37,10 +37,10 @@ class CreatePlanTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Decompose the current goal into ordered execution phases (with a "
-            "confidence rating) using an LLM-driven planner. Call this when the "
-            "goal is complex enough to benefit from an explicit plan before you "
-            "start executing — follow up with write_todos to track the phases."
+            "Decompose the current goal into an ordered execution plan using an "
+            "LLM-driven planner. Call this when the goal is complex enough to "
+            "benefit from an explicit plan before you start executing — follow "
+            "up with write_todos to track the plan's steps."
         )
 
     @property
@@ -68,10 +68,7 @@ class CreatePlanTool(Tool):
 
         try:
             plan = await DefaultPlanner(model).plan(ctx.goal)
-            content: object = {
-                "phases": [p.model_dump() for p in plan.phases],
-                "confidence": plan.confidence.value,
-            }
+            content: object = plan.text
             is_error = False
         except Exception as e:
             content = str(e)
@@ -80,4 +77,4 @@ class CreatePlanTool(Tool):
         return CoreToolResult(tool_call_id=call.id, name=call.name, content=content, is_error=is_error)
 
     async def execute(self, **kwargs: Any) -> ToolOutput:
-        return ToolOutput(success=True, data={"phases": [], "confidence": "low"})
+        return ToolOutput(success=True, data={"plan": ""})

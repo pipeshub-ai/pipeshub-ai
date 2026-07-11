@@ -2,18 +2,23 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.agent_loop_lib.core.exceptions import PlanningError
 from app.agent_loop_lib.core.types import Goal, UserMessage
-from app.agent_loop_lib.modules.pipeline.planner.base import Phase, Plan, Planner, parse_confidence
+from app.agent_loop_lib.modules.pipeline.planner.base import Plan, Planner
 
 if TYPE_CHECKING:
-    from app.agent_loop_lib.models.base import SupportsStructuredComplete
+    from app.agent_loop_lib.models.base import SupportsComplete
+
+_SYSTEM_PROMPT = (
+    "You are a planning agent. Decompose goals into clear, ordered execution phases, as a "
+    "numbered list, one phase per line: `1. Phase Name: description`. Mention the tools a phase "
+    "needs, if any specific one applies, in that phase's own description."
+)
 
 
 class DefaultPlanner(Planner):
-    """LLM-driven planner that decomposes goals into ordered phases."""
+    """LLM-driven planner that decomposes goals into an ordered plan."""
 
-    def __init__(self, model: "SupportsStructuredComplete") -> None:
+    def __init__(self, model: "SupportsComplete") -> None:
         self._model = model
 
     async def plan(self, goal: Goal) -> Plan:
@@ -24,47 +29,5 @@ class DefaultPlanner(Planner):
             f"Success criteria:\n{chr(10).join(f'- {s}' for s in goal.success_criteria)}"
         )
         user_msg = UserMessage(content=user_text)
-        system_prompt = (
-            "You are a planning agent. Decompose goals into clear, ordered execution phases. "
-            "Each phase has a name, description, and the tools needed."
-        )
-        schema = {
-            "type": "object",
-            "properties": {
-                "phases": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "description": {"type": "string"},
-                            "tools": {"type": "array", "items": {"type": "string"}},
-                        },
-                        "required": ["name", "description"],
-                    },
-                },
-                "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
-            },
-            "required": ["phases", "confidence"],
-        }
-
-        try:
-            response = await self._model.complete_structured(
-                messages=[user_msg],
-                output_schema=schema,
-                system=system_prompt,
-            )
-            result = response.data
-            phases = [
-                Phase(
-                    name=p["name"],
-                    description=p["description"],
-                    tools=p.get("tools") or [],
-                )
-                for p in result["phases"]
-            ]
-            confidence = parse_confidence(result.get("confidence", "medium"))
-        except (PlanningError, KeyError, ValueError) as e:
-            raise PlanningError(f"Failed to parse plan: {e}") from e
-
-        return Plan(goal=goal, phases=phases, confidence=confidence)
+        response = await self._model.complete(messages=[user_msg], system=_SYSTEM_PROMPT)
+        return Plan(goal=goal, text=response.message.text)

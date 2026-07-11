@@ -21,7 +21,9 @@ __all__ = [
     "StructuredSingleShotError",
     "build_task_complete_runtime",
     "parse_json_task_output",
+    "parse_text_task_output",
     "run_structured_single_shot",
+    "run_text_single_shot",
     "run_single_shot",
 ]
 
@@ -29,6 +31,12 @@ _TASK_COMPLETE_SUFFIX = (
     "\n\nWhen finished, call task_complete exactly once with `output` set to a "
     "JSON string containing your structured result. Do not wrap the JSON in "
     "markdown code fences."
+)
+
+_TASK_COMPLETE_TEXT_SUFFIX = (
+    "\n\nWhen finished, call task_complete exactly once with `output` set to "
+    "your result as plain markdown text — NOT a JSON string, no code fences "
+    "around the whole thing."
 )
 
 
@@ -102,6 +110,21 @@ def parse_json_task_output(result: Any) -> dict[str, Any]:
     return parsed
 
 
+def parse_text_task_output(result: Any) -> str:
+    """Extract raw text from a successful single-shot `AgentResult` — the
+    unstructured counterpart of `parse_json_task_output`: no `json.loads`,
+    no fence stripping, no schema. Only a failed run or genuinely empty
+    output raise; anything else the model wrote is returned as-is, since
+    callers using this path parse leniently (or not at all) downstream."""
+    if not getattr(result, "success", False):
+        raise StructuredSingleShotError(getattr(result, "error", None) or "agent run failed")
+
+    output = getattr(result, "output", None)
+    if not isinstance(output, str) or not output.strip():
+        raise StructuredSingleShotError("single-shot agent returned empty output")
+    return output.strip()
+
+
 async def run_structured_single_shot(
     *,
     name: str,
@@ -132,3 +155,43 @@ async def run_structured_single_shot(
         session_id=session_id,
     )
     return parse_json_task_output(result)
+
+
+async def run_text_single_shot(
+    *,
+    name: str,
+    system_prompt: str,
+    goal: Goal,
+    runtime: AgentRuntime,
+    model_spec: ModelSpec,
+    output_format_hint: str = "",
+    seed_messages: Sequence["Message"] | None = None,
+    session_id: str | None = None,
+) -> str:
+    """Run a one-turn agent via `SingleShotLoop` + `task_complete`, returning
+    the raw markdown/text from `task_complete`'s `output` argument verbatim.
+
+    The unstructured counterpart of `run_structured_single_shot`: the
+    prompt specifies a FORMAT (via `output_format_hint`, e.g. markdown
+    headings or a numbered list) but nothing here asserts or parses that
+    format — callers extract whatever fields they need leniently (regex/
+    heading scan), so a model that drifts slightly from the suggested
+    layout degrades gracefully instead of raising.
+    """
+    spec = AgentSpec(
+        name=name,
+        system_prompt=system_prompt + output_format_hint + _TASK_COMPLETE_TEXT_SUFFIX,
+        tool_names=["task_complete"],
+        model=model_spec,
+        loop=SingleShotLoop(),
+        max_turns=1,
+    )
+    result = await run_single_shot(
+        spec,
+        runtime,
+        goal,
+        seed_messages=seed_messages,
+        skip_start=seed_messages is not None,
+        session_id=session_id,
+    )
+    return parse_text_task_output(result)

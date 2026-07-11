@@ -11,8 +11,9 @@ from app.agent_loop_lib.tools.special_route import RouteContext
 
 class WriteTodosTool(Tool):
     """Structured, in-loop task list — the agent-driven replacement for the
-    Planner's pre-loop-only `Plan`/`Phase` (see modules/pipeline/planner/base.py), updatable
-    mid-run as priorities shift or steps complete.
+    Planner's pre-loop-only, free-form `Plan.text` (see
+    modules/pipeline/planner/base.py), updatable mid-run as priorities
+    shift or steps complete.
 
     This tool itself is stateless: the actual list lives on the calling
     `Agent` instance (`agent.todos`, part of the `AgentHandle` surface),

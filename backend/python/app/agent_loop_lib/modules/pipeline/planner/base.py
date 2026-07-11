@@ -3,28 +3,23 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from app.agent_loop_lib.core.types import Confidence, Goal
 
 logger = logging.getLogger(__name__)
 
 
-class Phase(BaseModel):
-    name: str
-    description: str
-    tools: list[str] = []
-
-    @field_validator("tools", mode="before")
-    @classmethod
-    def _coerce_none(cls, v: object) -> object:
-        return v if v is not None else []
-
-
 class Plan(BaseModel):
+    """A planner's output: the goal it was produced for, and the model's
+    raw text response — never parsed into structured fields. Consumers
+    that need the plan (`PlanExecuteLoop`, `create_plan`/`replan`/
+    `critique_plan` tools) inject/forward `text` verbatim; the model's own
+    downstream `write_todos` tool call is the structured channel for
+    anything that needs to become actual todo items."""
+
     goal: Goal
-    phases: list[Phase]
-    confidence: Confidence
+    text: str
 
 
 def parse_confidence(raw: object) -> Confidence:
@@ -34,6 +29,10 @@ def parse_confidence(raw: object) -> Confidence:
     numeric score (``"0.90"``, ``0.85``) or a capitalised variant
     (``"High"``) instead of the required ``"high"``/``"medium"``/``"low"``.
     Crashing on those is worse than degrading gracefully.
+
+    Still used by `PlanCritic`/`ResultCritic` (and the `require_critique`
+    hook), whose OUTPUTS remain deliberately structured — `passed` drives
+    verify-retry control flow, unlike a `Plan`'s free-form `text`.
     """
     if isinstance(raw, Confidence):
         return raw

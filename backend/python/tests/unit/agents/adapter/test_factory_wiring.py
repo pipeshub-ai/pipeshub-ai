@@ -213,15 +213,78 @@ class TestCreate:
 
         assert runtime.spec_factory is None
 
-    async def test_react_mode_keeps_full_tool_registry_names(self) -> None:
-        """Non-deep modes must NOT be narrowed to the coordination tools —
-        only `OrchestratorLoop` gets the restricted grant."""
+    async def test_react_mode_keeps_full_tool_registry_names_when_composition_off(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With the domain-agent kill-switch off, non-deep modes must NOT be
+        narrowed at all — the flat, every-registered-tool grant is the
+        rollback behavior."""
+        monkeypatch.setenv("PIPESHUB_USE_COMPOSED_AGENTS", "false")
         context = make_context(llm=FakeChatModel())
         factory = PipesHubAgentFactory()
 
         agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "react", query="hello")
 
         assert agent.spec.tool_names == runtime.tool_registry.names()
+
+    async def test_react_mode_composes_domain_agents_by_default(self) -> None:
+        """React runs get the composed top level: sandbox tools are claimed
+        by `coding_agent` (registered as an `AgentTool` on the shared
+        registry) and leave the top-level grant."""
+        context = make_context(llm=FakeChatModel())
+        factory = PipesHubAgentFactory()
+
+        agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "react", query="hello")
+
+        if "run_code" not in runtime.tool_registry.names():
+            pytest.skip("code execution disabled in this environment — no domain to compose")
+        assert "coding_agent" in agent.spec.tool_names
+        assert "run_code" not in agent.spec.tool_names
+        coding_spec = runtime.tool_registry.resolve_by_name("coding_agent")._spec
+        assert "run_code" in coding_spec.tool_names
+
+    async def test_quick_mode_composes_domain_agents_and_steers_planner_with_same_names(self) -> None:
+        """Regression test for the bug this fix addresses: quick mode
+        (`PlanExecuteLoop`) was previously exempt from composition, AND its
+        `PlanAheadPlanner` was seeded with the flat tool names even when
+        composition was applied elsewhere — the planner and the executing
+        agent must agree on the SAME composed top-level names."""
+        context = make_context(llm=FakeChatModel())
+        factory = PipesHubAgentFactory()
+
+        agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "quick", query="hello")
+
+        if "run_code" not in runtime.tool_registry.names():
+            pytest.skip("code execution disabled in this environment — no domain to compose")
+        assert "coding_agent" in agent.spec.tool_names
+        assert "run_code" not in agent.spec.tool_names
+
+        planner_tool_names = agent.spec.loop._planner._tool_names
+        assert "coding_agent" in planner_tool_names
+        assert "run_code" not in planner_tool_names
+
+    async def test_quick_mode_keeps_flat_tool_names_when_composition_off(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("PIPESHUB_USE_COMPOSED_AGENTS", "false")
+        context = make_context(llm=FakeChatModel())
+        factory = PipesHubAgentFactory()
+
+        agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "quick", query="hello")
+
+        assert agent.spec.tool_names == runtime.tool_registry.names()
+        assert agent.spec.loop._planner._tool_names == runtime.tool_registry.names()
+
+    async def test_deep_mode_is_never_composed(self) -> None:
+        """OrchestratorLoop keeps its own spawn_agent dispatch — the
+        composed AgentTool delegates must not be registered for it."""
+        context = make_context(llm=FakeChatModel())
+        factory = PipesHubAgentFactory()
+
+        agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "deep", query="hello")
+
+        assert "coding_agent" not in agent.spec.tool_names
+        assert not runtime.tool_registry.has("coding_agent")
 
     async def test_auto_mode_invokes_classifier(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from app.agents.agent_loop.intent import IntentRouteDecision

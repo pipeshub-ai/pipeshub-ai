@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.agent_loop_lib.core.types import UserMessage
-from app.agent_loop_lib.modules.pipeline.planner.base import parse_confidence
+from app.agent_loop_lib.core.types import Confidence, UserMessage
 from app.agent_loop_lib.modules.pipeline.critic.base import (
     Critic,
     CritiqueIssue,
     CritiqueResult,
 )
-from app.agent_loop_lib.modules.pipeline.planner.base import Plan
+from app.agent_loop_lib.modules.pipeline.planner.base import Plan, parse_confidence
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.models.base import SupportsStructuredComplete
@@ -46,21 +45,17 @@ class PlanCritic(Critic):
 
     async def critique(self, subject: Plan) -> CritiqueResult:
         if self._model is None:
-            passed = len(subject.phases) > 0
+            passed = bool(subject.text.strip())
             return CritiqueResult(
                 passed=passed,
                 confidence=Confidence.LOW,
                 issues=[],
-                summary="Plan has phases" if passed else "Plan has no phases — nothing to execute",
+                summary="Plan has content" if passed else "Plan is empty — nothing to execute",
             )
 
-        phase_lines = "\n".join(
-            f"  {i+1}. {p.name}: {p.description}"
-            for i, p in enumerate(subject.phases)
-        )
         prompt = (
             f"Evaluate the following execution plan for the goal: {subject.goal.description!r}\n\n"
-            f"Phases:\n{phase_lines or '  (none)'}\n\n"
+            f"Plan:\n{subject.text or '  (none)'}\n\n"
             "Assess feasibility, completeness, and correctness. "
             "Return 'passed: true' if the plan is sound enough to execute."
         )

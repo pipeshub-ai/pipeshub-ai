@@ -1,8 +1,8 @@
 """Tests for app.agent_loop_lib.modules.pipeline.planner.plan_ahead.PlanAheadPlanner.
 
-Covers the base plan/phase/confidence parsing behavior plus the
-`tool_names` steering added so the upfront plan can reference real tools
-(e.g. `run_code`) instead of producing tool-agnostic phases.
+Covers the planner's plain-text passthrough (`complete()`, zero parsing)
+plus the `tool_names` steering added so the upfront plan can reference
+real tools (e.g. `run_code`) instead of producing tool-agnostic phases.
 """
 
 from __future__ import annotations
@@ -11,22 +11,22 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.agent_loop_lib.core.responses import StructuredResponse
+from app.agent_loop_lib.core.messages import AssistantMessage
+from app.agent_loop_lib.core.responses import ModelResponse
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.modules.pipeline.planner.base import Plan
 from app.agent_loop_lib.modules.pipeline.planner.plan_ahead import PlanAheadPlanner
+
+_PLAN_TEXT = (
+    "1. **Research**: Gather data\n"
+    "2. **Implement**: Write code"
+)
 
 
 @pytest.fixture
 def mock_transport():
     t = AsyncMock()
-    t.complete_structured = AsyncMock(return_value=StructuredResponse(data={
-        "phases": [
-            {"name": "Research", "description": "Gather data", "tools": ["knowledge_query"]},
-            {"name": "Implement", "description": "Write code", "tools": []},
-        ],
-        "confidence": "high",
-    }))
+    t.complete = AsyncMock(return_value=ModelResponse(message=AssistantMessage(content=_PLAN_TEXT)))
     return t
 
 
@@ -40,30 +40,13 @@ async def test_plan_ahead_without_transport_returns_empty_plan() -> None:
     goal = Goal(description="complex task")
     plan = await p.plan(goal)
     assert isinstance(plan, Plan)
-    assert plan.phases == []
+    assert plan.text == ""
 
 
-async def test_plan_ahead_returns_plan_with_phases(mock_transport) -> None:
+async def test_plan_ahead_returns_raw_text_verbatim(mock_transport) -> None:
     p = PlanAheadPlanner(model=mock_transport)
-    goal = Goal(description="build a feature")
-    plan = await p.plan(goal)
-    assert len(plan.phases) == 2
-    assert plan.phases[0].name == "Research"
-    assert plan.phases[1].name == "Implement"
-
-
-async def test_plan_ahead_phase_tools_parsed(mock_transport) -> None:
-    p = PlanAheadPlanner(model=mock_transport)
-    goal = Goal(description="task")
-    plan = await p.plan(goal)
-    assert plan.phases[0].tools == ["knowledge_query"]
-
-
-async def test_plan_ahead_confidence_parsed(mock_transport) -> None:
-    p = PlanAheadPlanner(model=mock_transport)
-    goal = Goal(description="task")
-    plan = await p.plan(goal)
-    assert plan.confidence.value == "high"
+    plan = await p.plan(Goal(description="build a feature"))
+    assert plan.text == _PLAN_TEXT
 
 
 async def test_plan_ahead_goal_preserved(mock_transport) -> None:
@@ -73,19 +56,40 @@ async def test_plan_ahead_goal_preserved(mock_transport) -> None:
     assert plan.goal.description == "my special goal"
 
 
-async def test_plan_ahead_calls_complete_structured(mock_transport) -> None:
+async def test_plan_ahead_calls_complete(mock_transport) -> None:
     p = PlanAheadPlanner(model=mock_transport)
     await p.plan(Goal(description="task"))
-    mock_transport.complete_structured.assert_called_once()
+    mock_transport.complete.assert_called_once()
 
 
 async def test_plan_ahead_includes_requirements_in_prompt(mock_transport) -> None:
     p = PlanAheadPlanner(model=mock_transport)
     goal = Goal(description="task", requirements=["Must be fast"])
     await p.plan(goal)
-    call_kwargs = mock_transport.complete_structured.call_args.kwargs
+    call_kwargs = mock_transport.complete.call_args.kwargs
     prompt = call_kwargs["messages"][0].content
     assert "Must be fast" in prompt
+
+
+class TestOddFormatNeverRaises:
+    """Any `complete()` response is passed through verbatim — there is no
+    schema (or parsing) to fail against anymore."""
+
+    async def test_free_prose_response_passed_through(self, mock_transport) -> None:
+        mock_transport.complete = AsyncMock(
+            return_value=ModelResponse(message=AssistantMessage(content="Just do the thing carefully."))
+        )
+        p = PlanAheadPlanner(model=mock_transport)
+        plan = await p.plan(Goal(description="task"))
+        assert plan.text == "Just do the thing carefully."
+
+    async def test_empty_response_yields_empty_text(self, mock_transport) -> None:
+        mock_transport.complete = AsyncMock(
+            return_value=ModelResponse(message=AssistantMessage(content=""))
+        )
+        p = PlanAheadPlanner(model=mock_transport)
+        plan = await p.plan(Goal(description="task"))
+        assert plan.text == ""
 
 
 class TestToolNamesSteering:
@@ -95,13 +99,13 @@ class TestToolNamesSteering:
     async def test_no_tool_names_leaves_system_prompt_unchanged(self, mock_transport) -> None:
         p = PlanAheadPlanner(model=mock_transport)
         await p.plan(Goal(description="task"))
-        call_kwargs = mock_transport.complete_structured.call_args.kwargs
+        call_kwargs = mock_transport.complete.call_args.kwargs
         assert "Available tools for execution" not in call_kwargs["system"]
 
     async def test_tool_names_appended_to_system_prompt(self, mock_transport) -> None:
         p = PlanAheadPlanner(model=mock_transport, tool_names=["run_code", "web_search"])
         await p.plan(Goal(description="task"))
-        call_kwargs = mock_transport.complete_structured.call_args.kwargs
+        call_kwargs = mock_transport.complete.call_args.kwargs
         system = call_kwargs["system"]
         assert "run_code" in system
         assert "web_search" in system
@@ -109,13 +113,13 @@ class TestToolNamesSteering:
     async def test_empty_tool_names_list_leaves_system_prompt_unchanged(self, mock_transport) -> None:
         p = PlanAheadPlanner(model=mock_transport, tool_names=[])
         await p.plan(Goal(description="task"))
-        call_kwargs = mock_transport.complete_structured.call_args.kwargs
+        call_kwargs = mock_transport.complete.call_args.kwargs
         assert "Available tools for execution" not in call_kwargs["system"]
 
     async def test_run_code_mentioned_as_mandatory_for_file_generation(self, mock_transport) -> None:
         p = PlanAheadPlanner(model=mock_transport, tool_names=["run_code"])
         await p.plan(Goal(description="task"))
-        call_kwargs = mock_transport.complete_structured.call_args.kwargs
+        call_kwargs = mock_transport.complete.call_args.kwargs
         system = call_kwargs["system"]
         assert "MUST reference `run_code`" in system
 
@@ -127,7 +131,7 @@ class TestToolNamesSteering:
         can never actually complete."""
         p = PlanAheadPlanner(model=mock_transport, tool_names=["run_code", "web_search", "fetch_url"])
         await p.plan(Goal(description="task"))
-        call_kwargs = mock_transport.complete_structured.call_args.kwargs
+        call_kwargs = mock_transport.complete.call_args.kwargs
         system = call_kwargs["system"]
         assert "NO network access" in system
         assert "web_search" in system
@@ -143,7 +147,7 @@ class TestSandboxHasNetworkSteering:
     async def test_default_still_says_no_network_access(self, mock_transport) -> None:
         p = PlanAheadPlanner(model=mock_transport, tool_names=["run_code"])
         await p.plan(Goal(description="task"))
-        system = mock_transport.complete_structured.call_args.kwargs["system"]
+        system = mock_transport.complete.call_args.kwargs["system"]
         assert "run_code` has NO network access" in system
 
     async def test_sandbox_has_network_true_steers_toward_calling_apis_from_run_code(self, mock_transport) -> None:
@@ -151,12 +155,58 @@ class TestSandboxHasNetworkSteering:
             model=mock_transport, tool_names=["run_code", "web_search"], sandbox_has_network=True,
         )
         await p.plan(Goal(description="task"))
-        system = mock_transport.complete_structured.call_args.kwargs["system"]
+        system = mock_transport.complete.call_args.kwargs["system"]
         assert "run_code` CAN reach the network" in system
         assert "run_code` has NO network access" not in system
 
     async def test_sandbox_has_network_true_without_tool_names_leaves_prompt_unchanged(self, mock_transport) -> None:
         p = PlanAheadPlanner(model=mock_transport, sandbox_has_network=True)
         await p.plan(Goal(description="task"))
-        system = mock_transport.complete_structured.call_args.kwargs["system"]
+        system = mock_transport.complete.call_args.kwargs["system"]
         assert "Available tools for execution" not in system
+
+
+class TestComposedDelegateSteering:
+    """When the caller composed the top-level agent's tools (see
+    `app.agents.agent_loop.domain_agents`), `run_code`/`web_search`/
+    `fetch_url` are no longer directly callable — the planner must
+    reference the `coding_agent`/`web_agent` delegate instead, or the
+    executing ReAct loop has no tool matching the phase's own work."""
+
+    async def test_coding_agent_referenced_instead_of_run_code(self, mock_transport) -> None:
+        p = PlanAheadPlanner(model=mock_transport, tool_names=["coding_agent", "web_agent"])
+        await p.plan(Goal(description="task"))
+        system = mock_transport.complete.call_args.kwargs["system"]
+        assert "MUST reference `coding_agent`" in system
+        assert "run_code" not in system
+
+    async def test_web_agent_referenced_instead_of_web_search_fetch_url(self, mock_transport) -> None:
+        p = PlanAheadPlanner(model=mock_transport, tool_names=["coding_agent", "web_agent"])
+        await p.plan(Goal(description="task"))
+        system = mock_transport.complete.call_args.kwargs["system"]
+        assert "`web_agent`" in system
+        assert "web_search" not in system
+        assert "fetch_url" not in system
+
+    async def test_coding_agent_network_steering_still_applies(self, mock_transport) -> None:
+        p = PlanAheadPlanner(
+            model=mock_transport, tool_names=["coding_agent", "web_agent"], sandbox_has_network=True,
+        )
+        await p.plan(Goal(description="task"))
+        system = mock_transport.complete.call_args.kwargs["system"]
+        assert "coding_agent` CAN reach the network" in system
+
+    async def test_coding_agent_without_network_still_warns(self, mock_transport) -> None:
+        p = PlanAheadPlanner(model=mock_transport, tool_names=["coding_agent"])
+        await p.plan(Goal(description="task"))
+        system = mock_transport.complete.call_args.kwargs["system"]
+        assert "coding_agent` has NO network access" in system
+
+    async def test_flat_names_still_use_singular_run_code_and_plural_web_tools(self, mock_transport) -> None:
+        """Regression guard: when composition is off (flat names), the
+        original phrasing is unchanged, including "are" (plural) for the
+        two-tool `web_search`/`fetch_url` pair."""
+        p = PlanAheadPlanner(model=mock_transport, tool_names=["run_code", "web_search", "fetch_url"], sandbox_has_network=True)
+        await p.plan(Goal(description="task"))
+        system = mock_transport.complete.call_args.kwargs["system"]
+        assert "`web_search`/`fetch_url` (if in this list) are still" in system

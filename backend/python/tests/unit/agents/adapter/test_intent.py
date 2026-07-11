@@ -1,17 +1,18 @@
-"""`parse_intent_and_route` (`app/agents/agent_loop/intent.py`) — the merged
-intent-understanding + tier-routing agent run every chat mode goes through
-before the main `Agent.run()` (see `router.py::select_loop_and_goal`).
+"""`parse_intent_and_route` (`app/agents/agent_loop/intent.py`) — the intent-
+understanding + tier-routing agent run every chat mode goes through before
+the main `Agent.run()` (see `router.py::select_loop_and_goal`).
+
+The model's full output is used as `rewritten_query` without structured
+parsing. Only `route` is extracted (last word matching quick/react/deep).
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
 from app.agent_loop_lib.core.messages import ToolCall
 from app.agent_loop_lib.transport.registry import TransportRegistry
-from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
 from app.agents.agent_loop.intent import IntentRouteDecision, parse_intent_and_route
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
 
@@ -19,15 +20,12 @@ _LOGGER = logging.getLogger("test.agents.agent_loop.intent")
 
 
 class _FakeLangChainLLM:
-    """Placeholder `BaseChatModel` — the patched transport registry supplies
-    the actual `ScriptedTransport` responses."""
-
     pass
 
 
-def _script_task_complete(payload: dict[str, Any]) -> ScriptedTransport:
+def _script_task_complete(output: str) -> ScriptedTransport:
     return ScriptedTransport().add_tool_call(
-        ToolCall(id="tc1", name="task_complete", arguments={"output": json.dumps(payload)}),
+        ToolCall(id="tc1", name="task_complete", arguments={"output": output}),
     )
 
 
@@ -92,33 +90,33 @@ class TestParseIntentAndRoute:
 
         assert decision.route is None
 
-    async def test_happy_path_returns_rewritten_query_and_route(self) -> None:
-        transport = _script_task_complete({
-            "reasoning": "user wants X",
-            "rewritten_query": "Clear self-contained restatement of X",
-            "requirements": ["req1"],
-            "success_criteria": ["done when x happens"],
-            "route": "quick",
-        })
+    async def test_model_output_becomes_rewritten_query_verbatim(self) -> None:
+        output = "The user wants a summary of this week's bug bash from internal knowledge sources."
+        transport = _script_task_complete(output)
+
+        decision = await _run_with_transport(transport, query="do x", include_routing=False)
+
+        assert decision.rewritten_query == output
+
+    async def test_route_extracted_from_end_of_output(self) -> None:
+        output = "Summarize this week's bug bash.\n\nquick"
+        transport = _script_task_complete(output)
 
         decision = await _run_with_transport(transport, query="do x", include_routing=True)
 
-        assert decision.rewritten_query == "Clear self-contained restatement of X"
         assert decision.route == "quick"
-        assert decision.requirements == ["req1"]
-        assert decision.success_criteria == ["done when x happens"]
+        assert "bug bash" in decision.rewritten_query
 
-    async def test_include_routing_false_leaves_llm_returned_route_as_is(self) -> None:
-        transport = _script_task_complete({"reasoning": "r", "rewritten_query": "q", "route": "quick"})
+    async def test_include_routing_false_leaves_route_none_even_if_present(self) -> None:
+        output = "Something something\n\nreact"
+        transport = _script_task_complete(output)
 
         decision = await _run_with_transport(transport, include_routing=False)
 
         assert decision.route is None
-        system_prompt = transport.calls[0]["system"]
-        assert "Leave `route` null" in system_prompt
 
     async def test_include_routing_true_embeds_tier_rubric_in_system_prompt(self) -> None:
-        transport = _script_task_complete({"reasoning": "r", "rewritten_query": "q", "route": "react"})
+        transport = _script_task_complete("something\n\nreact")
 
         await _run_with_transport(transport, include_routing=True)
 
@@ -143,52 +141,62 @@ class TestParseIntentAndRoute:
         assert decision.rewritten_query == "raw text"
         assert decision.route is None
 
-    async def test_blank_rewritten_query_falls_back_to_raw_query(self) -> None:
-        transport = _script_task_complete({"reasoning": "r", "rewritten_query": "   ", "route": "react"})
+    async def test_blank_output_falls_back_to_raw_query(self) -> None:
+        transport = _script_task_complete("   ")
 
         decision = await _run_with_transport(transport, query="raw text", include_routing=True)
 
         assert decision.rewritten_query == "raw text"
 
-    async def test_gaps_and_clarifying_questions_default_empty(self) -> None:
-        transport = _script_task_complete({"reasoning": "r", "rewritten_query": "q", "route": "react"})
+    async def test_route_case_insensitive(self) -> None:
+        transport = _script_task_complete("summary of things\n\nDEEP")
 
-        decision = await _run_with_transport(transport, query="hello", include_routing=True)
+        decision = await _run_with_transport(transport, include_routing=True)
 
-        assert decision.gaps == []
+        assert decision.route == "deep"
+
+    async def test_no_route_word_in_output_yields_none(self) -> None:
+        transport = _script_task_complete("just a restatement with no tier word")
+
+        decision = await _run_with_transport(transport, include_routing=True)
+
+        assert decision.route is None
+
+    async def test_last_route_word_wins_over_earlier_occurrence(self) -> None:
+        """The prompt asks for the tier word at the END — if 'quick' appears
+        in the restatement body and 'react' at the end, 'react' wins."""
+        output = "The user wants a quick summary of their data.\n\nreact"
+        transport = _script_task_complete(output)
+
+        decision = await _run_with_transport(transport, include_routing=True)
+
+        assert decision.route == "react"
+
+    async def test_json_output_from_model_still_used_as_rewritten_query(self) -> None:
+        """If the model ignores the 'not JSON' instruction and produces
+        JSON anyway, the whole JSON string becomes rewritten_query — the
+        downstream Goal.description still carries the model's analysis,
+        just in JSON form instead of prose."""
+        json_output = '{"reasoning":"user wants X","rewritten_query":"do X","route":"react"}'
+        transport = _script_task_complete(json_output)
+
+        decision = await _run_with_transport(transport, include_routing=True)
+
+        assert decision.rewritten_query == json_output
+        assert decision.route == "react"
+
+    async def test_clarifying_questions_always_empty(self) -> None:
+        transport = _script_task_complete("something\n\nreact")
+
+        decision = await _run_with_transport(transport, include_routing=True)
+
         assert decision.clarifying_questions == []
 
-    async def test_clarifying_questions_threaded_through_on_ambiguous_request(self) -> None:
-        question = AskUserQuestionItemInput(
-            question="Which channel should I post in?",
-            options=[{"label": "general"}, {"label": "engineering"}, {"label": "random"}],
-            multiSelect=False,
-        )
-        transport = _script_task_complete({
-            "reasoning": "ambiguous — missing channel",
-            "rewritten_query": "Post the update in a channel",
-            "gaps": ["missing target channel"],
-            "clarifying_questions": [question.model_dump(mode="json")],
-            "route": "react",
-        })
+    async def test_requirements_and_gaps_always_empty(self) -> None:
+        transport = _script_task_complete("something\n\nreact")
 
-        decision = await _run_with_transport(transport, query="post the update", include_routing=True)
+        decision = await _run_with_transport(transport, include_routing=True)
 
-        assert decision.gaps == ["missing target channel"]
-        assert decision.clarifying_questions == [question]
-
-    async def test_empty_query_leaves_gaps_and_clarifying_questions_empty(self) -> None:
-        transport = ScriptedTransport().add_error(RuntimeError("must not be called"))
-
-        decision = await _run_with_transport(transport, query="", include_routing=True)
-
+        assert decision.requirements == []
+        assert decision.success_criteria == []
         assert decision.gaps == []
-        assert decision.clarifying_questions == []
-
-    async def test_llm_failure_leaves_gaps_and_clarifying_questions_empty(self) -> None:
-        transport = ScriptedTransport().add_error(RuntimeError("boom"))
-
-        decision = await _run_with_transport(transport, query="raw text", include_routing=True)
-
-        assert decision.gaps == []
-        assert decision.clarifying_questions == []

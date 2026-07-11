@@ -5,18 +5,32 @@ assembles today (Phase 4 of the agent-loop migration).
 Reuses every prompt fragment Phase 0 already extracted into standalone
 modules — `REACT_BASE_PROMPT`, `GUIDANCE_MAP`, `_build_knowledge_context`,
 `_format_user_context`, `_build_workflow_patterns`, `build_capability_summary`,
-`build_llm_time_context`, `_get_cached_tool_descriptions` — plus Phase 3's
-`ToolGuidanceProvider`, so none of that prompt text is duplicated here. The
-sections `nodes.py` has never extracted (tool-schema reference fallback,
-citation rules, web-search rules, hybrid-search-strategy guidance) are small,
-static, state-gated blocks kept local to this file since it is the only
-agent-loop-side consumer; `nodes.py` keeps its own copies on the legacy path.
+`build_llm_time_context` — plus Phase 3's `ToolGuidanceProvider`, so none of
+that prompt text is duplicated here. The sections `nodes.py` has never
+extracted (tool reference, citation rules, web-search rules,
+hybrid-search-strategy guidance) are small, static, state-gated blocks kept
+local to this file since it is the only agent-loop-side consumer; `nodes.py`
+keeps its own copies on the legacy path.
+
+The "Available Tools" section is rendered from `spec.tool_names` +
+`runtime.tool_registry` (what the agent was ACTUALLY granted this turn),
+never from the legacy flat ChatState tool list — when domain-agent
+composition (`domain_agents.py`) is active, `spec.tool_names` holds a
+handful of `AgentTool` delegates (`coding_agent`, `web_agent`, ...) plus
+residual tools, and describing the ~30 tools those delegates claimed would
+both blow up prompt size and describe tools the model can no longer call
+directly. The steering sections below (code execution, web search, tool
+selection, hybrid strategy) follow the same rule: reference whichever of
+`run_code`/`coding_agent`, `web_search`+`fetch_url`/`web_agent`,
+`retrieval.search_internal_knowledge`/`internal_search_agent` is actually
+in `spec.tool_names`.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.agent_loop_lib.tools.errors import ToolNotFoundError
 from app.agents.agent_loop.sandbox_bridge import sandbox_network_enabled
 from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.context.connector_detection import (
@@ -30,7 +44,6 @@ from app.modules.agents.context.connector_detection import (
     _has_teams_tools,
 )
 from app.modules.agents.context.knowledge_context import _build_knowledge_context
-from app.modules.agents.context.tool_descriptions import _get_cached_tool_descriptions
 from app.modules.agents.context.user_context import _format_user_context
 from app.modules.agents.context.workflow_patterns import _build_workflow_patterns
 from app.modules.agents.qna.chat_state import is_custom_agent_system_prompt
@@ -50,6 +63,35 @@ _TOOL_REFERENCE_HEADER = (
     "have concrete values from the user or context — not guesses, not placeholders.\n"
     "For READ tools, required params usually have reasonable defaults — proceed directly.\n\n"
 )
+
+
+def _composed_code_tool(tool_names: list[str]) -> str | None:
+    """`"coding_agent"` if the domain-agent catalog (`domain_agents.py`)
+    claimed `run_code` for this request, else `"run_code"` if it's granted
+    directly, else `None` if code execution isn't available this turn."""
+    if "coding_agent" in tool_names:
+        return "coding_agent"
+    if "run_code" in tool_names:
+        return "run_code"
+    return None
+
+
+def _web_reference(tool_names: list[str]) -> str:
+    """Markdown-formatted reference to whichever web-research surface is
+    actually granted: the composed `web_agent` delegate, or the flat
+    `web_search`/`fetch_url` pair otherwise — used as a fallback even when
+    neither is literally in `tool_names`, mirroring the legacy prompt's
+    assumption that the caller already gated on `has_web_search` before
+    rendering any text that mentions this reference."""
+    return "`web_agent`" if "web_agent" in tool_names else "`web_search`/`fetch_url`"
+
+
+def _internal_knowledge_reference(tool_names: list[str]) -> str:
+    """`"internal_search_agent"` when the domain-agent catalog claimed
+    retrieval, else the flat `retrieval.search_internal_knowledge` tool
+    name — mirrors `_web_reference`/`_composed_code_tool` above."""
+    return "internal_search_agent" if "internal_search_agent" in tool_names else "retrieval.search_internal_knowledge"
+
 
 _CITATION_RULES = """
 ## Citation Rules
@@ -75,23 +117,42 @@ _WEB_SEARCH_RULES = """
 - Cite web results as [source](URL/citation id). Use EXACTLY the URL/citation id shown.
 """
 
-_HYBRID_STRATEGY_HEADER = """
+_WEB_SEARCH_RULES_COMPOSED = """
+## Web Search Rules
+
+- Prefer delegating to `web_agent` over training data for anything that may have changed: news, prices, weather, sports, stocks, software versions, docs, regulations, current events.
+- Also delegate to `web_agent` when the user asks for "latest", "current", or "up-to-date" info.
+- Prefer delegating to `web_agent` for general/public knowledge queries: product recommendations, comparisons, reviews, health/medical info, consumer advice, market research, "best X" queries, travel, recipes, scientific research.
+- Use training data only for timeless knowledge (math, science, core concepts). When in doubt, delegate to `web_agent`.
+- When a query could have BOTH internal AND external relevance, delegate to your internal-knowledge tool AND `web_agent` in parallel.
+- **MANDATORY**: If the available context or retrieval results do NOT contain sufficient information to answer the user's question, you MUST delegate to `web_agent` to find relevant information BEFORE telling the user that you don't have enough information or context.
+- Cite web results as [source](URL/citation id). Use EXACTLY the URL/citation id shown.
+"""
+
+
+def _hybrid_strategy_header(internal_ref: str) -> str:
+    return f"""
 ## Hybrid Search Strategy (MANDATORY DEFAULT)
 
-You have BOTH a knowledge base (`retrieval.search_internal_knowledge`) AND live service API tools.
+You have BOTH a knowledge base (`{internal_ref}`) AND live service API tools.
 **Default behavior for ANY topic / information query: call BOTH in PARALLEL on your first turn.**
 This is not optional — indexed snapshots and live API data are complementary, and combining them
 gives users both historical context and current state in one answer. Treat single-source answers
 as a degraded fallback only used when one of the rules below explicitly applies.
 """
 
-_HYBRID_STRATEGY_RULES = """
+
+def _hybrid_strategy_rules(internal_ref: str) -> str:
+    composed = internal_ref == "internal_search_agent"
+    imperative = "Delegate to" if composed else "Call"
+    gerund = "delegating to" if composed else "calling"
+    return f"""
 ### When to use BOTH retrieval + service tools (DEFAULT for topic queries):
 - **Any topic about an indexed service** — e.g., "holiday policy", "Project X updates", "onboarding doc".
-  Call `retrieval.search_internal_knowledge` AND the matching service search tool (e.g.
+  {imperative} `{internal_ref}` AND the matching service search tool (e.g.
   `confluence.search_content`, `jira.search_issues`) IN PARALLEL.
 - **Query mentions a service AND a topic** — e.g., "holidays from Confluence", "Jira tickets about login".
-  Service mention narrows the API tool; it does NOT excuse you from also calling retrieval.
+  Service mention narrows the API tool; it does NOT excuse you from also {gerund} `{internal_ref}`.
 - **Benefit**: Indexed content covers historical and cross-service context; the live API has the most
   current data. The user gets the union.
 
@@ -108,8 +169,10 @@ _HYBRID_STRATEGY_RULES = """
 - Cross-service summaries where no single live API would have the full picture.
 """
 
-_HYBRID_WEB_SEARCH_NOTE = """
-### When to use `web_search`:
+
+def _hybrid_web_search_note(web_ref: str) -> str:
+    return f"""
+### When to use {web_ref}:
 - Current/changing public info (news, prices, weather, software versions, regulations) or "latest"/"current" requests.
 - When you suspect internal knowledge is incomplete on a public-knowledge question — combine with retrieval.
 """
@@ -141,6 +204,33 @@ When a task requires ANY of the following, you MUST use `run_code` — never ans
 Do NOT describe file contents in markdown as a substitute for producing the file. Write a complete program with `run_code`, have it write the output file(s) to the working directory (or `$OUTPUT_DIR`), and let the resulting `artifacts` be delivered automatically — do not print file paths in your answer.
 """
 
+_CODE_EXECUTION_STEERING_COMPOSED_NO_NETWORK = """
+## Code Execution (MANDATORY for file generation; NO network access)
+
+When a task requires ANY of the following, you MUST delegate to `coding_agent` — never answer in text alone, and never claim you cannot do it:
+- Generating a downloadable file (PDF, DOCX, XLSX, CSV, image, chart, presentation).
+- Data processing that produces structured output (tables, aggregations, transformations) beyond what a single tool call returns.
+- Any computation the user explicitly asks you to "run", "execute", or "code".
+
+`coding_agent`'s sandbox has NO network access, ever. For any task needing live/external data (a REST API, a webpage, search results, ...), delegate to {web_ref} FIRST to fetch that data, then include the already-fetched data directly in the goal you give `coding_agent` — it cannot make network calls itself.
+
+Do NOT describe file contents in markdown as a substitute for producing the file. Give `coding_agent` a goal stating exactly what to compute/produce and what the output file should contain — it writes and runs a complete program, and the resulting file is delivered automatically as an `artifact`; do not print file paths in your answer.
+"""
+
+_CODE_EXECUTION_STEERING_COMPOSED_NETWORK = """
+## Code Execution (MANDATORY for file generation; network access available)
+
+When a task requires ANY of the following, you MUST delegate to `coding_agent` — never answer in text alone, and never claim you cannot do it:
+- Generating a downloadable file (PDF, DOCX, XLSX, CSV, image, chart, presentation).
+- Data processing that produces structured output (tables, aggregations, transformations) beyond what a single tool call returns.
+- Any computation the user explicitly asks you to "run", "execute", or "code".
+- Getting live, structured data from a well-known public REST API and analyzing/filtering/aggregating it — give `coding_agent` a goal to call the API directly (e.g. with `requests`/`httpx`/`fetch`) and process the response, rather than eyeballing raw API output yourself.
+
+`coding_agent`'s sandbox CAN reach the network — prefer delegating to it over {web_ref} whenever a public, unauthenticated API serves the exact data the query needs: an API call returns the current answer, while {web_ref} only surfaces articles describing the topic (a stale snapshot). Still delegate to {web_ref} for discovery, research, or reading a specific known page — see "Tool Selection Strategy" below.
+
+Do NOT describe file contents in markdown as a substitute for producing the file. Give `coding_agent` a goal stating exactly what to compute/produce and what the output file should contain — it writes and runs a complete program, and the resulting file is delivered automatically as an `artifact`; do not print file paths in your answer.
+"""
+
 _TOOL_SELECTION_STRATEGY_HEADER = "\n## Tool Selection Strategy\n\n"
 
 _TOOL_SELECTION_MATCH_SOURCE_LIVE_API = (
@@ -159,6 +249,34 @@ _TOOL_SELECTION_MATCH_SOURCE_NO_API = (
     "`web_search` for discovery, opinions, and current public information; "
     "`fetch_url` for reading one specific already-known page.\n"
 )
+
+
+def _tool_selection_match_source_live_api_composed(code_tool: str, web_ref: str) -> str:
+    call_action = (
+        f"delegating to `{code_tool}` with a goal to call that API directly and analyze the response"
+        if code_tool != "run_code"
+        else f"writing a `{code_tool}` program that calls that API directly and analyzes the response"
+    )
+    prefer_action = f"delegating to `{code_tool}`" if code_tool != "run_code" else f"calling it from `{code_tool}`"
+    return (
+        "- Match the tool to the data source the question actually needs: a live, "
+        f"structured, real-time fact that a well-known public API serves is best answered by {call_action}; "
+        f"{web_ref} is best for discovery, opinions, and questions with no single authoritative source, or "
+        "for reading one specific already-known page.\n"
+        "- Prefer live data over a stale snapshot: if a public REST API can give you the current, exact "
+        f"answer, prefer {prefer_action} over {web_ref} — search results describe the data, an API call IS "
+        "the data.\n"
+    )
+
+
+def _tool_selection_match_source_no_api_composed(web_ref: str) -> str:
+    return (
+        "- Match the tool to the data source the question actually needs: "
+        f"{web_ref} for discovery, opinions, current public information, and reading one specific "
+        "already-known page.\n"
+    )
+
+
 _TOOL_SELECTION_ARBITRATION = (
     "- When it is genuinely unclear which available tool is the better fit, or "
     "two tools would return complementary information, call BOTH in parallel "
@@ -243,34 +361,46 @@ class PipesHubPromptBuilder:
         if goal is not None and goal.constraints:
             parts.append("## Additional Context\n" + "\n".join(f"- {c}" for c in goal.constraints))
 
-        parts.append(self._build_tool_reference_section(state, log))
+        tool_names = spec.tool_names or []
+        parts.append(self._build_tool_reference_section(tool_names, runtime))
 
         has_retrieval = bool(state.get("final_results"))
         has_attachments = bool(state.get("attachments"))
         has_web_search = bool(state.get("web_search_config"))
+        web_ref = _web_reference(tool_names)
 
         if has_retrieval or has_attachments:
             parts.append(_CITATION_RULES)
         if has_web_search:
-            parts.append(_WEB_SEARCH_RULES)
+            parts.append(_WEB_SEARCH_RULES_COMPOSED if "web_agent" in tool_names else _WEB_SEARCH_RULES)
 
-        parts.append(self._build_hybrid_strategy_section(state, has_web_search=has_web_search))
+        parts.append(self._build_hybrid_strategy_section(state, tool_names, has_web_search=has_web_search))
 
-        has_run_code = "run_code" in (spec.tool_names or [])
-        sandbox_networked = has_run_code and sandbox_network_enabled()
-        if has_run_code:
-            steering = (
-                _CODE_EXECUTION_STEERING_NETWORK if sandbox_networked
-                else _CODE_EXECUTION_STEERING_NO_NETWORK
-            )
+        code_tool = _composed_code_tool(tool_names)
+        sandbox_networked = code_tool is not None and sandbox_network_enabled()
+        if code_tool is not None:
+            composed_code = code_tool != "run_code"
+            if composed_code:
+                template = (
+                    _CODE_EXECUTION_STEERING_COMPOSED_NETWORK if sandbox_networked
+                    else _CODE_EXECUTION_STEERING_COMPOSED_NO_NETWORK
+                )
+                steering = template.format(web_ref=web_ref)
+            else:
+                steering = (
+                    _CODE_EXECUTION_STEERING_NETWORK if sandbox_networked
+                    else _CODE_EXECUTION_STEERING_NO_NETWORK
+                )
             parts.append(steering)
 
         if has_web_search:
-            # `sandbox_networked` (not just `has_run_code`) gates the
-            # "call a live API from run_code" bullet — that guidance would
-            # contradict _CODE_EXECUTION_STEERING_NO_NETWORK above if the
+            # `sandbox_networked` (not just `code_tool is not None`) gates the
+            # "call a live API from run_code"/"coding_agent" bullet — that
+            # guidance would contradict the NO_NETWORK steering above if the
             # sandbox has no network access this request.
-            parts.append(self._build_tool_selection_section(has_run_code=sandbox_networked))
+            parts.append(self._build_tool_selection_section(
+                code_tool=code_tool if sandbox_networked else None, web_ref=web_ref,
+            ))
 
         for guidance_text in self._guidance.get_active_guidance(self._context).values():
             parts.append(guidance_text)
@@ -299,23 +429,46 @@ class PipesHubPromptBuilder:
         return "\n\n".join(part for part in parts if part)
 
     @staticmethod
-    def _build_tool_reference_section(state: dict[str, Any], log: Any) -> str:  # noqa: ANN401
-        """Mirrors `nodes.py::_build_react_system_prompt`'s "Available Tools"
-        section: full per-tool schemas/guidance from the shared description
-        cache, falling back to the compact schema-only reference (still
-        defined in `nodes.py`, imported lazily here to avoid a needless
-        module-load-time dependency) only if the cache is empty."""
-        tool_descriptions = _get_cached_tool_descriptions(state, log)
-        if not tool_descriptions:
-            from app.modules.agents.qna.nodes import _build_tool_schema_reference
-
-            tool_descriptions = _build_tool_schema_reference(state, log)
-        if not tool_descriptions:
+    def _build_tool_reference_section(tool_names: list[str], runtime: AgentRuntime) -> str:
+        """"Available Tools" section rendered from what the agent was
+        ACTUALLY granted this turn (`spec.tool_names`, resolved against
+        `runtime.tool_registry`) — never the legacy flat ChatState tool
+        list, which described every registered tool regardless of whether
+        domain-agent composition (`domain_agents.py`) had since narrowed
+        the agent's real grant to a handful of delegates + residual tools.
+        Per-tool guidance (`llm_description`/when-to-use/when-not-to-use)
+        is already on `Tool.description` (see `tool_adapter.py`), so no
+        separate cache/formatting layer is needed — this just renders it."""
+        lines: list[str] = []
+        for name in tool_names:
+            try:
+                tool = runtime.tool_registry.resolve_by_name(name)
+            except ToolNotFoundError:
+                continue
+            lines.append(f"### {name}")
+            description = tool.description or tool.short_description
+            if description:
+                lines.append(f"  {description}")
+            params = tool.parameters
+            if params:
+                lines.append("")
+                lines.append("  **Parameters:**")
+                for param in params:
+                    required_marker = "**required**" if param.required else "optional"
+                    param_type = param.type.value.upper()
+                    if param.description:
+                        lines.append(f"  - `{param.name}` ({required_marker}): {param.description} [{param_type}]")
+                    else:
+                        lines.append(f"  - `{param.name}` ({required_marker}) [{param_type}]")
+            lines.append("")
+        if not lines:
             return ""
-        return _TOOL_REFERENCE_HEADER + tool_descriptions
+        return _TOOL_REFERENCE_HEADER + "\n".join(lines)
 
     @staticmethod
-    def _build_hybrid_strategy_section(state: dict[str, Any], *, has_web_search: bool) -> str:
+    def _build_hybrid_strategy_section(
+        state: dict[str, Any], tool_names: list[str], *, has_web_search: bool,
+    ) -> str:
         has_knowledge = bool(state.get("has_knowledge"))
         has_service_tools = any([
             _has_jira_tools(state),
@@ -329,20 +482,22 @@ class PipesHubPromptBuilder:
         ])
 
         if has_knowledge and has_service_tools:
-            section = _HYBRID_STRATEGY_HEADER + _HYBRID_STRATEGY_RULES
+            internal_ref = _internal_knowledge_reference(tool_names)
+            web_ref = _web_reference(tool_names)
+            section = _hybrid_strategy_header(internal_ref) + _hybrid_strategy_rules(internal_ref)
             if has_web_search:
-                section += _HYBRID_WEB_SEARCH_NOTE
-            section += "\n### How to merge hybrid results:\n1. Call the appropriate tools (retrieval + service API"
+                section += _hybrid_web_search_note(web_ref)
+            section += f"\n### How to merge hybrid results:\n1. Call the appropriate tools ({internal_ref} + service API"
             if has_web_search:
-                section += " + web_search as needed"
+                section += f" + {web_ref} as needed"
             section += (
                 ") — IN PARALLEL where possible.\n"
                 "2. Present a unified answer combining insights from all sources.\n"
-                "3. For internal knowledge (retrieval): cite as [source](ref1) using the Citation ID from the context blocks.\n"
+                f"3. For internal knowledge ({internal_ref}): cite as [source](ref1) using the Citation ID from the context blocks.\n"
             )
             if has_web_search:
                 section += (
-                    "4. For web search/fetch_url results: cite as [source](URL/citation id) using the URL/citation id.\n"
+                    f"4. For {web_ref} results: cite as [source](URL/citation id) using the URL/citation id.\n"
                     "5. Clearly attribute live API data (e.g., \"According to your Outlook calendar...\" or \"From Confluence...\").\n"
                 )
             else:
@@ -355,17 +510,23 @@ class PipesHubPromptBuilder:
         return ""
 
     @staticmethod
-    def _build_tool_selection_section(*, has_run_code: bool) -> str:
+    def _build_tool_selection_section(*, code_tool: str | None, web_ref: str) -> str:
         """Generic tool-arbitration guidance: distinct from
         `_build_hybrid_strategy_section` above (which only covers internal
-        retrieval vs. connector service tools) — this covers picking between
-        `web_search`/`fetch_url` and, when the sandbox has network access,
-        writing a `run_code` program that calls a live API directly."""
+        retrieval vs. connector service tools) — this covers picking
+        between the web-research surface (`web_search`/`fetch_url` or
+        composed `web_agent`) and, when a networked code-execution surface
+        is available, calling a live API directly from it."""
         section = _TOOL_SELECTION_STRATEGY_HEADER
-        section += (
-            _TOOL_SELECTION_MATCH_SOURCE_LIVE_API if has_run_code
-            else _TOOL_SELECTION_MATCH_SOURCE_NO_API
-        )
+        if code_tool is None:
+            section += (
+                _tool_selection_match_source_no_api_composed(web_ref) if web_ref == "`web_agent`"
+                else _TOOL_SELECTION_MATCH_SOURCE_NO_API
+            )
+        elif code_tool == "run_code" and web_ref != "`web_agent`":
+            section += _TOOL_SELECTION_MATCH_SOURCE_LIVE_API
+        else:
+            section += _tool_selection_match_source_live_api_composed(code_tool, web_ref)
         section += _TOOL_SELECTION_ARBITRATION
         return section
 
