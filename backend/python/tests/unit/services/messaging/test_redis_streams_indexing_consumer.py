@@ -914,11 +914,11 @@ class TestProcessMessageWrapper:
             "_ack_message",
             new_callable=AsyncMock,
             side_effect=ConnectionError("redis down"),
-        ):
+        ) as mock_ack:
             result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
 
         assert result is False
-        consumer._ack_message.assert_awaited_once_with("s", "1-0")
+        mock_ack.assert_awaited_once_with("s", "1-0")
 
     @pytest.mark.asyncio
     async def test_ack_failure_in_finally_logs_error(self, consumer, caplog):
@@ -965,11 +965,11 @@ class TestProcessMessageWrapper:
             "_ack_message",
             new_callable=AsyncMock,
             side_effect=ConnectionError("redis down"),
-        ):
+        ) as mock_ack:
             result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
 
         assert result is True
-        consumer._ack_message.assert_awaited_once_with("s", "1-0")
+        mock_ack.assert_awaited_once_with("s", "1-0")
 
     @pytest.mark.asyncio
     async def test_handler_exception_after_parsing_released(self, consumer):
