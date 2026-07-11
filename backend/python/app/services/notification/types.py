@@ -28,6 +28,8 @@ class NotificationType(str, Enum):
     CONNECTOR_INFO = "CONNECTOR_INFO"
     CONNECTOR_WARNING = "CONNECTOR_WARNING"
     CONNECTOR_SUCCESS = "CONNECTOR_SUCCESS"
+    # Agent toolsets ("Actions") — distinct from connectors.
+    TOOLSET_AUTH_ERROR = "TOOLSET_AUTH_ERROR"
 
 class NotificationStatus(str, Enum):
     UNREAD = "unread"

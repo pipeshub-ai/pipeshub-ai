@@ -22,6 +22,34 @@ from app.utils.embedding_server_client import get_embedding_server_embeddings
 from app.utils.logger import create_logger
 
 
+def coerce_message_content_to_text(content: Any) -> str:
+    """Normalize a LangChain message ``content`` value to plain text.
+
+    Most providers return ``content`` as a string, but some (e.g. Gemini) return
+    a list of content blocks — strings and/or ``{"type": "text", "text": ...}``
+    dicts. Concatenate the textual parts so downstream string handling does not
+    break with ``'list' object has no attribute 'strip'``. Non-text blocks (such
+    as image parts) are ignored rather than stringified.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+            elif block is not None:
+                parts.append(str(block))
+        return "".join(parts)
+    if content is None:
+        return ""
+    return str(content)
+
+
 class ModelType(str, Enum):
     LLM = "llm"
     EMBEDDING = "embedding"

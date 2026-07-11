@@ -27,13 +27,16 @@ from app.config.constants.arangodb import (
     normalize_file_extension,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint
-from app.connectors.core.constants import IconPaths, OAuthConfigKeys, CONNECTOR_EMAIL_IDENTITY_INFO
+from app.connectors.core.constants import (
+    CONNECTOR_EMAIL_IDENTITY_INFO,
+    IconPaths,
+)
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -90,13 +93,16 @@ from app.models.entities import (
     RelatedExternalRecord,
     TicketRecord,
 )
-from app.services.notification.types import NotificationType, NotificationSeverity, NotificationRecipientRole
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import (
+    NotificationRecipientRole,
+    NotificationSeverity,
+    NotificationType,
+)
 from app.sources.client.jira.jira import JiraClient
-from app.sources.external.common.atlassian import match_atlassian_cloud_resource
+from app.sources.external.common.atlassian import AtlassianMultiSiteError
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
-from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -696,16 +702,6 @@ async def adf_to_text_with_images(
                     field_type="PASSWORD",
                     is_secret=True
                 ),
-                AuthField(
-                    name="baseUrl",
-                    display_name="Atlassian site URL",
-                    placeholder="https://yourcompany.atlassian.net",
-                    description="Atlassian site URL to use. Must match the Jira site you want to sync.",
-                    field_type="URL",
-                    required=True,
-                    max_length=2000,
-                    is_secret=False,
-                ),
             ],
             icon_path=IconPaths.connector_icon(Connectors.JIRA.value),
             app_group="Atlassian",
@@ -822,7 +818,6 @@ class JiraConnector(BaseConnector):
         )
         self.external_client: Optional[JiraClient] = None
         self.data_source: Optional[JiraDataSource] = None
-        self.cloud_id: Optional[str] = None
         self.site_url: Optional[str] = None
         self.connector_id = connector_id
         self.connector_name = Connectors.JIRA
@@ -891,51 +886,12 @@ class JiraConnector(BaseConnector):
             # Create DataSource from client
             self.data_source = JiraDataSource(client)
 
-            # Get connector config to determine auth type
-            config_path = OAUTH_JIRA_CONFIG_PATH.format(connector_id=self.connector_id)
-            config = await self.config_service.get_config(config_path)
-            auth_config = config.get("auth", {}) if config else {}
-            auth_type = auth_config.get("authType", "OAUTH")
-
-            if auth_type == "API_TOKEN":
-                # For API Token auth, use the base URL directly from config
-                base_url = auth_config.get("baseUrl", "").strip().rstrip('/')
-                if not base_url:
-                    raise ValueError("Base URL is required for API_TOKEN auth")
-                self.site_url = base_url
-                # Cloud ID is not needed for API Token auth (direct URL access)
-                self.cloud_id = None
-                self.logger.info("✅ Jira client initialized with API Token authentication")
-            else:
-                access_token = await self._get_access_token()
-                resources = await JiraClient.get_accessible_resources(access_token)
-                site_url = (auth_config.get("baseUrl") or "").strip()
-                if not site_url:
-                    oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
-                    if oauth_config_id:
-                        shared = await fetch_oauth_config_by_id(
-                            oauth_config_id=oauth_config_id,
-                            connector_type="Jira",
-                            config_service=self.config_service,
-                            logger=self.logger,
-                        )
-                        if shared:
-                            site_url = (shared.get(OAuthConfigKeys.CONFIG, {}).get("baseUrl") or "").strip()
-                if not site_url:
-                    if not resources:
-                        raise ValueError(
-                            "Atlassian site URL (baseUrl) missing and OAuth token has no accessible Jira sites"
-                        )
-                    self.logger.warning(
-                        "Jira connector %s: baseUrl missing; using accessible-resources[0] (%s)",
-                        self.connector_id, resources[0].url,
-                    )
-                    picked = resources[0]
-                else:
-                    picked = match_atlassian_cloud_resource(resources, site_url, product="Jira")
-                self.cloud_id = picked.id
-                self.site_url = picked.url
-                self.logger.info("✅ Jira client initialized with OAuth authentication")
+            # build_from_services already resolved the site (rejecting multi-site OAuth
+            # tokens) and built the client with the correct base URL. Just surface the
+            # site URL for browse-link building; the cloud_id is baked into the client's
+            # base URL, so the connector doesn't track it separately.
+            self.site_url = client.get_site_url()
+            self.logger.info("✅ Jira client initialized (site: %s)", self.site_url or "unknown")
 
             if self.created_by:
                 try:
@@ -953,9 +909,33 @@ class JiraConnector(BaseConnector):
 
             return True
 
+        except AtlassianMultiSiteError as e:
+            # Propagate the actionable reason so the API surfaces it instead of the
+            # generic "Failed to initialize connector" message.
+            await self._notify_multi_site_ambiguity(e)
+            raise ConnectorInitError(str(e)) from e
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Jira client: {e}")
             return False
+
+    async def _notify_multi_site_ambiguity(self, error: AtlassianMultiSiteError) -> None:
+        """Notify admin: account-level app reaches multiple sites — needs a new
+        Resource-restricted OAuth app (grants cannot be changed on an existing app)."""
+        self.logger.error(
+            "❌ Jira connector %s: OAuth app can access multiple Atlassian sites: %s",
+            self.connector_id, error,
+        )
+        await self.notify(
+            type=NotificationType.CONNECTOR_AUTH_ERROR,
+            severity=NotificationSeverity.ERROR,
+            title="Jira connector: Resource-restricted OAuth required",
+            message=(
+                "This OAuth app has access to multiple Jira sites. "
+                "Create a single-site (resource-restricted) OAuth app in the "
+                "Atlassian Developer Console, then reconnect."
+            ),
+            recipient_roles=[NotificationRecipientRole.ADMIN],
+        )
 
     # ============================================================================
     # Authentication & Token Management
@@ -4755,8 +4735,12 @@ class JiraConnector(BaseConnector):
     async def test_connection_and_access(self) -> bool:
         """Test connection and access to Jira using DataSource"""
         try:
+            # init() always runs (and must succeed) before this in the connector setup
+            # flow, so the client/datasource are already built — fail fast if not,
+            # rather than re-initializing (mirrors the Confluence connector).
             if not self.data_source:
-                await self.init()
+                self.logger.error("Jira connector not initialized")
+                return False
 
             # Test by fetching user info (simple API call)
             datasource = await self._get_fresh_datasource()

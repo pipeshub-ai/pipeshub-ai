@@ -9,11 +9,10 @@ This connector syncs Confluence Cloud data including:
 Authentication: OAuth 2.0 (3-legged OAuth)
 """
 
+import asyncio
 import base64
 import json
 import uuid
-import asyncio
-from collections.abc import AsyncGenerator
 from collections import defaultdict
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
@@ -35,8 +34,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -46,6 +44,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
+from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO, IconPaths
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -60,7 +59,6 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
     SyncStrategy,
 )
-from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -110,9 +108,15 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import (
+    NotificationRecipientRole,
+    NotificationSeverity,
+    NotificationType,
+)
 from app.sources.client.confluence.confluence import (
     ConfluenceClient as ExternalConfluenceClient,
 )
+from app.sources.external.common.atlassian import AtlassianMultiSiteError
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 from app.utils.streaming import create_stream_record_response
 
@@ -236,16 +240,6 @@ def extract_media_from_adf(adf_content: dict[str, Any]) -> list[dict[str, Any]]:
             fields=[
                 CommonFields.client_id("Atlassian OAuth App"),
                 CommonFields.client_secret("Atlassian OAuth App"),
-                AuthField(
-                    name="baseUrl",
-                    display_name="Atlassian site URL",
-                    placeholder="https://yourcompany.atlassian.net",
-                    description="Atlassian site URL to use. Must match the Confluence site you want to sync.",
-                    field_type="URL",
-                    required=True,
-                    max_length=2000,
-                    is_secret=False,
-                ),
                 AuthField(
                     name="includeJiraScope",
                     display_name="Grant Jira user access",
@@ -473,9 +467,33 @@ class ConfluenceConnector(BaseConnector):
             self.logger.info("✅ Confluence connector initialized successfully")
             return True
 
+        except AtlassianMultiSiteError as e:
+            # Propagate the actionable reason so the API surfaces it instead of the
+            # generic "Failed to initialize connector" message.
+            await self._notify_multi_site_ambiguity(e)
+            raise ConnectorInitError(str(e)) from e
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Confluence connector: {e}", exc_info=True)
             return False
+
+    async def _notify_multi_site_ambiguity(self, error: AtlassianMultiSiteError) -> None:
+        """Notify admin: account-level app reaches multiple sites — needs a new
+        Resource-restricted OAuth app (grants cannot be changed on an existing app)."""
+        self.logger.error(
+            "❌ Confluence connector %s: OAuth app can access multiple Atlassian sites: %s",
+            self.connector_id, error,
+        )
+        await self.notify(
+            type=NotificationType.CONNECTOR_AUTH_ERROR,
+            severity=NotificationSeverity.ERROR,
+            title="Confluence connector: Resource-restricted OAuth required",
+            message=(
+                "This OAuth app has access to multiple Confluence sites. "
+                "Create a single-site (resource-restricted) OAuth app in the "
+                "Atlassian Developer Console, then reconnect."
+            ),
+            recipient_roles=[NotificationRecipientRole.ADMIN],
+        )
 
     async def _get_fresh_datasource(self) -> ConfluenceDataSource:
         """
