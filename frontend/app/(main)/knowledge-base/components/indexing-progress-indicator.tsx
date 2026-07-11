@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Box, Flex, Text } from '@radix-ui/themes';
-import type { IndexingRollup } from '../types';
+import { Box, Flex, Text, Tooltip } from '@radix-ui/themes';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
+import type { ConnectorSyncStatus, IndexingRollup } from '../types';
 import {
   PROGRESS_STEPS,
   getIndexingProgressView,
@@ -126,14 +128,28 @@ export function ContainerRollupIndicator({
 
   if (inline) {
     if (!view.isActive) {
-      const color = view.hasErrors ? 'var(--amber-11)' : 'var(--grass-11)';
+      // Clean success mirrors a single record: just the green check, "Indexed" on hover.
+      if (!view.hasErrors) {
+        return (
+          <Tooltip content="Indexed" side="top" delayDuration={200}>
+            <Flex align="center" style={{ minWidth: 0 }}>
+              <MaterialIcon name={getIndexStatusIcon('COMPLETED')} size={16} color="var(--emerald-11)" />
+            </Flex>
+          </Tooltip>
+        );
+      }
+      // Failures: icon + aggregate breakdown; keep the same text in the tooltip.
       return (
-        <Flex align="center" gap="1" style={{ minWidth: 0 }}>
-          <Box style={{ width: 6, height: 6, borderRadius: '9999px', background: color, flexShrink: 0 }} />
-          <Text size="1" weight="medium" style={{ color, whiteSpace: 'nowrap' }}>
-            {view.hasErrors ? `Indexed · ${view.detail}` : 'Indexed'}
-          </Text>
-        </Flex>
+        <Tooltip content={view.detail} side="top" delayDuration={200}>
+          <Flex align="center" gap="1" style={{ minWidth: 0 }}>
+            <MaterialIcon name={getIndexStatusIcon('FAILED')} size={16} color="var(--amber-11)" />
+            {view.detail ? (
+              <Text size="1" weight="medium" style={{ color: 'var(--amber-11)', whiteSpace: 'nowrap' }}>
+                {view.detail}
+              </Text>
+            ) : null}
+          </Flex>
+        </Tooltip>
       );
     }
     const activeColor = 'var(--blue-9)';
@@ -164,23 +180,28 @@ export function ContainerRollupIndicator({
   }
 
   if (!view.isActive) {
-    // Settled: keep it quiet. Green when clean, amber when some records failed.
-    const color = view.hasErrors ? 'var(--amber-11)' : 'var(--grass-11)';
+    // Clean success mirrors a single record: just the green check, "Indexed" on hover.
+    if (!view.hasErrors) {
+      return (
+        <Tooltip content="Indexed" side="top" delayDuration={200}>
+          <Flex align="center" justify="center" style={{ minWidth: 0 }}>
+            <MaterialIcon name={getIndexStatusIcon('COMPLETED')} size={16} color="var(--emerald-11)" />
+          </Flex>
+        </Tooltip>
+      );
+    }
+    // Failures: icon + aggregate breakdown; keep the same text in the tooltip.
     return (
-      <Flex direction="column" align="center" gap="1" style={{ minWidth: 0 }}>
-        <Text size="1" weight="medium" style={{ color, whiteSpace: 'nowrap' }}>
-          {view.hasErrors ? 'Indexed with errors' : 'Indexed'}
-        </Text>
-        {view.detail ? (
-          <Text size="1" style={{ color: 'var(--slate-10)', whiteSpace: 'nowrap' }}>
-            {view.detail}
-          </Text>
-        ) : (
-          <Text size="1" style={{ color: 'var(--slate-9)', whiteSpace: 'nowrap' }}>
-            {view.label}
-          </Text>
-        )}
-      </Flex>
+      <Tooltip content={view.detail} side="top" delayDuration={200}>
+        <Flex align="center" gap="1" style={{ minWidth: 0 }}>
+          <MaterialIcon name={getIndexStatusIcon('FAILED')} size={16} color="var(--amber-11)" />
+          {view.detail ? (
+            <Text size="1" weight="medium" style={{ color: 'var(--amber-11)', whiteSpace: 'nowrap' }}>
+              {view.detail}
+            </Text>
+          ) : null}
+        </Flex>
+      </Tooltip>
     );
   }
 
@@ -216,6 +237,76 @@ export function ContainerRollupIndicator({
           {view.detail}
         </Text>
       ) : null}
+    </Flex>
+  );
+}
+
+/** True while the owning connector is fetching from its source. */
+export function isActiveConnectorSync(status?: ConnectorSyncStatus | null): boolean {
+  return status === 'SYNCING' || status === 'FULL_SYNCING';
+}
+
+/**
+ * "Syncing" badge for connector-origin containers. Sync (connector pulling from the
+ * source) is distinct from indexing (processing pulled records), so it gets its own
+ * indigo styling and never mixes with the blue indexing bar.
+ *
+ * - `chip` — bordered pill for the KB header, next to breadcrumbs.
+ * - `pill` — compact inline variant for a connector row in list / grid.
+ */
+export function ConnectorSyncBadge({
+  syncStatus,
+  variant = 'pill',
+}: {
+  syncStatus?: ConnectorSyncStatus | null;
+  variant?: 'chip' | 'pill';
+}) {
+  if (!isActiveConnectorSync(syncStatus)) return null;
+
+  const label = syncStatus === 'FULL_SYNCING' ? 'Full sync…' : 'Syncing…';
+  const color = 'var(--indigo-11)';
+
+  const spinner = (
+    <Box
+      style={{
+        width: 9,
+        height: 9,
+        borderRadius: '9999px',
+        border: '1.5px solid var(--indigo-6)',
+        borderTopColor: color,
+        animation: 'spin 0.8s linear infinite',
+        flexShrink: 0,
+      }}
+    />
+  );
+
+  if (variant === 'chip') {
+    return (
+      <Flex
+        align="center"
+        gap="1"
+        style={{
+          padding: '2px 8px',
+          borderRadius: '9999px',
+          background: 'var(--indigo-3)',
+          border: '1px solid var(--indigo-5)',
+          flexShrink: 0,
+        }}
+      >
+        {spinner}
+        <Text size="1" weight="medium" style={{ color, whiteSpace: 'nowrap' }}>
+          {label}
+        </Text>
+      </Flex>
+    );
+  }
+
+  return (
+    <Flex align="center" gap="1" style={{ minWidth: 0 }}>
+      {spinner}
+      <Text size="1" weight="medium" style={{ color, whiteSpace: 'nowrap' }}>
+        {label}
+      </Text>
     </Flex>
   );
 }

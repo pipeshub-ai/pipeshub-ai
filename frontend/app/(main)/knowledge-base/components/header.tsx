@@ -6,9 +6,9 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/components/sidebar';
 import { useKnowledgeBaseStore } from '../store';
-import type { ViewMode, PageViewMode, Breadcrumb, IndexingRollup } from '../types';
+import type { ViewMode, PageViewMode, Breadcrumb, IndexingRollup, ConnectorSyncStatus } from '../types';
 import { FolderIcon } from '@/app/components/ui';
-import { ContainerRollupIndicator } from './indexing-progress-indicator';
+import { ContainerRollupIndicator, ConnectorSyncBadge } from './indexing-progress-indicator';
 import { useTranslation } from 'react-i18next';
 import { ShareHeaderGroup } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
@@ -19,6 +19,8 @@ interface KBHeaderProps {
   currentTitle?: string;
   /** Aggregated indexing progress for the container currently being browsed. */
   currentNodeRollup?: IndexingRollup | null;
+  /** Sync status of the owning connector while browsing connector content. */
+  currentNodeSyncStatus?: ConnectorSyncStatus | null;
   onBreadcrumbClick?: (breadcrumb: Breadcrumb) => void;
   onInfoClick?: () => void;
 
@@ -171,6 +173,7 @@ export function Header({
   breadcrumbs,
   currentTitle: _currentTitle,
   currentNodeRollup,
+  currentNodeSyncStatus,
   onBreadcrumbClick,
   onInfoClick,
   onFind,
@@ -337,10 +340,11 @@ export function Header({
         )}
       </Flex>
 
-      {/* Aggregated indexing progress for the folder/collection being viewed. */}
-      {!isSearchActive && currentNodeRollup && (
-        <Flex align="center" style={{ flexShrink: 0 }}>
-          <ContainerRollupIndicator rollup={currentNodeRollup} inline />
+      {/* Connector sync + aggregated indexing progress for the container being viewed. */}
+      {!isSearchActive && (currentNodeSyncStatus || currentNodeRollup) && (
+        <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
+          <ConnectorSyncBadge syncStatus={currentNodeSyncStatus} variant="chip" />
+          {currentNodeRollup && <ContainerRollupIndicator rollup={currentNodeRollup} inline />}
         </Flex>
       )}
 

@@ -21,7 +21,12 @@ import { KbNodeNameIcon } from '../utils/kb-node-name-icon';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { getIndexingProgressView } from '../utils/indexing-progress';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
-import { ContainerRollupIndicator, IndexingProgressIndicator } from './indexing-progress-indicator';
+import {
+  ContainerRollupIndicator,
+  ConnectorSyncBadge,
+  IndexingProgressIndicator,
+  isActiveConnectorSync,
+} from './indexing-progress-indicator';
 import {
   runItemMenuOpenFromMenu,
   shouldHideIndexingStatusForHubRecord,
@@ -255,7 +260,9 @@ function TableRow({
       ? getIndexingProgressView(item)
       : null;
   const containerRollup = isKnowledgeHubNode(item) ? item.indexingRollup ?? null : null;
-  const rowHeight = activeProgressView || containerRollup?.isActive ? '76px' : '60px';
+  const syncStatus = isKnowledgeHubNode(item) ? item.syncStatus ?? null : null;
+  const isSyncing = isActiveConnectorSync(syncStatus);
+  const rowHeight = activeProgressView || containerRollup?.isActive || isSyncing ? '76px' : '60px';
 
   // Status label for tooltip
   const getStatusLabel = (): string => {
@@ -273,7 +280,7 @@ function TableRow({
       let baseLabel: string;
       let showReason = true;
       switch (item.indexingStatus) {
-        case 'COMPLETED': baseLabel = 'Completed'; showReason = false; break;
+        case 'COMPLETED': baseLabel = 'Indexed'; showReason = false; break;
         case 'IN_PROGRESS': {
           const view = getIndexingProgressView(item);
           return view.detail ? `${view.label} — ${view.detail}` : view.label;
@@ -291,7 +298,7 @@ function TableRow({
     let baseLabel: string;
     let showReason = true;
     switch (item.status) {
-      case 'indexed': baseLabel = 'Completed'; showReason = false; break;
+      case 'indexed': baseLabel = 'Indexed'; showReason = false; break;
       case 'processing': baseLabel = 'In Progress'; showReason = false; break;
       case 'pending': baseLabel = 'Pending'; showReason = false; break;
       case 'failed': baseLabel = 'Failed'; break;
@@ -523,12 +530,14 @@ function TableRow({
               </Text>
             );
           }
-          // Container rows show an aggregated rollup rolled up from their subtree.
-          if (containerRollup) {
+          // Container rows show connector sync (if any) plus an aggregated rollup
+          // rolled up from their subtree.
+          if (containerRollup || isSyncing) {
             return (
-              <Box>
-                <ContainerRollupIndicator rollup={containerRollup} compact />
-              </Box>
+              <Flex direction="column" align="center" gap="1">
+                {isSyncing && <ConnectorSyncBadge syncStatus={syncStatus} variant="pill" />}
+                {containerRollup && <ContainerRollupIndicator rollup={containerRollup} compact />}
+              </Flex>
             );
           }
           const statusIcon = getStatusIcon();

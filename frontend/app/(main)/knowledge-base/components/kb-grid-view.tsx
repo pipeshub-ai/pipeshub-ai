@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Flex, Box, Text, Checkbox, IconButton, DropdownMenu } from '@radix-ui/themes';
+import { Flex, Box, Text, Checkbox, IconButton, DropdownMenu, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon, FolderIcon } from '@/app/components/ui';
 import { formatSize } from '@/lib/utils/formatters';
@@ -12,7 +12,12 @@ import {
   shouldShowDownloadForTableItem,
 } from '../utils/kb-table-item-actions';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
-import { ContainerRollupIndicator, IndexingProgressIndicator } from './indexing-progress-indicator';
+import {
+  ContainerRollupIndicator,
+  ConnectorSyncBadge,
+  IndexingProgressIndicator,
+  isActiveConnectorSync,
+} from './indexing-progress-indicator';
 import { useTranslation } from 'react-i18next';
 import {
   getReindexMenuState,
@@ -156,6 +161,8 @@ function GridCard({
     ? ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType)
     : item.type === 'folder';
   const containerRollup = isHubNode ? item.indexingRollup ?? null : null;
+  const syncStatus = isHubNode ? item.syncStatus ?? null : null;
+  const isSyncing = isActiveConnectorSync(syncStatus);
 
   // Status badge component (only shown for files)
   const getStatusBadge = () => {
@@ -173,18 +180,20 @@ function GridCard({
       switch (item.indexingStatus) {
         case 'COMPLETED':
           return (
-            <Flex
-              align="center"
-              justify="center"
-              style={{
-                backgroundColor: 'var(--accent-2)',
-                border: '1px solid var(--accent-7)',
-                borderRadius: 'var(--radius-1)',
-                padding: '4px 6px',
-              }}
-            >
-              <MaterialIcon name="check_circle" size={12} color="var(--accent-a11)" />
-            </Flex>
+            <Tooltip content="Indexed" side="top" delayDuration={200}>
+              <Flex
+                align="center"
+                justify="center"
+                style={{
+                  backgroundColor: 'var(--emerald-2)',
+                  border: '1px solid var(--emerald-7)',
+                  borderRadius: 'var(--radius-1)',
+                  padding: '4px 6px',
+                }}
+              >
+                <MaterialIcon name="check_circle" size={12} color="var(--emerald-11)" />
+              </Flex>
+            </Tooltip>
           );
         case 'IN_PROGRESS': {
           return (
@@ -310,18 +319,20 @@ function GridCard({
     switch (item.status) {
       case 'indexed':
         return (
-          <Flex
-            align="center"
-            justify="center"
-            style={{
-              backgroundColor: 'var(--accent-2)',
-              border: '1px solid var(--accent-7)',
-              borderRadius: 'var(--radius-1)',
-              padding: '4px 6px',
-            }}
-          >
-            <MaterialIcon name="check_circle" size={12} color="var(--accent-9)" />
-          </Flex>
+          <Tooltip content="Indexed" side="top" delayDuration={200}>
+            <Flex
+              align="center"
+              justify="center"
+              style={{
+                backgroundColor: 'var(--emerald-2)',
+                border: '1px solid var(--emerald-7)',
+                borderRadius: 'var(--radius-1)',
+                padding: '4px 6px',
+              }}
+            >
+              <MaterialIcon name="check_circle" size={12} color="var(--emerald-11)" />
+            </Flex>
+          </Tooltip>
         );
       case 'processing':
         return (
@@ -640,7 +651,12 @@ function GridCard({
         {/* Bottom section: status badge or placeholder */}
         <Flex align="center" style={{ minHeight: '20px' }}>
           {isFolder ? (
-            containerRollup ? <ContainerRollupIndicator rollup={containerRollup} compact /> : null
+            containerRollup || isSyncing ? (
+              <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
+                {isSyncing && <ConnectorSyncBadge syncStatus={syncStatus} variant="pill" />}
+                {containerRollup && <ContainerRollupIndicator rollup={containerRollup} compact />}
+              </Flex>
+            ) : null
           ) : shouldHideIndexingStatusForHubRecord(item) ? (
             <Text
               size="2"

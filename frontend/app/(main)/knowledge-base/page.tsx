@@ -58,6 +58,7 @@ import {
 } from './utils/all-records-transformer';
 import { buildFilterParams, buildAllRecordsFilterParams } from './utils';
 import { hasActiveIndexing } from './utils/indexing-progress';
+import { isActiveConnectorSync } from './components/indexing-progress-indicator';
 import { ShareSidebar } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { createKBShareAdapter } from './share-adapter';
@@ -274,14 +275,26 @@ function KnowledgeBasePageContent() {
     [isAllRecordsMode, allRecordsTableData, tableData],
   );
 
+  // Sync status of the connector currently being browsed (shown as a chip in the
+  // header). Any active sync also keeps polling alive so the chip clears itself.
+  const currentNodeSyncStatus = useMemo(
+    () =>
+      (isAllRecordsMode ? allRecordsTableData : tableData)?.currentNode?.syncStatus ?? null,
+    [isAllRecordsMode, allRecordsTableData, tableData],
+  );
+
   // Auto-poll for indexing status only while a visible record is still in
   // flight (QUEUED/IN_PROGRESS), or the container being viewed is still
   // aggregating. Gating on this boolean keeps the polling effect (and its
   // backoff) alive across refetches and stops the moment everything reaches a
   // terminal state, so settled views never poll.
   const hasActiveRecords = useMemo(
-    () => hasActiveIndexing(tableItems) || currentNodeRollup?.isActive === true,
-    [tableItems, currentNodeRollup],
+    () =>
+      hasActiveIndexing(tableItems) ||
+      currentNodeRollup?.isActive === true ||
+      isActiveConnectorSync(currentNodeSyncStatus) ||
+      tableItems.some((item) => isActiveConnectorSync((item as { syncStatus?: string }).syncStatus)),
+    [tableItems, currentNodeRollup, currentNodeSyncStatus],
   );
 
   const collectionRootNodes = useMemo(
@@ -2744,6 +2757,7 @@ function KnowledgeBasePageContent() {
               breadcrumbs={isAllRecordsMode ? allRecordsBreadcrumbs : tableData?.breadcrumbs?.slice(1)}
               currentTitle={currentTitle}
               currentNodeRollup={currentNodeRollup}
+              currentNodeSyncStatus={currentNodeSyncStatus}
               onBreadcrumbClick={handleBreadcrumbClick}
               onInfoClick={handleFolderInfoClick}
               onFind={handleFind}

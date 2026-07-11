@@ -13897,7 +13897,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     updatedAt: app.updatedAtTimestamp || 0,
                     webUrl: CONCAT("/app/", app._key),
                     hasChildren: has_children,
-                    sharingStatus: sharingStatus
+                    sharingStatus: sharingStatus,
+                    syncStatus: app.status
                 }
         )
 
@@ -15192,21 +15193,33 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET rg = record == null ? DOCUMENT("recordGroups", @node_id) : null
         LET app = record == null AND rg == null ? DOCUMENT("apps", @node_id) : null
 
+        // Resolve the owning connector app so we can surface its sync status.
+        // KB (collection) content never syncs, so it is excluded.
+        LET connector_app = app != null ? app : (
+            rg != null AND rg.connectorName != "KB" ? DOCUMENT(CONCAT("apps/", rg.connectorId)) : (
+                record != null AND record.connectorName != "KB" ? DOCUMENT(CONCAT("apps/", record.connectorId)) : null
+            )
+        )
+        LET sync_status = connector_app != null ? connector_app.status : null
+
         LET result = record != null AND record._key != null AND record.recordName != null ? {
             id: record._key,
             name: record.recordName,
             nodeType: record.mimeType IN @folder_mime_types ? "folder" : "record",
-            subType: record.recordType
+            subType: record.recordType,
+            syncStatus: sync_status
         } : (rg != null AND rg._key != null AND rg.groupName != null ? {
             id: rg._key,
             name: rg.groupName,
             nodeType: "recordGroup",
-            subType: rg.connectorName == "KB" ? "COLLECTION" : (rg.groupType || rg.connectorName)
+            subType: rg.connectorName == "KB" ? "COLLECTION" : (rg.groupType || rg.connectorName),
+            syncStatus: sync_status
         } : (app != null AND app._key != null AND app.name != null ? {
             id: app._key,
             name: app.name,
             nodeType: "app",
-            subType: app.type
+            subType: app.type,
+            syncStatus: sync_status
         } : null))
 
         RETURN result

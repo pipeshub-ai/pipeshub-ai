@@ -701,6 +701,7 @@ class KnowledgeHubService:
                 name=node_info['name'],
                 nodeType=node_info['nodeType'],
                 subType=node_info.get('subType'),
+                syncStatus=node_info.get('syncStatus'),
             )
         return None
 
@@ -812,6 +813,7 @@ class KnowledgeHubService:
             connector=doc.get('connector'),
             recordType=doc.get('recordType'),
             recordGroupType=doc.get('recordGroupType'),
+            syncStatus=doc.get('syncStatus'),
             indexingStatus=doc.get('indexingStatus'),
             reason=doc.get('reason'),
             indexingStage=doc.get('indexingStage'),

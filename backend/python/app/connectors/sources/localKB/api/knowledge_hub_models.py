@@ -89,6 +89,7 @@ class NodeItem(BaseModel):
     connector: Optional[str] = Field(None, description="Connector name (only for CONNECTOR origin)")
     recordType: Optional[str] = Field(None, description="Record type (only when nodeType is record)")
     recordGroupType: Optional[str] = Field(None, description="Record group type (only when nodeType is recordGroup, e.g. SLACK_CHANNEL, CONFLUENCE_SPACES)")
+    syncStatus: Optional[str] = Field(None, description="Owning connector's sync status (IDLE, SYNCING, FULL_SYNCING) for connector-origin container nodes")
     indexingStatus: Optional[str] = Field(None, description="Indexing status (only when nodeType is record)")
     reason: Optional[str] = Field(None, description="Reason for current indexing status (e.g. failure reason)")
     indexingStage: Optional[str] = Field(None, description="Coarse pipeline phase within IN_PROGRESS (QUEUED, EXTRACTING, INDEXING, COMPLETED, FAILED)")
@@ -117,6 +118,7 @@ class CurrentNode(BaseModel):
     name: str = Field(..., description="Current node name")
     nodeType: str = Field(..., description="Current node type (app, recordGroup, folder, record)")
     subType: Optional[str] = Field(None, description="Sub-type: connector name for apps/recordGroups, recordType for records")
+    syncStatus: Optional[str] = Field(None, description="Owning connector's sync status (IDLE, SYNCING, FULL_SYNCING) when browsing connector content")
     indexingRollup: Optional[IndexingRollup] = Field(None, description="Aggregated indexing progress across this container's subtree")
 
     class Config:

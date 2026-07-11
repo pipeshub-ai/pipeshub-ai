@@ -164,6 +164,14 @@ export interface IndexingRollup {
   status: 'COMPLETED' | 'IN_PROGRESS' | 'QUEUED' | 'COMPLETED_WITH_ERRORS';
   isActive: boolean;
 }
+
+/**
+ * Sync state of the owning connector, surfaced on connector-origin container nodes
+ * and on the current node while browsing connector content. Distinct from indexing:
+ * this is the connector fetching new/changed records from the source.
+ */
+export type ConnectorSyncStatus = 'IDLE' | 'SYNCING' | 'FULL_SYNCING' | string;
+
 export type SharingStatus = 'private' | 'team' | 'personal' | 'shared';
 
 /**
@@ -244,6 +252,7 @@ export interface KnowledgeHubNode {
   lastActivityTimestamp?: number | null;
   indexingProgress?: IndexingProgressMetrics | null;
   indexingRollup?: IndexingRollup | null;
+  syncStatus?: ConnectorSyncStatus | null;
   sizeInBytes?: number | null;
   mimeType?: string | null;
   extension?: string | null;
@@ -340,6 +349,7 @@ export interface KnowledgeHubApiResponse {
     origin?: string;
     indexingStatus?: string;
     indexingRollup?: IndexingRollup | null;
+    syncStatus?: ConnectorSyncStatus | null;
     version?: number;
     createdAt?: number;
     updatedAt?: number;

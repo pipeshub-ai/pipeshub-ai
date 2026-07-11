@@ -737,6 +737,7 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
               lastActivityTimestamp: fresh.lastActivityTimestamp,
               indexingProgress: fresh.indexingProgress,
               indexingRollup: fresh.indexingRollup,
+              syncStatus: fresh.syncStatus,
               reason: fresh.reason,
             };
           };
@@ -752,9 +753,11 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
           if (currentNode?.id) {
             if (state.tableData?.currentNode?.id === currentNode.id) {
               state.tableData.currentNode.indexingRollup = currentNode.indexingRollup;
+              state.tableData.currentNode.syncStatus = currentNode.syncStatus;
             }
             if (state.allRecordsTableData?.currentNode?.id === currentNode.id) {
               state.allRecordsTableData.currentNode.indexingRollup = currentNode.indexingRollup;
+              state.allRecordsTableData.currentNode.syncStatus = currentNode.syncStatus;
             }
           }
         }),

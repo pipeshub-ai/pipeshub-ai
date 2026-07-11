@@ -215,22 +215,33 @@ export interface RollupProgressView {
   hasErrors: boolean;
 }
 
+/** Settled container breakdown: "10 records: 7 indexed · 2 failed · 1 skipped". */
+export function formatRollupFailureDetail(
+  rollup: Pick<IndexingRollup, 'completed' | 'total' | 'failed' | 'skipped'>,
+): string {
+  const noun = rollup.total === 1 ? 'record' : 'records';
+  const parts = [`${rollup.total} ${noun}: ${rollup.completed} indexed`];
+  if (rollup.failed > 0) parts.push(`${rollup.failed} failed`);
+  if (rollup.skipped > 0) parts.push(`${rollup.skipped} skipped`);
+  return parts.join(' · ');
+}
+
 /** Build the container-row display model from an aggregated rollup. */
 export function getRollupProgressView(rollup: IndexingRollup): RollupProgressView {
   const done = rollup.completed + rollup.failed + rollup.skipped;
   const hasErrors = !rollup.isActive && rollup.failed > 0;
 
-  const extras: string[] = [];
-  if (rollup.failed > 0) extras.push(`${rollup.failed} failed`);
-  if (rollup.skipped > 0) extras.push(`${rollup.skipped} skipped`);
-
+  const detail =
+    !rollup.isActive && hasErrors
+      ? formatRollupFailureDetail(rollup)
+      : undefined;
   return {
     isActive: rollup.isActive,
     percent: Math.max(0, Math.min(100, rollup.percent)),
     label: rollup.isActive
       ? `${done} of ${rollup.total} indexed`
       : `${rollup.total} indexed`,
-    detail: extras.length ? extras.join(' · ') : undefined,
+    detail,
     hasErrors,
   };
 }

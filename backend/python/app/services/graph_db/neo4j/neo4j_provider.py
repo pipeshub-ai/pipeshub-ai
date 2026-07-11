@@ -7618,9 +7618,11 @@ class Neo4jProvider(IGraphDBProvider):
         ret = "RETURN cid AS id, r.indexingStatus AS status, r.indexingStage AS stage, count(*) AS cnt"
 
         queries = {
+            # Records carry connectorId = owning app id (mirrors the ArangoDB rollup),
+            # which is robust to how RecordGroup/App edges are wired.
             "app": f"""
             UNWIND $ids AS cid
-            MATCH (app:App {{id: cid}})<-[:BELONGS_TO*1..10]-(rg:RecordGroup)<-[:BELONGS_TO]-(r:Record)
+            MATCH (r:Record {{connectorId: cid, orgId: $org_id}})
             WHERE {leaf_filter}
             {ret}
             """,
@@ -7645,7 +7647,7 @@ class Neo4jProvider(IGraphDBProvider):
             try:
                 results = await self.client.execute_query(
                     queries[c_type],
-                    parameters={"ids": ids},
+                    parameters={"ids": ids, "org_id": org_id},
                     txn_id=transaction,
                 )
                 for row in results or []:
@@ -13675,7 +13677,8 @@ class Neo4jProvider(IGraphDBProvider):
                           updatedAt: coalesce(app.updatedAtTimestamp, 0),
                           webUrl: '/app/' + app.id,
                           hasChildren: has_children,
-                          sharingStatus: coalesce(app.scope, 'personal')
+                          sharingStatus: coalesce(app.scope, 'personal'),
+                          syncStatus: app.status
                       }
                       ELSE null
                  END AS app_node
@@ -14387,7 +14390,18 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (app:App {id: $node_id})
             WHERE app.name IS NOT NULL
 
-            WITH record, rg, app
+            // Resolve the owning connector app for records / record groups so we can
+            // surface its sync status. KB (collection) content never syncs.
+            OPTIONAL MATCH (rgApp:App {id: rg.connectorId})
+            OPTIONAL MATCH (recApp:App {id: record.connectorId})
+
+            WITH record, rg, app,
+                 CASE
+                     WHEN app IS NOT NULL THEN app.status
+                     WHEN rg IS NOT NULL AND rg.connectorName <> 'KB' THEN rgApp.status
+                     WHEN record IS NOT NULL AND record.connectorName <> 'KB' THEN recApp.status
+                     ELSE null
+                 END AS sync_status
 
             // Determine result based on which node was found
             RETURN CASE
@@ -14398,7 +14412,8 @@ class Neo4jProvider(IGraphDBProvider):
                         WHEN record.mimeType IN $folder_mime_types THEN 'folder'
                         ELSE 'record'
                     END,
-                    subType: record.recordType
+                    subType: record.recordType,
+                    syncStatus: sync_status
                 }
                 WHEN rg IS NOT NULL THEN {
                     id: rg.id,
@@ -14407,13 +14422,15 @@ class Neo4jProvider(IGraphDBProvider):
                     subType: CASE
                         WHEN rg.connectorName = 'KB' THEN 'COLLECTION'
                         ELSE coalesce(rg.groupType, rg.connectorName)
-                    END
+                    END,
+                    syncStatus: sync_status
                 }
                 WHEN app IS NOT NULL THEN {
                     id: app.id,
                     name: app.name,
                     nodeType: 'app',
-                    subType: app.type
+                    subType: app.type,
+                    syncStatus: sync_status
                 }
                 ELSE null
             END AS result

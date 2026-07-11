@@ -102,12 +102,12 @@ describe('getRollupProgressView', () => {
     expect(view.detail).toBeUndefined();
   });
 
-  it('surfaces failed/skipped counts on a settled container with errors', () => {
+  it('leads with total records then indexed/failed/skipped on a settled container with errors', () => {
     const view = getRollupProgressView(
       makeRollup({ total: 10, completed: 7, failed: 2, skipped: 1, percent: 100, status: 'COMPLETED_WITH_ERRORS', isActive: false }),
     );
     expect(view.hasErrors).toBe(true);
-    expect(view.detail).toBe('2 failed · 1 skipped');
+    expect(view.detail).toBe('10 records: 7 indexed · 2 failed · 1 skipped');
   });
 });
 
