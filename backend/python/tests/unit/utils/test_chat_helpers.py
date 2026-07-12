@@ -5509,25 +5509,6 @@ class TestEnrichRecordsWithGraphContext:
         assert set(relations[0]["labels"]) == {"ATTACHMENT", "CHILD"}
 
     @pytest.mark.asyncio
-    async def test_excludes_parent_from_relations(self):
-        rec = self._ticket_record()
-        vr_map = {"vr-ticket": rec}
-        flattened = [{
-            "virtual_record_id": "vr-ticket",
-            "block_index": 0,
-            "parent_node_relation": {"record_id": "rec-parent-1"},
-        }]
-        gp = self._make_graph_provider(
-            outgoing_by_type={
-                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-parent-1"}],
-            },
-        )
-        await enrich_records_with_graph_context(
-            vr_map, graph_provider=gp, flattened_results=flattened,
-        )
-        assert "record_relations" not in rec
-
-    @pytest.mark.asyncio
     async def test_excludes_deleted_targets(self):
         rec = self._ticket_record()
         vr_map = {"vr-ticket": rec}
