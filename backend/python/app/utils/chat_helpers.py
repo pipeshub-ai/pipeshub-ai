@@ -503,6 +503,7 @@ def _extend_record_id_index_from_hit_records(
                 "id": record_id,
                 "_key": record_id,
                 "recordName": record.get("record_name"),
+                "externalRecordId": record.get("external_record_id"),
             }
 
 def _resolve_dependent_graph_fields(
@@ -599,7 +600,7 @@ def _base_record_context_metadata_from_graph(
         lines.append(f"MIME Type       : {mime_type}")
     if web_url:
         if not str(web_url).startswith("http") and frontend_url:
-            web_url = f"{frontend_url.rstrip('/')}{web_url}"
+            web_url = f"{frontend_url.rstrip('/')}/{str(web_url).lstrip('/')}"
         lines.append(f"Web URL         : {web_url}")
     return "\n".join(lines)
 
@@ -752,29 +753,18 @@ def _classify_hits(
 def _build_relation_buckets(
     relation_eligible: list[tuple[str, str, dict[str, Any]]],
     edge_results: list,
-    flattened_results: list[dict[str, Any]],
 ) -> tuple[list[tuple[str, dict[str, Any], dict[str, dict[str, Any]]]], set[str]]:
     """Build per-record relation buckets from edge results.
 
-    Excludes self-references and already-annotated parents.
-    Returns (buckets, all_related_ids).
+    Excludes self-references. Returns (buckets, all_related_ids).
     """
-    vrid_to_excluded_parent: dict[str, set[str]] = {}
-    for row in flattened_results:
-        vrid = row.get("virtual_record_id")
-        if not vrid:
-            continue
-        parent_rel = row.get("parent_node_relation")
-        if isinstance(parent_rel, dict) and parent_rel.get("record_id"):
-            vrid_to_excluded_parent.setdefault(vrid, set()).add(parent_rel["record_id"])
-
     buckets: list[tuple[str, dict[str, Any], dict[str, dict[str, Any]]]] = []
     all_related_ids: set[str] = set()
 
     for (vrid, hit_record_id, record), edges in zip(relation_eligible, edge_results):
         if isinstance(edges, Exception):
             continue
-        exclude_ids = {hit_record_id} | vrid_to_excluded_parent.get(vrid, set())
+        exclude_ids = {hit_record_id}
         bucket: dict[str, dict[str, Any]] = {}
         for related_id, label in edges:
             if related_id not in exclude_ids:
@@ -973,7 +963,7 @@ async def enrich_records_with_graph_context(
 
     # Step 3: Build relation buckets from edges
     relation_buckets, all_related_ids = _build_relation_buckets(
-        relation_eligible, edge_results, flattened_results,
+        relation_eligible, edge_results,
     )
 
     # Step 4: Collect all IDs needing resolution (parents + related)
