@@ -22,8 +22,6 @@ from app.modules.agents.qna.chat_state import ChatState
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
     CitationRefMapper,
-    _build_record_id_to_graph_doc_index,
-    _extend_record_id_index_from_hit_records,
     build_message_content_array,
     enrich_records_with_graph_context,
     get_flattened_results,
@@ -329,14 +327,11 @@ class Retrieval:
 
             # === GRAPH CONTEXT ENRICHMENT ===
             if flattened_results and graph_provider:
-                doc_index = _build_record_id_to_graph_doc_index(virtual_to_record_map)
-                _extend_record_id_index_from_hit_records(doc_index, virtual_record_id_to_result)
                 await enrich_records_with_graph_context(
                     virtual_record_id_to_result,
                     graph_provider,
                     flattened_results,
                     virtual_to_record_map,
-                    doc_index=doc_index,
                     blob_store=blob_store,
                     org_id=org_id,
                     config_service=config_service,

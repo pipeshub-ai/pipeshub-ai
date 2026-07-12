@@ -661,9 +661,9 @@ class MessageRecord(Record):
     # Used by the processor to create INVOLVED_IN entity relations
     involved_user_source_ids: list[str] = Field(default_factory=list)
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted message-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
