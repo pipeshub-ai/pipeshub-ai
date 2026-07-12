@@ -615,52 +615,30 @@ async def _build_linked_record_context_metadata(
 ) -> str | None:
     """Build linked-record context (metadata + type fields + summary, no blocks).
 
-    2-tier resolution:
-      Tier 1: indexed (has vrid) → blob fetch + type-specific graph doc
-      Tier 2: graph only → base doc + type-specific graph doc, no summary
+    The base doc is guaranteed present in doc_index by the caller. When the record
+    is indexed (has a vrid), the blob supplies the summary; otherwise metadata only.
     """
+    base_doc = doc_index.get(record_id)
+    if not base_doc or not isinstance(base_doc, dict):
+        return None
     try:
-        # Tier 1: indexed, fetch from blob
+        blob_record = None
         if vrid and blob_store and org_id:
             try:
                 blob_record = await blob_store.get_record_from_storage(vrid, org_id)
-                if blob_record and isinstance(blob_record, dict):
-                    base_doc = doc_index.get(record_id)
-                    if not base_doc:
-                        base_doc = await graph_provider.get_document(
-                            record_id, CollectionNames.RECORDS.value
-                        )
-                        if base_doc and isinstance(base_doc, dict):
-                            doc_index[record_id] = base_doc
-                    record_dict = _merge_graph_into_blob_record(blob_record, base_doc)
-                    record_type = record_dict.get("record_type")
-                    type_graph_doc = await _fetch_type_specific_doc(
-                        graph_provider, record_id, record_type
-                    )
-                    record_instance = create_record_instance_from_dict(record_dict, type_graph_doc)
-                    if record_instance:
-                        return record_instance.to_llm_linked_context(frontend_url)
             except Exception as e:
                 logger.debug(
                     "Linked record context: blob fetch failed for %s (vrid=%s): %s",
                     record_id, vrid, e,
                 )
 
-        # Tier 2: graph only (no summary available)
-        base_doc = doc_index.get(record_id)
-        if not base_doc:
-            base_doc = await graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
-            if base_doc and isinstance(base_doc, dict):
-                doc_index[record_id] = base_doc
-        if not base_doc or not isinstance(base_doc, dict):
-            return None
+        if blob_record and isinstance(blob_record, dict):
+            record_dict = _merge_graph_into_blob_record(blob_record, base_doc)
+        else:
+            record_dict = _build_record_dict_from_graph_base(base_doc)
 
-        record_dict = _build_record_dict_from_graph_base(base_doc)
-        record_type = record_dict.get("record_type")
         type_graph_doc = await _fetch_type_specific_doc(
-            graph_provider, record_id, record_type
+            graph_provider, record_id, record_dict.get("record_type")
         )
         record_instance = create_record_instance_from_dict(record_dict, type_graph_doc)
         if record_instance:
@@ -818,31 +796,28 @@ async def _resolve_target_metadata(
     frontend_url: str | None,
     blob_store: Any,
     org_id: str,
-) -> tuple[dict[str, str], dict[str, str]]:
-    """Batch-resolve graph docs, vrids, and context for all target IDs.
+) -> dict[str, str]:
+    """Batch-resolve graph docs and context metadata for all target IDs.
 
-    Returns (id_to_vrid, context_map) where context_map has rendered metadata
-    for out-of-context records.
+    Returns context_map: out-of-context record id -> rendered metadata.
     """
     ids_needing_docs = [rid for rid in all_target_ids if rid not in doc_index]
 
-    async def _empty_list():
-        return []
-
-    doc_fetch_task = (
-        asyncio.gather(
+    async def _fetch_docs() -> list:
+        if not ids_needing_docs:
+            return []
+        return await asyncio.gather(
             *[graph_provider.get_document(rid, CollectionNames.RECORDS.value) for rid in ids_needing_docs],
             return_exceptions=True,
         )
-        if ids_needing_docs
-        else _empty_list()
-    )
-    vrid_fetch_task = graph_provider.get_virtual_record_ids_for_record_ids(list(all_target_ids))
 
-    batch_results = await asyncio.gather(doc_fetch_task, vrid_fetch_task, return_exceptions=True)
+    doc_results, vrid_result = await asyncio.gather(
+        _fetch_docs(),
+        graph_provider.get_virtual_record_ids_for_record_ids(list(all_target_ids)),
+        return_exceptions=True,
+    )
 
     # Populate doc_index from fetched docs
-    doc_results = batch_results[0]
     if ids_needing_docs and not isinstance(doc_results, Exception):
         for rid, doc in zip(ids_needing_docs, doc_results):
             if not isinstance(doc, Exception) and doc and isinstance(doc, dict):
@@ -850,7 +825,6 @@ async def _resolve_target_metadata(
 
     # Build id -> vrid mapping
     id_to_vrid: dict[str, str] = {}
-    vrid_result = batch_results[1]
     if not isinstance(vrid_result, Exception) and isinstance(vrid_result, dict):
         id_to_vrid = vrid_result
 
@@ -879,7 +853,7 @@ async def _resolve_target_metadata(
             if not isinstance(ctx, Exception) and ctx:
                 context_map[rid] = ctx
 
-    return id_to_vrid, context_map
+    return context_map
 
 
 def _annotate_dependent_parents(
@@ -1007,8 +981,8 @@ async def enrich_records_with_graph_context(
     if not all_target_ids:
         return
 
-    # Step 5: Batch resolve docs, vrids, and build context metadata
-    _, context_map = await _resolve_target_metadata(
+    # Step 5: Batch resolve docs and build context metadata
+    context_map = await _resolve_target_metadata(
         all_target_ids, doc_index, graph_provider,
         in_context_ids, frontend_url, blob_store, org_id,
     )
