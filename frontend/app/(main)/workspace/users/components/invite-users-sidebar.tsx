@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Box, Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -74,6 +74,8 @@ export function InviteUsersSidebar({
   // Local groups data (transient — not persisted in store)
   const [groups, setGroups] = useState<Group[]>([]);
   const [isLoadingGroups, setIsLoadingGroups] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Reset form when panel closes
   useEffect(() => {
@@ -252,6 +254,50 @@ export function InviteUsersSidebar({
     t,
   ]);
 
+  // Upload a CSV/Excel file of emails — the server parses and invites in the
+  // background, so we just report that the import started.
+  const handleImportFile = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = '';
+      if (!file) return;
+
+      setIsImporting(true);
+      try {
+        await UsersApi.inviteUsersFromFile(
+          file,
+          inviteGroupIds.length > 0 ? inviteGroupIds : undefined
+        );
+        addToast({
+          variant: 'success',
+          title: t('workspace.users.invite.importStarted', 'Import started'),
+          description: t(
+            'workspace.users.invite.importStartedDescription',
+            "We'll notify you when the invites finish."
+          ),
+          duration: 4000,
+        });
+        closeInvitePanel();
+        onInviteSuccess?.();
+      } catch (err) {
+        addToast({
+          variant: 'error',
+          title: t('workspace.users.invite.importFailed', 'Import failed'),
+          description:
+            (err as { message?: string })?.message ||
+            t(
+              'workspace.users.invite.importFailedDescription',
+              'Could not read the file. Upload a valid CSV or Excel file.'
+            ),
+          duration: 5000,
+        });
+      } finally {
+        setIsImporting(false);
+      }
+    },
+    [inviteGroupIds, addToast, t, closeInvitePanel, onInviteSuccess]
+  );
+
   // Panel title & button labels change in edit mode
   const panelTitle = isEditMode
     ? t('workspace.users.invite.editTitle', 'Edit Invite')
@@ -271,16 +317,26 @@ export function InviteUsersSidebar({
       icon={isEditMode ? 'edit' : 'person_add_alt'}
       headerActions={
         !isEditMode ? (
-          <Button
-            variant="outline"
-            color="gray"
-            size="2"
-            disabled
-            style={{ cursor: 'not-allowed', opacity: 0.5 }}
-          >
-            <MaterialIcon name="upload" size={16} />
-            {t('workspace.users.invite.importCsv', 'Import CSV')}
-          </Button>
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,.xlsx,.xls"
+              style={{ display: 'none' }}
+              onChange={handleImportFile}
+            />
+            <Button
+              variant="outline"
+              color="gray"
+              size="2"
+              disabled={isImporting}
+              onClick={() => fileInputRef.current?.click()}
+              style={{ cursor: isImporting ? 'default' : 'pointer' }}
+            >
+              <MaterialIcon name="upload" size={16} />
+              {t('workspace.users.invite.importCsv', 'Import CSV')}
+            </Button>
+          </>
         ) : undefined
       }
       primaryLabel={primaryLabel}
