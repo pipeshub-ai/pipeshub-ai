@@ -150,7 +150,7 @@ class TestInitialize:
             c.worker_loop.is_running.return_value = True
 
             with patch(
-                "app.services.messaging.redis_streams.indexing_consumer.Redis",
+                "app.services.messaging.redis_streams.indexing_consumer.build_redis_client",
                 return_value=mock_redis,
             ):
                 await c.initialize()
@@ -178,7 +178,7 @@ class TestInitialize:
             c.worker_loop.is_running.return_value = True
 
             with patch(
-                "app.services.messaging.redis_streams.indexing_consumer.Redis",
+                "app.services.messaging.redis_streams.indexing_consumer.build_redis_client",
                 return_value=mock_redis,
             ):
                 await c.initialize()
@@ -202,7 +202,7 @@ class TestInitialize:
             c.worker_loop.is_running.return_value = True
 
             with patch(
-                "app.services.messaging.redis_streams.indexing_consumer.Redis",
+                "app.services.messaging.redis_streams.indexing_consumer.build_redis_client",
                 return_value=mock_redis,
             ):
                 with patch.object(c, "stop", new_callable=AsyncMock) as mock_stop:
@@ -271,7 +271,7 @@ class TestInitialize:
             c.worker_loop.is_running.return_value = True
 
             with patch(
-                "app.services.messaging.redis_streams.indexing_consumer.Redis",
+                "app.services.messaging.redis_streams.indexing_consumer.build_redis_client",
                 return_value=mock_redis,
             ):
                 await c.initialize()  # should not raise
@@ -1617,7 +1617,7 @@ class TestFullLifecycle:
             c.worker_loop.is_running.return_value = True
 
             with patch(
-                "app.services.messaging.redis_streams.indexing_consumer.Redis",
+                "app.services.messaging.redis_streams.indexing_consumer.build_redis_client",
                 return_value=mock_redis,
             ):
                 await c.start(handler)

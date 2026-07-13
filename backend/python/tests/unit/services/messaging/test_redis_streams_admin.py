@@ -44,7 +44,7 @@ class TestEnsureTopicsExist:
         mock_redis.close = AsyncMock()
 
         with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
+            "app.services.messaging.redis_streams.admin.build_redis_client",
             return_value=mock_redis,
         ):
             await admin.ensure_topics_exist(["stream-a", "stream-b"])
@@ -60,7 +60,7 @@ class TestEnsureTopicsExist:
         mock_redis.close = AsyncMock()
 
         with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
+            "app.services.messaging.redis_streams.admin.build_redis_client",
             return_value=mock_redis,
         ):
             await admin.ensure_topics_exist(["existing-stream"])
@@ -76,7 +76,7 @@ class TestEnsureTopicsExist:
         mock_redis.close = AsyncMock()
 
         with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
+            "app.services.messaging.redis_streams.admin.build_redis_client",
             return_value=mock_redis,
         ):
             with pytest.raises(RuntimeError, match="Failed to ensure 1 Redis stream"):
@@ -92,7 +92,7 @@ class TestEnsureTopicsExist:
         mock_redis.close = AsyncMock()
 
         with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
+            "app.services.messaging.redis_streams.admin.build_redis_client",
             return_value=mock_redis,
         ):
             await admin.ensure_topics_exist()
@@ -109,7 +109,7 @@ class TestEnsureTopicsExist:
         mock_redis.close = AsyncMock()
 
         with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
+            "app.services.messaging.redis_streams.admin.build_redis_client",
             return_value=mock_redis,
         ):
             with pytest.raises(RuntimeError, match="Failed to ensure 1 Redis stream"):
@@ -125,7 +125,7 @@ class TestEnsureTopicsExist:
         mock_redis.close = AsyncMock()
 
         with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
+            "app.services.messaging.redis_streams.admin.build_redis_client",
             return_value=mock_redis,
         ):
             await admin.ensure_topics_exist(["s"])
@@ -140,7 +140,7 @@ class TestListTopics:
         mock_redis = AsyncMock()
         mock_redis.close = AsyncMock()
 
-        async def mock_scan_iter():
+        async def mock_scan_iter(match=None, count=100, **kwargs):
             for key in ["stream-1", "hash-key", "stream-2"]:
                 yield key
 
@@ -150,7 +150,7 @@ class TestListTopics:
         mock_redis.type = AsyncMock(side_effect=lambda k: type_results.get(k, "string"))
 
         with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
+            "app.services.messaging.redis_streams.admin.build_redis_client",
             return_value=mock_redis,
         ):
             result = await admin.list_topics()
@@ -163,14 +163,14 @@ class TestListTopics:
         mock_redis = AsyncMock()
         mock_redis.close = AsyncMock()
 
-        async def mock_scan_iter():
+        async def mock_scan_iter(match=None, count=100, **kwargs):
             return
             yield
 
         mock_redis.scan_iter = mock_scan_iter
 
         with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
+            "app.services.messaging.redis_streams.admin.build_redis_client",
             return_value=mock_redis,
         ):
             result = await admin.list_topics()
@@ -183,14 +183,14 @@ class TestListTopics:
         mock_redis = AsyncMock()
         mock_redis.close = AsyncMock()
 
-        async def mock_scan_iter():
+        async def mock_scan_iter(match=None, count=100, **kwargs):
             return
             yield
 
         mock_redis.scan_iter = mock_scan_iter
 
         with patch(
-            "app.services.messaging.redis_streams.admin.Redis",
+            "app.services.messaging.redis_streams.admin.build_redis_client",
             return_value=mock_redis,
         ):
             await admin.list_topics()

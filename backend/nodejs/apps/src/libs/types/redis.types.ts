@@ -5,6 +5,13 @@ export interface RedisTlsConfig {
   key?: string;
 }
 
+export type RedisMode = 'standalone' | 'cluster';
+
+export interface RedisClusterNode {
+  host: string;
+  port: number;
+}
+
 export interface RedisConfig {
   host: string;
   port: number;
@@ -16,6 +23,8 @@ export interface RedisConfig {
   maxRetriesPerRequest?: number;
   enableOfflineQueue?: boolean;
   tls?: boolean;
+  mode?: RedisMode;
+  nodes?: RedisClusterNode[];
 }
 
 export interface CacheOptions {

@@ -44,8 +44,15 @@ function setupIoredisMock(mockClient: MockRedisClient) {
 
   require.cache[ioredisPath] = {
     ...original!,
-    exports: { Redis: FakeRedis, default: FakeRedis, RedisOptions: {} },
+    exports: { Redis: FakeRedis, default: FakeRedis, Cluster: FakeRedis, RedisOptions: {} },
   } as any;
+
+  // redis-streams.service builds its client through redisClientFactory, which
+  // imports ioredis at module load. Invalidate BOTH so the reloaded service
+  // picks up the mocked ioredis (otherwise the factory keeps a reference to
+  // the real Redis and opens live TCP connections → timeouts/OOM in CI).
+  const factoryPath = require.resolve('../../../src/libs/services/redisClientFactory');
+  delete require.cache[factoryPath];
 
   const svcPath = require.resolve('../../../src/libs/services/redis-streams.service');
   delete require.cache[svcPath];
@@ -108,6 +115,10 @@ describe('Redis Streams Service', () => {
         exports: { Redis: CapturingRedis, default: CapturingRedis, RedisOptions: {} },
       } as any;
 
+      const factoryPath = require.resolve(
+        '../../../src/libs/services/redisClientFactory',
+      );
+      delete require.cache[factoryPath];
       const svcPath = require.resolve(
         '../../../src/libs/services/redis-streams.service',
       );
@@ -149,6 +160,10 @@ describe('Redis Streams Service', () => {
         exports: { Redis: CapturingRedis, default: CapturingRedis, RedisOptions: {} },
       } as any;
 
+      const factoryPath = require.resolve(
+        '../../../src/libs/services/redisClientFactory',
+      );
+      delete require.cache[factoryPath];
       const svcPath = require.resolve(
         '../../../src/libs/services/redis-streams.service',
       );

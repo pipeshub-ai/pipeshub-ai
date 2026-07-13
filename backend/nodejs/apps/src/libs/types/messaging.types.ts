@@ -59,16 +59,22 @@ export interface RedisConfig {
   password?: string;
   tls?: boolean;
   db?: number;
+  mode?: 'standalone' | 'cluster';
+  nodes?: Array<{ host: string; port: number }>;
 }
 
 export interface RedisBrokerConfig extends MessageBrokerConfig {
   type: MessageBrokerType.REDIS;
   host: string;
   port: number;
+  username?: string;
   password?: string;
   db?: number;
+  tls?: boolean;
   maxLen?: number;
   keyPrefix?: string;
+  mode?: 'standalone' | 'cluster';
+  nodes?: Array<{ host: string; port: number }>;
 }
 
 export interface StreamMessage<T> {

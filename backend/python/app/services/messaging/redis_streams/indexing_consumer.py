@@ -6,7 +6,6 @@ from logging import Logger
 from typing import Any, Optional, override
 
 from pydantic import ValidationError
-from redis.asyncio import Redis
 
 from app.services.messaging.config import (
     IndexingEvent,
@@ -14,16 +13,19 @@ from app.services.messaging.config import (
     RedisStreamsConfig,
     StreamMessage,
     messaging_env,
+    stream_key,
+    topic_from_stream_key,
 )
 from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType, format_exception_chain
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
+from app.services.messaging.retry_manager import RetryManager
+from app.utils.redis_util import RedisClient, build_redis_client
 from app.utils.request_context import (
     context_from_envelope,
     reset_context,
     set_context,
 )
-from app.services.messaging.retry_manager import RetryManager
 
 _BUSYGROUP_ERROR = "BUSYGROUP"
 _MESSAGE_VALUE_FIELD = "value"
@@ -51,7 +53,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self.config = config
         self.retry_manager = retry_manager
         self.producer = producer
-        self.redis: Optional[Redis] = None
+        self.redis: Optional[RedisClient] = None
         self.running = False
         self.consume_task: Optional[asyncio.Task] = None
         self.worker_executor: Optional[ThreadPoolExecutor] = None
@@ -81,19 +83,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if not self.worker_loop or not self.worker_loop.is_running():
                 raise RuntimeError("Worker thread event loop failed to start")
 
-            self.redis = Redis(
-                host=self.config.host,
-                port=self.config.port,
-                password=self.config.password,
-                db=self.config.db,
-                decode_responses=True,
-            )
+            self.redis = build_redis_client(self.config, decode_responses=True)
             await self.redis.ping()
 
             for topic in self.config.topics:
                 try:
                     await self.redis.xgroup_create(  # type: ignore
-                        topic,
+                        stream_key(self.config, topic),
                         self.config.group_id,
                         id="0",
                         mkstream=True,
@@ -265,12 +261,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         which increments on every XREADGROUP delivery including PEL re-reads.
         """
         max_attempts = messaging_env.max_delivery_attempts
+        # Cluster-safe: operate on the hash-tagged stream key, not the bare topic.
+        stream = stream_key(self.config, topic)
 
         try:
             if self.retry_manager is not None:
                 failure_count = await self._get_retry_count(message_id)
                 if failure_count >= max_attempts:
-                    await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore
+                    await self.redis.xack(stream, self.config.group_id, message_id)  # type: ignore
                     await self._clear_retry_tracking(message_id)
                     self.logger.warning(
                         "Dead-lettered %s after %d transient failures (max %d)",
@@ -282,7 +280,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 return False
 
             details = await self.redis.xpending_range(  # type: ignore
-                topic,
+                stream,
                 self.config.group_id,
                 min=message_id,
                 max=message_id,
@@ -291,7 +289,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if details:
                 times_delivered = details[0].get("times_delivered", 0)
                 if times_delivered >= max_attempts:
-                    await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore
+                    await self.redis.xack(stream, self.config.group_id, message_id)  # type: ignore
                     self.logger.warning(
                         "Dead-lettered %s after %d transient failures (max %d)",
                         message_id,
@@ -317,7 +315,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         processed_any = False
 
         for topic in self.config.topics:
-            # Phase 1: claim idle messages from other (possibly crashed) consumers
+            # Phase 1: claim idle messages from other (possibly crashed) consumers.
+            # `key` wraps the topic with a hash tag in cluster mode so XAUTOCLAIM/
+            # XACK below all route to the same shard.
+            key = stream_key(self.config, topic)
             start_id = "0-0"
             while self.running:
                 active_count = self._get_active_task_count()
@@ -326,7 +327,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     continue
                 try:
                     result = await self.redis.xautoclaim(  # type: ignore
-                        topic,
+                        key,
                         self.config.group_id,
                         self.config.client_id,
                         min_idle_time=self.config.claim_min_idle_ms,
@@ -350,7 +351,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                 topic,
                                 message_id,
                             )
-                            await self._start_processing_task(topic, message_id, fields)
+                            # Pass the wrapped key so downstream xack targets
+                            # the same shard as XAUTOCLAIM.
+                            await self._start_processing_task(key, message_id, fields)
                         except Exception as e:
                             self.logger.error(
                                 "Error recovering pending message %s: %s",
@@ -375,7 +378,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     results = await self.redis.xreadgroup(  # type: ignore
                         groupname=self.config.group_id,
                         consumername=self.config.client_id,
-                        streams={topic: last_pending_id},
+                        # Use the wrapped `key` (not `topic`) so cluster mode
+                        # routes to the same shard as Phase 1's XAUTOCLAIM.
+                        streams={key: last_pending_id},
                         count=self.config.batch_size,
                     )
 
@@ -404,7 +409,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                     topic,
                                     message_id,
                                 )
-                                await self._start_processing_task(topic, message_id, fields)
+                                # Pass the wrapped `key` (not `topic`) so the
+                                # downstream xack targets the same shard.
+                                await self._start_processing_task(key, message_id, fields)
                             except Exception as e:
                                 self.logger.error(
                                     "Error recovering own pending message %s: %s",
@@ -457,7 +464,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         )
                         self._backpressure_active = False
 
-                    streams = dict.fromkeys(self.config.topics, ">")
+                    streams = {
+                        stream_key(self.config, t): ">" for t in self.config.topics
+                    }
                     results = await self.redis.xreadgroup(  # type: ignore
                         groupname=self.config.group_id,
                         consumername=self.config.client_id,
@@ -479,15 +488,18 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     self._consecutive_empty_polls = 0
 
                     for stream_name, messages in results:
+                        topic = topic_from_stream_key(self.config, stream_name)
                         for message_id, fields in messages:
                             if not self.running:
                                 break
                             try:
                                 self.logger.info(
                                     "Received message: stream=%s, id=%s",
-                                    stream_name,
+                                    topic,
                                     message_id,
                                 )
+                                # stream_name is the wrapped key; downstream
+                                # xack must use it as-is for cluster routing.
                                 await self._start_processing_task(
                                     stream_name, message_id, fields
                                 )
@@ -674,9 +686,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             payload = dict(message.payload)
             payload["_retry_tracking_id"] = stable_message_id
             
+            # stream_name is the wrapped Redis key; hand the producer the logical
+            # topic so it re-applies the hash tag once (not twice) in cluster mode.
             await self._run_on_main_loop(
                 self.producer.send_event(
-                    topic=stream_name,
+                    topic=topic_from_stream_key(self.config, stream_name),
                     event_type=message.eventType,
                     payload=payload,
                 )

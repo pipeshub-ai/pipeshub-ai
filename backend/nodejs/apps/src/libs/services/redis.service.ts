@@ -1,13 +1,13 @@
 import { injectable } from 'inversify';
-import { Redis, RedisOptions } from 'ioredis';
 import { Logger } from './logger.service';
 
 import { RedisCacheError } from '../errors/redis.errors';
 import { CacheOptions, RedisConfig } from '../types/redis.types';
+import { buildRedisClient, RedisClient } from './redisClientFactory';
 
 @injectable()
 export class RedisService {
-  private client!: Redis;
+  private client!: RedisClient;
   private connected = false;
   private readonly logger: Logger;
   private readonly defaultTTL = 3600; // 1 hour
@@ -22,28 +22,10 @@ export class RedisService {
   }
 
   private initializeClient(): void {
-    const redisOptions: RedisOptions = {
-      host: this.config.host,
-      port: this.config.port,
-      username: this.config.username,
-      password: this.config.password,
-      db: this.config.db ?? 0,
-      connectTimeout: this.config.connectTimeout ?? 10000,
-      maxRetriesPerRequest: this.config.maxRetriesPerRequest ?? 3,
-      enableOfflineQueue: this.config.enableOfflineQueue ?? true,
-      retryStrategy: (times: number) => {
-        const delay = Math.min(times * 50, 2000);
-        return delay;
-      },
-    };
-
-    // Add TLS configuration if enabled
     if (this.config.tls) {
-      redisOptions.tls = {};
       this.logger.info('Redis TLS enabled');
     }
-
-    this.client = new Redis(redisOptions);
+    this.client = buildRedisClient(this.config);
 
     this.client.on('connect', () => {
       this.connected = true;
