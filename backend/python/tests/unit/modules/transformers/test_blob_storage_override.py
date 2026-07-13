@@ -225,6 +225,18 @@ class TestApplyUsesOverride:
 
         bs.update_record_buffer.assert_awaited_once()
         bs.save_record_to_storage.assert_not_awaited()
+        # Content was never relocated (update_record_buffer overwrites wherever
+        # Node's records already has it) -- its real path is genuinely unknown,
+        # so ctx.settings["storage_path"] must NOT be set to the freshly
+        # computed hierarchical candidate ("records/conn-1/Finance/doc.pdf").
+        # Asserting the candidate was never written this way catches a
+        # regression that reintroduces metadata drift even if the "unknown"
+        # sentinel value used to represent "don't know" changes later.
+        set_calls = [c.args for c in ctx.settings.__setitem__.call_args_list]
+        storage_path_calls = [c for c in set_calls if c[0] == "storage_path"]
+        assert storage_path_calls, "ctx.settings['storage_path'] was never set"
+        assert storage_path_calls[-1][1] != "records/conn-1/Finance/doc.pdf"
+        assert storage_path_calls[-1][1] is None
 
     @pytest.mark.asyncio
     async def test_new_record_calls_save_with_hierarchical_path(self):

@@ -1991,12 +1991,17 @@ class TestApplyActualStoragePath:
         bs.save_record_to_storage.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_override_in_place_success_falls_back_when_current_path_unknown(self):
+    async def test_override_in_place_success_leaves_storage_path_unknown_when_current_path_unknown(self):
         """When the actual current path can't be determined (_get_current_
         document_path returns None), currently_flat defaults to True so
-        apply() takes the override-in-place branch; since relative_current
-        is falsy, the actual_storage_path ternary's else arm fires and
-        storage_path == the fresh candidate."""
+        apply() takes the override-in-place branch. Content was never
+        relocated (update_record_buffer overwrites wherever Node's records
+        already has it), and its real location is genuinely unknown -- so
+        storage_path must NOT be set to the fresh candidate (that would be
+        an active lie about where content is, and would let
+        save_reconciliation_metadata create/recreate metadata at a path
+        that doesn't match content's real, unknown-but-unchanged location).
+        It must be left unknown (None) instead."""
         bs = _make_blob_storage()
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-existing"}
@@ -2017,7 +2022,7 @@ class TestApplyActualStoragePath:
 
         result_ctx = await bs.apply(ctx)
 
-        assert result_ctx.settings["storage_path"] == "records/conn-1/Finance/doc.pdf"
+        assert result_ctx.settings["storage_path"] is None
         bs.update_record_buffer.assert_awaited_once()
 
     @pytest.mark.asyncio

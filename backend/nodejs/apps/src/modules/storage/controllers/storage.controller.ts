@@ -418,13 +418,31 @@ export class StorageController {
       const storageType = await this.getConfiguredStorageType(req);
       const adapter = await this.initializeStorageAdapter(req);
 
+      let failedIds: string[] = [];
       if (storageType === 'local') {
         await this.moveTreeLocal(adapter, oldFullPath, newFullPath, matched, orgId);
       } else {
-        await this.moveTreeRemote(adapter, storageType, oldFullPath, newFullPath, matched, orgId);
+        ({ failedIds } = await this.moveTreeRemote(
+          adapter,
+          storageType,
+          oldFullPath,
+          newFullPath,
+          matched,
+          orgId,
+        ));
       }
 
-      res.status(HTTP_STATUS.OK).json({ moved: matched.length });
+      // `failed` is only present when at least one document's blob could not
+      // be relocated -- those documents were left fully unmoved (see
+      // moveTreeRemote) and the caller should surface/retry them explicitly
+      // rather than assume the whole tree moved cleanly.
+      const response: { moved: number; failed?: string[] } = {
+        moved: matched.length - failedIds.length,
+      };
+      if (failedIds.length > 0) {
+        response.failed = failedIds;
+      }
+      res.status(HTTP_STATUS.OK).json(response);
     } catch (error) {
       next(error);
     }
@@ -472,6 +490,14 @@ export class StorageController {
     await this.rewriteStoredUrls(adapter, StorageVendor.Local, matched, oldFullPath, newFullPath, orgId);
   }
 
+  // For S3/Azure, renameObject is copy-then-delete-the-source: the old blob
+  // is gone the instant it resolves. Each document's Mongo state (documentPath
+  // + URL fields) is therefore committed IMMEDIATELY after that document's own
+  // blob move succeeds -- never batched until after the loop -- so a failure
+  // on document N can never leave an EARLIER document's blob moved while its
+  // Mongo row still points at the (now-deleted) old location. A document that
+  // fails is left fully unmoved (blob untouched, Mongo untouched) and its id
+  // is collected so the caller can see which ones need a retry/manual look.
   private async moveTreeRemote(
     adapter: StorageServiceAdapter,
     storageType: string,
@@ -480,23 +506,25 @@ export class StorageController {
     matched: MatchedTreeDocument[],
     orgId: string | undefined,
     batchSize = 200,
-  ): Promise<void> {
+  ): Promise<{ failedIds: string[] }> {
+    const failedIds: string[] = [];
+
     for (let i = 0; i < matched.length; i += batchSize) {
       const batch = matched.slice(i, i + batchSize);
-      const oldRootsToDelete: string[] = [];
       for (const doc of batch) {
+        const docId = String(doc._id);
         const relativeSuffix = doc.documentPath.slice(oldFullPath.length);
         const docNewFullPath = `${newFullPath}${relativeSuffix}`;
 
         const oldRoot = getDocumentRootPath(
           String(orgId),
-          String(doc._id),
+          docId,
           undefined,
           doc.documentPath,
         );
         const newRoot = getDocumentRootPath(
           String(orgId),
-          String(doc._id),
+          docId,
           undefined,
           docNewFullPath,
         );
@@ -521,33 +549,45 @@ export class StorageController {
           !!doc.isVersionedFile,
         );
 
-        if (doc.isVersionedFile) {
-          await adapter.copyTree(`${oldRoot}/versions`, `${newRoot}/versions`);
+        try {
+          if (doc.isVersionedFile) {
+            await adapter.copyTree(`${oldRoot}/versions`, `${newRoot}/versions`);
+          }
+          await adapter.renameObject(oldFilePath, newFilePath);
+        } catch (error) {
+          this.logger.warn(
+            `moveTree: failed to relocate blob for document ${docId}; leaving it at its old path`,
+            { documentId: docId, oldFilePath, newFilePath, error: (error as Error)?.message ?? error },
+          );
+          failedIds.push(docId);
+          continue;
         }
-        await adapter.renameObject(oldFilePath, newFilePath);
-        oldRootsToDelete.push(oldRoot);
-      }
 
-      await DocumentModel.updateMany(
-        { _id: { $in: batch.map((d) => d._id) } },
-        [
-          {
-            $set: {
-              documentPath: this.documentPathRewriteExpr(oldFullPath, newFullPath),
-            },
-          },
-        ],
-      );
+        // Commit this document's documentPath + URL fields in the same
+        // write the moment its blob move succeeds -- this is the fix for the
+        // data-loss window described above.
+        const set: Record<string, unknown> = {
+          documentPath: docNewFullPath,
+          ...this.buildStorageUrlSet(adapter, storageType, doc, docNewFullPath, doc.documentName, orgId),
+        };
+        try {
+          await DocumentModel.updateOne({ _id: doc._id }, { $set: set });
+        } catch (error) {
+          // The blob already moved but Mongo didn't take the update -- this
+          // document is now genuinely inconsistent and needs manual repair.
+          // Reporting it (instead of silently continuing) is the best we can
+          // do without a cross-system transaction.
+          this.logger.warn(
+            `moveTree: blob relocated for document ${docId} but the Mongo update failed; document needs manual repair`,
+            { documentId: docId, error: (error as Error)?.message ?? error },
+          );
+          failedIds.push(docId);
+          continue;
+        }
 
-      // Rewrite the stored object URLs (s3.url / azureBlob.url + version urls)
-      // so downloads resolve to the relocated keys -- reads never derive the
-      // key from documentPath.
-      await this.rewriteStoredUrls(adapter, storageType, batch, oldFullPath, newFullPath, orgId);
-
-      // Only delete old blobs once this batch's Mongo rows point at the new
-      // path -- deleting before the update risked orphaning rows that still
-      // referenced the (now-gone) old object if the process crashed mid-batch.
-      for (const oldRoot of oldRootsToDelete) {
+        // Only delete the old blob once Mongo already points at the new path
+        // -- deleting before the update risked orphaning a row that still
+        // referenced the (now-gone) old object if the process crashed in between.
         try {
           await adapter.deleteObject(oldRoot);
         } catch {
@@ -555,12 +595,21 @@ export class StorageController {
         }
       }
     }
+
+    return { failedIds };
   }
 
   // Rewrites each document's stored blob-location field(s) to the new root.
   // Downloads resolve from s3.url / azureBlob.url / local.localPath (and the
   // per-version equivalents), never from documentPath, so these must be
   // rewritten alongside the physical relocation or moved docs 404.
+  //
+  // Only used by moveTreeLocal, where a single renameTree call relocates the
+  // whole prefix atomically on disk -- there is no per-document blob move to
+  // interleave with, so a batched rewrite afterward is safe. moveTreeRemote
+  // moves one blob at a time and calls buildStorageUrlSet directly per
+  // document instead, so each document's Mongo state can commit immediately
+  // after its own blob move succeeds.
   private async rewriteStoredUrls(
     adapter: StorageServiceAdapter,
     storageType: string,

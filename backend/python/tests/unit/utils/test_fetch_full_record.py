@@ -296,6 +296,7 @@ class TestFetchMultipleRecordsImpl:
             "recordType": "TICKET",
         })
         graph_provider.config_service = MagicMock()
+        graph_provider.check_vrids_accessible = AsyncMock(return_value={"vrid-1": "r1"})
 
         async def fake_get_record(vrid, map_, *args, **kwargs):
             map_[vrid] = {
@@ -323,6 +324,7 @@ class TestFetchMultipleRecordsImpl:
                 records_map,
                 graph_provider=graph_provider,
                 org_id="org-1",
+                user_id="user-1",
             )
 
         assert result["ok"] is True
@@ -443,6 +445,7 @@ class TestFetchMultipleRecordsImpl:
             "recordType": "DOCUMENT",
         })
         graph_provider.config_service = MagicMock()
+        graph_provider.check_vrids_accessible = AsyncMock(return_value={"vrid-1": "r1"})
 
         async def fake_get_record(vrid, map_, *args, **kwargs):
             map_[vrid] = {"id": "r1", "content": "fetched from blob"}
@@ -462,10 +465,52 @@ class TestFetchMultipleRecordsImpl:
                 ["r1"], records_map,
                 graph_provider=graph_provider,
                 org_id="org-1",
+                user_id="user-1",
             )
 
         assert result["ok"] is True
         assert result["record_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_missing_record_fetched_from_blob_permission_denied(self):
+        """Same as above, but the requesting user has no access to the vrid — the
+        pre-existing get_document fallback must not return the record's content."""
+        from app.config.constants.arangodb import ProgressStatus
+        from app.utils.fetch_full_record import _fetch_multiple_records_impl
+
+        records_map = {}
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "virtualRecordId": "vrid-1",
+            "recordType": "DOCUMENT",
+        })
+        graph_provider.config_service = MagicMock()
+        graph_provider.check_vrids_accessible = AsyncMock(return_value={})
+
+        async def fake_get_record(vrid, map_, *args, **kwargs):
+            map_[vrid] = {"id": "r1", "content": "fetched from blob"}
+
+        mock_blob_instance = MagicMock()
+        mock_blob_instance.config_service = MagicMock()
+        mock_blob_instance.config_service.get_config = AsyncMock(return_value={})
+
+        with patch(
+            "app.utils.fetch_full_record.BlobStorage",
+            return_value=mock_blob_instance,
+        ), patch(
+            "app.utils.fetch_full_record.get_record",
+            side_effect=fake_get_record,
+        ) as mock_get_record:
+            result = await _fetch_multiple_records_impl(
+                ["r1"], records_map,
+                graph_provider=graph_provider,
+                org_id="org-1",
+                user_id="user-1",
+            )
+
+        assert result["ok"] is False
+        mock_get_record.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_fetched_sql_table_enriched_with_fk(self):
@@ -480,6 +525,7 @@ class TestFetchMultipleRecordsImpl:
             "recordType": "SQL_TABLE",
         })
         graph_provider.config_service = MagicMock()
+        graph_provider.check_vrids_accessible = AsyncMock(return_value={"vrid-1": "r1"})
         graph_provider.get_child_record_ids_by_relation_type = AsyncMock(return_value=["c1"])
         graph_provider.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
 
@@ -502,6 +548,7 @@ class TestFetchMultipleRecordsImpl:
                 ["r1"], records_map,
                 graph_provider=graph_provider,
                 org_id="org-1",
+                user_id="user-1",
             )
 
         assert result["ok"] is True
@@ -538,7 +585,7 @@ class TestFetchMultipleRecordsImpl:
 class TestFetchMultipleRecordsImplGraphFallback:
     """Covers the org_id + graph_provider fallback branch (lines 97-125 in source)."""
 
-    def _make_graph_provider(self, *, document=None, raises=None, endpoints=None):
+    def _make_graph_provider(self, *, document=None, raises=None, endpoints=None, accessible_vrids=("vrid-1",)):
         gp = MagicMock()
         gp.config_service = MagicMock()
         if raises is not None:
@@ -548,11 +595,16 @@ class TestFetchMultipleRecordsImplGraphFallback:
         gp.config_service.get_config = AsyncMock(
             return_value=endpoints if endpoints is not None else {},
         )
+        # Permission check: by default the vrid used across these fixtures
+        # ("vrid-1") is accessible. Pass accessible_vrids=() to simulate denial.
+        gp.check_vrids_accessible = AsyncMock(
+            return_value={vrid: f"record-for-{vrid}" for vrid in accessible_vrids}
+        )
         return gp
 
     @pytest.mark.asyncio
     async def test_graph_fallback_returns_blob_record(self):
-        """graphDb lookup hits, indexing COMPLETED, BlobStorage populates the map."""
+        """graphDb lookup hits, indexing COMPLETED, permission granted, BlobStorage populates the map."""
         from app.utils import fetch_full_record as ffr
 
         graph_provider = self._make_graph_provider(
@@ -571,7 +623,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
             )
 
             result = await ffr._fetch_multiple_records_impl(
-                ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
             )
 
         assert result["ok"] is True
@@ -579,6 +631,54 @@ class TestFetchMultipleRecordsImplGraphFallback:
         assert result["records"][0]["virtual_record_id"] == "vrid-1"
         assert result["records"][0]["content"] == "blob-content"
         mock_get_record.assert_awaited_once()
+        graph_provider.check_vrids_accessible.assert_awaited_once_with(
+            user_id="user-1", org_id="org-1", virtual_record_ids=["vrid-1"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_permission_denied(self):
+        """graphDb lookup hits and indexing is COMPLETED, but the user lacks access
+        to the vrid — the pre-existing get_document fallback must not leak content."""
+        from app.utils import fetch_full_record as ffr
+
+        graph_provider = self._make_graph_provider(
+            document={"indexingStatus": "COMPLETED", "virtualRecordId": "vrid-1"},
+            accessible_vrids=(),  # nothing accessible to this user
+        )
+
+        async def _fake_get_record(vrid, results_map, *args, **kwargs):
+            results_map[vrid] = {"id": "r1", "content": "blob-content"}
+
+        with patch.object(ffr, "BlobStorage") as blob_cls, patch.object(
+            ffr, "get_record", new=AsyncMock(side_effect=_fake_get_record),
+        ) as mock_get_record:
+            blob_cls.return_value = MagicMock(
+                config_service=graph_provider.config_service,
+            )
+
+            result = await ffr._fetch_multiple_records_impl(
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
+            )
+
+        assert result["ok"] is False
+        mock_get_record.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_graph_fallback_no_user_id_denied(self):
+        """Without a user_id, the fallback path cannot be permission-checked and must
+        be skipped entirely rather than trusting an unverified caller."""
+        from app.utils import fetch_full_record as ffr
+
+        graph_provider = self._make_graph_provider(
+            document={"indexingStatus": "COMPLETED", "virtualRecordId": "vrid-1"},
+        )
+
+        result = await ffr._fetch_multiple_records_impl(
+            ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id=None,
+        )
+
+        assert result["ok"] is False
+        graph_provider.get_document.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_graph_fallback_endpoint_config_exception(self):
@@ -603,7 +703,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
             )
 
             result = await ffr._fetch_multiple_records_impl(
-                ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
             )
 
         assert result["ok"] is True
@@ -619,7 +719,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
         )
 
         result = await ffr._fetch_multiple_records_impl(
-            ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+            ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
         )
 
         assert result["ok"] is False
@@ -631,9 +731,10 @@ class TestFetchMultipleRecordsImplGraphFallback:
         from app.utils import fetch_full_record as ffr
 
         graph_provider = self._make_graph_provider(document=None)
+        graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=[])
 
         result = await ffr._fetch_multiple_records_impl(
-            ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+            ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
         )
 
         assert result["ok"] is False
@@ -646,7 +747,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
         graph_provider = self._make_graph_provider(raises=RuntimeError("arango down"))
 
         result = await ffr._fetch_multiple_records_impl(
-            ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+            ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
         )
 
         assert result["ok"] is False
@@ -671,7 +772,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
             )
 
             result = await ffr._fetch_multiple_records_impl(
-                ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
             )
 
         assert result["ok"] is False
@@ -697,10 +798,77 @@ class TestFetchMultipleRecordsImplGraphFallback:
             )
 
             result = await ffr._fetch_multiple_records_impl(
-                ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
             )
 
         assert result["ok"] is True
+
+    # -----------------------------------------------------------------
+    # New fallback: record_id passed in is actually a virtual_record_id
+    # (resolved via get_records_by_virtual_record_id → get_document)
+    # -----------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_vrid_resolution_fallback_permission_granted(self):
+        """record_id doesn't match a graph document directly, but resolves as a
+        virtual_record_id; when the user has access, the record is returned."""
+        from app.utils import fetch_full_record as ffr
+
+        graph_provider = self._make_graph_provider(document=None, accessible_vrids=("vrid-2",))
+        graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=["actual-record-1"])
+        graph_provider.get_document = AsyncMock(
+            return_value={"indexingStatus": "COMPLETED", "virtualRecordId": "vrid-2"}
+        )
+
+        async def _fake_get_record(vrid, results_map, *args, **kwargs):
+            results_map[vrid] = {"id": "actual-record-1", "content": "resolved-content"}
+
+        with patch.object(ffr, "BlobStorage") as blob_cls, patch.object(
+            ffr, "get_record", new=AsyncMock(side_effect=_fake_get_record),
+        ):
+            blob_cls.return_value = MagicMock(
+                config_service=graph_provider.config_service,
+            )
+
+            result = await ffr._fetch_multiple_records_impl(
+                ["vrid-2"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
+            )
+
+        assert result["ok"] is True
+        assert len(result["records"]) == 1
+        assert result["records"][0]["content"] == "resolved-content"
+        graph_provider.check_vrids_accessible.assert_awaited_once_with(
+            user_id="user-1", org_id="org-1", virtual_record_ids=["vrid-2"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_vrid_resolution_fallback_permission_denied(self):
+        """Same resolution path as above, but the user does not have access to the
+        resolved vrid — the new fallback must not leak the record's content."""
+        from app.utils import fetch_full_record as ffr
+
+        graph_provider = self._make_graph_provider(document=None, accessible_vrids=())
+        graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=["actual-record-1"])
+        graph_provider.get_document = AsyncMock(
+            return_value={"indexingStatus": "COMPLETED", "virtualRecordId": "vrid-2"}
+        )
+
+        async def _fake_get_record(vrid, results_map, *args, **kwargs):
+            results_map[vrid] = {"id": "actual-record-1", "content": "resolved-content"}
+
+        with patch.object(ffr, "BlobStorage") as blob_cls, patch.object(
+            ffr, "get_record", new=AsyncMock(side_effect=_fake_get_record),
+        ) as mock_get_record:
+            blob_cls.return_value = MagicMock(
+                config_service=graph_provider.config_service,
+            )
+
+            result = await ffr._fetch_multiple_records_impl(
+                ["vrid-2"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
+            )
+
+        assert result["ok"] is False
+        mock_get_record.assert_not_awaited()
 
 
 class TestCreateFetchFullRecordTool:

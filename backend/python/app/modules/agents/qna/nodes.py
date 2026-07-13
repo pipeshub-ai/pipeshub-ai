@@ -6955,6 +6955,7 @@ async def respond_node(
             virtual_record_map,
             org_id=org_id,
             graph_provider=graph_provider,
+            user_id=user_id,
         )
         tools = [fetch_tool]
         log.debug(

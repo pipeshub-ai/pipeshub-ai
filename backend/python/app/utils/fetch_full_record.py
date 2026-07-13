@@ -144,12 +144,45 @@ async def _enrich_sql_table_with_fk_relations(
     return enriched_record
 
 
+async def _is_vrid_accessible(
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+    virtual_record_id: str | None,
+) -> bool:
+    """Permission-gate a virtual_record_id before its content is returned.
+
+    Mirrors the targeted check used for grep/pattern-match results in
+    retrieval.py's _merge_pattern_match_blocks — records reached via a
+    record_id/virtual_record_id fallback (i.e. not already present in the
+    caller's permission-scoped virtual_record_id_to_result map) must pass
+    the same ACL check, not just an indexingStatus check.
+    """
+    if not virtual_record_id:
+        return False
+    try:
+        accessible = await graph_provider.check_vrids_accessible(
+            user_id=user_id,
+            org_id=org_id,
+            virtual_record_ids=[virtual_record_id],
+        )
+    except Exception as e:
+        logger.warning(
+            "Permission check failed for virtual_record_id %s: %s",
+            virtual_record_id,
+            str(e),
+        )
+        return False
+    return virtual_record_id in accessible
+
+
 async def _fetch_multiple_records_impl(
     record_ids: list[str],
     virtual_record_id_to_result: dict[str, Any],
     graph_provider: IGraphDBProvider | None = None,
     blob_store: BlobStorage | None = None,
     org_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Fetch multiple complete records at once.
@@ -157,8 +190,12 @@ async def _fetch_multiple_records_impl(
 
     If a record_id is not found in the map, attempts to:
     1. Fetch the Record from graph_provider to get virtual_record_id
-    2. Fetch the record content from blob_store
-    3. Enrich with FK relations if SQL_TABLE
+    2. Verify the requesting user has access to that virtual_record_id
+       (check_vrids_accessible) — the map lookup above is already
+       permission-scoped, but this fallback path is not, so it must be
+       gated explicitly.
+    3. Fetch the record content from blob_store
+    4. Enrich with FK relations if SQL_TABLE
 
     Returns:
     {
@@ -206,7 +243,7 @@ async def _fetch_multiple_records_impl(
             found_records.append(found_record)
             continue
 
-        if org_id and graph_provider:
+        if org_id and graph_provider and user_id:
             try:
                 graphDb_record = await graph_provider.get_document(
                                 document_key=record_id,
@@ -215,8 +252,10 @@ async def _fetch_multiple_records_impl(
 
                 if graphDb_record:
                     indexing_status = graphDb_record.get("indexingStatus")
-                    if indexing_status == ProgressStatus.COMPLETED.value:
-                        vrid = graphDb_record.get("virtualRecordId")
+                    vrid = graphDb_record.get("virtualRecordId")
+                    if indexing_status == ProgressStatus.COMPLETED.value and await _is_vrid_accessible(
+                        graph_provider, user_id, org_id, vrid
+                    ):
                         blob_store = BlobStorage(logger=logger, config_service=graph_provider.config_service, graph_provider=graph_provider)
                         frontend_url = None
                         try:
@@ -258,8 +297,10 @@ async def _fetch_multiple_records_impl(
                             )
                             if graphDb_record:
                                 indexing_status = graphDb_record.get("indexingStatus")
-                                if indexing_status == ProgressStatus.COMPLETED.value:
-                                    vrid = graphDb_record.get("virtualRecordId") or record_id
+                                vrid = graphDb_record.get("virtualRecordId") or record_id
+                                if indexing_status == ProgressStatus.COMPLETED.value and await _is_vrid_accessible(
+                                    graph_provider, user_id, org_id, vrid
+                                ):
                                     blob_store = BlobStorage(logger=logger, config_service=graph_provider.config_service, graph_provider=graph_provider)
                                     frontend_url = None
                                     try:
@@ -313,16 +354,20 @@ def create_fetch_full_record_tool(
     org_id: str | None = None,
     graph_provider: IGraphDBProvider | None = None,
     blob_store: BlobStorage | None = None,
+    user_id: str | None = None,
 ) -> Callable:
     """
     Factory function to create the tool with runtime dependencies injected.
-    
+
     Args:
         virtual_record_id_to_result: Mapping of virtual record IDs to record data
         graph_provider: Optional GraphDB service for enriching SQL_TABLE records
                         with FK parent/child relations and resolving record IDs
         blob_store: Optional blob storage for fetching records not in the map
         org_id: Optional organization ID for blob storage lookups
+        user_id: Requesting user's ID, required to permission-check any record
+                 resolved via the graph_provider fallback (records already in
+                 virtual_record_id_to_result are pre-scoped by the caller)
     """
     @tool("fetch_full_record", args_schema=FetchFullRecordArgs)
     async def fetch_full_record_tool(record_ids: list[str], reason: str = "Fetching full record content for comprehensive answer") -> dict[str, Any]:
@@ -354,6 +399,7 @@ def create_fetch_full_record_tool(
                 org_id=org_id,
                 graph_provider=graph_provider,
                 blob_store=blob_store,
+                user_id=user_id,
             )
         except Exception as e:
             # Return error as dict

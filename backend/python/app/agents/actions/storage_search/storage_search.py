@@ -82,10 +82,11 @@ _DANGEROUS_FLAGS_BY_BINARY: dict[str, frozenset[str]] = {
     "rg": frozenset({"--pre", "--pre-glob"}),
 }
 
-# Shell metacharacters that enable arbitrary command injection.
-# We allow the pipe character `|` for pipelines but nothing else.
-# Newlines/carriage returns are blocked because use_shell=True passes the
-# command to /bin/sh -c, which treats newlines as command separators.
+# Shell metacharacters that enable arbitrary command injection. Commands are
+# executed via create_subprocess_exec (never a shell), so $VAR/~/glob cannot
+# expand; this filter is defense-in-depth, rejecting operators that would only
+# ever indicate an injection attempt. The pipe `|` is allowed for pipelines
+# (handled by splitting into exec stages); newlines are rejected outright.
 _INJECTION_RE = re.compile(r'[;&<>`\n\r]|\$\(|`|\|\|')
 
 
@@ -220,6 +221,10 @@ class RunCommandInput(BaseModel):
 
 _MAX_FIND_RECORDS = 20
 _RECORD_FILENAME_RE = re.compile(r"record_([0-9a-f\-]+)\.json$", re.IGNORECASE)
+# Matches a record_<virtualRecordId>.json reference anywhere in a text line
+# (e.g. grep -r output "grp/doc/sid/record_<vrid>.json:match"), used to gate
+# raw command output on per-record access.
+_VRID_IN_TEXT_RE = re.compile(r"record_([0-9a-f\-]+)\.json", re.IGNORECASE)
 
 
 class FindRecordsInput(BaseModel):
@@ -374,25 +379,34 @@ def _validate_command(command: str) -> tuple[bool, str]:
             if xargs_err:
                 return False, xargs_err
 
-        for arg in parts[1:]:
+        # grep-family: the token after -e / --regexp is a regex PATTERN, not a
+        # path. Mark it so a pattern containing a leading '/' (e.g. -e "/foo/")
+        # is not misread as an absolute path. This is the only sanctioned way to
+        # pass a slash-containing pattern; a bare positional is treated as a
+        # path (we cannot tell pattern from path by shape).
+        pattern_indices: set[int] = set()
+        if binary in ("grep", "egrep", "fgrep", "rg"):
+            for idx in range(1, len(parts)):
+                if parts[idx] in ("-e", "--regexp") and idx + 1 < len(parts):
+                    pattern_indices.add(idx + 1)
+
+        for idx in range(1, len(parts)):
+            if idx in pattern_indices:
+                continue
+            arg = parts[idx]
             if ".." in arg:
                 return False, (
                     f"Error: path traversal ('..') is not allowed in argument '{arg}'. "
                     "All paths must be relative to the connector's record directory."
                 )
-            # Block absolute paths like /etc/passwd, /etc, or /.
-            # Allow grep/rg regex delimiters: /pattern/ (starts AND ends with /,
-            # no interior slash, length >= 3 so it's not just "/x").
-            is_regex_delimited = (
-                len(arg) >= 3
-                and arg.startswith("/")
-                and arg.endswith("/")
-                and "/" not in arg[1:-1]
-            )
-            if arg.startswith("/") and not is_regex_delimited:
+            # Reject any absolute path unconditionally (/etc, /etc/, /root/, /proc/…).
+            # The tool mandates relative paths; a legitimate slash-containing regex
+            # literal must be passed via -e (e.g. grep -e "/foo/" .).
+            if arg.startswith("/"):
                 return False, (
                     f"Error: absolute paths are not allowed in argument '{arg}'. "
-                    "Use relative paths only."
+                    "Use relative paths only. If this is a grep regex literal that must "
+                    "contain a slash, pass it with -e (e.g. grep -e \"/foo/\" .)."
                 )
 
     return True, ""
@@ -435,34 +449,61 @@ async def _run_subprocess(
     command: str,
     *,
     cwd: str,
-    use_shell: bool,
     timeout: int = _EXEC_TIMEOUT_SECS,
 ) -> tuple[bool, str]:
-    """Execute the command and return (success, output)."""
-    proc: asyncio.subprocess.Process | None = None
-    try:
-        if use_shell:
-            proc = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-            )
-        else:
-            parts = shlex.split(command)
-            proc = await asyncio.create_subprocess_exec(
-                *parts,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-            )
+    """Execute a validated pipeline without a shell and return (success, output).
 
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout
-        )
-        stdout = stdout_bytes.decode("utf-8", errors="replace")
-        stderr = stderr_bytes.decode("utf-8", errors="replace")
-        exit_code = proc.returncode
+    Each pipeline stage is tokenized and run via ``create_subprocess_exec`` --
+    never ``create_subprocess_shell`` -- so ``$VAR`` / ``${VAR}`` / ``~`` /
+    glob expansion cannot occur (there is no shell to perform it). Stage N's
+    stdout is captured and fed as stage N+1's stdin in Python, reproducing pipe
+    semantics without a shell. Pipeline exit status follows shell convention:
+    the LAST stage's exit code and stderr decide success (no pipefail).
+
+    The whole pipeline shares a single ``timeout`` deadline; every spawned
+    process is killed if it is exceeded.
+    """
+    stage_tokens: list[list[str]] = []
+    for stage in _split_pipeline_stages(command):
+        try:
+            tokens = shlex.split(stage)
+        except ValueError as exc:
+            return False, f"Error: cannot parse command: {exc}"
+        if not tokens:
+            return False, "Error: blank pipeline stage"
+        stage_tokens.append(tokens)
+
+    procs: list[asyncio.subprocess.Process] = []
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    stdin_data: bytes | None = None
+    last_proc: asyncio.subprocess.Process | None = None
+    last_stderr = b""
+
+    try:
+        for i, tokens in enumerate(stage_tokens):
+            proc = await asyncio.create_subprocess_exec(
+                *tokens,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+            )
+            procs.append(proc)
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(input=stdin_data if i > 0 else None),
+                timeout=remaining,
+            )
+            stdin_data = stdout_bytes
+            last_proc = proc
+            last_stderr = stderr_bytes
+
+        stdout = (stdin_data or b"").decode("utf-8", errors="replace")
+        stderr = last_stderr.decode("utf-8", errors="replace")
+        exit_code = last_proc.returncode if last_proc else 0
 
         if exit_code == 0:
             output = stdout if stdout.strip() else "No matches found."
@@ -482,16 +523,19 @@ async def _run_subprocess(
         return False, f"Command failed (exit {exit_code}): {_truncate(error_detail, 2000)}"
 
     except TimeoutError:
-        if proc and proc.returncode is None:
-            try:
-                proc.kill()
-                await proc.communicate()
-            except Exception:
-                pass
         return False, f"Error: command timed out after {timeout}s"
 
     except Exception as exc:
         return False, f"Error executing command: {exc}"
+
+    finally:
+        for proc in procs:
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                    await proc.communicate()
+                except Exception:
+                    pass
 
 
 async def _extract_record_metadata(
@@ -692,6 +736,82 @@ class StoragePatternMatch:
 
         return connector_dir, None
 
+    async def _check_accessible_vrids(self, vrids: list[str]) -> dict[str, str] | None:
+        """Resolve which of *vrids* the requesting user may access.
+
+        Returns a {virtual_record_id: record_id} map, or None if the check
+        cannot be performed (missing user_id / graph provider / lookup error) —
+        callers MUST fail closed on None. Empty ``vrids`` returns an empty map.
+        """
+        if not vrids:
+            return {}
+        user_id = self.state.get("user_id", "")
+        org_id = self.state.get("org_id", "")
+        graph_provider = self.state.get("graph_provider")
+        if not user_id or not graph_provider or not hasattr(
+            graph_provider, "check_vrids_accessible"
+        ):
+            return None
+        try:
+            accessible = await graph_provider.check_vrids_accessible(
+                user_id=user_id,
+                org_id=org_id,
+                virtual_record_ids=list(dict.fromkeys(vrids)),
+            )
+        except Exception as exc:
+            logger.warning(
+                "[storage_pattern_match] permission check failed: %s", exc
+            )
+            return None
+        return accessible or {}
+
+    async def _filter_output_by_permission(
+        self, command: str, output: str
+    ) -> str | None:
+        """Redact command output belonging to records the user cannot access.
+
+        Extracts record virtualRecordIds from both the command's file arguments
+        and the output text, resolves accessibility via ``check_vrids_accessible``,
+        and:
+          * returns None (→ caller denies) if the command directly targets a
+            record the user may not access, or the permission check is unavailable
+            while records are referenced (fail closed);
+          * drops output lines that reference an inaccessible record;
+          * returns output unchanged when no record is referenced (e.g. counts).
+
+        Note: aggregate output that references no record path (e.g. `wc -l`) can
+        still reflect inaccessible records in a count; content and file names are
+        never surfaced. Callers needing per-record results should use find_records.
+        """
+        output_vrids = set(_VRID_IN_TEXT_RE.findall(output))
+        command_vrids = set(_VRID_IN_TEXT_RE.findall(command))
+        all_vrids = output_vrids | command_vrids
+        if not all_vrids:
+            return output
+
+        accessible = await self._check_accessible_vrids(sorted(all_vrids))
+        if accessible is None:
+            return None
+        accessible_vrids = set(accessible)
+
+        # A record named directly in the command (cat/head/tail/file …) must be
+        # accessible, else deny the whole result — output from such reads carries
+        # no path prefix to redact line-by-line.
+        if command_vrids - accessible_vrids:
+            return None
+
+        if not (output_vrids - accessible_vrids):
+            return output
+
+        kept: list[str] = []
+        for line in output.splitlines():
+            line_vrids = set(_VRID_IN_TEXT_RE.findall(line))
+            if line_vrids - accessible_vrids:
+                continue
+            kept.append(line)
+        result = "\n".join(kept).strip()
+        return result if result else "No matches found."
+
     # ------------------------------------------------------------------
     # Tool
     # ------------------------------------------------------------------
@@ -801,7 +921,6 @@ class StoragePatternMatch:
             return False, err
 
         # 2. Inject date filter if requested.
-        use_shell = len(_split_pipeline_stages(command)) > 1
         effective_command = command
 
         if record_date is not None:
@@ -809,7 +928,6 @@ class StoragePatternMatch:
             if not ok:
                 return False, result
             effective_command = result
-            use_shell = True  # date-filtered commands always use shell for the pipe
 
         # 3. Resolve and verify the connector's record directory.
         connector_dir, path_err = await self._resolve_connector_path(connector_id)
@@ -818,14 +936,26 @@ class StoragePatternMatch:
 
         # 4. Execute.
         logger.debug(
-            "[storage_pattern_match] cwd=%s use_shell=%s effective_command=%r",
-            connector_dir, use_shell, effective_command,
+            "[storage_pattern_match] cwd=%s effective_command=%r",
+            connector_dir, effective_command,
         )
         success, output = await _run_subprocess(
             effective_command,
             cwd=connector_dir,
-            use_shell=use_shell,
         )
+
+        # 5. Permission gate: never surface content or paths of records the
+        # requesting user is not authorized to access. Mirrors the vrid gating
+        # in retrieval._merge_pattern_match_blocks.
+        if success:
+            filtered = await self._filter_output_by_permission(effective_command, output)
+            if filtered is None:
+                return False, (
+                    "Error: access denied — you do not have permission to read "
+                    "one or more records targeted by this command."
+                )
+            output = filtered
+
         logger.info(
             "[storage_pattern_match] result: success=%s output_len=%d output=%r",
             success, len(output), output[:500],
@@ -909,12 +1039,8 @@ class StoragePatternMatch:
         if path_err:
             return False, path_err
 
-        use_shell = len(_split_pipeline_stages(command)) > 1
-
         # Execute the command
-        success, output = await _run_subprocess(
-            command, cwd=connector_dir, use_shell=use_shell,
-        )
+        success, output = await _run_subprocess(command, cwd=connector_dir)
 
         if not success:
             if "No matches found" in output:
@@ -932,24 +1058,18 @@ class StoragePatternMatch:
                 "message": "No records match the command criteria.",
             })
 
-        # Extract file paths from output and parse record metadata
+        # Extract candidate record file paths (cheap regex, no file opens).
         lines = [
             line.strip() for line in output.splitlines()
             if line.strip() and not line.startswith("[...output truncated")
         ]
-
-        graph_provider = self.state.get("graph_provider")
-        records: list[dict[str, str]] = []
-        paths_found = 0
-
+        line_vrids: list[tuple[str, str]] = []
         for line in lines:
-            meta = await _extract_record_metadata(line, connector_dir, graph_provider)
-            if meta:
-                paths_found += 1
-                if len(records) < max_results:
-                    records.append(meta)
+            fm = _RECORD_FILENAME_RE.match(os.path.basename(line))
+            if fm:
+                line_vrids.append((line, fm.group(1)))
 
-        if not records:
+        if not line_vrids:
             return True, json_mod.dumps({
                 "records": [],
                 "total_found": 0,
@@ -958,6 +1078,42 @@ class StoragePatternMatch:
                     "Command ran successfully but no record file paths (record_*.json) "
                     "were found in the output. Ensure your command uses -l flag (list files) "
                     "or outputs file paths. Use run_command if you need raw output instead."
+                ),
+            })
+
+        # Permission gate: keep only records the requesting user may access.
+        # Fail closed if the check cannot be performed.
+        accessible = await self._check_accessible_vrids([v for _, v in line_vrids])
+        if accessible is None:
+            return False, (
+                "Error: cannot verify record access (permission service "
+                "unavailable). Refusing to return records."
+            )
+
+        records: list[dict[str, str]] = []
+        paths_found = 0
+        seen: set[str] = set()
+        for line, vrid in line_vrids:
+            if vrid not in accessible or vrid in seen:
+                continue
+            seen.add(vrid)
+            paths_found += 1
+            if len(records) >= max_results:
+                continue
+            meta = await _extract_record_metadata(line, connector_dir, graph_provider=None)
+            if meta:
+                # Authoritative record_id from the permission check.
+                meta["record_id"] = accessible[vrid] or meta.get("record_id", "")
+                records.append(meta)
+
+        if not records:
+            return True, json_mod.dumps({
+                "records": [],
+                "total_found": 0,
+                "raw_output_lines": len(lines),
+                "message": (
+                    "Matching record files were found but none are accessible to you, "
+                    "or no record metadata could be resolved."
                 ),
             })
 

@@ -365,7 +365,6 @@ class TestOutputHandling:
         success, output = await _run_subprocess(
             "grep -r 'zzz_nonexistent_xyz' .",
             cwd=str(tmp_path),
-            use_shell=False,
         )
         assert success is True
         assert "No matches found" in output
@@ -376,7 +375,6 @@ class TestOutputHandling:
         success, output = await _run_subprocess(
             "grep -r 'hello' .",
             cwd=str(tmp_path),
-            use_shell=False,
         )
         assert success is True
         assert "hello" in output
@@ -389,7 +387,6 @@ class TestOutputHandling:
         success, output = await _run_subprocess(
             "cat big.json",
             cwd=str(tmp_path),
-            use_shell=False,
         )
         assert success is True
         if len(big) > _MAX_OUTPUT_CHARS:
@@ -401,7 +398,6 @@ class TestOutputHandling:
         success, output = await _run_subprocess(
             'grep -E "[invalid" .',
             cwd=str(tmp_path),
-            use_shell=False,
         )
         assert success is False
         assert "exit" in output.lower() or "failed" in output.lower()
@@ -430,7 +426,6 @@ class TestTimeoutAndProcessManagement:
                 success, output = await _run_subprocess(
                     "find . -name '*.json'",
                     cwd=str(tmp_path),
-                    use_shell=False,
                     timeout=1,
                 )
 
@@ -459,7 +454,6 @@ class TestTimeoutAndProcessManagement:
                 await _run_subprocess(
                     "find . -name '*.json'",
                     cwd=str(tmp_path),
-                    use_shell=False,
                     timeout=1,
                 )
 
@@ -471,7 +465,6 @@ class TestTimeoutAndProcessManagement:
         success, output = await _run_subprocess(
             "ls .",
             cwd=str(tmp_path),
-            use_shell=False,
             timeout=5,
         )
         assert success is True
@@ -514,8 +507,9 @@ class TestDateFiltering:
         # No date filter injected — command unchanged
 
     @pytest.mark.asyncio
-    async def test_record_date_sets_use_shell(self, tmp_path):
-        """When record_date is given, effective_command uses shell pipeline."""
+    async def test_record_date_injects_find_filter(self, tmp_path):
+        """When record_date is given, the effective command is wrapped in a
+        find -newermt time filter and executed (no shell involved)."""
         tool = _make_tool(connector_dir=str(tmp_path))
         # Create a json file so the dir exists
         (tmp_path / "r.json").write_text('{"title":"hello"}')
@@ -532,8 +526,11 @@ class TestDateFiltering:
             )
 
         assert mock_run.called
-        _, kwargs = mock_run.call_args
-        assert kwargs.get("use_shell") is True
+        args, kwargs = mock_run.call_args
+        effective_command = args[0]
+        assert "newermt" in effective_command
+        # use_shell is gone entirely — no shell is ever used.
+        assert "use_shell" not in kwargs
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -761,8 +758,12 @@ class TestPipeSupport:
         assert not valid
 
     @pytest.mark.asyncio
-    async def test_pipe_command_uses_shell(self, tmp_path):
-        """Commands containing | must be executed with use_shell=True."""
+    async def test_pipe_command_never_uses_shell(self, tmp_path):
+        """Pipe commands run through the exec pipeline, never a shell.
+
+        _run_subprocess is called with the command string and NO use_shell
+        kwarg; create_subprocess_shell must never be invoked.
+        """
         (tmp_path / "r.json").write_text('{"title":"hello"}')
         tool = _make_tool(connector_dir=str(tmp_path))
 
@@ -773,24 +774,21 @@ class TestPipeSupport:
             mock_run.return_value = (True, "hello")
             await tool.run_command("conn-id", "grep -r 'hello' . | head -5")
 
-        _, kwargs = mock_run.call_args
-        assert kwargs["use_shell"] is True
+        args, kwargs = mock_run.call_args
+        assert args[0] == "grep -r 'hello' . | head -5"
+        assert "use_shell" not in kwargs
 
     @pytest.mark.asyncio
-    async def test_simple_command_uses_exec_not_shell(self, tmp_path):
-        """Commands without | must use create_subprocess_exec (use_shell=False)."""
-        (tmp_path / "r.json").write_text('{"title":"hello"}')
+    async def test_no_shell_subprocess_ever_created(self, tmp_path):
+        """Neither a piped nor a simple command may reach create_subprocess_shell."""
+        for i in range(3):
+            (tmp_path / f"r{i}.json").write_text(f'{{"title":"hello {i}"}}')
         tool = _make_tool(connector_dir=str(tmp_path))
 
-        with patch(
-            "app.agents.actions.storage_search.storage_search._run_subprocess",
-            new_callable=AsyncMock,
-        ) as mock_run:
-            mock_run.return_value = (True, "hello")
-            await tool.run_command("conn-id", "grep -r 'hello' .")
-
-        _, kwargs = mock_run.call_args
-        assert kwargs["use_shell"] is False
+        with patch("asyncio.create_subprocess_shell") as mock_shell:
+            await tool.run_command("conn-id", "grep -rh 'hello' . | sort")
+            await tool.run_command("conn-id", "grep -rh 'hello' .")
+            mock_shell.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_pipe_executes_correctly(self, tmp_path):
@@ -950,3 +948,209 @@ class TestIsLocalStorage:
 
     def test_none_config_defaults_local(self):
         assert is_local_storage(None) is True
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Adversarial security regression tests
+#
+# These pin the three CONFIRMED critical findings closed:
+#   F1: shell variable/tilde expansion leaking secrets / reading arbitrary files
+#   F2: regex-delimiter exception bypassing the absolute-path block
+#   F3: run_command / find_records having no per-record permission check
+# ──────────────────────────────────────────────────────────────────────────────
+
+_VRID_ACCESSIBLE = "aaaaaaaaaaaaaaaaaaaaaaaa"
+_VRID_FORBIDDEN = "bbbbbbbbbbbbbbbbbbbbbbbb"
+
+
+def _make_perm_tool(connector_dir: str, accessible_map: dict) -> StoragePatternMatch:
+    """Tool whose graph_provider.check_vrids_accessible returns accessible_map."""
+    graph_provider = MagicMock()
+    graph_provider.check_vrids_accessible = AsyncMock(return_value=accessible_map)
+    tool = _make_tool(connector_dir=connector_dir, graph_provider=graph_provider)
+    return tool
+
+
+def _seed_two_records(tmp_path, content: str = "secretword marker") -> None:
+    """Create one accessible-named and one forbidden-named record file."""
+    d = tmp_path / "grp" / "Doc" / "sid"
+    d.mkdir(parents=True)
+    (d / f"record_{_VRID_ACCESSIBLE}.json").write_text('{"id":"rec-ok"} ' + content)
+    (d / f"record_{_VRID_FORBIDDEN}.json").write_text('{"id":"rec-no"} ' + content)
+
+
+class TestFinding1ShellExpansion:
+    """F1: no shell is ever used, so $VAR / ${VAR} / ~ cannot expand."""
+
+    @pytest.mark.asyncio
+    async def test_dollar_var_not_expanded(self, tmp_path, monkeypatch):
+        # Exploit: `echo $SECRET | cat` leaked the process environment via /bin/sh -c.
+        monkeypatch.setenv("SECRET", "supersecret_leak_value")
+        success, output = await _run_subprocess("echo $SECRET | cat", cwd=str(tmp_path))
+        assert success is True
+        assert "supersecret_leak_value" not in output  # NOT expanded → no leak
+        assert "$SECRET" in output                      # passed through literally
+
+    @pytest.mark.asyncio
+    async def test_braced_var_not_expanded(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SECRET", "supersecret_leak_value")
+        success, output = await _run_subprocess("echo ${SECRET} | cat", cwd=str(tmp_path))
+        assert success is True
+        assert "supersecret_leak_value" not in output  # NOT expanded → no leak
+        assert "SECRET" in output                       # token passed through as text
+
+    @pytest.mark.asyncio
+    async def test_tilde_not_expanded(self, tmp_path):
+        # Exploit: `cat ~/.ssh/id_rsa | head` read arbitrary files via ~ expansion.
+        success, output = await _run_subprocess(
+            "echo ~/.ssh/id_rsa | head -1", cwd=str(tmp_path)
+        )
+        assert success is True
+        assert os.path.expanduser("~") not in output  # ~ NOT expanded to home dir
+        assert "~/.ssh/id_rsa" in output               # passed through literally
+
+    @pytest.mark.asyncio
+    async def test_tilde_read_does_not_reach_real_file(self, tmp_path):
+        # cat of a literal ~ path resolves relative to cwd (nonexistent), never home.
+        tool = _make_perm_tool(str(tmp_path), {})
+        success, output = await tool.run_command("c", "cat ~/.ssh/id_rsa | head")
+        # No shell → literal "~/.ssh/id_rsa" under cwd doesn't exist → no content leak.
+        assert os.path.expanduser("~") not in output
+
+    @pytest.mark.asyncio
+    async def test_shell_never_created_for_pipeline(self, tmp_path):
+        (tmp_path / "a.json").write_text("hello\n")
+        tool = _make_perm_tool(str(tmp_path), {})
+        with patch("asyncio.create_subprocess_shell") as mock_shell:
+            await tool.run_command("c", "grep -rh 'hello' . | sort | uniq")
+            mock_shell.assert_not_called()
+
+
+class TestFinding2AbsolutePathBypass:
+    """F2: the /pattern/ regex-delimiter carve-out is gone; absolute paths
+    (including single-component trailing-slash dirs) are always rejected."""
+
+    @pytest.mark.parametrize("cmd", [
+        'grep -r "root" /etc/',
+        'ls /etc/',
+        'grep -rIl "secret" /etc/',
+        'grep -r "x" /root/',
+        'grep -r "x" /home/',
+        'grep -r "x" /proc/',
+        'grep "/foo/" .',   # the exact shape the old is_regex_delimited exception allowed
+    ])
+    def test_absolute_paths_rejected(self, cmd: str):
+        valid, err = _validate_command(cmd)
+        assert not valid, f"Expected {cmd!r} to be rejected"
+        assert "absolute paths" in err
+
+    def test_regex_literal_via_dash_e_still_allowed(self):
+        # The sanctioned migration: a slash-containing regex literal goes through -e.
+        valid, err = _validate_command('grep -e "/foo/" .')
+        assert valid, f"Expected -e regex literal to pass, got: {err}"
+
+    def test_regex_literal_via_long_regexp_flag_allowed(self):
+        valid, err = _validate_command('grep --regexp "/foo/" .')
+        assert valid, f"Expected --regexp literal to pass, got: {err}"
+
+    def test_dash_e_does_not_exempt_a_real_absolute_path(self):
+        # -e exempts only its immediate pattern token; a later absolute path
+        # argument is still rejected.
+        valid, err = _validate_command('grep -e "pattern" /etc/passwd')
+        assert not valid
+        assert "absolute paths" in err
+
+
+class TestFinding3PermissionCheck:
+    """F3: run_command / find_records gate every returned record through
+    check_vrids_accessible and fail closed when the check is unavailable."""
+
+    @pytest.mark.asyncio
+    async def test_run_command_redacts_inaccessible_record_content(self, tmp_path):
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        success, output = await tool.run_command("c", 'grep -r "secretword" .')
+        assert success is True
+        assert _VRID_ACCESSIBLE in output       # accessible record kept
+        assert _VRID_FORBIDDEN not in output    # forbidden record redacted
+        tool.state["graph_provider"].check_vrids_accessible.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_run_command_direct_read_of_forbidden_record_denied(self, tmp_path):
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {})  # nothing accessible
+        success, output = await tool.run_command(
+            "c", f"cat ./grp/Doc/sid/record_{_VRID_FORBIDDEN}.json"
+        )
+        assert success is False
+        assert "access denied" in output.lower()
+
+    @pytest.mark.asyncio
+    async def test_run_command_no_records_referenced_passes_through(self, tmp_path):
+        # Output that references no record file → no permission call, unchanged.
+        (tmp_path / "plain.txt").write_text("nothing sensitive\n")
+        tool = _make_perm_tool(str(tmp_path), {})
+        success, output = await tool.run_command("c", 'grep -r "nothing" .')
+        assert success is True
+        assert "nothing sensitive" in output
+        tool.state["graph_provider"].check_vrids_accessible.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_command_fails_closed_without_graph_provider(self, tmp_path):
+        _seed_two_records(tmp_path)
+        tool = _make_tool(connector_dir=str(tmp_path), graph_provider=None)
+        success, output = await tool.run_command("c", 'grep -r "secretword" .')
+        assert success is False
+        assert "access denied" in output.lower()
+
+    @pytest.mark.asyncio
+    async def test_find_records_returns_only_accessible(self, tmp_path):
+        import json as _json
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok"})
+        success, output = await tool.find_records("c", 'grep -rl "secretword" .')
+        assert success is True
+        data = _json.loads(output)
+        vrids = [r["virtual_record_id"] for r in data["records"]]
+        assert vrids == [_VRID_ACCESSIBLE]
+        # record_id comes from the authoritative permission-check result.
+        assert data["records"][0]["record_id"] == "rec-ok"
+
+    @pytest.mark.asyncio
+    async def test_find_records_empty_when_none_accessible(self, tmp_path):
+        import json as _json
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {})
+        success, output = await tool.find_records("c", 'grep -rl "secretword" .')
+        assert success is True
+        data = _json.loads(output)
+        assert data["records"] == []
+
+    @pytest.mark.asyncio
+    async def test_find_records_fails_closed_without_graph_provider(self, tmp_path):
+        _seed_two_records(tmp_path)
+        tool = _make_tool(connector_dir=str(tmp_path), graph_provider=None)
+        success, output = await tool.find_records("c", 'grep -rl "secretword" .')
+        assert success is False
+        assert "cannot verify" in output.lower()
+
+
+class TestLegitimateFunctionalityPreserved:
+    """Regression guard: the fixes must not break normal usage."""
+
+    @pytest.mark.asyncio
+    async def test_relative_grep_still_works(self, tmp_path):
+        (tmp_path / "doc.json").write_text('{"title": "deployment guide"}')
+        tool = _make_perm_tool(str(tmp_path), {})
+        success, output = await tool.run_command("c", 'grep -r "deployment" .')
+        assert success is True
+        assert "deployment" in output
+
+    @pytest.mark.asyncio
+    async def test_multi_stage_pipe_still_works(self, tmp_path):
+        (tmp_path / "a.txt").write_text("banana\napple\napple\ncherry\n")
+        tool = _make_perm_tool(str(tmp_path), {})
+        success, output = await tool.run_command("c", "grep -h a a.txt | sort | uniq")
+        assert success is True
+        lines = [ln for ln in output.splitlines() if ln.strip()]
+        assert lines == ["apple", "banana"]  # cherry has no 'a'; dupes collapsed

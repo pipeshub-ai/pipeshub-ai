@@ -857,6 +857,7 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
                     virtual_record_map,
                     org_id=state.get("org_id", ""),
                     graph_provider=state.get("graph_provider"),
+                    user_id=state.get("user_id", ""),
                 )
                 structured_tools.append(fetch_tool)
 

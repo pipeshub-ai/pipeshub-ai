@@ -612,8 +612,13 @@ class BlobStorage(Transformer):
                         org_id, existing_doc_id, record_dict, virtual_record_id
                     )
                     # Content stayed at its real current location, not at the
-                    # freshly-computed candidate.
-                    actual_storage_path = relative_current if relative_current else storage_path
+                    # freshly-computed candidate. When that real location is
+                    # unknown (relative_current is None), do NOT assume it's
+                    # storage_path -- that's an active lie about where content
+                    # is. save_reconciliation_metadata has its own safety net
+                    # for a None document_path, so leaving this unknown is
+                    # safe and correct.
+                    actual_storage_path = relative_current
                 except Exception as e:
                     self.logger.warning(
                         "⚠️ Failed to update buffer for doc %s, falling back to new upload: %s",

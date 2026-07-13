@@ -2767,7 +2767,7 @@ describe('StorageController', () => {
       expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
     })
 
-    it('S3/Azure: batches copies and scopes each Mongo update to that batch', async () => {
+    it('S3/Azure: commits each document immediately after its own blob move, then deletes the old blob', async () => {
       const matched = Array.from({ length: 3 }, (_, i) => ({
         _id: `doc${i}`,
         documentPath: i === 0
@@ -2781,18 +2781,19 @@ describe('StorageController', () => {
         select: sinon.stub().returnsThis(),
         lean: sinon.stub().resolves(matched),
       } as any)
-      // Shared call-log lets us assert relative ordering across the two stubs,
-      // not just that each was called.
+      // Shared call-log lets us assert relative ordering across the stubs --
+      // per-document commit means each doc's own renameObject/updateOne/
+      // deleteObject triplet must complete before the next doc starts, not a
+      // batch-wide updateMany after the whole loop finishes.
       const callLog: string[] = []
-      const updateManyStub = sinon.stub(DocumentModel, 'updateMany').callsFake((async () => {
-        callLog.push('updateMany')
-        return {} as any
-      }) as any)
-      sinon.stub(DocumentModel, 'updateOne').callsFake((async () => {
+      const updateOneStub = sinon.stub(DocumentModel, 'updateOne').callsFake((async () => {
         callLog.push('updateOne')
         return {} as any
       }) as any)
-      const renameObjectStub = sinon.stub().resolves({ statusCode: 200, data: 'url' })
+      const renameObjectStub = sinon.stub().callsFake(async () => {
+        callLog.push('renameObject')
+        return { statusCode: 200, data: 'url' }
+      })
       const deleteObjectStub = sinon.stub().callsFake(async () => {
         callLog.push('deleteObject')
         return { statusCode: 200, data: undefined }
@@ -2808,26 +2809,28 @@ describe('StorageController', () => {
       await controller.moveTree(req, mockRes, mockNext)
 
       expect(renameObjectStub.callCount).to.equal(3)
-      expect(updateManyStub.callCount).to.be.greaterThan(0)
+      // Each document's Mongo state (documentPath + s3.url) commits in the
+      // same updateOne, right after that document's own blob move -- never a
+      // single batched updateMany after the whole loop.
+      expect(updateOneStub.callCount).to.equal(3)
+      const firstSet = (updateOneStub.firstCall.args[1] as any).$set
+      expect(firstSet).to.have.property('documentPath')
+      expect(firstSet).to.have.property('s3.url')
       expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
 
-      // Crash-consistency guarantee: old objects must only be deleted once this
-      // batch's Mongo rows already point at the new path (documentPath bulk
-      // update, then per-doc URL rewrite) -- deleting first would leave a row
-      // pointing nowhere if the process died between the calls.
+      // Crash-consistency guarantee: old objects must only be deleted once
+      // THAT document's own Mongo row already points at the new path --
+      // deleting first would leave a row pointing nowhere if the process died
+      // in between.
       expect(deleteObjectStub.callCount).to.equal(3)
       expect(callLog).to.deep.equal([
-        'updateMany',
-        'updateOne',
-        'updateOne',
-        'updateOne',
-        'deleteObject',
-        'deleteObject',
-        'deleteObject',
+        'renameObject', 'updateOne', 'deleteObject',
+        'renameObject', 'updateOne', 'deleteObject',
+        'renameObject', 'updateOne', 'deleteObject',
       ])
     })
 
-    it('S3/Azure: 250 matched docs span two real 200-sized batches, each scoped correctly', async () => {
+    it('S3/Azure: 250 matched docs span two real 200-sized batches, every document still gets moved and committed', async () => {
       // Controller batch size (moveTreeRemote) is a hardcoded 200 — use enough
       // matched docs (250) to force the for-loop to run twice: [200, 50].
       const matched = Array.from({ length: 250 }, (_, i) => ({
@@ -2843,11 +2846,11 @@ describe('StorageController', () => {
         select: sinon.stub().returnsThis(),
         lean: sinon.stub().resolves(matched),
       } as any)
-      const updateManyStub = sinon.stub(DocumentModel, 'updateMany').resolves({} as any)
-      sinon.stub(DocumentModel, 'updateOne').resolves({} as any)
+      const updateOneStub = sinon.stub(DocumentModel, 'updateOne').resolves({} as any)
       const renameObjectStub = sinon.stub().resolves({ statusCode: 200, data: 'url' })
       sinon.stub(controller, 'initializeStorageAdapter').resolves({
         renameObject: renameObjectStub,
+        deleteObject: sinon.stub().resolves({ statusCode: 200, data: undefined }),
         getObjectUrl: sinon.stub().returns('https://bucket.s3.region.amazonaws.com/new/key'),
       } as any)
       sinon.stub(controller as any, 'getConfiguredStorageType').resolves('s3')
@@ -2859,27 +2862,92 @@ describe('StorageController', () => {
       // not just the first one.
       expect(renameObjectStub.callCount).to.equal(250)
 
-      // A single bulk update would call updateMany once; real batching calls it
-      // once per batch (2 batches: 200 + 50).
-      expect(updateManyStub.callCount).to.equal(2)
+      // Every document commits its own Mongo state -- 250 documents means 250
+      // updateOne calls. The 200-sized loop chunking is only a throttle on the
+      // physical-move work, never a unit of Mongo commit.
+      expect(updateOneStub.callCount).to.equal(250)
 
-      const batchedIds = updateManyStub.getCalls().map(
-        (call) => (call.args[0] as { _id: { $in: string[] } })._id.$in,
+      const updatedIds = updateOneStub.getCalls().map(
+        (call) => (call.args[0] as { _id: string })._id,
       )
-      expect(batchedIds[0]).to.have.lengthOf(200)
-      expect(batchedIds[1]).to.have.lengthOf(50)
-
-      // Every batch is a distinct, non-overlapping subset that together covers
-      // all 250 matched documents — proves per-batch scoping, not one giant update.
-      const allIds = batchedIds.flat()
-      expect(allIds).to.have.lengthOf(250)
-      expect(new Set(allIds).size).to.equal(250)
-      expect(new Set(allIds)).to.deep.equal(new Set(matched.map((m) => m._id)))
-      expect(new Set(batchedIds[0]).size + new Set(batchedIds[1]).size).to.equal(250)
-      const intersection = batchedIds[0].filter((id: string) => batchedIds[1].includes(id))
-      expect(intersection).to.have.lengthOf(0)
+      expect(new Set(updatedIds).size).to.equal(250)
+      expect(new Set(updatedIds)).to.deep.equal(new Set(matched.map((m) => m._id)))
 
       expect(mockRes.status.calledWith(HTTP_STATUS.OK)).to.be.true
+    })
+
+    it('S3/Azure: a mid-batch blob-move failure commits documents before it, keeps processing after it, and is reported (not swallowed)', async () => {
+      const matched = Array.from({ length: 3 }, (_, i) => ({
+        _id: `doc${i}`,
+        documentPath: i === 0
+          ? 'org1/PipesHub/records/conn1/p1/c1'
+          : `org1/PipesHub/records/conn1/p1/c1/child${i}`,
+        documentName: `name${i}`,
+        extension: 'json',
+        isVersionedFile: false,
+      }))
+      sinon.stub(DocumentModel, 'find').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves(matched),
+      } as any)
+      const updateOneStub = sinon.stub(DocumentModel, 'updateOne').resolves({} as any)
+      const renameObjectStub = sinon.stub()
+      renameObjectStub.onCall(0).resolves({ statusCode: 200, data: 'url' }) // doc0: succeeds
+      renameObjectStub.onCall(1).rejects(new Error('S3 throttled'))        // doc1: fails
+      renameObjectStub.onCall(2).resolves({ statusCode: 200, data: 'url' }) // doc2: succeeds
+      const deleteObjectStub = sinon.stub().resolves({ statusCode: 200, data: undefined })
+      sinon.stub(controller, 'initializeStorageAdapter').resolves({
+        renameObject: renameObjectStub,
+        deleteObject: deleteObjectStub,
+        getObjectUrl: sinon.stub().returns('https://bucket.s3.region.amazonaws.com/new/key'),
+      } as any)
+      sinon.stub(controller as any, 'getConfiguredStorageType').resolves('s3')
+
+      const req = baseReq() as any
+      await controller.moveTree(req, mockRes, mockNext)
+
+      // All three documents are attempted -- doc1's failure does not abort
+      // the batch, doc2 is still processed afterward.
+      expect(renameObjectStub.callCount).to.equal(3)
+      expect(mockNext.called).to.be.false
+
+      // doc0's blob move succeeded BEFORE doc1 failed, so its Mongo
+      // documentPath must already be committed -- not lost or held back by
+      // doc1's later failure.
+      expect(updateOneStub.callCount).to.equal(2) // doc0 and doc2 only, never doc1
+      const doc0Call = updateOneStub.getCalls().find(
+        (call) => (call.args[0] as { _id: string })._id === 'doc0',
+      )
+      expect(doc0Call).to.not.be.undefined
+      expect((doc0Call!.args[1] as any).$set).to.have.property('documentPath')
+
+      // doc2, processed after the failure, was also committed -- processing
+      // continued past doc1 rather than stopping.
+      const doc2Call = updateOneStub.getCalls().find(
+        (call) => (call.args[0] as { _id: string })._id === 'doc2',
+      )
+      expect(doc2Call).to.not.be.undefined
+
+      // doc1 was never committed to Mongo.
+      const doc1Call = updateOneStub.getCalls().find(
+        (call) => (call.args[0] as { _id: string })._id === 'doc1',
+      )
+      expect(doc1Call).to.be.undefined
+
+      // doc1's failure is surfaced via a warning log, not silently swallowed.
+      expect(mockLogger.warn.called).to.be.true
+      expect(mockLogger.warn.firstCall.args[0]).to.include('doc1')
+
+      // ...and reported back to the caller in the response body so partial
+      // failure is visible outside the logs too.
+      const jsonArg = mockRes.json.firstCall.args[0]
+      expect(jsonArg.moved).to.equal(2)
+      expect(jsonArg.failed).to.deep.equal(['doc1'])
+
+      // doc1's old blob must never be deleted -- its move never succeeded, so
+      // there is nothing stale to clean up and the still-live old blob must
+      // be left in place.
+      expect(deleteObjectStub.callCount).to.equal(2)
     })
 
     it('rejects when newPath is a descendant of oldPath', async () => {
