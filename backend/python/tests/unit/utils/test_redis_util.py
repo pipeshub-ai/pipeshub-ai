@@ -141,6 +141,12 @@ class TestParseRedisNodes:
 
         assert parse_redis_nodes("host-only") == [("host-only", 6379)]
 
+    def test_strips_ipv6_brackets(self):
+        from app.utils.redis_util import parse_redis_nodes
+
+        assert parse_redis_nodes("[::1]:6379") == [("::1", 6379)]
+        assert parse_redis_nodes("fe80::1:7000") == [("fe80::1", 7000)]
+
 
 class TestIsClusterMode:
     def test_explicit_modes(self):

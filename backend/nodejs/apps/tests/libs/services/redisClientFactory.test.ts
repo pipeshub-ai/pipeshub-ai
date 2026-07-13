@@ -5,6 +5,7 @@ import { Cluster, Redis } from 'ioredis';
 import {
   buildRedisClient,
   clusterAwareScan,
+  parseRedisNodes,
 } from '../../../src/libs/services/redisClientFactory';
 import { RedisConfig } from '../../../src/libs/types/redis.types';
 
@@ -93,6 +94,27 @@ describe('redisClientFactory', () => {
       const out = await clusterAwareScan(fakeCluster as any, 'pattern');
       expect(out.sort()).to.deep.equal(['a', 'b', 'c']);
       expect(masterCalls).to.equal(2);
+    });
+  });
+
+  describe('parseRedisNodes', () => {
+    it('parses host:port pairs and defaults the port', () => {
+      expect(parseRedisNodes('a:7000, b:7001 ,c')).to.deep.equal([
+        { host: 'a', port: 7000 },
+        { host: 'b', port: 7001 },
+        { host: 'c', port: 6379 },
+      ]);
+    });
+
+    it('strips brackets from IPv6 literals', () => {
+      expect(parseRedisNodes('[::1]:6379,fe80::1:7000')).to.deep.equal([
+        { host: '::1', port: 6379 },
+        { host: 'fe80::1', port: 7000 },
+      ]);
+    });
+
+    it('throws on a non-numeric port', () => {
+      expect(() => parseRedisNodes('host:abc')).to.throw(/non-numeric port/);
     });
   });
 });
