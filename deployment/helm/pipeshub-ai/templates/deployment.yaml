@@ -173,6 +173,11 @@ spec:
               value: "{{ .Release.Name }}-redis-cluster"
             - name: REDIS_PORT
               value: "6379"
+            {{- if .Values.redisCluster.celeryRedisUrl }}
+            {{- /* Celery/kombu is not cluster-aware; use a standalone Redis. */}}
+            - name: CELERY_REDIS_URL
+              value: {{ .Values.redisCluster.celeryRedisUrl | quote }}
+            {{- end }}
             {{- if .Values.redisCluster.usePassword }}
             - name: REDIS_PASSWORD
               valueFrom:

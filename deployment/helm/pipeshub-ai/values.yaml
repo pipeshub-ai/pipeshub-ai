@@ -356,6 +356,9 @@ redisCluster:
   persistence:
     enabled: true
     storageClass: ""
+  # Celery/kombu is not cluster-aware. When cluster mode is on, point Celery at
+  # a standalone Redis here (required for the connectors service to start).
+  celeryRedisUrl: ""   # e.g. redis://:<password>@my-standalone-redis:6379/0
 
 arango:
   enabled: false

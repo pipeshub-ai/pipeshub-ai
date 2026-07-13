@@ -1,3 +1,4 @@
+import os
 import threading
 from typing import Any, Dict, Optional
 
@@ -9,7 +10,7 @@ from app.config.constants.service import (
     CeleryConfig,
     config_node_constants,
 )
-from app.utils.redis_util import build_redis_url
+from app.utils.redis_util import build_redis_url, is_cluster_mode
 from app.utils.request_context import (
     context_from_envelope,
     new_system_root,
@@ -68,7 +69,24 @@ class CeleryApp:
             )
             if not redis_config or not isinstance(redis_config, dict):
                 raise ValueError("Redis configuration not found")
-            redis_url = build_redis_url(redis_config)
+
+            # Celery/kombu's Redis transport is not cluster-aware: it does not
+            # follow MOVED/ASK redirects, so pointing it at a Redis Cluster node
+            # breaks for every key that hashes to another shard. Require an
+            # explicit standalone endpoint (CELERY_REDIS_URL) in cluster mode
+            # rather than silently emitting a single-node URL that half-works.
+            celery_url_override = os.getenv("CELERY_REDIS_URL")
+            if celery_url_override:
+                redis_url = celery_url_override
+            elif is_cluster_mode(redis_config):
+                raise ValueError(
+                    "REDIS_MODE=cluster is not supported for the Celery broker/"
+                    "result backend (kombu does not handle cluster redirects). "
+                    "Point Celery at a standalone Redis via the CELERY_REDIS_URL "
+                    "env var (e.g. redis://host:6379/0)."
+                )
+            else:
+                redis_url = build_redis_url(redis_config)
 
             celery_config = {
                 "broker_url": redis_url,

@@ -4,7 +4,6 @@ import { Cluster, Redis } from 'ioredis';
 
 import {
   buildRedisClient,
-  clusterAwareKeys,
   clusterAwareScan,
 } from '../../../src/libs/services/redisClientFactory';
 import { RedisConfig } from '../../../src/libs/types/redis.types';
@@ -70,9 +69,9 @@ describe('redisClientFactory', () => {
     });
   });
 
-  describe('clusterAwareScan / clusterAwareKeys (shape only)', () => {
+  describe('clusterAwareScan (shape only)', () => {
     // Real cluster behaviour is verified by integration tests behind
-    // RUN_CLUSTER_TESTS=1. Here we just confirm the helpers iterate every
+    // RUN_CLUSTER_TESTS=1. Here we just confirm the helper iterates every
     // node returned by `.nodes('master')` on a Cluster-shaped stub.
     it('iterates every master node and de-dupes results (scan)', async () => {
       let masterCalls = 0;
@@ -94,17 +93,6 @@ describe('redisClientFactory', () => {
       const out = await clusterAwareScan(fakeCluster as any, 'pattern');
       expect(out.sort()).to.deep.equal(['a', 'b', 'c']);
       expect(masterCalls).to.equal(2);
-    });
-
-    it('iterates every master node and de-dupes results (keys)', async () => {
-      const fakeNode = (keys: string[]) => ({
-        keys: async (_pattern: string) => keys,
-      });
-      const fakeCluster = {
-        nodes: () => [fakeNode(['x', 'y']), fakeNode(['y', 'z'])],
-      };
-      const out = await clusterAwareKeys(fakeCluster as any, 'pattern');
-      expect(out.sort()).to.deep.equal(['x', 'y', 'z']);
     });
   });
 });
