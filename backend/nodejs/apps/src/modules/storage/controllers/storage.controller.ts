@@ -53,6 +53,7 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { getMimeType } from '../mimetypes/mimetypes';
 import path from 'path';
 import { ErrorMetadata } from '../../../libs/errors/base.error';
+import { StorageError } from '../../../libs/errors/storage.errors';
 
 // Shape of a document row selected for a moveTree operation. documentPath is
 // non-optional here (unlike the base Document type) because every row comes
@@ -555,9 +556,17 @@ export class StorageController {
           }
           await adapter.renameObject(oldFilePath, newFilePath);
         } catch (error) {
+          // StorageError wraps the real provider error (e.g. the actual AWS
+          // AccessDenied/NoSuchKey reason) in `metadata.originalError` --
+          // `.message` alone is just the generic "Failed to rename object in
+          // S3" wrapper text and hides the reason the operation failed.
+          const detail =
+            error instanceof StorageError
+              ? (error.metadata?.['originalError'] ?? error.message)
+              : ((error as Error)?.message ?? error);
           this.logger.warn(
             `moveTree: failed to relocate blob for document ${docId}; leaving it at its old path`,
-            { documentId: docId, oldFilePath, newFilePath, error: (error as Error)?.message ?? error },
+            { documentId: docId, oldFilePath, newFilePath, error: detail },
           );
           failedIds.push(docId);
           continue;

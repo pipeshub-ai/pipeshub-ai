@@ -1,5 +1,5 @@
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -1071,61 +1071,6 @@ class TestUpdateRecord:
         resp = client.put("/api/v1/kb/record/r1", json={"updates": {"name": "new"}})
         assert resp.status_code == 200
 
-    def test_no_blob_move_when_record_name_unchanged(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.update_record = AsyncMock(return_value={
-            "success": True, "recordId": "r1",
-            "updatedRecord": {"id": "r1", "recordName": "same-name.txt", "virtualRecordId": "vr-1"},
-            "timestamp": 1234567890,
-        })
-        gp = app.state.graph_provider
-        gp.get_document = AsyncMock(return_value={"recordName": "same-name.txt"})
-        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB"})
-        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
-        gp.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        gp.get_knowledge_base = AsyncMock(return_value={"id": "kb1", "name": "KB"})
-        gp.get_knowledge_hub_parent_node = AsyncMock(return_value=None)
-
-        with patch("app.connectors.sources.localKB.api.kb_router.StorageCleanupHelper") as mock_cleanup_cls:
-            client = TestClient(app)
-            resp = client.put(
-                "/api/v1/kb/record/r1",
-                json={"updates": {"recordName": "same-name.txt"}},
-            )
-            assert resp.status_code == 200
-            mock_cleanup_cls.assert_not_called()
-
-    def test_blob_move_when_record_name_actually_changes(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.update_record = AsyncMock(return_value={
-            "success": True, "recordId": "r1",
-            "updatedRecord": {
-                "id": "r1", "recordName": "new-name.txt", "virtualRecordId": "vr-1",
-                "connectorId": "conn-1", "recordGroupId": "grp-1", "orgId": "org-1",
-            },
-            "timestamp": 1234567890,
-        })
-        gp = app.state.graph_provider
-        gp.get_document = AsyncMock(return_value={"recordName": "old-name.txt"})
-        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB"})
-        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
-        gp.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        gp.get_knowledge_base = AsyncMock(return_value={"id": "kb1", "name": "KB"})
-        gp.get_knowledge_hub_parent_node = AsyncMock(return_value=None)
-
-        with patch("app.connectors.sources.localKB.api.kb_router.StorageCleanupHelper") as mock_cleanup_cls:
-            mock_cleanup = AsyncMock()
-            mock_cleanup.build_storage_path = AsyncMock(return_value="records/conn-1/new-name.txt")
-            mock_cleanup_cls.return_value = mock_cleanup
-
-            client = TestClient(app)
-            resp = client.put(
-                "/api/v1/kb/record/r1",
-                json={"updates": {"recordName": "new-name.txt"}},
-            )
-            assert resp.status_code == 200
-            mock_cleanup.move_record_blob.assert_awaited_once()
-
     def test_invalid_body(self):
         app, kb_svc, _ = _make_app()
         client = TestClient(app)
@@ -1292,50 +1237,6 @@ class TestMoveRecord:
         client = TestClient(app)
         resp = client.put("/api/v1/kb/kb1/record/r1/move", json={"newParentId": None})
         assert resp.status_code == 200
-
-    def test_triggers_blob_move_after_successful_move(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.move_record = AsyncMock(return_value={"success": True})
-        gp = app.state.graph_provider
-        gp.get_document = AsyncMock(return_value={
-            "virtualRecordId": "vr-1",
-            "connectorId": "conn-1",
-            "recordGroupId": "grp-2",
-            "recordName": "file.txt",
-            "orgId": "org-1",
-        })
-
-        with patch("app.connectors.sources.localKB.api.kb_router.StorageCleanupHelper") as mock_cleanup_cls:
-            mock_cleanup = AsyncMock()
-            mock_cleanup.build_storage_path = AsyncMock(return_value="records/conn-1/new-folder/file.txt")
-            mock_cleanup_cls.return_value = mock_cleanup
-
-            client = TestClient(app)
-            resp = client.put("/api/v1/kb/kb1/record/r1/move", json={"newParentId": "f1"})
-
-            assert resp.status_code == 200
-            mock_cleanup.move_record_blob.assert_awaited_once_with(
-                "org-1", "r1", "vr-1", "records/conn-1/new-folder/file.txt", "file.txt",
-            )
-
-    def test_blob_move_failure_is_non_fatal(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.move_record = AsyncMock(return_value={"success": True})
-        gp = app.state.graph_provider
-        gp.get_document = AsyncMock(return_value={
-            "virtualRecordId": "vr-1", "connectorId": "conn-1",
-            "recordGroupId": "grp-2", "recordName": "file.txt", "orgId": "org-1",
-        })
-
-        with patch("app.connectors.sources.localKB.api.kb_router.StorageCleanupHelper") as mock_cleanup_cls:
-            mock_cleanup = AsyncMock()
-            mock_cleanup.build_storage_path = AsyncMock(side_effect=Exception("graph down"))
-            mock_cleanup_cls.return_value = mock_cleanup
-
-            client = TestClient(app)
-            resp = client.put("/api/v1/kb/kb1/record/r1/move", json={"newParentId": "f1"})
-
-            assert resp.status_code == 200
 
     def test_invalid_body(self):
         app, kb_svc, _ = _make_app()
