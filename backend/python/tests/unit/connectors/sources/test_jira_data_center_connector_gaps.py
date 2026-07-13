@@ -52,6 +52,14 @@ def _ok_resp(data: Any) -> MagicMock:
     return resp
 
 
+def _list_unavailable_resp() -> MagicMock:
+    resp = MagicMock()
+    resp.status = HttpStatusCode.NOT_FOUND.value
+    resp.json = MagicMock(return_value={})
+    resp.text = MagicMock(return_value="")
+    return resp
+
+
 def _tx_ctx(store: Any) -> Any:
     @asynccontextmanager
     async def _cm():
@@ -293,12 +301,14 @@ class TestUserAndGroupGaps:
         first = _ok_resp([{"key": "u1", "active": True}])
         empty = _ok_resp([])
         ds = MagicMock()
+        ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
         ds.get_user_search_v2 = AsyncMock(side_effect=[first, empty])
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
             raw = await conn._fetch_all_jira_users_bulk()
 
         assert len(raw) == 1
+        assert conn._user_bulk_incomplete is True
 
     @pytest.mark.asyncio
     async def test_resolve_private_email_users_skips_empty_user_key(self):

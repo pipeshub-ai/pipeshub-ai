@@ -60,6 +60,15 @@ def _make_connector() -> JiraDataCenterConnector:
     return JiraDataCenterConnector(logger, dep, dsp, cs, "conn-dc-cov", "team", "u1")
 
 
+def _list_unavailable_resp() -> MagicMock:
+    """``/user/list`` 404 so bulk falls back to ``/user/search`` in tests."""
+    resp = MagicMock()
+    resp.status = HttpStatusCode.NOT_FOUND.value
+    resp.json = MagicMock(return_value={})
+    resp.text = MagicMock(return_value="")
+    return resp
+
+
 def _ticket_record() -> TicketRecord:
     return TicketRecord(
         id=str(uuid4()),
@@ -680,6 +689,7 @@ async def test_fetch_users_paginates_and_maps_legacy_key():
     r2.json = MagicMock(return_value=[])
 
     ds = MagicMock()
+    ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
     ds.get_user_search_v2 = AsyncMock(side_effect=[r1, r2])
 
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
@@ -709,6 +719,7 @@ async def test_fetch_users_builds_name_to_source_id():
     r2.json = MagicMock(return_value=[])
 
     ds = MagicMock()
+    ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
     ds.get_user_search_v2 = AsyncMock(side_effect=[r1, r2])
 
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
@@ -774,6 +785,7 @@ async def test_fetch_users_non_ok_raises():
     bad.status = 500
     bad.text = MagicMock(return_value="err")
     ds = MagicMock()
+    ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
     ds.get_user_search_v2 = AsyncMock(return_value=bad)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         with pytest.raises(Exception, match="Failed to fetch users"):
@@ -788,6 +800,7 @@ async def test_fetch_users_parses_values_wrapper():
     r.status = HttpStatusCode.OK.value
     r.json = MagicMock(return_value={"values": [{"key": "k1", "emailAddress": "a@b", "active": True}]})
     ds = MagicMock()
+    ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
     ds.get_user_search_v2 = AsyncMock(side_effect=[r, MagicMock(status=HttpStatusCode.OK.value, json=MagicMock(return_value=[]))])
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         users = await conn._fetch_users()
@@ -1915,6 +1928,7 @@ async def test_fetch_users_parse_failure_stops_fetch():
     ok.status = HttpStatusCode.OK.value
     ok.json = MagicMock(return_value=None)
     ds = MagicMock()
+    ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
     ds.get_user_search_v2 = AsyncMock(return_value=ok)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         users = await conn._fetch_users()
@@ -1938,6 +1952,7 @@ async def test_fetch_users_skips_inactive_and_missing_email():
     empty.status = HttpStatusCode.OK.value
     empty.json = MagicMock(return_value=[])
     ds = MagicMock()
+    ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
     ds.get_user_search_v2 = AsyncMock(side_effect=[ok, empty])
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         users = await conn._fetch_users()
@@ -2730,6 +2745,7 @@ async def test_fetch_users_paginates_two_pages():
     r2.status = HttpStatusCode.OK.value
     r2.json = MagicMock(return_value=page2)
     ds = MagicMock()
+    ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
     ds.get_user_search_v2 = AsyncMock(side_effect=[r1, r2])
     with patch("app.connectors.sources.atlassian.jira_data_center.connector.USER_PAGE_SIZE", 50):
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
@@ -2758,6 +2774,7 @@ async def test_fetch_users_db_cache_resolves_hidden_email_user():
     empty.status = HttpStatusCode.OK.value
     empty.json = MagicMock(return_value=[])
     ds = MagicMock()
+    ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
     ds.get_user_search_v2 = AsyncMock(side_effect=[ok, empty])
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         users = await conn._fetch_users()
@@ -2795,6 +2812,7 @@ async def test_fetch_users_reverse_lookup_resolves_hidden_email():
 
     ds = MagicMock()
     # Bulk returns 2 items < USER_PAGE_SIZE so it breaks after 1st call; then reverse lookup
+    ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
     ds.get_user_search_v2 = AsyncMock(side_effect=[ok_bulk, reverse_resp])
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         users = await conn._fetch_users()
@@ -2821,6 +2839,7 @@ async def test_fetch_users_reverse_lookup_skipped_when_no_gaps():
     ok.json = MagicMock(return_value=batch)
     ds = MagicMock()
     # Bulk returns 1 item < USER_PAGE_SIZE, breaks after 1 call; no reverse lookup needed
+    ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
     ds.get_user_search_v2 = AsyncMock(side_effect=[ok])
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         users = await conn._fetch_users()
@@ -2849,6 +2868,7 @@ async def test_resolve_private_email_users_api_failure_graceful():
 
     ds = MagicMock()
     # Bulk returns 1 item < USER_PAGE_SIZE, breaks after 1 call; then reverse lookup fails
+    ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
     ds.get_user_search_v2 = AsyncMock(side_effect=[ok, fail_resp])
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         users = await conn._fetch_users()

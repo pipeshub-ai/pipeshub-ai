@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from logging import Logger
 from typing import Any, Optional
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 from uuid import uuid4
 
 import httpx  # type: ignore
@@ -95,6 +95,10 @@ from app.utils.streaming import create_stream_record_response
 DEFAULT_MAX_RESULTS: int = 50
 BATCH_PROCESSING_SIZE: int = 100
 USER_PAGE_SIZE: int = 50
+# /user/list supports up to 2000; use a moderate page to cut round-trips vs USER_PAGE_SIZE.
+USER_LIST_PAGE_SIZE: int = 100
+# Jira 10+ hard-caps /user/search to the first 100 results (startAt cannot page past).
+USER_SEARCH_HARD_CAP: int = 100
 GROUP_MEMBER_PAGE_SIZE: int = 50
 GROUPS_PICKER_MAX: int = 1000  # maxResults for GET /rest/api/2/groups/picker
 AUDIT_PAGE_SIZE: int = 500  # page size for GET /rest/auditing/1.0/events
@@ -131,6 +135,34 @@ def _application_role_groups_from_dc_role(role: dict[str, Any]) -> list[dict[str
         name = group_name.strip()
         normalized.append({"groupId": name, "name": name})
     return normalized
+
+
+def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], str | None]:
+    """Parse ``GET /rest/api/2/user/list`` JSON into ``(users, next_cursor)``."""
+    if isinstance(payload, list):
+        return [u for u in payload if isinstance(u, dict)], None
+    if not isinstance(payload, dict):
+        return [], None
+
+    raw_users = payload.get("values")
+    if raw_users is None:
+        raw_users = payload.get("users")
+    users = [u for u in raw_users if isinstance(u, dict)] if isinstance(raw_users, list) else []
+
+    next_cursor = payload.get("nextCursor")
+    if not next_cursor and isinstance(payload.get("nextPage"), str):
+        next_page = payload["nextPage"]
+        if "cursor=" in next_page:
+            qs = parse_qs(urlparse(next_page).query)
+            cursor_vals = qs.get("cursor") or []
+            next_cursor = cursor_vals[0] if cursor_vals else None
+        elif next_page and not next_page.startswith("http"):
+            next_cursor = next_page
+
+    if payload.get("isLast") is True:
+        next_cursor = None
+
+    return users, next_cursor if isinstance(next_cursor, str) and next_cursor else None
 
 
 @(
@@ -312,7 +344,10 @@ class JiraDataCenterConnector(BaseConnector):
         self._issue_attachments_cache: dict[str, list[dict[str, Any]]] = {}
 
         self._app_roles_forbidden: bool = False  # GET /applicationrole returned 403
-        self._user_bulk_forbidden: bool = False  # GET /user/search returned 401/403
+        self._user_bulk_forbidden: bool = False  # bulk user list/search returned 401/403
+        # True when bulk used /user/search (100-result hard cap on Jira 10+) or list failed
+        # open — reverse lookup must sweep all PipesHub candidates, not only bulk gaps.
+        self._user_bulk_incomplete: bool = False
         # DC username (``name``) -> source_user_id (``key``); built during _fetch_users
         self._dc_name_to_source_id: dict[str, str] = {}
         # Epic Link field id: None = before init, "" = not found, else customfield id
@@ -912,22 +947,20 @@ class JiraDataCenterConnector(BaseConnector):
 
     async def _fetch_users(self) -> list[AppUser]:
         """
-        Fetch and resolve all active Jira DC users using a two-pass strategy:
-        1. Bulk fetch from Jira (visible-email users resolved directly)
-        2. Reverse lookup for hidden-email users using PipesHub directory emails
+        Fetch and resolve active Jira DC users:
 
-        DC uses ``GET /rest/api/2/user/search`` with ``username`` parameter.
-        Identifier is ``key`` (immutable) falling back to ``name``.
+        1. Bulk enumerate via ``/user/list`` (preferred) or ``/user/search`` fallback
+        2. Resolve visible-email + cached users in memory
+        3. Reverse-lookup remaining PipesHub emails when bulk left gaps
+           (hidden emails, incomplete search, or bulk forbidden)
+
+        Identifier is ``key`` (immutable), falling back to ``accountId`` / ``name``.
         """
-
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
         self._dc_name_to_source_id = {}
 
-        # ====================================================================
-        # Phase 1: DB reads (0 API calls)
-        # ====================================================================
         cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
         pipeshub_users = await self.data_entities_processor.get_all_active_users()
 
@@ -936,35 +969,28 @@ class JiraDataCenterConnector(BaseConnector):
             for u in cached_app_users
             if u.source_user_id and u.email
         }
-
         pipeshub_emails: set[str] = {
             u.email.lower() for u in pipeshub_users if u.email
         }
 
-        # ====================================================================
-        # Phase 2: DC bulk fetch (paginated API call)
-        # ====================================================================
         raw_jira_users = await self._fetch_all_jira_users_bulk()
 
         all_active_user_keys: set[str] = set()
-        visible_email_map: dict[str, str] = {}  # email.lower() -> user_key
+        visible_email_map: dict[str, str] = {}
         key_to_display: dict[str, str] = {}
 
         for user in raw_jira_users:
             if not user.get("active", True):
                 continue
-
             user_key = user.get("accountId") or user.get("key") or user.get("name")
             if not user_key:
                 continue
 
             all_active_user_keys.add(user_key)
             key_to_display[user_key] = user.get("displayName", "")
-
             username = user.get("name")
             if username:
                 self._dc_name_to_source_id[username.lower()] = user_key
-
             email = user.get("emailAddress")
             if email:
                 visible_email_map[email.lower()] = user_key
@@ -974,44 +1000,35 @@ class JiraDataCenterConnector(BaseConnector):
             f"{len(visible_email_map)} with visible email"
         )
 
-        # ====================================================================
-        # Phase 3: Merge into resolved set (in-memory, 0 API calls)
-        # ====================================================================
-        resolved: dict[str, AppUser] = {}  # user_key -> AppUser
+        resolved: dict[str, AppUser] = {}
+        org_id = self.data_entities_processor.org_id
 
-        # 3A: Visible-email users from bulk (freshest data)
         for email_lower, user_key in visible_email_map.items():
             resolved[user_key] = AppUser(
                 app_name=self.connector_name,
                 connector_id=self.connector_id,
                 source_user_id=user_key,
-                org_id=self.data_entities_processor.org_id,
+                org_id=org_id,
                 email=email_lower,
                 full_name=key_to_display.get(user_key, email_lower),
-                is_active=True
+                is_active=True,
             )
 
-        # 3B: Valid cached users (prior syncs, still active in Jira)
         for user_key, email in cached_key_to_email.items():
             if user_key in all_active_user_keys and user_key not in resolved:
                 resolved[user_key] = AppUser(
                     app_name=self.connector_name,
                     connector_id=self.connector_id,
                     source_user_id=user_key,
-                    org_id=self.data_entities_processor.org_id,
+                    org_id=org_id,
                     email=email,
                     full_name=key_to_display.get(user_key, email),
-                    is_active=True
+                    is_active=True,
                 )
 
-        # ====================================================================
-        # Phase 4: Determine if reverse lookup is needed
-        # ====================================================================
-        unresolved_user_keys = all_active_user_keys - set(resolved.keys())
+        unresolved_user_keys = all_active_user_keys - resolved.keys()
         unresolved_count = len(unresolved_user_keys)
-
-        resolved_emails = {u.email.lower() for u in resolved.values()}
-        candidate_emails = pipeshub_emails - resolved_emails
+        candidate_emails = pipeshub_emails - {u.email.lower() for u in resolved.values()}
         candidate_count = len(candidate_emails)
 
         self.logger.info(
@@ -1020,58 +1037,112 @@ class JiraDataCenterConnector(BaseConnector):
             f"{candidate_count} PipesHub candidate emails"
         )
 
-        # ====================================================================
-        # Phase 5: Reverse lookup (only when there are gaps to fill)
-        # ====================================================================
-        # Normally Phase 5 only runs when the bulk fetch left us with
-        # ``unresolved_user_keys`` — but when the bulk fetch was forbidden
-        # (``_user_bulk_forbidden``) ``all_active_user_keys`` is empty by
-        # construction, so ``unresolved_count == 0`` even though we resolved
-        # nobody. In that case fall back to a directory-driven sweep: try
-        # per-email search for every PipesHub user we know about, since the
-        # single-user ``/user/search?username=<email>`` endpoint is often
-        # permitted even when the bulk enumeration is not.
-        if (unresolved_count > 0 or self._user_bulk_forbidden) and candidate_count > 0:
+        needs_reverse = (
+            unresolved_count > 0
+            or self._user_bulk_forbidden
+            or self._user_bulk_incomplete
+        )
+        if needs_reverse and candidate_count > 0:
             new_found = await self._resolve_private_email_users(
                 candidate_emails, unresolved_user_keys, resolved
             )
-            self.logger.info(
-                f"👥 Reverse lookup resolved {new_found} additional users"
-            )
-        elif unresolved_count == 0 and not self._user_bulk_forbidden:
+            self.logger.info(f"👥 Reverse lookup resolved {new_found} additional users")
+        elif not needs_reverse:
             self.logger.info("👥 All Jira DC users resolved, no reverse lookup needed")
 
         self.logger.info(f"👥 Total: {len(resolved)} Jira DC AppUsers resolved")
         return list(resolved.values())
 
-    async def _fetch_all_jira_users_bulk(self) -> list[dict[str, Any]]:
+    async def _fetch_users_via_list(self) -> list[dict[str, Any]] | None:
         """
-        Paginated fetch of all Jira DC users via GET /rest/api/2/user/search.
-        Returns raw user dicts (unfiltered).
+        Cursor-paginated fetch via ``GET /rest/api/2/user/list``.
+
+        Returns users on success, ``None`` when the endpoint is unavailable
+        (caller falls back to ``/user/search``).
+        """
+        users: list[dict[str, Any]] = []
+        cursor: str | None = ""
+        seen_cursors: set[str] = set()
+        # DC has no OAuth refresh — one datasource for the whole pagination loop.
+        datasource = await self._get_fresh_datasource()
+
+        while True:
+            if cursor in seen_cursors:
+                self.logger.warning(
+                    "⚠️ DC /user/list repeated cursor %r — stopping pagination", cursor
+                )
+                break
+            seen_cursors.add(cursor)
+
+            response = await datasource.get_user_list_v2(
+                cursor=cursor,
+                maxResults=USER_LIST_PAGE_SIZE,
+                includeInactive=False,
+            )
+
+            if response.status in (
+                HttpStatusCode.NOT_FOUND.value,
+                HttpStatusCode.METHOD_NOT_ALLOWED.value,
+            ):
+                self.logger.info(
+                    "ℹ️ DC /user/list returned %s — falling back to /user/search",
+                    response.status,
+                )
+                return None
+
+            if response.status != HttpStatusCode.OK.value:
+                if response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    self._user_bulk_forbidden = True
+                    self.logger.warning(
+                        "⚠️ DC /user/list returned %s — configuring user lacks "
+                        "'Browse users and groups'. Returning %s users collected "
+                        "so far; user resolution will degrade to PipesHub-directory "
+                        "reverse lookup only.",
+                        response.status, len(users),
+                    )
+                    return users
+                raise Exception(f"Failed to fetch users via /user/list: {response.text()}")
+
+            payload = self._safe_json_parse(response, "users list")
+            if payload is None:
+                self.logger.error("Failed to parse /user/list response, stopping list fetch")
+                break
+
+            batch_users, next_cursor = _parse_jira_dc_user_list_page(payload)
+            if not batch_users and not next_cursor:
+                break
+
+            users.extend(batch_users)
+            if not next_cursor:
+                break
+            cursor = next_cursor
+
+        self.logger.info("👥 Jira DC /user/list returned %s users", len(users))
+        return users
+
+    async def _fetch_users_via_search(self) -> list[dict[str, Any]]:
+        """
+        Paginated fetch via ``GET /rest/api/2/user/search?username=.``.
+
+        On Jira 10+ this is hard-capped at the first 100 results
+        (JRASERVER-78660); callers must treat results as incomplete.
         """
         users: list[dict[str, Any]] = []
         start_at = 0
-        max_results_per_request = USER_PAGE_SIZE
-        self._user_bulk_forbidden = False
+        datasource = await self._get_fresh_datasource()
 
         while True:
-            datasource = await self._get_fresh_datasource()
             response = await datasource.get_user_search_v2(
                 username=".",
                 includeInactive=False,
-                maxResults=max_results_per_request,
+                maxResults=USER_PAGE_SIZE,
                 startAt=start_at,
             )
 
             if response.status != HttpStatusCode.OK.value:
-                # /rest/api/2/user/search requires the *Browse users and groups*
-                # global permission. Non-admin sync users get 401/403 here.
-                # Mirror the ``_app_roles_forbidden`` fallback in
-                # ``_fetch_application_roles_to_groups_mapping``: rather than
-                # killing the whole ``run_sync`` (and silently dropping the
-                # entire connector), mark the gap, return whatever pages we
-                # already collected, and let downstream code degrade to
-                # per-email reverse-lookup / configuring-user fallbacks.
                 if response.status in (
                     HttpStatusCode.UNAUTHORIZED.value,
                     HttpStatusCode.FORBIDDEN.value,
@@ -1095,19 +1166,51 @@ class JiraDataCenterConnector(BaseConnector):
             if isinstance(users_batch, list):
                 batch_users = users_batch
             else:
-                batch_users = users_batch.get("values", []) if isinstance(users_batch, dict) else []
+                batch_users = (
+                    users_batch.get("values", []) if isinstance(users_batch, dict) else []
+                )
 
             if not batch_users:
                 break
 
             users.extend(batch_users)
 
-            if len(batch_users) < max_results_per_request:
+            if start_at + len(batch_users) >= USER_SEARCH_HARD_CAP:
+                self.logger.warning(
+                    "⚠️ DC /user/search hit the %s-user hard cap (JRASERVER-78660). "
+                    "Collected %s users; treating bulk as incomplete.",
+                    USER_SEARCH_HARD_CAP, len(users),
+                )
                 break
 
-            start_at += max_results_per_request
+            if len(batch_users) < USER_PAGE_SIZE:
+                break
+
+            start_at += USER_PAGE_SIZE
 
         return users
+
+    async def _fetch_all_jira_users_bulk(self) -> list[dict[str, Any]]:
+        """
+        Fetch Jira DC users for sync matching.
+
+        Prefers ``GET /rest/api/2/user/list`` (cursor pagination). Falls back to
+        ``GET /rest/api/2/user/search?username=.`` when ``/list`` is unavailable;
+        search results are marked incomplete so reverse lookup can fill gaps.
+        """
+        self._user_bulk_forbidden = False
+        self._user_bulk_incomplete = False
+
+        list_users = await self._fetch_users_via_list()
+        if list_users is not None:
+            return list_users
+
+        self._user_bulk_incomplete = True
+        self.logger.info(
+            "👥 Using /user/search for bulk users (incomplete on Jira 10+; "
+            "reverse lookup will sweep PipesHub candidates)"
+        )
+        return await self._fetch_users_via_search()
 
     async def _resolve_private_email_users(
         self,
@@ -1160,12 +1263,9 @@ class JiraDataCenterConnector(BaseConnector):
 
         batch_size = 20
         email_list = list(candidate_emails)
-        # When the bulk fetch was forbidden, ``unresolved_count`` is 0
-        # (``all_active_user_keys`` was empty) and the standard early-exit
-        # would skip every batch. Disable the early-exit in that case so we
-        # actually exhaust the candidate list and resolve as many directory
-        # users as the per-email endpoint will let us.
-        skip_early_exit = self._user_bulk_forbidden
+        # When bulk was forbidden or incomplete, ``unresolved_count`` only reflects
+        # the (partial) bulk set — disable early-exit and sweep all candidates.
+        skip_early_exit = self._user_bulk_forbidden or self._user_bulk_incomplete
 
         for i in range(0, len(email_list), batch_size):
             if not skip_early_exit and new_found >= unresolved_count:
