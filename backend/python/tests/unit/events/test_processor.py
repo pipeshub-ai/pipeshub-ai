@@ -17,6 +17,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.events.processor import Processor, convert_record_dict_to_record
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.entities import RecordType
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 import logging
@@ -3619,13 +3620,13 @@ class TestProcessSqlStructuredData:
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
-        """Exceptions during processing propagate."""
+        """Exceptions during processing propagate wrapped in DocumentProcessingError."""
         mock_parser = MagicMock()
         mock_parser.parse_stream.side_effect = RuntimeError("parse failed")
         proc = _make_processor_cov()
         proc.parsers = {"sql_table": mock_parser}
 
-        with pytest.raises(RuntimeError, match="parse failed"):
+        with pytest.raises(DocumentProcessingError, match="parse failed"):
             await _collect_events(
                 proc.process_sql_structured_data(
                     "table1", "r1", b'{}', "vr1",

@@ -148,7 +148,7 @@ class TestProcessPdfWithOcrVlmPageParseFail:
             )
             MockDocling.return_value = mock_processor
 
-            with pytest.raises(RuntimeError, match="parse failed for page"):
+            with pytest.raises(DocumentProcessingError, match="parse failed for page"):
                 await _collect_events(
                     proc.process_pdf_document_with_ocr(
                         "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
@@ -191,7 +191,7 @@ class TestProcessPdfWithOcrVlmBlocksFail:
             )
             MockDocling.return_value = mock_processor
 
-            with pytest.raises(RuntimeError, match="block creation failed"):
+            with pytest.raises(DocumentProcessingError, match="block creation failed"):
                 await _collect_events(
                     proc.process_pdf_document_with_ocr(
                         "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
@@ -828,7 +828,7 @@ class TestProcessDelimitedNonUnicodeError:
 class TestProcessDelimitedOuterException:
     @pytest.mark.asyncio
     async def test_outer_exception_propagated(self):
-        """Exceptions from the pipeline propagate through the outer handler."""
+        """Exceptions from the pipeline propagate through the outer handler wrapped in DocumentProcessingError."""
         csv_parser = MagicMock()
         csv_parser.read_raw_rows.return_value = [["a", "b"], ["1", "2"]]
         csv_parser.find_tables_in_csv.return_value = [
@@ -846,7 +846,7 @@ class TestProcessDelimitedOuterException:
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
 
-            with pytest.raises(RuntimeError, match="pipeline exploded"):
+            with pytest.raises(DocumentProcessingError, match="pipeline exploded"):
                 await _collect_events(
                     proc.process_delimited_document("test.csv", "r1", b"a,b\n1,2", "vr1")
                 )

@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 
 log = logging.getLogger("test")
@@ -124,7 +125,7 @@ class TestProcessHtmlDocument:
 
     @pytest.mark.asyncio
     async def test_exception_raised(self):
-        """Processor should propagate exceptions from html_parser.parse."""
+        """Processor should propagate exceptions from html_parser.parse wrapped in DocumentProcessingError."""
         proc = _make_processor()
 
         html_parser = MagicMock()
@@ -134,7 +135,7 @@ class TestProcessHtmlDocument:
         html_parser.parse_to_blocks = AsyncMock(side_effect=RuntimeError("parse failure"))
         proc.parsers = {"html": html_parser}
 
-        with pytest.raises(RuntimeError, match="parse failure"):
+        with pytest.raises(DocumentProcessingError, match="parse failure"):
             await _collect_events(
                 proc.process_html_document("t.html", "r1", "1", "w", "o1", b"<p>Hi</p>", "vr1")
             )
@@ -228,14 +229,14 @@ class TestProcessTxtDocument:
 
     @pytest.mark.asyncio
     async def test_undecipherable_encoding_raises(self):
-        """Binary that can't be decoded with any encoding raises ValueError."""
+        """Binary that can't be decoded with any encoding raises ValueError wrapped in DocumentProcessingError."""
         proc = _make_processor()
 
         # Create bytes that fail all encodings by mocking decode
         bad_binary = MagicMock()
         bad_binary.decode = MagicMock(side_effect=UnicodeDecodeError("codec", b"", 0, 1, "bad"))
 
-        with pytest.raises(ValueError, match="Unable to decode"):
+        with pytest.raises(DocumentProcessingError, match="Unable to decode"):
             await _collect_events(
                 proc.process_txt_document(
                     "test.txt", "r1", "1", "src", "o1",
@@ -363,14 +364,14 @@ class TestProcessPptxDocument:
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
-        """Parsing errors bubble up."""
+        """Parsing errors bubble up wrapped in DocumentProcessingError."""
         proc = _make_processor()
 
         mock_processor = AsyncMock()
         mock_processor.parse_document = AsyncMock(side_effect=RuntimeError("corrupt pptx"))
 
         with patch("app.events.processor.DoclingProcessor", return_value=mock_processor):
-            with pytest.raises(RuntimeError, match="corrupt pptx"):
+            with pytest.raises(DocumentProcessingError, match="corrupt pptx"):
                 await _collect_events(
                     proc.process_pptx_document("test.pptx", "r1", "1", "s", "o1", b"bad", "vr1")
                 )
@@ -428,14 +429,14 @@ class TestProcessDocxDocument:
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
-        """Errors during parsing bubble up."""
+        """Errors during parsing bubble up wrapped in DocumentProcessingError."""
         proc = _make_processor()
 
         mock_processor = AsyncMock()
         mock_processor.parse_document = AsyncMock(side_effect=RuntimeError("corrupt"))
 
         with patch("app.events.processor.DoclingProcessor", return_value=mock_processor):
-            with pytest.raises(RuntimeError, match="corrupt"):
+            with pytest.raises(DocumentProcessingError, match="corrupt"):
                 await _collect_events(
                     proc.process_docx_document("t.docx", "r1", "1", "s", "o1", b"bad", "vr1")
                 )
@@ -667,14 +668,14 @@ class TestProcessPdfWithPymupdf:
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
-        """Errors during PDF processing propagate."""
+        """Errors during PDF processing propagate wrapped in DocumentProcessingError."""
         proc = _make_processor()
 
         mock_processor = AsyncMock()
         mock_processor.parse_document = AsyncMock(side_effect=RuntimeError("bad pdf"))
 
         with patch("app.events.processor.PDFPlumberOpenCVProcessor", return_value=mock_processor):
-            with pytest.raises(RuntimeError, match="bad pdf"):
+            with pytest.raises(DocumentProcessingError, match="bad pdf"):
                 await _collect_events(
                     proc.process_pdf_with_pdf_plumber("test.pdf", "r1", b"bad", "vr1")
                 )
@@ -823,12 +824,12 @@ class TestProcessXlsDocument:
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
-        """XLS conversion failure propagates."""
+        """XLS conversion failure propagates wrapped in DocumentProcessingError."""
         xls_parser = MagicMock()
         xls_parser.convert_xls_to_xlsx.side_effect = RuntimeError("bad xls")
         proc = _make_processor(parsers={"xls": xls_parser})
 
-        with pytest.raises(RuntimeError, match="bad xls"):
+        with pytest.raises(DocumentProcessingError, match="bad xls"):
             await _collect_events(
                 proc.process_xls_document("t.xls", "r1", "1", "s", "o1", b"bad", "vr1")
             )
@@ -859,7 +860,7 @@ class TestProcessGmailMessage:
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
-        """Gmail processing errors propagate."""
+        """Gmail processing errors propagate as-is (no additional wrapping)."""
         proc = _make_processor()
 
         async def _fail_html(*args, **kwargs):
@@ -1373,7 +1374,7 @@ class TestProcessPdfDocumentWithOcr:
 class TestRunIndexingPipeline:
     @pytest.mark.asyncio
     async def test_pipeline_error_propagates(self):
-        """Errors from IndexingPipeline.apply propagate upward."""
+        """Errors from IndexingPipeline.apply propagate upward wrapped in DocumentProcessingError."""
         proc = _make_processor()
 
         md_parser = MagicMock()
@@ -1391,7 +1392,7 @@ class TestRunIndexingPipeline:
                 side_effect=RuntimeError("pipeline error")
             )
 
-            with pytest.raises(RuntimeError, match="pipeline error"):
+            with pytest.raises(DocumentProcessingError, match="pipeline error"):
                 await _collect_events(
                     proc.process_md_document("test.md", "r1", b"# Hello", "vr1")
                 )
@@ -1594,7 +1595,7 @@ class TestProcessPdfDocumentWithOcrAdditional:
 
     @pytest.mark.asyncio
     async def test_vlm_ocr_failure_propagates(self):
-        """When VLM OCR fails, exception propagates (no fallback)."""
+        """When VLM OCR fails, exception propagates wrapped in DocumentProcessingError (no fallback)."""
         proc = _make_processor()
 
         vlm_handler = AsyncMock()
@@ -1614,7 +1615,7 @@ class TestProcessPdfDocumentWithOcrAdditional:
                 "llm": [],
             })
 
-            with pytest.raises(RuntimeError, match="VLM failed"):
+            with pytest.raises(DocumentProcessingError, match="VLM failed"):
                 await _collect_events(
                     proc.process_pdf_document_with_ocr(
                         "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
@@ -1755,7 +1756,7 @@ class TestProcessPdfDocumentWithOcrAdditional:
 class TestRunIndexingPipelineAdditional:
     @pytest.mark.asyncio
     async def test_pipeline_error_in_docx(self):
-        """Pipeline error from process_docx_document propagates."""
+        """Pipeline error from process_docx_document propagates wrapped in DocumentProcessingError."""
         proc = _make_processor()
 
         mock_processor = AsyncMock()
@@ -1775,7 +1776,7 @@ class TestRunIndexingPipelineAdditional:
                 side_effect=RuntimeError("docx pipeline error")
             )
 
-            with pytest.raises(RuntimeError, match="docx pipeline error"):
+            with pytest.raises(DocumentProcessingError, match="docx pipeline error"):
                 await _collect_events(
                     proc.process_docx_document(
                         "test.docx", "r1", "1", "src", "o1", b"docx", "vr1"
@@ -1784,7 +1785,7 @@ class TestRunIndexingPipelineAdditional:
 
     @pytest.mark.asyncio
     async def test_pipeline_error_in_pptx(self):
-        """Pipeline error from process_pptx_document propagates."""
+        """Pipeline error from process_pptx_document propagates wrapped in DocumentProcessingError."""
         proc = _make_processor()
 
         mock_processor = AsyncMock()
@@ -1804,7 +1805,7 @@ class TestRunIndexingPipelineAdditional:
                 side_effect=RuntimeError("pptx pipeline error")
             )
 
-            with pytest.raises(RuntimeError, match="pptx pipeline error"):
+            with pytest.raises(DocumentProcessingError, match="pptx pipeline error"):
                 await _collect_events(
                     proc.process_pptx_document(
                         "test.pptx", "r1", "1", "src", "o1", b"pptx", "vr1"
@@ -2046,7 +2047,7 @@ class TestProcessTxtDocumentAdditional:
 class TestProcessExcelDocumentAdditional:
     @pytest.mark.asyncio
     async def test_parser_exception(self):
-        """Exception during workbook load propagates."""
+        """Exception during workbook load propagates wrapped in DocumentProcessingError."""
         excel_parser = MagicMock()
         excel_parser.load_workbook_from_binary = MagicMock(side_effect=RuntimeError("corrupt excel"))
         proc = _make_processor(parsers={"xlsx": excel_parser})
@@ -2055,7 +2056,7 @@ class TestProcessExcelDocumentAdditional:
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
-            with pytest.raises(RuntimeError, match="corrupt excel"):
+            with pytest.raises(DocumentProcessingError, match="corrupt excel"):
                 await _collect_events(
                     proc.process_excel_document("bad.xlsx", "r1", "1", "src", "o1", b"data", "vr1")
                 )

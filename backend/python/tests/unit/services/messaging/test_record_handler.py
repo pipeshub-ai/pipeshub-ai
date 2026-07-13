@@ -1074,16 +1074,18 @@ class TestProcessEventErrors:
             "orgId": "org-1",
             "mimeType": "application/pdf",
             "extension": "pdf",
+            "is_final_failure": True,
         }
 
         with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt:
             mock_jwt.return_value = "token"
             with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as mock_api:
-                mock_api.side_effect = Exception("download failed")
+                # Use DocumentProcessingError which is classified as TERMINAL
+                mock_api.side_effect = DocumentProcessingError("download failed")
                 handler.config_service.get_config = AsyncMock(
                     return_value={"connectors": {"endpoint": "http://localhost:8088"}}
                 )
-                with pytest.raises(Exception, match="download failed"):
+                with pytest.raises(DocumentProcessingError, match="download failed"):
                     await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         # The finally block should have called __update_document_status
@@ -1343,16 +1345,18 @@ class TestPropagatePrimaryFailureToQueuedDuplicates:
             "orgId": "org-1",
             "mimeType": "application/pdf",
             "extension": "pdf",
+            "is_final_failure": True,
         }
 
         with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt:
             mock_jwt.return_value = "token"
             with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as mock_api:
-                mock_api.side_effect = Exception("download failed")
+                # Use a terminal error type that will trigger propagate
+                mock_api.side_effect = DocumentProcessingError("download failed")
                 handler.config_service.get_config = AsyncMock(
                     return_value={"connectors": {"endpoint": "http://localhost:8088"}}
                 )
-                with pytest.raises(Exception, match="download failed"):
+                with pytest.raises(DocumentProcessingError, match="download failed"):
                     await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         handler._propagate_primary_failure_to_queued_duplicates.assert_awaited_once_with(
