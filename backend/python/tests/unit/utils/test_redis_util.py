@@ -115,3 +115,159 @@ class TestBuildRedisUrl:
         result = build_redis_url(config)
         assert result.startswith("redis://")
         assert not result.startswith("rediss://")
+
+
+# ---------------------------------------------------------------------------
+# Cluster / mode plumbing — added when REDIS_MODE=cluster opt-in landed.
+# ---------------------------------------------------------------------------
+
+
+class TestParseRedisNodes:
+    def test_empty_returns_empty_list(self):
+        from app.utils.redis_util import parse_redis_nodes
+
+        assert parse_redis_nodes(None) == []
+        assert parse_redis_nodes("") == []
+        assert parse_redis_nodes(",,,") == []
+
+    def test_host_port_pairs(self):
+        from app.utils.redis_util import parse_redis_nodes
+
+        parsed = parse_redis_nodes("a:7000, b:7001 ,c:7002")
+        assert parsed == [("a", 7000), ("b", 7001), ("c", 7002)]
+
+    def test_defaults_port_when_missing(self):
+        from app.utils.redis_util import parse_redis_nodes
+
+        assert parse_redis_nodes("host-only") == [("host-only", 6379)]
+
+
+class TestIsClusterMode:
+    def test_explicit_modes(self):
+        from app.utils.redis_util import is_cluster_mode
+
+        assert is_cluster_mode({"mode": "cluster"}) is True
+        assert is_cluster_mode({"mode": "CLUSTER"}) is True
+        assert is_cluster_mode({"mode": "standalone"}) is False
+        assert is_cluster_mode({}) is False
+
+
+class TestBuildRedisClient:
+    def test_returns_redis_in_standalone_mode(self):
+        from redis.asyncio import Redis
+        from redis.asyncio.cluster import RedisCluster
+
+        from app.utils.redis_util import build_redis_client
+
+        client = build_redis_client({"host": "localhost", "port": 6379, "mode": "standalone"})
+        assert isinstance(client, Redis)
+        assert not isinstance(client, RedisCluster)
+
+    def test_returns_cluster_in_cluster_mode(self):
+        from redis.asyncio.cluster import RedisCluster
+
+        from app.utils.redis_util import build_redis_client
+
+        client = build_redis_client(
+            {
+                "mode": "cluster",
+                "nodes": [("127.0.0.1", 7000), ("127.0.0.1", 7001)],
+                "password": None,
+            }
+        )
+        assert isinstance(client, RedisCluster)
+
+    def test_raises_when_cluster_nodes_missing(self):
+        from app.utils.redis_util import build_redis_client
+
+        with pytest.raises(ValueError, match="REDIS_NODES"):
+            build_redis_client({"mode": "cluster", "nodes": []})
+
+    def test_accepts_string_nodes(self):
+        from redis.asyncio.cluster import RedisCluster
+
+        from app.utils.redis_util import build_redis_client
+
+        client = build_redis_client(
+            {"mode": "cluster", "nodes": "127.0.0.1:7000,127.0.0.1:7001"}
+        )
+        assert isinstance(client, RedisCluster)
+
+    def test_accepts_dict_nodes(self):
+        from redis.asyncio.cluster import RedisCluster
+
+        from app.utils.redis_util import build_redis_client
+
+        client = build_redis_client(
+            {
+                "mode": "cluster",
+                "nodes": [
+                    {"host": "127.0.0.1", "port": 7000},
+                    {"host": "127.0.0.1", "port": 7001},
+                ],
+            }
+        )
+        assert isinstance(client, RedisCluster)
+
+
+class TestClusterAwareScanIter:
+    def test_falls_through_for_standalone(self):
+        """Standalone clients should use the plain scan_iter path, with no
+        target_nodes argument."""
+        import asyncio
+
+        from app.utils.redis_util import cluster_aware_scan_iter
+
+        captured = {}
+
+        class FakeStandalone:
+            async def scan_iter(self, **kwargs):
+                captured.update(kwargs)
+                for k in ("a", "b", "c"):
+                    yield k
+
+        async def collect():
+            out = []
+            async for k in cluster_aware_scan_iter(FakeStandalone(), match="pat", count=50):
+                out.append(k)
+            return out
+
+        result = asyncio.run(collect())
+        assert result == ["a", "b", "c"]
+        assert captured.get("match") == "pat"
+        assert captured.get("count") == 50
+        assert "target_nodes" not in captured
+
+    def test_targets_primaries_for_cluster(self):
+        """RedisCluster path must explicitly target PRIMARIES so partial-shard
+        scans cannot regress silently across redis-py versions."""
+        import asyncio
+
+        from redis.asyncio.cluster import RedisCluster
+
+        from app.utils.redis_util import cluster_aware_scan_iter
+
+        captured = {}
+
+        class FakeCluster(RedisCluster):
+            # Bypass real __init__ so we don't need a live cluster.
+            def __init__(self):  # noqa: D401, ANN001
+                pass
+
+            async def scan_iter(self, *, match=None, count=100, target_nodes=None):  # type: ignore[override]
+                captured["match"] = match
+                captured["count"] = count
+                captured["target_nodes"] = target_nodes
+                for k in ("x", "y"):
+                    yield k
+
+        async def collect():
+            out = []
+            async for k in cluster_aware_scan_iter(FakeCluster(), match="pat"):
+                out.append(k)
+            return out
+
+        result = asyncio.run(collect())
+        assert result == ["x", "y"]
+        assert captured["target_nodes"] == RedisCluster.PRIMARIES
+        assert captured["match"] == "pat"

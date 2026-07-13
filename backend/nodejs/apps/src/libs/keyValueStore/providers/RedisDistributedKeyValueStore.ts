@@ -1,8 +1,12 @@
-import { Redis } from 'ioredis';
 import { DistributedKeyValueStore } from '../keyValueStore';
 import { KeyAlreadyExistsError, KeyNotFoundError } from '../../errors/etcd.errors';
 import { RedisConfig } from '../../types/redis.types';
 import { Logger } from '../../services/logger.service';
+import {
+  buildRedisClient,
+  clusterAwareScan,
+  RedisClient,
+} from '../../services/redisClientFactory';
 
 export interface RedisStoreConfig extends RedisConfig {
   keyPrefix?: string;
@@ -10,9 +14,29 @@ export interface RedisStoreConfig extends RedisConfig {
 
 const CACHE_INVALIDATION_CHANNEL = 'pipeshub:cache:invalidate';
 
+// Atomic single-key compare-and-set. KEYS[1] is the key; ARGV[1] is "1" when
+// the caller expects the key to be absent, "0" otherwise; ARGV[2] is the
+// expected serialized value (ignored when ARGV[1] == "1"); ARGV[3] is the new
+// serialized value. Returns 1 on success, 0 on mismatch.
+const CAS_LUA = `
+local current = redis.call('GET', KEYS[1])
+if ARGV[1] == '1' then
+  if current == false then
+    redis.call('SET', KEYS[1], ARGV[3])
+    return 1
+  end
+  return 0
+end
+if current ~= false and current == ARGV[2] then
+  redis.call('SET', KEYS[1], ARGV[3])
+  return 1
+end
+return 0
+`;
+
 
 export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStore<T> {
-  private client: Redis;
+  private client: RedisClient;
   private serializer: (value: T) => Buffer;
   private deserializer: (buffer: Buffer) => T;
   private keyPrefix: string;
@@ -27,19 +51,7 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
     this.serializer = serializer;
     this.deserializer = deserializer;
 
-    this.client = new Redis({
-      host: config.host,
-      port: config.port,
-      password: config.password,
-      db: config.db || 0,
-      connectTimeout: config.connectTimeout || 10000,
-      maxRetriesPerRequest: config.maxRetriesPerRequest || 3,
-      enableOfflineQueue: config.enableOfflineQueue ?? true,
-      retryStrategy: (times: number) => {
-        const delay = Math.min(times * 50, 2000);
-        return delay;
-      },
-    });
+    this.client = buildRedisClient(config);
   }
 
   private buildKey(key: string): string {
@@ -98,22 +110,8 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
 
   async getAllKeys(): Promise<string[]> {
     const pattern = `${this.keyPrefix}*`;
-    const keys: string[] = [];
-
-    let cursor = '0';
-    do {
-      const [newCursor, foundKeys] = await this.client.scan(
-        cursor,
-        'MATCH',
-        pattern,
-        'COUNT',
-        100,
-      );
-      cursor = newCursor;
-      keys.push(...foundKeys.map((k) => this.stripPrefix(k)));
-    } while (cursor !== '0');
-
-    return keys;
+    const found = await clusterAwareScan(this.client, pattern, 100);
+    return found.map((k) => this.stripPrefix(k));
   }
 
   async watchKey(key: string, callback: (value: T | null) => void): Promise<void> {
@@ -144,22 +142,8 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
   async listKeysInDirectory(directory: string): Promise<string[]> {
     const prefix = directory.endsWith('/') ? directory : `${directory}/`;
     const pattern = `${this.keyPrefix}${prefix}*`;
-    const keys: string[] = [];
-
-    let cursor = '0';
-    do {
-      const [newCursor, foundKeys] = await this.client.scan(
-        cursor,
-        'MATCH',
-        pattern,
-        'COUNT',
-        100,
-      );
-      cursor = newCursor;
-      keys.push(...foundKeys.map((k) => this.stripPrefix(k)));
-    } while (cursor !== '0');
-
-    return keys;
+    const found = await clusterAwareScan(this.client, pattern, 100);
+    return found.map((k) => this.stripPrefix(k));
   }
 
   async compareAndSet(
@@ -170,33 +154,24 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
     const fullKey = this.buildKey(key);
     const newBuffer = this.serializer(newValue);
     const expectedBuffer =
-      expectedValue !== null ? this.serializer(expectedValue) : null;
+      expectedValue !== null ? this.serializer(expectedValue) : Buffer.alloc(0);
+    const expectNilFlag = expectedValue === null ? '1' : '0';
 
     try {
-      // Watch the key for any changes.
-      await this.client.watch(fullKey);
+      // Single-key atomic CAS via Lua. Works identically on standalone and
+      // Cluster (single KEY = single hash slot). Replaces WATCH+MULTI, which
+      // is unsafe under Cluster because separate awaited commands may take
+      // different pooled connections.
+      const result = (await this.client.eval(
+        CAS_LUA,
+        1,
+        fullKey,
+        expectNilFlag,
+        expectedBuffer,
+        newBuffer,
+      )) as number;
 
-      const currentBuffer = await this.client.getBuffer(fullKey);
-
-      // Compare buffers for an exact match.
-      const valuesMatch =
-        (expectedValue === null && currentBuffer === null) ||
-        (expectedBuffer !== null &&
-          currentBuffer !== null &&
-          expectedBuffer.equals(currentBuffer));
-
-      if (!valuesMatch) {
-        // Values don't match, abort.
-        await this.client.unwatch();
-        return false;
-      }
-
-      // Atomically set the new value.
-      const result = await this.client.multi().set(fullKey, newBuffer).exec();
-
-      // If result is null, it means the key was modified by another client
-      // after we started watching it. The transaction was aborted.
-      if (result === null) {
+      if (result !== 1) {
         return false;
       }
 
@@ -204,7 +179,6 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
       return true;
     } catch (error) {
       Logger.getInstance().error(`Error in compareAndSet for key ${key}:`, error);
-      // If operation fails, return false
       return false;
     }
   }

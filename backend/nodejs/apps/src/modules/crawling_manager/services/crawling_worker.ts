@@ -2,6 +2,10 @@ import { Worker, Job, WorkerOptions, JobProgress } from 'bullmq';
 import { Logger } from '../../../libs/services/logger.service';
 import { inject, injectable } from 'inversify';
 import { RedisConfig } from '../../../libs/types/redis.types';
+import {
+  buildBullConnection,
+  bullQueueName,
+} from '../../../libs/services/redisClientFactory';
 import { CrawlingJobData } from '../schema/interface';
 import { ConnectorsCrawlingService } from './connectors/connectors';
 import { ICrawlingTaskService } from './task/crawling_task_service';
@@ -21,21 +25,22 @@ export class CrawlingWorkerService {
   ) { 
     this.logger = Logger.getInstance({ service: 'CrawlingWorkerService' });
 
+    // Must match the queue name + connection used by CrawlingSchedulerService.
+    // In cluster mode the queue name gets a `{...}` hash tag and the
+    // connection is a Cluster instance — see redisClientFactory.
     const workerOptions: WorkerOptions = {
-      connection: {
-        host: redisConfig.host,
-        port: redisConfig.port,
-        password: redisConfig.password,
-        db: redisConfig.db || 0,
-        username: redisConfig.username,
-      },
+      // Use buildBullConnection so cluster mode wraps via a real Cluster
+      // client. The standalone branch of the helper already forwards
+      // host/port/username/password/db, so this subsumes the main-branch
+      // additions of `db` and `username`.
+      connection: buildBullConnection(redisConfig) as WorkerOptions['connection'],
       concurrency: 5, // Process up to 5 jobs concurrently
       maxStalledCount: 3,
       stalledInterval: 30000, // 30 seconds
     };
 
     this.worker = new Worker(
-      'crawling-scheduler', // Same queue name as in scheduler service
+      bullQueueName(redisConfig, 'crawling-scheduler'),
       this.processJob.bind(this),
       workerOptions,
     );
