@@ -191,7 +191,7 @@ STREAM_HASH_TAG_PREFIX = f"{STREAM_HASH_TAG}:"
 
 def stream_key(config: "RedisConfig", topic: str) -> str:
     """Forward: topic name → Redis stream key (with hash tag in cluster mode)."""
-    if getattr(config, "mode", "standalone") == "cluster":
+    if config.mode == "cluster":
         return f"{STREAM_HASH_TAG_PREFIX}{topic}"
     return topic
 
@@ -199,7 +199,7 @@ def stream_key(config: "RedisConfig", topic: str) -> str:
 def topic_from_stream_key(config: "RedisConfig", key: str) -> str:
     """Reverse: Redis stream key → topic name."""
     if (
-        getattr(config, "mode", "standalone") == "cluster"
+        config.mode == "cluster"
         and key.startswith(STREAM_HASH_TAG_PREFIX)
     ):
         return key[len(STREAM_HASH_TAG_PREFIX):]

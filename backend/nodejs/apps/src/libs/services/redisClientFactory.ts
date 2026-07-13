@@ -18,12 +18,17 @@ export const parseRedisNodes = (raw?: string): RedisClusterNode[] => {
     const entry = rawEntry.trim();
     if (!entry) continue;
     const lastColon = entry.lastIndexOf(':');
-    const host = lastColon === -1 ? entry : entry.slice(0, lastColon);
+    let host = lastColon === -1 ? entry : entry.slice(0, lastColon);
     const portStr = lastColon === -1 ? '6379' : entry.slice(lastColon + 1);
     if (!host) continue;
     const port = parseInt(portStr || '6379', 10);
     if (Number.isNaN(port)) {
       throw new Error(`REDIS_NODES entry has non-numeric port: '${entry}'`);
+    }
+    // Strip brackets from an IPv6 literal (`[::1]` -> `::1`); net.connect wants
+    // the raw address, not the URL-style bracketed form.
+    if (host.startsWith('[') && host.endsWith(']')) {
+      host = host.slice(1, -1);
     }
     nodes.push({ host, port });
   }

@@ -61,9 +61,14 @@ def parse_redis_nodes(raw: str | None) -> List[Tuple[str, int]]:
             continue
         if ':' in entry:
             host, port_str = entry.rsplit(':', 1)
-            nodes.append((host, _parse_port(port_str, entry)))
+            port = _parse_port(port_str, entry)
         else:
-            nodes.append((entry, 6379))
+            host, port = entry, 6379
+        # Strip brackets from an IPv6 literal (`[::1]` -> `::1`); the socket
+        # layer wants the raw address, not the URL-style bracketed form.
+        if host.startswith('[') and host.endswith(']'):
+            host = host[1:-1]
+        nodes.append((host, port))
     return nodes
 
 
