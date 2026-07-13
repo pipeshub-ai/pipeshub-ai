@@ -124,7 +124,9 @@ export const buildRedisClient = (
     const clusterOptions: ClusterOptions = {
       redisOptions: redisOpts,
       lazyConnect: options.lazyConnect ?? false,
-      scaleReads: 'slave',
+      // Keep reads on the primary: the KV/config store relies on read-after-write
+      // consistency, which replica reads break under replication lag.
+      scaleReads: 'master',
       clusterRetryStrategy: retryDelay(retry),
     };
     return new Cluster(nodes, clusterOptions);
@@ -174,22 +176,6 @@ export const clusterAwareScan = async (
 };
 
 /**
- * Cluster-aware equivalent of `KEYS pattern`.
- * Prefer `clusterAwareScan` for production paths — KEYS is O(N) and blocks the server.
- */
-export const clusterAwareKeys = async (
-  client: RedisClient,
-  pattern: string,
-): Promise<string[]> => {
-  const found = new Set<string>();
-  for (const node of scanTargets(client)) {
-    const keys = await node.keys(pattern);
-    for (const k of keys) found.add(k);
-  }
-  return Array.from(found);
-};
-
-/**
  * Wrap a BullMQ queue name with a Redis Cluster hash tag in cluster mode.
  *
  * BullMQ's internal Lua scripts touch many keys per queue (`<queue>:wait`,
@@ -223,6 +209,7 @@ export const buildBullConnection = (
   username?: string;
   password?: string;
   db?: number;
+  tls?: Record<string, never>;
   maxRetriesPerRequest: null;
 } => {
   if (config.mode === 'cluster') {
@@ -237,6 +224,7 @@ export const buildBullConnection = (
     username: config.username,
     password: config.password,
     db: config.db ?? 0,
+    ...(config.tls ? { tls: {} } : {}),
     maxRetriesPerRequest: null,
   };
 };
