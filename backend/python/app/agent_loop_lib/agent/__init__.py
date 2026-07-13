@@ -623,6 +623,21 @@ class Agent:
             return StepOutcome("continue", turn=turn)
 
         if not tool_calls:
+            # A POST_MODEL hook can veto "no tool calls -> done" by setting
+            # `recovery_message` even on a non-truncated response — e.g. a
+            # completion gate that requires an artifact-producing tool call
+            # before accepting a text-only answer (see
+            # `app/agents/agent_loop/hooks/completion_gate.py`), or a nudge
+            # for an empty/whitespace-only response. Same shape as the
+            # truncated branch above: inject the message and `continue`
+            # instead of treating this as a successful terminal turn.
+            if post_model_ctx.recovery_message is not None:
+                await context.add(post_model_ctx.recovery_message)
+                turn = AgentTurn(messages=[response_msg], tool_calls=[], tool_results=[])
+                self._scope.turns.append(turn)
+                await self.emit(EventType.TURN_COMPLETE, {"turn_index": turn_index})
+                return StepOutcome("continue", turn=turn)
+
             output = self.extract_text(response_msg)
             try:
                 await hooks.dispatch_guardrail_output(self._hooks, output or "", scope=turn_scope)
@@ -655,32 +670,21 @@ class Agent:
 
         seen_tool_calls = turn_scope.seen_tool_calls
 
-        # If this turn has multiple spawn_agent calls, pre-launch them all
-        # as concurrent asyncio Tasks so they run in parallel. Timeline
-        # entries are written HERE (at task-creation time) so their
-        # timestamps reflect the true parallel start.
+        # Pre-launch every spawn_agent call this turn (one or many) as a
+        # concurrent, dependency-aware asyncio Task via `spawn_scheduler` —
+        # a call with `depends_on` waits for its prerequisite(s) and gets
+        # their result folded into its goal before it actually spawns;
+        # calls with no dependency on each other still run fully in
+        # parallel. See `agent/spawn_scheduler.py` for why this replaced a
+        # plain "pre-launch every call, no ordering" batch.
         spawn_calls = [c for c in tool_calls if c.name == "spawn_agent"]
         self._pending_spawn_tasks = {}
-        if len(spawn_calls) > 1:
-            import uuid as _uuid
-
-            from app.agent_loop_lib.tools.builtin.coordination.spawn_agent import (
-                build_spawn_child,
+        if spawn_calls:
+            from app.agent_loop_lib.agent.spawn_scheduler import schedule_spawn_batch
+            self._pending_spawn_tasks = await schedule_spawn_batch(
+                self, runtime, spawn_calls, self._scope,
+                goal=goal, turn_index=turn_index, started_at=self.started_at,
             )
-            team_id = str(_uuid.uuid4())
-            for sc in spawn_calls:
-                await obs.write_state(self, goal, "spawning_agent", turn_index=turn_index, started_at=self.started_at, current_tool="spawn_agent")
-                await obs.append_timeline(
-                    self, "spawn_agent", "Spawning child agent (parallel)", "spawning_agent",
-                    {"args": {**sc.arguments, "_parallel": True}, "team_id": team_id},
-                )
-                child_spec, child_goal = build_spawn_child(runtime, sc)
-                self._pending_spawn_tasks[sc.id] = asyncio.create_task(
-                    runtime.run_child(
-                        child_spec, child_goal, self._run_ctx, team_id=team_id,
-                        session_id=self.session_id, parent_scope=self._scope,
-                    )
-                )
 
         # --- Parallel non-spawn tool execution: every non-spawn call this
         # turn is independent by construction and runs concurrently.

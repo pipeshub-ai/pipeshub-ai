@@ -15,6 +15,8 @@ LangGraph path, no dot-to-underscore sanitization is needed here.
 
 from __future__ import annotations
 
+import json
+import re
 from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
@@ -24,6 +26,8 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field, create_model
 
 from app.agent_loop_lib.core.messages import (
+    MALFORMED_TOOL_CALL_ARGS_KEY,
+    MALFORMED_TOOL_CALL_ERROR_KEY,
     AssistantMessage,
     ImagePart,
     ImageSource,
@@ -176,6 +180,74 @@ def convert_tool_call_from_langchain(call: dict[str, Any]) -> ToolCall:
     )
 
 
+# A small model frequently mangles tool-call argument JSON just enough that
+# LangChain's own parser gives up and routes the call into
+# `AIMessage.invalid_tool_calls` instead of `.tool_calls` — most often a
+# stray ```json fence around the arguments, or a trailing comma before a
+# closing brace/bracket. Both are cheap, unambiguous to strip, and cover
+# the overwhelming majority of "almost valid" JSON weak models produce.
+_JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+
+
+def _try_repair_json(raw: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Best-effort recovery for tool-call argument JSON a weak model
+    mangled. Returns `(parsed_args, None)` on success, `(None, error)` on
+    failure — never raises, so a caller can always fall back to the
+    malformed-call sentinel path."""
+    if not raw or not raw.strip():
+        return {}, None
+
+    candidates = [raw]
+    defenced = _JSON_FENCE_RE.sub("", raw).strip()
+    if defenced != raw:
+        candidates.append(defenced)
+    candidates.append(_TRAILING_COMMA_RE.sub(r"\1", candidates[-1]))
+
+    last_error = "unknown JSON parse error"
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError) as exc:
+            last_error = str(exc)
+            continue
+        if isinstance(parsed, dict):
+            return parsed, None
+        last_error = f"parsed JSON was not an object (got {type(parsed).__name__})"
+    return None, last_error
+
+
+def _recover_invalid_tool_call(call: dict[str, Any]) -> ToolCall:
+    """One LangChain `invalid_tool_call` entry -> a `ToolCall`, repairing
+    the raw argument string when possible (see `_try_repair_json`).
+
+    Never dropped: even when repair fails, this still returns a `ToolCall`
+    (carrying `MALFORMED_TOOL_CALL_ARGS_KEY`/`_ERROR_KEY` sentinels) rather
+    than `None` — a dropped call would make the turn look exactly like a
+    plain no-tool-call response, letting the model "finish" the run without
+    ever having actually invoked the tool it clearly intended to call. See
+    `agent/tool_loop.py::execute_tool_call`'s sentinel check for how this
+    turns into a corrective error `ToolMessage` on the next turn instead.
+    """
+    name = call.get("name") or "unknown_tool"
+    raw_args = call.get("args")
+    raw_args_str = raw_args if isinstance(raw_args, str) else ("" if raw_args is None else json.dumps(raw_args))
+
+    parsed, error = _try_repair_json(raw_args_str)
+    if parsed is not None:
+        return ToolCall(id=call.get("id") or "", name=name, arguments=parsed)
+
+    parse_error = error or call.get("error") or "malformed JSON arguments"
+    return ToolCall(
+        id=call.get("id") or "",
+        name=name,
+        arguments={
+            MALFORMED_TOOL_CALL_ARGS_KEY: raw_args_str,
+            MALFORMED_TOOL_CALL_ERROR_KEY: str(parse_error),
+        },
+    )
+
+
 def _is_truncated(ai_message: AIMessage) -> bool:
     metadata = ai_message.response_metadata or {}
     finish_reason = metadata.get("finish_reason") or metadata.get("stop_reason")
@@ -204,6 +276,11 @@ def convert_assistant_message_from_langchain(ai_message: AIMessage) -> Assistant
         # below, and PipesHub's LLMs don't return image content blocks.
 
     tool_calls = [convert_tool_call_from_langchain(c) for c in (ai_message.tool_calls or [])]
+    # `invalid_tool_calls` are calls the provider clearly intended to make
+    # but whose argument JSON LangChain's own parser rejected outright —
+    # recovered (or sentinel-marked) rather than silently dropped; see
+    # `_recover_invalid_tool_call`.
+    tool_calls += [_recover_invalid_tool_call(c) for c in (ai_message.invalid_tool_calls or [])]
 
     return AssistantMessage(
         content=parts,

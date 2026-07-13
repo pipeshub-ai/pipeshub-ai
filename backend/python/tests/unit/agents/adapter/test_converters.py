@@ -8,6 +8,8 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.messages import ToolMessage as LCToolMessage
 
 from app.agent_loop_lib.core.messages import (
+    MALFORMED_TOOL_CALL_ARGS_KEY,
+    MALFORMED_TOOL_CALL_ERROR_KEY,
     AssistantMessage,
     TextPart,
     ToolCall,
@@ -112,6 +114,92 @@ class TestAssistantMessageFromLangchain:
     def test_tool_call_missing_id_defaults_empty(self) -> None:
         call = convert_tool_call_from_langchain({"name": "foo", "args": {}})
         assert call.id == ""
+
+
+class TestInvalidToolCallRecovery:
+    """`AIMessage.invalid_tool_calls` must never be silently dropped — a
+    dropped call makes the turn look exactly like a plain no-tool-call
+    response, letting a weak model "finish" without ever having invoked
+    the tool it clearly meant to call. See `_recover_invalid_tool_call`."""
+
+    def test_repairable_markdown_fence_is_recovered_as_a_normal_call(self) -> None:
+        ai_message = AIMessage(
+            content="",
+            invalid_tool_calls=[{
+                "name": "run_code",
+                "args": '```json\n{"code": "print(1)", "language": "python"}\n```',
+                "id": "call_1",
+                "error": "invalid json",
+            }],
+        )
+        result = convert_assistant_message_from_langchain(ai_message)
+
+        assert result.tool_calls is not None
+        assert len(result.tool_calls) == 1
+        call = result.tool_calls[0]
+        assert call.name == "run_code"
+        assert call.arguments == {"code": "print(1)", "language": "python"}
+        assert MALFORMED_TOOL_CALL_ARGS_KEY not in call.arguments
+
+    def test_repairable_trailing_comma_is_recovered(self) -> None:
+        ai_message = AIMessage(
+            content="",
+            invalid_tool_calls=[{
+                "name": "run_code",
+                "args": '{"code": "print(1)",}',
+                "id": "call_1",
+                "error": "invalid json",
+            }],
+        )
+        result = convert_assistant_message_from_langchain(ai_message)
+
+        assert result.tool_calls[0].arguments == {"code": "print(1)"}
+
+    def test_unrepairable_json_becomes_sentinel_call_not_dropped(self) -> None:
+        ai_message = AIMessage(
+            content="",
+            invalid_tool_calls=[{
+                "name": "run_code",
+                "args": '{"code": "print(1)"  NOT VALID JSON AT ALL',
+                "id": "call_1",
+                "error": "invalid json",
+            }],
+        )
+        result = convert_assistant_message_from_langchain(ai_message)
+
+        assert result.tool_calls is not None
+        assert len(result.tool_calls) == 1
+        call = result.tool_calls[0]
+        assert call.name == "run_code"
+        assert call.id == "call_1"
+        assert MALFORMED_TOOL_CALL_ARGS_KEY in call.arguments
+        assert MALFORMED_TOOL_CALL_ERROR_KEY in call.arguments
+
+    def test_missing_name_defaults_to_unknown_tool(self) -> None:
+        ai_message = AIMessage(
+            content="",
+            invalid_tool_calls=[{"name": None, "args": "not json", "id": "call_1"}],
+        )
+        result = convert_assistant_message_from_langchain(ai_message)
+        assert result.tool_calls[0].name == "unknown_tool"
+
+    def test_combines_with_valid_tool_calls_on_the_same_response(self) -> None:
+        ai_message = AIMessage(
+            content="",
+            tool_calls=[{"name": "search", "args": {"q": "x"}, "id": "call_ok"}],
+            invalid_tool_calls=[{"name": "run_code", "args": "{bad", "id": "call_bad", "error": "e"}],
+        )
+        result = convert_assistant_message_from_langchain(ai_message)
+
+        assert result.tool_calls is not None
+        assert len(result.tool_calls) == 2
+        names = {c.name for c in result.tool_calls}
+        assert names == {"search", "run_code"}
+
+    def test_no_invalid_tool_calls_leaves_behavior_unchanged(self) -> None:
+        ai_message = AIMessage(content="just text")
+        result = convert_assistant_message_from_langchain(ai_message)
+        assert result.tool_calls is None
 
 
 class TestTokenUsage:

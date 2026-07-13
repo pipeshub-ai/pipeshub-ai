@@ -40,8 +40,11 @@ class TestCanonicalize:
     def test_npm_preserves_scope(self):
         assert canonicalize("@types/node", SandboxLanguage.TYPESCRIPT) == "@types/node"
 
-    def test_npm_preserves_scope_with_version(self):
-        assert canonicalize("@types/node@^20", SandboxLanguage.TYPESCRIPT) == "@types/node@^20"
+    def test_npm_strips_version_from_scoped_spec(self):
+        assert canonicalize("@types/node@^20", SandboxLanguage.TYPESCRIPT) == "@types/node"
+
+    def test_npm_strips_version_from_unscoped_spec(self):
+        assert canonicalize("lodash@4.17.21", SandboxLanguage.TYPESCRIPT) == "lodash"
 
     def test_npm_lowercases(self):
         assert canonicalize("PDFKit", SandboxLanguage.TYPESCRIPT) == "pdfkit"

@@ -14,6 +14,7 @@ from app.agent_loop_lib.hooks.middleware.context import (
     AgentLifecycleContext,
     GuardrailContext,
     ModelCallContext,
+    ModelResponseContext,
     ToolCallContext,
     ToolResultContext,
     TurnContext,
@@ -42,6 +43,14 @@ async def run_pre_model(middleware, messages, budget) -> list:
     ctx = ModelCallContext(messages=list(messages), budget=budget)
     await middleware(ctx, _noop_next)
     return ctx.messages
+
+
+async def run_post_model(middleware, response, tool_calls=None, turn_index=0, **kwargs) -> ModelResponseContext:
+    ctx = ModelResponseContext(
+        response=response, tool_calls=list(tool_calls or []), turn_index=turn_index, **kwargs,
+    )
+    await middleware(ctx, _noop_next)
+    return ctx
 
 
 async def run_pre_agent(middleware, goal=None) -> AgentLifecycleContext:
@@ -92,6 +101,7 @@ __all__ = [
     "run_pre_tool",
     "run_post_tool",
     "run_pre_model",
+    "run_post_model",
     "run_pre_agent",
     "run_post_agent",
     "run_pre_turn",

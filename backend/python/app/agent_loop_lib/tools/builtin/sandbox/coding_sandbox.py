@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 from typing import Any
 
 from app.agent_loop_lib.sandbox.coding.base import CodeRequest
@@ -34,10 +35,57 @@ unexpected exception (missing runtime, foundational env setup failure) is
 caught generically by `ToolExecutor._run` and surfaced the same way.
 """
 
-__all__ = ["CodingSandboxTool", "InstallPackagesTool", "ReadSandboxFileTool"]
+__all__ = [
+    "CodingSandboxTool",
+    "InstallPackagesTool",
+    "ReadSandboxFileTool",
+    "detect_language_mismatch",
+]
 
 _LANGUAGE_ENUM = ["typescript", "python"]
 _logger = logging.getLogger(__name__)
+
+# A weaker model asked to write "PDF-generation code" will often reach for
+# `reportlab`/`fpdf2` (Python) but leave `language` at its declared default
+# of "typescript" — the sandbox then tries to run Python source as
+# TypeScript and fails on the first line. These signals are deliberately
+# unambiguous syntax (not vocabulary that could appear in either language's
+# strings/comments) so a real mismatch is caught without ever "correcting"
+# code that's actually fine as declared.
+_PYTHON_SIGNALS: tuple[re.Pattern, ...] = (
+    re.compile(r"^\s*def\s+\w+\s*\([^)]*\)\s*:\s*$", re.MULTILINE),
+    re.compile(r"^\s*import\s+[\w.]+\s*$", re.MULTILINE),
+    re.compile(r"^\s*from\s+[\w.]+\s+import\s+", re.MULTILINE),
+    re.compile(r"^\s*if\s+__name__\s*==\s*[\"']__main__[\"']\s*:", re.MULTILINE),
+    re.compile(r"^\s*elif\s+.+:\s*$", re.MULTILINE),
+    re.compile(r"^\s*print\s*\(", re.MULTILINE),
+)
+_TYPESCRIPT_SIGNALS: tuple[re.Pattern, ...] = (
+    re.compile(r"^\s*(const|let|var)\s+\w+\s*[:=]", re.MULTILINE),
+    re.compile(r"^\s*import\s+.+\s+from\s+['\"].+['\"]\s*;?\s*$", re.MULTILINE),
+    re.compile(r"^\s*(export\s+)?function\s+\w+\s*\(", re.MULTILINE),
+    re.compile(r"^\s*console\.(log|error|warn)\(", re.MULTILINE),
+    re.compile(r"=>\s*\{", re.MULTILINE),
+)
+_LANGUAGE_MISMATCH_MIN_SIGNALS = 2
+
+
+def detect_language_mismatch(code: str, declared: str) -> str | None:
+    """High-confidence-only language detection: returns the corrected
+    language string when `code` clearly matches the OTHER language's
+    syntax and shows none of `declared`'s own signals, `None` otherwise
+    (including any ambiguous case — a false "no mismatch" costs nothing
+    beyond the status quo, while a false correction would run the model's
+    actual code as the wrong language)."""
+    python_score = sum(1 for pattern in _PYTHON_SIGNALS if pattern.search(code))
+    ts_score = sum(1 for pattern in _TYPESCRIPT_SIGNALS if pattern.search(code))
+
+    if declared == "typescript" and python_score >= _LANGUAGE_MISMATCH_MIN_SIGNALS and ts_score == 0:
+        return "python"
+    if declared == "python" and ts_score >= _LANGUAGE_MISMATCH_MIN_SIGNALS and python_score == 0:
+        return "typescript"
+    return None
+
 
 _NO_NETWORK_NOTE = (
     "IMPORTANT — this sandbox has NO network access, ever, by design: code that "
@@ -165,6 +213,16 @@ class CodingSandboxTool(Tool):
         except UnknownSandboxError as e:
             return ToolOutput(success=False, error=str(e))
 
+        language_correction: str | None = None
+        detected = detect_language_mismatch(code, language)
+        if detected is not None:
+            language_correction = (
+                f"Note: requested language={language!r}, but the code is unambiguously "
+                f"{detected} — ran it as {detected} instead of failing outright."
+            )
+            _logger.info("run_code: corrected declared language %r -> %r", language, detected)
+            language = detected
+
         resolved_timeout = timeout if timeout is not None else self._default_timeout
         request = CodeRequest(
             code=code,
@@ -176,6 +234,8 @@ class CodingSandboxTool(Tool):
         result = await backend.execute(request)
 
         data = {**result.model_dump(), "sandbox_id": resolved_id}
+        if language_correction is not None:
+            data["language_correction"] = language_correction
 
         if self._artifact_output_dir and result.artifacts:
             saved = await _save_artifacts(backend, resolved_id, result.artifacts, self._artifact_output_dir)

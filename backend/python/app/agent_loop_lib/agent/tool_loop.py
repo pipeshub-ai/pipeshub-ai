@@ -5,6 +5,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.agent import observability as obs
+from app.agent_loop_lib.core.messages import (
+    MALFORMED_TOOL_CALL_ARGS_KEY,
+    MALFORMED_TOOL_CALL_ERROR_KEY,
+)
 from app.agent_loop_lib.core.scope import ToolScope
 from app.agent_loop_lib.core.types import Artifact, Goal, Message, ToolCall, ToolResult
 from app.agent_loop_lib.events.base import EventType
@@ -104,6 +108,27 @@ async def execute_tool_call(
     `ToolScope.messages` — see `core/scope.py` for why that snapshot timing
     is load-bearing for `clarify`'s HIL checkpoint."""
     await agent.emit(EventType.TOOL_CALL, {"tool": call.name, "args": call.arguments})
+
+    # A call whose argument JSON couldn't be parsed (or repaired) by the
+    # transport's message converter arrives here carrying these sentinel
+    # keys instead of real arguments (see `app/agents/agent_loop/
+    # converters.py::_recover_invalid_tool_call`). Short-circuit straight
+    # to a corrective error `ToolMessage` — never resolve/validate/execute
+    # a tool against sentinel data, and never let this look like a plain
+    # no-tool-call turn (which `Agent.step()` would otherwise treat as a
+    # successful, silent completion).
+    if MALFORMED_TOOL_CALL_ARGS_KEY in call.arguments:
+        raw_args = call.arguments.get(MALFORMED_TOOL_CALL_ARGS_KEY, "")
+        parse_error = call.arguments.get(MALFORMED_TOOL_CALL_ERROR_KEY, "malformed JSON arguments")
+        content = (
+            f"Your call to `{call.name}` had invalid arguments: {parse_error}. "
+            "Re-issue this exact tool call with syntactically valid JSON arguments "
+            "(no markdown code fences, no trailing commas, no comments). "
+            f"Arguments received (truncated): {str(raw_args)[:300]!r}"
+        )
+        tr = ToolResult(tool_call_id=call.id, name=call.name, content=content, is_error=True)
+        await agent.emit(EventType.TOOL_RESULT, {"tool": tr.name, "is_error": True, "content": content[:200]})
+        return ToolCallOutcome(result=tr)
 
     # Detect repeated tool calls (same tool + same key argument)
     call_sig = f"{call.name}:{json.dumps(call.arguments, sort_keys=True)}"

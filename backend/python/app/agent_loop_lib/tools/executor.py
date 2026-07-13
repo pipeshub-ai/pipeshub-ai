@@ -31,15 +31,37 @@ from app.agent_loop_lib.hooks.middleware.context import (
 from app.agent_loop_lib.hooks.middleware.decisions import PostDecision, PreDecision
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.tools.base import ToolOutput
-from app.agent_loop_lib.tools.errors import ToolNotFoundError
+from app.agent_loop_lib.tools.errors import ToolNotFoundError, ToolValidationError
 from app.agent_loop_lib.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.scope import ToolScope
+    from app.agent_loop_lib.tools.base import Tool
 
 __all__ = ["ToolExecutor"]
 
 OverrideExecute = Callable[[], Awaitable[CoreToolResult]]
+
+_USAGE_HINT_DESCRIPTION_LIMIT = 100
+
+
+def _usage_hint(tool: "Tool") -> str:
+    """Compact, one-line-per-parameter usage summary built from `tool.
+    parameters` — appended to a `ToolValidationError` so the model sees
+    exactly what a correct call looks like (name, type, required/optional,
+    default, enum, truncated description) instead of only the one field
+    that failed."""
+    lines = [f"Correct usage of `{tool.name}`:"]
+    for param in tool.parameters:
+        bits = [param.type.value]
+        bits.append("required" if param.required else f"optional, default={param.default!r}")
+        if param.enum:
+            bits.append(f"one of {param.enum}")
+        description = param.description.strip()
+        if len(description) > _USAGE_HINT_DESCRIPTION_LIMIT:
+            description = description[: _USAGE_HINT_DESCRIPTION_LIMIT - 3] + "..."
+        lines.append(f"  - {param.name} ({', '.join(bits)}): {description}")
+    return "\n".join(lines)
 
 
 class ToolExecutor:
@@ -184,11 +206,24 @@ class ToolExecutor:
                     sources=list(core_result.sources),
                 )
             tool = self._registry.resolve_by_name(call.name)
-            normalized = dict(tool_input)
-            tool.validate(normalized)
-            return await tool.execute(**normalized)
         except ToolNotFoundError:
             return ToolOutput(success=False, error=f"Unknown tool: {call.name}")
+
+        try:
+            normalized = dict(tool_input)
+            tool.validate(normalized)
+        except ToolValidationError as exc:
+            # A bare exception string ("missing required argument 'code'")
+            # gives a weak model nothing to correct against beyond guessing
+            # again — appending the tool's own parameter list lets it fix
+            # the call in one turn instead of flailing until
+            # `ToolErrorTracker`'s 3-strike limit blocks the tool outright.
+            return ToolOutput(success=False, error=f"{exc}\n\n{_usage_hint(tool)}")
+        except Exception as exc:
+            return ToolOutput(success=False, error=str(exc))
+
+        try:
+            return await tool.execute(**normalized)
         except Exception as exc:
             return ToolOutput(success=False, error=str(exc))
 

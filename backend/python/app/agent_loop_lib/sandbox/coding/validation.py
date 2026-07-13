@@ -15,7 +15,12 @@ middleware's URL/`git+`/`file:` denylist is a cheaper, earlier check on
 the same class of input, not a replacement for this validation.
 """
 
-__all__ = ["validate_package_spec", "package_name"]
+__all__ = [
+    "canonical_package_key",
+    "matches_package_set",
+    "package_name",
+    "validate_package_spec",
+]
 
 # Deliberately restrictive character classes — anything outside these
 # (git+, http://, file:, leading '-', whitespace, shell metacharacters)
@@ -55,3 +60,27 @@ def package_name(spec: str, language: CodingLanguage) -> str:
     else:
         match = _PYPI_RE.match(spec)
     return match.group(1) if match else spec
+
+
+def canonical_package_key(name: str, language: CodingLanguage) -> str:
+    """Canonical allow/denylist key for a bare package name: lowercased,
+    and for Python also `_` -> `-` (PEP 503 normalization, so `python_docx`
+    and `python-docx` compare equal). npm names are left as-is beyond
+    lowercasing — underscores are significant in npm names."""
+    key = name.lower()
+    if language != "typescript":
+        key = key.replace("_", "-")
+    return key
+
+
+def matches_package_set(name: str, package_set: set[str], language: CodingLanguage) -> bool:
+    """Membership check for allow/denylists that tolerates spelling
+    variants the ecosystem itself treats as equal (`Pillow` vs `pillow`,
+    `python_docx` vs `python-docx`) — pip/PyPI normalize these, so an
+    exact string comparison would reject specs the installer accepts.
+    Compares both the raw name and its canonical key against the set and
+    the set's canonicalized entries."""
+    if name in package_set:
+        return True
+    key = canonical_package_key(name, language)
+    return any(canonical_package_key(entry, language) == key for entry in package_set)

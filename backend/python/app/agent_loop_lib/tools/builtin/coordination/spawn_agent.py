@@ -89,7 +89,14 @@ class SpawnAgentTool(Tool):
             "USE ONLY when the task has 3 or more truly independent sub-tasks that each require "
             "deep, dedicated research (5+ searches each). For single-domain tasks — even multi-part "
             "ones — use web_search directly instead; it is faster and cheaper. "
-            "Available roles: researcher, writer, planner, critic, verifier."
+            "Available roles: researcher, writer, planner, critic, verifier. "
+            "If one sub-task NEEDS another sub-task's output (e.g. 'summarize X' then 'write a "
+            "report from that summary'), give both a `task_id` and set the dependent's "
+            "`depends_on` to the prerequisite's `task_id` — you may still call spawn_agent for "
+            "BOTH in the same turn; the runtime runs independent tasks in parallel but holds the "
+            "dependent one back until its prerequisite finishes, then automatically includes the "
+            "prerequisite's result in the dependent's context. Never rely on turn order alone to "
+            "sequence dependent work — use depends_on."
         )
 
     @property
@@ -110,6 +117,33 @@ class SpawnAgentTool(Tool):
                 type=ParameterType.STRING,
                 description="Clear, self-contained description of exactly what this sub-agent must accomplish",
                 required=True,
+            ),
+            ToolParameter(
+                name="task_id",
+                type=ParameterType.STRING,
+                description=(
+                    "A short, stable name for this sub-task (e.g. 'fetch_tickets'), used to "
+                    "reference it from another spawn_agent call's `depends_on`. Optional — "
+                    "defaults to this call's own id if omitted, but an explicit name makes "
+                    "`depends_on` readable when dispatching several tasks together."
+                ),
+                required=False,
+                default=None,
+            ),
+            ToolParameter(
+                name="depends_on",
+                type=ParameterType.ARRAY,
+                description=(
+                    "task_ids of other spawn_agent calls (this turn, or from an earlier turn "
+                    "in this same run) whose output this sub-task needs before it can start. "
+                    "The runtime waits for every listed prerequisite to finish and automatically "
+                    "includes its result in this sub-task's context — do not describe the "
+                    "prerequisite's expected output yourself, just reference its task_id. Leave "
+                    "empty (default) for a fully independent sub-task."
+                ),
+                required=False,
+                default=None,
+                items={"type": "string"},
             ),
             ToolParameter(
                 name="reasoning",
@@ -174,21 +208,25 @@ class SpawnAgentTool(Tool):
                 },
             )
 
-        # Parallel batch spawns: Agent.step() pre-launches every spawn_agent
-        # call in a multi-spawn turn as a concurrent asyncio Task BEFORE any
-        # of them reach here — this call just awaits its own slot.
+        # `Agent.step()` pre-launches EVERY spawn_agent call in a turn (one
+        # call or many) as a concurrent, dependency-aware `asyncio.Task` via
+        # `spawn_scheduler.schedule_spawn_batch` — this call just awaits its
+        # own slot. The `call.id not in spawn_tasks` fallback below only
+        # matters for a handler invoked outside that normal turn loop (e.g.
+        # a test driving `handle()` directly): it runs the SAME scheduler
+        # as a batch-of-one against the agent's own `RunScope`, so
+        # `task_id`/`depends_on` behave identically either way.
         spawn_tasks = getattr(agent, "_pending_spawn_tasks", {}) or {}
-        if call.id not in spawn_tasks:
-            await obs.write_state(agent, goal, "spawning_agent", turn_index=turn_index, started_at=started_at, current_tool="spawn_agent")
-            await obs.append_timeline(agent, "spawn_agent", "Spawning child agent", "spawning_agent", {"args": call.arguments})
         try:
             if call.id in spawn_tasks:
                 child_result = await spawn_tasks[call.id]
             else:
-                child_spec, child_goal = build_spawn_child(ctx.runtime, call)
-                child_result = await ctx.runtime.run_child(
-                    child_spec, child_goal, agent.run_ctx, session_id=agent.session_id, parent_scope=agent.scope,
+                from app.agent_loop_lib.agent.spawn_scheduler import schedule_spawn_batch
+                solo_tasks = await schedule_spawn_batch(
+                    agent, ctx.runtime, [call], ctx.scope.turn.run,
+                    goal=goal, turn_index=turn_index, started_at=started_at,
                 )
+                child_result = await solo_tasks[call.id]
             return CoreToolResult(
                 tool_call_id=call.id, name=call.name,
                 content={"output": child_result.output, "success": child_result.success},

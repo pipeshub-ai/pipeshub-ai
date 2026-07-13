@@ -13,7 +13,10 @@ from __future__ import annotations
 
 from app.agent_loop_lib.sandbox.coding.base import CodeRequest, CodeResult
 from app.agent_loop_lib.sandbox.manager import SandboxManager, SandboxType
-from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import CodingSandboxTool
+from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import (
+    CodingSandboxTool,
+    detect_language_mismatch,
+)
 
 
 class _CapturingBackend:
@@ -85,3 +88,52 @@ async def test_execute_sets_allow_network_false_by_default() -> None:
     assert result.success
     backend = manager.get(SandboxType.CODING, result.data["sandbox_id"])
     assert backend.last_request.allow_network is False
+
+
+class TestDetectLanguageMismatch:
+    def test_python_code_declared_typescript_is_corrected(self) -> None:
+        code = "import reportlab\n\ndef build():\n    print('hi')\n"
+        assert detect_language_mismatch(code, "typescript") == "python"
+
+    def test_typescript_code_declared_python_is_corrected(self) -> None:
+        code = "import { foo } from 'bar';\n\nconst x: number = 1;\nconsole.log(x);\n"
+        assert detect_language_mismatch(code, "python") == "typescript"
+
+    def test_matching_language_is_not_corrected(self) -> None:
+        code = "import reportlab\n\ndef build():\n    print('hi')\n"
+        assert detect_language_mismatch(code, "python") is None
+
+    def test_ambiguous_single_signal_is_not_corrected(self) -> None:
+        code = "print('just one signal')\n"
+        assert detect_language_mismatch(code, "typescript") is None
+
+    def test_empty_code_is_not_corrected(self) -> None:
+        assert detect_language_mismatch("", "typescript") is None
+
+
+async def test_execute_corrects_python_code_declared_as_typescript() -> None:
+    manager = SandboxManager()
+    manager.register_backend_factory(SandboxType.CODING, _CapturingBackend)
+    tool = CodingSandboxTool(manager)
+    code = "import reportlab\n\ndef build():\n    print('hi')\n"
+
+    result = await tool.execute(code=code, language="typescript")
+
+    assert result.success
+    backend = manager.get(SandboxType.CODING, result.data["sandbox_id"])
+    assert backend.last_request.language == "python"
+    assert "language_correction" in result.data
+    assert "python" in result.data["language_correction"]
+
+
+async def test_execute_leaves_matching_language_untouched() -> None:
+    manager = SandboxManager()
+    manager.register_backend_factory(SandboxType.CODING, _CapturingBackend)
+    tool = CodingSandboxTool(manager)
+
+    result = await tool.execute(code="print(1)", language="python")
+
+    assert result.success
+    backend = manager.get(SandboxType.CODING, result.data["sandbox_id"])
+    assert backend.last_request.language == "python"
+    assert "language_correction" not in result.data

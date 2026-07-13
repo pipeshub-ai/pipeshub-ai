@@ -50,6 +50,7 @@ from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import (
     CodingSandboxTool,
     InstallPackagesTool,
     ReadSandboxFileTool,
+    detect_language_mismatch,
 )
 from app.config.constants.arangodb import Connectors
 from app.models.entities import ArtifactType
@@ -242,6 +243,18 @@ def coding_sandbox_package_policy(*, allow_network: bool = False):
         packages = ctx.tool_input.get("packages")
         if packages:
             language_str = ctx.tool_input.get("language") or "typescript"
+            # `run_code` may auto-correct a mismatched declared language
+            # against the actual code (see `CodingSandboxTool.execute`) —
+            # check the allowlist against the language it will ACTUALLY
+            # run as, not the (possibly wrong) declared one, so a
+            # `reportlab`-with-`language=typescript` call isn't denied
+            # for the wrong ecosystem right before the code itself would
+            # have been corrected to python.
+            code = ctx.tool_input.get("code")
+            if isinstance(code, str) and code:
+                corrected = detect_language_mismatch(code, language_str)
+                if corrected is not None:
+                    language_str = corrected
             sandbox_language = _LANGUAGE_TO_SANDBOX_LANGUAGE.get(language_str)
             if sandbox_language is not None:
                 try:
@@ -307,6 +320,11 @@ def coding_sandbox_artifact_bridge(context: "AgentContext", manager: SandboxMana
                     "coding sandbox produced %d artifact(s): %s (tool=%s sandbox=%s)",
                     len(artifacts), artifacts, ctx.tool_path, sandbox_id,
                 )
+                # Read by `hooks/completion_gate.py` — a file-generation
+                # request is only "done" once this flips true, regardless
+                # of which agent in the spawn tree (top-level or a spawned
+                # `coding_agent` child) produced the artifact.
+                context.artifacts_produced_this_run = True
                 await _fetch_and_schedule_artifact_upload(
                     context, manager, sandbox_id, artifacts, source_tool=ctx.tool_path,
                 )

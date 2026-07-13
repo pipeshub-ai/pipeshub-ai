@@ -14,6 +14,10 @@ requests.
 
 from app.agents.agent_loop.hooks.ask_user_question import ask_user_question_sse
 from app.agents.agent_loop.hooks.citations import CitationCollector, citation_tracking
+from app.agents.agent_loop.hooks.completion_gate import (
+    completion_gate,
+    looks_like_file_generation_request,
+)
 from app.agents.agent_loop.hooks.memory import conversation_enrichment
 from app.agents.agent_loop.hooks.result_accumulation import (
     result_accumulation,
@@ -27,7 +31,9 @@ __all__ = [
     "ToolErrorTracker",
     "ask_user_question_sse",
     "citation_tracking",
+    "completion_gate",
     "conversation_enrichment",
+    "looks_like_file_generation_request",
     "result_accumulation",
     "retry_with_status",
     "stash_tool_call_metadata",

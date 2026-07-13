@@ -28,6 +28,8 @@ from app.agent_loop_lib.sandbox.coding.cleanup import (
 )
 from app.agent_loop_lib.sandbox.coding.reflection import ReflectionEngine
 from app.agent_loop_lib.sandbox.coding.validation import (
+    canonical_package_key,
+    matches_package_set,
     package_name,
     validate_package_spec,
 )
@@ -240,11 +242,11 @@ class DockerCodingSandbox(CodingSandboxBackend):
             name = package_name(spec, language)
             if not validate_package_spec(spec, language):
                 return InstallResult(success=False, stderr=f"invalid or unsafe package spec: {spec!r}")
-            if self._denylist and name in self._denylist:
+            if self._denylist and matches_package_set(name, self._denylist, language):
                 return InstallResult(success=False, stderr=f"package {name!r} is denylisted")
-            if self._allowlist is not None and name not in self._allowlist:
+            if self._allowlist is not None and not matches_package_set(name, self._allowlist, language):
                 return InstallResult(success=False, stderr=f"package {name!r} is not in the configured allowlist")
-            if name not in self._installed[language]:
+            if canonical_package_key(name, language) not in self._installed[language]:
                 to_install.append(spec)
 
         if not to_install:
@@ -262,7 +264,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
 
         if success:
             for spec in to_install:
-                self._installed[language].add(package_name(spec, language))
+                self._installed[language].add(canonical_package_key(package_name(spec, language), language))
         return InstallResult(
             success=success,
             installed=[package_name(s, language) for s in to_install] if success else [],

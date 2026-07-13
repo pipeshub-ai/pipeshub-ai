@@ -65,7 +65,9 @@ from app.agents.agent_loop.hooks import (
     ToolErrorTracker,
     ask_user_question_sse,
     citation_tracking,
+    completion_gate,
     conversation_enrichment,
+    looks_like_file_generation_request,
     result_accumulation,
     retry_with_status,
     stash_tool_call_metadata,
@@ -242,6 +244,14 @@ class PipesHubAgentFactory:
             opik_project_name=opik_project_name,
         )
 
+        # Read by `hooks/completion_gate.py` (already wired onto `hooks`
+        # above) once the agent actually runs — computed from both the raw
+        # query and the intent-resolved goal description since either can
+        # carry the file-format wording ("... as a PDF", "export to CSV").
+        context.file_generation_requested = looks_like_file_generation_request(
+            query, goal.description,
+        )
+
         # Phase 10: the deep agent's top-level `Agent` is a pure
         # planner/dispatcher — it must never call connector tools directly
         # (that's what spawned, domain-scoped sub-agents are for), so its
@@ -363,6 +373,14 @@ class PipesHubAgentFactory:
         hooks.on(HookEvent.POST_TOOL_USE).use(ask_user_question_sse(context))
 
         hooks.on(HookEvent.PRE_TURN).use(conversation_enrichment(context))
+
+        # Refuses a text-only, no-tool-call turn as "done" when the request
+        # needed a generated file and no artifact has been produced yet —
+        # see `hooks/completion_gate.py`. Registered unconditionally: it is
+        # a no-op for every request `context.file_generation_requested`
+        # ends up False for (set further up in `create()`, after intent
+        # resolves the goal).
+        hooks.on(HookEvent.POST_MODEL).use(completion_gate(context))
 
         # This adapter path builds its own HookRegistry directly (never
         # goes through ControlPlane.start()), so the coding_sandbox_safety

@@ -85,7 +85,18 @@ class DomainSpawnAgentTool(SpawnAgentTool):
             "isolation. ALWAYS pass `tools` with the exact tool names for "
             "that domain — the sub-agent receives ONLY those tools, nothing "
             "else. To parallelize independent domains, call spawn_agent "
-            "multiple times in the SAME turn (one call per domain)."
+            "multiple times in the SAME turn (one call per domain). If one "
+            "phase's sub-agent NEEDS another phase's output (e.g. a "
+            "'coding'/file-generation phase that must build a PDF FROM a "
+            "'jira' phase's ticket data), give both calls a `task_id` "
+            "matching the plan's phase ids and set the dependent phase's "
+            "`depends_on` to the prerequisite phase's `task_id` — still call "
+            "spawn_agent for BOTH in the SAME turn; the runtime runs "
+            "independent phases in parallel but holds the dependent one "
+            "back until its prerequisite finishes, then automatically "
+            "includes the prerequisite's result in the dependent's goal. "
+            "Never rely on calling spawn_agent across separate turns to "
+            "sequence dependent phases — use `depends_on` instead."
         )
 
 
@@ -190,11 +201,14 @@ class OrchestratorLoop(LoopStrategy):
         await agent.inject_user_message(
             "Phase 1 -- PLAN: decompose this goal into single-domain phases "
             "(one phase per independent domain/workstream — never mix "
-            "domains in one phase) by calling create_plan. Then call "
-            "critique_plan with your plan. If critique_plan "
-            "returns passed=false, revise the plan and call critique_plan "
-            "again. Do not dispatch any sub-agents until critique_plan "
-            "passes.\n\n" + _domain_overview(agent)
+            "domains in one phase) by calling create_plan. Give each phase "
+            "a short, stable id, and explicitly note when a phase CONSUMES "
+            "another phase's output (e.g. 'build a PDF from the jira "
+            "phase's ticket data') — those phase ids become spawn_agent's "
+            "`task_id`/`depends_on` in Phase 2. Then call critique_plan "
+            "with your plan. If critique_plan returns passed=false, revise "
+            "the plan and call critique_plan again. Do not dispatch any "
+            "sub-agents until critique_plan passes.\n\n" + _domain_overview(agent)
         )
         planning_rounds = 0
         while planning_rounds < self._max_planning_rounds and turn_index < agent.max_turns:
@@ -216,12 +230,16 @@ class OrchestratorLoop(LoopStrategy):
         # --- Phase 2: DISPATCH (execute_sub_agents_node) ---
         await agent.inject_user_message(
             "Phase 2 -- DISPATCH: the plan is approved. For EACH phase, "
-            "call spawn_agent with `role` set to that phase's domain and "
-            "`tools` set to the exact tool names for that domain (see "
-            "'Available Domains' above). Call every independent phase's "
-            "spawn_agent IN THE SAME TURN so they run in parallel — only "
-            "sequence spawn_agent calls across turns for phases that "
-            "genuinely depend on an earlier phase's result."
+            "call spawn_agent with `role` set to that phase's domain, "
+            "`task_id` set to that phase's id from your plan, and `tools` "
+            "set to the exact tool names for that domain (see 'Available "
+            "Domains' above). Call EVERY phase's spawn_agent IN THE SAME "
+            "TURN, including phases that depend on another phase's result — "
+            "for those, set `depends_on` to the prerequisite phase's "
+            "`task_id`; the runtime enforces the ordering and hands the "
+            "prerequisite's result to the dependent phase automatically. Do "
+            "NOT try to sequence dependent phases by calling spawn_agent in "
+            "a later turn instead — always use `depends_on`."
         )
         dispatched = False
         while turn_index < agent.max_turns:

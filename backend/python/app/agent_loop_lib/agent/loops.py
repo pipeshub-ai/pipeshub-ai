@@ -77,6 +77,34 @@ class LoopStrategy(ABC):
         and return the final `AgentResult`."""
 
 
+# Below this many characters, the last assistant turn's text is treated as
+# a stray fragment (a lone acknowledgement, a mid-thought sentence) rather
+# than a real answer worth returning — see `_finish_after_max_turns`.
+_MIN_DEGRADED_OUTPUT_CHARS = 40
+
+
+async def _finish_after_max_turns(agent: "Agent", goal: Goal) -> AgentResult:
+    """Shared max_turns-exhausted tail for every loop shape below.
+
+    A hard `fail()` here throws away whatever the model DID produce, even
+    when it was most of the way to a real answer — a slower-converging
+    small model hits the turn cap mid-answer far more often than a larger
+    one does. If the last assistant turn already has substantive text,
+    return it as a degraded SUCCESS (flagged in the summary/detail) instead
+    of an opaque error; only a run that produced no usable text still
+    fails, since there is nothing better to hand back.
+    """
+    last_text = agent.last_assistant_text().strip()
+    if len(last_text) >= _MIN_DEGRADED_OUTPUT_CHARS:
+        return await agent.succeed(
+            goal, last_text, [],
+            event="agent_complete_partial",
+            summary=f"Exceeded max_turns={agent.max_turns} — returning the best-effort answer from the last turn",
+            detail={"degraded": True, "reason": f"Exceeded max_turns={agent.max_turns}"},
+        )
+    return await agent.fail(goal, f"Exceeded max_turns={agent.max_turns}", event="agent_failed")
+
+
 class ReActLoop(LoopStrategy):
     """Default: reason -> act -> observe, one `step()` per turn, until a
     turn stops the run or `agent.max_turns` is exhausted. Every other loop
@@ -90,7 +118,7 @@ class ReActLoop(LoopStrategy):
             outcome = await agent.step(goal, turn_index)
             if outcome.status == "stop":
                 return outcome.result
-        return await agent.fail(goal, f"Exceeded max_turns={agent.max_turns}", event="agent_failed")
+        return await _finish_after_max_turns(agent, goal)
 
 
 class SingleShotLoop(LoopStrategy):
@@ -149,7 +177,7 @@ class ReflexionLoop(LoopStrategy):
             note = await self._critique_fn(outcome.turn)
             if note:
                 await agent.inject_user_message(note)
-        return await agent.fail(goal, f"Exceeded max_turns={agent.max_turns}", event="agent_failed")
+        return await _finish_after_max_turns(agent, goal)
 
 
 class PlanExecuteLoop(LoopStrategy):
@@ -239,7 +267,7 @@ class PlanCritiqueExecuteLoop(LoopStrategy):
                         "Phase 3 — REPLAN: verify_result did not pass. Call replan to address "
                         "the issues, execute the revised steps, then call verify_result again."
                     )
-        return await agent.fail(goal, f"Exceeded max_turns={agent.max_turns}", event="agent_failed")
+        return await _finish_after_max_turns(agent, goal)
 
 
 class IncrementalLoop(LoopStrategy):
@@ -285,4 +313,4 @@ class IncrementalLoop(LoopStrategy):
                         "That step did not verify. Reflect on what went wrong and retry the "
                         "SAME step before planning any further ones."
                     )
-        return await agent.fail(goal, f"Exceeded max_turns={agent.max_turns}", event="agent_failed")
+        return await _finish_after_max_turns(agent, goal)

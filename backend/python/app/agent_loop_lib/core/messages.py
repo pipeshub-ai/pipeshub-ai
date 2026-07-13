@@ -32,6 +32,8 @@ from pydantic import BaseModel, Field, field_validator
 __all__ = [
     "MessageRole",
     "ToolCall",
+    "MALFORMED_TOOL_CALL_ARGS_KEY",
+    "MALFORMED_TOOL_CALL_ERROR_KEY",
     "ImageSource",
     "TextPart",
     "ThinkingPart",
@@ -56,6 +58,19 @@ class ToolCall(BaseModel):
     id: str
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+# Sentinel keys a transport's message converter can set on `arguments` when
+# a provider handed back a tool call whose argument JSON could not be
+# parsed (or repaired) at all — rather than dropping the call (which would
+# make the turn look like a plain no-tool-call response and let a weak
+# model "finish" without ever invoking the tool it clearly meant to call),
+# the converter still emits a `ToolCall` carrying these keys so
+# `agent/tool_loop.py::execute_tool_call` can turn it into a corrective
+# error `ToolMessage` and keep the loop going. See
+# `app/agents/agent_loop/converters.py::_recover_invalid_tool_call`.
+MALFORMED_TOOL_CALL_ARGS_KEY = "__malformed_json__"
+MALFORMED_TOOL_CALL_ERROR_KEY = "__parse_error__"
 
 
 class ImageSource(BaseModel):
