@@ -13,7 +13,8 @@ Covers:
 - _parse_message(): valid JSON, double-encoded, missing value field, invalid JSON
 - _start_processing_task(): no worker loop, not running, future tracking/callback
 - _process_message_wrapper(): semaphore acquire/release, handler iteration with
-  PipelineEvent, xack via main_loop, parse failure, no handler, exception
+  PipelineEvent, xack via main_loop, parse failure, no handler, exception,
+  terminal-failure PEL ACK regression suite
 - cleanup(): stops worker, closes redis, handles errors
 - is_running()
 - _get_active_task_count()
@@ -700,30 +701,47 @@ class TestProcessMessageWrapper:
     async def test_no_semaphores_returns_false(self, consumer):
         consumer.parsing_semaphore = None
         consumer.indexing_semaphore = None
+        consumer.redis = AsyncMock()
         result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
         assert result is False
+        consumer.redis.xack.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_parse_failure_returns_false(self, consumer):
         consumer.parsing_semaphore = asyncio.Semaphore(1)
         consumer.indexing_semaphore = asyncio.Semaphore(1)
-        result = await consumer._process_message_wrapper(
-            "s", "1-0", {"value": "not-json"}
-        )
+        consumer.redis = AsyncMock()
+        mock_main_loop = MagicMock()
+        mock_main_loop.is_running.return_value = True
+        consumer.main_loop = mock_main_loop
+
+        ack_future = Future()
+        ack_future.set_result(1)
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
+            result = await consumer._process_message_wrapper(
+                "s", "1-0", {"value": "not-json"}
+            )
+
         assert result is False
         # Semaphores released in finally
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
+        # Poison path ACKs once; handler_invoked stays False so no second ACK.
+        consumer.redis.xack.assert_called_once_with(
+            "s", consumer.config.group_id, "1-0"
+        )
 
     @pytest.mark.asyncio
     async def test_no_handler_returns_false(self, consumer):
         consumer.parsing_semaphore = asyncio.Semaphore(1)
         consumer.indexing_semaphore = asyncio.Semaphore(1)
         consumer.message_handler = None
+        consumer.redis = AsyncMock()
         result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
         assert result is False
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
+        consumer.redis.xack.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_successful_processing_with_xack(self, consumer):
@@ -760,6 +778,9 @@ class TestProcessMessageWrapper:
         assert result is True
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
+        consumer.redis.xack.assert_called_once_with(
+            "stream-a", consumer.config.group_id, "1-0"
+        )
 
     @pytest.mark.asyncio
     async def test_only_parsing_complete_released(self, consumer):
@@ -825,22 +846,140 @@ class TestProcessMessageWrapper:
     async def test_handler_exception_releases_semaphores(self, consumer):
         consumer.parsing_semaphore = asyncio.Semaphore(1)
         consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.redis = AsyncMock()
+        mock_main_loop = MagicMock()
+        mock_main_loop.is_running.return_value = True
+        consumer.main_loop = mock_main_loop
 
         async def handler(msg):
             raise RuntimeError("handler exploded")
             yield  # noqa: unreachable
 
         consumer.message_handler = handler
-        result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+
+        ack_future = Future()
+        ack_future.set_result(1)
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
+            result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+
         assert result is False
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
+        consumer.redis.xack.assert_called_once_with(
+            "s", consumer.config.group_id, "1-0"
+        )
+
+    @pytest.mark.asyncio
+    async def test_handler_terminal_failure_is_acked(self, consumer):
+        """Regression: handler exceptions must XACK so failed jobs leave the PEL."""
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.redis = AsyncMock()
+        mock_main_loop = MagicMock()
+        mock_main_loop.is_running.return_value = True
+        consumer.main_loop = mock_main_loop
+
+        async def handler(msg):
+            raise RuntimeError("indexing failed after status update")
+            yield  # noqa: unreachable
+
+        consumer.message_handler = handler
+
+        ack_future = Future()
+        ack_future.set_result(1)
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
+            result = await consumer._process_message_wrapper(
+                "record-events", "99-1", _valid_fields()
+            )
+
+        assert result is False
+        consumer.redis.xack.assert_called_once_with(
+            "record-events", consumer.config.group_id, "99-1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_ack_failure_in_finally_does_not_mask_handler_error(self, consumer):
+        """Redis ACK errors in finally must be logged without masking handler failure."""
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+
+        async def handler(msg):
+            raise RuntimeError("indexing failed")
+            yield  # noqa: unreachable
+
+        consumer.message_handler = handler
+
+        with patch.object(
+            consumer,
+            "_ack_message",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("redis down"),
+        ) as mock_ack:
+            result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+
+        assert result is False
+        mock_ack.assert_awaited_once_with("s", "1-0")
+
+    @pytest.mark.asyncio
+    async def test_ack_failure_in_finally_logs_error(self, consumer, caplog):
+        """ACK failure in finally is logged and does not raise."""
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+
+        async def handler(msg):
+            raise RuntimeError("indexing failed")
+            yield  # noqa: unreachable
+
+        consumer.message_handler = handler
+
+        with patch.object(
+            consumer,
+            "_ack_message",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("redis down"),
+        ):
+            with caplog.at_level(logging.ERROR):
+                result = await consumer._process_message_wrapper(
+                    "s", "1-0", _valid_fields()
+                )
+
+        assert result is False
+        assert "Failed to ACK message 1-0 in finally block" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_ack_failure_on_success_still_returns_true(self, consumer):
+        """Successful handler outcome must not be lost when ACK fails."""
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+
+        async def handler(msg):
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id="r1"),
+            )
+
+        consumer.message_handler = handler
+
+        with patch.object(
+            consumer,
+            "_ack_message",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("redis down"),
+        ) as mock_ack:
+            result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+
+        assert result is True
+        mock_ack.assert_awaited_once_with("s", "1-0")
 
     @pytest.mark.asyncio
     async def test_handler_exception_after_parsing_released(self, consumer):
         """Handler raises after yielding PARSING_COMPLETE. Only indexing released in finally."""
         consumer.parsing_semaphore = asyncio.Semaphore(1)
         consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.redis = AsyncMock()
+        mock_main_loop = MagicMock()
+        mock_main_loop.is_running.return_value = True
+        consumer.main_loop = mock_main_loop
 
         async def handler(msg):
             yield PipelineEvent(
@@ -850,10 +989,18 @@ class TestProcessMessageWrapper:
             raise RuntimeError("late boom")
 
         consumer.message_handler = handler
-        result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+
+        ack_future = Future()
+        ack_future.set_result(1)
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
+            result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+
         assert result is False
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
+        consumer.redis.xack.assert_called_once_with(
+            "s", consumer.config.group_id, "1-0"
+        )
 
     @pytest.mark.asyncio
     async def test_xack_timeout_logged(self, consumer):
@@ -975,6 +1122,71 @@ class TestProcessMessageWrapper:
         # Semaphores still released in finally despite the early return.
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
+
+
+class TestPelZombieRetryRegression:
+    """Regression suite for FAILED-in-UI / Redis-still-pending (bug #4)."""
+
+    @pytest.mark.asyncio
+    async def test_handler_completes_without_events_still_acks(self, consumer):
+        """Early handler return (no exception) still removes message from PEL."""
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.redis = AsyncMock()
+        mock_main_loop = MagicMock()
+        mock_main_loop.is_running.return_value = True
+        consumer.main_loop = mock_main_loop
+
+        async def handler(msg):
+            if False:
+                yield PipelineEvent(
+                    event=IndexingEvent.INDEXING_COMPLETE,
+                    data=PipelineEventData(record_id="r1"),
+                )
+
+        consumer.message_handler = handler
+
+        ack_future = Future()
+        ack_future.set_result(1)
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
+            result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+
+        assert result is True
+        consumer.redis.xack.assert_called_once_with(
+            "s", consumer.config.group_id, "1-0"
+        )
+
+    @pytest.mark.asyncio
+    async def test_redelivered_pel_message_acked_after_terminal_failure(
+        self, consumer
+    ):
+        """PEL redelivery on restart: terminal failure must ACK so no zombie retry."""
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.redis = AsyncMock()
+        mock_main_loop = MagicMock()
+        mock_main_loop.is_running.return_value = True
+        consumer.main_loop = mock_main_loop
+
+        async def handler(msg):
+            raise RuntimeError("rate limit 429")
+            yield  # noqa: unreachable
+
+        consumer.message_handler = handler
+
+        ack_future = Future()
+        ack_future.set_result(1)
+        with patch("asyncio.run_coroutine_threadsafe", return_value=ack_future):
+            result = await consumer._process_message_wrapper(
+                "record-events",
+                "pel-redelivery-1",
+                _valid_fields("newRecord", {"recordId": "deadbeef"}),
+            )
+
+        assert result is False
+        consumer.redis.xack.assert_called_once_with(
+            "record-events", consumer.config.group_id, "pel-redelivery-1"
+        )
 
 
 # ===================================================================
