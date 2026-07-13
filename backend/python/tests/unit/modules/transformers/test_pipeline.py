@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.config.constants.arangodb import CollectionNames, EventTypes, ProgressStatus
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import Block, BlockGroup, BlockType, DataFormat, GroupType
 from app.modules.transformers.pipeline import IndexingPipeline
@@ -134,6 +134,60 @@ class TestApplyEmpty:
         sink_orchestrator.index.assert_awaited_once_with(ctx)
         doc_extraction.apply.assert_awaited_once_with(ctx)
         sink_orchestrator.enrich.assert_awaited_once_with(ctx)
+
+
+# ---------------------------------------------------------------------------
+# apply -- empty blocks, 1:1 update: reconciliation metadata document_path
+# ---------------------------------------------------------------------------
+class TestApplyEmptyMetadataPath:
+    @pytest.mark.asyncio
+    async def test_saves_metadata_at_content_actual_current_path(
+        self, pipeline, doc_extraction, sink_orchestrator
+    ):
+        """document_path passed to save_reconciliation_metadata must come
+        from content's actual current location, not be omitted (which would
+        silently default metadata to the flat records/<vrid> form regardless
+        of where content really lives)."""
+        record = _make_record(blocks=[], block_groups=[], record_id="rec-1")
+        record.virtual_record_id = "vr-1"
+        record.org_id = "org-1"
+        ctx = _make_ctx(record)
+        ctx.event_type = EventTypes.UPDATE_RECORD.value
+        ctx.prev_virtual_record_id = "vr-1"
+
+        sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(
+            return_value="records/conn-1/Finance/doc.pdf"
+        )
+
+        await pipeline.apply(ctx)
+
+        sink_orchestrator.blob_storage.get_actual_content_path.assert_awaited_once_with(
+            "org-1", "vr-1"
+        )
+        sink_orchestrator.blob_storage.save_reconciliation_metadata.assert_awaited_once()
+        call_args = sink_orchestrator.blob_storage.save_reconciliation_metadata.call_args
+        assert call_args.kwargs["document_path"] == "records/conn-1/Finance/doc.pdf"
+
+    @pytest.mark.asyncio
+    async def test_passes_none_path_when_no_existing_content(
+        self, pipeline, doc_extraction, sink_orchestrator
+    ):
+        """When content doesn't exist yet (or the path can't be determined),
+        document_path is passed as None -- save_reconciliation_metadata's own
+        existing fallback (flat records/<vrid>) handles that safely."""
+        record = _make_record(blocks=[], block_groups=[], record_id="rec-2")
+        record.virtual_record_id = "vr-2"
+        record.org_id = "org-1"
+        ctx = _make_ctx(record)
+        ctx.event_type = EventTypes.REINDEX_RECORD.value
+        ctx.prev_virtual_record_id = "vr-2"
+
+        sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(return_value=None)
+
+        await pipeline.apply(ctx)
+
+        call_args = sink_orchestrator.blob_storage.save_reconciliation_metadata.call_args
+        assert call_args.kwargs["document_path"] is None
 
 
 # ---------------------------------------------------------------------------

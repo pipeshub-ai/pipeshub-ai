@@ -1464,12 +1464,14 @@ class TestDownloadWithRangeRequests:
 
     @pytest.mark.asyncio
     async def test_none_content_length_raises(self):
-        """When content length is None, should raise."""
+        """When content length is None, should raise the clean, intended
+        failure message -- not a TypeError from dividing None before the
+        None-check runs (the guard-after-use bug)."""
         bs = _make_blob_storage()
         bs._get_content_length = AsyncMock(return_value=None)
 
         mock_session = AsyncMock()
-        with pytest.raises(Exception):
+        with pytest.raises(Exception, match="Could not determine file size"):
             await bs._download_with_range_requests(
                 mock_session, "https://s3.example.com/file"
             )
@@ -1857,3 +1859,382 @@ class TestDownloadWithRangeRequestsDeep:
             await bs._download_with_range_requests(
                 mock_session, "https://s3.example.com/file", chunk_size_mb=1
             )
+
+
+# ===================================================================
+# apply() actual-path tracking (metadata-orphan fix)
+# ===================================================================
+
+class TestApplyActualStoragePath:
+    """ctx.settings['storage_path'] after apply() must reflect the path
+    content ACTUALLY used, not just the freshly-computed candidate --
+    otherwise a metadata write that reads this value (sink_orchestrator.py)
+    silently drifts out of sync with content's real location and gets
+    excluded from every future move-tree operation."""
+
+    @pytest.mark.asyncio
+    async def test_recreate_branch_uses_fresh_candidate_path(self):
+        """When apply() recreates at a new location, storage_path == the
+        fresh candidate (content really is there now)."""
+        bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(
+            return_value={"record_doc_id": "doc-existing"}
+        )
+        bs._get_current_document_path = AsyncMock(
+            return_value="org-1/PipesHub/records/conn-1/OldGroup/doc.pdf"
+        )
+        bs._build_hierarchical_storage_path = AsyncMock(
+            return_value="records/conn-1/NewGroup/doc.pdf"
+        )
+        bs.save_record_to_storage = AsyncMock(return_value=("new-doc-id", 100))
+        bs.store_virtual_record_mapping = AsyncMock()
+
+        record = _make_record_mock()
+        record.org_id = "org-1"
+        ctx = MagicMock()
+        ctx.record = record
+        ctx.settings = {}
+
+        result_ctx = await bs.apply(ctx)
+
+        assert result_ctx.settings["storage_path"] == "records/conn-1/NewGroup/doc.pdf"
+
+    @pytest.mark.asyncio
+    async def test_override_in_place_branch_uses_actual_current_path(self):
+        """When apply() overrides in place, storage_path == the document's
+        actual current stored path -- NOT the freshly-computed candidate,
+        which may differ from where content really is.
+
+        Reaches "override in place" via the currently_flat=True route (the
+        actual current path is the flat records/<vrid> form) while the fresh
+        candidate is a DIFFERENT, hierarchical path. This makes the two
+        paths diverge, so the assertion actually discriminates between the
+        old code (which used the fresh candidate) and the fixed code (which
+        uses the actual current path)."""
+        bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(
+            return_value={"record_doc_id": "doc-existing"}
+        )
+        # Actual current path is FLAT (records/<vrid>) -- this alone makes
+        # currently_flat True and triggers "override in place", regardless
+        # of what the fresh candidate below computes to.
+        bs._get_current_document_path = AsyncMock(
+            return_value="org-1/PipesHub/records/vr-1"
+        )
+        # Fresh candidate is hierarchical and DIFFERENT from the actual
+        # current path above.
+        bs._build_hierarchical_storage_path = AsyncMock(
+            return_value="records/conn-1/Finance/doc.pdf"
+        )
+        bs.update_record_buffer = AsyncMock(return_value=("doc-existing", 100))
+        bs.store_virtual_record_mapping = AsyncMock()
+
+        record = _make_record_mock()
+        record.org_id = "org-1"
+        record.virtual_record_id = "vr-1"
+        ctx = MagicMock()
+        ctx.record = record
+        ctx.settings = {}
+
+        result_ctx = await bs.apply(ctx)
+
+        # Must be the ACTUAL current path, not the fresh candidate
+        # ("records/conn-1/Finance/doc.pdf") that the old buggy code would
+        # have wrongly produced here.
+        assert result_ctx.settings["storage_path"] == "records/vr-1"
+        bs.update_record_buffer.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_override_in_place_failure_falls_back_to_fresh_candidate_path(self):
+        """When the override-in-place buffer update fails and apply() falls
+        back to recreating, storage_path == the fresh candidate (content
+        landed there via the fallback), not the stale current path.
+
+        Reaches "override in place" via the currently_flat=True route (the
+        actual current path is the flat records/<vrid> form) while the fresh
+        candidate is a DIFFERENT, hierarchical path -- same pattern as
+        test_override_in_place_branch_uses_actual_current_path above. This
+        makes relative_current and storage_path diverge, so the assertion
+        actually discriminates: a hypothetical regression that reassigned
+        actual_storage_path = relative_current in the except block would
+        fail here (expecting the hierarchical storage_path but getting
+        "records/vr-1")."""
+        bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(
+            return_value={"record_doc_id": "doc-existing"}
+        )
+        # Actual current path is FLAT (records/<vrid>) -- this alone makes
+        # currently_flat True and triggers "override in place".
+        bs._get_current_document_path = AsyncMock(
+            return_value="org-1/PipesHub/records/vr-1"
+        )
+        # Fresh candidate is hierarchical and DIFFERENT from the actual
+        # current path above.
+        bs._build_hierarchical_storage_path = AsyncMock(
+            return_value="records/conn-1/Finance/doc.pdf"
+        )
+        bs.update_record_buffer = AsyncMock(side_effect=Exception("buffer update failed"))
+        bs.save_record_to_storage = AsyncMock(return_value=("new-doc-id", 100))
+        bs.store_virtual_record_mapping = AsyncMock()
+
+        record = _make_record_mock()
+        record.org_id = "org-1"
+        record.virtual_record_id = "vr-1"
+        ctx = MagicMock()
+        ctx.record = record
+        ctx.settings = {}
+
+        result_ctx = await bs.apply(ctx)
+
+        # Fallback always uses the fresh candidate, never relative_current.
+        assert result_ctx.settings["storage_path"] == "records/conn-1/Finance/doc.pdf"
+        bs.save_record_to_storage.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_override_in_place_success_falls_back_when_current_path_unknown(self):
+        """When the actual current path can't be determined (_get_current_
+        document_path returns None), currently_flat defaults to True so
+        apply() takes the override-in-place branch; since relative_current
+        is falsy, the actual_storage_path ternary's else arm fires and
+        storage_path == the fresh candidate."""
+        bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(
+            return_value={"record_doc_id": "doc-existing"}
+        )
+        bs._get_current_document_path = AsyncMock(return_value=None)
+        bs._build_hierarchical_storage_path = AsyncMock(
+            return_value="records/conn-1/Finance/doc.pdf"
+        )
+        bs.update_record_buffer = AsyncMock(return_value=("doc-existing", 100))
+        bs.store_virtual_record_mapping = AsyncMock()
+
+        record = _make_record_mock()
+        record.org_id = "org-1"
+        record.virtual_record_id = "vr-1"
+        ctx = MagicMock()
+        ctx.record = record
+        ctx.settings = {}
+
+        result_ctx = await bs.apply(ctx)
+
+        assert result_ctx.settings["storage_path"] == "records/conn-1/Finance/doc.pdf"
+        bs.update_record_buffer.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_existing_doc_uses_fresh_candidate_path(self):
+        """First sync (no existing document): storage_path == the fresh
+        candidate (content was just created there)."""
+        bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
+        bs._build_hierarchical_storage_path = AsyncMock(
+            return_value="records/conn-1/Finance/doc.pdf"
+        )
+        bs.save_record_to_storage = AsyncMock(return_value=("new-doc-id", 100))
+        bs.store_virtual_record_mapping = AsyncMock()
+
+        record = _make_record_mock()
+        record.org_id = "org-1"
+        ctx = MagicMock()
+        ctx.record = record
+        ctx.settings = {}
+
+        result_ctx = await bs.apply(ctx)
+
+        assert result_ctx.settings["storage_path"] == "records/conn-1/Finance/doc.pdf"
+
+
+class TestGetActualContentPath:
+    @pytest.mark.asyncio
+    async def test_returns_stripped_current_path_when_doc_exists(self):
+        bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(
+            return_value={"record_doc_id": "doc-1"}
+        )
+        bs._get_current_document_path = AsyncMock(
+            return_value="org-1/PipesHub/records/conn-1/Finance/doc.pdf"
+        )
+
+        result = await bs.get_actual_content_path("org-1", "vr-1")
+
+        assert result == "records/conn-1/Finance/doc.pdf"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_existing_doc(self):
+        bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
+
+        result = await bs.get_actual_content_path("org-1", "vr-1")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_graph_provider_missing(self):
+        bs = _make_blob_storage()
+        bs.graph_provider = None
+        bs.get_document_id_by_virtual_record_id = AsyncMock()
+
+        result = await bs.get_actual_content_path("org-1", "vr-1")
+
+        assert result is None
+        bs.get_document_id_by_virtual_record_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_lookup_raises(self):
+        bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(side_effect=Exception("graph down"))
+
+        result = await bs.get_actual_content_path("org-1", "vr-1")
+
+        assert result is None
+
+
+class TestSaveReconciliationMetadataRelocation:
+    """save_reconciliation_metadata's existing-doc branch must mirror apply()'s
+    relocation logic for CONTENT: relocate metadata (create at the new
+    location) when the metadata doc's ACTUAL current path is hierarchical
+    and differs from where it should be, instead of always overriding in
+    place at the doc's existing stored path."""
+
+    @pytest.mark.asyncio
+    async def test_relocates_when_actual_path_diverges_from_effective_path(self):
+        """Metadata doc's real current path is hierarchical and different
+        from effective_path -> must recreate at effective_path via
+        _create_metadata_document, and must NOT override in place."""
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(
+            return_value={"record_metadata_doc_id": "meta-doc-existing"}
+        )
+        gp.batch_upsert_nodes = AsyncMock(return_value=True)
+        bs = _make_blob_storage(graph_provider=gp)
+
+        # Actual current path is hierarchical and diverges from effective_path.
+        bs._get_current_document_path = AsyncMock(
+            return_value="org-1/PipesHub/records/conn-1/OldGroup/meta.json"
+        )
+        bs._create_metadata_document = AsyncMock(return_value="meta-doc-new")
+        bs._update_metadata_buffer = AsyncMock(return_value=("meta-doc-existing", 50))
+
+        result = await bs.save_reconciliation_metadata(
+            "org-1", "rec-1", "vr-1", {"hash_to_block_ids": {}},
+            document_path="records/conn-1/NewGroup/meta.json",
+        )
+
+        assert result == "meta-doc-new"
+        bs._create_metadata_document.assert_awaited_once_with(
+            "org-1", "rec-1", "vr-1", {"hash_to_block_ids": {}},
+            "records/conn-1/NewGroup/meta.json",
+        )
+        bs._update_metadata_buffer.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_overrides_in_place_when_actual_path_matches_effective_path(self):
+        """Metadata doc's real current path already matches effective_path
+        -> existing override-in-place behavior is preserved."""
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(
+            return_value={"record_metadata_doc_id": "meta-doc-existing"}
+        )
+        gp.batch_upsert_nodes = AsyncMock(return_value=True)
+        bs = _make_blob_storage(graph_provider=gp)
+
+        # Actual current path is hierarchical but MATCHES effective_path.
+        bs._get_current_document_path = AsyncMock(
+            return_value="org-1/PipesHub/records/conn-1/NewGroup/meta.json"
+        )
+        bs._create_metadata_document = AsyncMock(return_value="meta-doc-new")
+        bs._update_metadata_buffer = AsyncMock(return_value=("meta-doc-existing", 50))
+
+        result = await bs.save_reconciliation_metadata(
+            "org-1", "rec-1", "vr-1", {"hash_to_block_ids": {}},
+            document_path="records/conn-1/NewGroup/meta.json",
+        )
+
+        assert result == "meta-doc-existing"
+        bs._update_metadata_buffer.assert_awaited_once_with(
+            "org-1", "meta-doc-existing", {"hash_to_block_ids": {}}, "vr-1",
+        )
+        bs._create_metadata_document.assert_not_awaited()
+
+
+class TestGetCurrentDocumentPathLogging:
+    """_get_current_document_path must log a warning for a non-404,
+    non-success status instead of silently returning None."""
+
+    @pytest.mark.asyncio
+    async def test_logs_warning_on_unexpected_status(self):
+        bs = _make_blob_storage()
+        bs.config_service.get_config = AsyncMock(
+            side_effect=[
+                {"scopedJwtSecret": "secret"},
+                {"cm": {"endpoint": "http://localhost:3001"}},
+                {"storageType": "local"},
+            ]
+        )
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 500
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = AsyncMock()
+        mock_session.get = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "app.modules.transformers.blob_storage.aiohttp.ClientSession",
+            return_value=mock_session,
+        ):
+            result = await bs._get_current_document_path("org-1", "doc-1")
+
+        assert result is None
+        bs.logger.warning.assert_called_once()
+        warning_args = bs.logger.warning.call_args[0]
+        assert "doc-1" in warning_args
+        assert 500 in warning_args
+
+
+class TestGetReconciliationMetadataSignedUrlFailure:
+    """When the signed-URL GET fails, get_reconciliation_metadata must not
+    fall through and return the raw {'signedUrl': ...} wrapper dict as if
+    it were real metadata."""
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_signed_url_fetch_fails(self):
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(
+            return_value={"record_metadata_doc_id": "meta-doc-1"}
+        )
+        bs = _make_blob_storage(graph_provider=gp)
+        bs.config_service.get_config = AsyncMock(
+            side_effect=[
+                {"scopedJwtSecret": "secret"},
+                {"cm": {"endpoint": "http://localhost:3001"}},
+            ]
+        )
+
+        first_resp = AsyncMock()
+        first_resp.status = 200
+        first_resp.json = AsyncMock(
+            return_value={"signedUrl": "https://s3.example.com/signed"}
+        )
+        first_resp.__aenter__ = AsyncMock(return_value=first_resp)
+        first_resp.__aexit__ = AsyncMock(return_value=False)
+
+        signed_resp = AsyncMock()
+        signed_resp.status = 403
+        signed_resp.__aenter__ = AsyncMock(return_value=signed_resp)
+        signed_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = AsyncMock()
+        mock_session.get = MagicMock(side_effect=[first_resp, signed_resp])
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "app.modules.transformers.blob_storage.aiohttp.ClientSession",
+            return_value=mock_session,
+        ):
+            result = await bs.get_reconciliation_metadata("vr-1", "org-1")
+
+        assert result is None

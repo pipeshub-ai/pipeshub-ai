@@ -1209,6 +1209,11 @@ class DataSourceEntitiesProcessor:
                     if processed_record:
                         records_to_publish.append(processed_record)
 
+            # Attempt the storage move BEFORE publishing -- a downstream
+            # consumer reindexing off this event must never see graph=new
+            # location while storage/Mongo still says old location.
+            await self._flush_pending_blob_moves(pending_moves)
+
             if records_to_publish:
                 for record in records_to_publish:
                     # Skip publishing indexing events for records with AUTO_INDEX_OFF status
@@ -1239,8 +1244,6 @@ class DataSourceEntitiesProcessor:
                             {"eventType": "newRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
                             key=record.id
                         )
-
-            await self._flush_pending_blob_moves(pending_moves)
         except Exception as e:
             self.logger.error(f"Transaction on_new_records failed: {str(e)}")
             raise e
@@ -1249,6 +1252,8 @@ class DataSourceEntitiesProcessor:
     @retry_on_deadlock()
     async def on_record_content_update(self, record: Record) -> None:
         pending_moves: list[PendingMove] = []
+        should_publish = False
+        processed_record = None
         async with self.data_store_provider.transaction() as tx_store:
             processed_record, pending_moves = await self._process_record(record, [], tx_store)
 
@@ -1262,14 +1267,19 @@ class DataSourceEntitiesProcessor:
                 current_status = processed_record.indexing_status if hasattr(processed_record, 'indexing_status') else None
                 if current_status != ProgressStatus.QUEUED.value:
                     await self._reset_indexing_status_to_queued(record.id, tx_store)
+                should_publish = True
 
-                await self.messaging_producer.send_message(
-                    "record-events",
-                    {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
-                    key=record.id
-                )
-
+        # Attempt the storage move BEFORE publishing -- a downstream
+        # consumer reindexing off this event must never see graph=new
+        # location while storage/Mongo still says old location.
         await self._flush_pending_blob_moves(pending_moves)
+
+        if should_publish:
+            await self.messaging_producer.send_message(
+                "record-events",
+                {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
+                key=record.id
+            )
 
     @retry_on_deadlock()
     async def on_record_metadata_update(self, record: Record) -> None:
@@ -1378,7 +1388,7 @@ class DataSourceEntitiesProcessor:
                     # Reuse the existing DB vertex id so all downstream edges
                     # (permissions, belongs-to, etc.) survive the path change.
                     new_record.id = old_record.id
-                    
+
                     if old_record.indexing_status == ProgressStatus.COMPLETED.value:
                         if not content_changed:
                             # If the old record is completed and content hasn't changed,
@@ -1418,44 +1428,11 @@ class DataSourceEntitiesProcessor:
                         await self._handle_parent_record(new_record, tx_store, existing_record=None)
                     await self._handle_record_permissions(new_record, permissions, tx_store)
 
-
-            # Publish events outside the transaction.
-            for record in new_records_to_publish:
-                if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
-                    continue
-                if record.is_internal:
-                    continue
-                await self.messaging_producer.send_message(
-                    "record-events",
-                    {
-                        "eventType": "newRecord",
-                        "timestamp": get_epoch_timestamp_in_ms(),
-                        "payload": record.to_kafka_record(),
-                    },
-                    key=record.id,
-                )
-
-            for record in records_to_reindex:
-                self.logger.info(
-                    "Firing updateRecord event for moved record %s (id=%s): content changed",
-                    record.record_name,
-                    record.id,
-                )
-                if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
-                    continue
-                if record.is_internal:
-                    continue
-                await self.messaging_producer.send_message(
-                    "record-events",
-                    {
-                        "eventType": "updateRecord",
-                        "timestamp": get_epoch_timestamp_in_ms(),
-                        "payload": record.to_kafka_record(),
-                    },
-                    key=record.id,
-                )
-
-            # Best-effort tree move for every record that was actually moved (not new)
+            # Compute and attempt the storage move for every record that was
+            # actually moved (not new) BEFORE publishing any Kafka event below
+            # -- a downstream consumer reindexing off updateRecord must never
+            # see graph=new location while storage/Mongo still says old
+            # location.
             pending_moves: list[PendingMove] = []
             storage_cleanup = self._get_storage_cleanup()
             if storage_cleanup:
@@ -1492,6 +1469,42 @@ class DataSourceEntitiesProcessor:
                     pending_moves.append((self.org_id, old_path, new_path))
 
             await self._flush_pending_blob_moves(pending_moves + fallback_pending_moves)
+
+            # Publish events after the storage move has been attempted.
+            for record in new_records_to_publish:
+                if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
+                    continue
+                if record.is_internal:
+                    continue
+                await self.messaging_producer.send_message(
+                    "record-events",
+                    {
+                        "eventType": "newRecord",
+                        "timestamp": get_epoch_timestamp_in_ms(),
+                        "payload": record.to_kafka_record(),
+                    },
+                    key=record.id,
+                )
+
+            for record in records_to_reindex:
+                self.logger.info(
+                    "Firing updateRecord event for moved record %s (id=%s): content changed",
+                    record.record_name,
+                    record.id,
+                )
+                if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
+                    continue
+                if record.is_internal:
+                    continue
+                await self.messaging_producer.send_message(
+                    "record-events",
+                    {
+                        "eventType": "updateRecord",
+                        "timestamp": get_epoch_timestamp_in_ms(),
+                        "payload": record.to_kafka_record(),
+                    },
+                    key=record.id,
+                )
 
         except Exception as e:
             self.logger.error(f"on_records_moved failed: {e}", exc_info=True)

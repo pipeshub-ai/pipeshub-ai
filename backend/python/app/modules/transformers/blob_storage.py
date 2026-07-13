@@ -296,6 +296,9 @@ class BlobStorage(Transformer):
         if total_size is None or total_size == 0:
             raise Exception("Could not determine file size for parallel download")
 
+        self.logger.debug("⏱️ File size check completed in %.0fms: %.2f MB",
+                        size_check_duration_ms, total_size / (1024 * 1024))
+
         # Calculate chunk ranges
         chunk_size_bytes = chunk_size_mb * 1024 * 1024
         chunks = []
@@ -388,10 +391,6 @@ class BlobStorage(Transformer):
                 ]
 
         return cleaned
-
-    def _is_non_versioned_exception(self, error: Exception) -> bool:
-        """Detect Node storage errors for legacy documents that are not version-enabled."""
-        return "cannot be versioned" in str(error).lower()
 
     async def _build_hierarchical_storage_path(
         self,
@@ -501,6 +500,10 @@ class BlobStorage(Transformer):
                     if response.status == 404:
                         return None
                     if response.status != HttpStatusCode.SUCCESS.value:
+                        self.logger.warning(
+                            "Unexpected status fetching current document path for %s: %s",
+                            document_id, response.status
+                        )
                         return None
                     doc = await response.json()
                     return doc.get("documentPath")
@@ -509,6 +512,29 @@ class BlobStorage(Transformer):
                 "Could not fetch current document path for %s: %s", document_id, str(e)
             )
             return None
+
+    async def get_actual_content_path(self, org_id: str, virtual_record_id: str) -> str | None:
+        """Return a record's content document's ACTUAL current stored path,
+        or None if no content document exists yet for this vrid (or it can't
+        be determined). Used by callers that need to save reconciliation
+        metadata at content's real current location rather than guessing --
+        see apply()'s actual_storage_path tracking below for why this
+        matters."""
+        if not self.graph_provider:
+            return None
+        try:
+            existing_lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+        except Exception as e:
+            self.logger.warning(
+                "⚠️ Failed to look up existing doc for vrid %s in get_actual_content_path: %s",
+                virtual_record_id, str(e)
+            )
+            return None
+        if not existing_lookup or not existing_lookup.get("record_doc_id"):
+            return None
+        existing_doc_id = existing_lookup["record_doc_id"]
+        current_path = await self._get_current_document_path(org_id, existing_doc_id)
+        return self._strip_org_prefix(org_id, current_path) if current_path else None
 
     async def apply(self, ctx: TransformContext) -> TransformContext:
         record = ctx.record
@@ -535,6 +561,14 @@ class BlobStorage(Transformer):
                     virtual_record_id, str(e)
                 )
                 existing_lookup = None
+
+        # Tracks the path content ACTUALLY ends up at, which may differ from
+        # the freshly-computed `storage_path` candidate above when the
+        # "override in place" branch runs -- metadata's own path must be
+        # derived from this, not from `storage_path`, or it silently drifts
+        # out of sync with content's real location and gets excluded from
+        # every future move-tree operation.
+        actual_storage_path = storage_path
 
         if existing_lookup and existing_lookup.get("record_doc_id"):
             existing_doc_id = existing_lookup["record_doc_id"]
@@ -577,6 +611,9 @@ class BlobStorage(Transformer):
                     document_id, file_size_bytes = await self.update_record_buffer(
                         org_id, existing_doc_id, record_dict, virtual_record_id
                     )
+                    # Content stayed at its real current location, not at the
+                    # freshly-computed candidate.
+                    actual_storage_path = relative_current if relative_current else storage_path
                 except Exception as e:
                     self.logger.warning(
                         "⚠️ Failed to update buffer for doc %s, falling back to new upload: %s",
@@ -585,6 +622,10 @@ class BlobStorage(Transformer):
                     document_id, file_size_bytes = await self.save_record_to_storage(
                         org_id, record_id, virtual_record_id, record_dict, document_path=storage_path
                     )
+                    # The fallback recreated content at storage_path, not
+                    # relative_current -- actual_storage_path already
+                    # defaults to storage_path above, so no reassignment
+                    # needed here.
         else:
             self.logger.info(
                 "📄 No existing storage doc for vrid %s, creating new document at path: %s",
@@ -597,7 +638,7 @@ class BlobStorage(Transformer):
         if document_id and self.graph_provider:
             await self.store_virtual_record_mapping(virtual_record_id, document_id, file_size_bytes)
 
-        ctx.settings["storage_path"] = storage_path
+        ctx.settings["storage_path"] = actual_storage_path
         ctx.record = record
         return ctx
 
@@ -1353,19 +1394,39 @@ class BlobStorage(Transformer):
 
             metadata_document_id = None
             if existing_metadata_doc_id:
-                try:
-                    doc_id, _ = await self._update_metadata_buffer(
-                        org_id, existing_metadata_doc_id, metadata_dict, virtual_record_id
-                    )
-                    metadata_document_id = doc_id
-                except Exception as e:
-                    self.logger.warning(
-                        "⚠️ Failed to update metadata buffer for doc %s; creating replacement: %s",
-                        existing_metadata_doc_id, str(e),
-                    )
+                # Mirror apply()'s content-relocation decision logic for
+                # metadata: only override in place when the doc's ACTUAL
+                # current path is flat/unknown/unchanged; otherwise recreate
+                # at the correct new location so metadata doesn't drift from
+                # content's real location.
+                current_path = await self._get_current_document_path(org_id, existing_metadata_doc_id)
+                relative_current = (
+                    self._strip_org_prefix(org_id, current_path) if current_path else None
+                )
+                currently_flat = (
+                    relative_current == f"records/{virtual_record_id}"
+                    if relative_current
+                    else True
+                )
+
+                if not currently_flat and relative_current != effective_path:
                     metadata_document_id = await self._create_metadata_document(
                         org_id, record_id, virtual_record_id, metadata_dict, effective_path
                     )
+                else:
+                    try:
+                        doc_id, _ = await self._update_metadata_buffer(
+                            org_id, existing_metadata_doc_id, metadata_dict, virtual_record_id
+                        )
+                        metadata_document_id = doc_id
+                    except Exception as e:
+                        self.logger.warning(
+                            "⚠️ Failed to update metadata buffer for doc %s; creating replacement: %s",
+                            existing_metadata_doc_id, str(e),
+                        )
+                        metadata_document_id = await self._create_metadata_document(
+                            org_id, record_id, virtual_record_id, metadata_dict, effective_path
+                        )
             else:
                 metadata_document_id = await self._create_metadata_document(
                     org_id, record_id, virtual_record_id, metadata_dict, effective_path
@@ -1706,6 +1767,12 @@ class BlobStorage(Transformer):
                             async with session.get(URL(signed_url, encoded=True)) as signed_resp:
                                 if signed_resp.status == HttpStatusCode.SUCCESS.value:
                                     data = await signed_resp.json(content_type=None)
+                                else:
+                                    self.logger.warning(
+                                        "⚠️ Failed to fetch metadata from signed URL: status %s, virtual_record_id: %s",
+                                        signed_resp.status, virtual_record_id
+                                    )
+                                    return None
                         # Handle both compressed (from upload_next_version) and uncompressed formats
                         if data.get("isCompressed"):
                             record = self._process_downloaded_record(data)

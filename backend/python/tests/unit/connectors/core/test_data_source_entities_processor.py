@@ -4069,6 +4069,34 @@ class TestOnNewRecords:
             await proc.on_new_records([(_make_record(), [])])
 
 
+class TestOnNewRecordsFlushBeforePublish:
+    @pytest.mark.asyncio
+    async def test_flush_happens_before_kafka_publish(self):
+        """_flush_pending_blob_moves must run before messaging_producer.send_message
+        -- a downstream reindex triggered by the event must never race an
+        in-flight storage move (see the newRecord/updateRecord Kafka event ->
+        BlobStorage.apply() consistency requirement)."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        call_order = []
+
+        async def track_flush(*args, **kwargs):
+            call_order.append("flush")
+
+        async def track_publish(*args, **kwargs):
+            call_order.append("publish")
+
+        record = _make_record()
+
+        with patch.object(proc, "_flush_pending_blob_moves", side_effect=track_flush):
+            proc.messaging_producer.send_message = AsyncMock(side_effect=track_publish)
+            await proc.on_new_records([(record, [])])
+
+        assert call_order == ["flush", "publish"]
+
+
 # ===========================================================================
 # on_record_content_update (lines 904-919)
 # ===========================================================================
@@ -4118,6 +4146,30 @@ class TestOnRecordContentUpdate:
             await proc.on_record_content_update(record)
 
             mock_reset.assert_awaited_once()
+
+
+class TestOnRecordContentUpdateFlushBeforePublish:
+    @pytest.mark.asyncio
+    async def test_flush_happens_before_kafka_publish(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        call_order = []
+
+        async def track_flush(*args, **kwargs):
+            call_order.append("flush")
+
+        async def track_publish(*args, **kwargs):
+            call_order.append("publish")
+
+        record = _make_record()
+
+        with patch.object(proc, "_flush_pending_blob_moves", side_effect=track_flush):
+            proc.messaging_producer.send_message = AsyncMock(side_effect=track_publish)
+            await proc.on_record_content_update(record)
+
+        assert call_order == ["flush", "publish"]
 
 
 # ===========================================================================
@@ -5436,3 +5488,36 @@ class TestOnRecordsMovedGroupChanged:
         await proc.on_records_moved([("/ns/-/blob/HEAD/same.txt", new_record, [])])
 
         proc._get_storage_cleanup().move_record_tree.assert_not_awaited()
+
+
+class TestOnRecordsMovedFlushBeforePublish:
+    """_flush_pending_blob_moves must run before either Kafka publish loop in
+    on_records_moved -- a downstream consumer reindexing off an updateRecord
+    event must never see graph=new location while storage/Mongo still says
+    old location."""
+
+    pytestmark = pytest.mark.anyio
+
+    async def test_flush_happens_before_kafka_publish(self) -> None:
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-abc", external_revision_id="sha-before")
+        new_record = _make_code_record(
+            record_id="fresh-uuid",
+            external_revision_id="sha-after",  # different -> content changed -> fires updateRecord
+        )
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        call_order = []
+
+        async def track_flush(*args, **kwargs):
+            call_order.append("flush")
+
+        async def track_publish(*args, **kwargs):
+            call_order.append("publish")
+
+        with patch.object(proc, "_flush_pending_blob_moves", side_effect=track_flush):
+            proc.messaging_producer.send_message = AsyncMock(side_effect=track_publish)
+            await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        assert call_order[0] == "flush"
+        assert "publish" in call_order
