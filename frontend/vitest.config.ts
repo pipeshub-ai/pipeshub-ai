@@ -13,6 +13,7 @@ export default defineConfig({
       'app/(main)/notifications/__tests__/useNotificationSocket.test.tsx',
       'app/components/ui/__tests__/help-tooltip.test.ts',
       'app/(main)/workspace/connectors/utils/__tests__/manual-indexing-tooltip.test.ts',
+      'lib/i18n/locales/__tests__/connector-inactive-copy.test.ts',
       'lib/socket/__tests__/notification-socket.test.ts',
     ],
     passWithNoTests: false,
