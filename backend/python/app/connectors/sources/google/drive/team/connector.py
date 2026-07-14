@@ -1494,7 +1494,6 @@ class GoogleDriveTeamConnector(BaseConnector):
             is_shared_with_me = is_shared and user_email not in owner_emails
 
             if not is_shared_drive and not is_shared_with_me:
-
                 if existing_record and existing_record.external_record_group_id is None:
                     is_updated = True
                     metadata_changed = True
@@ -1549,7 +1548,6 @@ class GoogleDriveTeamConnector(BaseConnector):
                 sha256_hash=metadata.get("sha256Checksum", None),
                 md5_hash=metadata.get("md5Checksum", None),
                 is_shared=is_shared,
-                is_shared_with_me=is_shared_with_me,
             )
 
             if existing_record and not content_changed:
@@ -1617,7 +1615,6 @@ class GoogleDriveTeamConnector(BaseConnector):
                         shared_with_me_record_group_ids.append(group_id)
 
             file_record.shared_with_me_record_group_ids = shared_with_me_record_group_ids
-            file_record.is_shared_with_me = bool(shared_with_me_record_group_ids)
 
             return RecordUpdate(
                 record=file_record,
@@ -1668,8 +1665,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 )
                 if record_update and record_update.record:
                     files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
-                    shared_disabled = record_update.record.is_shared and not record_update.record.is_shared_with_me and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
-                    shared_with_me_disabled = record_update.record.is_shared_with_me and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED_WITH_ME, default=True)
+                    shared_disabled = record_update.record.is_shared and not record_update.record.shared_with_me_record_group_ids and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
+                    shared_with_me_disabled = record_update.record.shared_with_me_record_group_ids and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED_WITH_ME, default=True)
                     if files_disabled or shared_disabled or shared_with_me_disabled:
                         record_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 

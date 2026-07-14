@@ -424,7 +424,6 @@ class BoxConnector(BaseConnector):
                 sha1_hash=entry.get('sha1'),
                 external_revision_id=entry.get('etag'),
                 is_shared=is_shared,
-                is_shared_with_me=is_shared_with_me,
             )
 
             # 1. Fetch explicit API permissions (Collaborators only)
@@ -460,29 +459,20 @@ class BoxConnector(BaseConnector):
             if self.indexing_filters:
                 shared_disabled = (
                     file_record.is_shared
-                    and not file_record.is_shared_with_me
+                    and not is_shared_with_me
                     and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
                 )
                 shared_with_me_disabled = (
-                    file_record.is_shared_with_me
+                    is_shared_with_me
                     and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED_WITH_ME, default=True)
                 )
                 if shared_disabled or shared_with_me_disabled:
                     file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             # Link shared-with-me records to the user's "Shared with Me" record group (for future collaboration sync)
-            if file_record.is_shared_with_me and user_email:
+            if is_shared_with_me and user_email:
                 file_record.external_record_group_id = None
-                async with self.data_store_provider.transaction() as tx_store:
-                    shared_with_me_group = await tx_store.get_record_group_by_external_id(
-                        connector_id=self.connector_id,
-                        external_id=f"0S:{user_email}",
-                    )
-                    if shared_with_me_group:
-                        await tx_store.create_record_group_relation(
-                            file_record.id,
-                            shared_with_me_group.id,
-                        )
+                file_record.shared_with_me_record_group_ids = [f"0S:{user_email}"]
 
             # Determine if new or updated
             if existing_record:
