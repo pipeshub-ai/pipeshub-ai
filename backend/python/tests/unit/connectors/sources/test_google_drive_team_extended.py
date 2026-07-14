@@ -752,7 +752,7 @@ class TestTeamProcessDriveItemExtended:
             drive_id="drive-1", is_shared_drive=False,
         )
         assert result.record.external_record_group_id is None
-        assert result.record.is_shared_with_me is True
+        assert result.record.shared_with_me_record_group_ids == ["0S:reader@example.com"]
 
     async def test_permission_fetch_failure_continues(self, connector):
         """Permission fetch failure still returns record update."""

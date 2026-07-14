@@ -1935,7 +1935,7 @@ class TestProcessDriveItem:
         )
         result = await conn._process_drive_item(metadata, "u1", "r@x.com", "d1", is_shared_drive=False)
         assert result is not None
-        assert result.record.is_shared_with_me is True
+        assert result.record.shared_with_me_record_group_ids == ["0S:r@x.com"]
         assert result.record.external_record_group_id is None
 
     @pytest.mark.asyncio
@@ -1966,7 +1966,6 @@ class TestProcessDriveItem:
         result = await conn._process_drive_item(metadata, "u1", "u@x.com", "sd-1", is_shared_drive=True)
         assert result is not None
         assert result.record.shared_with_me_record_group_ids == ["0S:member@x.com"]
-        assert result.record.is_shared_with_me is True
         # Drive membership should still be the primary group, independent of the individual share.
         assert result.record.external_record_group_id == "sd-1"
 
@@ -1987,7 +1986,6 @@ class TestProcessDriveItem:
         result = await conn._process_drive_item(metadata, "u1", "u@x.com", "sd-1", is_shared_drive=True)
         assert result is not None
         assert result.record.shared_with_me_record_group_ids == []
-        assert result.record.is_shared_with_me is False
 
     @pytest.mark.asyncio
     async def test_folder_type(self):
@@ -2242,7 +2240,7 @@ class TestProcessDriveItemsGenerator:
                 raise Exception("process error")
             fr = MagicMock()
             fr.is_shared = False
-            fr.is_shared_with_me = False
+            fr.shared_with_me_record_group_ids = []
             return RecordUpdate(
                 record=fr, is_new=True, is_updated=False, is_deleted=False,
                 metadata_changed=False, content_changed=False, permissions_changed=False,

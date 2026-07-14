@@ -931,7 +931,7 @@ class TestProcessDriveItem:
         meta = _make_file_metadata(shared=True, owners=[{"emailAddress": "other@t.com"}])
         connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
-        assert result.record.is_shared_with_me is True
+        assert result.record.shared_with_me_record_group_ids == ["0S:u@t.com"]
 
     @pytest.mark.asyncio
     async def test_date_filter_skip(self, connector):
@@ -975,7 +975,7 @@ class TestProcessDriveItemsGenerator:
     async def test_yields_records(self, connector):
         meta = _make_file_metadata()
         update = RecordUpdate(
-            record=MagicMock(is_shared=False, is_shared_with_me=False),
+            record=MagicMock(is_shared=False, shared_with_me_record_group_ids=[]),
             is_new=True, is_updated=False, is_deleted=False,
             metadata_changed=False, content_changed=False, permissions_changed=False,
             new_permissions=[]
@@ -996,7 +996,7 @@ class TestProcessDriveItemsGenerator:
 
     @pytest.mark.asyncio
     async def test_auto_index_off_shared(self, connector):
-        record = MagicMock(is_shared=True, is_shared_with_me=False)
+        record = MagicMock(is_shared=True, shared_with_me_record_group_ids=[])
         update = RecordUpdate(
             record=record, is_new=True, is_updated=False, is_deleted=False,
             metadata_changed=False, content_changed=False, permissions_changed=False,
@@ -2747,7 +2747,7 @@ class TestProcessDriveItemFullCoverage:
         meta = _make_file_metadata(shared=True, owners=[{"emailAddress": "other@t.com"}])
         connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
-        assert result.record.is_shared_with_me is True
+        assert result.record.shared_with_me_record_group_ids == ["0S:u@t.com"]
 
     @pytest.mark.asyncio
     async def test_date_filter_skip(self, connector):
@@ -2791,7 +2791,7 @@ class TestProcessDriveItemsGeneratorFullCoverage:
     async def test_yields_records(self, connector):
         meta = _make_file_metadata()
         update = RecordUpdate(
-            record=MagicMock(is_shared=False, is_shared_with_me=False),
+            record=MagicMock(is_shared=False, shared_with_me_record_group_ids=[]),
             is_new=True, is_updated=False, is_deleted=False,
             metadata_changed=False, content_changed=False, permissions_changed=False,
             new_permissions=[]
@@ -2812,7 +2812,7 @@ class TestProcessDriveItemsGeneratorFullCoverage:
 
     @pytest.mark.asyncio
     async def test_auto_index_off_shared(self, connector):
-        record = MagicMock(is_shared=True, is_shared_with_me=False)
+        record = MagicMock(is_shared=True, shared_with_me_record_group_ids=[])
         update = RecordUpdate(
             record=record, is_new=True, is_updated=False, is_deleted=False,
             metadata_changed=False, content_changed=False, permissions_changed=False,

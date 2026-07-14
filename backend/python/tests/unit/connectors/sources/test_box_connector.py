@@ -364,7 +364,7 @@ class TestProcessBoxEntry:
         result = await box_connector._process_box_entry(
             entry, user_id="u1", user_email="user@test.com", record_group_id="rg1"
         )
-        assert result.record.is_shared_with_me is True
+        assert result.record.shared_with_me_record_group_ids == ["0S:user@test.com"]
 
     async def test_no_size_field_logs_warning(self, box_connector):
         entry = _make_box_entry()
@@ -2074,4 +2074,4 @@ class TestBoxProcessBoxEntryFileExtensionFilter:
             entry, user_id="u1", user_email="user@test.com", record_group_id="rg1"
         )
         assert result is not None
-        assert result.record.is_shared_with_me is True
+        assert result.record.shared_with_me_record_group_ids == ["0S:user@test.com"]

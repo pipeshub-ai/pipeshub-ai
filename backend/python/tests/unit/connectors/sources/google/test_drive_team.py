@@ -458,7 +458,7 @@ class TestTeamProcessDriveItem:
         )
 
         assert result is not None
-        assert result.record.is_shared_with_me is True
+        assert result.record.shared_with_me_record_group_ids == ["0S:reader@example.com"]
         # Shared-with-me files get external_record_group_id set to None
         assert result.record.external_record_group_id is None
 

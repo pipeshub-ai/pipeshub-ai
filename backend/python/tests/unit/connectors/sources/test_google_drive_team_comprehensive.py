@@ -470,7 +470,7 @@ class TestProcessDriveItemComprehensive:
             drive_id="drive1", is_shared_drive=False
         )
         assert result is not None
-        assert result.record.is_shared_with_me is True
+        assert result.record.shared_with_me_record_group_ids == ["0S:me@test.com"]
         assert result.record.external_record_group_id is None
 
 
