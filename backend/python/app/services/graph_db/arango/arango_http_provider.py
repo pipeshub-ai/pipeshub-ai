@@ -14967,6 +14967,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 LET record = DOCUMENT(perm._to)
                 FILTER record != null AND record.orgId == @org_id
                 LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
+                LET record_parent_app = record_app
                 LET record_rg = DOCUMENT(CONCAT("recordGroups/", record.connectorId))
                 FILTER (
                     (record_app != null AND record_app._key IN user_accessible_apps) OR
@@ -14986,6 +14987,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER IS_SAME_COLLECTION("records", record)
                     FILTER record.orgId == @org_id
                     LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
+                    LET record_parent_app = record_app
                     LET record_rg = DOCUMENT(CONCAT("recordGroups/", record.connectorId))
                     FILTER (
                         (record_app != null AND record_app._key IN user_accessible_apps) OR
@@ -15004,6 +15006,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER IS_SAME_COLLECTION("records", record)
                     FILTER record.orgId == @org_id
                     LET record_app = DOCUMENT(CONCAT("apps/", record.connectorId))
+                    LET record_parent_app = record_app
                     LET record_rg = DOCUMENT(CONCAT("recordGroups/", record.connectorId))
                     FILTER (
                         (record_app != null AND record_app._key IN user_accessible_apps) OR
@@ -15044,6 +15047,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER edge._to == seed_app._id
                     LET record = DOCUMENT(edge._from)
                     FILTER record != null AND record.orgId == @org_id
+                    LET record_parent_app = DOCUMENT(CONCAT("apps/", record.connectorId))
                     {scope_filter_record}
                     {record_prefilter}
                     RETURN record
@@ -16866,6 +16870,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         LIMIT 1
                         RETURN 1
                 ) > 0)
+                LET record_parent_app = DOCUMENT(CONCAT("apps/", record.connectorId))
 
                 RETURN {{
                     id: record._key,
@@ -17025,6 +17030,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         LIMIT 1
                         RETURN 1
                 ) > 0)
+                LET record_parent_app = DOCUMENT(CONCAT("apps/", record.connectorId))
 
                 RETURN {{
                     id: record._key,
@@ -17128,6 +17134,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         LIMIT 1
                         RETURN 1
                 ) > 0)
+                LET record_parent_app = DOCUMENT(CONCAT("apps/", record.connectorId))
 
                 RETURN {{
                     id: record._key,
@@ -17267,6 +17274,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         LIMIT 1
                         RETURN 1
                 ) > 0)
+                LET record_parent_app = DOCUMENT(CONCAT("apps/", record.connectorId))
 
                 RETURN {{
                     id: record._key,
@@ -17359,6 +17367,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         LIMIT 1
                         RETURN 1
                 ) > 0)
+                LET record_parent_app = DOCUMENT(CONCAT("apps/", record.connectorId))
 
                 RETURN {{
                     id: record._key,

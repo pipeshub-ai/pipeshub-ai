@@ -16294,6 +16294,9 @@ class TestGetRecordChildrenSubquery:
         sub_query, bind_vars = connected_provider._get_record_children_subquery("r1", "org1", "uk1")
         assert isinstance(sub_query, str)
         assert "record_doc_id" in bind_vars
+        # Timestamp projection helpers require this LET; without it Arango
+        # treats record_parent_app as a missing collection (errorNum 1203).
+        assert 'LET record_parent_app = DOCUMENT(CONCAT("apps/", record.connectorId))' in sub_query
 
 
 # ---------------------------------------------------------------------------
