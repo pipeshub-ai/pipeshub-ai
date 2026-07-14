@@ -22,6 +22,14 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 
 FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
 
+# Presentation previews are converted to PDF at request time. The published
+# runtime base historically included Writer and Calc only, leaving the soffice
+# wrapper present but unable to load PPT/PPTX files.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    libreoffice-impress-nogui \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
 # -----------------------------------------------------------------------------
 # Stage 1: Node.js Backend Build
 # -----------------------------------------------------------------------------
