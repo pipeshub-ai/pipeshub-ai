@@ -3712,6 +3712,9 @@ components:
             externalGroupId:
               type: string
               nullable: true
+            externalParentId:
+              type: string
+              nullable: true
             connectorId:
               type: string
             connectorName:
@@ -3766,6 +3769,9 @@ components:
               type: string
             virtualRecordId:
               type: string
+            summaryDocumentId:
+              type: string
+              nullable: true
             webUrl:
               type: string
             fileRecord:
