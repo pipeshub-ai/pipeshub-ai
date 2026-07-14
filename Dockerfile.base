@@ -199,10 +199,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     # OpenGL library (required by Docling for PDF processing)
     libgl1 \
     libglib2.0-0 \
-    # LibreOffice - MINIMAL install (writer + calc, headless). Impress omitted to save image size.
+    # LibreOffice - headless document and presentation conversion.
     # Comment out if not needed - this is still ~300-400MB
     libreoffice-writer-nogui \
     libreoffice-calc-nogui \
+    libreoffice-impress-nogui \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Install Node.js runtime only (not full dev environment)

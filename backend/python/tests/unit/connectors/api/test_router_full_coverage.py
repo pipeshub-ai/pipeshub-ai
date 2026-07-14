@@ -776,6 +776,19 @@ class TestGetPdfConversionInfo:
         record.mime_type = "application/vnd.google-apps.presentation"
         needs, name, ext = get_pdf_conversion_info(record)
         assert needs is True
+        assert ext == "pptx"
+
+    def test_pptx_mime_infers_missing_extension(self):
+        from app.connectors.api.router import get_pdf_conversion_info
+        record = MagicMock()
+        record.record_name = "Quarterly review"
+        record.mime_type = (
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        )
+        needs, name, ext = get_pdf_conversion_info(record)
+        assert needs is True
+        assert name == "Quarterly review"
+        assert ext == "pptx"
 
 
 # ============================================================================
@@ -1077,4 +1090,3 @@ class TestReindexConnectorKbAuth:
         
         assert exc.value.status_code == 404
         assert "not found or access denied" in exc.value.detail
-
