@@ -16206,6 +16206,7 @@ class Neo4jProvider(IGraphDBProvider):
              [kb_app IN all_kb_apps |
                [(record:Record)-[:INHERIT_PERMISSIONS]->(kb_app)
                 WHERE record.orgId = $org_id
+                  {scope_filter_record}
                | record]
              ] AS kb_records_lists
 
@@ -16339,7 +16340,11 @@ class Neo4jProvider(IGraphDBProvider):
                  {
                    id: record.id,
                    name: record.recordName,
-                   nodeType: CASE WHEN record.mimeType = 'application/vnd.folder' THEN 'folder' ELSE 'record' END,
+                   nodeType: CASE
+                     WHEN record.mimeType = 'application/vnd.folder' THEN 'folder'
+                     WHEN file_info IS NOT NULL AND file_info.isFile = false THEN 'folder'
+                     ELSE 'record'
+                   END,
                    origin: CASE
                      WHEN record IS NULL THEN null
                      WHEN record.connectorName = 'KB' THEN 'COLLECTION'
@@ -16582,7 +16587,11 @@ class Neo4jProvider(IGraphDBProvider):
                  {
                    id: record.id,
                    name: record.recordName,
-                   nodeType: CASE WHEN record.mimeType = 'application/vnd.folder' THEN 'folder' ELSE 'record' END,
+                   nodeType: CASE
+                     WHEN record.mimeType = 'application/vnd.folder' THEN 'folder'
+                     WHEN file_info IS NOT NULL AND file_info.isFile = false THEN 'folder'
+                     ELSE 'record'
+                   END,
                    parentId: null,
                    origin: source,
                    connector: record.connectorName,

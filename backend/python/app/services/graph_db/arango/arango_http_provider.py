@@ -15186,7 +15186,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FOR file_edge IN isOfType FILTER file_edge._from == record._id
                     LET file = DOCUMENT(file_edge._to) RETURN file
                 )
-                LET is_folder = file_info != null AND file_info.isFile == false"""
+                LET is_folder = record.mimeType == "application/vnd.folder" OR (file_info != null AND file_info.isFile == false)"""
             node_type_expr = 'is_folder ? "folder" : "record"'
 
         has_children_block = ""
@@ -15300,7 +15300,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FOR file_edge IN isOfType FILTER file_edge._from == record._id
                         LET file = DOCUMENT(file_edge._to) RETURN file
                     )
-                    LET is_folder = file_info != null AND file_info.isFile == false
+                    LET is_folder = ref.nodeType == "folder" OR record.mimeType == "application/vnd.folder" OR (file_info != null AND file_info.isFile == false)
                     LET has_children = LENGTH(
                         FOR edge IN recordRelations
                             FILTER edge._from == record._id
