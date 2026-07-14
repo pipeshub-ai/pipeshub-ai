@@ -236,23 +236,24 @@ class TestPermissionSchemeGaps:
     async def test_permission_grants_non_list_normalized(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
-        sch = _ok_resp({"id": 1, "permissions": {"bad": "shape"}})
+        sch = _ok_resp({"id": 1})
+        grants = _ok_resp({"permissions": {"bad": "shape"}})
         ds = MagicMock()
         ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
-        ds.get_permission_scheme_grants_v2 = AsyncMock()
+        ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
             perms = await conn._fetch_project_permission_scheme("PROJ", {})
 
         assert perms == []
-        ds.get_permission_scheme_grants_v2.assert_not_awaited()
+        ds.get_permission_scheme_grants_v2.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_application_role_bare_grants_all_licensed_users(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
-        sch = _ok_resp({
-            "id": 1,
+        sch = _ok_resp({"id": 1})
+        grants = _ok_resp({
             "permissions": [{
                 "permission": "BROWSE_PROJECTS",
                 "holder": {"type": "applicationRole"},
@@ -260,6 +261,7 @@ class TestPermissionSchemeGaps:
         })
         ds = MagicMock()
         ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
+        ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
             perms = await conn._fetch_project_permission_scheme("PROJ", {})
@@ -274,8 +276,8 @@ class TestPermissionSchemeGaps:
         conn.data_source = MagicMock()
         conn.creator_email = "owner@example.com"
         conn._app_roles_forbidden = True
-        sch = _ok_resp({
-            "id": 1,
+        sch = _ok_resp({"id": 1})
+        grants = _ok_resp({
             "permissions": [{
                 "permission": "BROWSE_PROJECTS",
                 "holder": {"type": "applicationRole", "parameter": "jira-software"},
@@ -283,6 +285,7 @@ class TestPermissionSchemeGaps:
         })
         ds = MagicMock()
         ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
+        ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
             perms = await conn._fetch_project_permission_scheme("PROJ", {})
@@ -311,6 +314,65 @@ class TestUserAndGroupGaps:
         assert conn._user_bulk_incomplete is True
 
     @pytest.mark.asyncio
+    async def test_search_fallback_pages_past_100_users(self):
+        """Search fallback must keep paging past 100 (no hard cap)."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+
+        page1 = _ok_resp([{"key": f"k{i}", "active": True} for i in range(50)])
+        page2 = _ok_resp([{"key": f"k{i}", "active": True} for i in range(50, 100)])
+        page3 = _ok_resp([{"key": f"k{i}", "active": True} for i in range(100, 120)])
+        ds = MagicMock()
+        ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
+        ds.get_user_search_v2 = AsyncMock(side_effect=[page1, page2, page3])
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
+            raw = await conn._fetch_all_jira_users_bulk()
+
+        assert len(raw) == 120
+        assert ds.get_user_search_v2.await_count == 3
+        assert ds.get_user_search_v2.await_args_list[2].kwargs["startAt"] == 100
+
+    @pytest.mark.asyncio
+    async def test_search_fallback_stops_on_duplicate_page(self):
+        """If startAt sticks (Jira 10), stop when a page adds no new keys."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+
+        page = [{"key": f"k{i}", "active": True} for i in range(50)]
+        ds = MagicMock()
+        ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
+        ds.get_user_search_v2 = AsyncMock(
+            side_effect=[_ok_resp(page), _ok_resp(page)]
+        )
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
+            raw = await conn._fetch_all_jira_users_bulk()
+
+        assert len(raw) == 50
+        assert ds.get_user_search_v2.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_jira10_search_empty_after_100(self):
+        """Jira 10.x without /user/list: two full pages then empty at startAt=100."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+
+        page1 = _ok_resp([{"key": f"k{i}", "active": True} for i in range(50)])
+        page2 = _ok_resp([{"key": f"k{i}", "active": True} for i in range(50, 100)])
+        empty = _ok_resp([])
+        ds = MagicMock()
+        ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
+        ds.get_user_search_v2 = AsyncMock(side_effect=[page1, page2, empty])
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
+            raw = await conn._fetch_all_jira_users_bulk()
+
+        assert len(raw) == 100
+        assert conn._user_bulk_incomplete is True
+        assert ds.get_user_search_v2.await_args_list[2].kwargs["startAt"] == 100
+
+    @pytest.mark.asyncio
     async def test_resolve_private_email_users_skips_empty_user_key(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
@@ -325,6 +387,63 @@ class TestUserAndGroupGaps:
             )
 
         assert found == 0
+
+    @pytest.mark.asyncio
+    async def test_resolve_private_email_prefers_exact_match_over_first(self):
+        """Substring search returns a wrong user first — pick the exact-email match."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn._user_bulk_incomplete = True  # disable early-exit so the sweep runs
+        ds = MagicMock()
+        ds.get_user_search_v2 = AsyncMock(return_value=_ok_resp([
+            {"key": "WRONG", "name": "other", "emailAddress": "someone.else@example.com"},
+            {"key": "RIGHT", "name": "target", "emailAddress": "target@example.com"},
+        ]))
+        resolved = {}
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
+            found = await conn._resolve_private_email_users(
+                {"target@example.com"}, set(), resolved,
+            )
+        assert found == 1
+        assert "RIGHT" in resolved and "WRONG" not in resolved
+        assert resolved["RIGHT"].email == "target@example.com"
+
+    @pytest.mark.asyncio
+    async def test_resolve_private_email_trusts_lone_hidden_email_hit(self):
+        """Hidden-email user: response omits emailAddress but is the only hit → trust it."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn._user_bulk_incomplete = True
+        ds = MagicMock()
+        ds.get_user_search_v2 = AsyncMock(return_value=_ok_resp([
+            {"key": "HIDDEN", "name": "hidden"},  # no emailAddress
+        ]))
+        resolved = {}
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
+            found = await conn._resolve_private_email_users(
+                {"hidden@example.com"}, set(), resolved,
+            )
+        assert found == 1
+        assert resolved["HIDDEN"].email == "hidden@example.com"
+
+    @pytest.mark.asyncio
+    async def test_resolve_private_email_ambiguous_no_match_skips(self):
+        """Several hits, none with a matching email → ambiguous, resolve nothing."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn._user_bulk_incomplete = True
+        ds = MagicMock()
+        ds.get_user_search_v2 = AsyncMock(return_value=_ok_resp([
+            {"key": "A", "name": "a", "emailAddress": "a@example.com"},
+            {"key": "B", "name": "b", "emailAddress": "b@example.com"},
+        ]))
+        resolved = {}
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
+            found = await conn._resolve_private_email_users(
+                {"target@example.com"}, set(), resolved,
+            )
+        assert found == 0
+        assert resolved == {}
 
     @pytest.mark.asyncio
     async def test_sync_user_groups_no_valid_members_logs(self):

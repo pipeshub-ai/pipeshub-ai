@@ -889,7 +889,7 @@ def _perm_resp():
     ]
     sch = MagicMock()
     sch.status = HttpStatusCode.OK.value
-    sch.json = MagicMock(return_value={"id": 10, "permissions": permissions})
+    sch.json = MagicMock(return_value={"id": 10})
     grants = MagicMock()
     grants.status = HttpStatusCode.OK.value
     grants.json = MagicMock(return_value={"permissions": permissions})
@@ -909,7 +909,7 @@ async def test_fetch_project_permission_scheme_dc_branches():
     }
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         perms = await conn._fetch_project_permission_scheme("PROJ", app_map)
-    ds.get_permission_scheme_grants_v2.assert_not_awaited()
+    ds.get_permission_scheme_grants_v2.assert_awaited_once()
     types = {(p.entity_type, p.email, p.external_id) for p in perms}
     assert (EntityType.GROUP, None, "gid1") in types
     assert (EntityType.GROUP, None, "expanded-g") in types
@@ -926,9 +926,11 @@ async def test_fetch_project_permission_scheme_group_uses_parameter():
     conn.data_source = MagicMock()
     sch = MagicMock()
     sch.status = HttpStatusCode.OK.value
-    sch.json = MagicMock(
+    sch.json = MagicMock(return_value={"id": 10000})
+    grants = MagicMock()
+    grants.status = HttpStatusCode.OK.value
+    grants.json = MagicMock(
         return_value={
-            "id": 10000,
             "permissions": [
                 {
                     "permission": "BROWSE_PROJECTS",
@@ -942,47 +944,52 @@ async def test_fetch_project_permission_scheme_group_uses_parameter():
     )
     ds = MagicMock()
     ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
-    ds.get_permission_scheme_grants_v2 = AsyncMock()
+    ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         perms = await conn._fetch_project_permission_scheme("TEST", {})
-    ds.get_permission_scheme_grants_v2.assert_not_awaited()
+    ds.get_permission_scheme_grants_v2.assert_awaited_once_with(schemeId=10000)
     assert len(perms) == 1
     assert perms[0].entity_type == EntityType.GROUP
     assert perms[0].external_id == "jira-software-users"
 
 
 @pytest.mark.asyncio
-async def test_fetch_project_permission_scheme_user_from_embedded_scheme():
-    """Step 1 project permissionscheme embeds ``user.key``; step 2 only has username."""
+async def test_fetch_project_permission_scheme_user_resolved_via_user_by_key():
+    """No holder expansion — a ``user`` grant resolves its email via ``user_by_key``."""
     conn = _make_connector()
     conn.data_source = MagicMock()
     sch = MagicMock()
     sch.status = HttpStatusCode.OK.value
-    sch.json = MagicMock(
+    sch.json = MagicMock(return_value={"id": 10000})
+    grants = MagicMock()
+    grants.status = HttpStatusCode.OK.value
+    grants.json = MagicMock(
         return_value={
-            "id": 10000,
             "permissions": [
                 {
                     "permission": "BROWSE_PROJECTS",
-                    "holder": {
-                        "type": "user",
-                        "parameter": "JIRAUSER10000",
-                        "user": {
-                            "key": "JIRAUSER10000",
-                            "name": "darshan",
-                            "emailAddress": "darshan@example.com",
-                        },
-                    },
+                    "holder": {"type": "user", "parameter": "JIRAUSER10000"},
                 },
             ],
         }
     )
     ds = MagicMock()
     ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
-    ds.get_permission_scheme_grants_v2 = AsyncMock()
+    ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
+    user_by_key = {
+        "JIRAUSER10000": AppUser(
+            app_name=Connectors.JIRA_DATA_CENTER,
+            connector_id="conn-dc-cov",
+            source_user_id="JIRAUSER10000",
+            org_id="org-dc-cov",
+            email="darshan@example.com",
+            full_name="Darshan",
+            is_active=True,
+        )
+    }
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        perms = await conn._fetch_project_permission_scheme("TEST", {})
-    ds.get_permission_scheme_grants_v2.assert_not_awaited()
+        perms = await conn._fetch_project_permission_scheme("TEST", {}, user_by_key)
+    ds.get_permission_scheme_grants_v2.assert_awaited_once_with(schemeId=10000)
     assert len(perms) == 1
     assert perms[0].entity_type == EntityType.USER
     assert perms[0].email == "darshan@example.com"
@@ -1987,6 +1994,52 @@ async def test_fetch_project_permission_scheme_grants_not_ok():
     ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=bad_grants)
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         assert await conn._fetch_project_permission_scheme("P", {}) == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_project_permission_scheme_never_expands_holders():
+    """Unified path: scheme fetched without expand, grants from standalone endpoint."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    sch = MagicMock()
+    sch.status = HttpStatusCode.OK.value
+    sch.json = MagicMock(return_value={"id": 9})
+    grants = MagicMock()
+    grants.status = HttpStatusCode.OK.value
+    grants.json = MagicMock(
+        return_value={
+            "permissions": [
+                {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "jira-software-users"}},
+            ],
+        },
+    )
+    ds = MagicMock()
+    ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
+    ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        perms = await conn._fetch_project_permission_scheme("P", {})
+
+    assert len(perms) == 1
+    assert perms[0].external_id == "jira-software-users"
+    # neither call expands holders inline (the ?expand=all path 500s on some builds)
+    assert "expand" not in ds.get_assigned_permission_scheme_v2.await_args.kwargs
+    assert "expand" not in ds.get_permission_scheme_grants_v2.await_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_fetch_project_permission_scheme_scheme_missing_id_returns_empty():
+    """OK scheme response with no id -> no grants call, empty result."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    sch = MagicMock()
+    sch.status = HttpStatusCode.OK.value
+    sch.json = MagicMock(return_value={})
+    ds = MagicMock()
+    ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
+    ds.get_permission_scheme_grants_v2 = AsyncMock()
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        assert await conn._fetch_project_permission_scheme("P", {}) == []
+    ds.get_permission_scheme_grants_v2.assert_not_awaited()
 
 
 @pytest.mark.asyncio

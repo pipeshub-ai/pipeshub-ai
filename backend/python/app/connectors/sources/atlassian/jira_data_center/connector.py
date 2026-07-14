@@ -97,8 +97,6 @@ BATCH_PROCESSING_SIZE: int = 100
 USER_PAGE_SIZE: int = 50
 # /user/list supports up to 2000; use a moderate page to cut round-trips vs USER_PAGE_SIZE.
 USER_LIST_PAGE_SIZE: int = 100
-# Jira 10+ hard-caps /user/search to the first 100 results (startAt cannot page past).
-USER_SEARCH_HARD_CAP: int = 100
 GROUP_MEMBER_PAGE_SIZE: int = 50
 GROUPS_PICKER_MAX: int = 1000  # maxResults for GET /rest/api/2/groups/picker
 AUDIT_PAGE_SIZE: int = 500  # page size for GET /rest/auditing/1.0/events
@@ -345,8 +343,8 @@ class JiraDataCenterConnector(BaseConnector):
 
         self._app_roles_forbidden: bool = False  # GET /applicationrole returned 403
         self._user_bulk_forbidden: bool = False  # bulk user list/search returned 401/403
-        # True when bulk used /user/search (100-result hard cap on Jira 10+) or list failed
-        # open — reverse lookup must sweep all PipesHub candidates, not only bulk gaps.
+        # True when bulk fell back to /user/search (may be incomplete on Jira 10+) —
+        # reverse lookup must sweep all PipesHub candidates, not only bulk gaps.
         self._user_bulk_incomplete: bool = False
         # DC username (``name``) -> source_user_id (``key``); built during _fetch_users
         self._dc_name_to_source_id: dict[str, str] = {}
@@ -1127,10 +1125,11 @@ class JiraDataCenterConnector(BaseConnector):
         """
         Paginated fetch via ``GET /rest/api/2/user/search?username=.``.
 
-        On Jira 10+ this is hard-capped at the first 100 results
-        (JRASERVER-78660); callers must treat results as incomplete.
+        Pages until an empty or short page. Dedupes by user key so a stuck
+        ``startAt`` (Jira 10+ JRASERVER-78660) cannot loop forever.
         """
         users: list[dict[str, Any]] = []
+        seen_keys: set[str] = set()
         start_at = 0
         datasource = await self._get_fresh_datasource()
 
@@ -1173,13 +1172,21 @@ class JiraDataCenterConnector(BaseConnector):
             if not batch_users:
                 break
 
-            users.extend(batch_users)
+            new_in_page = 0
+            for user in batch_users:
+                user_key = user.get("accountId") or user.get("key") or user.get("name")
+                if user_key and user_key in seen_keys:
+                    continue
+                if user_key:
+                    seen_keys.add(user_key)
+                users.append(user)
+                new_in_page += 1
 
-            if start_at + len(batch_users) >= USER_SEARCH_HARD_CAP:
+            if new_in_page == 0:
                 self.logger.warning(
-                    "⚠️ DC /user/search hit the %s-user hard cap (JRASERVER-78660). "
-                    "Collected %s users; treating bulk as incomplete.",
-                    USER_SEARCH_HARD_CAP, len(users),
+                    "⚠️ DC /user/search returned no new users at startAt=%s "
+                    "(collected %s). Stopping pagination.",
+                    start_at, len(users),
                 )
                 break
 
@@ -1188,6 +1195,7 @@ class JiraDataCenterConnector(BaseConnector):
 
             start_at += USER_PAGE_SIZE
 
+        self.logger.info("👥 Jira DC /user/search returned %s users", len(users))
         return users
 
     async def _fetch_all_jira_users_bulk(self) -> list[dict[str, Any]]:
@@ -1246,9 +1254,20 @@ class JiraDataCenterConnector(BaseConnector):
                     if not results or not isinstance(results, list):
                         return None
 
-                    user = results[0]
-                    if not user:
-                        return None
+                    # ``username=<email>`` is a substring match over name/username/
+                    # email and can return several users, so don't trust results[0]:
+                    # pick the exact email match. When no result exposes an email
+                    # (the hidden-email case this lookup exists for), trust a lone
+                    # hit; if there are several and none match, it's ambiguous — skip.
+                    matches = [u for u in results if isinstance(u, dict)]
+                    user = next(
+                        (u for u in matches if (u.get("emailAddress") or "").lower() == email.lower()),
+                        None,
+                    )
+                    if user is None:
+                        if len(matches) != 1:
+                            return None
+                        user = matches[0]
                     user_key = user.get("accountId") or user.get("key") or user.get("name")
                     if not user_key:
                         return None
@@ -1393,10 +1412,11 @@ class JiraDataCenterConnector(BaseConnector):
         """
         Fetch permission holders for a project from its Permission Scheme (Data Center).
 
-        Uses ``GET /rest/api/2/project/{projectKeyOrId}/permissionscheme?expand=all``,
-        which embeds fully expanded ``permissions`` (including ``user.key`` / email).
-        Falls back to ``GET /rest/api/2/permissionscheme/{schemeId}/permission`` only
-        when the project scheme response has no ``permissions`` array.
+        Two calls, uniform across builds: ``GET /project/{key}/permissionscheme``
+        (no expand) for the scheme id, then ``GET /permissionscheme/{schemeId}/permission``
+        for the grants. ``?expand=all`` on the project endpoint is avoided because it
+        500s on some DC/Server builds (internal RequestScope NPE from lazy holder
+        expansion); the standalone grants endpoint expands no holders inline.
 
         Permission Schemes grant permissions (like BROWSE_PROJECTS) through different holder types:
         - group: Direct group permissions (e.g., "jira-software-users")
@@ -1414,10 +1434,16 @@ class JiraDataCenterConnector(BaseConnector):
         try:
             datasource = await self._get_fresh_datasource()
 
-            # Step 1: permission scheme assigned to this project (DC REST v2)
+            # Resolve the scheme in two steps instead of one ``?expand=all`` call.
+            # ``GET /project/{key}/permissionscheme?expand=all`` 500s on some
+            # DC/Server builds (internal RequestScope NPE — holders are expanded
+            # lazily during serialization, after the request scope is torn down).
+            # A bare scheme lookup + the standalone grants endpoint expands no
+            # holders inline, so it works uniformly across builds.
+
+            # Step 1: the scheme id assigned to this project (no expand).
             scheme_response = await datasource.get_assigned_permission_scheme_v2(
                 projectKeyOrId=project_key,
-                expand="all",
             )
 
             if scheme_response.status != HttpStatusCode.OK.value:
@@ -1442,37 +1468,40 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.warning(f"⚠️ Failed to fetch permission scheme for {project_key}: {scheme_response.text()}")
                 return []
 
-            scheme_data = scheme_response.json()
-            scheme_id = scheme_data.get("id")
-            permission_grants = scheme_data.get("permissions")
-
-            if not permission_grants:
-                # Fallback when expand=all did not embed permissions (older DC / tests).
-                grants_response = await datasource.get_permission_scheme_grants_v2(
-                    schemeId=scheme_id,
-                    expand="all",
+            scheme_id = scheme_response.json().get("id")
+            if not scheme_id:
+                self.logger.warning(
+                    "⚠️ Permission scheme for %s has no id — cannot fetch grants",
+                    project_key,
                 )
+                return []
 
-                if grants_response.status != HttpStatusCode.OK.value:
-                    if grants_response.status in (
-                        HttpStatusCode.UNAUTHORIZED.value,
-                        HttpStatusCode.FORBIDDEN.value,
-                    ):
-                        return self._fallback_permissions_for_forbidden_scheme(
-                            project_key=project_key,
-                            status=grants_response.status,
-                            stage=f"permission grants (scheme {scheme_id})",
-                        )
-                    self.logger.warning(
-                        "⚠️ Failed to fetch permission grants for scheme %s: %s",
-                        scheme_id,
-                        grants_response.text(),
+            # Step 2: grants from the standalone endpoint. No expand — the grant
+            # ``holder.parameter`` (group name / user key / role id) is always
+            # present, user emails resolve via ``user_by_key``, and expanding
+            # holders inline is what triggers the NPE above.
+            grants_response = await datasource.get_permission_scheme_grants_v2(
+                schemeId=scheme_id,
+            )
+
+            if grants_response.status != HttpStatusCode.OK.value:
+                if grants_response.status in (
+                    HttpStatusCode.UNAUTHORIZED.value,
+                    HttpStatusCode.FORBIDDEN.value,
+                ):
+                    return self._fallback_permissions_for_forbidden_scheme(
+                        project_key=project_key,
+                        status=grants_response.status,
+                        stage=f"permission grants (scheme {scheme_id})",
                     )
-                    return []
+                self.logger.warning(
+                    "⚠️ Failed to fetch permission grants for scheme %s: %s",
+                    scheme_id,
+                    grants_response.text(),
+                )
+                return []
 
-                grants_data = grants_response.json()
-                permission_grants = grants_data.get("permissions", [])
-
+            permission_grants = grants_response.json().get("permissions", [])
             if not isinstance(permission_grants, list):
                 permission_grants = []
 

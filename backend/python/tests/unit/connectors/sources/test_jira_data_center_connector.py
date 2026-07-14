@@ -1154,3 +1154,74 @@ class TestJiraDataCenterUserListBulk:
         assert conn._user_bulk_incomplete is True
         emails = {u.email for u in result}
         assert emails == {"in-bulk@example.com", "missed@example.com"}
+
+    @pytest.mark.asyncio
+    async def test_jira10_pre_list_search_stops_empty_after_100_reverse_sweeps(
+        self,
+    ) -> None:
+        """Jira 10.x before /user/list (e.g. 10.3.12): search returns ~100 then
+        empty pages; reverse lookup still sweeps PipesHub candidates past bulk.
+        """
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        conn.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[
+                MagicMock(email="in-bulk@example.com"),
+                MagicMock(email="beyond-cap@example.com"),
+            ]
+        )
+
+        page1 = [
+            {
+                "key": f"k{i}",
+                "emailAddress": f"u{i}@example.com",
+                "active": True,
+            }
+            for i in range(50)
+        ]
+        page1[0]["emailAddress"] = "in-bulk@example.com"
+        page2 = [
+            {
+                "key": f"k{i}",
+                "emailAddress": f"u{i}@example.com",
+                "active": True,
+            }
+            for i in range(50, 100)
+        ]
+        beyond_resp = _user_search_response(
+            HttpStatusCode.OK.value,
+            [{
+                "key": "k-beyond",
+                "name": "beyond",
+                "displayName": "Beyond Cap",
+                "emailAddress": "beyond-cap@example.com",
+            }],
+        )
+
+        async def get_user_search_v2(**kwargs):
+            username = kwargs.get("username")
+            start_at = kwargs.get("startAt", 0)
+            if username == ".":
+                if start_at == 0:
+                    return _user_search_response(HttpStatusCode.OK.value, page1)
+                if start_at == 50:
+                    return _user_search_response(HttpStatusCode.OK.value, page2)
+                # Jira 10: nothing past the ~100 hard cap
+                return _user_search_response(HttpStatusCode.OK.value, [])
+            if username == "beyond-cap@example.com":
+                return beyond_resp
+            return _user_search_response(HttpStatusCode.OK.value, [])
+
+        mock_ds = MagicMock()
+        _mock_user_list_unavailable(mock_ds)
+        mock_ds.get_user_search_v2 = AsyncMock(side_effect=get_user_search_v2)
+        conn._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await conn._fetch_users()
+
+        assert conn._user_bulk_incomplete is True
+        emails = {u.email for u in result}
+        assert "in-bulk@example.com" in emails
+        assert "beyond-cap@example.com" in emails
+        assert len(result) == 101  # 100 from bulk + 1 from reverse
