@@ -42,7 +42,7 @@ on:
       graph_db:
         description: 'Graph database backend to test against'
         required: true
-        default: 'neo4j'
+        default: 'both'
         type: choice
         options:
           - arango
@@ -62,7 +62,7 @@ permissions:
 
 env:
   PIPESHUB_BASE_URL: http://localhost:3000
-  GRAPH_DB: ${{ github.event.inputs.graph_db || 'neo4j' }}
+  GRAPH_DB: ${{ github.event.inputs.graph_db || 'both' }}
   MESSAGE_BROKER: ${{ github.event.inputs.message_broker || 'redis' }}
 
 jobs:
@@ -83,6 +83,7 @@ jobs:
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
       DOCKER_BUILDKIT: "1"
       PIPESHUB_TEST_ENV: local
+      ARANGO_PASSWORD: ${{ secrets.TEST_ARANGO_PASSWORD }}
       PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
       PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
       TEST_NEO4J_URI: ${{ secrets.TEST_NEO4J_URI }}
@@ -243,6 +244,8 @@ jobs:
       - name: 'Neo4j: Run integration tests'
         if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         working-directory: integration-tests
+        env:
+          TEST_GRAPH_DB_TYPE: neo4j
         run: |
           source .venv/bin/activate
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
@@ -357,6 +360,12 @@ jobs:
       - name: 'ArangoDB: Run integration tests'
         if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
         working-directory: integration-tests
+        env:
+          TEST_GRAPH_DB_TYPE: arango
+          TEST_ARANGO_URL: http://localhost:8529
+          TEST_ARANGO_USERNAME: root
+          TEST_ARANGO_PASSWORD: ${{ env.ARANGO_PASSWORD }}
+          TEST_ARANGO_DB_NAME: es
         run: |
           source .venv/bin/activate
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
