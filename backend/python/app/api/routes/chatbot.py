@@ -1615,6 +1615,22 @@ async def askAIStream(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
 
+    if query_info.chatMode == "web_search":
+        web_search_config = await config_service.get_config(
+            config_node_constants.WEB_SEARCH.value,
+            default={},
+            use_cache=False,
+        )
+        settings = (
+            web_search_config.get("settings", {})
+            if isinstance(web_search_config, dict)
+            else {}
+        )
+        if settings.get("enabled") is False:
+            raise HTTPException(
+                status_code=403,
+                detail="Web search is disabled for this workspace",
+            )
 
     _chat_user = getattr(request.state, "user", {}) or {}
     _chat_email = _chat_user.get("email")

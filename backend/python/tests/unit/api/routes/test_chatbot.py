@@ -707,6 +707,32 @@ class TestAskAIStreamEndpoint:
         assert isinstance(result, StreamingResponse)
         assert result.media_type == "text/event-stream"
 
+    @pytest.mark.asyncio
+    async def test_web_search_disabled_for_workspace_raises_403(self):
+        from fastapi import HTTPException
+
+        from app.api.routes.chatbot import askAIStream
+
+        request = MagicMock()
+        request.json = AsyncMock(
+            return_value={"query": "latest news", "chatMode": "web_search"}
+        )
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(
+            return_value={"settings": {"enabled": False}}
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await askAIStream(
+                request,
+                AsyncMock(),
+                AsyncMock(),
+                config_service,
+            )
+
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.detail == "Web search is disabled for this workspace"
+
 
 # ---------------------------------------------------------------------------
 # Additional get_model_config coverage

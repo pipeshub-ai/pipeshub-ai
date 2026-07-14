@@ -662,6 +662,7 @@ export const updateDefaultWebSearchProviderSchema = z.object({
 
 export const webSearchSettingsSchema = z
   .object({
+    enabled: z.boolean().optional(),
     includeImages: z.boolean(),
     maxImages: z.number().int().min(1).max(500).optional(),
   })
