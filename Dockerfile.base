@@ -203,6 +203,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     # Comment out if not needed - this is still ~300-400MB
     libreoffice-writer-nogui \
     libreoffice-calc-nogui \
+    # CJK fallback fonts used by LibreOffice when documents reference fonts
+    # that are unavailable in the Linux runtime (e.g. Microsoft JhengHei).
+    fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Install Node.js runtime only (not full dev environment)

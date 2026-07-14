@@ -22,6 +22,13 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
 
 FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
 
+# Install CJK fallback fonts until they are available in the published runtime
+# base image. LibreOffice uses these when documents reference unavailable fonts.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+    fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
 # -----------------------------------------------------------------------------
 # Stage 1: Node.js Backend Build
 # -----------------------------------------------------------------------------
