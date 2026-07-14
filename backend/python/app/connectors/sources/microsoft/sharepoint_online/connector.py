@@ -3924,7 +3924,7 @@ class SharePointConnector(BaseConnector):
           - Group.Read.All         → GET /groups?$top=1&$select=id
           - Files.ReadWrite.All    → GET /sites/root/drives
           - Sites.Read.All,Sites.FullControl.All  → GET /search/query with entityTypes=["site"]
-          - Sites.FullControl.All (Sharepoint REST API) → GET /_api/web
+          - Sites.FullControl.All (Sharepoint REST API) → GET /_api/web/roleassignments
 
         Returns True only when all five probes succeed.
         """
@@ -4034,12 +4034,24 @@ class SharePointConnector(BaseConnector):
     async def _probe_legacy_sharepoint_sites_scope(self) -> None:
         """
         Probe SharePoint-tier Sites.FullControl.All via legacy REST API.
+
+        Role assignment reads require Full Control; /_api/web/roleassignments
         """
         token = await self._get_sharepoint_access_token()
         if not token:
             raise ValueError("Failed to obtain SharePoint access token for permission probe")
 
-        url = f"{self.sharepoint_domain.rstrip('/')}/_api/web"
+        root_site = await self.client.sites.by_site_id("root").get()
+        site_url = (
+            root_site.web_url
+            if root_site and root_site.web_url
+            else self.sharepoint_domain.rstrip("/")
+        )
+
+        url = (
+            f"{site_url.rstrip('/')}/_api/web/roleassignments"
+            "?$top=1&$expand=RoleDefinitionBindings,Member"
+        )
         headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json;odata=verbose",
@@ -4049,8 +4061,9 @@ class SharePointConnector(BaseConnector):
             response = await http_client.get(url, headers=headers)
             if response.status_code in (401, 403):
                 raise PermissionError(
-                    f"SharePoint REST API denied access (HTTP {response.status_code}). "
-                    "Ensure Sites.FullControl.All is granted in the SharePoint admin centre."
+                    f"SharePoint REST API denied role assignment access (HTTP {response.status_code}). "
+                    "Ensure Sites.FullControl.All is granted for the SharePoint API resource in Entra ID "
+                    "and admin consent is provided."
                 )
             response.raise_for_status()
 
