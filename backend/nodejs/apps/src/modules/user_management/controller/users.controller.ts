@@ -1532,7 +1532,8 @@ export class UserController {
       let groupIds: string[] | undefined;
       if (typeof req.body.groupIds === 'string' && req.body.groupIds) {
         try {
-          groupIds = JSON.parse(req.body.groupIds);
+          const parsed = JSON.parse(req.body.groupIds);
+          groupIds = Array.isArray(parsed) ? parsed : undefined;
         } catch {
           groupIds = undefined;
         }
