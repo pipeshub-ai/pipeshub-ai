@@ -4041,15 +4041,9 @@ class SharePointConnector(BaseConnector):
         if not token:
             raise ValueError("Failed to obtain SharePoint access token for permission probe")
 
-        root_site = await self.client.sites.by_site_id("root").get()
-        site_url = (
-            root_site.web_url
-            if root_site and root_site.web_url
-            else self.sharepoint_domain.rstrip("/")
-        )
-
+        site_url = self.sharepoint_domain.rstrip("/")
         url = (
-            f"{site_url.rstrip('/')}/_api/web/roleassignments"
+            f"{site_url}/_api/web/roleassignments"
             "?$top=1&$expand=RoleDefinitionBindings,Member"
         )
         headers = {
