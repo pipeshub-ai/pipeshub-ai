@@ -1823,56 +1823,65 @@ export class UserController {
     org: { registeredName?: string; shortName?: string } | null,
     rejoin: boolean,
   ): Promise<boolean> {
-    const authToken = fetchConfigJwtGenerator(
-      userId,
-      orgId,
-      this.config.scopedJwtSecret,
-    );
-    const authResult = await this.authService.passwordMethodEnabled(authToken);
-    if (authResult.statusCode !== 200) {
-      throw new InternalServerError('Error fetching auth methods');
-    }
+    // Bulk-safe: any failure for one recipient must not abort the whole batch,
+    // so this honors its Promise<boolean> contract and never throws — callers
+    // record `false` as a per-email mail failure and continue.
+    try {
+      const authToken = fetchConfigJwtGenerator(
+        userId,
+        orgId,
+        this.config.scopedJwtSecret,
+      );
+      const authResult = await this.authService.passwordMethodEnabled(authToken);
+      if (authResult.statusCode !== 200) {
+        this.logger.error('Error fetching auth methods for invite', { email });
+        return false;
+      }
 
-    const subject = `You are invited to ${rejoin ? 're-join' : 'join'} ${org?.registeredName} `;
-    const invitee = inviterName;
-    const orgName = org?.shortName || org?.registeredName;
+      const subject = `You are invited to ${rejoin ? 're-join' : 'join'} ${org?.registeredName} `;
+      const invitee = inviterName;
+      const orgName = org?.shortName || org?.registeredName;
 
-    let result;
-    if (authResult.data?.isPasswordAuthEnabled) {
-      const { passwordResetToken, mailAuthToken } =
-        jwtGeneratorForNewAccountPassword(
-          email,
-          userId,
-          orgId,
-          this.config.scopedJwtSecret,
-        );
-      result = await this.mailService.sendMail({
-        emailTemplateType: 'appuserInvite',
-        initiator: { jwtAuthToken: mailAuthToken },
-        usersMails: [email],
-        subject,
-        templateData: {
-          invitee,
-          orgName,
-          link: `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`,
-        },
-      });
-    } else {
-      result = await this.mailService.sendMail({
-        emailTemplateType: 'appuserInvite',
-        initiator: {
-          jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
-        },
-        usersMails: [email],
-        subject,
-        templateData: {
-          invitee,
-          orgName,
-          link: `${this.config.frontendUrl}/sign-in`,
-        },
-      });
+      let result;
+      if (authResult.data?.isPasswordAuthEnabled) {
+        const { passwordResetToken, mailAuthToken } =
+          jwtGeneratorForNewAccountPassword(
+            email,
+            userId,
+            orgId,
+            this.config.scopedJwtSecret,
+          );
+        result = await this.mailService.sendMail({
+          emailTemplateType: 'appuserInvite',
+          initiator: { jwtAuthToken: mailAuthToken },
+          usersMails: [email],
+          subject,
+          templateData: {
+            invitee,
+            orgName,
+            link: `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`,
+          },
+        });
+      } else {
+        result = await this.mailService.sendMail({
+          emailTemplateType: 'appuserInvite',
+          initiator: {
+            jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+          },
+          usersMails: [email],
+          subject,
+          templateData: {
+            invitee,
+            orgName,
+            link: `${this.config.frontendUrl}/sign-in`,
+          },
+        });
+      }
+      return result.statusCode === 200;
+    } catch (error) {
+      this.logger.error('Failed to send invite mail', { email, error });
+      return false;
     }
-    return result.statusCode === 200;
   }
 
   private async notifyInviteResult(
