@@ -472,7 +472,7 @@ class BoxConnector(BaseConnector):
             # Link shared-with-me records to the user's "Shared with Me" record group (for future collaboration sync)
             if is_shared_with_me and user_email:
                 file_record.external_record_group_id = None
-                file_record.shared_with_me_record_group_ids = [f"0S:{user_email}"]
+                file_record.shared_with_me_record_group_ids = [f"0S:{user_email.lower()}"]
 
             # Determine if new or updated
             if existing_record:

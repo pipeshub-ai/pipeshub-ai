@@ -419,9 +419,14 @@ class DataSourceEntitiesProcessor:
 
         if record.shared_with_me_record_group_ids:
             for external_group_id in record.shared_with_me_record_group_ids:
-                shared_with_me_record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id, external_id=external_group_id)
+                shared_with_me_record_group = await tx_store.get_record_group_by_external_id(
+                    connector_id=record.connector_id,
+                    external_id=external_group_id
+                )
                 if shared_with_me_record_group:
-                    await tx_store.create_record_group_relation(record.id, shared_with_me_record_group.id)
+                    await tx_store.create_record_group_relation(
+                        record.id, shared_with_me_record_group.id
+                    )
                 else:
                     self.logger.warning(f"Shared with me record group with external ID {external_group_id} not found in database")
 
@@ -833,7 +838,11 @@ class DataSourceEntitiesProcessor:
                     # the shared-with-me edge for *this* user may still be missing because
                     # _process_record is skipped in the belongs_to_edges branch above.
                     for external_group_id in record.shared_with_me_record_group_ids:
-                        self.logger.debug(f"Creating shared-with-me record group relation for record {record.record_name} and record group {external_group_id}")
+                        self.logger.debug(
+                            "Creating shared-with-me record group relation for record %s and record group %s",
+                            record.record_name,
+                            external_group_id,
+                        )
                         shared_with_me_rg = await tx_store.get_record_group_by_external_id(
                             connector_id=record.connector_id,
                             external_id=external_group_id,

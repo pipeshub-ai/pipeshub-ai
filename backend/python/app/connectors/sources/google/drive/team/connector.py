@@ -1596,8 +1596,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             # user's own group (personal-drive share) plus, for Shared Drive items, one group per
             # user who was individually granted a "file"-type permission on this item.
             shared_with_me_record_group_ids: List[str] = []
-            if is_shared_with_me:
-                shared_with_me_record_group_ids.append(f"0S:{user_email}")
+            if is_shared_with_me and user_email:
+                shared_with_me_record_group_ids.append(f"0S:{user_email.lower()}")
             if is_shared_drive:
                 for shared_email in individually_shared_emails:
                     # Only users in this Workspace domain ever get a "Shared with Me" record group
@@ -1610,7 +1610,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                             shared_email, file_record.record_name
                         )
                         continue
-                    group_id = f"0S:{shared_email}"
+                    group_id = f"0S:{shared_email.lower()}"
                     if group_id not in shared_with_me_record_group_ids:
                         shared_with_me_record_group_ids.append(group_id)
 
@@ -2267,7 +2267,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                                     f"Processed {total_changes} changes."
                                 )
                             else:
-                                self.logger.info(f"Sync point not updated for drive '{drive_name}' ")
+                                self.logger.info(f"Sync point not updated for drive '{drive_name}'")
 
                     except Exception as e:
                         error_reason = None
