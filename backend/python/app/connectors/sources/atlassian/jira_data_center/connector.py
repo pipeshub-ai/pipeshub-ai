@@ -1059,8 +1059,8 @@ class JiraDataCenterConnector(BaseConnector):
         (caller falls back to ``/user/search``).
         """
         users: list[dict[str, Any]] = []
-        cursor: str | None = ""
-        seen_cursors: set[str] = set()
+        cursor: str | None = None
+        seen_cursors: set[str | None] = set()
         # DC has no OAuth refresh — one datasource for the whole pagination loop.
         datasource = await self._get_fresh_datasource()
 
@@ -1256,9 +1256,9 @@ class JiraDataCenterConnector(BaseConnector):
 
                     # ``username=<email>`` is a substring match over name/username/
                     # email and can return several users, so don't trust results[0]:
-                    # pick the exact email match. When no result exposes an email
-                    # (the hidden-email case this lookup exists for), trust a lone
-                    # hit; if there are several and none match, it's ambiguous — skip.
+                    # pick the exact email match. Otherwise trust a lone hit only
+                    # when its email is hidden (absent) — a lone hit with a visible
+                    # *mismatching* email is a fuzzy name/username match, not us.
                     matches = [u for u in results if isinstance(u, dict)]
                     user = next(
                         (u for u in matches if (u.get("emailAddress") or "").lower() == email.lower()),
@@ -1266,6 +1266,9 @@ class JiraDataCenterConnector(BaseConnector):
                     )
                     if user is None:
                         if len(matches) != 1:
+                            return None
+                        lone_email = matches[0].get("emailAddress")
+                        if lone_email and lone_email.lower() != email.lower():
                             return None
                         user = matches[0]
                     user_key = user.get("accountId") or user.get("key") or user.get("name")

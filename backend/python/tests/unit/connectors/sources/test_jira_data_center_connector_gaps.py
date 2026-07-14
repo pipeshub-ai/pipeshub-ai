@@ -427,6 +427,24 @@ class TestUserAndGroupGaps:
         assert resolved["HIDDEN"].email == "hidden@example.com"
 
     @pytest.mark.asyncio
+    async def test_resolve_private_email_rejects_lone_mismatching_email(self):
+        """A single hit whose *visible* email differs is a fuzzy match — reject it."""
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn._user_bulk_incomplete = True
+        ds = MagicMock()
+        ds.get_user_search_v2 = AsyncMock(return_value=_ok_resp([
+            {"key": "WRONG", "name": "other", "emailAddress": "someone.else@example.com"},
+        ]))
+        resolved = {}
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
+            found = await conn._resolve_private_email_users(
+                {"target@example.com"}, set(), resolved,
+            )
+        assert found == 0
+        assert resolved == {}
+
+    @pytest.mark.asyncio
     async def test_resolve_private_email_ambiguous_no_match_skips(self):
         """Several hits, none with a matching email → ambiguous, resolve nothing."""
         conn = _make_connector()
