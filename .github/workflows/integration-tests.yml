@@ -42,7 +42,7 @@ on:
       graph_db:
         description: 'Graph database backend to test against'
         required: true
-        default: 'neo4j'
+        default: 'both'
         type: choice
         options:
           - arango
