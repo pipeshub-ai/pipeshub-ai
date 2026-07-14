@@ -16732,6 +16732,94 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /users/bulk/invite/upload:
+    post:
+      tags:
+        - Users
+      summary: Bulk invite users from a CSV/Excel file
+      description: |
+        Upload a CSV or Excel (`.csv`, `.xlsx`, `.xls`) file of email addresses and invite them in
+        bulk. The file is parsed server-side; every cell containing `@` is treated as a candidate
+        email, then normalized (trimmed, lower-cased, BOM-stripped) and de-duplicated.
+
+        The file is validated on the request thread — an empty/unreadable file, a file with no
+        emails, or more than 1000 addresses is rejected with `400` before any processing. Otherwise
+        the endpoint responds `202 Accepted` immediately and performs the invites in a background
+        task, so the request never blocks.
+
+        Invalid email addresses are skipped (not rejected); valid ones follow the same
+        new/restored/pending logic as `POST /users/bulk/invite`. When the batch finishes, a
+        notification is sent to the uploading admin summarizing the result
+        (invited / re-invited / restored / already-members / invalid / failed-to-email).
+
+        Optional `groupIds` (a JSON-encoded array of 24-hex-character ObjectIds) adds new/restored
+        users to the specified groups. Same middleware chain as `POST /users/bulk/invite`
+        (`smtpConfigCheck`, `userAdminCheck`, `accountTypeCheck`).
+      operationId: bulkInviteUsersFromFile
+      security:
+        - bearerAuth: []
+        - oauth2: [user:invite]
+      requestBody:
+        required: true
+        description: "Multipart form with the file and optional group IDs"
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: CSV or Excel file (max 5 MB, up to 1000 emails)
+                groupIds:
+                  type: string
+                  description: JSON-encoded array of group ObjectIds to add invited users to
+                  example: '["507f1f77bcf86cd799439011"]'
+      responses:
+        '202':
+          description: File accepted; invites are processed in the background
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  message:
+                    type: string
+                    example: "Import started. You will be notified when it finishes."
+        '400':
+          description: |
+            Invalid request. Possible reasons:
+
+            - No file uploaded, or an unsupported/unreadable file
+            - No email addresses found in the file
+            - More than 1000 addresses
+            - `groupIds` contains an invalid ObjectId
+            - Requester is not an admin (`userAdminCheck`), or individual account (`accountTypeCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            Not found. Possible reasons:
+
+            - SMTP configuration missing host, port, or fromEmail (`smtpConfigCheck`)
+            - `userId` or `orgId` missing from token (`userAdminCheck`)
+            - Organization not found (`accountTypeCheck`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /users/{id}/resend-invite:
     post:
       tags:

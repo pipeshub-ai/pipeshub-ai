@@ -60,12 +60,21 @@ import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-ser
 
 const MAX_BULK_INVITE = 1000;
 
+// Linear-time email check: each segment excludes its following separator
+// (`@`/`.`), so there is no ambiguous backtracking (avoids ReDoS).
+const EMAIL_REGEX = /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/;
+
+function isValidEmail(email: string): boolean {
+  return EMAIL_REGEX.test(email);
+}
+
 interface InviteResult {
   invited: number;
   restored: number;
   reinvited: number;
   alreadyActive: number;
   mailFailed: string[];
+  mailErrorCode?: number;
 }
 
 @injectable()
@@ -1447,12 +1456,14 @@ export class UserController {
       if (!req.user) {
         throw new NotFoundError('User not found');
       }
-      if (!emails || !Array.isArray(emails)) {
+      if (!emails) {
+        throw new BadRequestError('emails are required');
+      }
+      if (!Array.isArray(emails)) {
         throw new BadRequestError('Please provide an array of email addresses');
       }
 
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      const invalidEmails = emails.filter((email) => !emailRegex.test(email));
+      const invalidEmails = emails.filter((email) => !isValidEmail(email));
       if (invalidEmails.length > 0) {
         throw new BadRequestError('Invalid emails are found');
       }
@@ -1483,7 +1494,7 @@ export class UserController {
       }
 
       if (result.mailFailed.length > 0) {
-        res.status(500).json({
+        res.status(result.mailErrorCode ?? 500).json({
           message: 'Error sending mail invite. Please try again.',
         });
         return;
@@ -1540,18 +1551,23 @@ export class UserController {
       } else if (Array.isArray(req.body.groupIds)) {
         groupIds = req.body.groupIds;
       }
+      // Reject invalid ids on the request thread — otherwise Mongo throws a
+      // CastError deep in the background task, surfacing only as a generic
+      // failure notification.
+      if (groupIds?.some((id) => !mongoose.isValidObjectId(id))) {
+        throw new BadRequestError('groupIds must contain valid MongoDB ObjectIds');
+      }
 
       const orgId = req.user.orgId;
       const inviterUserId = req.user?.userId;
       const inviterName = req.user?.fullName;
       const org = await Org.findOne({ _id: orgId, isDeleted: false });
 
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       const validEmails = normalizedEmails.filter((email) =>
-        emailRegex.test(email),
+        isValidEmail(email),
       );
       const invalidEmails = normalizedEmails.filter(
-        (email) => !emailRegex.test(email),
+        (email) => !isValidEmail(email),
       );
 
       res.status(202).json({
@@ -1574,7 +1590,10 @@ export class UserController {
             ...result,
             invalid: invalidEmails,
           });
-          await this.eventService.stop();
+          // Deliberately not calling eventService.stop(): the MessageProducer is
+          // a shared singleton (connected at startup, disconnected in the
+          // container's dispose()). Stopping it here would drop the connection
+          // for concurrent requests and the notification producer.
         } catch (error) {
           this.logger.error('Bulk invite from file failed', error);
           await this.notifyInviteFailure(inviterUserId, orgId);
@@ -1624,7 +1643,9 @@ export class UserController {
         for (const cell of row) {
           if (cell == null) continue;
           const value = String(cell).trim();
-          if (value.includes('@')) {
+          // 254 = max email length per RFC 5321; skip longer cells so a huge
+          // malformed value never bloats the parsed/invalid list.
+          if (value.length <= 254 && value.includes('@')) {
             emails.push(value);
           }
         }
@@ -1712,6 +1733,7 @@ export class UserController {
     }
 
     const mailFailed: string[] = [];
+    let mailErrorCode: number | undefined;
     const newUserByEmail = new Map(newUsers.map((user) => [user.email, user]));
     const pendingUserByEmail = new Map(
       pendingUsersToReinvite.map((user) => [user.email, user]),
@@ -1757,7 +1779,7 @@ export class UserController {
         await this.eventService.publishEvent(event);
       }
 
-      const sent = await this.sendInviteMail(
+      const statusCode = await this.sendInviteMail(
         email,
         userId.toString(),
         orgId,
@@ -1765,8 +1787,9 @@ export class UserController {
         org,
         false,
       );
-      if (!sent) {
+      if (statusCode !== 200) {
         mailFailed.push(email);
+        mailErrorCode = statusCode;
       }
     }
 
@@ -1793,7 +1816,7 @@ export class UserController {
       };
       await this.eventService.publishEvent(event);
 
-      const sent = await this.sendInviteMail(
+      const statusCode = await this.sendInviteMail(
         email,
         userId.toString(),
         orgId,
@@ -1801,8 +1824,9 @@ export class UserController {
         org,
         true,
       );
-      if (!sent) {
+      if (statusCode !== 200) {
         mailFailed.push(email);
+        mailErrorCode = statusCode;
       }
     }
 
@@ -1812,6 +1836,7 @@ export class UserController {
       reinvited: pendingUsersToReinvite.length,
       alreadyActive: activeUsers.length - pendingUsersToReinvite.length,
       mailFailed,
+      mailErrorCode,
     };
   }
 
@@ -1822,66 +1847,57 @@ export class UserController {
     inviterName: string | undefined,
     org: { registeredName?: string; shortName?: string } | null,
     rejoin: boolean,
-  ): Promise<boolean> {
-    // Bulk-safe: any failure for one recipient must not abort the whole batch,
-    // so this honors its Promise<boolean> contract and never throws — callers
-    // record `false` as a per-email mail failure and continue.
-    try {
-      const authToken = fetchConfigJwtGenerator(
-        userId,
-        orgId,
-        this.config.scopedJwtSecret,
-      );
-      const authResult = await this.authService.passwordMethodEnabled(authToken);
-      if (authResult.statusCode !== 200) {
-        this.logger.error('Error fetching auth methods for invite', { email });
-        return false;
-      }
-
-      const subject = `You are invited to ${rejoin ? 're-join' : 'join'} ${org?.registeredName} `;
-      const invitee = inviterName;
-      const orgName = org?.shortName || org?.registeredName;
-
-      let result;
-      if (authResult.data?.isPasswordAuthEnabled) {
-        const { passwordResetToken, mailAuthToken } =
-          jwtGeneratorForNewAccountPassword(
-            email,
-            userId,
-            orgId,
-            this.config.scopedJwtSecret,
-          );
-        result = await this.mailService.sendMail({
-          emailTemplateType: 'appuserInvite',
-          initiator: { jwtAuthToken: mailAuthToken },
-          usersMails: [email],
-          subject,
-          templateData: {
-            invitee,
-            orgName,
-            link: `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`,
-          },
-        });
-      } else {
-        result = await this.mailService.sendMail({
-          emailTemplateType: 'appuserInvite',
-          initiator: {
-            jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
-          },
-          usersMails: [email],
-          subject,
-          templateData: {
-            invitee,
-            orgName,
-            link: `${this.config.frontendUrl}/sign-in`,
-          },
-        });
-      }
-      return result.statusCode === 200;
-    } catch (error) {
-      this.logger.error('Failed to send invite mail', { email, error });
-      return false;
+  ): Promise<number> {
+    const authToken = fetchConfigJwtGenerator(
+      userId,
+      orgId,
+      this.config.scopedJwtSecret,
+    );
+    const authResult = await this.authService.passwordMethodEnabled(authToken);
+    if (authResult.statusCode !== 200) {
+      throw new InternalServerError('Error fetching auth methods');
     }
+
+    const subject = `You are invited to ${rejoin ? 're-join' : 'join'} ${org?.registeredName} `;
+    const invitee = inviterName;
+    const orgName = org?.shortName || org?.registeredName;
+
+    let result;
+    if (authResult.data?.isPasswordAuthEnabled) {
+      const { passwordResetToken, mailAuthToken } =
+        jwtGeneratorForNewAccountPassword(
+          email,
+          userId,
+          orgId,
+          this.config.scopedJwtSecret,
+        );
+      result = await this.mailService.sendMail({
+        emailTemplateType: 'appuserInvite',
+        initiator: { jwtAuthToken: mailAuthToken },
+        usersMails: [email],
+        subject,
+        templateData: {
+          invitee,
+          orgName,
+          link: `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`,
+        },
+      });
+    } else {
+      result = await this.mailService.sendMail({
+        emailTemplateType: 'appuserInvite',
+        initiator: {
+          jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+        },
+        usersMails: [email],
+        subject,
+        templateData: {
+          invitee,
+          orgName,
+          link: `${this.config.frontendUrl}/sign-in`,
+        },
+      });
+    }
+    return result.statusCode;
   }
 
   private async notifyInviteResult(
