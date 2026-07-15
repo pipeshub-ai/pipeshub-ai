@@ -1060,6 +1060,11 @@ class JiraDataCenterConnector(BaseConnector):
         """
         users: list[dict[str, Any]] = []
         cursor: str | None = None
+        # /user/list is server-driven pagination: we advance by whatever cursor the
+        # server hands back. A buggy build that returns a non-advancing or cycling
+        # ``nextCursor`` would loop forever re-fetching the same page, so track the
+        # cursors we've already requested and stop if one repeats (the cursor-path
+        # analog of the no-new-users guard in the /user/search fallback).
         seen_cursors: set[str | None] = set()
         # DC has no OAuth refresh — one datasource for the whole pagination loop.
         datasource = await self._get_fresh_datasource()
@@ -1205,6 +1210,24 @@ class JiraDataCenterConnector(BaseConnector):
         Prefers ``GET /rest/api/2/user/list`` (cursor pagination). Falls back to
         ``GET /rest/api/2/user/search?username=.`` when ``/list`` is unavailable;
         search results are marked incomplete so reverse lookup can fill gaps.
+
+        Endpoint behaviour by Jira DC/Server version (JRASERVER-78660):
+
+        - ``/user/list`` — full directory enumeration (cursor pagination, up to
+          2000/page). Available on Jira 10.3.13+ (back-ported to the 10.3 LTS) and
+          11.0.0+. Returns 404 on 8.x, 9.x, 10.0–10.3.12, and 10.4+ feature releases
+          that predate the back-port; those fall back to ``/user/search``.
+
+        - ``/user/search`` — relevance/substring endpoint, not a documented
+          directory-enumeration API. ``username="."`` matches against name /
+          username / email, and in practice nearly every user matches (emails
+          contain a ``.``), so it usually returns the whole directory. But on
+          Jira 10+ it is hard-capped at the first 100 results (``startAt`` cannot
+          page past); on 9.x and below ``startAt`` paginates normally (up to 1000
+          per request). Because completeness is not guaranteed by contract (and the
+          100-cap actively truncates on Jira 10+), this path sets
+          ``_user_bulk_incomplete`` and the caller sweeps PipesHub candidate emails
+          via per-email reverse lookup to fill any gap.
         """
         self._user_bulk_forbidden = False
         self._user_bulk_incomplete = False
