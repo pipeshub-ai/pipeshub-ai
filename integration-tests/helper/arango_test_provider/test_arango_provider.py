@@ -14,10 +14,32 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.config.constants.arangodb import CollectionNames
 from app.config.configuration_service import ConfigurationService
-from app.models.entities import AppMetadata, Record
+from app.config.constants.arangodb import Connectors
+from app.models.entities import AppMetadata, AppRole, Record
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 
 logger = logging.getLogger("test-graph-provider")
+
+
+def _app_role_from_arango(doc: dict, connector_id: str) -> AppRole:
+    """Build an :class:`AppRole` from a ``roles`` document (inverse of ``to_arango_base_role``)."""
+    conn_name = doc.get("connectorName")
+    try:
+        app_name = Connectors(conn_name) if conn_name else Connectors.JIRA
+    except ValueError:
+        app_name = Connectors.JIRA
+    return AppRole(
+        id=str(doc.get("_key") or doc.get("id") or ""),
+        org_id=doc.get("orgId", "") or "",
+        app_name=app_name,
+        connector_id=doc.get("connectorId", connector_id),
+        source_role_id=doc.get("externalRoleId", "") or "",
+        name=doc.get("name", "") or "",
+        created_at=doc.get("createdAtTimestamp", 0) or 0,
+        updated_at=doc.get("updatedAtTimestamp", 0) or 0,
+        source_created_at=doc.get("sourceCreatedAtTimestamp"),
+        source_updated_at=doc.get("sourceLastModifiedTimestamp"),
+    )
 
 
 class TestArangoHTTPProvider(ArangoHTTPProvider):
@@ -49,18 +71,48 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
     # =========================================================================
 
     async def count_records(self, connector_id: str) -> int:
-        """Return the number of Record documents for a connector."""
+        """Return the number of in-scope Record documents for a connector.
+
+        Guarded by a live ``BELONGS_TO`` → RecordGroup edge, not ``IS_OF_TYPE``: a full
+        sync wipes and recreates sync edges but leaves nodes and ``IS_OF_TYPE`` intact,
+        so records for a project that left the filter scope keep ``IS_OF_TYPE`` yet lose
+        ``BELONGS_TO``. Also excludes placeholder stubs (never get ``BELONGS_TO``).
+        """
         if not self.http_client:
             raise RuntimeError("Provider not connected")
-        query = f"FOR r IN {CollectionNames.RECORDS.value} FILTER r.connectorId == @cid RETURN 1"
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid
+                FILTER LENGTH(
+                    FOR v IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
+                        FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', v)
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
+                RETURN 1
+        """
         result = await self.http_client.execute_aql(query, {"cid": connector_id})
         return len(result) if result else 0
 
     async def count_record_groups(self, connector_id: str) -> int:
-        """Return the number of RecordGroup documents for a connector."""
+        """Return the number of in-scope RecordGroup documents for a connector.
+
+        Guarded by a live ``BELONGS_TO`` → App edge (same full-sync-wipe reasoning as
+        :meth:`count_records`) so a RecordGroup that left the filter scope is not counted.
+        """
         if not self.http_client:
             raise RuntimeError("Provider not connected")
-        query = f"FOR g IN {CollectionNames.RECORD_GROUPS.value} FILTER g.connectorId == @cid RETURN 1"
+        query = f"""
+            FOR g IN {CollectionNames.RECORD_GROUPS.value}
+                FILTER g.connectorId == @cid
+                FILTER LENGTH(
+                    FOR v IN OUTBOUND g {CollectionNames.BELONGS_TO.value}
+                        FILTER IS_SAME_COLLECTION('{CollectionNames.APPS.value}', v)
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
+                RETURN 1
+        """
         result = await self.http_client.execute_aql(query, {"cid": connector_id})
         return len(result) if result else 0
 
@@ -744,6 +796,25 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
             doc["_key"] = str(doc["id"])
         return AppMetadata.from_db_document(doc)
 
+    async def get_app_role_by_external_id(
+        self, connector_id: str, role_external_id: str
+    ) -> Optional[AppRole]:
+        """Load a Jira project role document (by ``externalRoleId``) as :class:`AppRole`."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR role IN {CollectionNames.ROLES.value}
+                FILTER role.connectorId == @cid AND role.externalRoleId == @rid
+                LIMIT 1
+                RETURN role
+        """
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "rid": str(role_external_id)}
+        )
+        if not result:
+            return None
+        return _app_role_from_arango(dict(result[0]), connector_id)
+
     async def count_group_members(
         self, connector_id: str, external_group_id: str
     ) -> int:
@@ -786,12 +857,21 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
     # =========================================================================
 
     async def count_records_by_type(self, connector_id: str, record_type: str) -> int:
-        """Count Record documents filtered by recordType."""
+        """Count in-scope Record documents filtered by recordType.
+
+        Same live ``BELONGS_TO`` → RecordGroup guard as :meth:`count_records`.
+        """
         if not self.http_client:
             raise RuntimeError("Provider not connected")
         query = f"""
             FOR r IN {CollectionNames.RECORDS.value}
                 FILTER r.connectorId == @cid AND r.recordType == @rtype
+                FILTER LENGTH(
+                    FOR v IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
+                        FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', v)
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
                 RETURN 1
         """
         result = await self.http_client.execute_aql(

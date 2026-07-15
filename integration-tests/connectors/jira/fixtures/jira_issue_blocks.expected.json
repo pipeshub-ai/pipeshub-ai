@@ -1,0 +1,565 @@
+{
+  "block_groups": [
+    {
+      "children": {
+        "block_group_ranges": [
+          {
+            "end": 4,
+            "start": 1
+          },
+          {
+            "end": 5,
+            "start": 5
+          },
+          {
+            "end": 7,
+            "start": 7
+          }
+        ],
+        "block_ranges": [
+          {
+            "end": 1,
+            "start": 0
+          }
+        ]
+      },
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": null,
+      "file_metadata": null,
+      "format": "markdown",
+      "index": 0,
+      "link_metadata": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_index": null,
+      "requires_processing": false,
+      "semantic_metadata": null,
+      "sub_type": "content",
+      "table_cell_metadata": null,
+      "table_metadata": null,
+      "table_row_metadata": null,
+      "type": "text_section"
+    },
+    {
+      "children": {
+        "block_group_ranges": [],
+        "block_ranges": [
+          {
+            "end": 3,
+            "start": 2
+          }
+        ]
+      },
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": null,
+      "file_metadata": null,
+      "format": null,
+      "index": 1,
+      "link_metadata": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_index": 0,
+      "requires_processing": false,
+      "semantic_metadata": null,
+      "sub_type": null,
+      "table_cell_metadata": null,
+      "table_metadata": null,
+      "table_row_metadata": null,
+      "type": "list"
+    },
+    {
+      "children": {
+        "block_group_ranges": [],
+        "block_ranges": [
+          {
+            "end": 5,
+            "start": 4
+          }
+        ]
+      },
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": null,
+      "file_metadata": null,
+      "format": null,
+      "index": 2,
+      "link_metadata": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_index": 0,
+      "requires_processing": false,
+      "semantic_metadata": null,
+      "sub_type": null,
+      "table_cell_metadata": null,
+      "table_metadata": null,
+      "table_row_metadata": null,
+      "type": "ordered_list"
+    },
+    {
+      "children": {
+        "block_group_ranges": [],
+        "block_ranges": [
+          {
+            "end": 6,
+            "start": 6
+          }
+        ]
+      },
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": null,
+      "file_metadata": null,
+      "format": null,
+      "index": 3,
+      "link_metadata": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_index": 0,
+      "requires_processing": false,
+      "semantic_metadata": null,
+      "sub_type": null,
+      "table_cell_metadata": null,
+      "table_metadata": null,
+      "table_row_metadata": null,
+      "type": "code"
+    },
+    {
+      "children": {
+        "block_group_ranges": [],
+        "block_ranges": [
+          {
+            "end": 7,
+            "start": 7
+          }
+        ]
+      },
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": {
+        "column_headers": [
+          "H1",
+          "H2"
+        ],
+        "table_summary": ""
+      },
+      "file_metadata": null,
+      "format": "json",
+      "index": 4,
+      "link_metadata": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_index": 0,
+      "requires_processing": false,
+      "semantic_metadata": null,
+      "sub_type": null,
+      "table_cell_metadata": null,
+      "table_metadata": {
+        "captions": [],
+        "column_names": null,
+        "footnotes": [],
+        "has_header": true,
+        "num_of_cells": 2,
+        "num_of_cols": 2,
+        "num_of_rows": 1
+      },
+      "table_row_metadata": null,
+      "type": "table"
+    },
+    {
+      "children": {
+        "block_group_ranges": [
+          {
+            "end": 6,
+            "start": 6
+          }
+        ],
+        "block_ranges": []
+      },
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": null,
+      "file_metadata": null,
+      "format": null,
+      "index": 5,
+      "link_metadata": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_index": 0,
+      "requires_processing": false,
+      "semantic_metadata": null,
+      "sub_type": "comment_thread",
+      "table_cell_metadata": null,
+      "table_metadata": null,
+      "table_row_metadata": null,
+      "type": "text_section"
+    },
+    {
+      "children": {
+        "block_group_ranges": [],
+        "block_ranges": [
+          {
+            "end": 8,
+            "start": 8
+          }
+        ]
+      },
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": null,
+      "file_metadata": null,
+      "format": "markdown",
+      "index": 6,
+      "link_metadata": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_index": 5,
+      "requires_processing": false,
+      "semantic_metadata": null,
+      "sub_type": "comment",
+      "table_cell_metadata": null,
+      "table_metadata": null,
+      "table_row_metadata": null,
+      "type": "text_section"
+    },
+    {
+      "children": {
+        "block_group_ranges": [
+          {
+            "end": 8,
+            "start": 8
+          }
+        ],
+        "block_ranges": []
+      },
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": null,
+      "file_metadata": null,
+      "format": null,
+      "index": 7,
+      "link_metadata": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_index": 0,
+      "requires_processing": false,
+      "semantic_metadata": null,
+      "sub_type": "comment_thread",
+      "table_cell_metadata": null,
+      "table_metadata": null,
+      "table_row_metadata": null,
+      "type": "text_section"
+    },
+    {
+      "children": {
+        "block_group_ranges": [],
+        "block_ranges": [
+          {
+            "end": 9,
+            "start": 9
+          }
+        ]
+      },
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": null,
+      "file_metadata": null,
+      "format": "markdown",
+      "index": 8,
+      "link_metadata": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_index": 7,
+      "requires_processing": false,
+      "semantic_metadata": null,
+      "sub_type": "comment",
+      "table_cell_metadata": null,
+      "table_metadata": null,
+      "table_row_metadata": null,
+      "type": "text_section"
+    }
+  ],
+  "blocks": [
+    {
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": "[KAN-13] IT Blocks Golden",
+      "file_metadata": null,
+      "format": "markdown",
+      "image_metadata": null,
+      "index": 0,
+      "link_metadata": null,
+      "links": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_block_index": null,
+      "parent_index": 0,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "semantic_metadata": null,
+      "source_type": null,
+      "sub_type": "heading",
+      "table_cell_metadata": null,
+      "table_row_metadata": null,
+      "type": "text"
+    },
+    {
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": "## Blocks Golden\nParagraph with a [link](https://example.com).",
+      "file_metadata": null,
+      "format": "markdown",
+      "image_metadata": null,
+      "index": 1,
+      "link_metadata": null,
+      "links": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_block_index": null,
+      "parent_index": 0,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "semantic_metadata": null,
+      "source_type": null,
+      "sub_type": "paragraph",
+      "table_cell_metadata": null,
+      "table_row_metadata": null,
+      "type": "text"
+    },
+    {
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": "bullet one",
+      "file_metadata": null,
+      "format": "markdown",
+      "image_metadata": null,
+      "index": 2,
+      "link_metadata": null,
+      "links": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_block_index": null,
+      "parent_index": 1,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "semantic_metadata": null,
+      "source_type": null,
+      "sub_type": "list_item",
+      "table_cell_metadata": null,
+      "table_row_metadata": null,
+      "type": "text"
+    },
+    {
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": "bullet two",
+      "file_metadata": null,
+      "format": "markdown",
+      "image_metadata": null,
+      "index": 3,
+      "link_metadata": null,
+      "links": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_block_index": null,
+      "parent_index": 1,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "semantic_metadata": null,
+      "source_type": null,
+      "sub_type": "list_item",
+      "table_cell_metadata": null,
+      "table_row_metadata": null,
+      "type": "text"
+    },
+    {
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": "first",
+      "file_metadata": null,
+      "format": "markdown",
+      "image_metadata": null,
+      "index": 4,
+      "link_metadata": null,
+      "links": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_block_index": null,
+      "parent_index": 2,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "semantic_metadata": null,
+      "source_type": null,
+      "sub_type": "list_item",
+      "table_cell_metadata": null,
+      "table_row_metadata": null,
+      "type": "text"
+    },
+    {
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": "second",
+      "file_metadata": null,
+      "format": "markdown",
+      "image_metadata": null,
+      "index": 5,
+      "link_metadata": null,
+      "links": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_block_index": null,
+      "parent_index": 2,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "semantic_metadata": null,
+      "source_type": null,
+      "sub_type": "list_item",
+      "table_cell_metadata": null,
+      "table_row_metadata": null,
+      "type": "text"
+    },
+    {
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": {
+        "dependencies": null,
+        "execution_context": null,
+        "is_executable": false,
+        "language": "python"
+      },
+      "comments": [],
+      "data": "print('hello blocks')",
+      "file_metadata": null,
+      "format": "code",
+      "image_metadata": null,
+      "index": 6,
+      "link_metadata": null,
+      "links": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_block_index": null,
+      "parent_index": 3,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "semantic_metadata": null,
+      "source_type": null,
+      "sub_type": "code",
+      "table_cell_metadata": null,
+      "table_row_metadata": null,
+      "type": "text"
+    },
+    {
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": {
+        "cells": [
+          "a",
+          "b"
+        ],
+        "row_natural_language_text": "H1: a, H2: b",
+        "row_number": 1
+      },
+      "file_metadata": null,
+      "format": "json",
+      "image_metadata": null,
+      "index": 7,
+      "link_metadata": null,
+      "links": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_block_index": null,
+      "parent_index": 4,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "semantic_metadata": null,
+      "source_type": null,
+      "sub_type": null,
+      "table_cell_metadata": null,
+      "table_row_metadata": null,
+      "type": "table_row"
+    },
+    {
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": "First comment for the blocks golden.",
+      "file_metadata": null,
+      "format": "markdown",
+      "image_metadata": null,
+      "index": 8,
+      "link_metadata": null,
+      "links": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_block_index": null,
+      "parent_index": 6,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "semantic_metadata": null,
+      "source_type": null,
+      "sub_type": "paragraph",
+      "table_cell_metadata": null,
+      "table_row_metadata": null,
+      "type": "text"
+    },
+    {
+      "children_records": null,
+      "citation_metadata": null,
+      "code_metadata": null,
+      "comments": [],
+      "data": "Second comment for the blocks golden.",
+      "file_metadata": null,
+      "format": "markdown",
+      "image_metadata": null,
+      "index": 9,
+      "link_metadata": null,
+      "links": null,
+      "list_metadata": null,
+      "media_metadata": null,
+      "parent_block_index": null,
+      "parent_index": 8,
+      "public_data_link": null,
+      "public_data_link_expiration_epoch_time_in_ms": null,
+      "semantic_metadata": null,
+      "source_type": null,
+      "sub_type": "paragraph",
+      "table_cell_metadata": null,
+      "table_row_metadata": null,
+      "type": "text"
+    }
+  ]
+}
