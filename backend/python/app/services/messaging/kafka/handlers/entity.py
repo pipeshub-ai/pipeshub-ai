@@ -651,6 +651,7 @@ class EntityEventService(BaseEventService):
                     connector_id=kb_key,
                     scope=ConnectorScopes.PERSONAL.value,
                     created_by=userId,
+                    org_id=orgId,
                     notification_service=self.app_container.connector_notification_service(),
                 )
                 if connector:

@@ -8396,65 +8396,6 @@ class TestDeleteNodesByConnectorId:
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateRecord:
-    @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    async def test_user_not_found(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_user_by_user_id",
-            new_callable=AsyncMock, return_value=None
-        ):
-            result = await connected_provider.update_record(
-                "rec1", "u1", {"recordName": "updated"}
-            )
-            assert result["success"] is False
-            assert result["code"] == 404
-
-    @pytest.mark.asyncio
-    async def test_record_not_updated(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_user_by_user_id",
-            new_callable=AsyncMock, return_value={"_key": "u1"}
-        ), patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, return_value=[]
-        ):
-            result = await connected_provider.update_record(
-                "rec1", "u1", {"recordName": "updated"}
-            )
-            assert result["success"] is False
-
-    @pytest.mark.asyncio
-    async def test_with_file_metadata(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_user_by_user_id",
-            new_callable=AsyncMock, return_value={"_key": "u1"}
-        ), patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, return_value=[{"_key": "rec1"}]
-        ), patch.object(
-            connected_provider, "get_document",
-            new_callable=AsyncMock, return_value={"_key": "rec1"}
-        ), patch.object(
-            connected_provider, "_create_update_record_event_payload",
-            new_callable=AsyncMock, return_value=None
-        ):
-            result = await connected_provider.update_record(
-                "rec1", "u1", {}, file_metadata={"lastModified": 123}
-            )
-            assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_user_by_user_id",
-            new_callable=AsyncMock, side_effect=Exception("db fail")
-        ):
-            result = await connected_provider.update_record(
-                "rec1", "u1", {"recordName": "updated"}
-            )
-            assert result["success"] is False
-            assert result["code"] == 500
 
 
 # ---------------------------------------------------------------------------
@@ -8462,32 +8403,6 @@ class TestUpdateRecord:
 # ---------------------------------------------------------------------------
 
 
-class TestDeleteRecords:
-    @pytest.mark.asyncio
-    async def test_empty_record_ids(self, connected_provider):
-        result = await connected_provider.delete_records([], "kb1")
-        assert result["success"] is True
-        assert result["total_requested"] == 0
-
-    @pytest.mark.asyncio
-    async def test_no_valid_records(self, connected_provider):
-        with patch.object(
-            connected_provider, "begin_transaction",
-            new_callable=AsyncMock, return_value="txn1"
-        ), patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, return_value=[{
-                "valid_records": [],
-                "invalid_records": [{"record_id": "r1"}]
-            }]
-        ), patch.object(
-            connected_provider, "commit_transaction",
-            new_callable=AsyncMock
-        ):
-            result = await connected_provider.delete_records(["r1"], "kb1")
-            assert result["success"] is True
-            assert result["successfully_deleted"] == 0
-            assert result["failed_count"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -10597,42 +10512,6 @@ class TestUpdateKnowledgeBase:
 # ---------------------------------------------------------------------------
 
 
-class TestDeleteKnowledgeBase:
-    @pytest.mark.asyncio
-    async def test_success_with_own_transaction(self, connected_provider):
-        with patch.object(
-            connected_provider, "begin_transaction",
-            new_callable=AsyncMock, return_value="txn1"
-        ), patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock,
-            side_effect=[
-                [{"kb_exists": True, "record_keys": ["r1"], "file_keys": ["f1"],
-                  "folder_keys": [], "records_with_details": [], "total_folders": 0, "total_records": 1}],
-                [],  # record_relations edge deletes
-                [],  # is_of_type edge deletes
-                [],  # belongs_to collect+delete
-                [],  # permission collect+delete
-                [],  # delete_nodes for FILES (internally calls execute_query)
-                [],  # delete_nodes for RECORDS (internally calls execute_query)
-                [],  # org/user app relation edges delete
-                [],  # KB app document REMOVE
-            ]
-        ), patch.object(
-            connected_provider, "commit_transaction",
-            new_callable=AsyncMock
-        ):
-            result = await connected_provider.delete_knowledge_base("kb1")
-            assert result.get("success") is True
-
-    @pytest.mark.asyncio
-    async def test_exception_returns_failure(self, connected_provider):
-        with patch.object(
-            connected_provider, "begin_transaction",
-            new_callable=AsyncMock, side_effect=Exception("txn fail")
-        ):
-            result = await connected_provider.delete_knowledge_base("kb1")
-            assert result["success"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -10989,26 +10868,6 @@ class TestValidateFolderExistsInKb:
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateFolder:
-    @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    async def test_not_found(self, connected_provider):
-        with patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, return_value=[]
-        ):
-            result = await connected_provider.update_folder("missing", {"name": "X"})
-            assert result == {"success": False, "reason": "Folder not found"}
-
-    @pytest.mark.asyncio
-    async def test_exception_returns_error_dict(self, connected_provider):
-        with patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, side_effect=Exception("fail")
-        ):
-            result = await connected_provider.update_folder("f1", {"name": "X"})
-            assert result["success"] is False
-            assert "fail" in result["reason"]
 
 
 # ---------------------------------------------------------------------------
@@ -11016,105 +10875,6 @@ class TestUpdateFolder:
 # ---------------------------------------------------------------------------
 
 
-class TestCreateFolder:
-    @pytest.mark.asyncio
-    async def test_success_no_parent(self, connected_provider):
-        with patch.object(
-            connected_provider, "begin_transaction",
-            new_callable=AsyncMock, return_value="txn1"
-        ), patch.object(
-            connected_provider, "find_folder_by_name_in_parent",
-            new_callable=AsyncMock, return_value=None
-        ), patch.object(
-            connected_provider, "batch_upsert_nodes",
-            new_callable=AsyncMock, return_value=True
-        ), patch.object(
-            connected_provider, "batch_create_edges",
-            new_callable=AsyncMock, return_value=True
-        ), patch.object(
-            connected_provider, "commit_transaction",
-            new_callable=AsyncMock
-        ):
-            result = await connected_provider.create_folder("kb1", "New Folder", "org1")
-            assert result is not None
-            assert result["success"] is True
-            assert result["name"] == "New Folder"
-
-    @pytest.mark.asyncio
-    async def test_folder_already_exists(self, connected_provider):
-        with patch.object(
-            connected_provider, "begin_transaction",
-            new_callable=AsyncMock, return_value="txn1"
-        ), patch.object(
-            connected_provider, "find_folder_by_name_in_parent",
-            new_callable=AsyncMock,
-            return_value={"_key": "existing", "name": "Existing", "webUrl": "/kb/kb1/folder/existing"}
-        ), patch.object(
-            connected_provider, "commit_transaction",
-            new_callable=AsyncMock
-        ):
-            result = await connected_provider.create_folder("kb1", "Existing", "org1")
-            assert result["exists"] is True
-            assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_with_parent_folder(self, connected_provider):
-        with patch.object(
-            connected_provider, "begin_transaction",
-            new_callable=AsyncMock, return_value="txn1"
-        ), patch.object(
-            connected_provider, "get_and_validate_folder_in_kb",
-            new_callable=AsyncMock, return_value={"_key": "parent1"}
-        ), patch.object(
-            connected_provider, "find_folder_by_name_in_parent",
-            new_callable=AsyncMock, return_value=None
-        ), patch.object(
-            connected_provider, "batch_upsert_nodes",
-            new_callable=AsyncMock, return_value=True
-        ), patch.object(
-            connected_provider, "batch_create_edges",
-            new_callable=AsyncMock, return_value=True
-        ), patch.object(
-            connected_provider, "commit_transaction",
-            new_callable=AsyncMock
-        ):
-            result = await connected_provider.create_folder(
-                "kb1", "Child Folder", "org1", parent_folder_id="parent1"
-            )
-            assert result is not None
-            assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_invalid_parent_raises(self, connected_provider):
-        with patch.object(
-            connected_provider, "begin_transaction",
-            new_callable=AsyncMock, return_value="txn1"
-        ), patch.object(
-            connected_provider, "get_and_validate_folder_in_kb",
-            new_callable=AsyncMock, return_value=None
-        ), patch.object(
-            connected_provider, "rollback_transaction",
-            new_callable=AsyncMock
-        ):
-            with pytest.raises(ValueError, match="Parent folder"):
-                await connected_provider.create_folder(
-                    "kb1", "Child", "org1", parent_folder_id="bad_parent"
-                )
-
-    @pytest.mark.asyncio
-    async def test_exception_rollback(self, connected_provider):
-        with patch.object(
-            connected_provider, "begin_transaction",
-            new_callable=AsyncMock, return_value="txn1"
-        ), patch.object(
-            connected_provider, "find_folder_by_name_in_parent",
-            new_callable=AsyncMock, side_effect=Exception("db error")
-        ), patch.object(
-            connected_provider, "rollback_transaction",
-            new_callable=AsyncMock
-        ):
-            with pytest.raises(Exception):
-                await connected_provider.create_folder("kb1", "Folder", "org1")
 
 
 # ---------------------------------------------------------------------------
@@ -11140,15 +10900,6 @@ class TestGetFolderContents:
 # ---------------------------------------------------------------------------
 
 
-class TestDeleteFolder:
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        with patch.object(
-            connected_provider, "begin_transaction",
-            new_callable=AsyncMock, side_effect=Exception("txn fail")
-        ):
-            result = await connected_provider.delete_folder("kb1", "f1")
-            assert result["success"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -11156,65 +10907,6 @@ class TestDeleteFolder:
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateRecord:
-    @pytest.mark.asyncio
-    async def test_user_not_found(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_user_by_user_id",
-            new_callable=AsyncMock, return_value=None
-        ):
-            result = await connected_provider.update_record("r1", "u1", {"name": "X"})
-            assert result["success"] is False
-            assert result["code"] == 404
-
-    @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    async def test_update_fails(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_user_by_user_id",
-            new_callable=AsyncMock,
-            return_value={"_key": "u1", "userId": "u1"}
-        ), patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock, return_value=[]
-        ):
-            result = await connected_provider.update_record("r1", "u1", {"name": "X"})
-            assert result["success"] is False
-            assert result["code"] == 500
-
-    @pytest.mark.asyncio
-    async def test_with_file_metadata(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_user_by_user_id",
-            new_callable=AsyncMock,
-            return_value={"_key": "u1", "userId": "u1"}
-        ), patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock,
-            return_value=[{"_key": "r1", "recordName": "Rec"}]
-        ), patch.object(
-            connected_provider, "get_document",
-            new_callable=AsyncMock, return_value={"_key": "r1"}
-        ), patch.object(
-            connected_provider, "_create_update_record_event_payload",
-            new_callable=AsyncMock, return_value={"topic": "record-events"}
-        ):
-            result = await connected_provider.update_record(
-                "r1", "u1", {"recordName": "Rec"},
-                file_metadata={"lastModified": 123456}
-            )
-            assert result["success"] is True
-            assert result["eventData"] is not None
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        with patch.object(
-            connected_provider, "get_user_by_user_id",
-            new_callable=AsyncMock, side_effect=Exception("fail")
-        ):
-            result = await connected_provider.update_record("r1", "u1", {"name": "X"})
-            assert result["success"] is False
-            assert result["code"] == 500
 
 
 # ---------------------------------------------------------------------------
@@ -11222,62 +10914,6 @@ class TestUpdateRecord:
 # ---------------------------------------------------------------------------
 
 
-class TestDeleteRecords:
-    @pytest.mark.asyncio
-    async def test_empty_record_ids(self, connected_provider):
-        result = await connected_provider.delete_records([], "kb1")
-        assert result["success"] is True
-        assert result["total_requested"] == 0
-
-    @pytest.mark.asyncio
-    async def test_no_valid_records(self, connected_provider):
-        with patch.object(
-            connected_provider, "begin_transaction",
-            new_callable=AsyncMock, return_value="txn1"
-        ), patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock,
-            return_value=[{"valid_records": [], "invalid_records": [{"record_id": "r1"}]}]
-        ), patch.object(
-            connected_provider, "commit_transaction",
-            new_callable=AsyncMock
-        ):
-            result = await connected_provider.delete_records(["r1"], "kb1")
-            assert result["success"] is True
-            assert result["successfully_deleted"] == 0
-            assert result["failed_count"] == 1
-
-    @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    async def test_with_folder_id(self, connected_provider):
-        with patch.object(
-            connected_provider, "begin_transaction",
-            new_callable=AsyncMock, return_value="txn1"
-        ), patch.object(
-            connected_provider, "execute_query",
-            new_callable=AsyncMock,
-            side_effect=[
-                [{"valid_records": [{"record_id": "r1", "record": {}, "file_record": None}],
-                  "invalid_records": []}],
-                [],  # edges cleanup
-                [],  # record deletion
-            ]
-        ), patch.object(
-            connected_provider, "commit_transaction",
-            new_callable=AsyncMock
-        ):
-            result = await connected_provider.delete_records(["r1"], "kb1", folder_id="f1")
-            assert result["success"] is True
-            assert result["folder_id"] == "f1"
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        with patch.object(
-            connected_provider, "begin_transaction",
-            new_callable=AsyncMock, side_effect=Exception("txn fail")
-        ):
-            result = await connected_provider.delete_records(["r1"], "kb1")
-            assert result["success"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -12280,35 +11916,6 @@ class TestGetConnectorInstancesWithFiltersExpanded:
 # ---------------------------------------------------------------------------
 
 
-class TestUploadRecords:
-    @pytest.mark.asyncio
-    async def test_validation_fails(self, connected_provider):
-        with patch.object(
-            connected_provider, "_validate_upload_context",
-            new_callable=AsyncMock,
-            return_value={"valid": False, "reason": "KB not found", "code": 404}
-        ):
-            result = await connected_provider.upload_records(
-                kb_id="kb1",
-                user_id="u1",
-                org_id="org1",
-                files=[],
-            )
-            assert result.get("valid") is False
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        with patch.object(
-            connected_provider, "_validate_upload_context",
-            new_callable=AsyncMock, side_effect=Exception("fail")
-        ):
-            result = await connected_provider.upload_records(
-                kb_id="kb1",
-                user_id="u1",
-                org_id="org1",
-                files=[],
-            )
-            assert result.get("success") is False
 
 
 # ---------------------------------------------------------------------------
@@ -12798,82 +12405,6 @@ class TestUpdateKnowledgeBaseExtended:
 # ---------------------------------------------------------------------------
 
 
-class TestDeleteKnowledgeBaseExtended:
-    @pytest.mark.asyncio
-    async def test_success_with_records(self, connected_provider):
-        inventory = {
-            "kb_exists": True,
-            "record_keys": ["r1", "r2"],
-            "file_keys": ["f1", "f2"],
-            "folder_keys": [],
-            "records_with_details": [
-                {"record": {"_key": "r1", "orgId": "o1"}, "file_record": {"extension": ".pdf", "mimeType": "application/pdf"}},
-            ],
-            "total_folders": 0,
-            "total_records": 2,
-        }
-        connected_provider.begin_transaction = AsyncMock(return_value="txn1")
-        # delete_knowledge_base: inventory, rel, iot, belongs_to, permission, org_user_rel, KB REMOVE
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[
-                [inventory],
-                [],  # record_relations
-                [],  # is_of_type
-                [],  # belongs_to
-                [],  # permission
-                [],  # org_user_rel
-                [],  # KB REMOVE
-            ]
-        )
-        connected_provider.delete_nodes = AsyncMock()
-        connected_provider.commit_transaction = AsyncMock()
-        connected_provider._create_deleted_record_event_payload = AsyncMock(
-            return_value={"orgId": "o1", "recordId": "r1"}
-        )
-        result = await connected_provider.delete_knowledge_base("kb1")
-        assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_kb_not_found(self, connected_provider):
-        connected_provider.begin_transaction = AsyncMock(return_value="txn1")
-        connected_provider.execute_query = AsyncMock(return_value=[{"kb_exists": False}])
-        connected_provider.commit_transaction = AsyncMock()
-        result = await connected_provider.delete_knowledge_base("kb999")
-        assert result["success"] is True
-        assert result.get("eventData") is None
-
-    @pytest.mark.asyncio
-    async def test_transaction_failure(self, connected_provider):
-        connected_provider.begin_transaction = AsyncMock(side_effect=Exception("txn fail"))
-        result = await connected_provider.delete_knowledge_base("kb1")
-        assert result["success"] is False
-
-    @pytest.mark.asyncio
-    async def test_with_existing_transaction(self, connected_provider):
-        inventory = {
-            "kb_exists": True,
-            "record_keys": [],
-            "file_keys": [],
-            "folder_keys": [],
-            "records_with_details": [],
-            "total_folders": 0,
-            "total_records": 0,
-        }
-        # No record keys: skip rel/is_of_type; still runs belongs_to, permission, org_user_rel, KB REMOVE
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[[inventory], [], [], [], []]
-        )
-        connected_provider.delete_nodes = AsyncMock()
-        result = await connected_provider.delete_knowledge_base("kb1", transaction="existing_txn")
-        assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_db_error_rollback(self, connected_provider):
-        connected_provider.begin_transaction = AsyncMock(return_value="txn1")
-        connected_provider.execute_query = AsyncMock(side_effect=Exception("db err"))
-        connected_provider.rollback_transaction = AsyncMock()
-        result = await connected_provider.delete_knowledge_base("kb1")
-        assert result["success"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -12909,28 +12440,6 @@ class TestCreateDeletedRecordEventPayload:
 # ---------------------------------------------------------------------------
 
 
-class TestCreateNewRecordEventPayload:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        record_doc = {
-            "_key": "r1", "orgId": "o1", "recordName": "Test",
-            "recordType": "FILE", "version": 1, "origin": "UPLOAD",
-            "externalRecordId": "ext1",
-            "createdAtTimestamp": 1000, "updatedAtTimestamp": 2000,
-            "sourceCreatedAtTimestamp": 1000,
-        }
-        file_doc = {"extension": ".txt", "mimeType": "text/plain"}
-        result = await connected_provider._create_new_record_event_payload(
-            record_doc, file_doc, "http://storage:3000"
-        )
-        assert result is not None
-        assert result["recordId"] == "r1"
-        assert "signedUrlRoute" in result
-
-    @pytest.mark.asyncio
-    async def test_exception_returns_none(self, connected_provider):
-        result = await connected_provider._create_new_record_event_payload({}, {}, "http://x")
-        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -13078,70 +12587,6 @@ class TestGetAndValidateFolderInKb:
 # ---------------------------------------------------------------------------
 
 
-class TestCreateFolderExtended:
-    @pytest.mark.asyncio
-    async def test_success_new_folder(self, connected_provider):
-        connected_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
-        connected_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        connected_provider.batch_create_edges = AsyncMock()
-        connected_provider.begin_transaction = AsyncMock(return_value="txn1")
-        connected_provider.commit_transaction = AsyncMock()
-        result = await connected_provider.create_folder("kb1", "New Folder", "org1")
-        assert result is not None
-        assert result["success"] is True
-        assert result["exists"] is False
-        assert result["name"] == "New Folder"
-
-    @pytest.mark.asyncio
-    async def test_existing_folder_returned(self, connected_provider):
-        connected_provider.find_folder_by_name_in_parent = AsyncMock(
-            return_value={"_key": "existing1", "name": "Existing"}
-        )
-        connected_provider.begin_transaction = AsyncMock(return_value="txn1")
-        connected_provider.commit_transaction = AsyncMock()
-        result = await connected_provider.create_folder("kb1", "Existing", "org1")
-        assert result["exists"] is True
-        assert result["folderId"] == "existing1"
-
-    @pytest.mark.asyncio
-    async def test_with_parent_folder(self, connected_provider):
-        connected_provider.get_and_validate_folder_in_kb = AsyncMock(
-            return_value={"_key": "parent1", "recordName": "Parent"}
-        )
-        connected_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        connected_provider.batch_create_edges = AsyncMock()
-        connected_provider.begin_transaction = AsyncMock(return_value="txn1")
-        connected_provider.commit_transaction = AsyncMock()
-        result = await connected_provider.create_folder(
-            "kb1", "Child", "org1", parent_folder_id="parent1"
-        )
-        assert result is not None
-        assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_parent_folder_not_found(self, connected_provider):
-        connected_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
-        connected_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        connected_provider.begin_transaction = AsyncMock(return_value="txn1")
-        connected_provider.rollback_transaction = AsyncMock()
-        with pytest.raises(ValueError):
-            await connected_provider.create_folder(
-                "kb1", "Child", "org1", parent_folder_id="missing"
-            )
-
-    @pytest.mark.asyncio
-    async def test_with_existing_transaction(self, connected_provider):
-        connected_provider.get_and_validate_folder_in_kb = AsyncMock(return_value=None)
-        connected_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        connected_provider.batch_create_edges = AsyncMock()
-        result = await connected_provider.create_folder(
-            "kb1", "Folder", "org1", transaction="ext_txn"
-        )
-        assert result is not None
-        assert result["success"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -13226,28 +12671,6 @@ class TestValidateFolderExistsInKbExtended:
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateFolderExtended:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(
-            return_value=[{"_key": "f1", "name": "Updated"}]
-        )
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        result = await connected_provider.update_folder("f1", {"name": "Updated"})
-        assert result == {"success": True, "updatedCount": 1}
-
-    @pytest.mark.asyncio
-    async def test_not_found(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(return_value=[])
-        result = await connected_provider.update_folder("f999", {"name": "X"})
-        assert result == {"success": False, "reason": "Folder not found"}
-
-    @pytest.mark.asyncio
-    async def test_exception_returns_error_dict(self, connected_provider):
-        connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.update_folder("f1", {"name": "X"})
-        assert result["success"] is False
-        assert "fail" in result["reason"]
 
 
 # ---------------------------------------------------------------------------
@@ -13255,42 +12678,6 @@ class TestUpdateFolderExtended:
 # ---------------------------------------------------------------------------
 
 
-class TestDeleteFolderExtended:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        inventory = {
-            "folder_exists": True,
-            "target_folder": "f1",
-            "all_folders": ["f1"],
-            "subfolders": [],
-            "records_with_details": [],
-            "file_records": [],
-            "total_folders": 1,
-            "total_subfolders": 0,
-            "total_records": 0,
-            "total_file_records": 0,
-        }
-        connected_provider.begin_transaction = AsyncMock(return_value="txn1")
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[[inventory], None, None, None, [], None, None]
-        )
-        connected_provider.commit_transaction = AsyncMock()
-        result = await connected_provider.delete_folder("kb1", "f1")
-        assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_folder_not_found(self, connected_provider):
-        connected_provider.begin_transaction = AsyncMock(return_value="txn1")
-        connected_provider.execute_query = AsyncMock(return_value=[{"folder_exists": False}])
-        connected_provider.rollback_transaction = AsyncMock()
-        result = await connected_provider.delete_folder("kb1", "f1")
-        assert result["success"] is False
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.begin_transaction = AsyncMock(side_effect=Exception("txn fail"))
-        result = await connected_provider.delete_folder("kb1", "f1")
-        assert result["success"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -13298,57 +12685,6 @@ class TestDeleteFolderExtended:
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateRecordKB:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        connected_provider.get_user_by_user_id = AsyncMock(
-            return_value={"_key": "uk1", "userId": "u1"}
-        )
-        connected_provider.execute_query = AsyncMock(
-            return_value=[{"_key": "r1", "recordName": "Updated", "updatedAtTimestamp": 9999}]
-        )
-        connected_provider.get_document = AsyncMock(return_value={"extension": ".pdf"})
-        connected_provider._create_update_record_event_payload = AsyncMock(return_value=None)
-        result = await connected_provider.update_record("r1", "u1", {"recordName": "Updated"})
-        assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self, connected_provider):
-        connected_provider.get_user_by_user_id = AsyncMock(return_value=None)
-        result = await connected_provider.update_record("r1", "u1", {"recordName": "X"})
-        assert result["success"] is False
-        assert result["code"] == 404
-
-    @pytest.mark.asyncio
-    async def test_record_not_found(self, connected_provider):
-        connected_provider.get_user_by_user_id = AsyncMock(
-            return_value={"_key": "uk1", "userId": "u1"}
-        )
-        connected_provider.execute_query = AsyncMock(return_value=[])
-        result = await connected_provider.update_record("r999", "u1", {"recordName": "X"})
-        assert result["success"] is False
-
-    @pytest.mark.asyncio
-    async def test_with_file_metadata(self, connected_provider):
-        connected_provider.get_user_by_user_id = AsyncMock(
-            return_value={"_key": "uk1", "userId": "u1"}
-        )
-        connected_provider.execute_query = AsyncMock(
-            return_value=[{"_key": "r1", "recordName": "Up"}]
-        )
-        connected_provider.get_document = AsyncMock(return_value=None)
-        connected_provider._create_update_record_event_payload = AsyncMock(return_value={"x": 1})
-        result = await connected_provider.update_record(
-            "r1", "u1", {"recordName": "Up"}, file_metadata={"lastModified": 5000}
-        )
-        assert result["success"] is True
-        assert result["eventData"] is not None
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.get_user_by_user_id = AsyncMock(side_effect=Exception("boom"))
-        result = await connected_provider.update_record("r1", "u1", {})
-        assert result["success"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -13356,58 +12692,6 @@ class TestUpdateRecordKB:
 # ---------------------------------------------------------------------------
 
 
-class TestDeleteRecordsKB:
-    @pytest.mark.asyncio
-    async def test_empty_list(self, connected_provider):
-        result = await connected_provider.delete_records([], "kb1")
-        assert result["success"] is True
-        assert result["total_requested"] == 0
-
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        val_result = {
-            "valid_records": [
-                {"record_id": "r1", "record": {"recordName": "Rec1"}, "file_record": {"_key": "f1"}},
-            ],
-            "invalid_records": [],
-        }
-        connected_provider.begin_transaction = AsyncMock(return_value="txn1")
-        connected_provider.execute_query = AsyncMock(
-            side_effect=[[val_result], None, None, None]
-        )
-        connected_provider.commit_transaction = AsyncMock()
-        result = await connected_provider.delete_records(["r1"], "kb1")
-        assert result["success"] is True
-        assert result["successfully_deleted"] == 1
-
-    @pytest.mark.asyncio
-    async def test_all_invalid(self, connected_provider):
-        val_result = {
-            "valid_records": [],
-            "invalid_records": [{"record_id": "r1"}],
-        }
-        connected_provider.begin_transaction = AsyncMock(return_value="txn1")
-        connected_provider.execute_query = AsyncMock(return_value=[val_result])
-        connected_provider.commit_transaction = AsyncMock()
-        result = await connected_provider.delete_records(["r1"], "kb1")
-        assert result["success"] is True
-        assert result["successfully_deleted"] == 0
-        assert result["failed_count"] == 1
-
-    @pytest.mark.asyncio
-    async def test_with_folder_id(self, connected_provider):
-        val_result = {"valid_records": [], "invalid_records": [{"record_id": "r1"}]}
-        connected_provider.begin_transaction = AsyncMock(return_value="txn1")
-        connected_provider.execute_query = AsyncMock(return_value=[val_result])
-        connected_provider.commit_transaction = AsyncMock()
-        result = await connected_provider.delete_records(["r1"], "kb1", folder_id="f1")
-        assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.begin_transaction = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.delete_records(["r1"], "kb1")
-        assert result["success"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -14376,32 +13660,6 @@ class TestDeleteParentChildEdgeToRecord:
 # ---------------------------------------------------------------------------
 
 
-class TestCreateParentChildEdge:
-    @pytest.mark.asyncio
-    async def test_success_folder_parent(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[{"_key": "e1"}])
-        result = await connected_provider.create_parent_child_edge("p1", "c1")
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_success_kb_parent(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[{"_key": "e1"}])
-        result = await connected_provider.create_parent_child_edge(
-            "kb1", "c1", parent_is_kb=True
-        )
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_failure(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        result = await connected_provider.create_parent_child_edge("p1", "c1")
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_exception_without_transaction(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.create_parent_child_edge("p1", "c1")
-        assert result is False
 
 
 # ---------------------------------------------------------------------------
@@ -14409,24 +13667,6 @@ class TestCreateParentChildEdge:
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateRecordExternalParentId:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[{"_key": "r1"}])
-        result = await connected_provider.update_record_external_parent_id("r1", "new_parent")
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_failure(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        result = await connected_provider.update_record_external_parent_id("r1", "new_parent")
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_exception_without_transaction(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.update_record_external_parent_id("r1", "np")
-        assert result is False
 
 
 # ---------------------------------------------------------------------------
@@ -15022,33 +14262,6 @@ class TestGetConnectorStatsExtendedV2:
 # ---------------------------------------------------------------------------
 
 
-class TestCreateUpdateRecordEventPayload:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        connected_provider.config_service.get_config = AsyncMock(
-            return_value={"storage": {"endpoint": "http://storage:3000"}}
-        )
-        record = {"orgId": "o1", "_key": "r1", "version": 1, "externalRecordId": "ext1",
-                  "updatedAtTimestamp": 2000, "sourceLastModifiedTimestamp": 1000}
-        file_record = {"extension": ".pdf", "mimeType": "application/pdf"}
-        result = await connected_provider._create_update_record_event_payload(record, file_record)
-        assert result is not None
-        assert result["recordId"] == "r1"
-
-    @pytest.mark.asyncio
-    async def test_no_file_record(self, connected_provider):
-        connected_provider.config_service.get_config = AsyncMock(
-            return_value={"storage": {"endpoint": "http://storage:3000"}}
-        )
-        record = {"orgId": "o1", "_key": "r1", "externalRecordId": "ext1"}
-        result = await connected_provider._create_update_record_event_payload(record, None)
-        assert result["extension"] == ""
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider.config_service.get_config = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider._create_update_record_event_payload({}, None)
-        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -15155,70 +14368,6 @@ class TestCreateReindexEventPayload:
 # ---------------------------------------------------------------------------
 
 
-class TestEnsureFoldersExist:
-    @pytest.mark.asyncio
-    async def test_existing_folders(self, connected_provider):
-        connected_provider.find_folder_by_name_in_parent = AsyncMock(
-            return_value={"_key": "existing_f1"}
-        )
-        folder_analysis = {
-            "sorted_folder_paths": ["folder1"],
-            "folder_hierarchy": {"folder1": {"name": "Folder1", "parent_path": None, "level": 1}},
-        }
-        validation = {"upload_target": "kb_root"}
-        result = await connected_provider._ensure_folders_exist(
-            "kb1", "org1", folder_analysis, validation, "txn1"
-        )
-        assert result["folder1"] == "existing_f1"
-
-    @pytest.mark.asyncio
-    async def test_create_new_folders(self, connected_provider):
-        connected_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        connected_provider.create_folder = AsyncMock(
-            return_value={"id": "new_f1", "success": True}
-        )
-        folder_analysis = {
-            "sorted_folder_paths": ["folder1"],
-            "folder_hierarchy": {"folder1": {"name": "Folder1", "parent_path": None, "level": 1}},
-        }
-        validation = {"upload_target": "kb_root"}
-        result = await connected_provider._ensure_folders_exist(
-            "kb1", "org1", folder_analysis, validation, "txn1"
-        )
-        assert result["folder1"] == "new_f1"
-
-    @pytest.mark.asyncio
-    async def test_folder_creation_failure(self, connected_provider):
-        connected_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        connected_provider.create_folder = AsyncMock(return_value=None)
-        folder_analysis = {
-            "sorted_folder_paths": ["folder1"],
-            "folder_hierarchy": {"folder1": {"name": "Folder1", "parent_path": None, "level": 1}},
-        }
-        validation = {"upload_target": "kb_root"}
-        with pytest.raises(ValueError):
-            await connected_provider._ensure_folders_exist(
-                "kb1", "org1", folder_analysis, validation, "txn1"
-            )
-
-    @pytest.mark.asyncio
-    async def test_with_parent_upload_folder(self, connected_provider):
-        connected_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        connected_provider.create_folder = AsyncMock(
-            return_value={"id": "new_f1"}
-        )
-        folder_analysis = {
-            "sorted_folder_paths": ["folder1"],
-            "folder_hierarchy": {"folder1": {"name": "Folder1", "parent_path": None, "level": 1}},
-        }
-        validation = {
-            "upload_target": "folder",
-            "parent_folder": {"_key": "parent_f1"},
-        }
-        result = await connected_provider._ensure_folders_exist(
-            "kb1", "org1", folder_analysis, validation, "txn1"
-        )
-        assert "folder1" in result
 
 
 # ---------------------------------------------------------------------------
@@ -15732,26 +14881,8 @@ class TestExecuteOutlookRecordDeletion:
 # ---------------------------------------------------------------------------
 
 
-class TestCreateFilesInKbRoot:
-    @pytest.mark.asyncio
-    async def test_delegates_to_batch(self, connected_provider):
-        connected_provider._create_files_batch = AsyncMock(return_value=[{"record": {}}])
-        result = await connected_provider._create_files_in_kb_root("kb1", [{}], "txn1", 1000)
-        assert len(result) == 1
-        connected_provider._create_files_batch.assert_called_once_with(
-            kb_id="kb1", files=[{}], parent_folder_id=None, transaction="txn1", timestamp=1000
-        )
 
 
-class TestCreateFilesInFolder:
-    @pytest.mark.asyncio
-    async def test_delegates_to_batch(self, connected_provider):
-        connected_provider._create_files_batch = AsyncMock(return_value=[{"record": {}}])
-        result = await connected_provider._create_files_in_folder("kb1", "f1", [{}], "txn1", 1000)
-        assert len(result) == 1
-        connected_provider._create_files_batch.assert_called_once_with(
-            kb_id="kb1", files=[{}], parent_folder_id="f1", transaction="txn1", timestamp=1000
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -15759,54 +14890,6 @@ class TestCreateFilesInFolder:
 # ---------------------------------------------------------------------------
 
 
-class TestCreateRecords:
-    @pytest.mark.asyncio
-    async def test_root_files(self, connected_provider):
-        connected_provider._create_files_in_kb_root = AsyncMock(return_value=([{"record": {}}], []))
-        folder_analysis = {
-            "file_destinations": {0: {"type": "root"}},
-            "parent_folder_id": None,
-        }
-        result = await connected_provider._create_records(
-            "kb1", [{"filePath": "file.pdf"}], folder_analysis, "txn1", 1000
-        )
-        assert result["total_created"] == 1
-        assert result["skipped_files"] == []
-
-    @pytest.mark.asyncio
-    async def test_folder_files(self, connected_provider):
-        connected_provider._create_files_in_folder = AsyncMock(return_value=([{"record": {}}], []))
-        folder_analysis = {
-            "file_destinations": {0: {"type": "folder", "folder_id": "f1"}},
-            "parent_folder_id": None,
-        }
-        result = await connected_provider._create_records(
-            "kb1", [{"filePath": "folder/file.pdf"}], folder_analysis, "txn1", 1000
-        )
-        assert result["total_created"] == 1
-
-    @pytest.mark.asyncio
-    async def test_missing_folder_id(self, connected_provider):
-        folder_analysis = {
-            "file_destinations": {0: {"type": "folder"}},
-            "parent_folder_id": None,
-        }
-        result = await connected_provider._create_records(
-            "kb1", [{"filePath": "folder/file.pdf"}], folder_analysis, "txn1", 1000
-        )
-        assert len(result["failed_files"]) == 1
-
-    @pytest.mark.asyncio
-    async def test_parent_folder_files(self, connected_provider):
-        connected_provider._create_files_in_folder = AsyncMock(return_value=([{"record": {}}], []))
-        folder_analysis = {
-            "file_destinations": {0: {"type": "root"}},
-            "parent_folder_id": "parent1",
-        }
-        result = await connected_provider._create_records(
-            "kb1", [{"filePath": "file.pdf"}], folder_analysis, "txn1", 1000
-        )
-        assert result["total_created"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -15814,51 +14897,6 @@ class TestCreateRecords:
 # ---------------------------------------------------------------------------
 
 
-class TestExecuteUploadTransaction:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        connected_provider.begin_transaction = AsyncMock(return_value="txn1")
-        connected_provider._ensure_folders_exist = AsyncMock(return_value={"folder1": "f1"})
-        connected_provider._populate_file_destinations = MagicMock()
-        connected_provider._create_records = AsyncMock(
-            return_value={"total_created": 2, "failed_files": [], "created_files_data": []}
-        )
-        connected_provider.commit_transaction = AsyncMock()
-        result = await connected_provider._execute_upload_transaction(
-            "kb1", "u1", "org1", [{}],
-            {"sorted_folder_paths": [], "folder_hierarchy": {}, "file_destinations": {}, "parent_folder_id": None},
-            {"upload_target": "kb_root"},
-        )
-        assert result["success"] is True
-        assert result["total_created"] == 2
-
-    @pytest.mark.asyncio
-    async def test_nothing_created(self, connected_provider):
-        connected_provider.begin_transaction = AsyncMock(return_value="txn1")
-        connected_provider._ensure_folders_exist = AsyncMock(return_value={})
-        connected_provider._populate_file_destinations = MagicMock()
-        connected_provider._create_records = AsyncMock(
-            return_value={"total_created": 0, "failed_files": ["f.pdf"], "created_files_data": []}
-        )
-        connected_provider.rollback_transaction = AsyncMock()
-        result = await connected_provider._execute_upload_transaction(
-            "kb1", "u1", "org1", [{}],
-            {"sorted_folder_paths": [], "folder_hierarchy": {}, "file_destinations": {}, "parent_folder_id": None},
-            {"upload_target": "kb_root"},
-        )
-        assert result["total_created"] == 0
-
-    @pytest.mark.asyncio
-    async def test_exception_rollback(self, connected_provider):
-        connected_provider.begin_transaction = AsyncMock(return_value="txn1")
-        connected_provider._ensure_folders_exist = AsyncMock(side_effect=Exception("fail"))
-        connected_provider.rollback_transaction = AsyncMock()
-        result = await connected_provider._execute_upload_transaction(
-            "kb1", "u1", "org1", [{}],
-            {"sorted_folder_paths": ["f1"], "folder_hierarchy": {"f1": {"name": "F", "parent_path": None, "level": 1}}, "file_destinations": {}, "parent_folder_id": None},
-            {"upload_target": "kb_root"},
-        )
-        assert result["success"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -15866,74 +14904,6 @@ class TestExecuteUploadTransaction:
 # ---------------------------------------------------------------------------
 
 
-class TestUploadRecordsExtended:
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        connected_provider._validate_upload_context = AsyncMock(
-            return_value={"valid": True, "user": {}, "user_key": "uk1", "user_role": "OWNER",
-                         "parent_folder": None, "parent_path": "/", "upload_target": "kb_root"}
-        )
-        connected_provider._execute_upload_transaction = AsyncMock(
-            return_value={
-                "success": True, "total_created": 1, "folders_created": 0,
-                "created_folders": [], "failed_files": [], "created_files_data": [],
-            }
-        )
-        result = await connected_provider.upload_records("kb1", "u1", "org1", [])
-        assert result["success"] is True
-        assert result["totalCreated"] == 1
-
-    @pytest.mark.asyncio
-    async def test_validation_failure(self, connected_provider):
-        connected_provider._validate_upload_context = AsyncMock(
-            return_value={"valid": False, "success": False, "code": 403, "reason": "No permission"}
-        )
-        result = await connected_provider.upload_records("kb1", "u1", "org1", [])
-        assert result["success"] is False
-
-    @pytest.mark.asyncio
-    async def test_with_parent_folder(self, connected_provider):
-        connected_provider._validate_upload_context = AsyncMock(
-            return_value={"valid": True, "user": {}, "user_key": "uk1", "user_role": "WRITER",
-                         "parent_folder": {"_key": "f1"}, "parent_path": "/folder", "upload_target": "folder"}
-        )
-        connected_provider._execute_upload_transaction = AsyncMock(
-            return_value={
-                "success": True, "total_created": 0, "folders_created": 0,
-                "created_folders": [], "failed_files": [], "created_files_data": [],
-            }
-        )
-        result = await connected_provider.upload_records("kb1", "u1", "org1", [], parent_folder_id="f1")
-        assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_with_event_payloads(self, connected_provider):
-        connected_provider._validate_upload_context = AsyncMock(
-            return_value={"valid": True, "user": {}, "user_key": "uk1", "user_role": "OWNER",
-                         "parent_folder": None, "parent_path": "/", "upload_target": "kb_root"}
-        )
-        connected_provider._execute_upload_transaction = AsyncMock(
-            return_value={
-                "success": True, "total_created": 1, "folders_created": 0,
-                "created_folders": [],  "failed_files": [],
-                "created_files_data": [{"record": {"_key": "r1"}, "fileRecord": {"_key": "f1"}}],
-            }
-        )
-        connected_provider.config_service.get_config = AsyncMock(
-            return_value={"storage": {"endpoint": "http://storage:3000"}}
-        )
-        connected_provider._create_new_record_event_payload = AsyncMock(
-            return_value={"recordId": "r1"}
-        )
-        result = await connected_provider.upload_records("kb1", "u1", "org1", [{}])
-        assert result["success"] is True
-        assert result.get("eventData") is not None
-
-    @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
-        connected_provider._validate_upload_context = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.upload_records("kb1", "u1", "org1", [])
-        assert result["success"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -15941,73 +14911,6 @@ class TestUploadRecordsExtended:
 # ---------------------------------------------------------------------------
 
 
-class TestCreateFilesBatch:
-    @pytest.mark.asyncio
-    async def test_empty_files(self, connected_provider):
-        result = await connected_provider._create_files_batch("kb1", [], None, "txn1", 1000)
-        assert result == ([], [])
-
-    @pytest.mark.asyncio
-    async def test_conflict_skipped(self, connected_provider):
-        # Simulate an existing file in the DB with the same name+mime.
-        connected_provider._fetch_existing_file_names_in_parent = AsyncMock(
-            return_value={("file.pdf", "")}
-        )
-        created, skipped = await connected_provider._create_files_batch(
-            "kb1", [{"filePath": "file.pdf", "fileRecord": {"name": "file.pdf"}, "record": {"_key": "r1", "recordName": "file.pdf"}}],
-            None, "txn1", 1000
-        )
-        assert created == []
-        assert len(skipped) == 1
-        assert skipped[0]["reason"] == "DUPLICATE_NAME"
-        assert skipped[0]["filePath"] == "file.pdf"
-
-    @pytest.mark.asyncio
-    async def test_duplicate_within_batch_skipped(self, connected_provider):
-        # No DB conflict, but two files in the same batch share a name+mime ->
-        # the second is skipped as an intra-batch duplicate.
-        connected_provider._fetch_existing_file_names_in_parent = AsyncMock(
-            return_value=set()
-        )
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        connected_provider.batch_create_edges = AsyncMock()
-        files = [
-            {"filePath": "a/test.pdf", "fileRecord": {"_key": "f1", "name": "test.pdf", "mimeType": "application/pdf", "isFile": True}, "record": {"_key": "r1", "recordName": "test.pdf"}},
-            {"filePath": "b/test.pdf", "fileRecord": {"_key": "f2", "name": "test.pdf", "mimeType": "application/pdf", "isFile": True}, "record": {"_key": "r2", "recordName": "test.pdf"}},
-        ]
-        created, skipped = await connected_provider._create_files_batch("kb1", files, None, "txn1", 1000)
-        assert len(created) == 1
-        assert len(skipped) == 1
-        assert skipped[0]["reason"] == "DUPLICATE_NAME"
-
-    @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
-        connected_provider._fetch_existing_file_names_in_parent = AsyncMock(
-            return_value=set()
-        )
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        connected_provider.batch_create_edges = AsyncMock()
-        files = [{
-            "fileRecord": {"_key": "f1", "name": "test.pdf", "mimeType": "application/pdf", "isFile": True},
-            "record": {"_key": "r1", "recordName": "test.pdf", "orgId": "o1"},
-        }]
-        created, skipped = await connected_provider._create_files_batch("kb1", files, None, "txn1", 1000)
-        assert len(created) == 1
-        assert skipped == []
-
-    @pytest.mark.asyncio
-    async def test_with_parent_folder(self, connected_provider):
-        connected_provider._fetch_existing_file_names_in_parent = AsyncMock(
-            return_value=set()
-        )
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        connected_provider.batch_create_edges = AsyncMock()
-        files = [{
-            "fileRecord": {"_key": "f1", "name": "test.pdf", "mimeType": "application/pdf", "isFile": True},
-            "record": {"_key": "r1", "recordName": "test.pdf", "orgId": "o1"},
-        }]
-        created, skipped = await connected_provider._create_files_batch("kb1", files, "parent1", "txn1", 1000)
-        assert len(created) == 1
 
 
 # ---------------------------------------------------------------------------
