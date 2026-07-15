@@ -1060,23 +1060,10 @@ class JiraDataCenterConnector(BaseConnector):
         """
         users: list[dict[str, Any]] = []
         cursor: str | None = None
-        # /user/list is server-driven pagination: we advance by whatever cursor the
-        # server hands back. A buggy build that returns a non-advancing or cycling
-        # ``nextCursor`` would loop forever re-fetching the same page, so track the
-        # cursors we've already requested and stop if one repeats (the cursor-path
-        # analog of the no-new-users guard in the /user/search fallback).
-        seen_cursors: set[str | None] = set()
         # DC has no OAuth refresh — one datasource for the whole pagination loop.
         datasource = await self._get_fresh_datasource()
 
         while True:
-            if cursor in seen_cursors:
-                self.logger.warning(
-                    "⚠️ DC /user/list repeated cursor %r — stopping pagination", cursor
-                )
-                break
-            seen_cursors.add(cursor)
-
             response = await datasource.get_user_list_v2(
                 cursor=cursor,
                 maxResults=USER_LIST_PAGE_SIZE,
