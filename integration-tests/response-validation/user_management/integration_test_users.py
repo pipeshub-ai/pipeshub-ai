@@ -49,7 +49,6 @@ Requires:
 from __future__ import annotations
 
 import logging
-import os
 import sys
 import uuid
 import base64
@@ -68,7 +67,6 @@ for _p in (_ROOT, _RV_HELPER):
 
 from helper.clients.users_client import UsersClient  # noqa: E402
 from helper.clients.user_groups_client import UserGroupsClient  # noqa: E402
-from helper.clients.config_client import ConfigClient  # noqa: E402
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
 )
@@ -1870,49 +1868,23 @@ class TestGetUsersByIds(UsersTestBase):
 # ====================================================================
 # POST /api/v1/users/bulk/invite  and  /bulk/invite/upload
 # ====================================================================
-def _smtp_env() -> Optional[dict]:
-    """Build an SMTP config from env, or None if not configured.
-
-    CI provides SMTP_HOST/PORT/USERNAME/PASSWORD as secrets. Locally, point
-    these at Mailpit (SMTP_HOST=localhost SMTP_PORT=1025, no credentials).
-    """
-    host = os.getenv("SMTP_HOST")
-    port = os.getenv("SMTP_PORT")
-    if not host or not port:
-        return None
-    username = os.getenv("SMTP_USERNAME", "")
-    return {
-        "host": host,
-        "port": int(port),
-        "username": username,
-        "password": os.getenv("SMTP_PASSWORD", ""),
-        "fromEmail": os.getenv("SMTP_FROM_EMAIL") or username or "no-reply@example.com",
-    }
-
-
 @pytest.mark.integration
 class TestBulkInvite(UsersTestBase):
     """POST /api/v1/users/bulk/invite and /bulk/invite/upload.
 
     The bulk-invite routes are gated by an smtpConfigCheck middleware, so the
-    suite configures SMTP first (POST /configurationManager/smtpConfig) from the
-    SMTP_* env. Without SMTP_HOST/SMTP_PORT the whole class skips, so local runs
-    without a mail server stay green — export the vars (Mailpit is easiest) to
-    exercise it.
+    class depends on the shared ``smtp_configured`` fixture (response-validation
+    conftest), which configures SMTP from the SMTP_* env and skips when it is
+    unset — so local runs without a mail server stay green (export the vars,
+    Mailpit is easiest, to exercise it).
 
     Recipients use the reserved example.com domain so a real relay accepts the
     submission without generating deliverable mail.
     """
 
     @pytest.fixture(autouse=True)
-    def _configure_smtp(self, config_client: ConfigClient) -> None:
-        smtp = _smtp_env()
-        if smtp is None:
-            pytest.skip("SMTP_HOST/SMTP_PORT not set — skipping bulk-invite IT")
-        resp = config_client.create_smtp_config(**smtp)
-        assert resp.status_code in (200, 201), (
-            f"Failed to configure SMTP: {resp.status_code} {resp.text}"
-        )
+    def _require_smtp(self, smtp_configured: None) -> None:
+        """Gate every test in this class on the global SMTP setup fixture."""
 
     @staticmethod
     def _unique_email() -> str:
