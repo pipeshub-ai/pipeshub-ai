@@ -1675,7 +1675,7 @@ class BoxConnector(BaseConnector):
     ) -> None:
         """
         For collaboration-grant events: fetch each item as the collaborator and upsert with
-        is_shared_with_me=True so the record is linked to their Shared with Me group.
+        shared_with_me_record_group_ids so the record is linked to their Shared with Me group.
         """
         if not items:
             return

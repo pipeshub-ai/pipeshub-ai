@@ -1479,7 +1479,6 @@ class TestLinkRecordToGroup:
         tx_store = _make_tx_store()
         record = _make_record()
         record.id = "rec-1"
-        record.is_shared_with_me = True
         record.shared_with_me_record_group_ids = ["shared-ext-group"]
         record.inherit_permissions = True
 

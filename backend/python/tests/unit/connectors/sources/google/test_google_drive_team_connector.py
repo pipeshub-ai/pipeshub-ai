@@ -2189,8 +2189,8 @@ class TestProcessDriveItemsGenerator:
         conn.indexing_filters = MagicMock()
         conn.indexing_filters.is_enabled = MagicMock(side_effect=is_enabled_side_effect)
 
-        # User is the owner so is_shared=True but is_shared_with_me=False,
-        # triggering the shared_disabled path
+        # User is the owner so is_shared=True but shared_with_me_record_group_ids
+        # stays empty, triggering the shared_disabled path
         metadata = _make_file_metadata(shared=True, owners=[{"emailAddress": "u@x.com"}], parents=["d1"])
         results = []
         async for record, perms, update in conn._process_drive_items_generator(
@@ -2198,6 +2198,7 @@ class TestProcessDriveItemsGenerator:
         ):
             results.append(record)
         assert len(results) == 1
+        assert results[0].shared_with_me_record_group_ids == []
         assert results[0].indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
     @pytest.mark.asyncio
