@@ -104,7 +104,7 @@ class HealthCheckFilter(logging.Filter):
 
 
 # Ensure log directory exists
-log_dir = "logs"
+log_dir = os.getenv("LOG_DIR", "logs")
 os.makedirs(log_dir, exist_ok=True)
 
 # Force UTF-8 for stdout/stderr in Windows
