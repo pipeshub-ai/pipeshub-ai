@@ -13,6 +13,7 @@ import {
   OAuthAppStatus,
 } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema';
 import * as oauthTokenServiceProvider from '../../../../src/libs/services/oauth-token-service.provider';
+import * as XLSX from 'xlsx';
 
 /** Query chain stub for OAuthApp.find(...).select().lean().exec() used in softDeleteOAuthAppsForUser */
 function stubOAuthAppsForDeletedUser(appsLeResult: unknown[] = []) {
@@ -4726,6 +4727,167 @@ describe('UserController', () => {
         mockNotificationProducer.publishEvent.lastCall.args[0].payload;
       expect(payload.message).to.include('failed to email');
       expect(next.called).to.be.false;
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // parseEmailsFromFile — CSV / Excel buffer parsing
+  // -----------------------------------------------------------------------
+  describe('parseEmailsFromFile', () => {
+    const parse = (buf: Buffer): string[] =>
+      (controller as any).parseEmailsFromFile(buf);
+
+    it('extracts emails from a CSV buffer, skipping the header and blank cells', () => {
+      const csv = 'Email\na@test.com\n\nb@test.com\n';
+      expect(parse(Buffer.from(csv))).to.deep.equal(['a@test.com', 'b@test.com']);
+    });
+
+    it('flattens multi-column rows and keeps only email-shaped cells', () => {
+      const csv = 'Name,Email\nAlice,alice@test.com\nBob,bob@test.com\n';
+      const result = parse(Buffer.from(csv));
+      expect(result).to.include.members(['alice@test.com', 'bob@test.com']);
+      expect(result).to.not.include('Name');
+      expect(result).to.not.include('Alice');
+    });
+
+    it('strips a UTF-8 BOM so the first email is not corrupted', () => {
+      const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+      const body = Buffer.from('carol@test.com\n');
+      expect(parse(Buffer.concat([bom, body]))).to.deep.equal(['carol@test.com']);
+    });
+
+    it('skips cells longer than 254 characters', () => {
+      const huge = 'x'.repeat(300) + '@test.com';
+      expect(parse(Buffer.from(`good@test.com\n${huge}\n`))).to.deep.equal([
+        'good@test.com',
+      ]);
+    });
+
+    it('parses an .xlsx workbook buffer', () => {
+      const ws = XLSX.utils.aoa_to_sheet([
+        ['Email'],
+        ['x@test.com'],
+        ['y@test.com'],
+      ]);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+      const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+      expect(parse(buf)).to.include.members(['x@test.com', 'y@test.com']);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // normalizeEmails — trim / BOM / lowercase / dedupe
+  // -----------------------------------------------------------------------
+  describe('normalizeEmails', () => {
+    const normalize = (emails: unknown[]): string[] =>
+      (controller as any).normalizeEmails(emails);
+
+    it('trims, lowercases, strips BOM, dedupes, and drops empties', () => {
+      const result = normalize([
+        '  Alice@Test.com  ',
+        '﻿alice@test.com',
+        'BOB@test.com',
+        '',
+        null,
+      ]);
+      expect(result).to.deep.equal(['alice@test.com', 'bob@test.com']);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // addManyUsersFromFile — request-thread validation (before the 202)
+  // -----------------------------------------------------------------------
+  describe('addManyUsersFromFile - request validation', () => {
+    it('rejects when no file is uploaded', async () => {
+      req.body = {};
+      await controller.addManyUsersFromFile(req, res, next);
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('No file uploaded');
+    });
+
+    it('rejects a file with no email addresses', async () => {
+      req.body = { fileBuffer: { buffer: Buffer.from('Name\nAlice\nBob\n') } };
+      await controller.addManyUsersFromFile(req, res, next);
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal(
+        'No email addresses found in the file',
+      );
+    });
+
+    it('rejects a file exceeding the bulk-invite limit', async () => {
+      const lines = Array.from({ length: 1001 }, (_, i) => `user${i}@test.com`);
+      req.body = { fileBuffer: { buffer: Buffer.from(lines.join('\n')) } };
+      await controller.addManyUsersFromFile(req, res, next);
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal(
+        'File exceeds the 1000-user limit',
+      );
+    });
+
+    it('rejects invalid groupIds before starting the import', async () => {
+      req.body = {
+        fileBuffer: { buffer: Buffer.from('a@test.com\n') },
+        groupIds: JSON.stringify(['not-an-objectid']),
+      };
+      await controller.addManyUsersFromFile(req, res, next);
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal(
+        'groupIds must contain valid MongoDB ObjectIds',
+      );
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // addManyUsersFromFile — happy path: 202 now, notification after
+  // -----------------------------------------------------------------------
+  describe('addManyUsersFromFile - success', () => {
+    it('responds 202 and notifies the inviter with the invite summary', async () => {
+      req.body = {
+        fileBuffer: {
+          buffer: Buffer.from('Email\nnew1@test.com\nnew2@test.com\n'),
+        },
+      };
+      sinon
+        .stub(Org, 'findOne')
+        .resolves({ registeredName: 'Corp', shortName: 'C' } as any);
+      sinon.stub(Users, 'find').resolves([]);
+      sinon.stub(Users, 'create').resolves([
+        { _id: 'u-1', email: 'new1@test.com' },
+        { _id: 'u-2', email: 'new2@test.com' },
+      ] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves();
+      sinon.stub(UserGroups, 'updateOne').resolves();
+
+      await controller.addManyUsersFromFile(req, res, next);
+
+      expect(res.status.calledWith(202)).to.be.true;
+      expect(next.called).to.be.false;
+
+      await new Promise((resolve) => setTimeout(resolve, 40));
+
+      expect(mockNotificationProducer.publishEvent.called).to.be.true;
+      const event = mockNotificationProducer.publishEvent.lastCall.args[0];
+      expect(event.payload.title).to.equal('Bulk invite finished');
+      expect(event.payload.severity).to.equal('success');
+      expect(event.payload.message).to.include('2 invited');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // isValidEmail — regression guard for the ReDoS-safe email regex
+  // -----------------------------------------------------------------------
+  describe('addManyUsers - rejects pathological email input quickly', () => {
+    it('classifies a very long malformed address as invalid without hanging', async () => {
+      const nasty = 'a'.repeat(50000) + '@' + 'a'.repeat(50000);
+      req.body = { emails: [nasty] };
+
+      const startedAt = Date.now();
+      await controller.addManyUsers(req, res, next);
+      expect(Date.now() - startedAt).to.be.lessThan(1000);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('Invalid emails are found');
     });
   });
 });
