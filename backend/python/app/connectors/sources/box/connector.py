@@ -323,49 +323,6 @@ class BoxConnector(BaseConnector):
 
         return {}
 
-    def _log_files_api_response(
-        self,
-        response: object,
-        *,
-        api: str,
-        user_email: Optional[str] = None,
-        folder_id: Optional[str] = None,
-        file_id: Optional[str] = None,
-        offset: Optional[int] = None,
-        data: Optional[Dict] = None,
-    ) -> None:
-        """Log the raw Box API response payload for file-fetch calls.
-
-        Pass an already-converted `data` dict when the caller has one, so this purely-diagnostic
-        call doesn't consume an extra `_to_dict` conversion the caller didn't ask for.
-        """
-        if isinstance(response, Exception):
-            self.logger.info(
-                "Box API response [%s] user=%s folder=%s file=%s offset=%s exception=%s",
-                api,
-                user_email or "n/a",
-                folder_id or "n/a",
-                file_id or "n/a",
-                offset if offset is not None else "n/a",
-                response,
-            )
-            return
-
-        raw = data if data is not None else self._to_dict(getattr(response, "data", None))
-        if not raw and getattr(response, "data", None) is not None:
-            raw = response.data
-
-        self.logger.info(
-            "Box API response [%s] user=%s folder=%s file=%s offset=%s success=%s raw=%s",
-            api,
-            user_email or "n/a",
-            folder_id or "n/a",
-            file_id or "n/a",
-            offset if offset is not None else "n/a",
-            getattr(response, "success", None),
-            raw,
-        )
-
     async def _process_box_entry(
         self,
         entry: Dict,
@@ -1065,15 +1022,6 @@ class BoxConnector(BaseConnector):
                 )
 
             data = self._to_dict(response.data)
-
-            self._log_files_api_response(
-                response,
-                api="folders_get_folder_items",
-                user_email=user.email,
-                folder_id=folder_id,
-                offset=offset,
-                data=data,
-            )
 
             if not response.success:
                 self.logger.error(f"Failed to fetch items for folder {folder_id}: {response.error}")
@@ -1941,13 +1889,6 @@ class BoxConnector(BaseConnector):
                         else:
                             file_response = await self.data_source.files_get_file_by_id(item_id)
                             entry = self._to_dict(file_response.data)
-                            self._log_files_api_response(
-                                file_response,
-                                api="files_get_file_by_id",
-                                user_email=collab_email,
-                                file_id=item_id,
-                                data=entry,
-                            )
                             if not file_response.success:
                                 self.logger.warning(f"Failed to fetch file {item_id} as shared-with-me: {file_response.error}")
                                 continue
@@ -1998,13 +1939,6 @@ class BoxConnector(BaseConnector):
             for file_id, res in zip(file_ids, responses):
                 entry = None if isinstance(res, Exception) or not getattr(res, 'success', False) else self._to_dict(getattr(res, 'data', None))
                 file_entries.append(entry)
-                self._log_files_api_response(
-                    res,
-                    api="files_get_file_by_id",
-                    user_email="incremental_sync_user",
-                    file_id=file_id,
-                    data=entry,
-                )
 
             updates_to_push = []
             parent_folders_to_ensure = set()
@@ -2190,15 +2124,6 @@ class BoxConnector(BaseConnector):
                 )
 
                 data = self._to_dict(response.data)
-
-                self._log_files_api_response(
-                    response,
-                    api="folders_get_folder_items",
-                    user_email=effective_email,
-                    folder_id=folder_id,
-                    offset=offset,
-                    data=data,
-                )
 
                 if not response.success:
                     self.logger.error(f"Failed to fetch items for folder {folder_id}: {response.error}")
@@ -2446,15 +2371,6 @@ class BoxConnector(BaseConnector):
                         entry_dict = None
                         if not isinstance(response, Exception) and getattr(response, 'success', False):
                             entry_dict = self._to_dict(getattr(response, 'data', None))
-
-                        if record.mime_type != MimeTypes.FOLDER.value:
-                            self._log_files_api_response(
-                                response,
-                                api="files_get_file_by_id",
-                                user_email="reindex_process",
-                                file_id=record.external_record_id,
-                                data=entry_dict,
-                            )
 
                         if isinstance(response, Exception) or not getattr(response, 'success', False):
                             self.logger.warning(f"Could not fetch record {record.record_name} ({record.external_record_id}) during reindex. It may be deleted.")
