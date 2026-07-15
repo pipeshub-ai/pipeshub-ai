@@ -4,7 +4,7 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Set, Tuple
+from typing import AsyncGenerator, Callable, Dict, List, NoReturn, Optional, Set, Tuple
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -1431,6 +1431,77 @@ class BoxConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ [Incremental] Error during sync: {e}", exc_info=True)
 
+    @staticmethod
+    def _get_collaboration_id(
+        event: Dict, get_val: Callable[..., Optional[object]]
+    ) -> Optional[str]:
+        """
+        Box collaboration events carry the collaboration id under
+        `additional_details.collab_id`. This is the stable key shared across
+        a single share's invite/accept/remove lifecycle.
+        """
+        details = get_val(event, 'additional_details')
+        collab_id = get_val(details, 'collab_id') if details else None
+        return str(collab_id) if collab_id is not None else None
+
+    def _collapse_collaboration_event_pairs(
+        self,
+        events: List[Dict],
+        get_val: Callable[..., Optional[object]],
+        grant_types: Set[str],
+        revoke_types: Set[str],
+        sort_key: Callable[[Dict], Tuple[int, str]],
+    ) -> List[Dict]:
+        """
+        Collapses same-batch collaboration grant/revoke events that share a Box
+        collaboration id down to their single, chronologically-last event.
+
+        `_process_event_batch` doesn't execute grants and revocations at the same
+        time: grants are only queued (`items_to_sync_shared_with_me`) and flushed
+        once the whole batch loop finishes, while revocations run inline as soon
+        as they're seen. Without collapsing, a same-batch invite-then-revoke would
+        have its revoke run first against a record that was never synced (no-op),
+        then have the deferred grant flush afterwards and incorrectly re-add the
+        item as shared - even though the revoke was chronologically later. Reducing
+        each collaboration to its net effect (last grant if it ends "shared", last
+        revoke if it ends "not shared") avoids that and skips the wasted fetch/
+        removal calls for shares that never persist past this batch.
+        """
+        groups: Dict[str, List[Dict]] = {}
+        passthrough: List[Dict] = []
+
+        for event in events:
+            event_type = get_val(event, 'event_type')
+            if event_type not in grant_types and event_type not in revoke_types:
+                passthrough.append(event)
+                continue
+
+            collab_id = self._get_collaboration_id(event, get_val)
+            if not collab_id:
+                # No resolvable collaboration id - fall back to processing this
+                # event on its own, exactly as before this optimization existed.
+                passthrough.append(event)
+                continue
+
+            groups.setdefault(collab_id, []).append(event)
+
+        if not groups:
+            return events
+
+        collapsed_count = 0
+        representatives: List[Dict] = []
+        for group in groups.values():
+            representatives.append(group[-1])  # group is already time-ordered
+            collapsed_count += len(group) - 1
+
+        if collapsed_count:
+            self.logger.info(
+                f"🧹 [Collab Pairing] Collapsed {collapsed_count} redundant collaboration "
+                f"grant/revoke event(s) across {len(groups)} collaboration(s) to their net effect."
+            )
+
+        return sorted(passthrough + representatives, key=sort_key)
+
     async def _process_event_batch(
         self,
         events: List[Dict],
@@ -1442,10 +1513,13 @@ class BoxConnector(BaseConnector):
         Supports "Flat" dictionary schemas and fetches missing emails. Handles files and folders.
 
         Shared-with-me: any collaboration grant where the grantee is a user we sync (in our org)
-        is linked to that user's Shared with Me group, whether the owner is internal or external.
+        is linked to that user's Shared with Me group. Owner may be internal or external, but
+        external-owner items are skipped before fetch (see `_fetch_and_sync_items_as_shared_with_me`)
+        since Box's API 404s on those regardless of who's impersonated.
         """
         items_to_sync: Dict[str, Tuple[str, str]] = {}  # item_id -> (owner_id, item_type)
-        items_to_sync_shared_with_me: List[Tuple[str, str, str, str]] = []  # (item_id, item_type, collaborator_box_id, collaborator_email)
+        # (item_id, item_type, collaborator_box_id, collaborator_email, owner_email)
+        items_to_sync_shared_with_me: List[Tuple[str, str, str, str, Optional[str]]] = []
         items_to_delete: set = set()
 
         DELETION_EVENTS = {
@@ -1488,6 +1562,9 @@ class BoxConnector(BaseConnector):
             return (1, '')  # events without timestamp last
 
         events = sorted(events, key=_event_sort_key)
+        events = self._collapse_collaboration_event_pairs(
+            events, get_val, COLLABORATION_GRANT_EVENTS, REVOCATION_EVENTS, _event_sort_key
+        )
         processed_ids_set = set()
 
         for event in events:
@@ -1542,18 +1619,27 @@ class BoxConnector(BaseConnector):
                 if not item_id:
                     item_id = get_val(event, 'source_item_id') or get_val(event, 'item_id')
 
-                # Fetch Email from Box if we only have ID
+                # Fetch Email from Box if we only have ID. Box's `users_get_user_by_id` only
+                # resolves managed users of this enterprise (plus, briefly, external users while
+                # they're actively collaborated on enterprise content) - so skip the call entirely
+                # for an id we already know isn't a managed user of ours, since it's guaranteed
+                # to 404 and would just add noise.
                 if granted_user_box_id and not granted_email:
-                    try:
-                        user_response = await self.data_source.users_get_user_by_id(granted_user_box_id)
+                    if our_org_box_user_ids is not None and granted_user_box_id not in our_org_box_user_ids:
+                        self.logger.debug(
+                            f"⏭️ Skipping email lookup for {granted_user_box_id} - not a managed user of this org"
+                        )
+                    else:
+                        try:
+                            user_response = await self.data_source.users_get_user_by_id(granted_user_box_id)
 
-                        if user_response.success and user_response.data:
-                            user_data = self._to_dict(user_response.data)
-                            granted_email = user_data.get('login')
-                        else:
-                            self.logger.warning(f"⚠️ Failed to fetch user details for ID {granted_user_box_id}: {user_response.error}")
-                    except Exception as e:
-                        self.logger.error(f"❌ Failed to resolve Box ID {granted_user_box_id}: {e}")
+                            if user_response.success and user_response.data:
+                                user_data = self._to_dict(user_response.data)
+                                granted_email = user_data.get('login')
+                            else:
+                                self.logger.warning(f"⚠️ Failed to fetch user details for ID {granted_user_box_id}: {user_response.error}")
+                        except Exception as e:
+                            self.logger.error(f"❌ Failed to resolve Box ID {granted_user_box_id}: {e}")
 
                 # EXECUTE GRANT - Queue item for sync to update permissions
                 if item_id:
@@ -1562,6 +1648,7 @@ class BoxConnector(BaseConnector):
                     # Get owner information
                     owner = get_val(source, 'owned_by') or get_val(event, 'created_by')
                     owner_id = get_val(owner, 'id') if owner else None
+                    owner_email = get_val(owner, 'login') if owner else None
 
                     # If no owner found, try to fetch the item to get owner info
                     if not owner_id:
@@ -1596,6 +1683,7 @@ class BoxConnector(BaseConnector):
                                 item_type or 'file',
                                 str(granted_user_box_id),
                                 granted_email,
+                                owner_email,
                             ))
                             self.logger.info(
                                 f"📥 Queued {item_type} {item_id} for Shared with Me for {granted_email}"
@@ -1657,18 +1745,44 @@ class BoxConnector(BaseConnector):
                 # Log what we found for debugging
                 self.logger.debug(f"Revocation event - file_id={file_id}, email={removed_email}, user_box_id={removed_user_box_id}, collab_id={collaboration_id}")
 
-                # Fetch Email from Box if we only have ID using data_source
-                if removed_user_box_id and not removed_email:
-                    try:
-                        user_response = await self.data_source.users_get_user_by_id(removed_user_box_id)
+                # Bail out before any email-resolution API calls if there's no synced record for
+                # this item at all - there's nothing to remove access from either way (e.g. a share
+                # granted and revoked before we ever synced it, a grant/revoke pair already
+                # collapsed away earlier in this same batch, or a stale revoke replayed by backfill).
+                existing_record = None
+                if file_id:
+                    async with self.data_store_provider.transaction() as tx_store:
+                        existing_record = await tx_store.get_record_by_external_id(
+                            external_id=file_id,
+                            connector_id=self.connector_id
+                        )
+                    if not existing_record:
+                        self.logger.debug(
+                            f"⏭️ Skipping revocation for {file_id} - no synced record exists to remove access from."
+                        )
+                        continue
 
-                        if user_response.success and user_response.data:
-                            user_data = self._to_dict(user_response.data)
-                            removed_email = user_data.get('login')
-                        else:
-                            self.logger.warning(f"⚠️ Failed to fetch user details for ID {removed_user_box_id}: {user_response.error}")
-                    except Exception as e:
-                        self.logger.error(f"❌ Failed to resolve Box ID {removed_user_box_id}: {e}")
+                # Fetch Email from Box if we only have ID using data_source. Same as the grant
+                # path above: `users_get_user_by_id` only resolves managed users of this
+                # enterprise (or an external user while actively collaborated on enterprise
+                # content - which this collaborator just stopped being, by definition of this
+                # being a removal event), so skip the doomed call for a known-non-managed id.
+                if removed_user_box_id and not removed_email:
+                    if our_org_box_user_ids is not None and removed_user_box_id not in our_org_box_user_ids:
+                        self.logger.debug(
+                            f"⏭️ Skipping email lookup for {removed_user_box_id} - not a managed user of this org"
+                        )
+                    else:
+                        try:
+                            user_response = await self.data_source.users_get_user_by_id(removed_user_box_id)
+
+                            if user_response.success and user_response.data:
+                                user_data = self._to_dict(user_response.data)
+                                removed_email = user_data.get('login')
+                            else:
+                                self.logger.warning(f"⚠️ Failed to fetch user details for ID {removed_user_box_id}: {user_response.error}")
+                        except Exception as e:
+                            self.logger.error(f"❌ Failed to resolve Box ID {removed_user_box_id}: {e}")
 
                 # EXECUTE REMOVAL
                 if file_id and removed_email:
@@ -1684,22 +1798,16 @@ class BoxConnector(BaseConnector):
                     if internal_user:
                         user_id = getattr(internal_user, 'id', None)
                         if user_id:
-                            # First, check if this is a folder to handle recursively
-                            async with self.data_store_provider.transaction() as tx_store:
-                                record = await tx_store.get_record_by_external_id(
-                                    external_id=file_id,
-                                    connector_id=self.connector_id
+                            if existing_record.mime_type == MimeTypes.FOLDER.value:
+                                # Folder - remove access from folder and all descendants
+                                self.logger.info(f"📁 Removing folder access recursively for {file_id}")
+                                await self._remove_user_access_from_folder_recursively(
+                                    folder_external_id=file_id,
+                                    user_id=user_id
                                 )
-
-                                if record and record.mime_type == MimeTypes.FOLDER.value:
-                                    # Folder - remove access from folder and all descendants
-                                    self.logger.info(f"📁 Removing folder access recursively for {file_id}")
-                                    await self._remove_user_access_from_folder_recursively(
-                                        folder_external_id=file_id,
-                                        user_id=user_id
-                                    )
-                                else:
-                                    # File - remove direct access
+                            else:
+                                # File - remove direct access
+                                async with self.data_store_provider.transaction() as tx_store:
                                     await tx_store.remove_user_access_to_record(
                                         connector_id=self.connector_id,
                                         external_id=file_id,
@@ -1782,17 +1890,37 @@ class BoxConnector(BaseConnector):
 
     async def _fetch_and_sync_items_as_shared_with_me(
         self,
-        items: List[Tuple[str, str, str, str]],  # (item_id, item_type, collaborator_box_id, collaborator_email)
+        # (item_id, item_type, collaborator_box_id, collaborator_email, owner_email)
+        items: List[Tuple[str, str, str, str, Optional[str]]],
     ) -> None:
         """
         For collaboration-grant events: fetch each item as the collaborator and upsert with
-        shared_with_me_record_group_ids so the record is linked to their Shared with Me group.
+        is_shared_with_me=True so the record is linked to their Shared with Me group.
+
+        Skips items owned by a user outside our org: Box's Files/Folders API reliably 404s
+        even for the legitimate collaborator (impersonated via As-User) when the owner is
+        external, so attempting the fetch is guaranteed-wasted work that only produces noisy
+        warnings. Owners are resolved in one batched `_get_app_users_by_emails` call (not
+        per-item) to avoid an N+1 lookup. Items with no resolvable owner_email are still
+        attempted, since we can't confirm they're external.
         """
         if not items:
             return
+
+        owner_emails = {owner_email for *_rest, owner_email in items if owner_email}
+        in_org_owner_emails = set()
+        if owner_emails:
+            owner_users = await self._get_app_users_by_emails(list(owner_emails))
+            in_org_owner_emails = {u.email for u in owner_users}
+
         # Group by collaborator to minimize as-user context switches
         by_collaborator: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}  # (box_id, email) -> [(item_id, item_type)]
-        for item_id, item_type, collab_box_id, collab_email in items:
+        for item_id, item_type, collab_box_id, collab_email, owner_email in items:
+            if owner_email and owner_email not in in_org_owner_emails:
+                self.logger.debug(
+                    f"⏭️ Skipping Shared with Me for {item_id}: owner {owner_email} is outside the org"
+                )
+                continue
             key = (collab_box_id, collab_email)
             if key not in by_collaborator:
                 by_collaborator[key] = []
