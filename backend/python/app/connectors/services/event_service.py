@@ -115,9 +115,10 @@ class EventService:
             config_service = self.app_container.config_service()
             data_store_provider = GraphDataStore(self.logger, self.graph_provider)
 
-            # Extract scope and createdBy from connector document
+            # Extract scope, createdBy and org from connector document
             scope = connector_doc.get("scope", "personal")
             created_by = connector_doc.get("createdBy", "")
+            org_id = connector_doc.get("orgId")
 
             connector = await ConnectorFactory.initialize_connector(
                 name=connector_name,
@@ -127,6 +128,7 @@ class EventService:
                 connector_id=connector_id,
                 scope=scope,
                 created_by=created_by,
+                org_id=org_id,
                 notification_service=self.app_container.connector_notification_service(),
             )
 
@@ -213,6 +215,7 @@ class EventService:
                 connector_id=connector_id,
                 scope=scope,
                 created_by=created_by,
+                org_id=org_id,
                 notification_service=self.app_container.connector_notification_service(),
             )
 
