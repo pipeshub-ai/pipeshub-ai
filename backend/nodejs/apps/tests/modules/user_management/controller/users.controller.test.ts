@@ -34,6 +34,7 @@ describe('UserController', () => {
   let mockAuthService: any;
   let mockLogger: any;
   let mockEventService: any;
+  let mockNotificationProducer: any;
   let req: any;
   let res: any;
   let next: sinon.SinonStub;
@@ -70,12 +71,20 @@ describe('UserController', () => {
       isConnected: sinon.stub().returns(false),
     };
 
+    mockNotificationProducer = {
+      start: sinon.stub().resolves(),
+      stop: sinon.stub().resolves(),
+      publishEvent: sinon.stub().resolves(),
+      isConnected: sinon.stub().returns(true),
+    };
+
     controller = new UserController(
       mockConfig,
       mockMailService,
       mockAuthService,
       mockLogger,
       mockEventService,
+      mockNotificationProducer,
     );
 
     req = {
@@ -4618,6 +4627,105 @@ describe('UserController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.include('Error fetching auth methods');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Bulk-safety: one recipient failing must not stop the others
+  // -----------------------------------------------------------------------
+  describe('addManyUsers - partial mail failure does not abort the batch', () => {
+    it('still sends the other invites when one email fails, and reports the failing code', async () => {
+      req.body = {
+        emails: ['a@test.com', 'b@test.com', 'c@test.com'],
+        groupIds: [],
+      };
+
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp', shortName: 'C' } as any);
+      sinon.stub(Users, 'find').resolves([]);
+      sinon.stub(Users, 'create').resolves([
+        { _id: 'u-a', email: 'a@test.com' },
+        { _id: 'u-b', email: 'b@test.com' },
+        { _id: 'u-c', email: 'c@test.com' },
+      ] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves();
+      sinon.stub(UserGroups, 'updateOne').resolves();
+
+      mockAuthService.passwordMethodEnabled.resolves({
+        statusCode: 200,
+        data: { isPasswordAuthEnabled: false },
+      });
+      // The middle recipient fails; a@ and c@ must still be sent.
+      mockMailService.sendMail
+        .onCall(0).resolves({ statusCode: 200 })
+        .onCall(1).resolves({ statusCode: 502 })
+        .onCall(2).resolves({ statusCode: 200 });
+
+      await controller.addManyUsers(req, res, next);
+
+      // All three attempted — the failure did not abort the loop.
+      expect(mockMailService.sendMail.callCount).to.equal(3);
+      const sent = mockMailService.sendMail
+        .getCalls()
+        .map((call: any) => call.args[0].usersMails[0]);
+      expect(sent).to.include.members(['a@test.com', 'c@test.com']);
+
+      // The failing mail service code is surfaced, not a blanket 500.
+      expect(res.status.calledWith(502)).to.be.true;
+      expect(next.called).to.be.false;
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // File upload: responds first, then reports mail failures via notification
+  // -----------------------------------------------------------------------
+  describe('addManyUsersFromFile - continues on individual mail failures', () => {
+    it('responds 202, sends the remaining invites, and reports failures via notification', async () => {
+      req.body = {
+        fileBuffer: {
+          buffer: Buffer.from('Email\na@test.com\nb@test.com\nc@test.com\n'),
+        },
+      };
+
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp', shortName: 'C' } as any);
+      sinon.stub(Users, 'find').resolves([]);
+      sinon.stub(Users, 'create').resolves([
+        { _id: 'u-a', email: 'a@test.com' },
+        { _id: 'u-b', email: 'b@test.com' },
+        { _id: 'u-c', email: 'c@test.com' },
+      ] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves();
+      sinon.stub(UserGroups, 'updateOne').resolves();
+
+      mockAuthService.passwordMethodEnabled.resolves({
+        statusCode: 200,
+        data: { isPasswordAuthEnabled: false },
+      });
+      mockMailService.sendMail
+        .onCall(0).resolves({ statusCode: 200 })
+        .onCall(1).resolves({ statusCode: 500 })
+        .onCall(2).resolves({ statusCode: 200 });
+
+      await controller.addManyUsersFromFile(req, res, next);
+
+      // Responds immediately, before any mail is sent.
+      expect(res.status.calledWith(202)).to.be.true;
+
+      // Let the background task finish.
+      await new Promise((resolve) => setTimeout(resolve, 40));
+
+      // All three attempted despite the middle failure.
+      expect(mockMailService.sendMail.callCount).to.equal(3);
+      const sent = mockMailService.sendMail
+        .getCalls()
+        .map((call: any) => call.args[0].usersMails[0]);
+      expect(sent).to.include.members(['a@test.com', 'c@test.com']);
+
+      // The failure is surfaced after the response, via the notification.
+      expect(mockNotificationProducer.publishEvent.called).to.be.true;
+      const payload =
+        mockNotificationProducer.publishEvent.lastCall.args[0].payload;
+      expect(payload.message).to.include('failed to email');
+      expect(next.called).to.be.false;
     });
   });
 });
