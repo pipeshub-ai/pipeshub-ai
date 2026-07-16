@@ -3725,20 +3725,18 @@ class TestValidateUploadContext:
 
     @pytest.mark.asyncio
     async def test_no_role_rejected_with_no_access_message(self, neo4j_provider: Neo4jProvider):
-        """User with no KB role (None) must not see 'Role: None'; gets 'no access' message."""
+        """User with no KB role gets 404 to hide KB existence."""
         neo4j_provider.get_user_by_user_id = AsyncMock(
             return_value={"_key": "uk1", "id": "uk1"}
         )
+        neo4j_provider.kb_exists = AsyncMock(return_value=True)
         neo4j_provider.get_user_kb_permission = AsyncMock(return_value=None)
-        neo4j_provider._fetch_kb_name = AsyncMock(return_value="My KB")
 
         result = await neo4j_provider._validate_upload_context("kb1", "u1", "org1")
 
         assert result["valid"] is False
-        assert result["code"] == 403
-        assert "Role: None" not in result["reason"]
-        assert "My KB" in result["reason"]
-        assert "OWNER or WRITER" in result["reason"]
+        assert result["code"] == 404
+        assert "kb1" in result["reason"]
 
     @pytest.mark.asyncio
     async def test_folder_not_in_kb_includes_names_in_message(self, neo4j_provider: Neo4jProvider):
@@ -3877,22 +3875,20 @@ class TestValidateFolderForUpload:
 
     @pytest.mark.asyncio
     async def test_no_role_returns_403_without_role_none_text(self, neo4j_provider: Neo4jProvider):
-        """User with no KB role at all must not see 'Role: None'."""
+        """User with no KB role gets 404 to hide KB existence."""
         neo4j_provider.get_user_by_user_id = AsyncMock(
             return_value={"_key": "uk1", "id": "uk1"}
         )
+        neo4j_provider.kb_exists = AsyncMock(return_value=True)
         neo4j_provider.get_user_kb_permission = AsyncMock(return_value=None)
-        neo4j_provider._fetch_kb_name = AsyncMock(return_value="Docs KB")
 
         result = await neo4j_provider.validate_folder_for_upload(
             kb_id="kb1", folder_id="f1", user_id="u1", org_id="org1"
         )
 
         assert result["valid"] is False
-        assert result["code"] == 403
-        assert "Role: None" not in result["reason"]
-        assert "Docs KB" in result["reason"]
-        assert "OWNER or WRITER" in result["reason"]
+        assert result["code"] == 404
+        assert "kb1" in result["reason"]
 
     @pytest.mark.asyncio
     async def test_user_not_found_returns_404(self, neo4j_provider: Neo4jProvider):
