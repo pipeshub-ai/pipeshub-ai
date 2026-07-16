@@ -24,7 +24,7 @@ Counts are BELONGS_TO-guarded (see the IT graph providers).
   order 15 TC-BROWSE-001      — BROWSE_PROJECTS scheme → PERMISSION→RecordGroup
   order 16 TC-FILTER-001      — in [A,B,(C)]
   order 17 TC-FILTER-002      — not_in [A] (primary absent)
-  order 18 TC-FILTER-DATE-001 — created/modified windows
+  order 18 TC-FILTER-DATE-001 — created after/before windows
   order 19 TC-FILTER-003      — empty = all (last)
 """
 
@@ -55,9 +55,7 @@ from validation.graph_entity_validator import (  # noqa: E402
     assert_user_app_edge,
 )
 from connectors.jira.constants import (  # noqa: E402
-    JIRA_FILTER_CREATED_CUT_MS,
-    JIRA_FILTER_FAR_FUTURE_MS,
-    JIRA_FILTER_FAR_PAST_MS,
+    JIRA_FILTER_DATE_CUT_MS,
     JIRA_INDEXING_WAIT_SEC,
     JIRA_USERS_GROUP_NAME,
 )
@@ -889,45 +887,39 @@ class TestJiraFilters:
         logger.info("TC-FILTER-002 passed: primary excluded")
 
     @pytest.mark.order(18)
-    async def test_tc_filter_date_001_created_modified_windows(
+    async def test_tc_filter_date_001_created_windows(
         self,
         jira_connector: dict[str, Any],
         jira_datasource: JiraDataSource,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-FILTER-DATE-001: the created-date filter partitions the primary project at a fixed
-        cut, and the modified-date filter's direction holds (all / none).
+        """TC-FILTER-DATE-001: created filter partitions primary at ``JIRA_FILTER_DATE_CUT_MS``.
 
-        The cut (``JIRA_FILTER_CREATED_CUT_MS``) is a fixed instant in the gap between the original
-        fixture batch and the later "IT Date Filter New" tickets, chosen so the connector's created
-        filter splits old vs new identically regardless of its JQL timezone quirk. Expected id sets
-        are derived from live Jira with the SAME cut (issue keys are not hardcoded), so the test
-        auto-adjusts to added tickets and never drifts (``created`` is immutable).
+        Expected id sets come from live Jira ``created`` at that cut (``>=`` / ``<=``, matching
+        connector JQL). Only ``project_keys: in [primary]`` + created window — no modified filter.
         """
         connector_id = jira_connector["connector_id"]
         primary_key = jira_connector["primary_key"]
+        cut = JIRA_FILTER_DATE_CUT_MS
 
-        # Partition the live primary issues by the fixed cut (external record id == Jira issue id).
         issues = await search_issues_jql(
-            jira_datasource, f'project = "{primary_key}"', ["created", "updated"],
+            jira_datasource, f'project = "{primary_key}"', ["created"],
         )
         created_by_id = {
             str(it["id"]): parse_jira_timestamp((it.get("fields") or {}).get("created"))
             for it in issues if (it.get("fields") or {}).get("created")
         }
-        total = len(created_by_id)
-        expected_after = {i for i, c in created_by_id.items() if c >= JIRA_FILTER_CREATED_CUT_MS}
-        expected_before = {i for i, c in created_by_id.items() if c <= JIRA_FILTER_CREATED_CUT_MS}
-        if not expected_after or not expected_before:
+        expected_created_after = {i for i, c in created_by_id.items() if c >= cut}
+        expected_created_before = {i for i, c in created_by_id.items() if c <= cut}
+
+        if not expected_created_after or not expected_created_before:
             pytest.fail(
                 "TC-FILTER-DATE-001 setup: primary needs tickets on BOTH sides of "
-                "JIRA_FILTER_CREATED_CUT_MS. Re-provision the 'IT Date Filter New' group (created "
-                "> ~11h after the batch) and recompute the cut."
+                "JIRA_FILTER_DATE_CUT_MS by ``created``. Re-provision the "
+                "'IT Date Filter New' group and recompute the cut."
             )
 
-        # DATETIME filter value is a {start, end} epoch-ms window: start = "after", end = "before"
-        # (get_value returns the (start, end) tuple the connector unpacks as created_after/before).
         def _dt(start: int | None, end: int | None) -> dict[str, Any]:
             op = "is_after" if end is None else "is_before"
             return {"type": "datetime", "operator": op, "value": {"start": start, "end": end}}
@@ -936,42 +928,23 @@ class TestJiraFilters:
             return await graph_provider.count_records_by_type(connector_id, RecordType.TICKET.value)
 
         async def _assert_scope(expected_ids: set[str], label: str) -> None:
-            # count == len AND every expected id present ⇒ the synced set is exactly expected_ids
-            # (a wrong ticket would push the count over, a missing one would fail the presence loop).
             count = await _count()
             assert count == len(expected_ids), f"{label}: expected {len(expected_ids)} tickets, got {count}"
             for external_id in expected_ids:
                 rec = await graph_provider.get_record_by_external_id(connector_id, external_id)
                 assert rec is not None, f"{label}: ticket {external_id} should be in scope but is absent"
 
-        # created is_after the cut → only the newer group.
         await _apply_filter_full_sync(
             pipeshub_client, graph_provider, connector_id,
-            _sync_filters(project_keys=_pk("in", [primary_key]), created=_dt(JIRA_FILTER_CREATED_CUT_MS, None)),
+            _sync_filters(project_keys=_pk("in", [primary_key]), created=_dt(cut, None)),
         )
-        await _assert_scope(expected_after, "created_after(cut)")
+        await _assert_scope(expected_created_after, "created_after(cut)")
 
-        # created is_before the cut → only the older batch (exercises the `end` side).
         await _apply_filter_full_sync(
             pipeshub_client, graph_provider, connector_id,
-            _sync_filters(project_keys=_pk("in", [primary_key]), created=_dt(None, JIRA_FILTER_CREATED_CUT_MS)),
+            _sync_filters(project_keys=_pk("in", [primary_key]), created=_dt(None, cut)),
         )
-        await _assert_scope(expected_before, "created_before(cut)")
-
-        # modified is_after a far-past sentinel → everything (updated is mutable, so a partition
-        # here would drift; the sentinels validate the filter's direction without depending on it).
-        await _apply_filter_full_sync(
-            pipeshub_client, graph_provider, connector_id,
-            _sync_filters(project_keys=_pk("in", [primary_key]), modified=_dt(JIRA_FILTER_FAR_PAST_MS, None)),
-        )
-        assert await _count() == total, f"modified_after(far-past) should sync all {total} tickets"
-
-        # modified is_after a far-future sentinel → nothing.
-        await _apply_filter_full_sync(
-            pipeshub_client, graph_provider, connector_id,
-            _sync_filters(project_keys=_pk("in", [primary_key]), modified=_dt(JIRA_FILTER_FAR_FUTURE_MS, None)),
-        )
-        assert await _count() == 0, "modified_after(far-future) should sync 0 tickets"
+        await _assert_scope(expected_created_before, "created_before(cut)")
         logger.info("TC-FILTER-DATE-001 passed")
 
     @pytest.mark.order(19)

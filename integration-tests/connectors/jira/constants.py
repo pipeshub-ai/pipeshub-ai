@@ -28,17 +28,6 @@ JIRA_REFERENCE_ISSUE_KEY = "KAN-4"
 # have User→Group edges. Empty string skips that check.
 JIRA_USERS_GROUP_NAME = "jira-users-pipeshub-it"
 
-# TC-FILTER-DATE-001 partition cut (epoch-ms). Fixed in the gap between the original fixture
-# batch (created 2026-07-15 ~19:35 IST) and the later "IT Date Filter New" tickets. It sits
-# inside the tz-safe window — further from either group than the connector account's UTC offset
-# (+05:30) — so the connector's created-date filter splits old vs new identically whether or not
-# its JQL timezone quirk is ever fixed. Verified against live Jira: created_after → the new group,
-# created_before → the batch. ``created`` is immutable so this never drifts; recompute only if the
-# new-group tickets are re-provisioned. The test derives the expected id sets from live Jira using
-# this same cut (it does not hardcode issue keys), so added tickets are handled automatically.
-JIRA_FILTER_CREATED_CUT_MS = 1784146637293
-
-# Far-out sentinels for the mutable ``updated`` field (all / none directions of the modified
-# filter). A century margin dwarfs any account tz offset, so these are robust and never break.
-JIRA_FILTER_FAR_PAST_MS = 946684800000     # 2000-01-01T00:00:00Z
-JIRA_FILTER_FAR_FUTURE_MS = 4102444800000  # 2100-01-01T00:00:00Z
+# Fixed cut between the original fixture batch and later "IT Date Filter New" tickets.
+# Used for created after/before partitions in TC-FILTER-DATE-001 (``created`` is immutable).
+JIRA_FILTER_DATE_CUT_MS = 1784146637293
