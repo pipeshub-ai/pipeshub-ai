@@ -15,7 +15,7 @@ from ``JIRA_TEST_PROJECT_KEYS`` (env); fixture issue keys come from ``constants.
 import logging
 import os
 import uuid
-from typing import Any, AsyncGenerator, Callable, Dict, Optional
+from typing import Any, AsyncGenerator, Callable, Optional
 
 import pytest
 import pytest_asyncio
@@ -105,7 +105,7 @@ async def jira_connector(
     jira_datasource: JiraDataSource,
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
-) -> AsyncGenerator[Dict[str, Any], None]:
+) -> AsyncGenerator[dict[str, Any], None]:
     """Module-scoped Jira connector: sync pre-provisioned projects, discover references, snapshot.
 
     Yields a state dict with project/primary ids, discovered reference/hierarchy/attachment
@@ -125,7 +125,7 @@ async def jira_connector(
     primary_key = project_keys[0]
 
     connector_name = f"jira-test-{uuid.uuid4().hex[:8]}"
-    state: Dict[str, Any] = {
+    state: dict[str, Any] = {
         "project_keys": project_keys,
         "primary_key": primary_key,
         "primary_project_id": None,
@@ -149,7 +149,7 @@ async def jira_connector(
     logger.info("SETUP: Jira IT projects=%s (primary=%s)", project_keys, primary_key)
 
     # 1. Resolve each project id (with lead expanded); fail if a configured project is missing.
-    project_id_by_key: Dict[str, str] = {}
+    project_id_by_key: dict[str, str] = {}
     for key in project_keys:
         resp = await jira_datasource.get_project(projectIdOrKey=key, expand="lead")
         if resp.status != 200:
@@ -213,7 +213,7 @@ async def jira_connector(
         state["link_source_issue_key"] = JIRA_LINK_SOURCE_ISSUE_KEY
 
     # 4. Register connector with the primary filter baked into create-config (active on first sync).
-    config: Dict[str, Any] = {
+    config: dict[str, Any] = {
         "auth": {
             "authType": "API_TOKEN",
             "baseUrl": base_url,

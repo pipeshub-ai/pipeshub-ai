@@ -33,7 +33,7 @@ import os
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 
@@ -87,7 +87,7 @@ from connectors.jira.jira_test_utils import (  # noqa: E402
 logger = logging.getLogger("jira-lifecycle-test")
 
 
-def _adf(text: str) -> Dict[str, Any]:
+def _adf(text: str) -> dict[str, Any]:
     """Minimal Atlassian Document Format paragraph."""
     return {
         "type": "doc",
@@ -108,10 +108,10 @@ async def _apply_filter_full_sync(
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
     connector_id: str,
-    filters: Dict[str, Any],
+    filters: dict[str, Any],
     *,
     timeout: int = 300,
-):
+) -> int:
     """Set a full filter payload then force a full sync (wipes+recreates sync edges).
 
     A full sync is required for scope *narrowing* to be reflected: it strips
@@ -128,7 +128,7 @@ async def _apply_filter_full_sync(
     )
 
 
-def _sync_filters(**values: Any) -> Dict[str, Any]:
+def _sync_filters(**values: Any) -> dict[str, Any]:
     """Wrap filter fields into the connector's ``config.filters.sync.values`` shape.
 
     The connector reads ``config.filters.sync.values.<key>`` (see load_connector_filters);
@@ -139,7 +139,7 @@ def _sync_filters(**values: Any) -> Dict[str, Any]:
     return {"sync": {"values": values}}
 
 
-def _pk(operator: str, values: List[str]) -> Dict[str, Any]:
+def _pk(operator: str, values: list[str]) -> dict[str, Any]:
     return {"operator": operator, "type": "list", "value": values}
 
 
@@ -161,7 +161,7 @@ class TestJiraConnector:
     @pytest.mark.order(1)
     async def test_tc_sync_001_full_sync_graph_validation(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         jira_datasource: JiraDataSource,
         graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -237,7 +237,7 @@ class TestJiraConnector:
     @pytest.mark.order(8)
     async def test_tc_incr_001_incremental_sync_new_issue(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         jira_datasource: JiraDataSource,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
@@ -308,7 +308,7 @@ class TestJiraConnector:
     @pytest.mark.order(9)
     async def test_tc_update_001_content_and_summary_revision(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         jira_datasource: JiraDataSource,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
@@ -354,7 +354,7 @@ class TestJiraConnector:
             assert new_summary in (record_after.record_name or "")
             logger.info("TC-UPDATE-001 passed: version %s -> %s", old_version, record_after.version)
         finally:
-            restore_fields: Dict[str, Any] = {"summary": orig_summary}
+            restore_fields: dict[str, Any] = {"summary": orig_summary}
             if orig_description is not None:
                 restore_fields["description"] = orig_description
             try:
@@ -377,7 +377,7 @@ class TestJiraValidation:
     @pytest.mark.order(2)
     async def test_tc_jira_001_user_properties(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         jira_datasource: JiraDataSource,
         graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -398,7 +398,7 @@ class TestJiraValidation:
     @pytest.mark.order(3)
     async def test_tc_jira_002_group_properties(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         jira_datasource: JiraDataSource,
         graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -431,7 +431,7 @@ class TestJiraValidation:
     @pytest.mark.order(4)
     async def test_tc_jira_role_001_project_roles(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         jira_datasource: JiraDataSource,
         graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -486,7 +486,7 @@ class TestJiraValidation:
     @pytest.mark.order(5)
     async def test_tc_jira_003_project_record_group(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         jira_datasource: JiraDataSource,
         graph_provider: GraphProviderProtocol,
         connector_assertions: ConnectorAssertions,
@@ -521,7 +521,7 @@ class TestJiraValidation:
     @pytest.mark.order(6)
     async def test_tc_jira_004_issue_properties(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         jira_datasource: JiraDataSource,
         graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -548,7 +548,7 @@ class TestJiraValidation:
     @pytest.mark.order(11)
     async def test_tc_jira_entity_001_ticket_user_relations(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         jira_datasource: JiraDataSource,
         graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -587,7 +587,7 @@ class TestJiraValidation:
     @pytest.mark.order(12)
     async def test_tc_jira_links_001_outward_issue_links(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         jira_datasource: JiraDataSource,
         graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -638,7 +638,7 @@ class TestJiraIndexing:
     @pytest.mark.order(7)
     async def test_tc_jira_idx_001_reference_issue_indexing_completed(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         jira_datasource: JiraDataSource,
         graph_provider: GraphProviderProtocol,
         pipeshub_client: PipeshubClient,
@@ -672,7 +672,7 @@ class TestJiraHierarchy:
     @pytest.mark.order(10)
     async def test_tc_jira_hier_001_parent_child(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-JIRA-HIER-001: Epic↔child and Task↔sub-task hierarchy built as PARENT_CHILD (read-only)."""
@@ -713,7 +713,7 @@ class TestJiraAttachments:
     @pytest.mark.order(13)
     async def test_tc_jira_attach_001_attachment_as_file_record(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         jira_datasource: JiraDataSource,
         graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -730,7 +730,6 @@ class TestJiraAttachments:
         att_filename = meta.get("filename", "unknown")
         att_mime = meta.get("mimeType", "application/octet-stream")
         att_size = int(meta.get("size", 0) or 0)
-        from connectors.jira.jira_test_utils import parse_jira_timestamp  # local import to keep top tidy
         att_created_ms = parse_jira_timestamp(meta.get("created")) if meta.get("created") else 0
 
         external_id = f"attachment_{attachment_id}"
@@ -760,7 +759,7 @@ class TestJiraBlocks:
     @pytest.mark.order(14)
     async def test_tc_jira_blocks_001_streamed_blocks_expected(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
         pipeshub_client: PipeshubClient,
     ) -> None:
@@ -805,7 +804,7 @@ class TestJiraBrowseProjectPermissions:
     @pytest.mark.order(15)
     async def test_tc_browse_001_default_scheme_matches_graph(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         jira_datasource: JiraDataSource,
         graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -839,7 +838,7 @@ class TestJiraFilters:
     @pytest.mark.order(16)
     async def test_tc_filter_001_in_multiple_projects(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -861,7 +860,7 @@ class TestJiraFilters:
     @pytest.mark.order(17)
     async def test_tc_filter_002_not_in_primary(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
@@ -892,7 +891,7 @@ class TestJiraFilters:
     @pytest.mark.order(18)
     async def test_tc_filter_date_001_created_modified_windows(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         jira_datasource: JiraDataSource,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
@@ -929,7 +928,7 @@ class TestJiraFilters:
 
         # DATETIME filter value is a {start, end} epoch-ms window: start = "after", end = "before"
         # (get_value returns the (start, end) tuple the connector unpacks as created_after/before).
-        def _dt(start: int | None, end: int | None) -> Dict[str, Any]:
+        def _dt(start: int | None, end: int | None) -> dict[str, Any]:
             op = "is_after" if end is None else "is_before"
             return {"type": "datetime", "operator": op, "value": {"start": start, "end": end}}
 
@@ -978,7 +977,7 @@ class TestJiraFilters:
     @pytest.mark.order(19)
     async def test_tc_filter_003_empty_all(
         self,
-        jira_connector: Dict[str, Any],
+        jira_connector: dict[str, Any],
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
