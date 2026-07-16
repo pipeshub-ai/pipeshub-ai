@@ -528,7 +528,7 @@ class QdrantService(IVectorDBService):
         self,
         collection_name: str,
         points: List[VectorPoint],
-        batch_size: int = 500,
+        batch_size: int = 512,
     ) -> None:
         self._assert_connected()
         qdrant_points = [QdrantUtils.vector_point_to_qdrant(p) for p in points]
