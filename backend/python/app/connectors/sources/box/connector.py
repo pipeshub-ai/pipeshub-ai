@@ -1021,11 +1021,11 @@ class BoxConnector(BaseConnector):
                     fields=fields,
                 )
 
-            data = self._to_dict(response.data)
-
             if not response.success:
                 self.logger.error(f"Failed to fetch items for folder {folder_id}: {response.error}")
                 break
+            
+            data = self._to_dict(response.data)
 
             items = data.get('entries', [])
             total_count = data.get('total_count', 0)
@@ -1229,7 +1229,7 @@ class BoxConnector(BaseConnector):
             self.logger.info("📦 [Full Sync] Backfilling historical 'Shared with Me' collaborations...")
             our_org_box_user_ids = {
                 str(u.source_user_id) for u in (users or [])
-                if getattr(u, 'source_user_id', None)
+                if u.source_user_id
             }
             await self._backfill_shared_with_me_history(our_org_box_user_ids)
 
@@ -1573,7 +1573,7 @@ class BoxConnector(BaseConnector):
                 # for an id we already know isn't a managed user of ours, since it's guaranteed
                 # to 404 and would just add noise.
                 if granted_user_box_id and not granted_email:
-                    if our_org_box_user_ids is not None and granted_user_box_id not in our_org_box_user_ids:
+                    if our_org_box_user_ids is not None and str(granted_user_box_id) not in our_org_box_user_ids:
                         self.logger.debug(
                             f"⏭️ Skipping email lookup for {granted_user_box_id} - not a managed user of this org"
                         )
@@ -1855,7 +1855,7 @@ class BoxConnector(BaseConnector):
         if not items:
             return
 
-        owner_emails = {owner_email for *_rest, owner_email in items if owner_email}
+        owner_emails = {owner_email for _, _, _, _, owner_email in items if owner_email}
         in_org_owner_emails = set()
         if owner_emails:
             owner_users = await self._get_app_users_by_emails(list(owner_emails))
@@ -1888,8 +1888,8 @@ class BoxConnector(BaseConnector):
                             entry = self._to_dict(folder_response.data)
                         else:
                             file_response = await self.data_source.files_get_file_by_id(item_id)
-                            entry = self._to_dict(file_response.data)
                             if not file_response.success:
+                                entry = self._to_dict(file_response.data)
                                 self.logger.warning(f"Failed to fetch file {item_id} as shared-with-me: {file_response.error}")
                                 continue
                         if not entry:
@@ -1937,7 +1937,7 @@ class BoxConnector(BaseConnector):
             # Convert each response to a dict once and reuse it for logging + both passes below.
             file_entries: List[Optional[Dict]] = []
             for file_id, res in zip(file_ids, responses):
-                entry = None if isinstance(res, Exception) or not getattr(res, 'success', False) else self._to_dict(getattr(res, 'data', None))
+                entry = None if isinstance(res, Exception) or not res.success else self._to_dict(res.data)
                 file_entries.append(entry)
 
             updates_to_push = []
@@ -2123,11 +2123,11 @@ class BoxConnector(BaseConnector):
                     fields=fields,
                 )
 
-                data = self._to_dict(response.data)
-
                 if not response.success:
                     self.logger.error(f"Failed to fetch items for folder {folder_id}: {response.error}")
                     break
+
+                data = self._to_dict(response.data)
 
                 items = data.get('entries', [])
                 total_count = data.get('total_count', 0)
@@ -2369,12 +2369,11 @@ class BoxConnector(BaseConnector):
 
                     for record, response in zip(owner_records, responses):
                         entry_dict = None
-                        if not isinstance(response, Exception) and getattr(response, 'success', False):
-                            entry_dict = self._to_dict(getattr(response, 'data', None))
-
-                        if isinstance(response, Exception) or not getattr(response, 'success', False):
+                        if isinstance(response, Exception) or not response.success:
                             self.logger.warning(f"Could not fetch record {record.record_name} ({record.external_record_id}) during reindex. It may be deleted.")
                             continue
+
+                        entry_dict = self._to_dict(response.data)
 
                         if not entry_dict:
                             continue

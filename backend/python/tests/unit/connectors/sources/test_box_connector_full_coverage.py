@@ -834,7 +834,7 @@ class TestBoxFetchAndSyncItemsAsSharedWithMe:
             record=MagicMock(), new_permissions=[]
         ))
 
-        items = [("f1", "file", "u1", "user@test.com")]
+        items = [("f1", "file", "u1", "user@test.com", None)]
         await box_connector._fetch_and_sync_items_as_shared_with_me(items)
         box_connector.data_entities_processor.on_new_records.assert_awaited()
 
@@ -852,7 +852,7 @@ class TestBoxFetchAndSyncItemsAsSharedWithMe:
         ))
         box_connector._sync_folder_contents_recursively = AsyncMock()
 
-        items = [("d1", "folder", "u1", "user@test.com")]
+        items = [("d1", "folder", "u1", "user@test.com", None)]
         await box_connector._fetch_and_sync_items_as_shared_with_me(items)
         box_connector._sync_folder_contents_recursively.assert_awaited()
 
