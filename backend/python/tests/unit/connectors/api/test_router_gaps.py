@@ -88,6 +88,15 @@ from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.models.entities import RecordType
 
 _ROUTER = "app.connectors.api.router"
+_TEAM_CONNECTOR = "app.connectors.sources.google.drive.team.connector"
+
+
+def _make_stream_connector():
+    from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
+
+    conn = object.__new__(GoogleDriveTeamConnector)
+    conn.logger = MagicMock()
+    return conn
 
 
 # ---------------------------------------------------------------------------
@@ -1606,8 +1615,7 @@ class TestStreamGoogleApiRequestGaps:
     @pytest.mark.asyncio
     async def test_empty_chunk_is_skipped(self):
         """When MediaIoBaseDownload returns an empty chunk, it should not be yielded."""
-        from app.connectors.api.router import _stream_google_api_request
-
+        conn = _make_stream_connector()
         mock_request = MagicMock()
 
         call_count = [0]
@@ -1619,13 +1627,13 @@ class TestStreamGoogleApiRequestGaps:
                 return (None, False)
             return (None, True)
 
-        with patch(f"{_ROUTER}.MediaIoBaseDownload") as mock_downloader_cls:
+        with patch(f"{_TEAM_CONNECTOR}.MediaIoBaseDownload") as mock_downloader_cls:
             mock_dl = MagicMock()
             mock_dl.next_chunk = MagicMock(side_effect=lambda: mock_next_chunk(mock_dl))
             mock_downloader_cls.return_value = mock_dl
 
             chunks = []
-            async for chunk in _stream_google_api_request(mock_request, "download"):
+            async for chunk in conn._stream_google_api_request(mock_request, "download"):
                 chunks.append(chunk)
 
             # Since the mock buffer won't have real data, just verify no errors
@@ -3400,6 +3408,15 @@ class TestPrepareConnectorConfigOAuth:
 # =============================================================================
 
 _ROUTER = "app.connectors.api.router"
+_TEAM_CONNECTOR = "app.connectors.sources.google.drive.team.connector"
+
+
+def _make_stream_connector():
+    from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
+
+    conn = object.__new__(GoogleDriveTeamConnector)
+    conn.logger = MagicMock()
+    return conn
 
 
 # ---------------------------------------------------------------------------
@@ -4918,8 +4935,7 @@ class TestStreamGoogleApiRequestGapsCoverage:
     @pytest.mark.asyncio
     async def test_empty_chunk_is_skipped(self):
         """When MediaIoBaseDownload returns an empty chunk, it should not be yielded."""
-        from app.connectors.api.router import _stream_google_api_request
-
+        conn = _make_stream_connector()
         mock_request = MagicMock()
 
         call_count = [0]
@@ -4931,13 +4947,13 @@ class TestStreamGoogleApiRequestGapsCoverage:
                 return (None, False)
             return (None, True)
 
-        with patch(f"{_ROUTER}.MediaIoBaseDownload") as mock_downloader_cls:
+        with patch(f"{_TEAM_CONNECTOR}.MediaIoBaseDownload") as mock_downloader_cls:
             mock_dl = MagicMock()
             mock_dl.next_chunk = MagicMock(side_effect=lambda: mock_next_chunk(mock_dl))
             mock_downloader_cls.return_value = mock_dl
 
             chunks = []
-            async for chunk in _stream_google_api_request(mock_request, "download"):
+            async for chunk in conn._stream_google_api_request(mock_request, "download"):
                 chunks.append(chunk)
 
             # Since the mock buffer won't have real data, just verify no errors

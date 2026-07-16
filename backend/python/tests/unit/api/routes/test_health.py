@@ -1781,3 +1781,74 @@ class TestPerformImageGenerationHealthCheck:
                 self._cfg("openRouter", model="bytedance-seed/seedream-4.5"), logger
             )
         assert resp.status_code == 500
+
+
+# ============================================================================
+# _is_collection_not_found_error
+# ============================================================================
+
+class TestIsCollectionNotFoundError:
+    def test_detects_not_found_in_message(self):
+        exc = Exception("Collection not found in database")
+        from app.api.routes.health import _is_collection_not_found_error
+        assert _is_collection_not_found_error(exc) is True
+
+    def test_detects_doesnt_exist_in_message(self):
+        exc = Exception("Index doesn't exist")
+        from app.api.routes.health import _is_collection_not_found_error
+        assert _is_collection_not_found_error(exc) is True
+
+    def test_detects_404_in_message(self):
+        exc = Exception("HTTP 404 error occurred")
+        from app.api.routes.health import _is_collection_not_found_error
+        assert _is_collection_not_found_error(exc) is True
+
+    def test_detects_status_code_404(self):
+        exc = Exception("Some error")
+        exc.status_code = 404
+        from app.api.routes.health import _is_collection_not_found_error
+        assert _is_collection_not_found_error(exc) is True
+
+    def test_other_error_returns_false(self):
+        exc = Exception("Generic error")
+        from app.api.routes.health import _is_collection_not_found_error
+        assert _is_collection_not_found_error(exc) is False
+
+
+# ============================================================================
+# _extract_error_message
+# ============================================================================
+
+class TestExtractErrorMessage:
+    def test_extracts_openai_nested_error(self):
+        exc = Exception("Wrapper error")
+        exc.body = {
+            "error": {
+                "message": "Invalid API key provided"
+            }
+        }
+        from app.api.routes.health import _extract_error_message
+        result = _extract_error_message(exc)
+        assert result == "Invalid API key provided"
+
+    def test_extracts_body_message_direct(self):
+        exc = Exception("Wrapper error")
+        exc.body = {
+            "message": "Rate limit exceeded"
+        }
+        from app.api.routes.health import _extract_error_message
+        result = _extract_error_message(exc)
+        assert result == "Rate limit exceeded"
+
+    def test_extracts_anthropic_message_attribute(self):
+        exc = Exception("Generic error")
+        exc.message = "Model not found"
+        from app.api.routes.health import _extract_error_message
+        result = _extract_error_message(exc)
+        assert result == "Model not found"
+
+    def test_falls_back_to_str(self):
+        exc = Exception("Plain exception message")
+        from app.api.routes.health import _extract_error_message
+        result = _extract_error_message(exc)
+        assert result == "Plain exception message"
