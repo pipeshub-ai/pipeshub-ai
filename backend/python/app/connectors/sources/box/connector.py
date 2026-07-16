@@ -1889,9 +1889,9 @@ class BoxConnector(BaseConnector):
                         else:
                             file_response = await self.data_source.files_get_file_by_id(item_id)
                             if not file_response.success:
-                                entry = self._to_dict(file_response.data)
                                 self.logger.warning(f"Failed to fetch file {item_id} as shared-with-me: {file_response.error}")
                                 continue
+                            entry = self._to_dict(file_response.data)
                         if not entry:
                             continue
                         update_obj = await self._process_box_entry(
