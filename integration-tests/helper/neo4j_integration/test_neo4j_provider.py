@@ -81,38 +81,46 @@ class TestNeo4jProvider(Neo4jProvider):
     # Test Helper Methods - Counts
     # =========================================================================
     
-    async def count_records(self, connector_id: str) -> int:
-        """Return the number of in-scope Record nodes for a connector.
+    async def count_records(self, connector_id: str, *, scoped: bool = False) -> int:
+        """Return the number of Record nodes for a connector.
 
-        Guarded by a live ``BELONGS_TO`` → RecordGroup edge, not ``IS_OF_TYPE``: a full
-        sync wipes and recreates sync edges (``delete_connector_sync_edges``) but leaves
-        nodes and ``IS_OF_TYPE`` intact, so records for a project that left the filter
-        scope keep ``IS_OF_TYPE`` yet lose ``BELONGS_TO``. This also excludes placeholder
-        stubs, which never get a ``BELONGS_TO`` edge.
+        With ``scoped=True`` only records with a live ``BELONGS_TO`` → RecordGroup edge are
+        counted (not ``IS_OF_TYPE``): a full sync wipes and recreates sync edges
+        (``delete_connector_sync_edges``) but leaves nodes and ``IS_OF_TYPE`` intact, so records
+        for a project that left the filter scope keep ``IS_OF_TYPE`` yet lose ``BELONGS_TO``;
+        scoped counting also excludes placeholder stubs. Default (``False``) counts every record
+        for the connector — required by suites whose records have no RecordGroup (e.g. KB uploads).
         """
         if not self.client:
             raise RuntimeError("Provider not connected")
-        result = await self.client.execute_query(
-            "MATCH (r:Record {connectorId: $cid})-[:BELONGS_TO]->(:RecordGroup) "
-            "RETURN count(DISTINCT r) AS c",
-            {"cid": connector_id}
-        )
+        if scoped:
+            cypher = (
+                "MATCH (r:Record {connectorId: $cid})-[:BELONGS_TO]->(:RecordGroup) "
+                "RETURN count(DISTINCT r) AS c"
+            )
+        else:
+            cypher = "MATCH (r:Record {connectorId: $cid}) RETURN count(DISTINCT r) AS c"
+        result = await self.client.execute_query(cypher, {"cid": connector_id})
         return int(result[0]["c"]) if result else 0
 
-    async def count_record_groups(self, connector_id: str) -> int:
-        """Return the number of in-scope RecordGroup nodes for a connector.
+    async def count_record_groups(self, connector_id: str, *, scoped: bool = False) -> int:
+        """Return the number of RecordGroup nodes for a connector.
 
-        Guarded by a live ``BELONGS_TO`` → App edge (same full-sync-wipe reasoning as
-        :meth:`count_records`) so a project that left the filter scope, whose RecordGroup
-        node still exists but lost its App edge, is not counted.
+        With ``scoped=True`` only RecordGroups with a live ``BELONGS_TO`` → App edge are counted
+        (same full-sync-wipe reasoning as :meth:`count_records`), so a project that left the filter
+        scope, whose RecordGroup node still exists but lost its App edge, is not counted. Default
+        counts every RecordGroup for the connector.
         """
         if not self.client:
             raise RuntimeError("Provider not connected")
-        result = await self.client.execute_query(
-            "MATCH (g:RecordGroup {connectorId: $cid})-[:BELONGS_TO]->(:App) "
-            "RETURN count(DISTINCT g) AS c",
-            {"cid": connector_id}
-        )
+        if scoped:
+            cypher = (
+                "MATCH (g:RecordGroup {connectorId: $cid})-[:BELONGS_TO]->(:App) "
+                "RETURN count(DISTINCT g) AS c"
+            )
+        else:
+            cypher = "MATCH (g:RecordGroup {connectorId: $cid}) RETURN count(DISTINCT g) AS c"
+        result = await self.client.execute_query(cypher, {"cid": connector_id})
         return int(result[0]["c"]) if result else 0
 
     async def count_user_groups(self, connector_id: str) -> int:
@@ -733,18 +741,25 @@ class TestNeo4jProvider(Neo4jProvider):
     # Edge-coverage helpers (Jira test plan)
     # =========================================================================
 
-    async def count_records_by_type(self, connector_id: str, record_type: str) -> int:
-        """Count in-scope Record nodes filtered by recordType (e.g. TICKET, FILE).
+    async def count_records_by_type(self, connector_id: str, record_type: str, *, scoped: bool = False) -> int:
+        """Count Record nodes filtered by recordType (e.g. TICKET, FILE).
 
-        Same live ``BELONGS_TO`` → RecordGroup guard as :meth:`count_records`.
+        With ``scoped=True`` applies the same live ``BELONGS_TO`` → RecordGroup guard as
+        :meth:`count_records`. Default counts every record of that type for the connector.
         """
         if not self.client:
             raise RuntimeError("Provider not connected")
-        result = await self.client.execute_query(
-            "MATCH (r:Record {connectorId: $cid, recordType: $rtype})-[:BELONGS_TO]->(:RecordGroup) "
-            "RETURN count(DISTINCT r) AS c",
-            {"cid": connector_id, "rtype": record_type},
-        )
+        if scoped:
+            cypher = (
+                "MATCH (r:Record {connectorId: $cid, recordType: $rtype})-[:BELONGS_TO]->(:RecordGroup) "
+                "RETURN count(DISTINCT r) AS c"
+            )
+        else:
+            cypher = (
+                "MATCH (r:Record {connectorId: $cid, recordType: $rtype}) "
+                "RETURN count(DISTINCT r) AS c"
+            )
+        result = await self.client.execute_query(cypher, {"cid": connector_id, "rtype": record_type})
         return int(result[0]["c"]) if result else 0
 
     async def count_inherit_permissions_edges(self, connector_id: str) -> int:

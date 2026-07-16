@@ -598,7 +598,7 @@ async def assert_jira_issues_match_graph_records(
 ) -> None:
     """Assert JQL issue count for the project equals graph TICKET-record count for the connector."""
     api_count = await count_jira_project_issues_via_jql(datasource, project_key)
-    graph_ticket_count = await graph_provider.count_records_by_type(connector_id, "TICKET")
+    graph_ticket_count = await graph_provider.count_records_by_type(connector_id, "TICKET", scoped=True)
     if api_count != graph_ticket_count:
         raise AssertionError(
             f"{phase}: Jira JQL issue count ({api_count}) != "

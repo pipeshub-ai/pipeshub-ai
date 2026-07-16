@@ -70,49 +70,58 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
     # Test Helper Methods - Counts
     # =========================================================================
 
-    async def count_records(self, connector_id: str) -> int:
-        """Return the number of in-scope Record documents for a connector.
+    async def count_records(self, connector_id: str, *, scoped: bool = False) -> int:
+        """Return the number of Record documents for a connector.
 
-        Guarded by a live ``BELONGS_TO`` → RecordGroup edge, not ``IS_OF_TYPE``: a full
-        sync wipes and recreates sync edges but leaves nodes and ``IS_OF_TYPE`` intact,
-        so records for a project that left the filter scope keep ``IS_OF_TYPE`` yet lose
-        ``BELONGS_TO``. Also excludes placeholder stubs (never get ``BELONGS_TO``).
+        With ``scoped=True`` only records with a live ``BELONGS_TO`` → RecordGroup edge are
+        counted (not ``IS_OF_TYPE``): a full sync wipes and recreates sync edges but leaves
+        nodes and ``IS_OF_TYPE`` intact, so records for a project that left the filter scope
+        keep ``IS_OF_TYPE`` yet lose ``BELONGS_TO``; scoped counting also excludes placeholder
+        stubs. Default (``False``) counts every record for the connector — required by suites
+        whose records have no RecordGroup (e.g. standalone KB uploads).
         """
         if not self.http_client:
             raise RuntimeError("Provider not connected")
-        query = f"""
-            FOR r IN {CollectionNames.RECORDS.value}
-                FILTER r.connectorId == @cid
-                FILTER LENGTH(
-                    FOR v IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
-                        FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', v)
-                        LIMIT 1
-                        RETURN 1
-                ) > 0
-                RETURN 1
-        """
+        if scoped:
+            query = f"""
+                FOR r IN {CollectionNames.RECORDS.value}
+                    FILTER r.connectorId == @cid
+                    FILTER LENGTH(
+                        FOR v IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
+                            FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', v)
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0
+                    RETURN 1
+            """
+        else:
+            query = f"FOR r IN {CollectionNames.RECORDS.value} FILTER r.connectorId == @cid RETURN 1"
         result = await self.http_client.execute_aql(query, {"cid": connector_id})
         return len(result) if result else 0
 
-    async def count_record_groups(self, connector_id: str) -> int:
-        """Return the number of in-scope RecordGroup documents for a connector.
+    async def count_record_groups(self, connector_id: str, *, scoped: bool = False) -> int:
+        """Return the number of RecordGroup documents for a connector.
 
-        Guarded by a live ``BELONGS_TO`` → App edge (same full-sync-wipe reasoning as
-        :meth:`count_records`) so a RecordGroup that left the filter scope is not counted.
+        With ``scoped=True`` only RecordGroups with a live ``BELONGS_TO`` → App edge are counted
+        (same full-sync-wipe reasoning as :meth:`count_records`), so a RecordGroup that left the
+        filter scope is not counted. Default counts every RecordGroup for the connector.
         """
         if not self.http_client:
             raise RuntimeError("Provider not connected")
-        query = f"""
-            FOR g IN {CollectionNames.RECORD_GROUPS.value}
-                FILTER g.connectorId == @cid
-                FILTER LENGTH(
-                    FOR v IN OUTBOUND g {CollectionNames.BELONGS_TO.value}
-                        FILTER IS_SAME_COLLECTION('{CollectionNames.APPS.value}', v)
-                        LIMIT 1
-                        RETURN 1
-                ) > 0
-                RETURN 1
-        """
+        if scoped:
+            query = f"""
+                FOR g IN {CollectionNames.RECORD_GROUPS.value}
+                    FILTER g.connectorId == @cid
+                    FILTER LENGTH(
+                        FOR v IN OUTBOUND g {CollectionNames.BELONGS_TO.value}
+                            FILTER IS_SAME_COLLECTION('{CollectionNames.APPS.value}', v)
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0
+                    RETURN 1
+            """
+        else:
+            query = f"FOR g IN {CollectionNames.RECORD_GROUPS.value} FILTER g.connectorId == @cid RETURN 1"
         result = await self.http_client.execute_aql(query, {"cid": connector_id})
         return len(result) if result else 0
 
@@ -856,24 +865,32 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
     # Edge-coverage helpers (Jira test plan)
     # =========================================================================
 
-    async def count_records_by_type(self, connector_id: str, record_type: str) -> int:
-        """Count in-scope Record documents filtered by recordType.
+    async def count_records_by_type(self, connector_id: str, record_type: str, *, scoped: bool = False) -> int:
+        """Count Record documents filtered by recordType.
 
-        Same live ``BELONGS_TO`` → RecordGroup guard as :meth:`count_records`.
+        With ``scoped=True`` applies the same live ``BELONGS_TO`` → RecordGroup guard as
+        :meth:`count_records`. Default counts every record of that type for the connector.
         """
         if not self.http_client:
             raise RuntimeError("Provider not connected")
-        query = f"""
-            FOR r IN {CollectionNames.RECORDS.value}
-                FILTER r.connectorId == @cid AND r.recordType == @rtype
-                FILTER LENGTH(
-                    FOR v IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
-                        FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', v)
-                        LIMIT 1
-                        RETURN 1
-                ) > 0
-                RETURN 1
-        """
+        if scoped:
+            query = f"""
+                FOR r IN {CollectionNames.RECORDS.value}
+                    FILTER r.connectorId == @cid AND r.recordType == @rtype
+                    FILTER LENGTH(
+                        FOR v IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
+                            FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', v)
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0
+                    RETURN 1
+            """
+        else:
+            query = f"""
+                FOR r IN {CollectionNames.RECORDS.value}
+                    FILTER r.connectorId == @cid AND r.recordType == @rtype
+                    RETURN 1
+            """
         result = await self.http_client.execute_aql(
             query, {"cid": connector_id, "rtype": record_type}
         )

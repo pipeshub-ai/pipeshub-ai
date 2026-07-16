@@ -167,9 +167,9 @@ class TestJiraConnector:
         connector_id = jira_connector["connector_id"]
         primary_key = jira_connector["primary_key"]
 
-        ticket_count = await graph_provider.count_records_by_type(connector_id, RecordType.TICKET.value)
-        file_count = await graph_provider.count_records_by_type(connector_id, RecordType.FILE.value)
-        total = await graph_provider.count_records(connector_id)
+        ticket_count = await graph_provider.count_records_by_type(connector_id, RecordType.TICKET.value, scoped=True)
+        file_count = await graph_provider.count_records_by_type(connector_id, RecordType.FILE.value, scoped=True)
+        total = await graph_provider.count_records(connector_id, scoped=True)
 
         # Independent (live Jira): TICKET / FILE counts, attachment + parent-child edges.
         assert ticket_count == jira_connector["expected_ticket_count"], (
@@ -192,7 +192,7 @@ class TestJiraConnector:
 
         # Independent: record-group count from filter scope (primary only).
         app_edges = await graph_provider.count_app_record_group_edges(connector_id)
-        rgs = await graph_provider.count_record_groups(connector_id)
+        rgs = await graph_provider.count_record_groups(connector_id, scoped=True)
         assert app_edges == rgs == jira_connector["expected_record_groups"]
 
         # Structural graph-consistency invariants (graph self-consistency, no Jira dependency).
@@ -574,8 +574,20 @@ class TestJiraValidation:
             if not account_id or not email:
                 continue  # unassigned or private-email user → no edge emitted
             related = await graph_provider.get_record_outgoing_entity_relations(connector_id, target_id, edge_type)
-            assert account_id in related, (
-                f"{edge_type}: expected user {account_id} in {related!r} for issue {target_key}"
+            # The Jira accountId lands on the user NODE (as ``userId``) only for users the connector
+            # creates fresh; when the actor already exists as a pipeshub user (e.g. the connector owner
+            # in CI, where the ticket creator's email == the pipeshub account) the node keeps its native
+            # userId and the accountId sits on the userAppRelation edge instead. So match on whatever
+            # identity the node actually carries, resolved by the actor's email.
+            expected_ids = {account_id}
+            user_doc = await graph_provider.graph_find_user_by_email(email)
+            if user_doc:
+                expected_ids |= {
+                    str(user_doc[k]) for k in ("sourceUserId", "userId", "_key", "id") if user_doc.get(k)
+                }
+            assert expected_ids & set(related), (
+                f"{edge_type}: none of {sorted(expected_ids)} (for {email}) in {related!r} "
+                f"for issue {target_key}"
             )
             asserted += 1
         if asserted == 0:
@@ -848,7 +860,7 @@ class TestJiraFilters:
         await _apply_filter_full_sync(
             pipeshub_client, graph_provider, connector_id, _sync_filters(project_keys=_pk("in", keys)),
         )
-        rgs = await graph_provider.count_record_groups(connector_id)
+        rgs = await graph_provider.count_record_groups(connector_id, scoped=True)
         assert rgs == len(keys), f"expected {len(keys)} RecordGroups, got {rgs}"
         for key in keys:
             rg = await graph_provider.get_record_group_by_external_id(connector_id, project_id_by_key[key])
@@ -925,7 +937,7 @@ class TestJiraFilters:
             return {"type": "datetime", "operator": op, "value": {"start": start, "end": end}}
 
         async def _count() -> int:
-            return await graph_provider.count_records_by_type(connector_id, RecordType.TICKET.value)
+            return await graph_provider.count_records_by_type(connector_id, RecordType.TICKET.value, scoped=True)
 
         async def _assert_scope(expected_ids: set[str], label: str) -> None:
             count = await _count()
@@ -962,7 +974,7 @@ class TestJiraFilters:
         await _apply_filter_full_sync(
             pipeshub_client, graph_provider, connector_id, _sync_filters(project_keys=_pk("in", [])),
         )
-        rgs = await graph_provider.count_record_groups(connector_id)
+        rgs = await graph_provider.count_record_groups(connector_id, scoped=True)
         assert rgs >= len(keys), f"empty=all should sync ≥ {len(keys)} RecordGroups, got {rgs}"
         for key in keys:
             rg = await graph_provider.get_record_group_by_external_id(connector_id, project_id_by_key[key])
