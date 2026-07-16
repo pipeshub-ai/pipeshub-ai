@@ -1024,7 +1024,7 @@ class BoxConnector(BaseConnector):
             if not response.success:
                 self.logger.error(f"Failed to fetch items for folder {folder_id}: {response.error}")
                 break
-            
+
             data = self._to_dict(response.data)
 
             items = data.get('entries', [])
@@ -1241,15 +1241,8 @@ class BoxConnector(BaseConnector):
 
     async def _backfill_shared_with_me_history(self, our_org_box_user_ids: Set[str]) -> None:
         """
-        Discover collaboration grants that happened *before* this connector ever ran (or before
-        the last cursor anchor), so pre-existing "Shared with Me" items are not missed.
-
-        Box's folder-tree walk (`_sync_folder_recursively`, starting at folder '0') only ever
-        discovers items the syncing user *owns*, plus shared *folders* (which Box surfaces as
-        top-level entries in the owner-less tree). Individually shared *files* never appear in
-        that walk at all - the only way to discover them is via collaboration events. Since
-        `run_sync()` anchors the live event stream at 'now' before walking the tree, any share
-        made earlier is otherwise never seen by incremental sync either.
+        Discover collaboration grants that happened *before* this connector ran so pre-existing
+        "Shared with Me" items are not missed.
 
         Box retains enterprise event history for up to 1 year via `stream_type='admin_logs'`.
         We page through that history (oldest -> newest) filtered to collaboration grant *and*
@@ -1282,7 +1275,7 @@ class BoxConnector(BaseConnector):
 
                 if events:
                     total_events += len(events)
-                    self.logger.info(f"📥 [Backfill] Fetched {len(events)} historical collaboration event(s) from Box.")
+                    self.logger.info(f"📥 [Backfill] Fetched {len(events)} collaboration event(s) from Box.")
                     await self._process_event_batch(events, our_org_box_user_ids=our_org_box_user_ids)
 
                 if not next_stream_position or next_stream_position == stream_position or not events:
@@ -1443,7 +1436,7 @@ class BoxConnector(BaseConnector):
             collapsed_count += len(group) - 1
 
         if collapsed_count:
-            self.logger.info(
+            self.logger.debug(
                 f"🧹 [Collab Pairing] Collapsed {collapsed_count} redundant collaboration "
                 f"grant/revoke event(s) across {len(groups)} collaboration(s) to their net effect."
             )
@@ -1693,10 +1686,7 @@ class BoxConnector(BaseConnector):
                 # Log what we found for debugging
                 self.logger.debug(f"Revocation event - file_id={file_id}, email={removed_email}, user_box_id={removed_user_box_id}, collab_id={collaboration_id}")
 
-                # Bail out before any email-resolution API calls if there's no synced record for
-                # this item at all - there's nothing to remove access from either way (e.g. a share
-                # granted and revoked before we ever synced it, a grant/revoke pair already
-                # collapsed away earlier in this same batch, or a stale revoke replayed by backfill).
+                # Bail out before any email-resolution API calls if there's no synced record for this item 
                 existing_record = None
                 if file_id:
                     async with self.data_store_provider.transaction() as tx_store:
@@ -1711,12 +1701,9 @@ class BoxConnector(BaseConnector):
                         continue
 
                 # Fetch Email from Box if we only have ID using data_source. Same as the grant
-                # path above: `users_get_user_by_id` only resolves managed users of this
-                # enterprise (or an external user while actively collaborated on enterprise
-                # content - which this collaborator just stopped being, by definition of this
-                # being a removal event), so skip the doomed call for a known-non-managed id.
+                # path above: `users_get_user_by_id` only resolves managed users of this enterprise
                 if removed_user_box_id and not removed_email:
-                    if our_org_box_user_ids is not None and removed_user_box_id not in our_org_box_user_ids:
+                    if our_org_box_user_ids is not None and str(removed_user_box_id) not in our_org_box_user_ids:
                         self.logger.debug(
                             f"⏭️ Skipping email lookup for {removed_user_box_id} - not a managed user of this org"
                         )
@@ -2128,7 +2115,6 @@ class BoxConnector(BaseConnector):
                     break
 
                 data = self._to_dict(response.data)
-
                 items = data.get('entries', [])
                 total_count = data.get('total_count', 0)
 
@@ -2368,7 +2354,6 @@ class BoxConnector(BaseConnector):
                     responses = await asyncio.gather(*tasks, return_exceptions=True)
 
                     for record, response in zip(owner_records, responses):
-                        entry_dict = None
                         if isinstance(response, Exception) or not response.success:
                             self.logger.warning(f"Could not fetch record {record.record_name} ({record.external_record_id}) during reindex. It may be deleted.")
                             continue
