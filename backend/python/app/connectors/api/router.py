@@ -81,6 +81,7 @@ from app.models.entities import Record, RecordType
 from app.services.featureflag.config.config import CONFIG
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.api_call import make_api_call
+from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import extract_oauth_error_message, fetch_oauth_config_by_id, get_oauth_config
@@ -1356,6 +1357,58 @@ async def get_record_by_id(
     except Exception as e:
         logger.error(f"Error checking record access: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to check record access") from e
+
+@router.get(
+    "/api/v1/records/{record_id}/content",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))],
+)
+@inject
+async def get_record_content(
+    record_id: str,
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict:
+    """
+    Fetch the full parsed content and metadata of a record, with permission scoping.
+    """
+    container = request.app.container
+    logger = container.logger()
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+
+    try:
+        access_check = await graph_provider.check_record_access_with_details(
+            user_id=user_id,
+            org_id=org_id,
+            record_id=record_id,
+        )
+        if not access_check:
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="You do not have permission to access this record",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking record access for {record_id}: {str(e)}")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to check record access") from e
+
+    try:
+        result = await _fetch_multiple_records_impl(
+            record_ids=[record_id],
+            virtual_record_id_to_result={},
+            graph_provider=graph_provider,
+            org_id=org_id,
+        )
+    except Exception as e:
+        logger.error(f"Error fetching record content for {record_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to fetch record content") from e
+
+    if not result.get("ok") or not result.get("records"):
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record content is not available")
+
+    return {"record": result["records"][0]}
+
 
 @router.delete("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE, OAuthScopes.KB_DELETE))])
 @inject
