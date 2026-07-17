@@ -4730,6 +4730,62 @@ describe('UserController', () => {
     });
   });
 
+  describe('addManyUsers - a thrown mail transport error does not abort the batch', () => {
+    it('keeps inviting the remaining users when one send throws', async () => {
+      req.body = { emails: ['a@test.com', 'b@test.com', 'c@test.com'] };
+
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp' } as any);
+      sinon.stub(Users, 'find').resolves([]);
+      sinon.stub(Users, 'create').resolves([
+        { _id: 'u-a', email: 'a@test.com' },
+        { _id: 'u-b', email: 'b@test.com' },
+        { _id: 'u-c', email: 'c@test.com' },
+      ] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves();
+      sinon.stub(UserGroups, 'updateOne').resolves();
+
+      mockAuthService.passwordMethodEnabled.resolves({
+        statusCode: 200,
+        data: { isPasswordAuthEnabled: false },
+      });
+      // A network-level failure (not a non-200 response) for the middle address.
+      mockMailService.sendMail
+        .onCall(0).resolves({ statusCode: 200 })
+        .onCall(1).rejects(new Error('ECONNRESET'))
+        .onCall(2).resolves({ statusCode: 200 });
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(mockMailService.sendMail.callCount).to.equal(3);
+      const sent = mockMailService.sendMail
+        .getCalls()
+        .map((call: any) => call.args[0].usersMails[0]);
+      expect(sent).to.include.members(['a@test.com', 'c@test.com']);
+      expect(next.called).to.be.false;
+      expect(res.status.calledWith(500)).to.be.true;
+    });
+  });
+
+  describe('processInvites - skips group update when no groupIds given', () => {
+    it('does not query UserGroups.updateMany for an empty groupIds list', async () => {
+      req.body = { emails: ['solo@test.com'] };
+
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Corp' } as any);
+      sinon.stub(Users, 'find').resolves([]);
+      sinon
+        .stub(Users, 'create')
+        .resolves([{ _id: 'u-1', email: 'solo@test.com' }] as any);
+      const updateMany = sinon.stub(UserGroups, 'updateMany').resolves();
+      sinon.stub(UserGroups, 'updateOne').resolves();
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(updateMany.called).to.be.false;
+      // The 'everyone' group is still joined.
+      expect((UserGroups.updateOne as any).called).to.be.true;
+    });
+  });
+
   // -----------------------------------------------------------------------
   // parseEmailsFromFile — CSV / Excel buffer parsing
   // -----------------------------------------------------------------------
