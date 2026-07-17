@@ -468,8 +468,9 @@ def _anthropic_supports_sampling_params(model_name: str | None) -> bool:
     The same direction is expected for future Claude families, so we also
     disable sampling params for any Claude major version >= 5.
 
-    Matches model IDs like ``claude-opus-4-7``, ``claude-opus-4.7``, and
-    Bedrock/Vertex variants that embed the same version suffix.
+    Matches model IDs like ``claude-opus-4-7``, ``claude-opus-4.7``,
+    ``claude-sonnet-5``, and Bedrock/Vertex variants that embed the same
+    version suffix.
     """
     if not model_name:
         return True
@@ -478,18 +479,22 @@ def _anthropic_supports_sampling_params(model_name: str | None) -> bool:
     if "claude" not in lowered:
         return True
 
-    match = re.search(r"claude[-_]?(opus|sonnet|haiku)[-_]?(\d+)[-_.](\d+)", lowered)
+    # Minor is optional so bare major IDs like ``claude-sonnet-5`` match.
+    match = re.search(
+        r"claude[-_]?(opus|sonnet|haiku)[-_]?(\d+)(?:[-_.](\d+))?",
+        lowered,
+    )
     if not match:
         return True
 
     tier = match.group(1)
     major = int(match.group(2))
-    minor = int(match.group(3))
-
-    if tier == "opus" and (major > 4 or (major == 4 and minor >= 7)):
-        return False
+    minor = int(match.group(3)) if match.group(3) is not None else None
 
     if major >= 5:
+        return False
+
+    if tier == "opus" and major == 4 and minor is not None and minor >= 7:
         return False
 
     return True

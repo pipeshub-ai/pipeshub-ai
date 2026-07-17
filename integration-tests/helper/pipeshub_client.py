@@ -442,6 +442,37 @@ class PipeshubClient:
             json={"type": "sync"},
         )
 
+    def resync_connector(
+        self,
+        connector_id: str,
+        *,
+        full_sync: bool = True,
+        connector_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Trigger a resync (default full sync) for an already-active connector.
+
+        The backend requires the connector to be active and the ``connectorName``
+        (app/type name, e.g. "Jira" — server applies ``normalizeAppName``). A full
+        sync wipes and recreates the connector's sync edges, so this is how filter
+        scope changes and post-delete cleanup are reflected in the graph.
+        """
+        if connector_name is None:
+            connector = self.get_connector(connector_id)
+            connector_name = (
+                connector.get("connectorType")
+                or connector.get("connectorName")
+                or connector.get("name")
+            )
+        if not connector_name:
+            raise PipeshubClientError(
+                f"resync_connector: could not resolve connectorName for {connector_id}"
+            )
+        return self._request_json(
+            "POST",
+            f"/api/v1/connectors/{connector_id}/resync",
+            json={"connectorName": connector_name, "fullSync": full_sync},
+        )
+
     def delete_connector(self, connector_id: str) -> Dict[str, Any]:
         """Delete a connector instance and all associated data."""
         return self._request_json(
