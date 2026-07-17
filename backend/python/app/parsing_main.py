@@ -122,7 +122,7 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     # PDF
     # ----------------------------------------------------------------
     registry.register("pdf", ParserProvider.DOCLING, SmartPDFParser(docling_svc_parser, docling_ocr_parser))
-    registry.register("pdf", ParserProvider.DEFAULT, SmartPDFParser(pdfplumber_parser, default_ocr_parser))
+    registry.register("pdf", ParserProvider.DEFAULT, SmartPDFParser(docling_svc_parser, default_ocr_parser))
 
     # ----------------------------------------------------------------
     # DOCX / DOC — local Docling handles these in-process
