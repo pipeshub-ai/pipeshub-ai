@@ -1473,6 +1473,10 @@ export class UserController {
       const normalizedEmails = this.normalizeEmails(emails);
 
       await this.eventService.start();
+      // Deliberately not calling eventService.stop(): the MessageProducer is a
+      // shared singleton (connected at startup, disconnected in the container's
+      // dispose()). Stopping it here would drop the connection for concurrent
+      // requests and for the background task in addManyUsersFromFile.
       const result = await this.processInvites(
         normalizedEmails,
         groupIds,
@@ -1480,7 +1484,6 @@ export class UserController {
         req.user?.fullName,
         org,
       );
-      await this.eventService.stop();
 
       if (
         result.invited === 0 &&
@@ -1704,11 +1707,13 @@ export class UserController {
 
     for (let i = 0; i < existingUsers.length; ++i) {
       const userId = existingUsers[i]?._id;
-      await UserGroups.updateMany(
-        { _id: { $in: groupIds }, orgId },
-        { $addToSet: { users: userId } },
-        { new: true },
-      );
+      if (groupIds && groupIds.length > 0) {
+        await UserGroups.updateMany(
+          { _id: { $in: groupIds }, orgId },
+          { $addToSet: { users: userId } },
+          { new: true },
+        );
+      }
       await UserGroups.updateOne(
         { orgId, type: 'everyone' },
         { $addToSet: { users: userId } },
@@ -1757,11 +1762,13 @@ export class UserController {
         );
       }
       if (!pendingUser) {
-        await UserGroups.updateMany(
-          { _id: { $in: groupIds }, orgId },
-          { $addToSet: { users: userId } },
-          { new: true },
-        );
+        if (groupIds && groupIds.length > 0) {
+          await UserGroups.updateMany(
+            { _id: { $in: groupIds }, orgId },
+            { $addToSet: { users: userId } },
+            { new: true },
+          );
+        }
         await UserGroups.updateOne(
           { orgId, type: 'everyone' },
           { $addToSet: { users: userId } },
@@ -1862,42 +1869,49 @@ export class UserController {
     const invitee = inviterName;
     const orgName = org?.shortName || org?.registeredName;
 
-    let result;
-    if (authResult.data?.isPasswordAuthEnabled) {
-      const { passwordResetToken, mailAuthToken } =
-        jwtGeneratorForNewAccountPassword(
-          email,
-          userId,
-          orgId,
-          this.config.scopedJwtSecret,
-        );
-      result = await this.mailService.sendMail({
-        emailTemplateType: 'appuserInvite',
-        initiator: { jwtAuthToken: mailAuthToken },
-        usersMails: [email],
-        subject,
-        templateData: {
-          invitee,
-          orgName,
-          link: `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`,
-        },
-      });
-    } else {
-      result = await this.mailService.sendMail({
-        emailTemplateType: 'appuserInvite',
-        initiator: {
-          jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
-        },
-        usersMails: [email],
-        subject,
-        templateData: {
-          invitee,
-          orgName,
-          link: `${this.config.frontendUrl}/sign-in`,
-        },
-      });
+    // A transport failure for one recipient must not abort the rest of the
+    // batch: return a non-200 so the caller records it in mailFailed instead.
+    try {
+      let result;
+      if (authResult.data?.isPasswordAuthEnabled) {
+        const { passwordResetToken, mailAuthToken } =
+          jwtGeneratorForNewAccountPassword(
+            email,
+            userId,
+            orgId,
+            this.config.scopedJwtSecret,
+          );
+        result = await this.mailService.sendMail({
+          emailTemplateType: 'appuserInvite',
+          initiator: { jwtAuthToken: mailAuthToken },
+          usersMails: [email],
+          subject,
+          templateData: {
+            invitee,
+            orgName,
+            link: `${this.config.frontendUrl}/reset-password#token=${passwordResetToken}`,
+          },
+        });
+      } else {
+        result = await this.mailService.sendMail({
+          emailTemplateType: 'appuserInvite',
+          initiator: {
+            jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
+          },
+          usersMails: [email],
+          subject,
+          templateData: {
+            invitee,
+            orgName,
+            link: `${this.config.frontendUrl}/sign-in`,
+          },
+        });
+      }
+      return result.statusCode;
+    } catch (error) {
+      this.logger.error(`Failed to send invite mail to ${email}`, error);
+      return 500;
     }
-    return result.statusCode;
   }
 
   private async notifyInviteResult(
