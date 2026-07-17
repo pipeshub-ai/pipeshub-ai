@@ -60,8 +60,11 @@ class TestAnthropicSupportsSamplingParams:
             ("claude-opus-4-7", False),
             ("claude_opus_4.7", False),
             ("anthropic.claude-opus-4-7-v1", False),
+            ("claude-sonnet-5", False),
             ("claude-sonnet-5-0", False),
             ("claude-haiku-5-1", False),
+            ("claude-sonnet-4", True),
+            ("claude-opus-4", True),
         ],
     )
     def test_sampling_param_support(self, model_name, expected):
@@ -79,6 +82,19 @@ class TestAnthropicNoSamplingTemperature:
         config = {
             "configuration": {
                 "model": "claude-opus-4-7",
+                "apiKey": "key",
+            },
+            "isDefault": True,
+        }
+        with patch("langchain_anthropic.ChatAnthropic") as mock_cls:
+            mock_cls.return_value = MagicMock()
+            get_generator_model(LLMProvider.ANTHROPIC.value, config)
+            assert "temperature" not in mock_cls.call_args.kwargs
+
+    def test_direct_anthropic_sonnet_5_omits_temperature(self):
+        config = {
+            "configuration": {
+                "model": "claude-sonnet-5",
                 "apiKey": "key",
             },
             "isDefault": True,
