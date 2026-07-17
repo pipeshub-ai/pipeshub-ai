@@ -119,12 +119,12 @@ export class Logger {
       defaultMeta: this.defaultMeta,
       transports: [
         new winston.transports.File({
-          filename: path.join(process.env.LOG_DIR || '', 'error.log'),
+          filename: 'error.log',
           level: LogLevel.Error,
           format: winston.format.combine(logFormat, winston.format.json())
         }),
         new winston.transports.File({
-          filename: path.join(process.env.LOG_DIR || '', 'combined.log'),
+          filename: 'combined.log',
           format: winston.format.combine(logFormat, winston.format.json())
         }),
         new winston.transports.Console({
