@@ -362,6 +362,10 @@ class FilterField:
         no_implicit_operator_default: When True, connector UI must not fall back to
             the first allowed operator for an empty operator (e.g. datetime fields
             where no date filter should be implied until the user picks an operator).
+        allowed_operators: Restrict the operators exposed to the UI to a subset of the
+            filter_type's normal operators (e.g. only "in" for a LIST filter that doesn't
+            make sense with "not_in" yet). Must be a non-empty subset of the type's
+            operators. Defaults to all operators for filter_type.
 
     Value types by filter_type:
         STRING      → str
@@ -387,6 +391,7 @@ class FilterField:
     no_implicit_operator_default: bool = False
     options: list[str] = dataclass_field(default_factory=list)
     option_source_type: OptionSourceType = OptionSourceType.MANUAL
+    allowed_operators: list[str] | None = None
     def __post_init__(self) -> None:
         """Validate configuration"""
 
@@ -406,6 +411,23 @@ class FilterField:
             if not self.options:
                 raise ValueError(
                     "option_source_type=STATIC requires options list to be defined"
+                )
+
+        # Validate allowed_operators is a non-empty subset of the type's operators
+        if self.allowed_operators is not None:
+            valid_operators = get_operators_for_type(self.filter_type)
+            if not self.allowed_operators:
+                raise ValueError("allowed_operators, if provided, must not be empty")
+            invalid = [op for op in self.allowed_operators if op not in valid_operators]
+            if invalid:
+                raise ValueError(
+                    f"Invalid allowed_operators {invalid} for type '{self.filter_type.value}'. "
+                    f"Valid operators: {valid_operators}"
+                )
+            if self.default_operator and self.default_operator not in self.allowed_operators:
+                raise ValueError(
+                    f"default_operator '{self.default_operator}' must be one of allowed_operators "
+                    f"{self.allowed_operators}"
                 )
 
     def _get_default_for_type(self) -> str | bool | list[str] | tuple | None:
@@ -434,7 +456,9 @@ class FilterField:
 
     @property
     def operators(self) -> list[str]:
-        """Get allowed operators for this filter type"""
+        """Get allowed operators for this filter type, restricted to allowed_operators if set"""
+        if self.allowed_operators is not None:
+            return self.allowed_operators
         return get_operators_for_type(self.filter_type)
 
     def to_schema_dict(self) -> dict[str, Any]:

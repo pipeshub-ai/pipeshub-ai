@@ -19,6 +19,8 @@ import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { FilterDropdown } from '@/app/components/ui/filter-dropdown';
 import { DateRangePicker } from '@/app/components/ui/date-range-picker';
 import type { DateFilterType } from '@/app/components/ui/date-range-picker';
+import { TagInput } from '@/app/(main)/workspace/components/tag-input';
+import type { TagItem } from '@/app/(main)/workspace/components/tag-input';
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import type { FilterSchemaField } from '../../types';
@@ -281,6 +283,16 @@ function isListLikeField(field: FilterSchemaField): boolean {
   if (field.fieldType === 'MULTISELECT' || field.fieldType === 'TAGS') return true;
   const ft = String(field.filterType ?? '').toLowerCase();
   return ft === 'list' || ft === 'multiselect';
+}
+
+/**
+ * LIST filters with option_source_type=MANUAL have no predefined/dynamic options for the
+ * user to pick from — the value IS whatever the user types (e.g. arbitrary folder/drive IDs).
+ * These get a free-text tag input instead of the dropdown used by static/dynamic list filters.
+ */
+function isFreeTextListField(field: FilterSchemaField): boolean {
+  const ft = String(field.filterType ?? '').toLowerCase();
+  return ft === 'list' && field.optionSourceType === 'manual';
 }
 
 /** API may return list values as string[] or { id, label }[] (Confluence / legacy). */
@@ -623,6 +635,58 @@ function ConnectorFilterMultiSelect({
       onPopoverOpenChange={handlePopoverOpen}
       portalContainer={portalContainer}
       popoverContentStyle={{ minWidth: 280, maxWidth: 420, zIndex: 10001 }}
+    />
+  );
+}
+
+// ========================================
+// Free-text list (LIST + MANUAL: user types/pastes arbitrary values, e.g. IDs)
+// ========================================
+
+function tagItemsFromIds(ids: string[]): TagItem[] {
+  return ids.map((id) => ({ id, value: id }));
+}
+
+function ConnectorFilterTagInput({
+  field,
+  value,
+  onValueChange,
+}: {
+  field: FilterSchemaField;
+  value: unknown;
+  onValueChange: (v: unknown) => void;
+}) {
+  // Tags live in local state (not re-derived from `value` on every render) so that
+  // transient per-tag UI state (isHighlighted for backspace-to-delete, isEditing for
+  // click-to-edit) survives across renders — mirrors invite-users-sidebar's TagInput usage.
+  const [tags, setTags] = useState<TagItem[]>(() => tagItemsFromIds(listFilterIds(value)));
+
+  // Re-sync only when the persisted value diverges from what we last committed (e.g. the
+  // filter row was reset/reloaded externally). Our own commits round-trip to the same ids,
+  // so this intentionally does not fire on every isHighlighted/isEditing-only local change.
+  useEffect(() => {
+    const incomingIds = listFilterIds(value);
+    const currentIds = tags.map((t) => t.value);
+    const sameContent =
+      incomingIds.length === currentIds.length &&
+      incomingIds.every((id, i) => id === currentIds[i]);
+    if (!sameContent) {
+      setTags(tagItemsFromIds(incomingIds));
+    }
+    // Only re-sync in response to external `value` changes, not our own local tag edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  const handleTagsChange = (next: TagItem[]) => {
+    setTags(next);
+    onValueChange(next.map((t) => t.value));
+  };
+
+  return (
+    <TagInput
+      tags={tags}
+      onTagsChange={handleTagsChange}
+      placeholder={`Add ${field.displayName.toLowerCase()}…`}
     />
   );
 }
@@ -1117,6 +1181,7 @@ function FilterFieldRow({
   }, [field.operators, field.defaultOperator, row.operator]);
 
   const listLike = isListLikeField(field);
+  const freeTextList = isFreeTextListField(field);
   const isBooleanField = field.filterType === 'boolean';
   const projectOptionsScope =
     section === 'sync' && field.name === 'project_ids'
@@ -1279,7 +1344,13 @@ function FilterFieldRow({
                   ? field.displayName
                   : 'Value'}
             </Text>
-            {listLike ? (
+            {freeTextList ? (
+              <ConnectorFilterTagInput
+                field={field}
+                value={row.value}
+                onValueChange={(v) => commit({ ...row, value: v })}
+              />
+            ) : listLike ? (
               <ConnectorFilterMultiSelect
                 field={field}
                 value={row.value}

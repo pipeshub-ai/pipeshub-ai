@@ -130,6 +130,15 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
             'https://docs.pipeshub.com/connectors/google-workspace/drive/drive',
             'pipeshub'
         ))
+        .add_filter_field(FilterField(
+            name=SyncFilterKey.FOLDER_IDS.value,
+            display_name="Folder IDs",
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            description="Limit sync to specific Google Drive folder IDs. Add one or more folder IDs; leave empty to sync all folders.",
+            option_source_type=OptionSourceType.MANUAL,
+            allowed_operators=[FilterOperator.IN],
+        ))
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
