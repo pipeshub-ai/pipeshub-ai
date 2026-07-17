@@ -59,7 +59,6 @@ services:
       # Core
       - NODE_ENV=${NODE_ENV:-production}
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      - LOG_DIR=${LOG_DIR:-/data/pipeshub/logs}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
