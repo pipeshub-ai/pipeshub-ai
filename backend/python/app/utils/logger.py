@@ -113,7 +113,7 @@ def _resolve_log_dir() -> str:
     volume) would otherwise raise here and take down every service that imports
     the logger. File logging must never stop a service from starting.
     """
-    configured = os.getenv("LOG_DIR", _DEFAULT_LOG_DIR)
+    configured = os.getenv("LOG_DIR") or _DEFAULT_LOG_DIR
     candidates = [configured]
     if configured != _DEFAULT_LOG_DIR:
         candidates.append(_DEFAULT_LOG_DIR)
