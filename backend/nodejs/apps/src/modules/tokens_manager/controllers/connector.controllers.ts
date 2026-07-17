@@ -1929,11 +1929,12 @@ export const getRecordContent =
         );
       }
 
-      // Call the Python service to get the full parsed record content
+      // Never forward raw client headers: `x-is-admin` survives sanitizeHeaders and
+      // the Python side trusts it for authorization. This route needs no admin rights.
       const response = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/records/${recordId}/content`,
+        `${appConfig.connectorBackend}/api/v1/records/${encodeURIComponent(recordId)}/content`,
         HttpMethod.GET,
-        req.headers as Record<string, string>,
+        buildProxyHeaders(req, false),
       );
 
       handleConnectorResponse(

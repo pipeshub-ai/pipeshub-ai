@@ -18,7 +18,6 @@ for _p in (_ROOT, _RV_HELPER):
 from helper.clients.connectors_client import ConnectorsClient  # noqa: E402
 from helper.clients.kb_client import KBClient  # noqa: E402
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
-from helper.second_user_auth import second_pipeshub_client  # noqa: E402, F401
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
 )
@@ -134,13 +133,19 @@ class TestConnectorRecordContent:
     def test_get_record_content_without_connector_read_scope(
         self,
         indexed_text_record: dict[str, str],
-        second_pipeshub_client: PipeshubClient,
+        token_without_connector_read: str,
     ) -> None:
         """A token without `connector:read` is rejected even for a real record."""
-        resp = ConnectorsClient(second_pipeshub_client).get_record_content(
-            indexed_text_record["record_id"]
+        resp = self.connectors.get_record_content(
+            indexed_text_record["record_id"],
+            auth=False,
+            headers={"Authorization": f"Bearer {token_without_connector_read}"},
         )
         assert resp.status_code == 403, resp.text
+        body = resp.json()
         assert_response_matches_openapi_operation(
-            resp.json(), _OPERATION_ID, status_code="403"
+            body, _OPERATION_ID, status_code="403"
         )
+        # A record-access denial is also a 403, so pin the scope check specifically —
+        # otherwise this still passes if the token turns out to be fine.
+        assert "scope" in body["error"]["message"].lower(), body

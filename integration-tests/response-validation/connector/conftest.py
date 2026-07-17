@@ -17,6 +17,7 @@ from uuid import uuid4
 import pytest
 
 from helper.clients.kb_client import KBClient
+from helper.clients.oauth_client import OAuthAppsClient, OAuthProviderClient
 from messaging.test_e2e_record_pipeline import (
     TERMINAL_STATUSES,
     _extract_kb_id,
@@ -42,6 +43,44 @@ the platform team, and the most recent rehearsal completed without data loss.
 Backups are replicated to a secondary region every hour. Restore drills are
 signed off by the on-call lead before the runbook is marked current.
 """
+
+
+@pytest.fixture(scope="module")
+def token_without_connector_read(pipeshub_client: PipeshubClient) -> Iterator[str]:
+    """Access token from an OAuth app that deliberately omits `connector:read`.
+
+    Minting a scope-restricted token for the *same* user isolates the scope check
+    itself, and keeps this off the second-user path — that one seeds a password
+    straight into MongoDB and needs TEST_MONGO_URI/TEST_MONGO_DB_NAME to match the
+    running stack, which the config defaults do not.
+    """
+    apps = OAuthAppsClient(pipeshub_client)
+    resp = apps.create_app(
+        name=f"connector-content-it-noscope-{uuid4().hex[:8]}",
+        allowedGrantTypes=["client_credentials"],
+        allowedScopes=["openid", "profile", "kb:read"],
+    )
+    assert resp.status_code < 300, f"OAuth app create failed: {resp.status_code} {resp.text}"
+    app = resp.json()["app"]
+
+    try:
+        token_resp = OAuthProviderClient(pipeshub_client).token(
+            grant_type="client_credentials",
+            client_id=app["clientId"],
+            client_secret=app["clientSecret"],
+        )
+        assert token_resp.status_code < 300, (
+            f"token fetch failed: {token_resp.status_code} {token_resp.text}"
+        )
+        access_token = token_resp.json().get("access_token")
+        assert access_token, f"token response had no access_token: {token_resp.text}"
+
+        yield str(access_token)
+    finally:
+        try:
+            apps.delete_app(str(app["id"]))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to delete OAuth app %s: %s", app.get("id"), e)
 
 
 class IndexedTextRecord(TypedDict):
