@@ -59,7 +59,7 @@ from app.models.entities import (
     User,
 )
 from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint, generate_record_sync_point_key
-from app.services.notification.types import NotificationRecipientRole, NotificationSeverity, NotificationType
+from app.services.notification.types import NotificationSeverity, NotificationType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.utils.streaming import create_stream_record_response
@@ -523,7 +523,6 @@ class WebConnector(BaseConnector):
                     severity=NotificationSeverity.ERROR,
                     title=f"Website not accessible",
                     message=f"Website {self.url} is not accessible.",
-                    recipient_user_ids=[self.created_by]
                 )
                 return False
 
@@ -542,7 +541,6 @@ class WebConnector(BaseConnector):
                     severity=NotificationSeverity.ERROR,
                     title=f"Website not accessible",
                     message=f"Website {self.url} returned status {result.status_code}",
-                    recipient_user_ids=[self.created_by]
                 )
                 return False
 
@@ -767,7 +765,6 @@ class WebConnector(BaseConnector):
                     severity=NotificationSeverity.INFO,
                     title=f"Web crawl completed",
                     message=f"Failed to crawl {len(self.retry_urls)} pages.\nCrawled {len(self.visited_urls)} pages.\nProcessed {self.processed_urls} pages.",
-                    recipient_user_ids=[self.created_by],
                 )
             else:
                 await self.notify(
@@ -775,7 +772,6 @@ class WebConnector(BaseConnector):
                     severity=NotificationSeverity.INFO,
                     title=f"Web crawl completed",
                     message=f"Added {self.processed_urls} pages.",
-                    recipient_user_ids=[self.created_by],
                 )
 
         except Exception as e:

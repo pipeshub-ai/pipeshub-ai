@@ -29,7 +29,6 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
-    NotificationRecipientRole,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
