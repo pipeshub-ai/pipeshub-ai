@@ -655,7 +655,7 @@ class KnowledgeBaseService:
             org_id=org_id,
             record_name=name,
             record_type=RecordType.FILE,
-            external_record_id=f"kb_folder_{folder_id}",
+            external_record_id=folder_id,
             origin=OriginTypes.UPLOAD,
             connector_name=Connectors.KNOWLEDGE_BASE,
             connector_id=kb_id,

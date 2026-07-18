@@ -2936,6 +2936,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     GRAPH @graph_name
                     FILTER e.relationshipType == 'PARENT_CHILD'
                     FILTER v.externalRecordId == p.vertices[LENGTH(p.vertices)-2].externalParentId
+                        OR v._key == p.vertices[LENGTH(p.vertices)-2].externalParentId
                     RETURN v.recordName
             )
             LET path_order = REVERSE(ancestors)

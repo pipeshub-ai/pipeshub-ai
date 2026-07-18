@@ -2877,8 +2877,9 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE all(r IN relationships(path) WHERE r.relationshipType = 'PARENT_CHILD')
 
             // 2. Node Filter: Ensure it follows the strict canonical path
-            AND all(i IN range(0, length(path)-1) 
-                    WHERE nodes(path)[i].externalParentId = nodes(path)[i+1].externalRecordId)
+            AND all(i IN range(0, length(path)-1)
+                    WHERE nodes(path)[i].externalParentId = nodes(path)[i+1].externalRecordId
+                       OR nodes(path)[i].externalParentId = nodes(path)[i+1].id)
 
             // 3. Grab the longest valid path up to the root as above query returns all path lengths incrementally from 0,1,2,3 .....
             WITH nodes(path) AS path_nodes
