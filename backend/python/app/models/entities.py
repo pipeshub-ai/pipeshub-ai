@@ -227,8 +227,7 @@ class Record(BaseModel):
     fetch_signed_url: str | None = None
     preview_renderable: bool | None = True
     is_shared: bool | None = False
-    is_shared_with_me: bool | None = False
-    shared_with_me_record_group_id: str | None = None
+    shared_with_me_record_group_ids: list[str] = Field(default_factory=list)
     hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
     is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
 

@@ -417,12 +417,18 @@ class DataSourceEntitiesProcessor:
             else:
                 await tx_store.delete_inherit_permissions_relation_record_group(record.id, record_group_id)
 
-        if record.is_shared_with_me and record.shared_with_me_record_group_id is not None:
-            shared_with_me_record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id, external_id=record.shared_with_me_record_group_id)
-            if shared_with_me_record_group:
-                await tx_store.create_record_group_relation(record.id, shared_with_me_record_group.id)
-            else:
-                self.logger.warning(f"Shared with me record group with external ID {record.shared_with_me_record_group_id} not found in database")
+        if record.shared_with_me_record_group_ids:
+            for external_group_id in record.shared_with_me_record_group_ids:
+                shared_with_me_record_group = await tx_store.get_record_group_by_external_id(
+                    connector_id=record.connector_id,
+                    external_id=external_group_id
+                )
+                if shared_with_me_record_group:
+                    await tx_store.create_record_group_relation(
+                        record.id, shared_with_me_record_group.id
+                    )
+                else:
+                    self.logger.warning(f"Shared with me record group with external ID {external_group_id} not found in database")
 
     async def _prepare_ticket_user_edge(
         self,
@@ -827,6 +833,27 @@ class DataSourceEntitiesProcessor:
                         record.record_name,
                     )
                     await self._process_record(record, [], tx_store)
+                elif record.shared_with_me_record_group_ids:
+                    # The record already has BELONGS_TO edges (e.g. to the owner's "My Drive"), but
+                    # the shared-with-me edge for *this* user may still be missing because
+                    # _process_record is skipped in the belongs_to_edges branch above.
+                    for external_group_id in record.shared_with_me_record_group_ids:
+                        self.logger.debug(
+                            "Creating shared-with-me record group relation for record %s and record group %s",
+                            record.record_name,
+                            external_group_id,
+                        )
+                        shared_with_me_rg = await tx_store.get_record_group_by_external_id(
+                            connector_id=record.connector_id,
+                            external_id=external_group_id,
+                        )
+                        if shared_with_me_rg:
+                            await tx_store.create_record_group_relation(record.id, shared_with_me_rg.id)
+                        else:
+                            self.logger.warning(
+                                "Shared with me record group with external ID %s not found in database",
+                                external_group_id,
+                            )
 
                 # Step 1: Delete all existing permission edges that point TO this record.
                 deleted_count = await tx_store.delete_edges_to(
@@ -901,7 +928,7 @@ class DataSourceEntitiesProcessor:
                 await self._handle_updated_record(record, existing_record, tx_store)
 
         # Link record to group AFTER saving (when record.id is available for edges)
-        if record_group_id or record.is_shared_with_me:
+        if record_group_id or record.shared_with_me_record_group_ids:
             await self._link_record_to_group(record, record_group_id, tx_store, existing_record)
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided

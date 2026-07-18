@@ -235,8 +235,7 @@ class TestLinkRecordToGroupSharedNotFound:
         tx_store = _make_tx_store()
         record = _make_record()
         record.id = "rec-1"
-        record.is_shared_with_me = True
-        record.shared_with_me_record_group_id = "shared-ext-group"
+        record.shared_with_me_record_group_ids = ["shared-ext-group"]
         record.inherit_permissions = True
 
         # shared_with_me group lookup returns None
@@ -2883,8 +2882,7 @@ class TestLinkRecordToGroupEdgeCases:
 
         record = _make_record()
         record.id = "rec-1"
-        record.is_shared_with_me = True
-        record.shared_with_me_record_group_id = "shared-ext-grp"
+        record.shared_with_me_record_group_ids = ["shared-ext-grp"]
         record.inherit_permissions = False
 
         shared_grp = MagicMock()
@@ -3843,7 +3841,7 @@ class TestProcessRecordRevisionMatch:
 
     @pytest.mark.asyncio
     async def test_record_group_links_when_shared(self):
-        """Links record to group when is_shared_with_me is True."""
+        """Links record to group when shared_with_me_record_group_ids is not empty."""
         proc = _make_processor()
         tx_store = _make_tx_store()
 
@@ -3852,8 +3850,7 @@ class TestProcessRecordRevisionMatch:
         tx_store.get_record_group_by_external_id.return_value = shared_grp
 
         record = _make_record()
-        record.is_shared_with_me = True
-        record.shared_with_me_record_group_id = "shared-grp"
+        record.shared_with_me_record_group_ids = ["shared-grp"]
         record.inherit_permissions = False
         record.record_group_type = "DRIVE"
         record.external_record_group_id = "ext-grp"

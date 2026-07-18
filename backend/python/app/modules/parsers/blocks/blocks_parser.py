@@ -245,7 +245,7 @@ class BlocksParser:
         modified_markdown = markdown_data
 
         image_parser = ImageParser(self.logger)
-        md_parser = MarkdownParser(self.logger, self.config_service)
+        md_parser = MarkdownParser(logger=self.logger, config_service=self.config_service)
 
         if md_parser and image_parser:
             modified_markdown, images = md_parser.extract_and_replace_images(markdown_data)
@@ -377,7 +377,7 @@ class BlocksParser:
         processing_results: dict[int, Tuple[List[BlockGroup], List[Block]]] = {}
         initial_block_count = len(block_containers.blocks)
 
-        md_parser = MarkdownParser(self.logger, self.config_service)
+        md_parser = MarkdownParser(logger=self.logger, config_service=self.config_service)
 
         for block_group in block_groups_to_process:
             try:
