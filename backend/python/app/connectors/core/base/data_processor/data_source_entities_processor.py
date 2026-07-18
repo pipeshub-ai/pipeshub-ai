@@ -376,7 +376,8 @@ class DataSourceEntitiesProcessor:
 
             if parent_record and isinstance(parent_record, Record):
                 if (record.record_type == RecordType.FILE and record.parent_external_record_id and
-                    record.parent_record_type in self.ATTACHMENT_CONTAINER_TYPES):
+                    record.parent_record_type in self.ATTACHMENT_CONTAINER_TYPES
+                    and getattr(record, 'is_file', True)):
                     relation_type = RecordRelations.ATTACHMENT.value
                 else:
                     relation_type = RecordRelations.PARENT_CHILD.value
