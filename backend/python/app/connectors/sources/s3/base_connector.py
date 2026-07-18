@@ -1136,7 +1136,6 @@ class S3CompatibleBaseConnector(BaseConnector):
                     severity=NotificationSeverity.ERROR,
                     title=f"Connection test failed",
                     message=f"{self.connector_name.value}: {response.error}",
-                    recipient_roles=[NotificationRecipientRole.EVERYONE],
                 )
                 return False
         except Exception as e:
@@ -1146,7 +1145,6 @@ class S3CompatibleBaseConnector(BaseConnector):
                 severity=NotificationSeverity.ERROR,
                 title=f"Connection test failed",
                 message=f"{self.connector_name.value}: {e}",
-                recipient_roles=[NotificationRecipientRole.ADMIN],
             )
             return False
 

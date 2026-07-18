@@ -523,8 +523,7 @@ class WebConnector(BaseConnector):
                     severity=NotificationSeverity.ERROR,
                     title=f"Website not accessible",
                     message=f"Website {self.url} is not accessible.",
-                    recipient_roles=[NotificationRecipientRole.ADMIN] if self.scope == ConnectorScope.TEAM.value else None,
-                    recipient_user_ids=[self.created_by] if self.scope == ConnectorScope.PERSONAL.value else None
+                    recipient_user_ids=[self.created_by]
                 )
                 return False
 
@@ -543,8 +542,7 @@ class WebConnector(BaseConnector):
                     severity=NotificationSeverity.ERROR,
                     title=f"Website not accessible",
                     message=f"Website {self.url} returned status {result.status_code}",
-                    recipient_roles=[NotificationRecipientRole.ADMIN] if self.scope == ConnectorScope.TEAM.value else None,
-                    recipient_user_ids=[self.created_by] if self.scope == ConnectorScope.PERSONAL.value else None
+                    recipient_user_ids=[self.created_by]
                 )
                 return False
 
