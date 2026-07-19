@@ -540,6 +540,10 @@ function ConnectorItemComponent({
     if (connectorType === 'jira') {
       return <MaterialIcon name="bug_report" size={iconSize} color={iconColor} style={iconStyle} />;
     }
+    if (connectorType === 'odoo') {
+      // No brand icon yet — matches the generic fallback in ConnectorIcon.tsx.
+      return <MaterialIcon name="extension" size={iconSize} color={iconColor} style={iconStyle} />;
+    }
     return <MaterialIcon name="description" size={iconSize} color={iconColor} style={iconStyle} />;
   };
 
@@ -679,6 +683,7 @@ function getAppConnectorType(app: KnowledgeHubNode): ConnectorType {
   if (name.includes('notion')) return 'notion';
   if (name.includes('dropbox')) return 'dropbox';
   if (name.includes('web')) return 'web';
+  if (name.includes('odoo')) return 'odoo';
   return 'generic';
 }
 
