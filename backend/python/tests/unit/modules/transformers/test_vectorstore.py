@@ -296,7 +296,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embed = MagicMock()
-        mock_embed.embed_query.return_value = [0.1] * 768
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 768)
         mock_embed.model_name = "test-model"
 
         with patch("app.modules.transformers.vectorstore.get_default_embedding_model", return_value=mock_embed):
@@ -321,7 +321,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embed = MagicMock()
-        mock_embed.embed_query.return_value = [0.1] * 1536
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1536)
         mock_embed.model_name = "text-embedding-3-small"
 
         with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
@@ -345,7 +345,7 @@ class TestGetEmbeddingModelInstance:
         })
 
         mock_embed = MagicMock()
-        mock_embed.embed_query.side_effect = RuntimeError("API error")
+        mock_embed.aembed_query = AsyncMock(side_effect=RuntimeError("API error"))
 
         with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
             with pytest.raises(IndexingError):
@@ -368,7 +368,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embed = MagicMock(spec=[])  # no attributes
-        mock_embed.embed_query = MagicMock(return_value=[0.1] * 1024)
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         # Add only 'model' attribute
         mock_embed.model = "test-model-via-model"
 
@@ -394,7 +394,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embed = MagicMock(spec=[])  # no attributes
-        mock_embed.embed_query = MagicMock(return_value=[0.1] * 1024)
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         mock_embed.model_id = "test-model-via-id"
 
         with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
@@ -1377,7 +1377,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embeddings = MagicMock()
-        mock_embeddings.embed_query.return_value = [0.1] * 1024
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         mock_embeddings.model_name = "default-model"
 
         vs.config_service.get_config = AsyncMock(return_value={
@@ -1396,7 +1396,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embeddings = MagicMock()
-        mock_embeddings.embed_query.return_value = [0.1] * 1536
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 1536)
         mock_embeddings.model_name = "text-embedding-3-small"
 
         config = {
@@ -1425,7 +1425,7 @@ class TestGetEmbeddingModelInstance:
 
         vs = _make_vectorstore()
         mock_embeddings = MagicMock()
-        mock_embeddings.embed_query.side_effect = Exception("embed failed")
+        mock_embeddings.aembed_query = AsyncMock(side_effect=Exception("embed failed"))
 
         vs.config_service.get_config = AsyncMock(return_value={
             "embedding": [{
@@ -1446,7 +1446,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embeddings = MagicMock(spec=[])
-        mock_embeddings.embed_query = MagicMock(return_value=[0.1] * 768)
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 768)
         mock_embeddings.model = "my-model"
 
         vs.config_service.get_config = AsyncMock(return_value={"embedding": []})
@@ -1463,7 +1463,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embeddings = MagicMock(spec=[])
-        mock_embeddings.embed_query = MagicMock(return_value=[0.1] * 768)
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 768)
         mock_embeddings.model_id = "my-model-id"
 
         vs.config_service.get_config = AsyncMock(return_value={"embedding": []})
@@ -1480,7 +1480,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embeddings = MagicMock(spec=[])
-        mock_embeddings.embed_query = MagicMock(return_value=[0.1] * 768)
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 768)
 
         vs.config_service.get_config = AsyncMock(return_value={"embedding": []})
 
@@ -1496,7 +1496,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         mock_embeddings = MagicMock()
-        mock_embeddings.embed_query.return_value = [0.1] * 1024
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         mock_embeddings.model_name = "amazon.titan-embed-image-v1"
 
         config = {
@@ -2284,7 +2284,7 @@ class TestGetEmbeddingModelInstanceUnknown:
         vs._initialize_collection = AsyncMock()
 
         mock_embed = MagicMock(spec=[])  # no attributes
-        mock_embed.embed_query = MagicMock(return_value=[0.1] * 1024)
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         # No model_name, model, or model_id attributes
 
         with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
@@ -2316,7 +2316,7 @@ class TestGetEmbeddingModelInstanceUnknown:
         vs._initialize_collection = AsyncMock()
 
         mock_embed = MagicMock()
-        mock_embed.embed_query.return_value = [0.1] * 1024
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         mock_embed.model_name = "titan-embed"
 
         with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):

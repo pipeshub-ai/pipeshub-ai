@@ -200,7 +200,7 @@ class TestGetEmbeddingModelInstance:
         vs = _make_vectorstore()
 
         mock_embeddings = MagicMock()
-        mock_embeddings.embed_query.return_value = [0.1] * 1024
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         mock_embeddings.model_name = "default-model"
 
         vs.config_service.get_config = AsyncMock(
@@ -223,7 +223,7 @@ class TestGetEmbeddingModelInstance:
         vs = _make_vectorstore()
 
         mock_embeddings = MagicMock()
-        mock_embeddings.embed_query.return_value = [0.1] * 768
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 768)
         mock_embeddings.model_name = "configured-model"
 
         config = {
@@ -256,7 +256,7 @@ class TestGetEmbeddingModelInstance:
         vs = _make_vectorstore()
 
         mock_embeddings = MagicMock()
-        mock_embeddings.embed_query.side_effect = Exception("model error")
+        mock_embeddings.aembed_query = AsyncMock(side_effect=Exception("model error"))
 
         vs.config_service.get_config = AsyncMock(
             return_value={"embedding": []}
@@ -1528,8 +1528,8 @@ def _make_vectorstore_p1(supports_sparse=False):
 
     # Dense embeddings pre-configured
     dense = MagicMock()
-    dense.embed_documents = MagicMock(return_value=[[0.1] * 1024])
-    dense.embed_query = MagicMock(return_value=[0.1] * 1024)
+    dense.aembed_documents = AsyncMock(return_value=[[0.1] * 1024])
+    dense.aembed_query = AsyncMock(return_value=[0.1] * 1024)
     vs.dense_embeddings = dense
     vs.embedding_provider = None
     vs.api_key = None

@@ -778,7 +778,7 @@ class TestGetEmbeddingModelInstanceBedrock:
         vs._initialize_collection = AsyncMock()
 
         mock_embed = MagicMock()
-        mock_embed.embed_query.return_value = [0.1] * 1024
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         mock_embed.model_name = "amazon.titan-embed-v1"
 
         with patch(
@@ -809,7 +809,7 @@ class TestGetEmbeddingModelInstanceBedrock:
 
         # Create an embedding object with no model_name, model, or model_id
         mock_embed = MagicMock(spec=[])
-        mock_embed.embed_query = MagicMock(return_value=[0.1] * 1024)
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
 
         with patch(
             "app.modules.transformers.vectorstore.get_embedding_model",
@@ -835,7 +835,7 @@ class TestGetEmbeddingModelInstanceBedrock:
         vs._initialize_collection = AsyncMock()
 
         mock_embed = MagicMock()
-        mock_embed.embed_query.return_value = [0.1] * 1024
+        mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         mock_embed.model_name = "test-model"
 
         with patch(

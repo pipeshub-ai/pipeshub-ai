@@ -932,14 +932,10 @@ class VectorStore(Transformer):
             return
 
         texts = [doc.page_content for doc in documents]
-        loop = asyncio.get_running_loop()
 
-        # Dense embeddings (sync call in thread)
         try:
             dense_embeddings = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, self.dense_embeddings.embed_documents, texts
-                ),
+                self.dense_embeddings.aembed_documents(texts),
                 timeout=_EMBEDDING_BATCH_TIMEOUT_S,
             )
         except asyncio.TimeoutError:

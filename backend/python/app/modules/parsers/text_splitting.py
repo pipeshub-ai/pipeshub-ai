@@ -10,6 +10,7 @@ rule-based text segmentation.
 from __future__ import annotations
 
 import re
+import threading
 
 import pysbd
 import pysbd.languages
@@ -83,19 +84,21 @@ _LANGUAGE_ALIASES = {
     "tr": "en",  # Turkish -> English
 }
 
-_SEGMENTER_CACHE: dict[str, "pysbd.Segmenter"] = {}
+_SEGMENTER_CACHE = threading.local()
 
 
 def _get_segmenter(language: str) -> "pysbd.Segmenter":
     lang = _LANGUAGE_ALIASES.get(language, language)
     if lang not in _PYSBD_SUPPORTED:
         lang = "en"
-    segmenter = _SEGMENTER_CACHE.get(lang)
+    if not hasattr(_SEGMENTER_CACHE, "cache"):
+        _SEGMENTER_CACHE.cache = {}
+    segmenter = _SEGMENTER_CACHE.cache.get(lang)
     if segmenter is None:
         # clean=False preserves the original text verbatim so embedded
         # sentences match the source block exactly (no whitespace mangling).
         segmenter = pysbd.Segmenter(language=lang, clean=False)
-        _SEGMENTER_CACHE[lang] = segmenter
+        _SEGMENTER_CACHE.cache[lang] = segmenter
     return segmenter
 
 

@@ -10,7 +10,7 @@ COMPOSE_FILES=(
   docker-compose.build.neo4j.yml
   docker-compose.integration.arango.yml
   docker-compose.integration.neo4j.yml
-  docker-compose.prod.yml
+  docker-compose.prod-legacy.yml
 )
 
 render_compose() {
