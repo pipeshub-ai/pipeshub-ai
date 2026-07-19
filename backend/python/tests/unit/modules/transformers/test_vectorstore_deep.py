@@ -1011,7 +1011,8 @@ class TestSplitIntoSentencesResilience:
         from app.modules.parsers.text_splitting import split_into_sentences
 
         # Force a cache miss so the patched constructor is actually exercised.
-        text_splitting_module._SEGMENTER_CACHE.pop("en", None)
+        if hasattr(text_splitting_module._SEGMENTER_CACHE, "cache"):
+            text_splitting_module._SEGMENTER_CACHE.cache.pop("en", None)
         with patch(
             "app.modules.parsers.text_splitting.pysbd.Segmenter",
             side_effect=ValueError("segmenter init failed"),
