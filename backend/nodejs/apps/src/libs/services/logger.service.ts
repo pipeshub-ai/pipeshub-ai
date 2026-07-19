@@ -1,6 +1,7 @@
 import winston from 'winston';
 import { Request } from 'express';
 import { injectable } from 'inversify';
+import fs from 'fs';
 import path from 'path';
 import { threadId } from 'worker_threads';
 import { currentDisplayId, getRequestContext } from '../context/request-context';
@@ -37,6 +38,28 @@ export function getLogLevel(): LogLevel {
   }
   return LogLevel.Info;
 }
+
+function resolveLogDir(): string | null {
+  const configured = process.env.LOG_DIR;
+  const candidates = configured ? [configured, ''] : [''];
+  for (const candidate of candidates) {
+    try {
+      if (candidate) {
+        fs.mkdirSync(candidate, { recursive: true });
+      }
+      fs.accessSync(candidate || '.', fs.constants.W_OK);
+      return candidate;
+    } catch (error) {
+      console.warn(
+        `WARNING: log directory '${candidate || process.cwd()}' is unusable (${error})`,
+      );
+    }
+  }
+  console.warn('WARNING: file logging disabled; using console only');
+  return null;
+}
+
+const logDir = resolveLogDir();
 
 
 export interface LoggerConfig {
@@ -118,15 +141,19 @@ export class Logger {
       format: logFormat,
       defaultMeta: this.defaultMeta,
       transports: [
-        new winston.transports.File({
-          filename: 'error.log',
-          level: LogLevel.Error,
-          format: winston.format.combine(logFormat, winston.format.json())
-        }),
-        new winston.transports.File({
-          filename: 'combined.log',
-          format: winston.format.combine(logFormat, winston.format.json())
-        }),
+        ...(logDir === null
+          ? []
+          : [
+              new winston.transports.File({
+                filename: path.join(logDir, 'error.log'),
+                level: LogLevel.Error,
+                format: winston.format.combine(logFormat, winston.format.json())
+              }),
+              new winston.transports.File({
+                filename: path.join(logDir, 'combined.log'),
+                format: winston.format.combine(logFormat, winston.format.json())
+              }),
+            ]),
         new winston.transports.Console({
           format: logFormat,
         }),

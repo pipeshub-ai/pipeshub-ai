@@ -103,9 +103,34 @@ class HealthCheckFilter(logging.Filter):
         return not ("/health" in msg and '" 2' in msg)
 
 
-# Ensure log directory exists
-log_dir = "logs"
-os.makedirs(log_dir, exist_ok=True)
+_DEFAULT_LOG_DIR = "logs"
+
+
+def _resolve_log_dir() -> str:
+    """Return a writable log directory, or "" to log to console only.
+
+    This runs at import time, so an unwritable LOG_DIR (bad mount, read-only
+    volume) would otherwise raise here and take down every service that imports
+    the logger. File logging must never stop a service from starting.
+    """
+    configured = os.getenv("LOG_DIR") or _DEFAULT_LOG_DIR
+    candidates = [configured]
+    if configured != _DEFAULT_LOG_DIR:
+        candidates.append(_DEFAULT_LOG_DIR)
+    for candidate in candidates:
+        try:
+            os.makedirs(candidate, exist_ok=True)
+            return candidate
+        except OSError as exc:
+            print(
+                f"WARNING: log directory {candidate!r} is unusable ({exc})",
+                file=sys.stderr,
+            )
+    print("WARNING: file logging disabled; using console only", file=sys.stderr)
+    return ""
+
+
+log_dir = _resolve_log_dir()
 
 # Force UTF-8 for stdout/stderr in Windows
 if sys.platform == "win32":
@@ -154,19 +179,20 @@ def create_logger(service_name: str) -> logging.Logger:
         # Enhanced format: request id + thread/task + filename and line number
         log_format = LOG_FORMAT
 
-        # File handler with enhanced format
-        file_handler = logging.FileHandler(
-            os.path.join(log_dir, f"{service_name}.log"),
-            encoding="utf-8",  # Explicitly set encoding here too
-        )
-        file_handler.setFormatter(logging.Formatter(log_format))
+        # File handler with enhanced format; skipped when no log dir is usable
+        if log_dir:
+            file_handler = logging.FileHandler(
+                os.path.join(log_dir, f"{service_name}.log"),
+                encoding="utf-8",  # Explicitly set encoding here too
+            )
+            file_handler.setFormatter(logging.Formatter(log_format))
+            logger.addHandler(file_handler)
 
         # Console handler with colored format
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(ColoredFormatter(log_format))
 
         # Add handlers
-        logger.addHandler(file_handler)
         logger.addHandler(console_handler)
         logger.propagate = False
 
