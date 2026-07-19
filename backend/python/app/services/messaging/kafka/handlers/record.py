@@ -412,6 +412,13 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.PPT.value,
                 MimeTypes.MDX.value,
                 MimeTypes.TSV.value,
+                MimeTypes.JSON.value,
+                MimeTypes.YAML.value,
+                # Node's storage layer (backend/nodejs/.../mimetypes.ts) maps
+                # .yaml/.yml to "application/x-yaml", not MimeTypes.YAML's
+                # "application/yaml" — accept both so records created from
+                # KB uploads aren't gated on this mismatch.
+                "application/x-yaml",
                 MimeTypes.SQL_TABLE.value,
                 MimeTypes.SQL_VIEW.value,
                 MimeTypes.PYTHON.value,
@@ -450,6 +457,9 @@ class RecordEventHandler(BaseEventService):
                 ExtensionTypes.WEBP.value,
                 ExtensionTypes.SVG.value,
                 ExtensionTypes.TSV.value,
+                ExtensionTypes.JSON.value,
+                ExtensionTypes.YAML.value,
+                ExtensionTypes.YML.value,
                 ExtensionTypes.SQL_TABLE.value,
                 ExtensionTypes.SQL_VIEW.value,
                 ExtensionTypes.PY.value,

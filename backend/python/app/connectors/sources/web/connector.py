@@ -4,6 +4,7 @@ import hashlib
 import random
 import re
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 from io import BytesIO
@@ -13,6 +14,11 @@ from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
 import pillow_avif  # noqa: F401  # pyright: ignore[reportUnusedImport]
+from bs4 import BeautifulSoup, Tag
+from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
+from PIL import Image
+
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
@@ -23,6 +29,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -48,7 +55,6 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
-from app.connectors.sources.web.fetch_strategy import fetch_url_with_fallback
 from app.models.entities import (
     AppUser,
     FileRecord,
@@ -58,17 +64,17 @@ from app.models.entities import (
     RecordType,
     User,
 )
+from app.connectors.sources.web.fetch_strategy import FetchResponse, fetch_url_with_fallback
+from app.connectors.sources.web.crawl4ai_fetcher import Crawl4AIFetcher, FetchResult, get_shared_fetcher, release_shared_fetcher, resolve_fetch_status_code
+from app.connectors.sources.web.csr_detection import CSR_PROBE_JS, PRE_HYDRATION_INIT_SCRIPT, analyze_rendering
 from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint, generate_record_sync_point_key
-from app.services.notification.types import NotificationRecipientRole, NotificationSeverity, NotificationType
+from app.services.notification.types import NotificationSeverity, NotificationType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.utils.api_call import make_api_call
+from app.utils.jwt import generate_jwt
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from bs4 import BeautifulSoup, Tag
-from fastapi import HTTPException
-from fastapi.responses import StreamingResponse
-from PIL import Image
-
 
 async def _bytes_async_gen(data: bytes) -> AsyncGenerator[bytes, None]:
     """Wrap raw bytes as an async generator for StreamingResponse."""
@@ -89,6 +95,19 @@ class RecordUpdate:
     new_permissions: Optional[List[Permission]] = None
     external_record_id: Optional[str] = None
     html_bytes: Optional[bytes] = None
+
+@dataclass
+class CrawlFetchResult:
+    """Lightweight result yielded by the BFS generator.
+
+    Contains only what is needed to advance the crawl (link extraction,
+    visited-URL tracking). Heavy processing (image downloads, storage upload,
+    record building) is deferred to the consumer.
+    """
+    url: str
+    depth: int
+    referer: Optional[str]
+    fetch_response: FetchResponse
 
 @dataclass
 class RetryUrl:
@@ -113,7 +132,7 @@ RETRYABLE_STATUS_CODES = {
 
 # Base and cap (seconds) for the exponential back-off between attempts.
 _BACKOFF_BASE = 15.0
-_BACKOFF_CAP = 120.0
+_BACKOFF_CAP = 300.0
 MAX_RETRIES = 2
 
 DOCUMENT_MIME_TYPES = {
@@ -231,6 +250,18 @@ class WebApp(App):
             default_value=[],
             description="Sync only pages whose URL contains these strings; others are skipped. Leave empty to sync all pages."
         ))
+        .add_sync_custom_field(CustomField(
+            name="use_headless_browser",
+            display_name="Robust Mode (slower)",
+            field_type="BOOLEAN",
+            required=False,
+            default_value="false",
+            description=(
+                "Use a real Chromium browser to fetch pages. "
+                "Recommended for JavaScript-heavy or bot-protected sites — "
+                "without this, some pages may not be indexed properly."
+            )
+        ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(FilterField(
@@ -269,6 +300,7 @@ class WebApp(App):
         .with_agent_support(False)
     )\
     .build_decorator()
+
 class WebConnector(BaseConnector):
     """
     Web connector for crawling and indexing web pages.
@@ -325,9 +357,11 @@ class WebConnector(BaseConnector):
         self.base_domain: Optional[str] = None
         self.session: Optional[aiohttp.ClientSession] = None
         self.full_sync: bool = False
+        self.use_headless_browser: bool = False
+        self.crawl4ai_fetcher: Optional[Crawl4AIFetcher] = None
 
         # Batch processing
-        self.batch_size: int = 50
+        self.batch_size: int = 10
 
         # Filter collections
         self.sync_filters: FilterCollection = FilterCollection()
@@ -348,34 +382,27 @@ class WebConnector(BaseConnector):
             self.restrict_to_start_path = config_values["restrict_to_start_path"]
             self.start_path_prefix = config_values["start_path_prefix"]
             self.url_should_contain = config_values["url_should_contain"]
+            self.use_headless_browser = config_values["use_headless_browser"]
 
             # Load creator email if needed (for personal scope permission creation)
             await self._load_creator_email()
 
             # Initialize aiohttp session with realistic browser headers
-            # These headers mimic a real Chrome browser to avoid being blocked by websites
-            # that check for bot traffic. Includes modern security headers (Sec-Fetch-*)
-            # and Chrome client hints (sec-ch-ua-*) that are sent by real browsers.
             timeout = aiohttp.ClientTimeout(total=30)
             self.session = aiohttp.ClientSession(
                 timeout=timeout,
                 headers={
-                    # Modern Chrome User-Agent
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-                    # Accept headers that match real browsers
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
                     "Accept-Language": "en-US,en;q=0.9",
                     "Accept-Encoding": "gzip, deflate, br",
-                    # Security and privacy headers
                     "DNT": "1",
                     "Connection": "keep-alive",
                     "Upgrade-Insecure-Requests": "1",
-                    # Fetch metadata headers (important for modern browsers)
                     "Sec-Fetch-Dest": "document",
                     "Sec-Fetch-Mode": "navigate",
                     "Sec-Fetch-Site": "none",
                     "Sec-Fetch-User": "?1",
-                    # Additional headers for realism
                     "Cache-Control": "max-age=0",
                     "sec-ch-ua": '"Google Chrome";v="119", "Chromium";v="119", "Not?A_Brand";v="24"',
                     "sec-ch-ua-mobile": "?0",
@@ -383,10 +410,13 @@ class WebConnector(BaseConnector):
                 }
             )
 
-            self.logger.info(
-                f"✅ Web connector initialized: url={self.url}, type={self.crawl_type},"
-                + f" depth={self.max_depth}, max_pages={self.max_pages}"
-            )
+            if self.use_headless_browser:
+                self.crawl4ai_fetcher = await get_shared_fetcher()
+            elif self.url:
+                if await self._detect_csr(self.url):
+                    self.use_headless_browser = True
+                    self.crawl4ai_fetcher = await get_shared_fetcher()
+
             return True
 
         except Exception as e:
@@ -446,6 +476,8 @@ class WebConnector(BaseConnector):
             else:
                 self.logger.warning("⚠️ WebPage url_should_contain is not a list, setting to empty list: %s", _usc_raw)
                 url_should_contain = []
+            _uhb_raw = sync_config.get("use_headless_browser", False)
+            use_headless_browser = _uhb_raw if isinstance(_uhb_raw, bool) else str(_uhb_raw).lower() == "true"
 
             # restrict_to_start_path implies staying on the starting domain,
             # so follow_external must be False — override with a warning.
@@ -498,6 +530,7 @@ class WebConnector(BaseConnector):
                 "restrict_to_start_path": restrict_to_start_path,
                 "start_path_prefix": start_path_prefix,
                 "url_should_contain": url_should_contain,
+                "use_headless_browser": use_headless_browser,
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch and parse config: {e}")
@@ -523,16 +556,10 @@ class WebConnector(BaseConnector):
                     severity=NotificationSeverity.ERROR,
                     title=f"Website not accessible",
                     message=f"Website {self.url} is not accessible.",
-                    recipient_roles=[NotificationRecipientRole.ADMIN] if self.scope == ConnectorScope.TEAM.value else None,
-                    recipient_user_ids=[self.created_by] if self.scope == ConnectorScope.PERSONAL.value else None
                 )
                 return False
 
             if result.status_code < HttpStatusCode.BAD_REQUEST.value:
-                self.logger.info(
-                    f"✅ Website accessible: {self.url} "
-                    + f"(status: {result.status_code}, via {result.strategy})"
-                )
                 return True
             else:
                 self.logger.warning(
@@ -543,8 +570,6 @@ class WebConnector(BaseConnector):
                     severity=NotificationSeverity.ERROR,
                     title=f"Website not accessible",
                     message=f"Website {self.url} returned status {result.status_code}",
-                    recipient_roles=[NotificationRecipientRole.ADMIN] if self.scope == ConnectorScope.TEAM.value else None,
-                    recipient_user_ids=[self.created_by] if self.scope == ConnectorScope.PERSONAL.value else None
                 )
                 return False
 
@@ -621,10 +646,6 @@ class WebConnector(BaseConnector):
             # Create/update record group with permissions
             await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
 
-            self.logger.info(
-                f"✅ Created record group '{record_group_name}' with permissions for {len(permissions)} users"
-            )
-
         except Exception as e:
             self.logger.error(f"❌ Failed to create record group: {e}", exc_info=True)
             raise
@@ -632,7 +653,6 @@ class WebConnector(BaseConnector):
     async def reload_config(self) -> None:
         """Reload the connector configuration."""
         try:
-            self.logger.debug("running reload config")
             config_values = await self._fetch_and_parse_config(use_cache=False)
 
             new_url =  config_values["url"]
@@ -645,7 +665,7 @@ class WebConnector(BaseConnector):
             new_restrict_to_start_path = config_values["restrict_to_start_path"]
             new_start_path_prefix = config_values["start_path_prefix"]
 
-            if new_url.lower() != self.url.lower():
+            if self.url is not None and new_url.lower() != self.url.lower():
                 self.logger.error(f"❌ Cannot change URL from {self.url} to {new_url}. Please create a new connector for {new_url}")
                 raise ValueError("Cannot change URL for web connector.")
             if new_base_domain != self.base_domain:
@@ -653,28 +673,21 @@ class WebConnector(BaseConnector):
                 raise ValueError("Cannot change base domain for web connector.")
 
             if new_crawl_type != self.crawl_type:
-                self.logger.info("🔄 Crawl type changed from %s to %s", self.crawl_type, new_crawl_type)
                 self.crawl_type = new_crawl_type
             if new_max_depth != self.max_depth:
-                self.logger.info("🔄 Max depth changed from %s to %s", self.max_depth, new_max_depth)
                 self.max_depth = new_max_depth
             if new_max_pages != self.max_pages:
-                self.logger.info("🔄 Max pages changed from %s to %s", self.max_pages, new_max_pages)
                 self.max_pages = new_max_pages
             if new_max_size_mb != self.max_size_mb:
-                self.logger.info("🔄 Max size in MB changed from %s to %s", self.max_size_mb, new_max_size_mb)
                 self.max_size_mb = new_max_size_mb
             if new_follow_external != self.follow_external:
-                self.logger.info("🔄 Follow external changed from %s to %s", self.follow_external, new_follow_external)
                 self.follow_external = new_follow_external
             if new_restrict_to_start_path != self.restrict_to_start_path:
-                self.logger.info(f"🔄 Restrict to start path changed from {self.restrict_to_start_path} to {new_restrict_to_start_path}")
                 self.restrict_to_start_path = new_restrict_to_start_path
                 self.start_path_prefix = new_start_path_prefix
 
             new_url_should_contain = config_values["url_should_contain"]
             if new_url_should_contain != self.url_should_contain:
-                self.logger.info("🔄 URL should contain changed from %s to %s", self.url_should_contain, new_url_should_contain)
                 self.url_should_contain = new_url_should_contain
 
         except Exception as e:
@@ -691,7 +704,7 @@ class WebConnector(BaseConnector):
                 self.config_service, "web", self.connector_id, self.logger
             )
 
-            self.logger.info(f"🚀 Starting web crawl: {self.url}")
+            self.logger.info("Starting web crawl: %s", self.url)
 
             sync_point_key = generate_record_sync_point_key(
                 RecordType.WEBPAGE.value,
@@ -702,7 +715,6 @@ class WebConnector(BaseConnector):
             sync_point = await self.record_sync_point.read_sync_point(sync_point_key)
             if not sync_point:
                 self.full_sync = True
-                self.logger.debug(f"Running full sync for connector: {self.connector_id}")
 
             if self.scope == ConnectorScope.TEAM.value:
                 async with self.data_store_provider.transaction() as tx_store:
@@ -760,7 +772,10 @@ class WebConnector(BaseConnector):
             self.full_sync = False
 
             self.logger.info(
-                f"✅ Web crawl completed: {len(self.visited_urls)} pages crawled, {self.processed_urls} pages processed, {len(self.retry_urls)} pages failed"
+                "Web crawl completed: %d pages crawled, %d pages processed, %d pages failed",
+                len(self.visited_urls),
+                self.processed_urls,
+                len(self.retry_urls),
             )
 
             if len(self.retry_urls) > 0:
@@ -769,7 +784,6 @@ class WebConnector(BaseConnector):
                     severity=NotificationSeverity.INFO,
                     title=f"Web crawl completed",
                     message=f"Failed to crawl {len(self.retry_urls)} pages.\nCrawled {len(self.visited_urls)} pages.\nProcessed {self.processed_urls} pages.",
-                    recipient_user_ids=[self.created_by],
                 )
             else:
                 await self.notify(
@@ -777,7 +791,6 @@ class WebConnector(BaseConnector):
                     severity=NotificationSeverity.INFO,
                     title=f"Web crawl completed",
                     message=f"Added {self.processed_urls} pages.",
-                    recipient_user_ids=[self.created_by],
                 )
 
         except Exception as e:
@@ -806,10 +819,8 @@ class WebConnector(BaseConnector):
                     await self.data_entities_processor.on_new_records([pair])
                     self.processed_urls += 1
                 elif self.full_sync and record_update.record is not None:
-                    self.logger.debug("Reconstructing permissions for record: %s (id: %s)", record_update.record.record_name, record_update.record.id)
                     await self.data_entities_processor.on_updated_record_permissions(record_update.record, record_update.new_permissions)
                     self.processed_urls += 1
-                self.logger.info(f"✅ Indexed single page: {url}")
 
         except Exception as e:
             self.logger.error(f"❌ Error crawling single page {url}: {e}", exc_info=True)
@@ -872,12 +883,6 @@ class WebConnector(BaseConnector):
                             external_record_id=legacy_external_id,
                         )
 
-                        if existing:
-                            self.logger.info(
-                                f"🔄 Found legacy record (no trailing slash) for {legacy_external_id}, "
-                                f"will migrate external_record_id to {external_id}"
-                            )
-
                 record_id = existing.id if existing else str(uuid.uuid4())
 
                 file_record = FileRecord(
@@ -912,16 +917,9 @@ class WebConnector(BaseConnector):
                 permissions = []
 
                 placeholder_records.append((file_record, permissions))
-                self.logger.info(
-                    f"📁 Queued ancestor placeholder: {record_name}"
-                )
 
             if placeholder_records:
                 await self.data_entities_processor.on_new_records(placeholder_records)
-                self.logger.info(
-                    f"✅ Upserted {len(placeholder_records)} ancestor placeholder record(s) "
-                    f"for start URL: {start_url}"
-                )
 
         except ValueError as e:
             # Raised by urlparse/urlunparse when start_url is structurally invalid
@@ -937,38 +935,90 @@ class WebConnector(BaseConnector):
             )
 
     async def _crawl_recursive(self, start_url: str, depth: int) -> None:
-        """Recursively crawl pages starting from start_url."""
+        """Recursively crawl pages starting from start_url.
+
+        The BFS generator runs as a separate task, pushing lightweight
+        CrawlFetchResult items into an asyncio.Queue. The consumer pulls
+        from the queue and does the heavy per-page work (image downloads,
+        storage upload, record building). Because both sides are independent
+        tasks, the generator can fetch the next batch while the consumer is
+        still processing images from the current one.
+        """
         try:
-            # Upsert placeholder WEBPAGE records for every intermediate path
-            # segment of the start URL before we begin crawling.
             await self._create_ancestor_placeholder_records(start_url)
+
+            result_queue: asyncio.Queue[Optional[CrawlFetchResult]] = asyncio.Queue(maxsize=self.batch_size * 2)
+            producer_error: Optional[BaseException] = None
+
+            async def _produce() -> None:
+                nonlocal producer_error
+                try:
+                    async for crawl_result in self._crawl_recursive_generator(start_url, depth):
+                        await result_queue.put(crawl_result)
+                except Exception as exc:
+                    producer_error = exc
+                finally:
+                    await result_queue.put(None)
+
+            producer_task = asyncio.create_task(_produce())
 
             batch_records: List[Tuple[FileRecord, List[Permission]]] = []
 
-            async for record_update in self._crawl_recursive_generator(start_url, depth):
+            try:
+                while True:
+                    crawl_result = await result_queue.get()
+                    if crawl_result is None:
+                        break
 
-                if record_update.is_updated:
-                    await self._handle_record_updates(record_update)
-                    self.processed_urls += 1
-                elif record_update.is_new and record_update.record is not None and record_update.new_permissions is not None:
-                    entry: Tuple[Record, List[Permission]] = (record_update.record, record_update.new_permissions)
-                    batch_records.append(entry)
+                    try:
+                        record_update = await self._fetch_and_process_url(
+                            crawl_result.url,
+                            crawl_result.depth,
+                            referer=crawl_result.referer,
+                            prefetched_result=crawl_result.fetch_response,
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            "⚠️ Failed to process %s: %s", crawl_result.url, e
+                        )
+                        continue
 
-                    # Process batch when it reaches the size limit
-                    if len(batch_records) >= self.batch_size:
-                        await self.data_entities_processor.on_new_records(batch_records)
-                        self.logger.info(f"✅ Batch processed: {len(batch_records)} records")
-                        self.processed_urls += len(batch_records)
-                        batch_records.clear()
-                elif self.full_sync and record_update.record is not None:
-                    self.logger.debug("Reconstructing permissions for record: %s (id: %s)", record_update.record.record_name, record_update.record.id)
-                    await self.data_entities_processor.on_updated_record_permissions(record_update.record, record_update.new_permissions)
-                    self.processed_urls += 1
+                    if record_update is None:
+                        continue
 
-            # Process remaining batch
+                    file_record = record_update.record
+                    if file_record:
+                        is_disabled = self._check_index_filter(file_record)
+                        if is_disabled:
+                            file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+                    if record_update.is_updated:
+                        await self._handle_record_updates(record_update)
+                        self.processed_urls += 1
+                    elif record_update.is_new and record_update.record is not None and record_update.new_permissions is not None:
+                        entry: Tuple[Record, List[Permission]] = (record_update.record, record_update.new_permissions)
+                        batch_records.append(entry)
+
+                        if len(batch_records) >= self.batch_size:
+                            await self.data_entities_processor.on_new_records(batch_records)
+                            self.processed_urls += len(batch_records)
+                            batch_records.clear()
+                    elif self.full_sync and record_update.record is not None:
+                        await self.data_entities_processor.on_updated_record_permissions(record_update.record, record_update.new_permissions)
+                        self.processed_urls += 1
+            finally:
+                if not producer_task.done():
+                    producer_task.cancel()
+                    try:
+                        await producer_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+
+            if producer_error is not None:
+                raise producer_error
+
             if batch_records:
                 await self.data_entities_processor.on_new_records(batch_records)
-                self.logger.info(f"✅ Final batch processed: {len(batch_records)} records")
                 self.processed_urls += len(batch_records)
 
         except Exception as e:
@@ -977,191 +1027,477 @@ class WebConnector(BaseConnector):
 
     async def _crawl_recursive_generator(
         self, start_url: str, depth: int
-    ) -> AsyncGenerator[RecordUpdate, None]:
-        """
-        BFS crawl generator; yields (FileRecord, permissions) for each successfully
-        fetched page. Allows non-blocking processing of large site crawls.
+    ) -> AsyncGenerator[CrawlFetchResult, None]:
+        """BFS crawl generator; yields one CrawlFetchResult per successfully fetched page.
 
-        Yields:
-            Tuple of (FileRecord, List[Permission])
+        The generator is intentionally kept lightweight: it only fetches,
+        validates, and extracts links. All heavy per-page work (image downloads,
+        storage upload, record building) is deferred to the consumer
+        (_crawl_recursive) so the BFS queue is never blocked by I/O.
         """
-        # Queue for BFS crawling: (url, depth, referer)
-        queue: List[Tuple[str, int, Optional[str]]] = [(start_url, depth, None)]
+        queue: deque[Tuple[str, int, Optional[str]]] = deque([(start_url, depth, None)])
 
         while (queue or self.retry_urls) and len(self.visited_urls) < self.max_pages:
             if not queue:
                 # Re-enqueue retry candidates that haven't hit the max-retry limit.
-                # The existing loop logic will skip any that are at MAX_RETRIES.
                 # Exhausted entries are left for process_retry_urls() at the end.
                 retry_candidates = [
                     r for r in self.retry_urls.values() if r.retries < MAX_RETRIES
                 ]
                 if not retry_candidates:
-                    break  # only exhausted entries remain; hand off to process_retry_urls()
+                    break
+
+                min_retries = min(r.retries for r in retry_candidates)
+                backoff = min(_BACKOFF_BASE * (2 ** min_retries), _BACKOFF_CAP)
+                self.logger.info(
+                    "Backing off %.0fs before retrying %d URL(s)",
+                    backoff, len(retry_candidates),
+                )
+                await asyncio.sleep(backoff)
 
                 for retry_entry in retry_candidates:
                     normalized = self._normalize_url(retry_entry.url)
                     if normalized not in self.visited_urls:
                         queue.append((retry_entry.url, retry_entry.depth, retry_entry.referer))
 
-                self.logger.debug(f"Re-enqueued {len(retry_candidates)} retry URLs")
-                continue  # restart the while-loop with the newly enqueued URLs
-
-            current_url, current_depth, referer = queue.pop(0)
-
-            # Skip if already visited
-            normalized_url = self._normalize_url(current_url)
-            if normalized_url in self.visited_urls:
                 continue
-            if normalized_url in self.retry_urls:
-                retry_url = self.retry_urls[normalized_url]
-                if retry_url.retries >= MAX_RETRIES:
+
+            if self.use_headless_browser and self.crawl4ai_fetcher:
+                # Headless batch path: fetch a batch concurrently, extract links
+                # from raw HTML immediately, then yield each validated result.
+                batch: list[tuple[str, int, Optional[str]]] = []
+                batch_seen: set[str] = set()
+                while queue and len(batch) < self.batch_size:
+                    if len(self.visited_urls) + len(batch_seen) >= self.max_pages:
+                        break
+                    candidate_url, candidate_depth, candidate_referer = queue.popleft()
+                    norm = self._normalize_url(candidate_url)
+                    if norm in self.visited_urls or norm in batch_seen:
+                        continue
+                    if norm in self.retry_urls and self.retry_urls[norm].retries >= MAX_RETRIES:
+                        continue
+                    if candidate_depth > self.max_depth:
+                        continue
+                    batch.append((candidate_url, candidate_depth, candidate_referer))
+                    batch_seen.add(norm)
+                if not batch:
                     continue
 
-            # Skip if depth exceeded
-            if current_depth > self.max_depth:
-                continue
-
-            self.logger.info(
-                f"📄 Crawling [{len(self.visited_urls) + 1}/{self.max_pages}] "
-                + f"(depth {current_depth}): {current_url}"
-            )
-
-            try:
-                # Fetch and process the page with referer
-                record_update = await self._fetch_and_process_url(
-                    current_url, current_depth, referer=referer
+                fetch_responses = await self._headless_fetch_many(
+                    [u for u, _, _ in batch]
                 )
+                fetch_responses = await self._retry_rate_limited(batch, fetch_responses)
 
-                # Only mark as visited if NOT queued for retry
-                if normalized_url not in self.retry_urls:
-                    self.visited_urls.add(normalized_url)
-
-                if record_update is None:
-                    continue
-
-                file_record = record_update.record
-
-                if file_record:
-
-                    is_disabled = self._check_index_filter(file_record)
-
-                    if is_disabled:
-                        file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-
-                    # Extract links if we haven't reached max depth
-                    if current_depth < self.max_depth and file_record.mime_type == MimeTypes.HTML.value:
-                        links = await self._extract_links_from_content(
-                            current_url, record_update.html_bytes, file_record, referer=referer
+                for (current_url, current_depth, referer), raw_result in zip(batch, fetch_responses):
+                    normalized_url = self._normalize_url(current_url)
+                    try:
+                        result = await self._validate_fetch_result(
+                            current_url, current_depth, referer, raw_result
                         )
 
-                        # Add new links to queue with current URL as referer
-                        for link in links:
-                            normalized_link = self._normalize_url(link)
-                            if (
-                                normalized_link not in self.visited_urls
-                                and normalized_link not in self.retry_urls
-                                and len(self.visited_urls) < self.max_pages
+                        if normalized_url not in self.retry_urls:
+                            self.visited_urls.add(normalized_url)
+
+                        if result is None:
+                            continue
+
+                        # Extract links from raw HTML immediately so the queue
+                        # is populated before the next batch fetch.
+                        if current_depth < self.max_depth and result.content_bytes:
+                            try:
+                                for link in self._extract_links_from_html(
+                                    current_url, result.content_bytes
+                                ):
+                                    normalized_link = self._normalize_url(link)
+                                    if (
+                                        normalized_link not in self.visited_urls
+                                        and normalized_link not in self.retry_urls
+                                        and len(self.visited_urls) < self.max_pages
+                                    ):
+                                        queue.append((link, current_depth + 1, current_url))
+                            except Exception:
+                                pass
+
+                        yield CrawlFetchResult(
+                            url=current_url,
+                            depth=current_depth,
+                            referer=referer,
+                            fetch_response=result,
+                        )
+
+                    except Exception as e:
+                        self.logger.warning("⚠️ Failed to process %s: %s", current_url, e)
+
+            else:
+                current_url, current_depth, referer = queue.popleft()
+
+                normalized_url = self._normalize_url(current_url)
+                if normalized_url in self.visited_urls:
+                    continue
+                if normalized_url in self.retry_urls:
+                    if self.retry_urls[normalized_url].retries >= MAX_RETRIES:
+                        continue
+
+                if current_depth > self.max_depth:
+                    continue
+
+                try:
+                    if self.session is None:
+                        self.logger.error("❌ Session not initialized")
+                        continue
+
+                    raw_result = await fetch_url_with_fallback(
+                        url=current_url,
+                        session=self.session,
+                        logger=self.logger,
+                        referer=referer,
+                        timeout=15,
+                        max_size_mb=self.max_size_mb,
+                    )
+
+                    result = await self._validate_fetch_result(
+                        current_url, current_depth, referer, raw_result
+                    )
+
+                    if normalized_url not in self.retry_urls:
+                        self.visited_urls.add(normalized_url)
+
+                    if result is None:
+                        continue
+
+                    if current_depth < self.max_depth and result.content_bytes:
+                        try:
+                            for link in self._extract_links_from_html(
+                                current_url, result.content_bytes
                             ):
-                                queue.append((link, current_depth + 1, current_url))
+                                normalized_link = self._normalize_url(link)
+                                if (
+                                    normalized_link not in self.visited_urls
+                                    and normalized_link not in self.retry_urls
+                                    and len(self.visited_urls) < self.max_pages
+                                ):
+                                    queue.append((link, current_depth + 1, current_url))
+                        except Exception:
+                            pass
 
-                    yield record_update
+                    yield CrawlFetchResult(
+                        url=current_url,
+                        depth=current_depth,
+                        referer=referer,
+                        fetch_response=result,
+                    )
 
-            except Exception as e:
-                self.logger.warning("⚠️ Failed to process %s: %s", current_url, e)
-                continue
+                except Exception as e:
+                    self.logger.warning("⚠️ Failed to process %s: %s", current_url, e)
+                    continue
 
-            # Small delay to be respectful to the server; also yields control to
-            # other async tasks (mirrors the OneDrive generator pattern).
-            await asyncio.sleep(1)
 
-    async def _fetch_and_process_url(
-        self, url: str, depth: int, referer: str | None = None
-    ) -> Optional[RecordUpdate]:
-        """Fetch URL content using multi-strategy fallback and create a RecordUpdate."""
+    def _is_rate_limited(
+        self,
+        response: Optional[FetchResponse],
+    ) -> bool:
+        if response is None:
+            return False
+        return self._is_rate_limited_status(response.status_code, response.error_message)
+
+    def _is_rate_limited_status(
+        self,
+        status_code: int,
+        error_message: Optional[str] = None,
+    ) -> bool:
+        if status_code in {
+            HttpStatusCode.TOO_MANY_REQUESTS.value,   # 429
+            HttpStatusCode.SERVICE_UNAVAILABLE.value,  # 503
+            HttpStatusCode.FORBIDDEN.value,            # 403 — WAF/bot-block, treat as rate-limit for backoff
+        }:
+            return True
+        if not error_message:
+            return False
+        lower = error_message.lower()
+        return (
+            "429" in lower or "too many requests" in lower
+            or "503" in lower or "service unavailable" in lower
+            or "403" in lower or "forbidden" in lower
+        )
+
+    # ------------------------------------------------------------------
+    # CSR (client-side rendering) detection
+    # ------------------------------------------------------------------
+
+    async def _detect_csr(self, url: str) -> bool:
+        """Detect whether *url* is client-side rendered.
+
+        Uses a single headless-browser fetch with two ``innerText``
+        snapshots — one captured at ``DOMContentLoaded`` (before JS
+        hydration) via an init script, and one after the page is fully
+        rendered.  Both snapshots respect CSS visibility, avoiding false
+        results from CSS-hidden elements.
+        """
         try:
-            if self.session is None:
-                self.logger.error("❌ Session not initialized")
-                return None
+            probe = Crawl4AIFetcher(
+                concurrency=1,
+                js_code=CSR_PROBE_JS,
+                init_scripts=[PRE_HYDRATION_INIT_SCRIPT],
+            )
+            await probe.start()
+            try:
+                rendered = await probe.fetch(url)
+            finally:
+                await probe.close()
 
-            result = await fetch_url_with_fallback(
-                url=url,
-                session=self.session,
-                logger=self.logger,
-                referer=referer,
-                timeout=15,
-                max_size_mb=self.max_size_mb,
+            if not rendered.success or not (rendered.html or "").strip():
+                return False
+
+            js_result = rendered.js_execution_result or {}
+            pre_len = js_result.get("preLen", -1)
+            post_len = js_result.get("postLen", 0)
+
+            if pre_len < 0:
+                self.logger.debug(
+                    "🔍 CSR probe for %s: init script did not fire, "
+                    "falling back to SSR assumption",
+                    url,
+                )
+                return False
+
+            analysis = analyze_rendering(pre_len, post_len)
+
+            if analysis.is_csr:
+                self.logger.info(
+                    "🔍 CSR detected for %s (verdict=%s, confidence=%s, "
+                    "pre_text=%d, post_text=%d, text_ratio=%.2f) "
+                    "— auto-enabling headless browser",
+                    url, analysis.verdict, analysis.confidence,
+                    analysis.raw_text_length, analysis.rendered_text_length,
+                    analysis.text_ratio,
+                )
+            else:
+                self.logger.debug(
+                    "🔍 CSR probe for %s: verdict=%s, confidence=%s, "
+                    "pre_text=%d, post_text=%d, text_ratio=%.2f",
+                    url, analysis.verdict, analysis.confidence,
+                    analysis.raw_text_length, analysis.rendered_text_length,
+                    analysis.text_ratio,
+                )
+            return analysis.is_csr
+
+        except Exception as e:
+            self.logger.warning("⚠️ CSR detection failed for %s: %s", url, e)
+            return False
+
+    def _crawl4ai_result_to_response(self, fetch_result: FetchResult, url: str) -> Optional[FetchResponse]:
+        status_code = resolve_fetch_status_code(
+            fetch_result.status_code,
+            fetch_result.error,
+        ) or 503
+        if self._is_rate_limited_status(status_code, fetch_result.error):
+            status_code = HttpStatusCode.TOO_MANY_REQUESTS.value
+
+        if not fetch_result.success or not (fetch_result.html or "").strip():
+            return FetchResponse(
+                status_code=status_code,
+                content_bytes=b"",
+                headers={},
+                final_url=url,
+                strategy="crawl4ai",
+                success=False,
+                error_message=fetch_result.error,
+            )
+        return FetchResponse(
+            status_code=status_code,
+            content_bytes=fetch_result.html.encode("utf-8"),
+            headers={},
+            final_url=fetch_result.url,
+            strategy="crawl4ai",
+        )
+
+    async def _headless_fetch(self, url: str) -> Optional[FetchResponse]:
+        """Fetch a single URL via crawl4ai (used outside the BFS crawl loop)."""
+        if self.crawl4ai_fetcher is None:
+            return None
+        result = await self.crawl4ai_fetcher.fetch(url)
+        return self._crawl4ai_result_to_response(result, url)
+
+    async def _headless_fetch_many(self, urls: list[str]) -> list[Optional[FetchResponse]]:
+        """Fetch a batch of URLs via crawl4ai concurrently."""
+        assert self.crawl4ai_fetcher is not None
+        results = await self.crawl4ai_fetcher.fetch_many(urls)
+        return [self._crawl4ai_result_to_response(r, url) for r, url in zip(results, urls)]
+
+    async def _retry_rate_limited(
+        self,
+        batch: list[tuple[str, int, Optional[str]]],
+        responses: list[Optional[FetchResponse]],
+    ) -> list[Optional[FetchResponse]]:
+        """Re-fetch any rate-limited/bot-blocked responses with exponential backoff, leaving others untouched."""
+        rate_limited_indices = [
+            i for i, r in enumerate(responses)
+            if self._is_rate_limited(r)
+        ]
+        if not rate_limited_indices:
+            return responses
+
+        results = list(responses)
+        pending = rate_limited_indices
+        delay = _BACKOFF_BASE
+
+        while pending and delay <= _BACKOFF_CAP:
+            self.logger.warning(
+                "Rate-limited/bot-blocked on %d URL(s), backing off %.0fs before retry",
+                len(pending), delay,
+            )
+            await asyncio.sleep(delay)
+
+            still_limited: list[int] = []
+            for batch_idx in pending:
+                url = batch[batch_idx][0]
+                new_resp = await self._headless_fetch(url)
+                if self._is_rate_limited(new_resp):
+                    still_limited.append(batch_idx)
+                else:
+                    results[batch_idx] = new_resp
+
+            pending = still_limited
+            delay *= 2
+
+        if pending:
+            self.logger.warning(
+                "Giving up on %d URL(s) still rate-limited after backoff cap",
+                len(pending),
             )
 
-            if result is None:
-                # Connection-level failure (all fetch strategies exhausted with no response).
-                # Queue for retry; unlike HTTP 4xx/5xx this is often transient.
+        return results
+
+    async def _validate_fetch_result(
+        self,
+        url: str,
+        depth: int,
+        referer: str | None,
+        result: Optional[FetchResponse],
+    ) -> Optional[FetchResponse]:
+        """Validate a fetch response and update retry state.
+
+        Handles connection failures, domain-boundary redirects, url_should_contain
+        filtering, HTTP error codes, and size/MIME checks. Returns the validated
+        response on success, or None if the URL should be skipped.
+
+        Side-effects: may mutate self.retry_urls and self.visited_urls.
+        """
+        if result is None:
+            normalized = self._normalize_url(url)
+            existing_entry = self.retry_urls.get(normalized)
+            self.retry_urls[normalized] = RetryUrl(
+                url=normalized,
+                status=Status.PENDING.value,
+                status_code=existing_entry.status_code if existing_entry else 408,
+                retries=(existing_entry.retries + 1) if existing_entry else 0,
+                last_attempted=get_epoch_timestamp_in_ms(),
+                depth=depth,
+                referer=referer,
+            )
+            return None
+
+        final_url = result.final_url
+
+        if self.base_domain and not self.follow_external:
+            final_netloc = urlparse(final_url).netloc
+            base_netloc = urlparse(self.base_domain).netloc
+            if final_netloc.lower() != base_netloc.lower():
+                return None
+
+        if self.url_should_contain:
+            is_start_url = self._normalize_url(final_url) == self._normalize_url(self.url or "")
+            if not is_start_url:
+                final_url_lower = final_url.lower()
+                matched = any(s.lower() in final_url_lower for s in self.url_should_contain)
+                if not matched:
+                    final_url_normalized = self._normalize_url(final_url)
+                    current_url_normalized = self._normalize_url(url)
+                    if final_url_normalized != current_url_normalized:
+                        self.visited_urls.add(final_url_normalized)
+                    return None
+
+        if result.status_code >= HttpStatusCode.BAD_REQUEST.value:
+            if result.status_code in RETRYABLE_STATUS_CODES:
                 normalized = self._normalize_url(url)
                 existing_entry = self.retry_urls.get(normalized)
                 self.retry_urls[normalized] = RetryUrl(
                     url=normalized,
-                    status=Status.PENDING,
-                    # Synthetic timeout code for connection failures without an HTTP response.
-                    status_code=existing_entry.status_code if existing_entry else 408,
+                    status=Status.PENDING.value,
+                    status_code=result.status_code,
                     retries=(existing_entry.retries + 1) if existing_entry else 0,
                     last_attempted=get_epoch_timestamp_in_ms(),
                     depth=depth,
                     referer=referer,
                 )
+            return None
+        elif not result.success:
+            normalized = self._normalize_url(url)
+            existing_entry = self.retry_urls.get(normalized)
+            self.retry_urls[normalized] = RetryUrl(
+                url=normalized,
+                status=Status.PENDING.value,
+                status_code=result.status_code,
+                retries=(existing_entry.retries + 1) if existing_entry else 0,
+                last_attempted=get_epoch_timestamp_in_ms(),
+                depth=depth,
+                referer=referer,
+            )
+            self.logger.warning(
+                "⚠️ Fetch returned status %d but marked unsuccessful for %s: %s — will retry",
+                result.status_code, url, result.error_message or "unknown error",
+            )
+            return None
+        else:
+            normalized_url = self._normalize_url(url)
+            if normalized_url in self.retry_urls:
+                self.retry_urls.pop(normalized_url, None)
+
+        content_bytes = result.content_bytes
+        if len(content_bytes) > self.max_size_mb * 1024 * 1024:
+            return None
+
+        content_type = result.headers.get("Content-Type", "").lower()
+        _, extension = self._determine_mime_type(url, content_type)
+        if not self._pass_extension_filter(extension):
+            return None
+
+        return result
+
+    async def _fetch_and_process_url(
+        self, url: str, depth: int, referer: str | None = None,
+        prefetched_result: Optional[FetchResponse] = None,
+    ) -> Optional[RecordUpdate]:
+        """Build a RecordUpdate from a validated fetch response.
+
+        When *prefetched_result* is supplied it is assumed to have already
+        passed through ``_validate_fetch_result``; validation is skipped and
+        processing begins immediately.
+        """
+        try:
+            if self.session is None:
+                self.logger.error("❌ Session not initialized")
                 return None
 
-            final_url = result.final_url
-
-            # Guard against HTTP redirects that silently cross a domain boundary.
-            if self.base_domain and not self.follow_external:
-                final_netloc = urlparse(final_url).netloc
-                base_netloc = urlparse(self.base_domain).netloc
-                if final_netloc.lower() != base_netloc.lower():
-                    self.logger.debug(
-                        "⚠️ Skipping %s: HTTP redirect crossed domain boundary "
-                        +"(%s → %s)", url, base_netloc, final_netloc
+            if prefetched_result is not None:
+                result = prefetched_result
+            else:
+                if self.use_headless_browser and self.crawl4ai_fetcher:
+                    raw = await self._headless_fetch(url)
+                else:
+                    raw = await fetch_url_with_fallback(
+                        url=url,
+                        session=self.session,
+                        logger=self.logger,
+                        referer=referer,
+                        timeout=15,
+                        max_size_mb=self.max_size_mb,
                     )
+                result = await self._validate_fetch_result(url, depth, referer, raw)
+                if result is None:
                     return None
 
-            # Apply url_should_contain filter (OR logic: at least one substring must match).
-            # When the list is non-empty, a URL that matches NONE of the substrings
-            # is skipped (case-insensitive comparison).
-            if self.url_should_contain:
-                # Always allow the configured start URL through, regardless of the filter.
-                is_start_url = self._normalize_url(final_url) == self._normalize_url(self.url or "")
-                if not is_start_url:
-                    final_url_lower = final_url.lower()
-                    matched = any(s.lower() in final_url_lower for s in self.url_should_contain)
-                    if not matched:
-                        self.logger.debug(
-                            "⚠️ Skipping %s: URL does not match any of the required substrings "
-                            + "%s", final_url, self.url_should_contain
-                        )
-                        final_url_normalized = self._normalize_url(final_url)
-                        current_url_normalized = self._normalize_url(url)
-                        if final_url_normalized != current_url_normalized:
-                            self.visited_urls.add(final_url_normalized)
-                        return None
-
-            if result.status_code >= HttpStatusCode.BAD_REQUEST.value:
-                if result.status_code in RETRYABLE_STATUS_CODES:
-                    normalized = self._normalize_url(url)
-                    existing_entry = self.retry_urls.get(normalized)  # O(1)
-                    self.retry_urls[normalized] = RetryUrl(
-                        url=normalized,
-                        status=Status.PENDING,
-                        status_code=result.status_code,
-                        retries=(existing_entry.retries + 1) if existing_entry else 0,
-                        last_attempted=get_epoch_timestamp_in_ms(),
-                        depth=depth,
-                        referer=referer,
-                    )
-                return None
-            else:
-                normalized_url = self._normalize_url(url)
-                if normalized_url in self.retry_urls:
-                    self.retry_urls.pop(normalized_url, None)
-                    self.logger.info(f"✅ Retry URL {normalized_url} processed successfully")
+            final_url = result.final_url
 
             is_new = False
             is_updated = False
@@ -1172,18 +1508,8 @@ class WebConnector(BaseConnector):
             content_type = result.headers.get("Content-Type", "").lower()
             content_bytes = result.content_bytes
 
-            if len(content_bytes) > self.max_size_mb * 1024 * 1024:
-                size_mb = len(content_bytes) / (1024 * 1024)
-                self.logger.debug(
-                    "⚠️ Skipping %s: downloaded size %.1fMB "
-                    + "exceeds limit of %.0fMB", url, size_mb, self.max_size_mb
-                )
-                return None
-
             # Determine MIME type and file extension
             mime_type, extension = self._determine_mime_type(url, content_type)
-            if not self._pass_extension_filter(extension):
-                return None
             html_bytes = content_bytes if mime_type == MimeTypes.HTML else None
 
             # Normalize external_id to always end with '/' for extensionless (page) URLs
@@ -1206,10 +1532,6 @@ class WebConnector(BaseConnector):
                     )
                     if existing_record:
                         legacy_lookup = True
-                        self.logger.info(
-                            f"🔄 Found legacy record (no trailing slash) for {legacy_external_id}, "
-                            f"will migrate external_record_id to {external_id}"
-                        )
 
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
@@ -1218,25 +1540,30 @@ class WebConnector(BaseConnector):
             size_in_bytes = len(content_bytes)
             timestamp = get_epoch_timestamp_in_ms()
 
-            # For HTML pages, extract clean content
+            # For HTML pages, extract title and produce fully processed content
+            processed_content_bytes: Optional[bytes] = None
             if mime_type == MimeTypes.HTML:
                 try:
                     soup = BeautifulSoup(content_bytes, "html.parser")
                     title = self._extract_title(soup, final_url)
 
+                    headers_for_images = {"Referer": self.url} if self.url else {}
+                    strategy = None if (result.strategy == "crawl4ai") else result.strategy
+                    cleaned_html = await self._process_html_content(
+                        content_bytes, final_url, headers_for_images, strategy
+                    )
+                    if cleaned_html:
+                        processed_content_bytes = cleaned_html.encode("utf-8")
+
+                    # Text-only hash for change detection (consistent with previous behaviour)
                     self._remove_unwanted_tags(soup)
-
-                    # Get text content
                     text_content = soup.get_text(separator="\n", strip=True)
-
-                    # Store cleaned HTML for indexing
                     content_bytes = text_content.encode("utf-8")
-                    # size_in_bytes = len(content_bytes)
 
                 except Exception as e:
                     self.logger.warning(f"⚠️ Failed to parse HTML for {url}: {e}")
 
-            # Calculate MD5 hash once
+            # Calculate MD5 hash once (on text content for HTML, raw bytes otherwise)
             content_md5_hash = hashlib.md5(content_bytes).hexdigest()
 
             # Ensure title is never empty (schema requirement)
@@ -1266,6 +1593,36 @@ class WebConnector(BaseConnector):
             else:
                 is_new = True
 
+            # Upload processed content to storage
+            upload_bytes = processed_content_bytes if processed_content_bytes else content_bytes
+            existing_storage_doc_id = (
+                existing_record.storage_document_id if existing_record else None
+            )
+
+            # Only upload when content is new or changed
+            storage_document_id: Optional[str] = None
+            if is_new or content_changed or (existing_record and not existing_storage_doc_id):
+                storage_document_id = await self._store_crawled_content(
+                    content=upload_bytes,
+                    record_name=title,
+                    extension=extension or "html",
+                    mime_type=mime_type.value,
+                    existing_storage_doc_id=existing_storage_doc_id,
+                )
+                if not storage_document_id:
+                    self.logger.warning("Failed to store content for %s, indexing will fall back to live fetch", url)
+            else:
+                storage_document_id = existing_storage_doc_id
+
+            # Build the signed URL route for the indexer to download from storage
+            fetch_signed_url: Optional[str] = None
+            if storage_document_id:
+                try:
+                    storage_url = await self._get_storage_url()
+                    fetch_signed_url = f"{storage_url}/api/v1/document/internal/{storage_document_id}/download"
+                except Exception:
+                    pass
+
             # Create FileRecord
             file_record = FileRecord(
                 id=record_id,
@@ -1294,6 +1651,8 @@ class WebConnector(BaseConnector):
                 preview_renderable=False,
                 parent_external_record_id=parent_url,
                 parent_record_type=RecordType.FILE if parent_url else None,
+                storage_document_id=storage_document_id,
+                fetch_signed_url=fetch_signed_url,
             )
 
             if existing_record and not content_changed:
@@ -1314,11 +1673,6 @@ class WebConnector(BaseConnector):
                 html_bytes=html_bytes,
             )
 
-            self.logger.debug(
-                "✅ Processed: %s (%s, %s bytes) via %s",
-                title, mime_type.value, size_in_bytes, result.strategy
-            )
-
             return record_update
 
         except asyncio.TimeoutError:
@@ -1333,14 +1687,23 @@ class WebConnector(BaseConnector):
         if not record_update.record:
             return
         if record_update.is_deleted:
-            self.logger.debug(f"Deleting record: {record_update.record.record_name} (id: {record_update.record.id})")
             await self.data_entities_processor.on_record_deleted(record_update.record.id)
         if record_update.metadata_changed:
-            self.logger.debug(f"Metadata changed for record: {record_update.record.record_name} (id: {record_update.record.id})")
             await self.data_entities_processor.on_record_metadata_update(record_update.record)
         if record_update.content_changed:
-            self.logger.debug(f"Content changed for record: {record_update.record.record_name} (id: {record_update.record.id})")
             await self.data_entities_processor.on_record_content_update(record_update.record)
+
+    def _extract_links_from_html(
+        self, base_url: str, html_bytes: bytes,
+    ) -> List[str]:
+        """Extract valid outbound links from raw HTML bytes."""
+        links: List[str] = []
+        soup = BeautifulSoup(html_bytes, "html.parser")
+        for anchor in soup.find_all("a", href=True):
+            absolute_url = urljoin(base_url, anchor["href"])
+            if self._is_valid_url(absolute_url, base_url):
+                links.append(absolute_url)
+        return links
 
     async def _extract_links_from_content(
         self, base_url: str, html_bytes: Optional[bytes], file_record: FileRecord, referer: Optional[str] = None
@@ -1351,17 +1714,19 @@ class WebConnector(BaseConnector):
         try:
 
             if not html_bytes:
-                self.logger.debug(f"no HTML content, fetching from {file_record.weburl}")
                 if not self.session or not file_record.weburl:
                     return links
 
-                # Re-fetch using the same multi-strategy fallback used everywhere else
-                result = await fetch_url_with_fallback(
-                    url=file_record.weburl,
-                    session=self.session,
-                    logger=self.logger,
-                    referer=referer,
-                )
+                # Re-fetch using the same strategy configured for this connector
+                if self.use_headless_browser and self.crawl4ai_fetcher:
+                    result = await self._headless_fetch(file_record.weburl)
+                else:
+                    result = await fetch_url_with_fallback(
+                        url=file_record.weburl,
+                        session=self.session,
+                        logger=self.logger,
+                        referer=referer,
+                    )
                 if result is None or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
                     return links
 
@@ -1487,8 +1852,6 @@ class WebConnector(BaseConnector):
 
         snapshot = list(self.retry_urls.values())
 
-        self.logger.info("Processing %d retryable URLs", len(snapshot))
-
         for retry_url in snapshot:
             placeholder, perms = await self._create_failed_placeholder_record(
                 retry_url.url, retry_url.status_code
@@ -1528,14 +1891,12 @@ class WebConnector(BaseConnector):
 
                 if len(batch_records) >= self.batch_size:
                     await self.data_entities_processor.on_new_records(batch_records)
-                    self.logger.info("✅ Retry batch processed: %d records", len(batch_records))
                     self.processed_urls += len(batch_records)
                     batch_records.clear()
 
         # Flush any remaining records
         if batch_records:
             await self.data_entities_processor.on_new_records(batch_records)
-            self.logger.info("✅ Retry final batch processed: %d records", len(batch_records))
             self.processed_urls += len(batch_records)
 
     def _check_index_filter(self, record: Record) -> bool:
@@ -1907,7 +2268,6 @@ class WebConnector(BaseConnector):
                 permissions = []
 
                 batch_parent_records.append((file_record, permissions))
-                self.logger.debug(f"📁 Queued missing ancestor placeholder: {record_name}")
 
             if not batch_parent_records:
                 return
@@ -1916,10 +2276,6 @@ class WebConnector(BaseConnector):
             batch_parent_records.reverse()
 
             await self.data_entities_processor.on_new_records(batch_parent_records)
-            self.logger.info(
-                f"✅ Upserted {len(batch_parent_records)} missing ancestor record(s) "
-                f"for parent URL: {parent_url}"
-            )
 
         except Exception as e:
             self.logger.error(
@@ -1947,24 +2303,22 @@ class WebConnector(BaseConnector):
 
     async def cleanup(self) -> None:
         """Cleanup resources."""
+        if self.crawl4ai_fetcher:
+            self.crawl4ai_fetcher = None
+            await release_shared_fetcher()
         if self.session:
             await self.session.close()
             self.session = None
         self.visited_urls.clear()
-        self.logger.info("✅ Web connector cleanup completed")
 
     async def reindex_records(self, record_results: List[Record]) -> None:
         """Reindex records - not implemented for Web connector yet."""
 
         try:
             if not record_results:
-                self.logger.info("No records to reindex")
                 return
 
-            self.logger.info(f"Starting reindex for {len(record_results)} Web records")
-
             await self.data_entities_processor.reindex_existing_records(record_results)
-            self.logger.info(f"Published reindex events for {len(record_results)} records")
 
         except Exception as e:
             self.logger.error(f"Error during Web reindex: {e}", exc_info=True)
@@ -1986,7 +2340,33 @@ class WebConnector(BaseConnector):
         pass
 
     async def get_signed_url(self, record: Record) -> Optional[str]:  # type: ignore[override]
-        """Return the web URL as the signed URL."""
+        """Return a storage signed URL if content is stored, otherwise the web URL."""
+        if record.storage_document_id:
+            try:
+                storage_url = await self._get_storage_url()
+                token = await self._get_storage_token()
+                download_endpoint = f"{storage_url}/api/v1/document/internal/{record.storage_document_id}/download"
+
+                owned_session = self.session is None
+                session = self.session or aiohttp.ClientSession()
+                try:
+                    async with session.get(
+                        download_endpoint,
+                        headers={"Authorization": f"Bearer {token}"},
+                    ) as response:
+                        if response.status == HttpStatusCode.OK.value:
+                            content_type = response.headers.get("Content-Type", "")
+                            if "application/json" in content_type:
+                                data = await response.json()
+                                signed_url = data.get("signedUrl")
+                                if signed_url:
+                                    return signed_url
+                finally:
+                    if owned_session:
+                        await session.close()
+            except Exception as e:
+                self.logger.warning("Failed to get storage signed URL for record %s: %s", record.id, e)
+
         return record.weburl if record.weburl else None
 
     # ==================== Base64 Validation Helpers ====================
@@ -2185,7 +2565,6 @@ class WebConnector(BaseConnector):
             new_img['alt'] = svg.get('aria-label') or svg.get('title') or 'Converted SVG image'
 
             svg.replace_with(new_img)
-            self.logger.debug("✅ Converted SVG tag to PNG img tag")
             return True
 
         except Exception as e:
@@ -2259,7 +2638,6 @@ class WebConnector(BaseConnector):
                         img.decompose()
 
                 elif mime_type == 'image/avif':
-                    self.logger.debug("Converting inline AVIF base64 to PNG base64")
                     # Inline AVIF data URI — decode and convert to PNG
                     cleaned_b64 = self._clean_base64_string(existing_b64)
                     if cleaned_b64:
@@ -2328,24 +2706,12 @@ class WebConnector(BaseConnector):
                     return
                 content_type = 'image/png'
             elif content_type == 'image/avif':
-                self.logger.debug("Converting external AVIF to PNG base64")
                 b64_str = self._convert_avif_bytes_to_png_base64(img_bytes, absolute_url)
                 if not b64_str:
                     img.decompose()
                     return
                 content_type = 'image/png'
             elif content_type not in self.OPENAI_SUPPORTED_IMAGE_TYPES:
-                # Server returned an unsupported format — log full metadata then skip.
-                raw_ct = img_result.headers.get('Content-Type') or img_result.headers.get('content-type', '<none>')
-                self.logger.debug(
-                    "⚠️ Unsupported downloaded image — "
-                    + f"resolved_content_type='{content_type}' | "
-                    + f"raw_Content-Type='{raw_ct}' | "
-                    + f"url='{absolute_url}' | "
-                    + f"response_status={img_result.status_code} | "
-                    + f"content_length={len(img_bytes)} bytes | "
-                    + f"response_headers={dict(img_result.headers)} — skipping"
-                )
                 img.decompose()
                 return
             else:
@@ -2355,7 +2721,6 @@ class WebConnector(BaseConnector):
                     self.logger.warning(f"⚠️ Failed to clean/validate base64 for image: {absolute_url}. Removing.")
                     img.decompose()
                     return
-                self.logger.debug(f"✅ Converted image to base64: {absolute_url}")
 
             img['src'] = f"data:{content_type};base64,{b64_str}"
 
@@ -2399,7 +2764,6 @@ class WebConnector(BaseConnector):
                 self.logger.warning(f"⚠️ Failed to clean/validate PNG base64 from SVG: {url}. Removing.")
                 return None
 
-            self.logger.debug(f"✅ Converted SVG to PNG and base64: {url}")
             return png_b64_str
 
         except Exception as e:
@@ -2422,7 +2786,6 @@ class WebConnector(BaseConnector):
             if not png_b64_str:
                 self.logger.warning(f"⚠️ Failed to clean/validate PNG base64 from AVIF (Pillow): {url}")
                 return None
-            self.logger.debug(f"✅ Converted AVIF→PNG via Pillow: {url}")
             return png_b64_str
 
         except Exception as pillow_err:
@@ -2431,6 +2794,8 @@ class WebConnector(BaseConnector):
             )
             return None
 
+    _IMAGE_DOWNLOAD_CONCURRENCY = 8
+
     async def _process_all_images(
         self,
         soup: BeautifulSoup,
@@ -2438,14 +2803,23 @@ class WebConnector(BaseConnector):
         headers: dict,
         preferred_strategy: Optional[str] = None
     ) -> None:
-        """Process all image tags in the soup."""
-        for img in soup.find_all('img'):
-            await self._process_single_image(img, soup, base_url, headers, preferred_strategy)
+        """Download and convert all images concurrently (up to _IMAGE_DOWNLOAD_CONCURRENCY)."""
+        imgs = soup.find_all('img')
+        if not imgs:
+            return
+
+        sem = asyncio.Semaphore(self._IMAGE_DOWNLOAD_CONCURRENCY)
+
+        async def _bounded(img_tag):
+            async with sem:
+                await self._process_single_image(img_tag, soup, base_url, headers, preferred_strategy)
+
+        await asyncio.gather(*(_bounded(img) for img in imgs))
 
     async def _process_html_content(
         self,
         content_bytes: bytes,
-        record: Record,
+        weburl: str,
         headers: dict,
         preferred_strategy: Optional[str] = None
     ) -> Optional[str]:
@@ -2454,7 +2828,7 @@ class WebConnector(BaseConnector):
 
         Args:
             content_bytes: Raw HTML content bytes
-            record: Record object containing URL and metadata
+            weburl: URL of the page being processed
             headers: HTTP headers for image requests
 
         Returns:
@@ -2473,9 +2847,8 @@ class WebConnector(BaseConnector):
                 self._process_svg_tags(soup)
 
                 # Process all images: download and convert to base64
-                await self._process_all_images(soup, record.weburl or "", headers, preferred_strategy)
+                await self._process_all_images(soup, weburl, headers, preferred_strategy)
             else:
-                self.logger.debug("Removing all image tags: image indexing is disabled")
                 # Remove all image and SVG tags when image indexing is disabled
                 self._remove_image_tags(soup)
 
@@ -2488,19 +2861,225 @@ class WebConnector(BaseConnector):
             self.logger.error(f"⚠️ Failed to parse/clean HTML: {e}")
             raise
 
+    # ==================== Storage Helpers ====================
+
+    async def _get_storage_url(self) -> str:
+        """Resolve the storage service endpoint from config."""
+        endpoints = await self.config_service.get_config(
+            config_node_constants.ENDPOINTS.value
+        )
+        return endpoints.get("storage", {}).get(
+            "endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value
+        )
+
+    async def _get_storage_token(self) -> str:
+        """Generate a scoped JWT token for storage service calls."""
+        jwt_payload = {
+            "orgId": self.data_entities_processor.org_id,
+            "scopes": ["storage:token"],
+        }
+        return await generate_jwt(self.config_service, jwt_payload)
+
+    @staticmethod
+    def _sanitize_storage_name(name: str) -> str:
+        """Sanitize a name for use as a storage document/file name.
+
+        Removes characters that are invalid on Windows filesystems and trims
+        the result to a reasonable length.
+        """
+        sanitized = re.sub(r'[<>:"/\\|?*]', '_', name)
+        sanitized = sanitized.strip(". ")
+        return sanitized[:200] if sanitized else "untitled"
+
+    async def _upload_new_to_storage(
+        self,
+        content: bytes,
+        record_name: str,
+        extension: str,
+        mime_type: str,
+    ) -> Optional[str]:
+        """Upload new content to storage using the full upload endpoint.
+
+        Creates the document record and writes the file in a single call,
+        same as local KB uploads. Returns the storage document ID on success.
+        """
+        try:
+            storage_url = await self._get_storage_url()
+            token = await self._get_storage_token()
+
+            clean_name = self._sanitize_storage_name(record_name)
+            if clean_name.endswith(f".{extension}"):
+                clean_name = clean_name[: -(len(extension) + 1)]
+
+            filename = f"{clean_name}.{extension}" if extension else clean_name
+
+            form = aiohttp.FormData()
+            form.add_field(
+                "file",
+                content,
+                filename=filename,
+                content_type=mime_type,
+            )
+            form.add_field("documentName", clean_name)
+            form.add_field("documentPath", f"WebConnector/{self.connector_id}")
+            form.add_field("isVersionedFile", "false")
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{storage_url}/api/v1/document/internal/upload",
+                    data=form,
+                    headers={"Authorization": f"Bearer {token}"},
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        doc_id = data.get("_id") or data.get("id")
+                        return str(doc_id) if doc_id else None
+                    else:
+                        error = await resp.text()
+                        self.logger.error(
+                            "Failed to upload to storage (status %d): %s",
+                            resp.status, error,
+                        )
+                        return None
+        except Exception as e:
+            self.logger.error("Error uploading new doc to storage: %s", e, exc_info=True)
+            return None
+
+    async def _update_storage_buffer(
+        self,
+        storage_document_id: str,
+        content: bytes,
+        filename: str,
+        mime_type: str,
+    ) -> bool:
+        """Update content of an existing storage document via PUT buffer.
+
+        Only used when the document already has a file path (from a prior upload).
+        Returns True on success.
+        """
+        try:
+            storage_url = await self._get_storage_url()
+            token = await self._get_storage_token()
+
+            form = aiohttp.FormData()
+            form.add_field(
+                "file",
+                content,
+                filename=filename,
+                content_type=mime_type,
+            )
+
+            async with aiohttp.ClientSession() as session:
+                async with session.put(
+                    f"{storage_url}/api/v1/document/internal/{storage_document_id}/buffer",
+                    data=form,
+                    headers={"Authorization": f"Bearer {token}"},
+                ) as resp:
+                    if resp.status == 200:
+                        return True
+                    else:
+                        error = await resp.text()
+                        self.logger.error(
+                            "Failed to update buffer for storage doc %s (status %d): %s",
+                            storage_document_id, resp.status, error,
+                        )
+                        return False
+        except Exception as e:
+            self.logger.error("Error updating storage buffer: %s", e, exc_info=True)
+            return False
+
+    async def _store_crawled_content(
+        self,
+        content: bytes,
+        record_name: str,
+        extension: str,
+        mime_type: str,
+        existing_storage_doc_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Store crawled content in the storage service.
+
+        For new documents, uses the full upload endpoint (creates record + writes
+        file in one call). For existing documents, updates the buffer in-place.
+
+        Returns the storage document ID on success, None on failure.
+        """
+        if existing_storage_doc_id:
+            safe_name = self._sanitize_storage_name(record_name)
+            filename = f"{safe_name}.{extension}" if extension else safe_name
+            ok = await self._update_storage_buffer(
+                existing_storage_doc_id, content, filename, mime_type
+            )
+            return existing_storage_doc_id if ok else None
+
+        return await self._upload_new_to_storage(
+            content, record_name, extension or "html", mime_type
+        )
+
+    async def _read_from_storage(self, storage_document_id: str) -> Optional[bytes]:
+        """Read the buffer for a stored document from the storage service."""
+        try:
+            storage_url = await self._get_storage_url()
+            token = await self._get_storage_token()
+            buffer_url = f"{storage_url}/api/v1/document/internal/{storage_document_id}/buffer"
+            response = await make_api_call(route=buffer_url, token=token)
+            if isinstance(response.get("data"), dict):
+                data = response["data"].get("data")
+                return bytes(data) if isinstance(data, list) else data
+            return response.get("data")
+        except Exception as e:
+            self.logger.warning("Failed to read from storage doc %s: %s", storage_document_id, e)
+            return None
+
+    async def _delete_storage_document(self, storage_document_id: str) -> bool:
+        """Delete a document from the storage service."""
+        try:
+            storage_url = await self._get_storage_url()
+            token = await self._get_storage_token()
+            async with aiohttp.ClientSession() as session:
+                async with session.delete(
+                    f"{storage_url}/api/v1/document/internal/{storage_document_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                ) as resp:
+                    return resp.status in (200, 204, 404)
+        except Exception as e:
+            self.logger.warning("Failed to delete storage doc %s: %s", storage_document_id, e)
+            return False
+
     # ==================== Main Stream Record Method ====================
 
     async def stream_record(self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None) -> Optional[StreamingResponse]:  # type: ignore[override]
-        """
-        Stream the web page content with proper content extraction.
-        """
-        if not record.weburl:
+        """Stream the web page content, preferring stored content over live re-fetch."""
+        if not record.weburl and not record.storage_document_id:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"Web URL is missing for record {record.record_name} (id:{record.id})",
+                detail=f"Web URL and storage document ID are both missing for record {record.record_name} (id:{record.id})",
             )
 
         try:
+            mime_type = record.mime_type or "text/html"
+
+            # Prefer reading from storage if available
+            if record.storage_document_id:
+                stored_content = await self._read_from_storage(record.storage_document_id)
+                if stored_content:
+                    return create_stream_record_response(
+                        _bytes_async_gen(stored_content),
+                        filename=record.record_name,
+                        mime_type=mime_type,
+                        fallback_filename=f"record_{record.id}",
+                    )
+                self.logger.warning(
+                    "Storage read failed for record %s (doc %s), falling back to live fetch",
+                    record.id, record.storage_document_id,
+                )
+
+            # Fallback: live fetch (for legacy records without stored content)
+            if not record.weburl:
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value,
+                    detail=f"No stored content and no web URL for record {record.record_name} (id:{record.id})",
+                )
+
             referer = self.url if self.url else None
 
             if self.session is None:
@@ -2509,12 +3088,15 @@ class WebConnector(BaseConnector):
                     detail="Session not initialized",
                 )
 
-            result = await fetch_url_with_fallback(
-                url=record.weburl,
-                session=self.session,
-                logger=self.logger,
-                referer=referer,
-            )
+            if self.use_headless_browser and self.crawl4ai_fetcher:
+                result = await self._headless_fetch(record.weburl)
+            else:
+                result = await fetch_url_with_fallback(
+                    url=record.weburl,
+                    session=self.session,
+                    logger=self.logger,
+                    referer=referer,
+                )
 
             if result is None or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
                 raise HTTPException(
@@ -2524,16 +3106,17 @@ class WebConnector(BaseConnector):
 
             content_bytes = result.content_bytes
             headers = {"Referer": self.url} if self.url else {}
-            mime_type = record.mime_type or "text/html"
 
-            # Process HTML content
             cleaned_html_content = None
             if "html" in mime_type.lower():
+                if result.strategy == "crawl4ai":
+                    strategy = None
+                else:
+                    strategy = result.strategy
                 cleaned_html_content = await self._process_html_content(
-                    content_bytes, record, headers, result.strategy
+                    content_bytes, record.weburl or "", headers, strategy
                 )
 
-            # Prepare response content
             response_content = (
                 cleaned_html_content.encode("utf-8")
                 if cleaned_html_content
