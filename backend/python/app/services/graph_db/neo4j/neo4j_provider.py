@@ -2873,8 +2873,8 @@ class Neo4jProvider(IGraphDBProvider):
             // PROFILE
             MATCH path = (start_record:Record {id: $record_id})<-[:RECORD_RELATION*0..100]-(ancestor)
 
-            // 1. Edge Filter: Ensure the edge acts as a parent-child link
-            WHERE all(r IN relationships(path) WHERE r.relationshipType = 'PARENT_CHILD')
+            // 1. Edge Filter: Follow PARENT_CHILD and ATTACHMENT edges for hierarchical paths
+            WHERE all(r IN relationships(path) WHERE r.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
 
             // 2. Node Filter: Ensure it follows the strict canonical path
             AND all(i IN range(0, length(path)-1)

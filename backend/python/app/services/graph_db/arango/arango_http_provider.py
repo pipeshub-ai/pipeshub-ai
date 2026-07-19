@@ -2930,11 +2930,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             query = """
             LET start_record = DOCUMENT(@records_collection, @record_id)
             FILTER start_record != null
-            // Only follow the canonical parent (externalParentId) so duplicate/stale edges don't produce wrong paths
+            // Follow PARENT_CHILD and ATTACHMENT edges to build hierarchical paths for both pages and attachments
             LET ancestors = (
                 FOR v, e, p IN 1..100 INBOUND start_record
                     GRAPH @graph_name
-                    FILTER e.relationshipType == 'PARENT_CHILD'
+                    FILTER e.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
                     FILTER v.externalRecordId == p.vertices[LENGTH(p.vertices)-2].externalParentId
                         OR v._key == p.vertices[LENGTH(p.vertices)-2].externalParentId
                     RETURN v.recordName
