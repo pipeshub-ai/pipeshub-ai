@@ -17,7 +17,9 @@ from app.models.permission import EntityType, PermissionType
 import asyncio
 import hashlib
 from io import BytesIO
+from fastapi import HTTPException
 from app.connectors.sources.rss.connector import RSSConnector
+from app.connectors.sources.web.fetch_strategy import FetchResponse
 from app.models.entities import FileRecord, RecordType
 
 
@@ -347,8 +349,8 @@ class TestRSSConnectorEntryProcessing:
         file_record, permissions = result
         assert file_record.record_name == "My Article"
         assert file_record.weburl == "https://example.com/article-1"
-        assert file_record.mime_type == MimeTypes.HTML.value
-        assert file_record.extension == "html"
+        assert file_record.mime_type == MimeTypes.PLAIN_TEXT.value
+        assert file_record.extension == "txt"
         assert file_record.connector_name == Connectors.RSS
         assert len(permissions) == 1
         assert permissions[0].entity_type == EntityType.ORG
@@ -603,6 +605,26 @@ def _make_session(response):
     return session
 
 
+def _make_fetch_response(status=200, content=b"<html>body</html>", headers=None,
+                         final_url="https://example.com/article"):
+    """Build a FetchResponse as returned by fetch_url_with_fallback."""
+    return FetchResponse(
+        status_code=status,
+        content_bytes=content,
+        headers=headers or {"Content-Type": "text/html"},
+        final_url=final_url,
+        strategy="aiohttp",
+    )
+
+
+def _patch_fetch(**kwargs):
+    """Patch the connector's fetch_url_with_fallback to return a FetchResponse."""
+    return patch(
+        "app.connectors.sources.rss.connector.fetch_url_with_fallback",
+        new=AsyncMock(return_value=_make_fetch_response(**kwargs)),
+    )
+
+
 def _make_record(**overrides):
     """Build a minimal Record for testing."""
     defaults = {
@@ -649,9 +671,8 @@ class TestFetchAndParseFeed:
                 </item>
             </channel>
         </rss>"""
-        resp = _make_mock_response(status=200, content=feed_xml)
-        conn.session = _make_session(resp)
-        result = await conn._fetch_and_parse_feed("https://feed.com/rss")
+        with _patch_fetch(status=200, content=feed_xml):
+            result = await conn._fetch_and_parse_feed("https://feed.com/rss")
         assert result is not None
         assert len(result.entries) == 1
 
