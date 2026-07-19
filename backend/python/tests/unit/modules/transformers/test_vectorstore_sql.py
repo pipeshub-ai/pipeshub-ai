@@ -31,9 +31,7 @@ def _make_vectorstore():
     )
     vdb.get_capabilities = MagicMock(return_value=caps)
 
-    with patch.object(_vs_mod, "SparseEmbedder"), patch.object(
-        _vs_mod, "_get_shared_nlp"
-    ):
+    with patch.object(_vs_mod, "SparseEmbedder"):
         vs = _vs_mod.VectorStore(
             logger=MagicMock(),
             config_service=AsyncMock(),
@@ -58,7 +56,6 @@ class TestSqlBlockGroups:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
-        vs.nlp = MagicMock(return_value=MagicMock(sents=[]))
 
         bg = BlockGroup(
             index=0,
@@ -95,7 +92,6 @@ class TestSqlBlockGroups:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
-        vs.nlp = MagicMock(return_value=MagicMock(sents=[]))
 
         bg = BlockGroup(
             index=0,
@@ -123,7 +119,6 @@ class TestSqlBlockGroups:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
-        vs.nlp = MagicMock(return_value=MagicMock(sents=[]))
 
         bg = BlockGroup(
             index=0,
@@ -163,7 +158,6 @@ class TestSqlBlockGroups:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
-        vs.nlp = MagicMock(return_value=MagicMock(sents=[]))
 
         bg = BlockGroup(
             index=0,
@@ -195,7 +189,6 @@ class TestSqlRowBlocks:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
-        vs.nlp = MagicMock(return_value=MagicMock(sents=[]))
 
         row = Block(
             index=0,
@@ -229,7 +222,6 @@ class TestRegularTableBlockWithSummary:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
-        vs.nlp = MagicMock(return_value=MagicMock(sents=[]))
 
         table_block = Block(
             index=0, type=BlockType.TABLE, format="txt",
@@ -268,7 +260,6 @@ class TestReconciliationProcessing:
         vs._process_document_chunks = AsyncMock()
         vs._process_image_embeddings = AsyncMock(return_value=[{"fake": "point"}])
         vs._store_image_points = AsyncMock()
-        vs.nlp = MagicMock(return_value=MagicMock(sents=[]))
 
         text_block = Block(index=0, type=BlockType.TEXT, format="txt", data="text")
         img_block = Block(index=1, type=BlockType.IMAGE, format="bin", data={"uri": "abc"})
@@ -297,7 +288,6 @@ class TestReconciliationProcessing:
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._process_document_chunks = AsyncMock()
         vs.delete_blocks_by_ids = AsyncMock()
-        vs.nlp = MagicMock(return_value=MagicMock(sents=[]))
 
         text_block = Block(index=0, type=BlockType.TEXT, format="txt", data="some text")
         container = BlocksContainer(blocks=[text_block], block_groups=[])
@@ -329,7 +319,6 @@ class TestReconciliationProcessing:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs.delete_blocks_by_ids = AsyncMock()
-        vs.nlp = MagicMock(return_value=MagicMock(sents=[]))
 
         # A divider isn't embedded -> no documents_to_embed
         divider = Block(index=0, type=BlockType.DIVIDER, format="txt", data="x")

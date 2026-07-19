@@ -745,21 +745,29 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 ctx = context_from_envelope({"requestId": parsed_message.requestId})
                 token = set_context(ctx.root_id)
                 try:
-                    async for event in self.message_handler(parsed_message):
-                        if (
-                            event.event == IndexingEvent.PARSING_COMPLETE
-                            and parsing_held
-                            and self.parsing_semaphore
-                        ):
-                            self.parsing_semaphore.release()
-                            parsing_held = False
-                        elif (
-                            event.event == IndexingEvent.INDEXING_COMPLETE
-                            and indexing_held
-                            and self.indexing_semaphore
-                        ):
-                            self.indexing_semaphore.release()
-                            indexing_held = False
+                    async with asyncio.timeout(messaging_env.record_processing_timeout):
+                        async for event in self.message_handler(parsed_message):
+                            if (
+                                event.event == IndexingEvent.PARSING_COMPLETE
+                                and parsing_held
+                                and self.parsing_semaphore
+                            ):
+                                self.parsing_semaphore.release()
+                                parsing_held = False
+                            elif (
+                                event.event == IndexingEvent.INDEXING_COMPLETE
+                                and indexing_held
+                                and self.indexing_semaphore
+                            ):
+                                self.indexing_semaphore.release()
+                                indexing_held = False
+                except TimeoutError:
+                    self.logger.error(
+                        "Record processing timed out after %ss for %s",
+                        messaging_env.record_processing_timeout,
+                        message_id,
+                    )
+                    raise
                 finally:
                     reset_context(token)
 

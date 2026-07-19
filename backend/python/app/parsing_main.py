@@ -22,7 +22,9 @@ from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdown
 from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.blocks.blocks_parser import BlocksParser
 from app.modules.parsers.docx.docparser import DocParser
+from app.modules.parsers.json.json_parser import JSONParser
 from app.modules.parsers.pptx.ppt_parser import PPTParser
+from app.modules.parsers.yaml.yaml_parser import YAMLParser
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -118,6 +120,13 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     docling_ocr_parser = OCRParser(ocr_handler, docling_md_parser)
     
     registry.register("blocks", ParserProvider.DEFAULT, BlocksParser(app_logger, config_service))
+
+    # ----------------------------------------------------------------
+    # JSON / YAML — deterministic, schema-aware natural-language chunking
+    # ----------------------------------------------------------------
+    json_parser = JSONParser()
+    registry.register("json", ParserProvider.DEFAULT, json_parser)
+    registry.register("yaml", ParserProvider.DEFAULT, YAMLParser(json_parser))
     # ----------------------------------------------------------------
     # PDF
     # ----------------------------------------------------------------

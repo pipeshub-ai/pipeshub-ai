@@ -527,6 +527,109 @@ class TestUnsupportedFileType:
 
         assert len(events) >= 1
 
+    @pytest.mark.asyncio
+    async def test_json_mime_and_extension_pass_check(self):
+        """application/json + .json should not trigger the unsupported path."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "application/json",
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "orgId": "org-1",
+            "mimeType": "application/json",
+            "extension": "json",
+            "signedUrl": "https://example.com/file.json",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"content"
+            events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 1
+        assert events[0].event == "parsing_complete"
+
+    @pytest.mark.asyncio
+    async def test_yaml_extension_passes_check(self):
+        """.yaml/.yml extensions should not trigger the unsupported path."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "application/yaml",
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "orgId": "org-1",
+            "mimeType": "application/yaml",
+            "extension": "yaml",
+            "signedUrl": "https://example.com/file.yaml",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"content"
+            events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 1
+        assert events[0].event == "parsing_complete"
+
+    @pytest.mark.asyncio
+    async def test_node_x_yaml_mime_passes_check(self):
+        """Node's storage layer emits "application/x-yaml" (not MimeTypes.YAML's
+        "application/yaml") for .yaml/.yml uploads — both must be accepted."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "application/x-yaml",
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock()
+
+        ep = handler.event_processor
+        ep.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+        ]))
+
+        payload = {
+            "recordId": "r1",
+            "orgId": "org-1",
+            "mimeType": "application/x-yaml",
+            "extension": "yml",
+            "signedUrl": "https://example.com/file.yml",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"content"
+            events = await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        assert len(events) == 1
+        assert events[0].event == "parsing_complete"
+
 
 # ===================================================================
 # Mime type and extension fallback logic

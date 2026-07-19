@@ -701,16 +701,23 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 ctx = context_from_envelope({"requestId": parsed_message.requestId})
                 token = set_context(ctx.root_id)
                 try:
-                    async for event in self.message_handler(parsed_message):
-                        if event.event == IndexingEvent.PARSING_COMPLETE and parsing_held and self.parsing_semaphore:
-                            self.parsing_semaphore.release()
-                            parsing_held = False
-                            self.logger.debug(f"Released parsing semaphore for {message_id}")
-                        elif event.event == IndexingEvent.INDEXING_COMPLETE and indexing_held and self.indexing_semaphore:
-                            self.indexing_semaphore.release()
-                            indexing_held = False
-                            self.logger.debug(f"Released indexing semaphore for {message_id}")
-                            success = True  # Both events completed successfully
+                    async with asyncio.timeout(messaging_env.record_processing_timeout):
+                        async for event in self.message_handler(parsed_message):
+                            if event.event == IndexingEvent.PARSING_COMPLETE and parsing_held and self.parsing_semaphore:
+                                self.parsing_semaphore.release()
+                                parsing_held = False
+                                self.logger.debug(f"Released parsing semaphore for {message_id}")
+                            elif event.event == IndexingEvent.INDEXING_COMPLETE and indexing_held and self.indexing_semaphore:
+                                self.indexing_semaphore.release()
+                                indexing_held = False
+                                self.logger.debug(f"Released indexing semaphore for {message_id}")
+                                success = True  # Both events completed successfully
+                except TimeoutError:
+                    self.logger.error(
+                        f"Record processing timed out after {messaging_env.record_processing_timeout}s "
+                        f"for {message_id}"
+                    )
+                    raise
                 finally:
                     reset_context(token)
             else:

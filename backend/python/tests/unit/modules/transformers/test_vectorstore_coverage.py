@@ -19,11 +19,8 @@ def _make_vectorstore():
     """Instantiate a VectorStore with everything mocked to bypass __init__ side effects."""
     with patch(
         "app.modules.transformers.vectorstore.SparseEmbedder"
-    ) as mock_sparse, patch(
-        "app.modules.transformers.vectorstore._get_shared_nlp"
-    ) as mock_nlp:
+    ) as mock_sparse:
         mock_sparse.return_value = MagicMock()
-        mock_nlp.return_value = MagicMock()
 
         from app.modules.transformers.vectorstore import VectorStore
         from app.services.vector_db.models import VectorDBCapabilities
@@ -47,87 +44,44 @@ def _make_vectorstore():
 
 
 # ===================================================================
-# _get_shared_nlp branch coverage
+# text_splitting._get_segmenter / detect_language branch coverage
+# (replaces the removed spaCy _get_shared_nlp coverage)
 # ===================================================================
 
 
-class TestGetSharedNlp:
-    """Cover _get_shared_nlp branches for sentencizer and custom_sentence_boundary."""
+class TestGetSegmenterBranches:
+    """Cover _get_segmenter branches: cache hit, alias mapping, unsupported fallback."""
 
-    def test_sentencizer_already_present(self):
-        """When sentencizer is already in pipe_names, it is not re-added."""
+    def test_unsupported_language_falls_back_to_english(self):
+        from app.modules.parsers.text_splitting import _get_segmenter
+
+        segmenter = _get_segmenter("xx-not-a-real-language")
+        assert segmenter is not None
+
+    def test_aliased_language_routes_to_target_rule_set(self):
+        """Portuguese has no native pysbd rule set; it should route to Spanish."""
+        from app.modules.parsers.text_splitting import _get_segmenter
+
+        segmenter = _get_segmenter("pt")
+        assert segmenter is not None
+
+    def test_cache_returns_same_instance(self):
+        from app.modules.parsers.text_splitting import _get_segmenter
+
+        seg1 = _get_segmenter("en")
+        seg2 = _get_segmenter("en")
+        assert seg1 is seg2
+
+    def test_segment_failure_falls_back_to_regex(self):
+        """split_into_sentences never raises even if the segmenter errors."""
+        from app.modules.parsers.text_splitting import split_into_sentences
+
         with patch(
-            "app.modules.transformers.vectorstore.SparseEmbedder"
-        ) as mock_sparse, patch(
-            "app.modules.transformers.vectorstore.spacy"
-        ) as mock_spacy:
-            mock_sparse.return_value = MagicMock()
-
-            from app.modules.transformers.vectorstore import _get_shared_nlp
-
-            # Clear the cached nlp
-            if hasattr(_get_shared_nlp, "_cached_nlp"):
-                delattr(_get_shared_nlp, "_cached_nlp")
-
-            mock_nlp = MagicMock()
-            mock_nlp.pipe_names = ["sentencizer", "parser"]
-            mock_spacy.load.return_value = mock_nlp
-
-            result = _get_shared_nlp()
-
-            # Should not call add_pipe for sentencizer since it's already present
-            # But should try to add custom_sentence_boundary
-            assert result is mock_nlp
-
-            # Clean up
-            if hasattr(_get_shared_nlp, "_cached_nlp"):
-                delattr(_get_shared_nlp, "_cached_nlp")
-
-    def test_custom_sentence_boundary_add_raises(self):
-        """When adding custom_sentence_boundary fails, it's silently caught."""
-        with patch(
-            "app.modules.transformers.vectorstore.SparseEmbedder"
-        ) as mock_sparse, patch(
-            "app.modules.transformers.vectorstore.spacy"
-        ) as mock_spacy:
-            mock_sparse.return_value = MagicMock()
-
-            from app.modules.transformers.vectorstore import _get_shared_nlp
-
-            # Clear the cached nlp
-            if hasattr(_get_shared_nlp, "_cached_nlp"):
-                delattr(_get_shared_nlp, "_cached_nlp")
-
-            mock_nlp = MagicMock()
-            mock_nlp.pipe_names = []
-
-            def fake_add_pipe(name, **kwargs):
-                if name == "custom_sentence_boundary":
-                    raise Exception("component not registered")
-
-            mock_nlp.add_pipe = fake_add_pipe
-            mock_spacy.load.return_value = mock_nlp
-
-            result = _get_shared_nlp()
-
-            assert result is mock_nlp
-
-            # Clean up
-            if hasattr(_get_shared_nlp, "_cached_nlp"):
-                delattr(_get_shared_nlp, "_cached_nlp")
-
-    def test_cached_nlp_returned(self):
-        """When _cached_nlp is set, it is returned directly."""
-        from app.modules.transformers.vectorstore import _get_shared_nlp
-
-        mock_cached = MagicMock()
-        setattr(_get_shared_nlp, "_cached_nlp", mock_cached)
-
-        result = _get_shared_nlp()
-        assert result is mock_cached
-
-        # Clean up
-        delattr(_get_shared_nlp, "_cached_nlp")
+            "app.modules.parsers.text_splitting._get_segmenter",
+            side_effect=RuntimeError("pysbd exploded"),
+        ):
+            result = split_into_sentences("First. Second.", "en")
+        assert result  # regex fallback still produces output
 
 
 # ===================================================================
@@ -189,134 +143,37 @@ class TestNormalizeImageExceptionFallthrough:
 
 
 # ===================================================================
-# custom_sentence_boundary - heading and letter bullet branches
+# split_into_sentences - bullet/list and heading-like input handled via pysbd
+# rule sets rather than the removed custom_sentence_boundary component.
 # ===================================================================
 
 
-class TestCustomSentenceBoundaryDeeper:
-    """Cover heading detection branches and letter bullet branches."""
+class TestSplitIntoSentencesBulletsAndHeadings:
+    """Sanity-check bullet/list and heading-like text doesn't explode splitting."""
 
-    def _make_mock_doc(self, tokens_data):
-        """Create a minimal mock doc with token-like objects."""
-        tokens = []
-        for i, data in enumerate(tokens_data):
-            tok = MagicMock()
-            tok.i = i
-            tok.text = data["text"]
-            tok.like_num = data.get("like_num", False)
-            tok.is_sent_start = data.get("is_sent_start", None)
-            tokens.append(tok)
+    def test_letter_bullet_list(self):
+        from app.modules.parsers.text_splitting import split_into_sentences
 
-        class DocSlice:
-            def __init__(self, toks):
-                self._tokens = toks
+        result = split_into_sentences("a. First item. b. Second item.", "en")
+        assert result
 
-            def __getitem__(self, key):
-                if isinstance(key, slice):
-                    return DocSlice(self._tokens[key])
-                return self._tokens[key]
+    def test_numeric_bullet_list(self):
+        from app.modules.parsers.text_splitting import split_into_sentences
 
-            def __iter__(self):
-                return iter(self._tokens)
-
-            def __len__(self):
-                return len(self._tokens)
-
-        return DocSlice(tokens)
-
-    def test_letter_bullet_followed_by_period(self):
-        """Single letter + period should NOT cause sentence split."""
-        from app.modules.transformers.vectorstore import VectorStore
-
-        tokens_data = [
-            {"text": "a", "like_num": False},
-            {"text": ".", "is_sent_start": True},
-            {"text": "end"},
-        ]
-        doc = self._make_mock_doc(tokens_data)
-
-        VectorStore.custom_sentence_boundary(doc)
-
-        assert doc[1].is_sent_start is False
-
-    def test_heading_all_caps_not_at_end(self):
-        """All-caps token before end should not cause sentence split when next_token.i < len(doc) - 1."""
-        from app.modules.transformers.vectorstore import VectorStore
-
-        tokens_data = [
-            {"text": "INTRODUCTION", "like_num": False},
-            {"text": "text", "is_sent_start": True},
-            {"text": "more"},
-            {"text": "end"},
-        ]
-        doc = self._make_mock_doc(tokens_data)
-
-        VectorStore.custom_sentence_boundary(doc)
-
-        assert doc[1].is_sent_start is False
-
-    def test_heading_all_caps_at_end(self):
-        """All-caps token at end of doc (next_token.i >= len(doc) - 1) should NOT set is_sent_start to False."""
-        from app.modules.transformers.vectorstore import VectorStore
-
-        tokens_data = [
-            {"text": "HEADING", "like_num": False},
-            {"text": "NEXT", "is_sent_start": True},
-        ]
-        doc = self._make_mock_doc(tokens_data)
-
-        # next_token.i = 1, len(doc) - 1 = 1, so condition 1 < 1 is False
-        VectorStore.custom_sentence_boundary(doc)
-
-        # is_sent_start should NOT be changed (stays True)
-        assert doc[1].is_sent_start is True
-
-    def test_numeric_bullet_with_short_digits(self):
-        """Numeric bullet (short number + period) should not cause sentence split."""
-        from app.modules.transformers.vectorstore import VectorStore
-
-        tokens_data = [
-            {"text": "1", "like_num": True},
-            {"text": ".", "is_sent_start": True},
-            {"text": "end"},
-        ]
-        doc = self._make_mock_doc(tokens_data)
-
-        VectorStore.custom_sentence_boundary(doc)
-
-        assert doc[1].is_sent_start is False
+        result = split_into_sentences("1. First item. 2. Second item.", "en")
+        assert result
 
     def test_dash_bullet_marker(self):
-        """Dash bullet marker should not cause sentence split."""
-        from app.modules.transformers.vectorstore import VectorStore
+        from app.modules.parsers.text_splitting import split_into_sentences
 
-        tokens_data = [
-            {"text": "-"},
-            {"text": "item", "is_sent_start": True},
-            {"text": "end"},
-        ]
-        doc = self._make_mock_doc(tokens_data)
+        result = split_into_sentences("- item one\n- item two", "en")
+        assert result
 
-        VectorStore.custom_sentence_boundary(doc)
+    def test_all_caps_heading_followed_by_body(self):
+        from app.modules.parsers.text_splitting import split_into_sentences
 
-        assert doc[1].is_sent_start is False
-
-    def test_all_caps_with_digit_is_not_heading(self):
-        """All-caps text containing digits (serial number) should not be treated as heading."""
-        from app.modules.transformers.vectorstore import VectorStore
-
-        tokens_data = [
-            {"text": "ABC123", "like_num": False},
-            {"text": "next", "is_sent_start": True},
-            {"text": "end"},
-        ]
-        doc = self._make_mock_doc(tokens_data)
-
-        VectorStore.custom_sentence_boundary(doc)
-
-        # ABC123 has digits, so it won't match the all-caps heading rule
-        # is_sent_start should remain True (not changed)
-        assert doc[1].is_sent_start is True
+        result = split_into_sentences("INTRODUCTION\nThis is the body text.", "en")
+        assert result
 
 
 # ===================================================================
@@ -835,7 +692,6 @@ class TestIndexDocumentsDeeper:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
-        vs.nlp = MagicMock(return_value=MagicMock(sents=[MagicMock(text="Section text")]))
 
         block = MagicMock()
         block.type = "textsection"

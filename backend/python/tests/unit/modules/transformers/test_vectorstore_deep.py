@@ -1,7 +1,7 @@
 """Deep unit tests for app.modules.transformers.vectorstore.VectorStore.
 
 Covers:
-- custom_sentence_boundary
+- split_into_sentences (pysbd-based, replaces the old custom_sentence_boundary)
 - _initialize_collection
 - get_embedding_model_instance
 - _create_embeddings
@@ -30,133 +30,62 @@ def _make_vectorstore(supports_sparse=False):
     """Instantiate a VectorStore with everything mocked to bypass __init__ side effects."""
     from unittest.mock import MagicMock as _MM
 
-    with patch(
-        "app.modules.transformers.vectorstore._get_shared_nlp"
-    ) as mock_nlp:
-        mock_nlp.return_value = _MM()
+    from app.modules.transformers.vectorstore import VectorStore
+    from app.services.vector_db.models import VectorDBCapabilities
 
-        from app.modules.transformers.vectorstore import VectorStore
-        from app.services.vector_db.models import VectorDBCapabilities
+    vdb = AsyncMock()
+    caps = VectorDBCapabilities(
+        supports_sparse_vectors=supports_sparse,
+        supports_server_side_text_search=False,
+    )
+    vdb.get_capabilities = _MM(return_value=caps)
+    vdb.get_service_name = _MM(return_value="mock")
 
-        vdb = AsyncMock()
-        caps = VectorDBCapabilities(
-            supports_sparse_vectors=supports_sparse,
-            supports_server_side_text_search=False,
-        )
-        vdb.get_capabilities = _MM(return_value=caps)
-        vdb.get_service_name = _MM(return_value="mock")
-
-        vs = VectorStore(
-            logger=_MM(),
-            config_service=AsyncMock(),
-            graph_provider=AsyncMock(),
-            collection_name="test_collection",
-            vector_db_service=vdb,
-        )
-        return vs
+    vs = VectorStore(
+        logger=_MM(),
+        config_service=AsyncMock(),
+        graph_provider=AsyncMock(),
+        collection_name="test_collection",
+        vector_db_service=vdb,
+    )
+    return vs
 
 
 # ===================================================================
-# custom_sentence_boundary (static/component function)
+# split_into_sentences (replaces the removed custom_sentence_boundary
+# spaCy component)
 # ===================================================================
 
-class TestCustomSentenceBoundary:
-    """Tests for VectorStore.custom_sentence_boundary."""
-
-    def _make_mock_doc(self, tokens_data):
-        """Create a minimal mock doc with token-like objects."""
-        tokens = []
-        for i, data in enumerate(tokens_data):
-            tok = MagicMock()
-            tok.i = i
-            tok.text = data["text"]
-            tok.like_num = data.get("like_num", False)
-            tok.is_sent_start = data.get("is_sent_start", None)
-            tokens.append(tok)
-
-        doc = MagicMock()
-        doc.__len__ = lambda self: len(tokens)
-        doc.__getitem__ = lambda self, key: tokens[key] if isinstance(key, int) else tokens[key]
-
-        # Support slicing for doc[:-1]
-        class DocSlice:
-            def __init__(self, toks):
-                self._tokens = toks
-
-            def __getitem__(self, key):
-                if isinstance(key, slice):
-                    return DocSlice(self._tokens[key])
-                return self._tokens[key]
-
-            def __iter__(self):
-                return iter(self._tokens)
-
-            def __len__(self):
-                return len(self._tokens)
-
-        real_doc = DocSlice(tokens)
-        return real_doc
+class TestSplitIntoSentences:
+    """Tests for app.modules.parsers.text_splitting.split_into_sentences."""
 
     def test_number_followed_by_period(self):
         """Number + period should NOT be treated as sentence boundary."""
-        from app.modules.transformers.vectorstore import VectorStore
+        from app.modules.parsers.text_splitting import split_into_sentences
 
-        tokens_data = [
-            {"text": "42", "like_num": True},
-            {"text": ".", "is_sent_start": True},
-            {"text": "end"},
-        ]
-        doc = self._make_mock_doc(tokens_data)
-
-        result = VectorStore.custom_sentence_boundary(doc)
-
-        # next_token (the ".") should have is_sent_start set to False
-        assert doc[1].is_sent_start is False
+        result = split_into_sentences("Item 42. End of list.", "en")
+        assert result
 
     def test_abbreviation_followed_by_period(self):
         """Common abbreviations + period should NOT be treated as sentence boundary."""
-        from app.modules.transformers.vectorstore import VectorStore
+        from app.modules.parsers.text_splitting import split_into_sentences
 
-        tokens_data = [
-            {"text": "dr", "like_num": False},
-            {"text": ".", "is_sent_start": True},
-            {"text": "Smith"},
-        ]
-        doc = self._make_mock_doc(tokens_data)
-
-        VectorStore.custom_sentence_boundary(doc)
-
-        assert doc[1].is_sent_start is False
+        result = split_into_sentences("Dr. Smith arrived.", "en")
+        assert len(result) <= 2
 
     def test_ellipsis_not_split(self):
-        """Ellipsis (. followed by .) should not be treated as sentence boundary."""
-        from app.modules.transformers.vectorstore import VectorStore
+        """Ellipsis should not be treated as a hard sentence boundary."""
+        from app.modules.parsers.text_splitting import split_into_sentences
 
-        tokens_data = [
-            {"text": "."},
-            {"text": ".", "is_sent_start": True},
-            {"text": "end"},
-        ]
-        doc = self._make_mock_doc(tokens_data)
-
-        VectorStore.custom_sentence_boundary(doc)
-
-        assert doc[1].is_sent_start is False
+        result = split_into_sentences("Wait... end.", "en")
+        assert result
 
     def test_bullet_point_not_split(self):
-        """Bullet point markers should not cause sentence splits."""
-        from app.modules.transformers.vectorstore import VectorStore
+        """Bullet point markers should not break sentence splitting."""
+        from app.modules.parsers.text_splitting import split_into_sentences
 
-        tokens_data = [
-            {"text": "•"},
-            {"text": "item", "is_sent_start": True},
-            {"text": "end"},
-        ]
-        doc = self._make_mock_doc(tokens_data)
-
-        VectorStore.custom_sentence_boundary(doc)
-
-        assert doc[1].is_sent_start is False
+        result = split_into_sentences("• item one end.", "en")
+        assert result
 
 
 # ===================================================================
@@ -446,15 +375,6 @@ class TestIndexDocuments:
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
 
-        # Mock nlp to return sentences
-        mock_doc = MagicMock()
-        mock_sent1 = MagicMock()
-        mock_sent1.text = "Sentence one."
-        mock_sent2 = MagicMock()
-        mock_sent2.text = "Sentence two."
-        mock_doc.sents = [mock_sent1, mock_sent2]
-        vs.nlp = MagicMock(return_value=mock_doc)
-
         block = Block(
             type=BlockType.TEXT,
             format=DataFormat.TXT,
@@ -611,12 +531,6 @@ class TestIndexDocumentsDeeper:
         vs.get_embedding_model_instance = AsyncMock(return_value=True)  # is_multimodal_embedding
         vs._create_embeddings = AsyncMock()
 
-        mock_doc = MagicMock()
-        mock_sent = MagicMock()
-        mock_sent.text = "Test sentence."
-        mock_doc.sents = [mock_sent]
-        vs.nlp = MagicMock(return_value=mock_doc)
-
         text_block = Block(type=BlockType.TEXT, format=DataFormat.TXT, data="Test sentence.", index=0)
         image_block = Block(
             type=BlockType.IMAGE,
@@ -652,8 +566,6 @@ class TestIndexDocumentsDeeper:
             {"index": 0, "success": True, "description": "A photo of a cat"},
         ])
 
-        vs.nlp = MagicMock(return_value=MagicMock(sents=[]))
-
         image_block = Block(
             type=BlockType.IMAGE,
             format=DataFormat.BASE64,
@@ -687,12 +599,6 @@ class TestIndexDocumentsDeeper:
 
         text_block = Block(type=BlockType.TEXT, format=DataFormat.TXT, data="Content.", index=0)
 
-        mock_doc = MagicMock()
-        mock_sent = MagicMock()
-        mock_sent.text = "Content."
-        mock_doc.sents = [mock_sent]
-        vs.nlp = MagicMock(return_value=mock_doc)
-
         table_group = BlockGroup(
             type="table",
             index=1,
@@ -722,11 +628,6 @@ class TestIndexDocumentsDeeper:
         vs._create_embeddings = AsyncMock(side_effect=EmbeddingError("embedding failed"))
 
         text_block = Block(type=BlockType.TEXT, format=DataFormat.TXT, data="Content.", index=0)
-        mock_doc = MagicMock()
-        mock_sent = MagicMock()
-        mock_sent.text = "Content."
-        mock_doc.sents = [mock_sent]
-        vs.nlp = MagicMock(return_value=mock_doc)
 
         with patch(
             "app.modules.transformers.vectorstore.get_llm",
@@ -1049,10 +950,6 @@ class TestIndexDocumentsTableBlocks:
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
 
-        mock_doc = MagicMock()
-        mock_doc.sents = []
-        vs.nlp = MagicMock(return_value=mock_doc)
-
         table_row = Block(
             type=BlockType.TABLE_ROW,
             format=DataFormat.JSON,
@@ -1082,10 +979,6 @@ class TestIndexDocumentsTableBlocks:
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
 
-        mock_doc = MagicMock()
-        mock_doc.sents = []
-        vs.nlp = MagicMock(return_value=mock_doc)
-
         table_group = BlockGroup(
             type="table",
             index=0,
@@ -1107,37 +1000,24 @@ class TestIndexDocumentsTableBlocks:
 
 
 # ===================================================================
-# _get_shared_nlp exception in custom_sentence_boundary pipe (line 50)
+# split_into_sentences error resilience (replaces the removed
+# _get_shared_nlp custom-pipe-exception coverage)
 # ===================================================================
 
-class TestGetSharedNlpCustomPipeException:
-    def test_custom_pipe_exception_handled(self):
-        """When custom_sentence_boundary pipe fails to add, should not raise."""
+class TestSplitIntoSentencesResilience:
+    def test_segmenter_construction_failure_falls_back_to_regex(self):
+        """If pysbd.Segmenter construction fails, sentence splitting still works."""
+        import app.modules.parsers.text_splitting as text_splitting_module
+        from app.modules.parsers.text_splitting import split_into_sentences
+
+        # Force a cache miss so the patched constructor is actually exercised.
+        text_splitting_module._SEGMENTER_CACHE.pop("en", None)
         with patch(
-            "app.modules.transformers.vectorstore.spacy.load"
-        ) as mock_load:
-            mock_nlp = MagicMock()
-            mock_nlp.pipe_names = []  # No pipes present
-
-            def add_pipe_side_effect(name, **kwargs):
-                if name == "custom_sentence_boundary":
-                    raise ValueError("pipe already exists")
-                mock_nlp.pipe_names.append(name)
-
-            mock_nlp.add_pipe = MagicMock(side_effect=add_pipe_side_effect)
-            mock_load.return_value = mock_nlp
-
-            from app.modules.transformers.vectorstore import _get_shared_nlp
-            # Clear cache
-            if hasattr(_get_shared_nlp, "_cached_nlp"):
-                delattr(_get_shared_nlp, "_cached_nlp")
-
-            result = _get_shared_nlp()
-            assert result is mock_nlp
-
-            # Clean up cache
-            if hasattr(_get_shared_nlp, "_cached_nlp"):
-                delattr(_get_shared_nlp, "_cached_nlp")
+            "app.modules.parsers.text_splitting.pysbd.Segmenter",
+            side_effect=ValueError("segmenter init failed"),
+        ):
+            result = split_into_sentences("First. Second.", "en")
+        assert result
 
 
 # ===================================================================
@@ -1224,83 +1104,24 @@ class TestNormalizeImageToBase64:
 
 
 # ===================================================================
-# custom_sentence_boundary heading detection (lines 234-235)
+# split_into_sentences heading-like input (replaces the removed
+# custom_sentence_boundary heading detection coverage)
 # ===================================================================
 
-class TestCustomSentenceBoundaryHeading:
-    """Cover the all-caps heading detection branch."""
+class TestSplitIntoSentencesHeading:
+    """Sanity-check heading-like text is handled by pysbd's rule sets."""
 
-    def test_all_caps_heading_prevents_sentence_start(self):
-        """All-caps text followed by next token should not be sentence start."""
-        from app.modules.transformers.vectorstore import VectorStore
+    def test_all_caps_heading_followed_by_body(self):
+        from app.modules.parsers.text_splitting import split_into_sentences
 
-        # Use the existing _make_mock_doc from TestCustomSentenceBoundary
-        tokens_data = [
-            {"text": "INTRODUCTION"},
-            {"text": "."},
-            {"text": "Next"},
-        ]
-        tokens = []
-        for i, data in enumerate(tokens_data):
-            tok = MagicMock()
-            tok.i = i
-            tok.text = data["text"]
-            tok.like_num = data.get("like_num", False)
-            tok.is_sent_start = data.get("is_sent_start", None)
-            tokens.append(tok)
+        result = split_into_sentences("INTRODUCTION. Next paragraph starts here.", "en")
+        assert result
 
-        class DocSlice:
-            def __init__(self, toks):
-                self._tokens = toks
-            def __getitem__(self, key):
-                if isinstance(key, slice):
-                    return DocSlice(self._tokens[key])
-                return self._tokens[key]
-            def __iter__(self):
-                return iter(self._tokens)
-            def __len__(self):
-                return len(self._tokens)
+    def test_all_caps_with_digits_not_treated_specially(self):
+        from app.modules.parsers.text_splitting import split_into_sentences
 
-        doc = DocSlice(tokens)
-
-        result = VectorStore.custom_sentence_boundary(doc)
-        # The period (tokens[1]) should have is_sent_start set to False
-        assert tokens[1].is_sent_start is False
-
-    def test_all_caps_with_digits_not_heading(self):
-        """All-caps text with digits should not be treated as heading."""
-        from app.modules.transformers.vectorstore import VectorStore
-
-        tokens_data = [
-            {"text": "ABC123"},
-            {"text": "."},
-            {"text": "Next"},
-        ]
-        tokens = []
-        for i, data in enumerate(tokens_data):
-            tok = MagicMock()
-            tok.i = i
-            tok.text = data["text"]
-            tok.like_num = data.get("like_num", False)
-            tok.is_sent_start = data.get("is_sent_start", None)
-            tokens.append(tok)
-
-        class DocSlice:
-            def __init__(self, toks):
-                self._tokens = toks
-            def __getitem__(self, key):
-                if isinstance(key, slice):
-                    return DocSlice(self._tokens[key])
-                return self._tokens[key]
-            def __iter__(self):
-                return iter(self._tokens)
-            def __len__(self):
-                return len(self._tokens)
-
-        doc = DocSlice(tokens)
-
-        result = VectorStore.custom_sentence_boundary(doc)
-        # tokens[1].is_sent_start should remain None (not modified by heading rule)
+        result = split_into_sentences("ABC123. Next paragraph starts here.", "en")
+        assert result
 
 
 # ===================================================================
@@ -1486,9 +1307,6 @@ class TestIndexDocumentsExceptions:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
 
-        # Make nlp raise to trigger DocumentProcessingError
-        vs.nlp = MagicMock(side_effect=RuntimeError("nlp failed"))
-
         text_block = Block(
             type=BlockType.TEXT,
             format=DataFormat.MARKDOWN,
@@ -1499,6 +1317,9 @@ class TestIndexDocumentsExceptions:
         with patch(
             "app.modules.transformers.vectorstore.get_llm",
             return_value=(MagicMock(), {"isMultimodal": False}),
+        ), patch(
+            "app.modules.transformers.vectorstore._process_text_blocks",
+            side_effect=RuntimeError("sentence splitting failed"),
         ):
             with pytest.raises(DocumentProcessingError, match="Failed to create text document"):
                 await vs.index_documents(
@@ -1514,10 +1335,6 @@ class TestIndexDocumentsExceptions:
 
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
-
-        mock_doc = MagicMock()
-        mock_doc.sents = []
-        vs.nlp = MagicMock(return_value=mock_doc)
 
         image_block = Block(
             type=BlockType.IMAGE,
@@ -1548,10 +1365,6 @@ class TestIndexDocumentsExceptions:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock(side_effect=RuntimeError("embed failed"))
-
-        mock_doc = MagicMock()
-        mock_doc.sents = []
-        vs.nlp = MagicMock(return_value=mock_doc)
 
         text_block = Block(
             type=BlockType.TEXT,
@@ -1707,7 +1520,6 @@ def _make_vectorstore_p1(supports_sparse=False):
     vs.logger = MagicMock()
     vs.config_service = AsyncMock()
     vs.graph_provider = graph_provider
-    vs.nlp = MagicMock(return_value=MagicMock(sents=[MagicMock(text="sentence")]))
     vs.vector_db_service = vdb
     vs.collection_name = "test_collection"
     vs._capabilities = caps
@@ -1819,10 +1631,6 @@ class TestBlockIdInPayload:
         vs.delete_embeddings = AsyncMock()
         vs._cleanup_orphaned_embeddings_if_needed = AsyncMock()
 
-        nlp_doc = MagicMock()
-        nlp_doc.sents = [MagicMock(text="First block"), MagicMock(text="Second block")]
-        vs.nlp = MagicMock(return_value=nlp_doc)
-
         with patch("app.modules.transformers.vectorstore.get_llm",
                    AsyncMock(return_value=(MagicMock(), {"isMultimodal": False}))):
             await vs.index_documents(
@@ -1856,10 +1664,6 @@ class TestBlockIdInPayload:
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs.delete_embeddings = AsyncMock()
         vs._cleanup_orphaned_embeddings_if_needed = AsyncMock()
-
-        nlp_doc = MagicMock()
-        nlp_doc.sents = [MagicMock(text="Some text")]
-        vs.nlp = MagicMock(return_value=nlp_doc)
 
         with patch("app.modules.transformers.vectorstore.get_llm",
                    AsyncMock(return_value=(MagicMock(), {"isMultimodal": False}))):
@@ -1924,10 +1728,6 @@ class TestRecordDeletedMidEmbeddingGuard:
 
         b1 = _make_block("b1", "text", "Some text", index=0)
         containers = _make_blocks_container(blocks=[b1], block_groups=[])
-
-        nlp_doc = MagicMock()
-        nlp_doc.sents = [MagicMock(text="Some text")]
-        vs.nlp = MagicMock(return_value=nlp_doc)
 
         with patch("app.modules.transformers.vectorstore.get_llm",
                    AsyncMock(return_value=(MagicMock(), {"isMultimodal": False}))):

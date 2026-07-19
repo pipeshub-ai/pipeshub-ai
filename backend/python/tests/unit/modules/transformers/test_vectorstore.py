@@ -14,23 +14,20 @@ def _make_vectorstore():
     """Instantiate a VectorStore with everything mocked to bypass __init__ side effects."""
     from app.services.vector_db.models import VectorDBCapabilities
 
-    with patch("app.modules.transformers.vectorstore._get_shared_nlp") as mock_nlp:
-        mock_nlp.return_value = MagicMock()
+    from app.modules.transformers.vectorstore import VectorStore
 
-        from app.modules.transformers.vectorstore import VectorStore
+    mock_vdb = AsyncMock()
+    mock_vdb.get_capabilities = MagicMock(return_value=VectorDBCapabilities())
+    mock_vdb.get_service_name = MagicMock(return_value="mock")
 
-        mock_vdb = AsyncMock()
-        mock_vdb.get_capabilities = MagicMock(return_value=VectorDBCapabilities())
-        mock_vdb.get_service_name = MagicMock(return_value="mock")
-
-        vs = VectorStore(
-            logger=MagicMock(),
-            config_service=AsyncMock(),
-            graph_provider=AsyncMock(),
-            collection_name="test_collection",
-            vector_db_service=mock_vdb,
-        )
-        return vs
+    vs = VectorStore(
+        logger=MagicMock(),
+        config_service=AsyncMock(),
+        graph_provider=AsyncMock(),
+        collection_name="test_collection",
+        vector_db_service=mock_vdb,
+    )
+    return vs
 
 
 # ===================================================================
@@ -869,13 +866,6 @@ class TestIndexDocuments:
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
 
-        # Mock nlp to return sentences
-        mock_doc = MagicMock()
-        mock_sent = MagicMock()
-        mock_sent.text = "Hello world"
-        mock_doc.sents = [mock_sent]
-        vs.nlp = MagicMock(return_value=mock_doc)
-
         block = Block(index=0, type="text", format="txt", data="Hello world", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
 
@@ -893,15 +883,6 @@ class TestIndexDocuments:
         vs = _make_vectorstore()
         vs.get_embedding_model_instance = AsyncMock(return_value=False)
         vs._create_embeddings = AsyncMock()
-
-        # Mock nlp to return multiple sentences
-        sent1 = MagicMock()
-        sent1.text = "First sentence."
-        sent2 = MagicMock()
-        sent2.text = "Second sentence."
-        mock_doc = MagicMock()
-        mock_doc.sents = [sent1, sent2]
-        vs.nlp = MagicMock(return_value=mock_doc)
 
         block = Block(index=0, type="text", format="txt", data="First sentence. Second sentence.", comments=[])
         container = BlocksContainer(blocks=[block], block_groups=[])
@@ -1137,88 +1118,126 @@ class TestIndexDocuments:
         assert result is True
 
 
-class TestCreateCustomTokenizer:
-    """Tests for VectorStore._create_custom_tokenizer."""
-
-    @pytest.mark.skip(reason="_create_custom_tokenizer removed in new implementation")
-    def test_returns_language_instance(self):
-        """_create_custom_tokenizer returns a Language instance."""
-        vs = _make_vectorstore()
-        import spacy
-        # blank("en") has no "parser" pipe; add one so _create_custom_tokenizer
-        # can insert sentencizer before it (mirrors en_core_web_sm layout).
-        nlp = spacy.blank("en")
-        nlp.add_pipe("parser")
-        result = vs._create_custom_tokenizer(nlp)
-        assert result is not None
-        assert "sentencizer" in result.pipe_names
-
-
 # ===================================================================
-# _get_shared_nlp (lines 42-54)
+# _detect_record_language / _build_text_documents / _chunk_oversized_text /
+# _process_text_blocks (module-level helpers that replaced spaCy)
 # ===================================================================
 
-class TestGetSharedNlp:
-    """Tests for the _get_shared_nlp module-level function."""
+class TestDetectRecordLanguage:
+    """Tests for the _detect_record_language module-level function."""
 
-    @staticmethod
-    def _blank_with_parser():
-        """Return a blank English model with a parser pipe (mimics en_core_web_sm)."""
-        import spacy
-        nlp = spacy.blank("en")
-        nlp.add_pipe("parser")
-        return nlp
+    def test_empty_blocks_defaults_to_en(self):
+        from app.modules.transformers.vectorstore import _detect_record_language
+        assert _detect_record_language([]) == "en"
 
-    def test_returns_language_instance(self):
-        """_get_shared_nlp returns a spaCy Language instance."""
-        from spacy.language import Language
-        with patch("app.modules.transformers.vectorstore.spacy.load", return_value=self._blank_with_parser()):
-            from app.modules.transformers.vectorstore import _get_shared_nlp
-            # Clear cache so we exercise the creation path
-            if hasattr(_get_shared_nlp, "_cached_nlp"):
-                delattr(_get_shared_nlp, "_cached_nlp")
-            nlp = _get_shared_nlp()
-            assert isinstance(nlp, Language)
+    def test_blocks_with_no_text_defaults_to_en(self):
+        from app.models.blocks import Block
+        from app.modules.transformers.vectorstore import _detect_record_language
+        blocks = [Block(index=0, type="text", format="txt", data="", comments=[])]
+        assert _detect_record_language(blocks) == "en"
 
-    def test_caching_returns_same_instance(self):
-        """Subsequent calls return the same cached instance."""
-        with patch("app.modules.transformers.vectorstore.spacy.load", return_value=self._blank_with_parser()):
-            from app.modules.transformers.vectorstore import _get_shared_nlp
-            # Clear cache to start fresh
-            if hasattr(_get_shared_nlp, "_cached_nlp"):
-                delattr(_get_shared_nlp, "_cached_nlp")
-            nlp1 = _get_shared_nlp()
-            nlp2 = _get_shared_nlp()
-            assert nlp1 is nlp2
+    def test_detects_english_text(self):
+        from app.models.blocks import Block
+        from app.modules.transformers.vectorstore import _detect_record_language
+        blocks = [
+            Block(
+                index=0,
+                type="text",
+                format="txt",
+                data="This is a perfectly ordinary English sentence about the weather today.",
+                comments=[],
+            )
+        ]
+        assert _detect_record_language(blocks) == "en"
 
-
-# ===================================================================
-# VectorStore.__init__ error paths (lines 96-107)
-# ===================================================================
-
-class TestVectorStoreInitErrors:
-    """Tests for VectorStore.__init__ error handling."""
-
-    @pytest.mark.skip(reason="FastEmbedSparse is no longer initialized in __init__ in new implementation")
-    def test_sparse_embedding_failure_raises_indexing_error(self):
-        """When FastEmbedSparse fails, should raise IndexingError."""
-        from app.exceptions.indexing_exceptions import IndexingError
-
+    def test_delegates_to_detect_language(self):
+        """Passes the sampled text straight through to detect_language."""
+        from app.models.blocks import Block
+        from app.modules.transformers.vectorstore import _detect_record_language
+        blocks = [Block(index=0, type="text", format="txt", data="Some text", comments=[])]
         with patch(
-            "app.modules.transformers.vectorstore.FastEmbedSparse",
-            side_effect=Exception("sparse init failed"),
-        ):
-            with patch("app.modules.transformers.vectorstore._get_shared_nlp") as mock_nlp:
-                mock_nlp.return_value = MagicMock()
-                from app.modules.transformers.vectorstore import VectorStore
-                with pytest.raises(IndexingError, match="Failed to initialize"):
-                    VectorStore(
-                        logger=MagicMock(),
-                        config_service=AsyncMock(),
-                        graph_provider=AsyncMock(),
-                        collection_name="test",
-                        vector_db_service=AsyncMock(),
-                    )
+            "app.modules.transformers.vectorstore.detect_language",
+            return_value="fr",
+        ) as mock_detect:
+            result = _detect_record_language(blocks)
+        assert result == "fr"
+        mock_detect.assert_called_once_with("Some text")
+
+
+class TestChunkOversizedText:
+    """Tests for the _chunk_oversized_text module-level function."""
+
+    def test_short_text_returns_single_chunk(self):
+        from app.modules.transformers.vectorstore import _chunk_oversized_text
+        chunks = _chunk_oversized_text("Just one short sentence.", "en")
+        assert len(chunks) == 1
+
+    def test_long_text_splits_into_multiple_chunks(self):
+        from app.modules.transformers.vectorstore import (
+            _OVERSIZED_CHUNK_SIZE,
+            _chunk_oversized_text,
+        )
+        sentence = "This is a moderately long sentence for testing purposes. "
+        text = sentence * 200  # far exceeds _OVERSIZED_CHUNK_SIZE
+        chunks = _chunk_oversized_text(text, "en")
+        assert len(chunks) > 1
+        assert all(len(c) <= _OVERSIZED_CHUNK_SIZE + len(sentence) for c in chunks)
+
+    def test_empty_text_returns_text_as_single_chunk(self):
+        from app.modules.transformers.vectorstore import _chunk_oversized_text
+        assert _chunk_oversized_text("", "en") == [""]
+
+
+class TestBuildTextDocuments:
+    """Tests for the _build_text_documents module-level function."""
+
+    def test_single_sentence_block_yields_one_document(self):
+        from app.models.blocks import Block
+        from app.modules.transformers.vectorstore import _build_text_documents
+        blocks = [Block(index=0, type="text", format="txt", data="Hello world", comments=[])]
+        docs = _build_text_documents(blocks, "vr-1", "org-1", "en")
+        assert len(docs) == 1
+        assert docs[0].metadata["isBlock"] is True
+
+    def test_multi_sentence_block_yields_sentences_plus_block(self):
+        from app.models.blocks import Block
+        from app.modules.transformers.vectorstore import _build_text_documents
+        blocks = [
+            Block(
+                index=0,
+                type="text",
+                format="txt",
+                data="First sentence. Second sentence.",
+                comments=[],
+            )
+        ]
+        docs = _build_text_documents(blocks, "vr-1", "org-1", "en")
+        assert len(docs) == 3
+        assert sum(1 for d in docs if d.metadata["isBlock"]) == 1
+
+    def test_oversized_block_skips_whole_block_document(self):
+        from app.models.blocks import Block
+        from app.modules.transformers.vectorstore import (
+            _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT,
+            _build_text_documents,
+        )
+        oversized_text = ("Sentence number filler text here. " * 2000)
+        assert len(oversized_text) > _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT
+        blocks = [Block(index=0, type="text", format="txt", data=oversized_text, comments=[])]
+        docs = _build_text_documents(blocks, "vr-1", "org-1", "en")
+        assert len(docs) > 1
+        assert all(not d.metadata["isBlock"] for d in docs)
+
+
+class TestProcessTextBlocks:
+    """Tests for the _process_text_blocks module-level function."""
+
+    def test_combines_detection_and_document_building(self):
+        from app.models.blocks import Block
+        from app.modules.transformers.vectorstore import _process_text_blocks
+        blocks = [Block(index=0, type="text", format="txt", data="Hello world", comments=[])]
+        docs = _process_text_blocks(blocks, "vr-1", "org-1")
+        assert len(docs) == 1
 
 
 # ===================================================================
@@ -1257,37 +1276,29 @@ class TestApply:
 
 
 # ===================================================================
-# custom_sentence_boundary (lines 166-240)
+# split_into_sentences (app.modules.parsers.text_splitting) — replaces the
+# old spaCy custom_sentence_boundary component used by VectorStore.
 # ===================================================================
 
-class TestCustomSentenceBoundary:
-    """Tests for the custom_sentence_boundary component."""
+class TestSplitIntoSentences:
+    """Tests for the pysbd-based split_into_sentences helper used by VectorStore."""
 
     def test_number_period_not_sentence_boundary(self):
         """Number followed by period should not be a sentence boundary."""
-        import spacy
-        nlp = spacy.blank("en")
-        nlp.add_pipe("sentencizer")
-        doc = nlp("Section 1. The first item.")
-        sents = list(doc.sents)
+        from app.modules.parsers.text_splitting import split_into_sentences
+        sents = split_into_sentences("Section 1. The first item.", "en")
         assert len(sents) >= 1
 
     def test_abbreviation_not_sentence_boundary(self):
         """Common abbreviations should not cause sentence splits."""
-        import spacy
-        nlp = spacy.blank("en")
-        nlp.add_pipe("sentencizer")
-        doc = nlp("Dr. Smith went to the store.")
-        sents = list(doc.sents)
+        from app.modules.parsers.text_splitting import split_into_sentences
+        sents = split_into_sentences("Dr. Smith went to the store.", "en")
         assert len(sents) <= 2
 
     def test_ellipsis_not_sentence_boundary(self):
         """Ellipsis (...) should not cause sentence splits."""
-        import spacy
-        nlp = spacy.blank("en")
-        nlp.add_pipe("sentencizer")
-        doc = nlp("Wait... I think so.")
-        sents = list(doc.sents)
+        from app.modules.parsers.text_splitting import split_into_sentences
+        sents = split_into_sentences("Wait... I think so.", "en")
         assert len(sents) >= 1
 
 
@@ -2237,16 +2248,16 @@ class TestProcessDocumentChunksRemoteFailure:
 
 
 # ===================================================================
-# custom_sentence_boundary (lines 166-240)
+# split_into_sentences — replacement for the removed custom_sentence_boundary
+# spaCy component
 # ===================================================================
 
-class TestCustomSentenceBoundary:
-    """Tests for the custom_sentence_boundary spaCy component."""
+class TestSplitIntoSentencesExists:
+    """split_into_sentences is defined and importable from text_splitting."""
 
     def test_function_exists(self):
-        """custom_sentence_boundary function is defined."""
-        from app.modules.transformers.vectorstore import VectorStore
-        assert hasattr(VectorStore, 'custom_sentence_boundary')
+        from app.modules.parsers.text_splitting import split_into_sentences
+        assert callable(split_into_sentences)
 
 
 # ===================================================================
