@@ -73,6 +73,7 @@ export type ConnectorType =
   | 'google-admin'
   | 'google-cloud'
   | 'salesforce'
+  | 'odoo'
   // Databases
   | 'postgresql'
   | 'mariadb'
@@ -171,6 +172,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'google-admin': { svg: svg('google-admin'), fallback: 'admin_panel_settings' },
   'google-cloud': { svg: svg('gcs'), fallback: 'cloud' },
   'salesforce': { svg: svg('salesforce'), fallback: 'cloud' },
+  'odoo': { svg: svg('odoo'), fallback: 'extension' },
   // Databases
   'postgresql': { svg: svg('postgresql'), fallback: 'storage' },
   'mariadb': { svg: svg('mariadb'), fallback: 'storage' },
