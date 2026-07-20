@@ -1292,6 +1292,20 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 detail=f"Failed to stream file from Drive: {str(drive_error)}"
             )
 
+    def _dump_raw_html(self, message_id: str, raw_html: str) -> None:
+        """Debug helper: persist the raw Gmail HTML payload for inspection."""
+        try:
+            dump_dir = Path(r"C:\Harshit\Programs\htmls")
+            dump_dir.mkdir(parents=True, exist_ok=True)
+
+            safe_id = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in str(message_id))
+            dump_path = dump_dir / f"{safe_id}.html"
+
+            dump_path.write_text(raw_html, encoding="utf-8")
+            self.logger.info(f"📝 Dumped raw HTML for message {message_id} to {dump_path}")
+        except Exception as e:
+            self.logger.error(f"❌ Failed to dump raw HTML for message {message_id}: {str(e)}")
+
     async def _stream_mail_record(
         self,
         gmail_service,
@@ -1312,6 +1326,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
             raw_html = base64.urlsafe_b64decode(
                 mail_content_base64.encode("ASCII")
             ).decode("utf-8", errors="replace")
+
+            self._dump_raw_html(message_id, raw_html)
 
             latest_reply_text = ""
 
