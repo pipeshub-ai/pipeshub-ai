@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 import base64
 import logging
+import os
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -153,17 +154,26 @@ def create_internal_search_tool(
         Returns: Retrieved record blocks with metadata for citation, or {"ok": false, "error": "..."}.
         """
         try:
-            parallel_tasks = [
-                retrieval_service.search_with_filters(
-                    queries=[query],
-                    org_id=org_id,
-                    user_id=user_id,
-                    limit=limit,
-                    filter_groups=filter_groups,
-                ),
-            ]
+            disable_semantic = os.getenv("DISABLE_SEMANTIC_SEARCH", "false").strip().lower() == "true"
+            disable_pattern = os.getenv("DISABLE_STORAGE_PATTERN", "false").strip().lower() == "true"
+
+            parallel_tasks = []
+            semantic_task_idx = None
             pm_task_idx = None
-            if config_service:
+
+            if not disable_semantic:
+                semantic_task_idx = len(parallel_tasks)
+                parallel_tasks.append(
+                    retrieval_service.search_with_filters(
+                        queries=[query],
+                        org_id=org_id,
+                        user_id=user_id,
+                        limit=limit,
+                        filter_groups=filter_groups,
+                    ),
+                )
+
+            if config_service and not disable_pattern:
                 pm_task_idx = len(parallel_tasks)
                 parallel_tasks.append(
                     execute_pattern_match_pipeline(
@@ -177,13 +187,22 @@ def create_internal_search_tool(
                     )
                 )
 
-            parallel_results = await asyncio.gather(
-                *parallel_tasks, return_exceptions=True,
-            )
+            if parallel_tasks:
+                parallel_results = await asyncio.gather(
+                    *parallel_tasks, return_exceptions=True,
+                )
+            else:
+                parallel_results = []
 
-            result = parallel_results[0]
-            if isinstance(result, Exception):
-                raise result
+            result: dict[str, Any]
+            if semantic_task_idx is not None:
+                res = parallel_results[semantic_task_idx]
+                if isinstance(res, Exception):
+                    raise res
+                result = res
+            else:
+                tool_logger.info("Semantic search disabled via DISABLE_SEMANTIC_SEARCH")
+                result = {"status_code": 200, "searchResults": []}
 
             raw_pm_records: list[dict] = []
             if pm_task_idx is not None:
@@ -192,6 +211,8 @@ def create_internal_search_tool(
                     tool_logger.warning("Pattern match failed: %s", pm_result)
                 else:
                     raw_pm_records = pm_result
+            elif disable_pattern:
+                tool_logger.info("Pattern match disabled via DISABLE_STORAGE_PATTERN")
 
             search_results = result.get("searchResults", [])
             virtual_to_record_map = result.get("virtual_to_record_map", {})
@@ -963,35 +984,62 @@ async def _generate_internal_search_stream(
                 # --- Standard path: upfront retrieval (first query, no attachments) ---
                 yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
 
-                parallel_results = await asyncio.gather(
-                    retrieval_service.search_with_filters(
-                        queries=all_queries,
-                        org_id=org_id,
-                        user_id=user_id,
-                        limit=query_info.limit,
-                        filter_groups=query_info.filters,
-                    ),
-                    execute_pattern_match_pipeline(
-                        query=query_info.query,
-                        config_service=config_service,
-                        org_id=org_id,
-                        user_id=user_id,
-                        graph_provider=graph_provider,
-                        filters=query_info.filters,
-                        logger_instance=logger,
-                    ),
-                    return_exceptions=True,
-                )
+                disable_semantic = os.getenv("DISABLE_SEMANTIC_SEARCH", "false").strip().lower() == "true"
+                disable_pattern = os.getenv("DISABLE_STORAGE_PATTERN", "false").strip().lower() == "true"
 
-                result = parallel_results[0]
-                if isinstance(result, Exception):
-                    raise result
+                parallel_tasks = []
+                semantic_task_idx = None
+                pm_task_idx = None
+
+                if not disable_semantic:
+                    semantic_task_idx = len(parallel_tasks)
+                    parallel_tasks.append(
+                        retrieval_service.search_with_filters(
+                            queries=all_queries,
+                            org_id=org_id,
+                            user_id=user_id,
+                            limit=query_info.limit,
+                            filter_groups=query_info.filters,
+                        ),
+                    )
+
+                if not disable_pattern:
+                    pm_task_idx = len(parallel_tasks)
+                    parallel_tasks.append(
+                        execute_pattern_match_pipeline(
+                            query=query_info.query,
+                            config_service=config_service,
+                            org_id=org_id,
+                            user_id=user_id,
+                            graph_provider=graph_provider,
+                            filters=query_info.filters,
+                            logger_instance=logger,
+                        ),
+                    )
+
+                if parallel_tasks:
+                    parallel_results = await asyncio.gather(
+                        *parallel_tasks, return_exceptions=True,
+                    )
+                else:
+                    parallel_results = []
+
+                if semantic_task_idx is not None:
+                    result = parallel_results[semantic_task_idx]
+                    if isinstance(result, Exception):
+                        raise result
+                else:
+                    logger.info("Semantic search disabled via DISABLE_SEMANTIC_SEARCH")
+                    result = {"status_code": 200, "searchResults": []}
 
                 raw_pm_records: list[dict] = []
-                if isinstance(parallel_results[1], Exception):
-                    logger.warning("Pattern match failed: %s", parallel_results[1])
-                else:
-                    raw_pm_records = parallel_results[1]
+                if pm_task_idx is not None:
+                    if isinstance(parallel_results[pm_task_idx], Exception):
+                        logger.warning("Pattern match failed: %s", parallel_results[pm_task_idx])
+                    else:
+                        raw_pm_records = parallel_results[pm_task_idx]
+                elif disable_pattern:
+                    logger.info("Pattern match disabled via DISABLE_STORAGE_PATTERN")
 
                 search_results = result.get("searchResults", [])
                 virtual_to_record_map = result.get("virtual_to_record_map", {})
