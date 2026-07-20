@@ -1008,30 +1008,41 @@ def build_parent_info(result: dict[str, Any]) -> str:
     return parent_info
 
 def build_record_relations_info(record: dict[str, Any]) -> str:
-    """Build related records info with rich context metadata when available."""
+    """Build related records grouped by relation label (ATTACHMENT/CHILD/PARENT).
+
+    Each label is rendered once as a heading with all its records listed
+    underneath, so a label never repeats per row. A record reached via more than
+    one relation type appears under each of its labels.
+    """
     relations = record.get("record_relations")
     if not relations:
         return ""
 
-    lines = ["\n* Related records:"]
+    label_to_rels: dict[str, list[dict[str, Any]]] = {}
     for rel in relations:
         if not isinstance(rel, dict):
             continue
-        labels = rel.get("labels") or []
-        label_text = ", ".join(labels) if labels else "RELATED"
-        context_metadata = rel.get("context_metadata")
-        if context_metadata:
-            lines.append(f"  - {label_text}:")
-            for ctx_line in context_metadata.split("\n"):
-                lines.append(f"    {ctx_line}")
-        else:
-            record_id = rel.get("record_id", "")
-            record_name = rel.get("record_name", "Unknown")
-            lines.append(
-                f"  - {label_text} | Record ID: {record_id} | Name: {record_name}"
-            )
-    if len(lines) == 1:
+        for label in (rel.get("labels") or ["RELATED"]):
+            label_to_rels.setdefault(label, []).append(rel)
+
+    if not label_to_rels:
         return ""
+
+    lines = ["\n* Related records:"]
+    for label in sorted(label_to_rels):
+        lines.append(f"  {label}:")
+        for rel in label_to_rels[label]:
+            context_metadata = rel.get("context_metadata")
+            if context_metadata:
+                ctx_lines = context_metadata.split("\n")
+                lines.append(f"    - {ctx_lines[0]}")
+                # Indent the remaining fields one tab deeper than the "Record ID"
+                # line so full-metadata records stand apart from id+name-only rows.
+                lines.extend(f"          {ctx_line}" for ctx_line in ctx_lines[1:])
+            else:
+                record_id = rel.get("record_id", "")
+                record_name = rel.get("record_name", "Unknown")
+                lines.append(f"    - Record ID: {record_id} | Name: {record_name}")
     return "\n".join(lines) + "\n"
 
 # FK table enrichment (runs before doc_index in chatbot; extends virtual_record_id_to_result)
