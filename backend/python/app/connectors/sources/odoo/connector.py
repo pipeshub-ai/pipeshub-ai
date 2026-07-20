@@ -3,15 +3,25 @@ entries, plus salespersons (res.users) as AppUsers.
 
 Scope: CRM leads only, matching app/sources/external/odoo/odoo.py. Record
 groups (crm.team) and roles are intentionally not synced yet — Odoo CRM
-access doesn't map cleanly onto BookStack-style book/shelf/role hierarchies
-(a lead's real access is "salesperson owns it"), so this ships owner-only
-permissions for v1. Add team-based sharing when that's actually needed.
+access doesn't map cleanly onto BookStack-style book/shelf/role hierarchies.
+Res.groups/ir.rule gate model-level access, not individual records, so
+there's no clean "role -> these specific leads" list to sync the way
+BookStack's per-content role permissions work.
+
+Permissions per lead: OWNER for the assigned salesperson (user_id) plus
+READER for every mail.followers subscriber on that lead — followers are
+Odoo's only genuine per-record "who's actually looped into this" signal,
+closer to BookStack's content-level permissions than a coarse team-wide
+grant would be. Team-based sharing (whole team sees the whole pipeline) is
+a separate, still-open decision — add it if followers alone prove too
+narrow for how a given org actually uses Odoo teams.
 """
 
 from __future__ import annotations
 
 import asyncio
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 from logging import Logger
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
@@ -189,6 +199,11 @@ class OdooConnector(BaseConnector):
         # id -> email, built during _sync_users(); used to attach owner
         # permissions to leads without a per-lead user lookup.
         self._user_email_by_id: Dict[int, str] = {}
+        # res.partner id -> email, for resolving mail.followers subscribers
+        # (followers are stored as partner_id, not user_id) back to a known
+        # internal user. Followers that don't match any entry here are
+        # external contacts, not PipesHub users — silently skipped.
+        self._user_email_by_partner_id: Dict[int, str] = {}
 
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
@@ -307,11 +322,15 @@ class OdooConnector(BaseConnector):
 
         app_users: List[AppUser] = []
         self._user_email_by_id = {}
+        self._user_email_by_partner_id = {}
         for user in users:
             email = user.email if isinstance(user.email, str) else (user.login or None)
             if not email:
                 continue
             self._user_email_by_id[user.id] = email
+            partner_id = _m2o_id(user.partner_id)
+            if partner_id is not None:
+                self._user_email_by_partner_id[partner_id] = email
             app_users.append(
                 AppUser(
                     app_name=Connectors.ODOO,
@@ -356,11 +375,17 @@ class OdooConnector(BaseConnector):
             if not leads:
                 break
 
+            followers_by_lead = await self._fetch_followers_by_lead(
+                [lead.id for lead in leads]
+            )
+
             for lead in leads:
                 if allowed_types and lead.type not in allowed_types:
                     continue
 
-                record, permissions, is_new = await self._process_lead(lead)
+                record, permissions, is_new = await self._process_lead(
+                    lead, followers_by_lead.get(lead.id, [])
+                )
 
                 if is_new:
                     batch_records.append((record, permissions))
@@ -385,19 +410,29 @@ class OdooConnector(BaseConnector):
         )
         self.logger.info("Finished syncing Odoo leads.")
 
-    async def _process_lead(
-        self, lead: CrmLead
-    ) -> Tuple[DealRecord, List[Permission], bool]:
-        external_id = f"crm.lead/{lead.id}"
+    async def _fetch_followers_by_lead(
+        self, lead_ids: List[int]
+    ) -> Dict[int, List[int]]:
+        """One batched mail.followers call per page instead of one per
+        lead — group the resulting (res_id, partner_id) rows by lead."""
+        if not self.data_source or not lead_ids:
+            return {}
+        followers = await self.data_source.list_followers("crm.lead", lead_ids)
+        by_lead: Dict[int, List[int]] = defaultdict(list)
+        for follower in followers:
+            if follower.res_id is None:
+                continue
+            partner_id = _m2o_id(follower.partner_id)
+            if partner_id is not None:
+                by_lead[follower.res_id].append(partner_id)
+        return by_lead
 
-        async with self.data_store_provider.transaction() as tx_store:
-            existing_record = await tx_store.get_record_by_external_id(
-                connector_id=self.connector_id, external_id=external_id
-            )
-        is_new = existing_record is None
-
-        owner_id = _m2o_id(lead.user_id)
+    def _build_lead_permissions(
+        self, owner_id: Optional[int], follower_partner_ids: List[int]
+    ) -> List[Permission]:
         permissions: List[Permission] = []
+        seen_emails: set[str] = set()
+
         if owner_id is not None:
             email = self._user_email_by_id.get(owner_id)
             if email:
@@ -409,6 +444,37 @@ class OdooConnector(BaseConnector):
                         entity_type=EntityType.USER,
                     )
                 )
+                seen_emails.add(email)
+
+        for partner_id in follower_partner_ids:
+            email = self._user_email_by_partner_id.get(partner_id)
+            if not email or email in seen_emails:
+                continue
+            seen_emails.add(email)
+            permissions.append(
+                Permission(
+                    external_id=email,
+                    email=email,
+                    type=PermissionType.READ,
+                    entity_type=EntityType.USER,
+                )
+            )
+
+        return permissions
+
+    async def _process_lead(
+        self, lead: CrmLead, follower_partner_ids: Optional[List[int]] = None
+    ) -> Tuple[DealRecord, List[Permission], bool]:
+        external_id = f"crm.lead/{lead.id}"
+
+        async with self.data_store_provider.transaction() as tx_store:
+            existing_record = await tx_store.get_record_by_external_id(
+                connector_id=self.connector_id, external_id=external_id
+            )
+        is_new = existing_record is None
+
+        owner_id = _m2o_id(lead.user_id)
+        permissions = self._build_lead_permissions(owner_id, follower_partner_ids or [])
 
         created_at_ms = _parse_odoo_datetime(lead.create_date) or get_epoch_timestamp_in_ms()
         updated_at_ms = _parse_odoo_datetime(lead.write_date) or get_epoch_timestamp_in_ms()
@@ -425,7 +491,11 @@ class OdooConnector(BaseConnector):
             version=0 if is_new else existing_record.version + 1,
             external_revision_id=lead.write_date,
             weburl=f"{self.base_url}/web#id={lead.id}&model=crm.lead&view_type=form",
-            mime_type=MimeTypes.UNKNOWN.value,
+            # Must match the media_type stream_record() actually streams —
+            # the indexing pipeline gates on this before ever calling
+            # stream_record(); UNKNOWN silently drops every lead as
+            # FILE_TYPE_NOT_SUPPORTED without embedding anything.
+            mime_type=MimeTypes.PLAIN_TEXT.value,
             created_at=created_at_ms,
             updated_at=updated_at_ms,
             source_created_at=created_at_ms,
@@ -504,6 +574,10 @@ class OdooConnector(BaseConnector):
             if not self.data_source:
                 raise Exception("Odoo client not initialized. Call init() first.")
 
+            # Refresh the owner/follower email maps — reindex can run
+            # without a preceding _sync_leads() in this connector instance.
+            await self._sync_users()
+
             updated_records: List[Tuple[Record, List[Permission]]] = []
             non_updated_records: List[Record] = []
 
@@ -514,7 +588,17 @@ class OdooConnector(BaseConnector):
                     if lead is None:
                         continue
                     if lead.write_date != record.external_revision_id:
-                        updated_record, permissions, _is_new = await self._process_lead(lead)
+                        followers = await self.data_source.list_followers(
+                            "crm.lead", [lead_id]
+                        )
+                        follower_partner_ids = [
+                            pid
+                            for f in followers
+                            if (pid := _m2o_id(f.partner_id)) is not None
+                        ]
+                        updated_record, permissions, _is_new = await self._process_lead(
+                            lead, follower_partner_ids
+                        )
                         updated_records.append((updated_record, permissions))
                     else:
                         non_updated_records.append(record)

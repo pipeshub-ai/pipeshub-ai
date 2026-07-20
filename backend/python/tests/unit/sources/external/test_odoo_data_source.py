@@ -15,6 +15,7 @@ from app.sources.external.odoo.odoo import (
     CrmTag,
     CrmTeam,
     MailActivity,
+    MailFollower,
     MailMessage,
     OdooDataSource,
     Partner,
@@ -340,6 +341,26 @@ class TestUsers:
         await data_source.list_users(include_inactive=True)
         kwargs = client.execute_kw.await_args.args[3]
         assert kwargs["context"] == {"active_test": False}
+
+
+class TestFollowers:
+    async def test_list_followers_bulk_by_res_ids(self, data_source, client):
+        client.execute_kw.return_value = [
+            {"id": 1, "res_id": 42, "partner_id": [7, "Anup Pradhan"]},
+            {"id": 2, "res_id": 43, "partner_id": [9, "External Contact"]},
+        ]
+        followers = await data_source.list_followers("crm.lead", [42, 43])
+        assert len(followers) == 2
+        assert all(isinstance(f, MailFollower) for f in followers)
+        assert followers[0].res_id == 42
+        domain = client.execute_kw.await_args.args[2][0]
+        assert ["res_model", "=", "crm.lead"] in domain
+        assert ["res_id", "in", [42, 43]] in domain
+
+    async def test_list_followers_empty_ids_skips_call(self, data_source, client):
+        followers = await data_source.list_followers("crm.lead", [])
+        assert followers == []
+        client.execute_kw.assert_not_awaited()
 
 
 class TestAttachments:
