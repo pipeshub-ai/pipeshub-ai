@@ -3,6 +3,7 @@ from typing import Dict, List, Optional
 
 from app.config.constants.arangodb import (
     CollectionNames,
+    ProgressStatus,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.blocks import SemanticMetadata
@@ -58,6 +59,7 @@ class GraphDBTransformer(Transformer):
                             record_id,
                         )
                         return
+                    record.extraction_status = ProgressStatus.FAILED.value
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
                 raise
@@ -356,6 +358,7 @@ class GraphDBTransformer(Transformer):
                         record_id,
                     )
                     return
+                record.extraction_status = ProgressStatus.COMPLETED.value
 
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")

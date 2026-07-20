@@ -200,6 +200,8 @@ class SinkOrchestrator(Transformer):
             ],
             CollectionNames.RECORDS.value,
         )
+        record.record_status = ProgressStatus.COMPLETED
+        record.indexing_status = ProgressStatus.COMPLETED.value
         self.logger.info(
             "✅ indexingStatus=COMPLETED recorded for %s", record.id
         )

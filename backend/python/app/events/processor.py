@@ -68,6 +68,8 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         record_name=record_dict.get("recordName"),
         record_type=RecordType(record_dict.get("recordType", "FILE")),
         record_status=ProgressStatus(record_dict.get("indexingStatus", "NOT_STARTED")),
+        indexing_status=record_dict.get("indexingStatus", ProgressStatus.QUEUED.value),
+        extraction_status=record_dict.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
         external_record_id=record_dict.get("externalRecordId"),
         version=record_dict.get("version", 1),
         origin=origin,

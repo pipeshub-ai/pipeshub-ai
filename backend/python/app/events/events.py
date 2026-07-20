@@ -274,9 +274,6 @@ class EventProcessor:
                         semantic_metadata,
                     )
 
-                if semantic_metadata:
-                    await self.sink_orchestrator.blob_storage.apply(ctx)
-
                 await self.sink_orchestrator.enrich(ctx)
                 self.logger.info(
                     "✅ Graph enrichment completed for record %s", record_id
@@ -287,6 +284,8 @@ class EventProcessor:
                     record_id,
                     enrich_exc,
                 )
+
+        await self.sink_orchestrator.blob_storage.apply(ctx)
 
         yield PipelineEvent(
             event=IndexingEvent.INDEXING_COMPLETE,
