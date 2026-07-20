@@ -144,6 +144,7 @@ async def test_full_pipeline_happy_path() -> None:
     sink_orchestrator = MagicMock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
+    sink_orchestrator.blob_storage.apply = AsyncMock()
 
     transform_pipeline = MagicMock()
     transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
@@ -181,6 +182,7 @@ async def test_enrichment_failure_does_not_block_indexing() -> None:
     sink_orchestrator = MagicMock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
+    sink_orchestrator.blob_storage.apply = AsyncMock()
 
     transform_pipeline = MagicMock()
     transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
@@ -216,6 +218,7 @@ async def test_deferred_extraction_skips_extraction_client() -> None:
     sink_orchestrator = MagicMock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
+    sink_orchestrator.blob_storage.apply = AsyncMock()
 
     transform_pipeline = MagicMock()
     transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
