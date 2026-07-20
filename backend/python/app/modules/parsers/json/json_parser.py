@@ -18,6 +18,7 @@ SQL table parser's "no-LLM" design.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from typing import Any, Dict, List, Optional
@@ -70,7 +71,9 @@ class JSONParser:
             raise ParseError(ParseErrorCode.EMPTY_CONTENT, "JSON content is empty")
 
         try:
-            data = json.loads(content.decode("utf-8"))
+            # json.loads + the tree walk below are synchronous CPU work; keep
+            # large payloads off the event loop.
+            data = await asyncio.to_thread(json.loads, content.decode("utf-8"))
         except Exception as e:
             raise ParseError(
                 ParseErrorCode.PARSE_FAILED,
@@ -78,7 +81,7 @@ class JSONParser:
                 {"error": str(e)},
             )
 
-        block_container = self.parse_data(data, record_name)
+        block_container = await asyncio.to_thread(self.parse_data, data, record_name)
         return ParseResult(
             block_container=block_container,
             metadata={"record_name": record_name},
