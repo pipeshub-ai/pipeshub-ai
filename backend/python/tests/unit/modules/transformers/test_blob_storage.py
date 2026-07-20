@@ -1865,66 +1865,26 @@ class TestDownloadWithRangeRequestsDeep:
 # apply() actual-path tracking (metadata-orphan fix)
 # ===================================================================
 
-class TestApplyActualStoragePath:
-    """ctx.settings['storage_path'] after apply() must reflect the path
-    content ACTUALLY used, not just the freshly-computed candidate --
-    otherwise a metadata write that reads this value (sink_orchestrator.py)
-    silently drifts out of sync with content's real location and gets
-    excluded from every future move-tree operation."""
+class TestApplyStoragePath:
+    """ctx.settings['storage_path'] after apply() must reflect the ACTUAL
+    content path so metadata is colocated with content. For new records
+    this is the freshly-computed path; for existing records it is the
+    real current path queried from Node.js after buffer override."""
 
     @pytest.mark.asyncio
-    async def test_recreate_branch_uses_fresh_candidate_path(self):
-        """When apply() recreates at a new location, storage_path == the
-        fresh candidate (content really is there now)."""
+    async def test_existing_flat_record_uses_actual_flat_path(self):
+        """Existing flat-path record: buffer override in place,
+        storage_path == the actual flat path from Node.js, NOT the
+        freshly-computed hierarchical candidate."""
         bs = _make_blob_storage()
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-existing"}
         )
-        bs._get_current_document_path = AsyncMock(
-            return_value="org-1/PipesHub/records/conn-1/OldGroup/doc.pdf"
-        )
-        bs._build_hierarchical_storage_path = AsyncMock(
-            return_value="records/conn-1/NewGroup/doc.pdf"
-        )
-        bs.save_record_to_storage = AsyncMock(return_value=("new-doc-id", 100))
-        bs.store_virtual_record_mapping = AsyncMock()
-
-        record = _make_record_mock()
-        record.org_id = "org-1"
-        ctx = MagicMock()
-        ctx.record = record
-        ctx.settings = {}
-
-        result_ctx = await bs.apply(ctx)
-
-        assert result_ctx.settings["storage_path"] == "records/conn-1/NewGroup/doc.pdf"
-
-    @pytest.mark.asyncio
-    async def test_override_in_place_branch_uses_actual_current_path(self):
-        """When apply() overrides in place, storage_path == the document's
-        actual current stored path -- NOT the freshly-computed candidate,
-        which may differ from where content really is.
-
-        Reaches "override in place" via the currently_flat=True route (the
-        actual current path is the flat records/<vrid> form) while the fresh
-        candidate is a DIFFERENT, hierarchical path. This makes the two
-        paths diverge, so the assertion actually discriminates between the
-        old code (which used the fresh candidate) and the fixed code (which
-        uses the actual current path)."""
-        bs = _make_blob_storage()
-        bs.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value={"record_doc_id": "doc-existing"}
-        )
-        # Actual current path is FLAT (records/<vrid>) -- this alone makes
-        # currently_flat True and triggers "override in place", regardless
-        # of what the fresh candidate below computes to.
-        bs._get_current_document_path = AsyncMock(
-            return_value="org-1/PipesHub/records/vr-1"
-        )
-        # Fresh candidate is hierarchical and DIFFERENT from the actual
-        # current path above.
         bs._build_hierarchical_storage_path = AsyncMock(
             return_value="records/conn-1/Finance/doc.pdf"
+        )
+        bs._get_current_document_path = AsyncMock(
+            return_value="org-1/PipesHub/records/vr-1"
         )
         bs.update_record_buffer = AsyncMock(return_value=("doc-existing", 100))
         bs.store_virtual_record_mapping = AsyncMock()
@@ -1938,38 +1898,72 @@ class TestApplyActualStoragePath:
 
         result_ctx = await bs.apply(ctx)
 
-        # Must be the ACTUAL current path, not the fresh candidate
-        # ("records/conn-1/Finance/doc.pdf") that the old buggy code would
-        # have wrongly produced here.
         assert result_ctx.settings["storage_path"] == "records/vr-1"
         bs.update_record_buffer.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_override_in_place_failure_falls_back_to_fresh_candidate_path(self):
-        """When the override-in-place buffer update fails and apply() falls
-        back to recreating, storage_path == the fresh candidate (content
-        landed there via the fallback), not the stale current path.
-
-        Reaches "override in place" via the currently_flat=True route (the
-        actual current path is the flat records/<vrid> form) while the fresh
-        candidate is a DIFFERENT, hierarchical path -- same pattern as
-        test_override_in_place_branch_uses_actual_current_path above. This
-        makes relative_current and storage_path diverge, so the assertion
-        actually discriminates: a hypothetical regression that reassigned
-        actual_storage_path = relative_current in the except block would
-        fail here (expecting the hierarchical storage_path but getting
-        "records/vr-1")."""
+    async def test_existing_hierarchical_record_uses_actual_hierarchical_path(self):
+        """Existing hierarchical record: storage_path == the actual
+        hierarchical path from Node.js (which may have been moved by
+        move_record_tree since the last reindex)."""
         bs = _make_blob_storage()
         bs.get_document_id_by_virtual_record_id = AsyncMock(
             return_value={"record_doc_id": "doc-existing"}
         )
-        # Actual current path is FLAT (records/<vrid>) -- this alone makes
-        # currently_flat True and triggers "override in place".
-        bs._get_current_document_path = AsyncMock(
-            return_value="org-1/PipesHub/records/vr-1"
+        bs._build_hierarchical_storage_path = AsyncMock(
+            return_value="records/conn-1/NewFolder/doc.pdf"
         )
-        # Fresh candidate is hierarchical and DIFFERENT from the actual
-        # current path above.
+        bs._get_current_document_path = AsyncMock(
+            return_value="org-1/PipesHub/records/conn-1/NewFolder/doc.pdf"
+        )
+        bs.update_record_buffer = AsyncMock(return_value=("doc-existing", 100))
+        bs.store_virtual_record_mapping = AsyncMock()
+
+        record = _make_record_mock()
+        record.org_id = "org-1"
+        record.virtual_record_id = "vr-1"
+        ctx = MagicMock()
+        ctx.record = record
+        ctx.settings = {}
+
+        result_ctx = await bs.apply(ctx)
+
+        assert result_ctx.settings["storage_path"] == "records/conn-1/NewFolder/doc.pdf"
+
+    @pytest.mark.asyncio
+    async def test_path_lookup_failure_falls_back_to_computed_path(self):
+        """When _get_current_document_path returns None (e.g. transient
+        failure), storage_path falls back to the freshly-computed path."""
+        bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(
+            return_value={"record_doc_id": "doc-existing"}
+        )
+        bs._build_hierarchical_storage_path = AsyncMock(
+            return_value="records/conn-1/Finance/doc.pdf"
+        )
+        bs._get_current_document_path = AsyncMock(return_value=None)
+        bs.update_record_buffer = AsyncMock(return_value=("doc-existing", 100))
+        bs.store_virtual_record_mapping = AsyncMock()
+
+        record = _make_record_mock()
+        record.org_id = "org-1"
+        record.virtual_record_id = "vr-1"
+        ctx = MagicMock()
+        ctx.record = record
+        ctx.settings = {}
+
+        result_ctx = await bs.apply(ctx)
+
+        assert result_ctx.settings["storage_path"] == "records/conn-1/Finance/doc.pdf"
+
+    @pytest.mark.asyncio
+    async def test_buffer_failure_falls_back_to_new_upload_at_computed_path(self):
+        """When buffer override fails, apply() creates a new document at
+        the freshly-computed hierarchical path."""
+        bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(
+            return_value={"record_doc_id": "doc-existing"}
+        )
         bs._build_hierarchical_storage_path = AsyncMock(
             return_value="records/conn-1/Finance/doc.pdf"
         )
@@ -1986,49 +1980,13 @@ class TestApplyActualStoragePath:
 
         result_ctx = await bs.apply(ctx)
 
-        # Fallback always uses the fresh candidate, never relative_current.
         assert result_ctx.settings["storage_path"] == "records/conn-1/Finance/doc.pdf"
         bs.save_record_to_storage.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_override_in_place_success_leaves_storage_path_unknown_when_current_path_unknown(self):
-        """When the actual current path can't be determined (_get_current_
-        document_path returns None), currently_flat defaults to True so
-        apply() takes the override-in-place branch. Content was never
-        relocated (update_record_buffer overwrites wherever Node's records
-        already has it), and its real location is genuinely unknown -- so
-        storage_path must NOT be set to the fresh candidate (that would be
-        an active lie about where content is, and would let
-        save_reconciliation_metadata create/recreate metadata at a path
-        that doesn't match content's real, unknown-but-unchanged location).
-        It must be left unknown (None) instead."""
-        bs = _make_blob_storage()
-        bs.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value={"record_doc_id": "doc-existing"}
-        )
-        bs._get_current_document_path = AsyncMock(return_value=None)
-        bs._build_hierarchical_storage_path = AsyncMock(
-            return_value="records/conn-1/Finance/doc.pdf"
-        )
-        bs.update_record_buffer = AsyncMock(return_value=("doc-existing", 100))
-        bs.store_virtual_record_mapping = AsyncMock()
-
-        record = _make_record_mock()
-        record.org_id = "org-1"
-        record.virtual_record_id = "vr-1"
-        ctx = MagicMock()
-        ctx.record = record
-        ctx.settings = {}
-
-        result_ctx = await bs.apply(ctx)
-
-        assert result_ctx.settings["storage_path"] is None
-        bs.update_record_buffer.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_no_existing_doc_uses_fresh_candidate_path(self):
-        """First sync (no existing document): storage_path == the fresh
-        candidate (content was just created there)."""
+    async def test_no_existing_doc_uses_computed_path(self):
+        """First sync (no existing document): storage_path == the freshly
+        computed hierarchical path."""
         bs = _make_blob_storage()
         bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
         bs._build_hierarchical_storage_path = AsyncMock(
@@ -2093,18 +2051,15 @@ class TestGetActualContentPath:
         assert result is None
 
 
-class TestSaveReconciliationMetadataRelocation:
-    """save_reconciliation_metadata's existing-doc branch must mirror apply()'s
-    relocation logic for CONTENT: relocate metadata (create at the new
-    location) when the metadata doc's ACTUAL current path is hierarchical
-    and differs from where it should be, instead of always overriding in
-    place at the doc's existing stored path."""
+class TestSaveReconciliationMetadataBufferOverride:
+    """save_reconciliation_metadata always buffer-overrides existing metadata
+    documents by document ID, regardless of path. Only new metadata documents
+    are created at the hierarchical path."""
 
     @pytest.mark.asyncio
-    async def test_relocates_when_actual_path_diverges_from_effective_path(self):
-        """Metadata doc's real current path is hierarchical and different
-        from effective_path -> must recreate at effective_path via
-        _create_metadata_document, and must NOT override in place."""
+    async def test_existing_metadata_always_buffer_overrides(self):
+        """Existing metadata doc is always updated in place via buffer
+        override, regardless of where the blob currently lives."""
         gp = AsyncMock()
         gp.get_document = AsyncMock(
             return_value={"record_metadata_doc_id": "meta-doc-existing"}
@@ -2112,40 +2067,6 @@ class TestSaveReconciliationMetadataRelocation:
         gp.batch_upsert_nodes = AsyncMock(return_value=True)
         bs = _make_blob_storage(graph_provider=gp)
 
-        # Actual current path is hierarchical and diverges from effective_path.
-        bs._get_current_document_path = AsyncMock(
-            return_value="org-1/PipesHub/records/conn-1/OldGroup/meta.json"
-        )
-        bs._create_metadata_document = AsyncMock(return_value="meta-doc-new")
-        bs._update_metadata_buffer = AsyncMock(return_value=("meta-doc-existing", 50))
-
-        result = await bs.save_reconciliation_metadata(
-            "org-1", "rec-1", "vr-1", {"hash_to_block_ids": {}},
-            document_path="records/conn-1/NewGroup/meta.json",
-        )
-
-        assert result == "meta-doc-new"
-        bs._create_metadata_document.assert_awaited_once_with(
-            "org-1", "rec-1", "vr-1", {"hash_to_block_ids": {}},
-            "records/conn-1/NewGroup/meta.json",
-        )
-        bs._update_metadata_buffer.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_overrides_in_place_when_actual_path_matches_effective_path(self):
-        """Metadata doc's real current path already matches effective_path
-        -> existing override-in-place behavior is preserved."""
-        gp = AsyncMock()
-        gp.get_document = AsyncMock(
-            return_value={"record_metadata_doc_id": "meta-doc-existing"}
-        )
-        gp.batch_upsert_nodes = AsyncMock(return_value=True)
-        bs = _make_blob_storage(graph_provider=gp)
-
-        # Actual current path is hierarchical but MATCHES effective_path.
-        bs._get_current_document_path = AsyncMock(
-            return_value="org-1/PipesHub/records/conn-1/NewGroup/meta.json"
-        )
         bs._create_metadata_document = AsyncMock(return_value="meta-doc-new")
         bs._update_metadata_buffer = AsyncMock(return_value=("meta-doc-existing", 50))
 
@@ -2159,6 +2080,31 @@ class TestSaveReconciliationMetadataRelocation:
             "org-1", "meta-doc-existing", {"hash_to_block_ids": {}}, "vr-1",
         )
         bs._create_metadata_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_buffer_failure_falls_back_to_create(self):
+        """When buffer override fails for existing metadata, falls back to
+        creating a new document at the effective path."""
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(
+            return_value={"record_metadata_doc_id": "meta-doc-existing"}
+        )
+        gp.batch_upsert_nodes = AsyncMock(return_value=True)
+        bs = _make_blob_storage(graph_provider=gp)
+
+        bs._update_metadata_buffer = AsyncMock(side_effect=Exception("buffer 404"))
+        bs._create_metadata_document = AsyncMock(return_value="meta-doc-new")
+
+        result = await bs.save_reconciliation_metadata(
+            "org-1", "rec-1", "vr-1", {"hash_to_block_ids": {}},
+            document_path="records/conn-1/NewGroup/meta.json",
+        )
+
+        assert result == "meta-doc-new"
+        bs._create_metadata_document.assert_awaited_once_with(
+            "org-1", "rec-1", "vr-1", {"hash_to_block_ids": {}},
+            "records/conn-1/NewGroup/meta.json",
+        )
 
 
 class TestGetCurrentDocumentPathLogging:

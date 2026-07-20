@@ -296,9 +296,6 @@ class BlobStorage(Transformer):
         if total_size is None or total_size == 0:
             raise Exception("Could not determine file size for parallel download")
 
-        self.logger.debug("⏱️ File size check completed in %.0fms: %.2f MB",
-                        size_check_duration_ms, total_size / (1024 * 1024))
-
         # Calculate chunk ranges
         chunk_size_bytes = chunk_size_mb * 1024 * 1024
         chunks = []
@@ -516,10 +513,7 @@ class BlobStorage(Transformer):
     async def get_actual_content_path(self, org_id: str, virtual_record_id: str) -> str | None:
         """Return a record's content document's ACTUAL current stored path,
         or None if no content document exists yet for this vrid (or it can't
-        be determined). Used by callers that need to save reconciliation
-        metadata at content's real current location rather than guessing --
-        see apply()'s actual_storage_path tracking below for why this
-        matters."""
+        be determined)."""
         if not self.graph_provider:
             return None
         try:
@@ -532,9 +526,10 @@ class BlobStorage(Transformer):
             return None
         if not existing_lookup or not existing_lookup.get("record_doc_id"):
             return None
-        existing_doc_id = existing_lookup["record_doc_id"]
-        current_path = await self._get_current_document_path(org_id, existing_doc_id)
-        return self._strip_org_prefix(org_id, current_path) if current_path else None
+        raw_path = await self._get_current_document_path(
+            org_id, existing_lookup["record_doc_id"]
+        )
+        return self._strip_org_prefix(org_id, raw_path) if raw_path else None
 
     async def apply(self, ctx: TransformContext) -> TransformContext:
         record = ctx.record
@@ -562,75 +557,29 @@ class BlobStorage(Transformer):
                 )
                 existing_lookup = None
 
-        # Tracks the path content ACTUALLY ends up at, which may differ from
-        # the freshly-computed `storage_path` candidate above when the
-        # "override in place" branch runs -- metadata's own path must be
-        # derived from this, not from `storage_path`, or it silently drifts
-        # out of sync with content's real location and gets excluded from
-        # every future move-tree operation.
         actual_storage_path = storage_path
 
         if existing_lookup and existing_lookup.get("record_doc_id"):
             existing_doc_id = existing_lookup["record_doc_id"]
-            # Whether to relocate is decided by the record's ACTUAL current
-            # documentPath, not by whether a hierarchical path happens to be
-            # computable right now -- nearly every record has a
-            # connector_id, so recomputing fresh would treat almost every
-            # legacy flat record as eligible for migration on every reindex,
-            # which is exactly the unwanted behavior this check exists to
-            # stop. Unknown/unreachable current path defaults to "flat" (the
-            # safe choice: don't move something we can't verify).
-            current_path = await self._get_current_document_path(org_id, existing_doc_id)
-            relative_current = (
-                self._strip_org_prefix(org_id, current_path) if current_path else None
+            self.logger.info(
+                "📄 Overriding buffer in place for vrid %s (doc_id=%s)",
+                virtual_record_id, existing_doc_id
             )
-            currently_flat = (
-                relative_current == f"records/{virtual_record_id}"
-                if relative_current
-                else True
-            )
-
-            if not currently_flat and relative_current != storage_path:
-                # Hierarchical and the path changed — recreate at the updated location.
-                self.logger.info(
-                    "📄 Doc %s for vrid %s moved (%s -> %s), recreating at new location",
-                    existing_doc_id, virtual_record_id, relative_current, storage_path
+            try:
+                document_id, file_size_bytes = await self.update_record_buffer(
+                    org_id, existing_doc_id, record_dict, virtual_record_id
+                )
+                raw_path = await self._get_current_document_path(org_id, existing_doc_id)
+                if raw_path:
+                    actual_storage_path = self._strip_org_prefix(org_id, raw_path)
+            except Exception as e:
+                self.logger.warning(
+                    "⚠️ Failed to update buffer for doc %s, falling back to new upload: %s",
+                    existing_doc_id, str(e)
                 )
                 document_id, file_size_bytes = await self.save_record_to_storage(
                     org_id, record_id, virtual_record_id, record_dict, document_path=storage_path
                 )
-            else:
-                # Flat, unknown, or hierarchical-but-unchanged — override the
-                # buffer in place. Recreating here would orphan the existing
-                # Mongo doc + blob on every reindex.
-                self.logger.info(
-                    "📄 Overriding buffer in place for vrid %s (doc_id=%s, path=%s)",
-                    virtual_record_id, existing_doc_id, relative_current
-                )
-                try:
-                    document_id, file_size_bytes = await self.update_record_buffer(
-                        org_id, existing_doc_id, record_dict, virtual_record_id
-                    )
-                    # Content stayed at its real current location, not at the
-                    # freshly-computed candidate. When that real location is
-                    # unknown (relative_current is None), do NOT assume it's
-                    # storage_path -- that's an active lie about where content
-                    # is. save_reconciliation_metadata has its own safety net
-                    # for a None document_path, so leaving this unknown is
-                    # safe and correct.
-                    actual_storage_path = relative_current
-                except Exception as e:
-                    self.logger.warning(
-                        "⚠️ Failed to update buffer for doc %s, falling back to new upload: %s",
-                        existing_doc_id, str(e)
-                    )
-                    document_id, file_size_bytes = await self.save_record_to_storage(
-                        org_id, record_id, virtual_record_id, record_dict, document_path=storage_path
-                    )
-                    # The fallback recreated content at storage_path, not
-                    # relative_current -- actual_storage_path already
-                    # defaults to storage_path above, so no reassignment
-                    # needed here.
         else:
             self.logger.info(
                 "📄 No existing storage doc for vrid %s, creating new document at path: %s",
@@ -641,7 +590,9 @@ class BlobStorage(Transformer):
             )
 
         if document_id and self.graph_provider:
-            await self.store_virtual_record_mapping(virtual_record_id, document_id, file_size_bytes)
+            await self.store_virtual_record_mapping(
+                virtual_record_id, document_id, file_size_bytes,
+            )
 
         ctx.settings["storage_path"] = actual_storage_path
         ctx.record = record
@@ -1230,7 +1181,6 @@ class BlobStorage(Transformer):
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 
-            # Create a unique key for the mapping using both IDs
             mapping_key = virtual_record_id
 
             mapping_document = {
@@ -1241,7 +1191,6 @@ class BlobStorage(Transformer):
                 "updatedAt": get_epoch_timestamp_in_ms()
             }
 
-            # Add file size if provided
             if file_size_bytes is not None:
                 mapping_document["fileSizeBytes"] = file_size_bytes
 
@@ -1399,39 +1348,19 @@ class BlobStorage(Transformer):
 
             metadata_document_id = None
             if existing_metadata_doc_id:
-                # Mirror apply()'s content-relocation decision logic for
-                # metadata: only override in place when the doc's ACTUAL
-                # current path is flat/unknown/unchanged; otherwise recreate
-                # at the correct new location so metadata doesn't drift from
-                # content's real location.
-                current_path = await self._get_current_document_path(org_id, existing_metadata_doc_id)
-                relative_current = (
-                    self._strip_org_prefix(org_id, current_path) if current_path else None
-                )
-                currently_flat = (
-                    relative_current == f"records/{virtual_record_id}"
-                    if relative_current
-                    else True
-                )
-
-                if not currently_flat and relative_current != effective_path:
+                try:
+                    doc_id, _ = await self._update_metadata_buffer(
+                        org_id, existing_metadata_doc_id, metadata_dict, virtual_record_id
+                    )
+                    metadata_document_id = doc_id
+                except Exception as e:
+                    self.logger.warning(
+                        "⚠️ Failed to update metadata buffer for doc %s; creating replacement: %s",
+                        existing_metadata_doc_id, str(e),
+                    )
                     metadata_document_id = await self._create_metadata_document(
                         org_id, record_id, virtual_record_id, metadata_dict, effective_path
                     )
-                else:
-                    try:
-                        doc_id, _ = await self._update_metadata_buffer(
-                            org_id, existing_metadata_doc_id, metadata_dict, virtual_record_id
-                        )
-                        metadata_document_id = doc_id
-                    except Exception as e:
-                        self.logger.warning(
-                            "⚠️ Failed to update metadata buffer for doc %s; creating replacement: %s",
-                            existing_metadata_doc_id, str(e),
-                        )
-                        metadata_document_id = await self._create_metadata_document(
-                            org_id, record_id, virtual_record_id, metadata_dict, effective_path
-                        )
             else:
                 metadata_document_id = await self._create_metadata_document(
                     org_id, record_id, virtual_record_id, metadata_dict, effective_path
@@ -1569,7 +1498,7 @@ class BlobStorage(Transformer):
                     if not signed_url:
                         raise Exception("No signed URL in response for metadata document")
 
-                    await self._upload_to_signed_url(session, signed_url, upload_data)
+                    await self._upload_to_signed_url(session, signed_url, metadata_dict)
 
                     self.logger.info("✅ Created metadata document: %s", document_id)
                     return document_id
