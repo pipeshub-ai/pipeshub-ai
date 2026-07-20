@@ -5789,8 +5789,14 @@ class TestBuildRecordRelationsInfo:
             ],
         })
         assert "* Related records:" in text
-        assert "ATTACHMENT | Record ID: rec-1 | Name: screenshot.png" in text
-        assert "CHILD | Record ID: rec-2 | Name: [PST-9-1] Subtask" in text
+        # Grouped by label: each label a single heading, records listed underneath.
+        assert "ATTACHMENT:" in text
+        assert "CHILD:" in text
+        assert "- Record ID: rec-1 | Name: screenshot.png" in text
+        assert "- Record ID: rec-2 | Name: [PST-9-1] Subtask" in text
+        # Label heading appears once, not inline on every row.
+        assert text.count("ATTACHMENT") == 1
+        assert text.count("CHILD") == 1
 
     def test_renders_rich_context_metadata_when_present(self):
         context = (
@@ -5836,7 +5842,22 @@ class TestBuildRecordRelationsInfo:
             ],
         })
         assert "CHILD:" in text
-        assert "ATTACHMENT | Record ID: rec-minimal | Name: Minimal" in text
+        assert "ATTACHMENT:" in text
+        assert "- Record ID: rec-minimal | Name: Minimal" in text
+
+    def test_groups_many_records_under_one_label_heading(self):
+        text = build_record_relations_info({
+            "record_relations": [
+                {"record_id": "rec-1", "record_name": "Sub 1", "labels": ["CHILD"]},
+                {"record_id": "rec-2", "record_name": "Sub 2", "labels": ["CHILD"]},
+                {"record_id": "rec-3", "record_name": "Sub 3", "labels": ["CHILD"]},
+            ],
+        })
+        # One CHILD heading, all three records listed underneath.
+        assert text.count("CHILD:") == 1
+        assert "- Record ID: rec-1 | Name: Sub 1" in text
+        assert "- Record ID: rec-2 | Name: Sub 2" in text
+        assert "- Record ID: rec-3 | Name: Sub 3" in text
 
 
 class TestToLlmLinkedContext:
