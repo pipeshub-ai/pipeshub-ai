@@ -306,12 +306,22 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
     const agentSrc = loadedAgent || undefined;
     if (agentSrc) {
-      const { nodes: n, edges: e } = reconstructFlowFromAgent(
-        { ...agentSrc, knowledge: (agentSrc.knowledge as unknown[]) || [] },
-        availableModels,
-        availableTools,
-        availableKnowledgeBases
-      );
+      let n: Node<FlowNodeData>[];
+      let e: Edge[];
+
+      const savedFlow = agentSrc.flowSchemaVersion === 2 && agentSrc.flow;
+      if (savedFlow && Array.isArray(savedFlow.nodes) && savedFlow.nodes.length > 0) {
+        n = savedFlow.nodes as Node<FlowNodeData>[];
+        e = (savedFlow.edges ?? []) as Edge[];
+      } else {
+        ({ nodes: n, edges: e } = reconstructFlowFromAgent(
+          { ...agentSrc, knowledge: (agentSrc.knowledge as unknown[]) || [] },
+          availableModels,
+          availableTools,
+          availableKnowledgeBases
+        ));
+      }
+
       setNodes(n);
       setEdges(e);
       setCleanSnapshot({

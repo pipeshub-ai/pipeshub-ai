@@ -165,6 +165,9 @@ export interface AgentDetail {
   can_delete: boolean;
   can_share: boolean;
   can_view: boolean;
+  /** Persisted visual flow layout (nodes + edges), present when saved with the builder. */
+  flow?: { nodes: unknown[]; edges: unknown[] };
+  flowSchemaVersion?: number;
 }
 
 // ── Builder catalog rows (tool list + KB) ───────────────────────
