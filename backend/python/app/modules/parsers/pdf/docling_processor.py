@@ -1,8 +1,6 @@
 import asyncio
 import logging
-import multiprocessing
 import os
-from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
 from io import BytesIO
 from typing import TYPE_CHECKING
@@ -24,6 +22,7 @@ if TYPE_CHECKING:
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlocksContainer
 from app.utils.converters.docling_doc_to_blocks import DoclingDocToBlocksConverter
+from app.utils.recoverable_process_pool import RecoverableProcessPool
 
 SUCCESS_STATUS = "success"
 
@@ -42,12 +41,14 @@ def _get_local_parse_worker_count() -> int:
 LOCAL_DOCLING_PARSE_WORKERS = _get_local_parse_worker_count()
 
 
-@lru_cache(maxsize=1)
-def _get_process_pool() -> ProcessPoolExecutor:
-    return ProcessPoolExecutor(
-        max_workers=LOCAL_DOCLING_PARSE_WORKERS,
-        mp_context=multiprocessing.get_context("spawn"),
-    )
+_parse_pool = RecoverableProcessPool(
+    max_workers=LOCAL_DOCLING_PARSE_WORKERS, name="docling-local-parse"
+)
+
+
+def shutdown_docling_parse_pool() -> bool:
+    """Shut down the local Docling parse process pool if it was initialised."""
+    return _parse_pool.shutdown()
 
 
 @lru_cache(maxsize=1)
@@ -88,12 +89,8 @@ class DoclingProcessor():
         raw_content = content.getvalue() if isinstance(content, BytesIO) else content
 
         if LOCAL_DOCLING_PARSE_WORKERS > 1:
-            loop = asyncio.get_running_loop()
-            serialized_doc = await loop.run_in_executor(
-                _get_process_pool(),
-                _parse_document_in_worker,
-                doc_name,
-                raw_content,
+            serialized_doc = await _parse_pool.run(
+                _parse_document_in_worker, doc_name, raw_content
             )
             return DoclingDocument.model_validate_json(serialized_doc)
 

@@ -2,15 +2,13 @@
 
 Targets uncovered lines:
 - 33-36: _get_local_parse_worker_count() with valid and invalid env var
-- 46: _get_process_pool()
+- _parse_pool / shutdown_docling_parse_pool()
 - 66-71: _parse_document_in_worker()
 - 87-94: multi-worker path in parse_document()
 """
 
 import logging
-import multiprocessing
 import os
-from concurrent.futures import ProcessPoolExecutor
 from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -103,29 +101,21 @@ class TestGetLocalParseWorkerCount:
 
 
 # ===========================================================================
-# _get_process_pool (line 46)
+# _parse_pool / shutdown_docling_parse_pool
 # ===========================================================================
-class TestGetProcessPool:
-    """Cover _get_process_pool function."""
+class TestParsePool:
+    """Cover the module-level parse pool wiring."""
 
-    def test_get_process_pool_returns_executor(self):
-        """_get_process_pool returns a ProcessPoolExecutor."""
-        with patch("app.modules.parsers.pdf.docling_processor.ProcessPoolExecutor") as MockExecutor, \
-             patch("app.modules.parsers.pdf.docling_processor.multiprocessing") as mock_mp:
-            mock_ctx = MagicMock()
-            mock_mp.get_context.return_value = mock_ctx
-            mock_pool = MagicMock(spec=ProcessPoolExecutor)
-            MockExecutor.return_value = mock_pool
+    def test_parse_pool_is_recoverable(self):
+        """The parse pool is a RecoverableProcessPool (survives worker crashes)."""
+        from app.modules.parsers.pdf.docling_processor import _parse_pool
+        from app.utils.recoverable_process_pool import RecoverableProcessPool
+        assert isinstance(_parse_pool, RecoverableProcessPool)
 
-            from app.modules.parsers.pdf.docling_processor import _get_process_pool
-            # Clear lru_cache so our mock takes effect
-            _get_process_pool.cache_clear()
-            result = _get_process_pool()
-
-            MockExecutor.assert_called_once()
-            assert result is mock_pool
-            # Clear again so it doesn't affect other tests
-            _get_process_pool.cache_clear()
+    def test_shutdown_returns_false_when_uninitialised(self):
+        """shutdown_docling_parse_pool is a no-op when the pool was never used."""
+        from app.modules.parsers.pdf.docling_processor import shutdown_docling_parse_pool
+        assert shutdown_docling_parse_pool() is False
 
 
 # ===========================================================================
@@ -199,29 +189,25 @@ class TestParseDocumentMultiWorker:
 
     @pytest.mark.asyncio
     async def test_multi_worker_path_with_bytes(self):
-        """When workers > 1, uses run_in_executor with process pool."""
+        """When workers > 1, runs the worker fn in the parse pool."""
         processor = _make_processor()
 
         mock_serialized = '{"text": "parsed"}'
         mock_doc = MagicMock()
 
         with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 2), \
-             patch("app.modules.parsers.pdf.docling_processor._get_process_pool") as mock_pool, \
-             patch("app.modules.parsers.pdf.docling_processor.DoclingDocument") as MockDoclingDoc, \
-             patch("asyncio.get_running_loop") as mock_get_loop:
+             patch("app.modules.parsers.pdf.docling_processor._parse_pool") as mock_pool, \
+             patch("app.modules.parsers.pdf.docling_processor.DoclingDocument") as MockDoclingDoc:
 
-            mock_loop = MagicMock()
-            mock_loop.run_in_executor = AsyncMock(return_value=mock_serialized)
-            mock_get_loop.return_value = mock_loop
+            mock_pool.run = AsyncMock(return_value=mock_serialized)
             MockDoclingDoc.model_validate_json.return_value = mock_doc
 
             result = await processor.parse_document("test.pdf", b"pdf bytes")
 
-            mock_loop.run_in_executor.assert_awaited_once()
-            call_args = mock_loop.run_in_executor.call_args
-            assert call_args[0][0] is mock_pool()  # pool argument
-            assert call_args[0][2] == "test.pdf"   # doc_name
-            assert call_args[0][3] == b"pdf bytes"  # content
+            mock_pool.run.assert_awaited_once()
+            call_args = mock_pool.run.call_args
+            assert call_args[0][1] == "test.pdf"   # doc_name
+            assert call_args[0][2] == b"pdf bytes"  # content
             MockDoclingDoc.model_validate_json.assert_called_once_with(mock_serialized)
             assert result is mock_doc
 
@@ -234,38 +220,30 @@ class TestParseDocumentMultiWorker:
         mock_doc = MagicMock()
 
         with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 2), \
-             patch("app.modules.parsers.pdf.docling_processor._get_process_pool") as mock_pool, \
-             patch("app.modules.parsers.pdf.docling_processor.DoclingDocument") as MockDoclingDoc, \
-             patch("asyncio.get_running_loop") as mock_get_loop:
+             patch("app.modules.parsers.pdf.docling_processor._parse_pool") as mock_pool, \
+             patch("app.modules.parsers.pdf.docling_processor.DoclingDocument") as MockDoclingDoc:
 
-            mock_loop = MagicMock()
-            mock_loop.run_in_executor = AsyncMock(return_value=mock_serialized)
-            mock_get_loop.return_value = mock_loop
+            mock_pool.run = AsyncMock(return_value=mock_serialized)
             MockDoclingDoc.model_validate_json.return_value = mock_doc
 
             content = BytesIO(b"bytesio content")
             result = await processor.parse_document("test.pdf", content)
 
-            mock_loop.run_in_executor.assert_awaited_once()
-            call_args = mock_loop.run_in_executor.call_args
+            mock_pool.run.assert_awaited_once()
+            call_args = mock_pool.run.call_args
             # The raw_content should be bytes extracted from BytesIO
-            assert call_args[0][3] == b"bytesio content"
+            assert call_args[0][2] == b"bytesio content"
             assert result is mock_doc
 
     @pytest.mark.asyncio
     async def test_multi_worker_path_executor_error_propagates(self):
-        """When run_in_executor raises, it propagates to caller."""
+        """When the pool run raises, it propagates to caller."""
         processor = _make_processor()
 
         with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 2), \
-             patch("app.modules.parsers.pdf.docling_processor._get_process_pool"), \
-             patch("asyncio.get_running_loop") as mock_get_loop:
+             patch("app.modules.parsers.pdf.docling_processor._parse_pool") as mock_pool:
 
-            mock_loop = MagicMock()
-            mock_loop.run_in_executor = AsyncMock(
-                side_effect=RuntimeError("Worker crashed")
-            )
-            mock_get_loop.return_value = mock_loop
+            mock_pool.run = AsyncMock(side_effect=RuntimeError("Worker crashed"))
 
             with pytest.raises(RuntimeError, match="Worker crashed"):
                 await processor.parse_document("test.pdf", b"content")
