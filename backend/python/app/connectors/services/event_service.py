@@ -570,8 +570,8 @@ class EventService:
             # work: a record that fails and flips back into the filter must not be
             # picked up again by this run. Taking it from anything other than the
             # final row would rewind the cursor and re-fetch the batch forever.
-            last_id = getattr(records[-1], "id", None)
-            if not isinstance(last_id, str) or not last_id:
+            last_id = records[-1].id
+            if not last_id:
                 self.logger.error(
                     f"Last record of batch has no usable id - stopping reindex for "
                     f"{connector_id}; cannot advance the cursor safely"
@@ -579,11 +579,7 @@ class EventService:
                 break
             after_key = last_id
 
-            record_ids_to_update = [
-                rid
-                for r in records
-                if (rid := getattr(r, "id", None)) and isinstance(rid, str)
-            ]
+            record_ids_to_update = [r.id for r in records if r.id]
             if record_ids_to_update:
                 await self.graph_provider.update_indexing_status_for_record_ids(
                     record_ids_to_update, ProgressStatus.NOT_STARTED.value
@@ -592,8 +588,7 @@ class EventService:
             # Connectors that publish via on_new_records drop AUTO_INDEX_OFF records;
             # reindex is an explicit user action, so clear that in memory too.
             for record in records:
-                if hasattr(record, 'indexing_status'):
-                    record.indexing_status = ProgressStatus.NOT_STARTED.value
+                record.indexing_status = ProgressStatus.NOT_STARTED.value
 
             await connector.reindex_records(records)
 

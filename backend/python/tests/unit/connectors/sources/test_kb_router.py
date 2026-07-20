@@ -55,6 +55,7 @@ def _mock_kb_service():
 def _mock_kafka_service():
     svc = AsyncMock()
     svc.publish_event = AsyncMock()
+    svc.publish_events = AsyncMock(return_value=[True, True])
     return svc
 
 
@@ -366,7 +367,10 @@ class TestDeleteKnowledgeBase:
             kb_service=kb_svc, kafka_service=kafka_svc
         )
         assert result.message == "Knowledge base deleted successfully"
-        assert kafka_svc.publish_event.await_count == 2
+        kafka_svc.publish_events.assert_awaited_once()
+        topic, events = kafka_svc.publish_events.await_args.args
+        assert topic == "test-topic"
+        assert len(events) == 2
 
     @pytest.mark.asyncio
     async def test_success_without_events(self):
@@ -402,7 +406,7 @@ class TestDeleteKnowledgeBase:
         from app.connectors.sources.localKB.api.kb_router import delete_knowledge_base
         kb_svc = _mock_kb_service()
         kafka_svc = _mock_kafka_service()
-        kafka_svc.publish_event.side_effect = Exception("kafka down")
+        kafka_svc.publish_events.side_effect = Exception("kafka down")
         kb_svc.delete_knowledge_base.return_value = {
             "success": True,
             "eventData": {
@@ -989,6 +993,7 @@ def _mock_kb_service():
 def _mock_kafka_service():
     svc = AsyncMock()
     svc.publish_event = AsyncMock()
+    svc.publish_events = AsyncMock(return_value=[True, True])
     return svc
 
 
@@ -1300,7 +1305,10 @@ class TestDeleteKnowledgeBaseCoverage:
             kb_service=kb_svc, kafka_service=kafka_svc
         )
         assert result.message == "Knowledge base deleted successfully"
-        assert kafka_svc.publish_event.await_count == 2
+        kafka_svc.publish_events.assert_awaited_once()
+        topic, events = kafka_svc.publish_events.await_args.args
+        assert topic == "test-topic"
+        assert len(events) == 2
 
     @pytest.mark.asyncio
     async def test_success_without_events(self):
@@ -1336,7 +1344,7 @@ class TestDeleteKnowledgeBaseCoverage:
         from app.connectors.sources.localKB.api.kb_router import delete_knowledge_base
         kb_svc = _mock_kb_service()
         kafka_svc = _mock_kafka_service()
-        kafka_svc.publish_event.side_effect = Exception("kafka down")
+        kafka_svc.publish_events.side_effect = Exception("kafka down")
         kb_svc.delete_knowledge_base.return_value = {
             "success": True,
             "eventData": {

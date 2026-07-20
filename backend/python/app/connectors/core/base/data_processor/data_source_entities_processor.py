@@ -1075,7 +1075,7 @@ class DataSourceEntitiesProcessor:
             publishable: list[Record] = []
             for record in records_to_publish:
                 # Skip publishing indexing events for records with AUTO_INDEX_OFF status
-                if hasattr(record, 'indexing_status') and record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
+                if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
                     self.logger.debug(
                         f"Skipping automatic indexing event for record {record.id} "
                         f"with AUTO_INDEX_OFF status"
@@ -1128,7 +1128,7 @@ class DataSourceEntitiesProcessor:
             processed_record = await self._process_record(record, [], tx_store)
 
             # Skip publishing update events for records with AUTO_INDEX_OFF status
-            if hasattr(processed_record, 'indexing_status') and processed_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
+            if processed_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
                 self.logger.debug(
                     f"Skipping content update event for record {record.id} with AUTO_INDEX_OFF status"
                 )
