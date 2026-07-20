@@ -192,13 +192,22 @@ class TestRecordGroupLookup:
 
 class TestRecordPathLookup:
     @pytest.mark.asyncio
-    async def test_record_path_success_splits_into_segments(self) -> None:
-        record = _Record(record_group_id=None, id="rec-1", record_name="ignored.txt")
+    async def test_record_path_splits_into_segments(self) -> None:
+        record = _Record(record_group_id=None, id="rec-1", record_name="Sub Folder")
         gp = _make_graph_provider()
-        gp.get_record_path = AsyncMock(return_value="/Folder A/Sub Folder/")
+        gp.get_record_path = AsyncMock(return_value="Folder A/Sub Folder")
         result = await build_hierarchical_storage_path(record, gp)
         assert result == "records/conn-1/Folder A/Sub Folder"
         gp.get_record_path.assert_awaited_once_with("rec-1")
+
+    @pytest.mark.asyncio
+    async def test_slash_in_record_name_preserved_as_single_segment(self) -> None:
+        """A record name containing '/' is kept whole and sanitized."""
+        record = _Record(record_group_id=None, id="rec-1", record_name="API v1/v2")
+        gp = _make_graph_provider()
+        gp.get_record_path = AsyncMock(return_value="Docs/API v1/v2")
+        result = await build_hierarchical_storage_path(record, gp)
+        assert result == "records/conn-1/Docs/API v1_v2"
 
     @pytest.mark.asyncio
     async def test_record_path_sanitizes_segments(self) -> None:
@@ -306,7 +315,7 @@ class TestTransactionForwarding:
     async def test_transaction_forwarded_to_record_path_lookup(self) -> None:
         record = _Record(record_group_id=None, id="rec-1", record_name="f.txt")
         gp = _make_graph_provider()
-        gp.get_record_path = AsyncMock(return_value="Folder")
+        gp.get_record_path = AsyncMock(return_value="Folder/f.txt")
         await build_hierarchical_storage_path(record, gp, transaction="tx-1")
         gp.get_record_path.assert_awaited_once_with("rec-1", transaction="tx-1")
 
@@ -315,7 +324,7 @@ class TestTransactionForwarding:
         record = _Record(record_group_id="grp-1", id="rec-1", record_name="f.txt")
         gp = _make_graph_provider()
         gp.get_record_group_by_id = AsyncMock(return_value={"groupName": "G"})
-        gp.get_record_path = AsyncMock(return_value="Folder")
+        gp.get_record_path = AsyncMock(return_value="Folder/f.txt")
         await build_hierarchical_storage_path(record, gp, transaction=None)
         gp.get_record_group_by_id.assert_awaited_once_with("grp-1")
         gp.get_record_path.assert_awaited_once_with("rec-1")
@@ -324,7 +333,7 @@ class TestTransactionForwarding:
 class TestFullHierarchy:
     @pytest.mark.asyncio
     async def test_group_and_record_path_both_present(self) -> None:
-        record = _Record(record_group_id="grp-1", id="rec-1", record_name="ignored.txt")
+        record = _Record(record_group_id="grp-1", id="rec-1", record_name="Reports")
         gp = _make_graph_provider()
         gp.get_record_group_by_id = AsyncMock(return_value={"groupName": "Finance"})
         gp.get_record_path = AsyncMock(return_value="Q1/Reports")
@@ -341,3 +350,89 @@ class TestFullHierarchy:
         gp = _make_graph_provider()
         result = await build_hierarchical_storage_path(record, gp)
         assert result == "records/conn-2/doc.pdf"
+
+
+class TestSlashInRecordName:
+    """Edge cases for record names that contain '/' characters."""
+
+    @pytest.mark.asyncio
+    async def test_slash_in_name_with_ancestors(self) -> None:
+        """'Docs/API v1/v2' with record_name='API v1/v2' -> ancestors=['Docs'], name sanitized."""
+        record = _Record(id="rec-1", record_name="API v1/v2")
+        gp = _make_graph_provider()
+        gp.get_record_path = AsyncMock(return_value="Docs/API v1/v2")
+        result = await build_hierarchical_storage_path(record, gp)
+        assert result == "records/conn-1/Docs/API v1_v2"
+
+    @pytest.mark.asyncio
+    async def test_slash_in_name_at_root(self) -> None:
+        """Record with '/' in name at root level (no ancestors)."""
+        record = _Record(id="rec-1", record_name="v1/v2")
+        gp = _make_graph_provider()
+        gp.get_record_path = AsyncMock(return_value="v1/v2")
+        result = await build_hierarchical_storage_path(record, gp)
+        assert result == "records/conn-1/v1_v2"
+
+    @pytest.mark.asyncio
+    async def test_slash_in_name_deep_hierarchy(self) -> None:
+        """Multiple ancestor levels + record name with '/'."""
+        record = _Record(id="rec-1", record_name="draft/final")
+        gp = _make_graph_provider()
+        gp.get_record_path = AsyncMock(return_value="Team/Projects/2024/draft/final")
+        result = await build_hierarchical_storage_path(record, gp)
+        assert result == "records/conn-1/Team/Projects/2024/draft_final"
+
+    @pytest.mark.asyncio
+    async def test_colon_in_name_replaced(self) -> None:
+        """':' is replaced with '_' for Windows local storage safety."""
+        record = _Record(id="rec-1", record_name="Meeting:Notes")
+        gp = _make_graph_provider()
+        gp.get_record_path = AsyncMock(return_value="Docs/Meeting:Notes")
+        result = await build_hierarchical_storage_path(record, gp)
+        assert result == "records/conn-1/Docs/Meeting_Notes"
+
+    @pytest.mark.asyncio
+    async def test_record_name_none_falls_to_plain_split(self) -> None:
+        """When record_name is None, path is split normally by '/'."""
+        record = _Record(id="rec-1", record_name=None)
+        gp = _make_graph_provider()
+        gp.get_record_path = AsyncMock(return_value="Docs/file.pdf")
+        result = await build_hierarchical_storage_path(record, gp)
+        assert result == "records/conn-1/Docs/file.pdf"
+
+    @pytest.mark.asyncio
+    async def test_record_name_mismatch_falls_to_plain_split(self) -> None:
+        """When record_name doesn't match path suffix, split normally."""
+        record = _Record(id="rec-1", record_name="renamed.pdf")
+        gp = _make_graph_provider()
+        gp.get_record_path = AsyncMock(return_value="Docs/original.pdf")
+        result = await build_hierarchical_storage_path(record, gp)
+        assert result == "records/conn-1/Docs/original.pdf"
+
+    @pytest.mark.asyncio
+    async def test_record_name_appears_in_ancestor_too(self) -> None:
+        """Record name appearing in both ancestor and leaf is handled correctly."""
+        record = _Record(id="rec-1", record_name="test")
+        gp = _make_graph_provider()
+        gp.get_record_path = AsyncMock(return_value="test/subdir/test")
+        result = await build_hierarchical_storage_path(record, gp)
+        assert result == "records/conn-1/test/subdir/test"
+
+    @pytest.mark.asyncio
+    async def test_multiple_slashes_in_name(self) -> None:
+        """Record name with multiple '/' characters."""
+        record = _Record(id="rec-1", record_name="a/b/c")
+        gp = _make_graph_provider()
+        gp.get_record_path = AsyncMock(return_value="Root/a/b/c")
+        result = await build_hierarchical_storage_path(record, gp)
+        assert result == "records/conn-1/Root/a_b_c"
+
+    @pytest.mark.asyncio
+    async def test_slash_in_name_with_group(self) -> None:
+        """Group + ancestors + record name with '/' all compose correctly."""
+        record = _Record(record_group_id="grp-1", id="rec-1", record_name="v1/v2")
+        gp = _make_graph_provider()
+        gp.get_record_group_by_id = AsyncMock(return_value={"groupName": "Space"})
+        gp.get_record_path = AsyncMock(return_value="Folder/v1/v2")
+        result = await build_hierarchical_storage_path(record, gp)
+        assert result == "records/conn-1/Space/Folder/v1_v2"

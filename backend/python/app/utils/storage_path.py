@@ -78,14 +78,20 @@ async def build_hierarchical_storage_path(
     record_path_added = False
     if record_id:
         try:
-            kwargs = {}
+            kwargs: dict = {}
             if transaction is not None:
                 kwargs["transaction"] = transaction
             record_path = await graph_provider.get_record_path(record_id, **kwargs)
             if record_path:
-                path_segments = [s for s in record_path.split("/") if s]
-                if path_segments:
-                    parts.extend(sanitize_path_segment(s) for s in path_segments)
+                record_name = getattr(record, "record_name", None)
+                if record_name and record_path.endswith(record_name):
+                    ancestor_part = record_path[: -len(record_name)].rstrip("/")
+                    ancestors = [s for s in ancestor_part.split("/") if s]
+                    segments = ancestors + [record_name]
+                else:
+                    segments = [s for s in record_path.split("/") if s]
+                if segments:
+                    parts.extend(sanitize_path_segment(s) for s in segments)
                     record_path_added = True
         except Exception as e:
             if logger:
