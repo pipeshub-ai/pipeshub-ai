@@ -107,6 +107,35 @@ class TestGetSharedNlp:
             if hasattr(_get_shared_nlp, "_cached_nlp"):
                 delattr(_get_shared_nlp, "_cached_nlp")
 
+    def test_missing_model_falls_back_to_blank_english(self):
+        """When en_core_web_sm is unavailable, fallback to spacy.blank('en')."""
+        with patch(
+            "app.modules.transformers.vectorstore.FastEmbedSparse"
+        ) as mock_sparse, patch(
+            "app.modules.transformers.vectorstore.spacy"
+        ) as mock_spacy:
+            mock_sparse.return_value = MagicMock()
+
+            from app.modules.transformers.vectorstore import _get_shared_nlp
+
+            if hasattr(_get_shared_nlp, "_cached_nlp"):
+                delattr(_get_shared_nlp, "_cached_nlp")
+
+            mock_nlp = MagicMock()
+            mock_nlp.pipe_names = []
+            mock_spacy.load.side_effect = OSError("missing model")
+            mock_spacy.blank.return_value = mock_nlp
+
+            result = _get_shared_nlp()
+
+            assert result is mock_nlp
+            mock_spacy.blank.assert_called_once_with("en")
+            mock_nlp.add_pipe.assert_any_call("sentencizer")
+            mock_nlp.add_pipe.assert_any_call("custom_sentence_boundary", after="sentencizer")
+
+            if hasattr(_get_shared_nlp, "_cached_nlp"):
+                delattr(_get_shared_nlp, "_cached_nlp")
+
     def test_cached_nlp_returned(self):
         """When _cached_nlp is set, it is returned directly."""
         from app.modules.transformers.vectorstore import _get_shared_nlp

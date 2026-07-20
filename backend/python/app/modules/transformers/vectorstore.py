@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import re
 import time
 import uuid
@@ -40,13 +41,24 @@ from app.utils.llm import get_llm_for_role
 # Module-level shared spaCy pipeline to avoid repeated heavy loads
 _SHARED_NLP: Optional[Language] = None
 
+_MODULE_LOGGER = logging.getLogger(__name__)
+
 def _get_shared_nlp() -> Language:
     # Avoid global mutation; attach cache to function attribute
     cached = getattr(_get_shared_nlp, "_cached_nlp", None)
     if cached is None:
-        nlp = spacy.load("en_core_web_sm")
+        try:
+            nlp = spacy.load("en_core_web_sm")
+        except OSError:
+            _MODULE_LOGGER.warning(
+                "spaCy model en_core_web_sm is not installed; falling back to a blank English pipeline"
+            )
+            nlp = spacy.blank("en")
         if "sentencizer" not in nlp.pipe_names:
-            nlp.add_pipe("sentencizer", before="parser")
+            if "parser" in nlp.pipe_names:
+                nlp.add_pipe("sentencizer", before="parser")
+            else:
+                nlp.add_pipe("sentencizer")
         if "custom_sentence_boundary" not in nlp.pipe_names:
             try:
                 nlp.add_pipe("custom_sentence_boundary", after="sentencizer")

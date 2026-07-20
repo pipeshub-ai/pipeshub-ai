@@ -18,7 +18,8 @@ FROM ${PYTHON_DEPS_IMAGE} AS python-deps
 WORKDIR /app/python
 COPY backend/python/pyproject.toml ./
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
-    uv pip install --system -e .
+    uv pip install --system -e . && \
+    python -m spacy download en_core_web_sm
 
 FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
 
