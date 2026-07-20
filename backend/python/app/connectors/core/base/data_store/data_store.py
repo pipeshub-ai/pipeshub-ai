@@ -41,6 +41,25 @@ class DataStoreProvider(ABC):
         pass
 
     @abstractmethod
+    async def compare_and_set_indexing_status(
+        self, record_ids: list[str], expected: str, new_status: str
+    ) -> list[str]:
+        """
+        Set each id's indexingStatus, but only while that id still holds `expected`.
+        Returns the ids actually updated; ids that held some other status are absent,
+        which is a normal outcome. Pass a one-element list for a single record.
+
+        Deliberately not transactional: it races the indexing service, so it must
+        read and write in one statement and be visible immediately.
+        """
+        pass
+
+    @abstractmethod
+    async def get_existing_record_keys(self, record_ids: list[str]) -> set[str]:
+        """Return the subset of record_ids that exist, in one round-trip."""
+        pass
+
+    @abstractmethod
     async def execute_in_transaction(self, func, *args, **kwargs) -> None:
         """
         Execute a function within a transaction.
@@ -99,8 +118,21 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_records_by_status(self, org_id: str, connector_id: str, status_filters: list[str], limit: Optional[int] = None, offset: int = 0) -> list[Record]:
-        """Get records by their indexing status with pagination support. Returns typed Record instances."""
+    async def get_records_by_status(
+        self,
+        org_id: str,
+        connector_id: str,
+        status_filters: list[str],
+        limit: Optional[int] = None,
+        offset: int = 0,
+        after_key: Optional[str] = None,
+        exclude_statuses: Optional[list[str]] = None,
+    ) -> list[Record]:
+        """Get records by their indexing status with pagination support. Returns typed Record instances.
+
+        Pass after_key for keyset pagination instead of offset when the result set
+        mutates while being iterated.
+        """
         pass
 
     @abstractmethod

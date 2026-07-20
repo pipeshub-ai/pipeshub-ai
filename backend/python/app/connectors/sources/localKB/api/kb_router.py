@@ -310,19 +310,18 @@ async def delete_knowledge_base(
         if event_data and event_data.get("payloads"):
             try:
                 timestamp = get_epoch_timestamp_in_ms()
-                successful_events = 0
-                for payload in event_data["payloads"]:
-                    try:
-                        event = {
+                results = await kafka_service.publish_events(
+                    event_data["topic"],
+                    [
+                        {
                             "eventType": event_data["eventType"],
                             "timestamp": timestamp,
-                            "payload": payload
+                            "payload": payload,
                         }
-                        await kafka_service.publish_event(event_data["topic"], event)
-                        successful_events += 1
-                    except Exception as e:
-                        logger.error(f"❌ Failed to publish deletion event: {str(e)}")
-                logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} deletion events")
+                        for payload in event_data["payloads"]
+                    ],
+                )
+                logger.info(f"✅ Published {sum(results)}/{len(event_data['payloads'])} deletion events")
             except Exception as e:
                 logger.error(f"❌ Failed to publish deletion events: {str(e)}")
 
@@ -460,19 +459,18 @@ async def upload_records_to_kb(
         if event_data and event_data.get("payloads"):
             try:
                 timestamp = get_epoch_timestamp_in_ms()
-                successful_events = 0
-                for payload in event_data["payloads"]:
-                    try:
-                        event = {
+                results = await kafka_service.publish_events(
+                    event_data["topic"],
+                    [
+                        {
                             "eventType": event_data["eventType"],
                             "timestamp": timestamp,
-                            "payload": payload
+                            "payload": payload,
                         }
-                        await kafka_service.publish_event(event_data["topic"], event)
-                        successful_events += 1
-                    except Exception as e:
-                        logger.error(f"❌ Failed to publish event for record: {str(e)}")
-                logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} upload events")
+                        for payload in event_data["payloads"]
+                    ],
+                )
+                logger.info(f"✅ Published {sum(results)}/{len(event_data['payloads'])} upload events")
             except Exception as e:
                 logger.error(f"❌ Failed to publish upload events: {str(e)}")
 
@@ -566,19 +564,18 @@ async def upload_records_to_folder(
         if event_data and event_data.get("payloads"):
             try:
                 timestamp = get_epoch_timestamp_in_ms()
-                successful_events = 0
-                for payload in event_data["payloads"]:
-                    try:
-                        event = {
+                results = await kafka_service.publish_events(
+                    event_data["topic"],
+                    [
+                        {
                             "eventType": event_data["eventType"],
                             "timestamp": timestamp,
-                            "payload": payload
+                            "payload": payload,
                         }
-                        await kafka_service.publish_event(event_data["topic"], event)
-                        successful_events += 1
-                    except Exception as e:
-                        logger.error(f"❌ Failed to publish event for record: {str(e)}")
-                logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} upload events")
+                        for payload in event_data["payloads"]
+                    ],
+                )
+                logger.info(f"✅ Published {sum(results)}/{len(event_data['payloads'])} upload events")
             except Exception as e:
                 logger.error(f"❌ Failed to publish upload events: {str(e)}")
 
@@ -863,19 +860,18 @@ async def delete_folder(
         if event_data and event_data.get("payloads"):
             try:
                 timestamp = get_epoch_timestamp_in_ms()
-                successful_events = 0
-                for payload in event_data["payloads"]:
-                    try:
-                        event = {
+                results = await kafka_service.publish_events(
+                    event_data["topic"],
+                    [
+                        {
                             "eventType": event_data["eventType"],
                             "timestamp": timestamp,
-                            "payload": payload
+                            "payload": payload,
                         }
-                        await kafka_service.publish_event(event_data["topic"], event)
-                        successful_events += 1
-                    except Exception as e:
-                        logger.error(f"❌ Failed to publish deletion event: {str(e)}")
-                logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} deletion events for folder {folder_id}")
+                        for payload in event_data["payloads"]
+                    ],
+                )
+                logger.info(f"✅ Published {sum(results)}/{len(event_data['payloads'])} deletion events for folder {folder_id}")
             except Exception as e:
                 logger.error(f"❌ Failed to publish folder deletion events: {str(e)}")
 

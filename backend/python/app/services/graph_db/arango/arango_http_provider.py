@@ -655,6 +655,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ["indexingStatus"],
         )
 
+        # COMPOUND: the reindex keyset walk filters on all three then sorts by _key.
+        # Without _key trailing the filter fields the SORT is not index-satisfied and
+        # every batch re-sorts the whole candidate set.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["orgId", "connectorId", "indexingStatus", "_key"],
+        )
+
         # SINGLE: origin (heavily used in permission WHERE clauses)
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
@@ -1322,16 +1330,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to validate record group reindex: %s", str(e))
             return {"success": False, "code": 500, "reason": str(e)}
 
-    async def reset_indexing_status_to_queued_for_record_ids(self, record_ids: list[str]) -> None:
+    async def update_indexing_status_for_record_ids(self, record_ids: list[str], status: str) -> None:
         """
-        Bulk-fetch records, then batch upsert indexingStatus=QUEUED where appropriate.
-        Skips missing ids, isInternal records, and docs already QUEUED.
+        Update indexingStatus to the specified status for each id (deduplicated).
+        Skips missing ids and isInternal records.
+        
+        Args:
+            record_ids: List of record IDs to update
+            status: Target status (e.g., ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value)
         """
         unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
         if not unique_ids:
             return
         coll = CollectionNames.RECORDS.value
-        skip_status = frozenset({ProgressStatus.QUEUED.value})
         try:
             query = """
             FOR doc IN @@collection
@@ -1351,14 +1362,80 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     continue
                 if record.get("isInternal"):
                     continue
-                if record.get("indexingStatus") in skip_status:
-                    continue
-                to_upsert.append({"_key": rid, "indexingStatus": ProgressStatus.QUEUED.value})
+                to_upsert.append({"_key": rid, "indexingStatus": status})
 
             if to_upsert:
                 await self.batch_upsert_nodes(to_upsert, coll)
+                self.logger.debug("✅ Updated %s record(s) indexing status to %s", len(to_upsert), status)
         except Exception as e:
-            self.logger.error("❌ Failed bulk reset records to QUEUED: %s", str(e))
+            self.logger.error("❌ Failed to update records to %s: %s", status, str(e))
+
+    async def compare_and_set_indexing_status(
+        self,
+        record_ids: list[str],
+        expected: str,
+        new_status: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """
+        Set indexingStatus to new_status on each id, but only while that id still
+        holds expected. One round-trip. Returns the ids actually updated; ids that
+        held some other status were left alone, which is a normal outcome.
+        """
+        unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
+        if not unique_ids:
+            return []
+        coll = CollectionNames.RECORDS.value
+        try:
+            # FILTER + UPDATE in one statement; a read-then-write would let the
+            # indexing service advance a record in between and get clobbered.
+            query = """
+            FOR doc IN @@collection
+                FILTER doc._key IN @keys AND doc.indexingStatus == @expected
+                UPDATE doc WITH { indexingStatus: @new_status } IN @@collection
+                RETURN NEW._key
+            """
+            bind_vars = {
+                "@collection": coll,
+                "keys": unique_ids,
+                "expected": expected,
+                "new_status": new_status,
+            }
+            updated = await self.http_client.execute_aql(query, bind_vars, transaction)
+            updated_keys = [k for k in (updated or []) if isinstance(k, str)]
+            self.logger.debug(
+                "✅ %s/%s record(s) swapped %s -> %s",
+                len(updated_keys), len(unique_ids), expected, new_status,
+            )
+            return updated_keys
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed compare-and-set (%s -> %s): %s",
+                expected, new_status, str(e),
+            )
+            return []
+
+    async def get_existing_record_keys(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> set[str]:
+        """Return the subset of record_ids that exist, in one round-trip."""
+        unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
+        if not unique_ids:
+            return set()
+        try:
+            query = """
+            FOR doc IN @@collection
+                FILTER doc._key IN @keys
+                RETURN doc._key
+            """
+            bind_vars = {"@collection": CollectionNames.RECORDS.value, "keys": unique_ids}
+            found = await self.http_client.execute_aql(query, bind_vars, transaction)
+            return {k for k in (found or []) if isinstance(k, str)}
+        except Exception as e:
+            self.logger.error("❌ Failed to check record existence: %s", str(e))
+            return set()
 
     async def _check_record_permissions(
         self,
@@ -1738,7 +1815,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "topic": "record-events",
                         "payload": payload
                     }
-                    await self.reset_indexing_status_to_queued_for_record_ids([record_id])
+                    # Clear any terminal status so the consumer's COMPLETED gate does not
+                    # skip the event. The router promotes this to QUEUED once it publishes.
+                    await self.update_indexing_status_for_record_ids(
+                        [record_id], ProgressStatus.NOT_STARTED.value
+                    )
                 else:
                     # For connector records, use sync-events with connector reindex event
                     connector_for_event = connector_name.replace(" ", "").lower() if connector_name else "unknown"
@@ -3239,17 +3320,26 @@ class ArangoHTTPProvider(IGraphDBProvider):
         status_filters: list[str] | None,
         limit: int | None = None,
         offset: int = 0,
-        transaction: str | None = None
+        transaction: str | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
     ) -> list[Record]:
         """
         Get records by their indexing status with pagination support.
         Returns properly typed Record instances (FileRecord, MailRecord, etc.)
         A None or empty status_filters returns records regardless of status.
+        Pass after_key for keyset pagination instead of offset.
         """
         try:
-            self.logger.debug(f"Retrieving records for connector {connector_id} with status filters: {status_filters}, limit: {limit}, offset: {offset}")
+            self.logger.debug(f"Retrieving records for connector {connector_id} with status filters: {status_filters}, limit: {limit}, offset: {offset}, after_key: {after_key}")
 
             limit_clause = "LIMIT @offset, @limit" if limit else ""
+            after_key_clause = "FILTER record._key > @after_key" if after_key else ""
+            exclude_clause = (
+                "FILTER record.indexingStatus NOT IN @exclude_statuses"
+                if exclude_statuses
+                else ""
+            )
 
             # Group record types by their collection
             from collections import defaultdict
@@ -3301,12 +3391,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER record.orgId == @org_id
                     AND record.connectorId == @connector_id
                     AND (@status_filters == null OR LENGTH(@status_filters) == 0 OR record.indexingStatus IN @status_filters)
-                SORT record._key
-                {limit_clause}
+                {exclude_clause}
+                {after_key_clause}
 
                 LET typeDoc = (
                     {type_doc_expr}
                 )
+                FILTER typeDoc != null
+
+                SORT record._key
+                {limit_clause}
 
                 RETURN {{
                     record: record,
@@ -3317,6 +3411,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if limit:
                 bind_vars["limit"] = limit
                 bind_vars["offset"] = offset
+            if after_key:
+                bind_vars["after_key"] = after_key
+            if exclude_statuses:
+                bind_vars["exclude_statuses"] = exclude_statuses
 
             results = await self.http_client.execute_aql(query, bind_vars, transaction)
 
@@ -3347,6 +3445,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         offset: int = 0,
         transaction: str | None = None,
         status_filters: list[str] | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
     ) -> list[Record]:
         """
         Get all records belonging to a record group up to a specified depth.
@@ -3390,6 +3490,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
             status_filter_aql = ""
             if status_filters:
                 status_filter_aql = "FILTER rec.indexingStatus IN @status_filters"
+
+            exclude_status_aql = ""
+            if exclude_statuses:
+                exclude_status_aql = "FILTER rec.indexingStatus NOT IN @exclude_statuses"
+
+            # Prune on the cursor inside the traversal, before the COLLECT dedup below.
+            after_key_aql = "FILTER rec._key > @after_key" if after_key else ""
 
             # Handle limit/offset for pagination
             # Note: ArangoDB LIMIT syntax requires both offset and count: LIMIT offset, count
@@ -3534,6 +3641,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER rec.isDeleted != true
                             FILTER rec.orgId == @org_id OR rec.orgId == null
                             {status_filter_aql}
+                            {exclude_status_aql}
+                            {after_key_aql}
                             RETURN rec
                     )
                         {record_permission_filter}
@@ -3571,6 +3680,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if limit is not None:
                 bind_vars["limit"] = limit
                 bind_vars["offset"] = offset
+            if after_key:
+                bind_vars["after_key"] = after_key
+            if exclude_statuses:
+                bind_vars["exclude_statuses"] = exclude_statuses
 
             results = await self.http_client.execute_aql(query, bind_vars, transaction)
 
@@ -3607,6 +3720,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         offset: int = 0,
         transaction: str | None = None,
         status_filters: list[str] | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
     ) -> list[Record]:
         """
         Get all child records of a parent record (folder) up to a specified depth.
@@ -3656,6 +3771,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if status_filters:
                 status_filter_aql = "FILTER v.indexingStatus IN @status_filters"
 
+            exclude_status_aql = ""
+            if exclude_statuses:
+                exclude_status_aql = "FILTER v.indexingStatus NOT IN @exclude_statuses"
+
+            after_key_aql = "FILTER v._key > @after_key" if after_key else ""
+
             bind_vars = {
                 "record_id": f"{CollectionNames.RECORDS.value}/{parent_record_id}",
                 "max_depth": max_depth,
@@ -3664,6 +3785,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
             if status_filters:
                 bind_vars["status_filters"] = status_filters
+            if exclude_statuses:
+                bind_vars["exclude_statuses"] = exclude_statuses
+            if after_key:
+                bind_vars["after_key"] = after_key
 
             if limit is not None:
                 bind_vars["limit"] = limit
@@ -3702,6 +3827,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER v.orgId == @org_id OR v.orgId == null
                 FILTER v.isDeleted != true
                 {status_filter_aql}
+                {exclude_status_aql}
+                {after_key_aql}
 
                 LET typedRecord = FIRST(
                     FOR rec IN 1..1 OUTBOUND v {CollectionNames.IS_OF_TYPE.value}
@@ -3720,7 +3847,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     depth: LENGTH(p.edges)
                 }}
 
-                SORT result.depth, result.record._key
+                // Sort on _key alone so it matches the @after_key cursor. A
+                // (depth, _key) order would let a deep record with a low key sort
+                // ahead of the cursor and be skipped for the rest of the run.
+                SORT result.record._key
                 {limit_clause}
                 RETURN result
             """
@@ -12632,12 +12762,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if skipped_count > 0:
             message += f". {skipped_count} file{'s' if skipped_count != 1 else ''} skipped (name already exists)"
         return message + "."
-
-
-
-
-
-
 
     async def _get_attachment_ids(
         self,

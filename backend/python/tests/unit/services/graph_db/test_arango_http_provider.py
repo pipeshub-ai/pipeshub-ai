@@ -4985,7 +4985,7 @@ class TestReindexSingleRecord:
             new_callable=AsyncMock,
             return_value={"permission": "OWNER", "source": "DIRECT"}
         ), patch.object(
-            connected_provider, "reset_indexing_status_to_queued_for_record_ids",
+            connected_provider, "update_indexing_status_for_record_ids",
             new_callable=AsyncMock
         ):
             result = await connected_provider.reindex_single_record(
@@ -5073,7 +5073,7 @@ class TestReindexSingleRecord:
             new_callable=AsyncMock,
             return_value="OWNER"
         ), patch.object(
-            connected_provider, "reset_indexing_status_to_queued_for_record_ids",
+            connected_provider, "update_indexing_status_for_record_ids",
             new_callable=AsyncMock
         ):
             result = await connected_provider.reindex_single_record("r1", "u1", "org1", depth=100)
@@ -5094,7 +5094,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 14
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 15
 
 
 # ---------------------------------------------------------------------------
@@ -7742,7 +7742,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 14
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 15
 
 
 # ---------------------------------------------------------------------------
@@ -11801,7 +11801,7 @@ class TestReindexSingleRecordSuccess:
             new_callable=AsyncMock,
             return_value={"permission": "OWNER", "source": "DIRECT"}
         ), patch.object(
-            connected_provider, "reset_indexing_status_to_queued_for_record_ids",
+            connected_provider, "update_indexing_status_for_record_ids",
             new_callable=AsyncMock
         ):
             result = await connected_provider.reindex_single_record("r1", "u1", "org1")
@@ -11829,7 +11829,7 @@ class TestReindexSingleRecordSuccess:
             connected_provider, "get_user_kb_permission",
             new_callable=AsyncMock, return_value="OWNER"
         ), patch.object(
-            connected_provider, "reset_indexing_status_to_queued_for_record_ids",
+            connected_provider, "update_indexing_status_for_record_ids",
             new_callable=AsyncMock
         ):
             result = await connected_provider.reindex_single_record("r1", "u1", "org1")
@@ -18416,7 +18416,7 @@ class TestReindexSingleRecordFullCoverage:
         ])
         connected_provider_fullcov.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         connected_provider_fullcov._check_record_permissions = AsyncMock(return_value={"permission": "OWNER"})
-        connected_provider_fullcov.reset_indexing_status_to_queued_for_record_ids = AsyncMock()
+        connected_provider_fullcov.update_indexing_status_for_record_ids = AsyncMock()
         result = await connected_provider_fullcov.reindex_single_record("r1", "u1", "org1", depth=-1)
         assert result["success"] is True
 
