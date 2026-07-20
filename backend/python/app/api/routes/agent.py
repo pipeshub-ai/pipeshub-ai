@@ -3833,6 +3833,8 @@ async def get_agents(
         for agent in agents:
             if not isinstance(agent, dict):
                 continue
+            agent.pop("flow", None)
+            agent.pop("flowSchemaVersion", None)
             agent["webSearch"] = _format_web_search_for_response(agent.get("webSearch"))
             creator_key = agent.get("createdBy")
             if creator_key and creator_key != "system":
