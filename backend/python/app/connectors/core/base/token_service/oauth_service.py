@@ -49,6 +49,20 @@ def _is_permanent_refresh_rejection(error_str: str) -> bool:
     return any(marker in lowered for marker in _PERMANENT_REFRESH_ERROR_MARKERS)
 
 
+_SERVICENOW_TOKEN_ENDPOINT = "oauth_token.do"
+
+# servicenow specific check for refresh token rejection
+def _is_servicenow_refresh_rejection(error_str: str, token_url: str) -> bool:
+    """ServiceNow reports a dead refresh token as 401 server_error/access_denied"""
+    if _SERVICENOW_TOKEN_ENDPOINT not in token_url.lower():
+        return False
+    status_match = re.search(r"status (\d+)", error_str)
+    if not status_match or int(status_match.group(1)) != HttpStatusCode.UNAUTHORIZED.value:
+        return False
+    lowered = error_str.lower()
+    return "server_error" in lowered and "access_denied" in lowered
+
+
 @dataclass
 class OAuthConfig:
     """OAuth Configuration"""
@@ -333,7 +347,7 @@ class OAuthProvider:
             token_data = await self._make_token_request(data)
         except Exception as e:
             error_str = str(e)
-            if _is_permanent_refresh_rejection(error_str):
+            if _is_permanent_refresh_rejection(error_str) or _is_servicenow_refresh_rejection(error_str, self.config.token_url):
                 raise RefreshTokenInvalidError(f"Refresh token rejected by provider — expired or revoked; re-authentication is required. {error_str}") from e
             status_match = re.search(r"status (\d+)", error_str)
             # Bare 403 stays transient — may be a WAF block, not a dead token

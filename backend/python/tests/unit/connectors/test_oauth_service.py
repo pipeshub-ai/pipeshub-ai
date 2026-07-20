@@ -995,6 +995,40 @@ class TestRefreshAccessToken:
             await provider.refresh_access_token("expired-refresh")
 
     @pytest.mark.asyncio
+    async def test_refresh_servicenow_401_raises_refresh_token_invalid_error(self, mock_config_service):
+        """ServiceNow signals a dead refresh token as 401 server_error/access_denied."""
+        config = _make_oauth_config(token_url="https://dev293310.service-now.com/oauth_token.do")
+        provider = OAuthProvider(config, mock_config_service, "/path")
+
+        provider._make_token_request = AsyncMock(
+            side_effect=Exception(
+                'OAuth token request failed with status 401. '
+                'Token URL: https://dev293310.service-now.com/oauth_token.do, '
+                'Response: {"error_description":"access_denied","error":"server_error"}'
+            )
+        )
+
+        with pytest.raises(RefreshTokenInvalidError):
+            await provider.refresh_access_token("expired-refresh")
+
+    @pytest.mark.asyncio
+    async def test_refresh_servicenow_body_on_other_provider_is_not_permanent(self, mock_config_service):
+        """server_error/access_denied is ambiguous outside ServiceNow and must stay transient."""
+        config = _make_oauth_config()
+        provider = OAuthProvider(config, mock_config_service, "/path")
+
+        provider._make_token_request = AsyncMock(
+            side_effect=Exception(
+                'OAuth token request failed with status 401. '
+                'Response: {"error_description":"access_denied","error":"server_error"}'
+            )
+        )
+
+        with pytest.raises(Exception) as exc_info:
+            await provider.refresh_access_token("expired-refresh")
+        assert not isinstance(exc_info.value, RefreshTokenInvalidError)
+
+    @pytest.mark.asyncio
     async def test_refresh_non_403_error_reraises(self, mock_config_service):
         """Non-403 errors are re-raised without modification."""
         config = _make_oauth_config()
