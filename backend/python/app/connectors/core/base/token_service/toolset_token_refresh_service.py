@@ -882,7 +882,7 @@ class ToolsetTokenRefreshService:
                 f"refresh token is invalid, re-authentication required"
             )
         except Exception as e:
-            self.logger.error(f"Error marking toolset {config_path} as unauthenticated: {e}", exc_info=True)
+            self.logger.error(f"Error marking toolset {config_path} as unauthenticated: {e}", exc_info=False)
 
         # Cancelling our own task here would raise CancelledError on the caller's next await.
         existing_task = self._refresh_tasks.get(config_path)

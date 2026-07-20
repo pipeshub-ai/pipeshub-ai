@@ -251,8 +251,7 @@ class EventService:
             document_key=connector_id,
             collection=CollectionNames.APPS.value,
         )
-        # Scheduled BullMQ crawls keep firing after auto-deactivation (e.g. dead
-        # refresh token); skip before attempting a connector init that cannot succeed.
+
         if connector_doc and (
             connector_doc.get(ConnectorStateKeys.IS_ACTIVE) is False
             or connector_doc.get(ConnectorStateKeys.IS_AUTHENTICATED) is False

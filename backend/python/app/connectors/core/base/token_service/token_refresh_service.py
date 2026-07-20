@@ -599,16 +599,17 @@ class TokenRefreshService:
             if not app_doc:
                 return False
 
-            org_id = None
-            edges = await self.graph_provider.get_edges_to_node(
-                f"{CollectionNames.APPS.value}/{connector_id}",
-                CollectionNames.ORG_APP_RELATION.value,
-            )
-            if edges:
-                org_id = edges[0].get("_from", "").split("/")[-1]
+            org_id = app_doc.get("orgId")
             if not org_id:
-                # The appDisabled consumer rejects payloads without orgId
-                return False
+                edges = await self.graph_provider.get_edges_to_node(
+                    f"{CollectionNames.APPS.value}/{connector_id}",
+                    CollectionNames.ORG_APP_RELATION.value,
+                )
+                if edges:
+                    from_val = edges[0].get("_from")
+                    if from_val: 
+                        org_id = from_val.split("/")[-1]
+
 
             message = {
                 "eventType": "appDisabled",

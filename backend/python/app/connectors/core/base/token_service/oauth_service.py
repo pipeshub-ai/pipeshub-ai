@@ -36,7 +36,6 @@ class RefreshTokenInvalidError(Exception):
 
 _PERMANENT_REFRESH_ERROR_MARKERS = (
     "invalid_grant",
-    "refresh_token is invalid",
     "refresh token is invalid",
     "refresh token has expired",
     "invalid_refresh_token",
