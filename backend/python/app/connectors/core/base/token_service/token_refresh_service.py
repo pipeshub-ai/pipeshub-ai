@@ -6,34 +6,56 @@ Handles automatic token refresh for OAuth connectors
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from typing import Optional
 
 from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import (
     AuthFieldKeys,
     ConnectorRequestKeys,
+    ConnectorStateKeys,
     OAuthConfigKeys,
 )
-from app.connectors.core.base.token_service.oauth_service import OAuthToken
+from app.connectors.core.base.token_service.oauth_service import (
+    OAuthToken,
+    RefreshTokenInvalidError,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.interface.producer import IMessagingProducer
 from app.utils.oauth_config import get_oauth_config
 from app.utils.request_context import (
     new_system_root,
     reset_context,
     set_context,
 )
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Consecutive rejections before deactivating; guards against provider blips
+MAX_REFRESH_TOKEN_INVALID_FAILURES = 3
 
 
 class TokenRefreshService:
     """Service for managing token refresh across all connectors"""
 
-    def __init__(self, configuration_service: ConfigurationService, graph_provider: IGraphDBProvider) -> None:
+    def __init__(
+        self,
+        configuration_service: ConfigurationService,
+        graph_provider: IGraphDBProvider,
+        messaging_producer: Optional[IMessagingProducer] = None,
+    ) -> None:
         self.configuration_service = configuration_service
         self.graph_provider = graph_provider
+        self._messaging_producer = messaging_producer
         self.logger = logging.getLogger("connector_service")
         self._refresh_tasks: dict[str, asyncio.Task] = {}
         self._running = False
         self._refresh_lock = asyncio.Lock()  # Prevent concurrent refresh operations
         self._processing_connectors: set = set()  # Track connectors currently being processed to prevent recursion
+        self._invalid_refresh_failures: dict[str, int] = {}  # Consecutive refresh-token rejections per connector
+
+    def set_messaging_producer(self, producer: IMessagingProducer) -> None:
+        """Attach the messaging producer; it starts after this service at app startup."""
+        self._messaging_producer = producer
 
     async def start(self, wait_for_initial_refresh: bool = True) -> None:
         """Start the token refresh service.
@@ -129,6 +151,10 @@ class TokenRefreshService:
         for conn in connectors:
             # Only process OAuth connectors
             if not self._is_oauth_connector(conn):
+                continue
+
+            # Explicit False only — legacy docs may lack the flag
+            if conn.get(ConnectorStateKeys.IS_AUTHENTICATED) is False:
                 continue
 
             connector_id = conn.get('_key')
@@ -499,9 +525,112 @@ class TokenRefreshService:
         refresh_token: str,
     ) -> OAuthToken:
         """Public entry point for an on-demand OAuth token refresh."""
-        return await self._perform_token_refresh(
-            connector_id, connector_type, refresh_token
+        try:
+            return await self._perform_token_refresh(
+                connector_id, connector_type, refresh_token
+            )
+        except RefreshTokenInvalidError as e:
+            await self._handle_refresh_token_invalid(connector_id, e)
+            raise
+
+    async def _handle_refresh_token_invalid(self, connector_id: str, error: Exception) -> None:
+        """Deactivate the connector after MAX_REFRESH_TOKEN_INVALID_FAILURES consecutive rejections."""
+        failures = self._invalid_refresh_failures.get(connector_id, 0) + 1
+        self._invalid_refresh_failures[connector_id] = failures
+
+        if failures < MAX_REFRESH_TOKEN_INVALID_FAILURES:
+            self.logger.error(
+                f"Refresh token rejected for connector {connector_id} "
+                f"(failure {failures}/{MAX_REFRESH_TOKEN_INVALID_FAILURES}): {error}",
+                exc_info=False,
+            )
+            return
+
+        self.logger.error(
+            f"Refresh token rejected for connector {connector_id} "
+            f"{failures} consecutive times, deactivating: {error}",
+            exc_info=False,
         )
+        self._invalid_refresh_failures.pop(connector_id, None)
+        await self._mark_connector_unauthenticated(connector_id)
+
+    async def _mark_connector_unauthenticated(self, connector_id: str) -> None:
+        """Flip the connector to unauthenticated so refresh scans stop until re-auth."""
+        # Cancelling our own task here would abort the state update below.
+        existing_task = self._refresh_tasks.get(connector_id)
+        if existing_task is not None and existing_task is not asyncio.current_task():
+            self._cancel_existing_refresh_task(connector_id)
+
+        updates = {
+            ConnectorStateKeys.IS_AUTHENTICATED: False,
+            ConnectorStateKeys.UPDATED_AT_TIMESTAMP: get_epoch_timestamp_in_ms(),
+        }
+
+        # The appDisabled consumer owns isActive and sync-stop; write directly if it can't be reached
+        if not await self._send_app_disabled_event(connector_id):
+            updates[ConnectorStateKeys.IS_ACTIVE] = False
+
+        try:
+            updated = await self.graph_provider.update_node(
+                connector_id,
+                CollectionNames.APPS.value,
+                updates,
+            )
+            if updated:
+                self.logger.warning(
+                    f"Marked connector {connector_id} as unauthenticated — "
+                    f"refresh token is invalid, re-authentication required"
+                )
+            else:
+                self.logger.error(f"Failed to mark connector {connector_id} as unauthenticated")
+        except Exception as e:
+            self.logger.error(
+                f"Error marking connector {connector_id} as unauthenticated: {e}", exc_info=False
+            )
+
+    async def _send_app_disabled_event(self, connector_id: str) -> bool:
+        """Publish the platform appDisabled event for this connector instance."""
+        producer = self._messaging_producer
+        if producer is None:
+            return False
+
+        try:
+            app_doc = await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+            if not app_doc:
+                return False
+
+            org_id = None
+            edges = await self.graph_provider.get_edges_to_node(
+                f"{CollectionNames.APPS.value}/{connector_id}",
+                CollectionNames.ORG_APP_RELATION.value,
+            )
+            if edges:
+                org_id = edges[0].get("_from", "").split("/")[-1]
+            if not org_id:
+                # The appDisabled consumer rejects payloads without orgId
+                return False
+
+            message = {
+                "eventType": "appDisabled",
+                "payload": {
+                    "orgId": org_id,
+                    "appGroup": app_doc.get("appGroup"),
+                    "apps": [str(app_doc.get("type", "")).replace(" ", "").lower()],
+                    "connectorId": connector_id,
+                    "scope": app_doc.get("scope"),
+                },
+                "timestamp": get_epoch_timestamp_in_ms(),
+            }
+            await producer.send_message(topic="entity-events", message=message)
+            self.logger.info(
+                f"Sent appDisabled event for connector {connector_id} (refresh token invalid)"
+            )
+            return True
+        except Exception as e:
+            self.logger.error(
+                f"Failed to send appDisabled event for connector {connector_id}: {e}", exc_info=False
+            )
+            return False
 
     async def _perform_token_refresh(
         self,
@@ -561,6 +690,8 @@ class TokenRefreshService:
             config['credentials'] = new_token.to_dict()
             await self.configuration_service.set_config(config_key, config)
             self.logger.info(f"💾 Updated stored credentials for connector {connector_id}")
+
+            self._invalid_refresh_failures.pop(connector_id, None)
 
             return new_token
         finally:
@@ -670,6 +801,8 @@ class TokenRefreshService:
         except RecursionError as e:
             # Special handling for recursion errors
             self.logger.error(f"❌ Recursion error refreshing token for connector {connector_id}: {e}", exc_info=False)
+        except RefreshTokenInvalidError as e:
+            await self._handle_refresh_token_invalid(connector_id, e)
         except Exception as e:
             # Use exc_info=False to avoid potential recursion in traceback formatting
             self.logger.error(f"❌ Error refreshing token for connector {connector_id}: {e}", exc_info=False)
@@ -723,6 +856,9 @@ class TokenRefreshService:
             new_token = await self._perform_token_refresh(connector_id, connector_type, token.refresh_token)
             self.logger.info(f"🔄 Immediate refresh completed for connector {connector_id}")
             return new_token, True
+        except RefreshTokenInvalidError as e:
+            await self._handle_refresh_token_invalid(connector_id, e)
+            return None, False
         except Exception as e:
             self.logger.error(f"❌ Failed to perform immediate refresh for connector {connector_id}: {e}", exc_info=False)
             return None, False

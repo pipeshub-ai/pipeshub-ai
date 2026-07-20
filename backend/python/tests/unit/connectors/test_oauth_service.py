@@ -11,6 +11,7 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
     OAuthToken,
+    RefreshTokenInvalidError,
 )
 
 # ---------------------------------------------------------------------------
@@ -949,6 +950,49 @@ class TestRefreshAccessToken:
 
         with pytest.raises(Exception, match="Token refresh failed with 403 Forbidden"):
             await provider.refresh_access_token("bad-refresh")
+
+    @pytest.mark.asyncio
+    async def test_refresh_atlassian_403_raises_refresh_token_invalid_error(self, mock_config_service):
+        """Atlassian-style 403 with refresh_token marker raises the typed error."""
+        config = _make_oauth_config()
+        provider = OAuthProvider(config, mock_config_service, "/path")
+
+        provider._make_token_request = AsyncMock(
+            side_effect=Exception(
+                'OAuth token request failed with status 403. '
+                'Response: {"error":"unauthorized_client","error_description":"refresh_token is invalid"}'
+            )
+        )
+
+        with pytest.raises(RefreshTokenInvalidError):
+            await provider.refresh_access_token("bad-refresh")
+
+    @pytest.mark.asyncio
+    async def test_refresh_bare_403_is_not_permanent(self, mock_config_service):
+        """403 without a token-specific marker (WAF block, misconfig) must not deactivate."""
+        config = _make_oauth_config()
+        provider = OAuthProvider(config, mock_config_service, "/path")
+
+        provider._make_token_request = AsyncMock(
+            side_effect=Exception("OAuth token request failed with status 403. Response: forbidden")
+        )
+
+        with pytest.raises(Exception, match="403 Forbidden") as exc_info:
+            await provider.refresh_access_token("bad-refresh")
+        assert not isinstance(exc_info.value, RefreshTokenInvalidError)
+
+    @pytest.mark.asyncio
+    async def test_refresh_invalid_grant_raises_refresh_token_invalid_error(self, mock_config_service):
+        """invalid_grant (Google/Microsoft style, status 400) raises the typed error."""
+        config = _make_oauth_config()
+        provider = OAuthProvider(config, mock_config_service, "/path")
+
+        provider._make_token_request = AsyncMock(
+            side_effect=Exception('OAuth token request failed with status 400. Response: {"error":"invalid_grant"}')
+        )
+
+        with pytest.raises(RefreshTokenInvalidError, match="invalid_grant"):
+            await provider.refresh_access_token("expired-refresh")
 
     @pytest.mark.asyncio
     async def test_refresh_non_403_error_reraises(self, mock_config_service):
