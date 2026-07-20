@@ -1,10 +1,16 @@
 """Odoo connector — syncs CRM leads/opportunities (crm.lead) as DealRecord
-entries, plus salespersons (res.users) as AppUsers.
+entries, sales teams (crm.team) as RecordGroups, plus salespersons
+(res.users) as AppUsers.
 
-Scope: CRM leads only, matching app/sources/external/odoo/odoo.py. Record
-groups (crm.team) and roles are intentionally not synced yet — Odoo CRM
-access doesn't map cleanly onto BookStack-style book/shelf/role hierarchies.
-Res.groups/ir.rule gate model-level access, not individual records, so
+Scope: CRM leads only, matching app/sources/external/odoo/odoo.py. Teams
+are synced purely as a structural container (every connector in this repo
+groups its records under something — Odoo is otherwise the only exception,
+and a flat/groupless connector's records don't show up at all in the "All
+Records" browse tree, since that view only queries RecordGroups under an
+app, not bare records). Team-based *sharing* (whole team can see the whole
+pipeline, not just its own leads) is a separate, still-open decision — see
+the permissions docstring below. Roles are intentionally not synced —
+res.groups/ir.rule gate model-level access, not individual records, so
 there's no clean "role -> these specific leads" list to sync the way
 BookStack's per-content role permissions work.
 
@@ -62,7 +68,14 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.odoo.apps import OdooApp
-from app.models.entities import AppUser, DealRecord, Record, RecordType
+from app.models.entities import (
+    AppUser,
+    DealRecord,
+    Record,
+    RecordGroup,
+    RecordGroupType,
+    RecordType,
+)
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.odoo.odoo import OdooClient, OdooClientBuilder
 from app.sources.external.odoo.odoo import CrmLead, OdooDataSource
@@ -280,8 +293,21 @@ class OdooConnector(BaseConnector):
         self.data_source = None
 
     async def run_sync(self) -> None:
+        await self._run_sync(full_sync=True)
+
+    async def run_incremental_sync(self) -> None:
+        await self._run_sync(full_sync=False)
+
+    async def _run_sync(self, full_sync: bool) -> None:
+        """full_sync=True (the "Full sync" button / first-ever sync) ignores
+        the stored write_date cursor and re-fetches every lead — this is
+        what actually lets a connector-code change (e.g. a new field we
+        now want to backfill) reach leads that haven't changed in Odoo
+        since they were first synced. full_sync=False only fetches what's
+        genuinely new since the last run."""
         try:
-            self.logger.info("Starting Odoo full sync.")
+            label = "full" if full_sync else "incremental"
+            self.logger.info(f"Starting Odoo {label} sync.")
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "odoo", self.connector_id, self.logger
@@ -290,23 +316,15 @@ class OdooConnector(BaseConnector):
             self.logger.info("Syncing users (salespersons)...")
             await self._sync_users()
 
-            self.logger.info("Syncing leads/opportunities...")
-            await self._sync_leads()
+            self.logger.info("Syncing sales teams...")
+            await self._sync_teams()
 
-            self.logger.info("Odoo full sync completed.")
+            self.logger.info("Syncing leads/opportunities...")
+            await self._sync_leads(full_sync=full_sync)
+
+            self.logger.info(f"Odoo {label} sync completed.")
         except Exception as ex:
             self.logger.error(f"Error in Odoo connector run: {ex}", exc_info=True)
-            raise
-
-    async def run_incremental_sync(self) -> None:
-        try:
-            self.logger.info("Starting Odoo incremental sync.")
-            # _sync_leads reads its own stored sync point and only fetches
-            # what changed since then — same call as a full sync.
-            await self.run_sync()
-            self.logger.info("Odoo incremental sync completed.")
-        except Exception as ex:
-            self.logger.error(f"Error in Odoo incremental sync: {ex}", exc_info=True)
             raise
 
     # -- Users -----------------------------------------------------------
@@ -345,20 +363,56 @@ class OdooConnector(BaseConnector):
         await self.data_entities_processor.on_new_app_users(app_users)
         self.logger.info(f"Synced {len(app_users)} Odoo users.")
 
+    # -- Teams -------------------------------------------------------------
+
+    @staticmethod
+    def _team_external_group_id(team_id: int) -> str:
+        return f"crm.team/{team_id}"
+
+    async def _sync_teams(self) -> None:
+        """Sales teams as RecordGroups — purely structural (lets leads show
+        up in the All Records browse tree, which only lists RecordGroups
+        under an app, never bare records). Small, rarely-changing list —
+        full refresh every run, no separate incremental cursor."""
+        if not self.data_source:
+            return
+
+        teams = await self.data_source.list_teams()
+        groups = [
+            (
+                RecordGroup(
+                    name=team.name or f"Team {team.id}",
+                    org_id=self.data_entities_processor.org_id,
+                    external_group_id=self._team_external_group_id(team.id),
+                    connector_name=Connectors.ODOO,
+                    connector_id=self.connector_id,
+                    group_type=RecordGroupType.PROJECT,
+                ),
+                [],
+            )
+            for team in teams
+        ]
+        if groups:
+            await self.data_entities_processor.on_new_record_groups(groups)
+        self.logger.info(f"Synced {len(groups)} Odoo sales teams.")
+
     # -- Leads -------------------------------------------------------------
 
     def _get_lead_type_filter(self) -> Optional[List[str]]:
         values = self.sync_filters.get_value("lead_type")
         return list(values) if values else None
 
-    async def _sync_leads(self) -> None:
+    async def _sync_leads(self, full_sync: bool = False) -> None:
         if not self.data_source:
             return
 
         current_timestamp = _odoo_now()
         sync_key = generate_record_sync_point_key("odoo", "leads", "global")
         sync_point = await self.record_sync_point.read_sync_point(sync_key)
-        last_write_date = sync_point.get("write_date")
+        # full_sync ignores the stored cursor entirely — this is what lets
+        # a connector-code change (e.g. a newly-added field) reach leads
+        # that haven't changed in Odoo since they were first synced.
+        last_write_date = None if full_sync else sync_point.get("write_date")
 
         allowed_types = self._get_lead_type_filter()
 
@@ -476,6 +530,9 @@ class OdooConnector(BaseConnector):
         owner_id = _m2o_id(lead.user_id)
         permissions = self._build_lead_permissions(owner_id, follower_partner_ids or [])
 
+        team_id = _m2o_id(lead.team_id)
+        external_group_id = self._team_external_group_id(team_id) if team_id is not None else None
+
         created_at_ms = _parse_odoo_datetime(lead.create_date) or get_epoch_timestamp_in_ms()
         updated_at_ms = _parse_odoo_datetime(lead.write_date) or get_epoch_timestamp_in_ms()
 
@@ -490,6 +547,8 @@ class OdooConnector(BaseConnector):
             org_id=self.data_entities_processor.org_id,
             version=0 if is_new else existing_record.version + 1,
             external_revision_id=lead.write_date,
+            external_record_group_id=external_group_id,
+            record_group_type=RecordGroupType.PROJECT if external_group_id else None,
             weburl=f"{self.base_url}/web#id={lead.id}&model=crm.lead&view_type=form",
             # Must match the media_type stream_record() actually streams —
             # the indexing pipeline gates on this before ever calling
