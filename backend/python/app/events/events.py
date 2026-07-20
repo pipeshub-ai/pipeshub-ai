@@ -285,7 +285,14 @@ class EventProcessor:
                     enrich_exc,
                 )
 
-        await self.sink_orchestrator.blob_storage.apply(ctx)
+        try:
+            await self.sink_orchestrator.blob_storage.apply(ctx)
+        except Exception as blob_exc:
+            self.logger.error(
+                "❌ Blob storage status update failed for record %s (document remains searchable): %s",
+                record_id,
+                blob_exc,
+            )
 
         yield PipelineEvent(
             event=IndexingEvent.INDEXING_COMPLETE,
