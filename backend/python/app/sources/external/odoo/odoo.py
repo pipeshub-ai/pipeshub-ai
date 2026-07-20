@@ -6,6 +6,9 @@ Scope: CRM only, read-only. Covers:
   - res.partner (contacts) / res.users (salespersons)
   - mail.activity (activities scheduled on a lead)
   - mail.message (chatter notes/log — read; add_note()/create_activity() still write, they're not lead mutation)
+  - mail.followers (who's subscribed to a record's chatter — the only
+    per-record "who can actually see this" signal Odoo exposes; res.groups
+    and ir.rule gate model-level access, not individual records)
   - utm.source / utm.medium / utm.campaign (marketing attribution)
   - ir.attachment (metadata + on-demand content fetch)
 
@@ -64,7 +67,7 @@ DEFAULT_PARTNER_FIELDS = [
     "is_company", "parent_id", "write_date",
 ]
 
-DEFAULT_USER_FIELDS = ["id", "name", "email", "login", "active"]
+DEFAULT_USER_FIELDS = ["id", "name", "email", "login", "active", "partner_id"]
 
 DEFAULT_ATTACHMENT_FIELDS = [
     "id", "name", "mimetype", "file_size", "res_id", "res_model",
@@ -174,6 +177,13 @@ class MailMessage(BaseModel):
     subtype_id: Any = None
 
 
+class MailFollower(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: int
+    res_id: int | None = None
+    partner_id: Any = None
+
+
 class UtmSource(BaseModel):
     model_config = ConfigDict(extra="allow")
     id: int
@@ -216,6 +226,7 @@ class ResUser(BaseModel):
     email: str | bool | None = None
     login: str = ""
     active: bool = True
+    partner_id: Any = None
 
 
 class Attachment(BaseModel):
@@ -415,6 +426,25 @@ class OdooDataSource:
         """Post a chatter note via the model's mail.thread mixin — the
         standard way to write a note in Odoo, works on any model."""
         return await self._client.execute_kw(res_model, "message_post", [[res_id]], {"body": body})
+
+    # -- Followers -------------------------------------------------------------
+
+    async def list_followers(
+        self, res_model: str, res_ids: list[int]
+    ) -> list[MailFollower]:
+        """Who's subscribed to a record's chatter — Odoo's only per-record
+        visibility signal (res.groups/ir.rule gate the model as a whole, not
+        individual records). Bulk by res_ids so a page of leads costs one
+        call, not one per lead."""
+        if not res_ids:
+            return []
+        rows = await self._client.execute_kw(
+            "mail.followers",
+            "search_read",
+            [[["res_model", "=", res_model], ["res_id", "in", res_ids]]],
+            {"fields": ["res_id", "partner_id"]},
+        )
+        return [MailFollower.model_validate(row) for row in rows]
 
     # -- Contacts ------------------------------------------------------------
 
