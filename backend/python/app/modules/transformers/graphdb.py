@@ -66,6 +66,7 @@ class GraphDBTransformer(Transformer):
         else:
             is_vlm_ocr_processed = getattr(record, 'is_vlm_ocr_processed', False)
             await self.save_metadata_to_db(record_id, metadata, virtual_record_id, is_vlm_ocr_processed)
+            record.extraction_status = ProgressStatus.COMPLETED.value
 
     # ------------------------------------------------------------------
     # helpers
@@ -358,7 +359,6 @@ class GraphDBTransformer(Transformer):
                         record_id,
                     )
                     return
-                record.extraction_status = ProgressStatus.COMPLETED.value
 
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
