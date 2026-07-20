@@ -65,6 +65,8 @@ from app.utils.fetch_slack_thread import (
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.fetch_url_tool import create_fetch_url_tool
 from app.utils.pattern_match import (
+    DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
+    cap_pattern_match_blocks,
     execute_pattern_match_pipeline,
     merge_pattern_match_results,
 )
@@ -156,6 +158,14 @@ def create_internal_search_tool(
         try:
             disable_semantic = os.getenv("DISABLE_SEMANTIC_SEARCH", "false").strip().lower() == "true"
             disable_pattern = os.getenv("DISABLE_STORAGE_PATTERN", "false").strip().lower() == "true"
+            # Always logged (not just when disabled) so the active search paths for
+            # this request are verifiable from logs alone, e.g.:
+            #   grep "search_internal_knowledge flags" | grep "semantic_search=off"
+            tool_logger.info(
+                "search_internal_knowledge flags: semantic_search=%s pattern_match=%s",
+                "off" if disable_semantic else "on",
+                "off" if disable_pattern else "on",
+            )
 
             parallel_tasks = []
             semantic_task_idx = None
@@ -242,6 +252,12 @@ def create_internal_search_tool(
                     logger_instance=tool_logger,
                 )
                 if pm_blocks:
+                    pm_blocks = cap_pattern_match_blocks(
+                        pm_blocks,
+                        budget=limit or DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
+                        virtual_record_id_to_result=virtual_record_id_to_result,
+                        logger_instance=tool_logger,
+                    )
                     flattened_results.extend(pm_blocks)
                     tool_logger.info("Tool path: pattern match added %d blocks", len(pm_blocks))
 
@@ -986,6 +1002,13 @@ async def _generate_internal_search_stream(
 
                 disable_semantic = os.getenv("DISABLE_SEMANTIC_SEARCH", "false").strip().lower() == "true"
                 disable_pattern = os.getenv("DISABLE_STORAGE_PATTERN", "false").strip().lower() == "true"
+                # Always logged (not just when disabled) so the active search paths for
+                # this request are verifiable from logs alone.
+                logger.info(
+                    "internal_search_stream flags: semantic_search=%s pattern_match=%s",
+                    "off" if disable_semantic else "on",
+                    "off" if disable_pattern else "on",
+                )
 
                 parallel_tasks = []
                 semantic_task_idx = None
@@ -1073,6 +1096,12 @@ async def _generate_internal_search_stream(
                         logger_instance=logger,
                     )
                     if pm_blocks:
+                        pm_blocks = cap_pattern_match_blocks(
+                            pm_blocks,
+                            budget=query_info.limit or DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
+                            virtual_record_id_to_result=virtual_record_id_to_result,
+                            logger_instance=logger,
+                        )
                         final_results.extend(pm_blocks)
                         logger.info("Standard path: pattern match added %d blocks", len(pm_blocks))
 

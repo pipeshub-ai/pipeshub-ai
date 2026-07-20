@@ -20,6 +20,7 @@ from app.agents.actions.storage_search.storage_search import (
     is_local_storage,
 )
 from app.utils.pattern_match import (
+    cap_pattern_match_blocks,
     merge_pattern_match_results,
     run_pattern_match,
 )
@@ -278,47 +279,13 @@ class Retrieval:
                 )
 
                 # PM gets its own budget, distributed proportionally across records
-                if len(pm_blocks) > adjusted_limit:
-                    pm_by_record: dict[str, list[dict]] = {}
-                    for block in pm_blocks:
-                        vrid = block.get("virtual_record_id", "")
-                        pm_by_record.setdefault(vrid, []).append(block)
-
-                    total_pm = len(pm_blocks)
-                    budget_left = adjusted_limit
-                    blocks_left = total_pm
-
-                    distributed: list[dict] = []
-                    for vrid, blocks in pm_by_record.items():
-                        if budget_left <= 0:
-                            break
-                        share = max(1, round(len(blocks) / blocks_left * budget_left))
-                        take = min(share, len(blocks), budget_left)
-                        distributed.extend(blocks[:take])
-                        budget_left -= take
-                        blocks_left -= len(blocks)
-
-                    logger_instance.info(
-                        "PM trimmed %d → %d (distributed across %d records)",
-                        len(pm_blocks), len(distributed), len(pm_by_record),
-                    )
-
-                    surviving_vrids = {
-                        b.get("virtual_record_id") for b in distributed
-                        if b.get("virtual_record_id")
-                    }
-                    orphan_vrids = set(pm_by_record.keys()) - surviving_vrids
-                    if orphan_vrids:
-                        for vrid in orphan_vrids:
-                            virtual_record_id_to_result.pop(vrid, None)
-                        logger_instance.info(
-                            "Pruned %d orphaned PM records from vrid map",
-                            len(orphan_vrids),
-                        )
-
-                    final_results.extend(distributed)
-                else:
-                    final_results.extend(pm_blocks)
+                pm_blocks = cap_pattern_match_blocks(
+                    pm_blocks,
+                    budget=adjusted_limit,
+                    virtual_record_id_to_result=virtual_record_id_to_result,
+                    logger_instance=logger_instance,
+                )
+                final_results.extend(pm_blocks)
 
             self._accumulate_state(
                 final_results=final_results,
@@ -425,6 +392,13 @@ class Retrieval:
         # DISABLE_STORAGE_PATTERN=1  → skip pattern match even if command given
         disable_semantic = os.getenv("DISABLE_SEMANTIC_SEARCH", "false").strip().lower() == "true"
         disable_pattern = os.getenv("DISABLE_STORAGE_PATTERN", "false").strip().lower() == "true"
+        # Always logged (not just when disabled) so the active search paths for
+        # this request are verifiable from logs alone.
+        logger_instance.info(
+            "retrieval tool flags: semantic_search=%s pattern_match=%s",
+            "off" if disable_semantic else "on",
+            "off" if disable_pattern else "on",
+        )
 
         pm_command_valid = False
         if command and not disable_pattern:

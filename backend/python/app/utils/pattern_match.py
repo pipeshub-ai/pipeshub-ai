@@ -19,6 +19,14 @@ from app.utils.chat_helpers import get_flattened_results, get_record
 
 _PATTERN_MATCH_TIMEOUT = 15
 _MAX_PATTERN_MATCH_RECORDS = 5
+# Fallback budget when a caller has no per-request limit to pass (e.g. limit=None).
+# Pattern match fans out per-connector (max_results=10 each) and then expands each
+# accessible record into one synthetic result per block, so an unbounded record
+# (hundreds of blocks) can otherwise blow up the LLM context on its own.
+# Matches retrieval.py's `_build_filter_groups` default `adjusted_limit` (50 for
+# the <=1 source case) and ChatQuery.limit's own default, so pattern-match and
+# semantic search share the same budget baseline across both call paths.
+DEFAULT_PATTERN_MATCH_BLOCK_BUDGET = 50
 
 _STOP_WORDS = frozenset({
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
@@ -278,6 +286,78 @@ async def merge_pattern_match_results(
         graph_provider=graph_provider,
     )
     return flattened if flattened else []
+
+
+def cap_pattern_match_blocks(
+    pm_blocks: list[dict],
+    *,
+    budget: int,
+    virtual_record_id_to_result: dict[str, dict],
+    logger_instance: logging.Logger,
+) -> list[dict]:
+    """Trim pattern-match blocks to `budget`, sharing the budget proportionally
+    across records so one large record can't starve the others out.
+
+    `merge_pattern_match_results` caps at the *record* level
+    (`_MAX_PATTERN_MATCH_RECORDS`), but a single accessible record can still
+    expand into an unbounded number of synthetic blocks (one per block in that
+    record). Callers must apply this cap before merging pattern-match blocks
+    into the results sent to the LLM, or a large record can overflow the
+    context window on its own.
+
+    Records that lose all their blocks in the trim are pruned from
+    `virtual_record_id_to_result` (mutated in place) so no orphaned metadata
+    lingers for a record that no longer appears in the results.
+    """
+    if len(pm_blocks) <= budget:
+        return pm_blocks
+
+    if budget <= 0:
+        for block in pm_blocks:
+            vrid = block.get("virtual_record_id")
+            if vrid:
+                virtual_record_id_to_result.pop(vrid, None)
+        logger_instance.info(
+            "Pattern match blocks capped %d -> 0 (budget=%d)", len(pm_blocks), budget,
+        )
+        return []
+
+    pm_by_record: dict[str, list[dict]] = {}
+    for block in pm_blocks:
+        vrid = block.get("virtual_record_id", "")
+        pm_by_record.setdefault(vrid, []).append(block)
+
+    total_pm = len(pm_blocks)
+    budget_left = budget
+    blocks_left = total_pm
+
+    distributed: list[dict] = []
+    for vrid, blocks in pm_by_record.items():
+        if budget_left <= 0:
+            break
+        share = max(1, round(len(blocks) / blocks_left * budget_left))
+        take = min(share, len(blocks), budget_left)
+        distributed.extend(blocks[:take])
+        budget_left -= take
+        blocks_left -= len(blocks)
+
+    logger_instance.info(
+        "Pattern match blocks capped %d -> %d (distributed across %d records, budget=%d)",
+        total_pm, len(distributed), len(pm_by_record), budget,
+    )
+
+    surviving_vrids = {
+        b.get("virtual_record_id") for b in distributed if b.get("virtual_record_id")
+    }
+    orphan_vrids = set(pm_by_record.keys()) - surviving_vrids
+    if orphan_vrids:
+        for vrid in orphan_vrids:
+            virtual_record_id_to_result.pop(vrid, None)
+        logger_instance.info(
+            "Pruned %d orphaned pattern-match records from vrid map", len(orphan_vrids),
+        )
+
+    return distributed
 
 
 # ---------------------------------------------------------------------------
