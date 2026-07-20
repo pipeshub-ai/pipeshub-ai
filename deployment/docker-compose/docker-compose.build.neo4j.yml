@@ -151,7 +151,7 @@ services:
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
 
       # Set to "true" to route indexing through the standalone parsing/extraction services
-      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-false}
+      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
       # Set to "true" to defer graph enrichment until after vectordb indexing completes
       - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 

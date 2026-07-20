@@ -146,7 +146,7 @@ class EventProcessor:
             self.parsing_client is not None
             and self.extraction_client is not None
             and self.sink_orchestrator is not None
-            and os.environ.get("USE_PARSING_SERVICE", "true").lower() == "true"
+            and os.environ.get("USE_PARSING_SERVICE", "false").lower() == "true"
         )
 
     async def _orchestrate_via_services(
