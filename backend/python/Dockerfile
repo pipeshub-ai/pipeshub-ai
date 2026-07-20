@@ -51,14 +51,15 @@ COPY --from=builder /build/dist/query_main ./
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
 # Install necessary runtime libraries
-# libreoffice: required for PPT/PPTX to PDF conversion (fixes #2710)
+# libreoffice-nogui: headless LibreOffice for PPT/PPTX to PDF conversion without
+#   GUI/X11 dependencies, significantly reducing image size (fixes #2710)
 # fonts-noto-cjk, fonts-wqy-zenhei, fonts-wqy-microhei: CJK font support for
-# correct rendering of Chinese/Japanese/Korean text in converted PDFs (fixes #2712)
-RUN apt-get update && apt-get install -y \
+#   correct rendering of Chinese/Japanese/Korean text in converted PDFs (fixes #2712)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     librocksdb-dev libgflags-dev libsnappy-dev zlib1g-dev \
     libbz2-dev liblz4-dev libzstd-dev libssl-dev ca-certificates libspatialindex-dev libpq5 \
     ffmpeg \
-    libreoffice \
+    libreoffice-nogui \
     fonts-noto-cjk \
     fonts-wqy-zenhei \
     fonts-wqy-microhei \
