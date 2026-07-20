@@ -395,6 +395,13 @@ const agentWebSearchSchema = z.union([
     }),
 ]);
 
+const agentFlowSchema = z.object({
+  nodes: z.array(z.record(z.unknown())),
+  edges: z.array(z.record(z.unknown())),
+});
+
+const agentOrchestrationModeSchema = z.enum(['single', 'linear', 'conditional']);
+
 const AGENT_MODEL_REQUIRED_MESSAGE =
   'At least one AI model is required. Please add a model to your configuration.';
 const AGENT_REASONING_MODEL_REQUIRED_MESSAGE =
@@ -443,6 +450,9 @@ const createAgentBodySchema = z
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
+    flow: agentFlowSchema.optional(),
+    flowSchemaVersion: z.number().int().min(1).optional(),
+    orchestrationMode: agentOrchestrationModeSchema.optional(),
   });
 
 export const createAgentSchema = z.object({
@@ -472,6 +482,9 @@ const updateAgentBodySchema = z
     toolsets: z.array(agentToolsetSchema).max(100).optional(),
     knowledge: z.array(agentKnowledgeSchema).max(100).optional(),
     webSearch: z.union([z.null(), agentWebSearchSchema]).optional(),
+    flow: agentFlowSchema.optional(),
+    flowSchemaVersion: z.number().int().min(1).optional(),
+    orchestrationMode: agentOrchestrationModeSchema.optional(),
   });
 
 export const updateAgentSchema = z.object({
