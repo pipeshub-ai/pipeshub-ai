@@ -110,6 +110,11 @@ const contextFieldsSchema = {
     })
     .optional(),
   tools: z.array(z.string().min(1)).optional(),
+  // AG-UI wire-protocol negotiation (see utils/agui.ts::resolveProtocol).
+  // Must be declared here or Zod's default unknown-key stripping removes it
+  // from req.body before the controller can read it — the validation
+  // middleware replaces req.body with the parsed result.
+  protocol: z.enum(['agui', 'legacy']).optional(),
 };
 
 /** Title body shared by conversation/agent rename endpoints. */
@@ -275,8 +280,14 @@ export const addMessageParamsSchema = z.object({
   body: addMessageBodySchema,
 });
 
-/** Agent follow-up stream chat modes (matches OpenAPI AgentAddMessageStreamRequest). */
-export const AGENT_CHAT_MODES = ['auto', 'quick', 'verification', 'deep'] as const;
+/**
+ * Agent follow-up stream chat modes (matches OpenAPI AgentAddMessageStreamRequest).
+ * `verification` is kept as a legacy alias for `planExecute` (see Python's
+ * `agents/agent_loop/modes.py::MODE_CATALOG`, which resolves both wire values
+ * to the same `PlanExecuteLoop` mode) so old clients/persisted state that
+ * still send `chatMode=verification` keep working unchanged.
+ */
+export const AGENT_CHAT_MODES = ['auto', 'quick', 'planExecute', 'verification', 'deep'] as const;
 
 const agentChatModeSchema = z
   .enum(AGENT_CHAT_MODES, {

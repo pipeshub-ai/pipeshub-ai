@@ -1396,7 +1396,7 @@ class TestBuildKnowledgeContextRoutingMatrix:
     _KB  = {"displayName": "Company Wiki", "type": "KB"}
     _KBI = {
         "displayName": "Private Docs", "type": "KB",
-        "connectorId": "kb-app-uuid-1",  # KB app UUID becomes collection_id
+        "connectorId": "kb-app-uuid-1",  # KB app UUID IS its connector_id
     }
     _J   = {"displayName": "Jira Project", "type": "jira",       "connectorId": "jira-cid-1"}
     _C   = {"displayName": "Confluence",   "type": "confluence", "connectorId": "conf-cid-2"}
@@ -1419,11 +1419,12 @@ class TestBuildKnowledgeContextRoutingMatrix:
         result = self._ctx([self._KB])
         assert "Company Wiki" in result
 
-    def test_kb_only_with_ids_shows_collection_ids(self) -> None:
-        """KB with connectorId: collection_ids must appear in routing block."""
+    def test_kb_only_with_ids_shows_connector_ids(self) -> None:
+        """KB with connectorId: connector_ids must appear in routing block —
+        the SAME parameter app connectors use."""
         result = self._ctx([self._KBI])
         assert "kb-app-uuid-1" in result
-        assert "collection_ids" in result
+        assert "connector_ids" in result
 
     def test_kb_only_routing_block_present(self) -> None:
         """KB-only: routing block (Reason then Route) IS generated."""
@@ -1431,7 +1432,7 @@ class TestBuildKnowledgeContextRoutingMatrix:
         assert "KB-only configuration" in result
 
     def test_kb_only_omit_guidance_when_no_ids(self) -> None:
-        """KB-only without collection_ids: guidance says to omit filter."""
+        """KB-only without connector_ids: guidance says to omit filter."""
         result = self._ctx([self._KB])
         assert "omit" in result.lower() or "KB-only" in result
 

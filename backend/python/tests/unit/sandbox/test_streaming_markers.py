@@ -17,6 +17,7 @@ def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
         return answer
 
     parts: list[str] = []
+    seen_artifacts: set[str] = set()
     for t in conversation_tasks:
         task_type = t.get("type", "")
 
@@ -29,7 +30,15 @@ def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
                 mime = art.get("mimeType", "application/octet-stream")
                 doc_id = art.get("documentId", "")
                 record_id = art.get("recordId", "")
-                parts.append(f"::artifact[{fname}]({url}){{{mime}|{doc_id}|{record_id}}}")
+                artifact_type = art.get("artifactType", "")
+                version = art.get("version", "")
+                dedupe_key = f"{record_id or doc_id or url}:{version}"
+                if dedupe_key in seen_artifacts:
+                    continue
+                seen_artifacts.add(dedupe_key)
+                parts.append(
+                    f"::artifact[{fname}]({url}){{{mime}|{doc_id}|{record_id}|{artifact_type}|{version}}}"
+                )
         else:
             url = t.get("signedUrl") or t.get("downloadUrl", "")
             if url:
@@ -93,7 +102,7 @@ class TestAppendTaskMarkersArtifacts:
             }],
         }]
         result = _append_task_markers("answer", tasks)
-        assert "::artifact[chart.png](https://s3/chart.png){image/png|doc123|rec456}" in result
+        assert "::artifact[chart.png](https://s3/chart.png){image/png|doc123|rec456||}" in result
 
     def test_multiple_artifacts(self):
         tasks = [{
@@ -173,7 +182,7 @@ class TestAppendTaskMarkersMixed:
             }],
         }]
         result = _append_task_markers("answer", tasks)
-        assert "::artifact[Download](https://s3/file){application/octet-stream||}" in result
+        assert "::artifact[Download](https://s3/file){application/octet-stream||||}" in result
 
     def test_separator_is_double_newline(self):
         tasks = [{"fileName": "f.csv", "signedUrl": "https://url"}]

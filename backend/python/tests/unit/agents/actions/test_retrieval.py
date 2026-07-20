@@ -88,16 +88,18 @@ class TestSearchInternalKnowledgeInput:
         inp = SearchInternalKnowledgeInput(query="test")
         assert inp.query == "test"
         assert inp.connector_ids is None
-        assert inp.collection_ids is None
 
     def test_custom_values(self):
         inp = SearchInternalKnowledgeInput(
             query="how to",
             connector_ids=["c1", "c2"],
-            collection_ids=["k1"],
         )
         assert inp.connector_ids == ["c1", "c2"]
-        assert inp.collection_ids == ["k1"]
+
+    def test_no_collection_ids_field(self):
+        """collection_ids has been unified into connector_ids — it no
+        longer exists as a separate parameter."""
+        assert "collection_ids" not in SearchInternalKnowledgeInput.model_fields
 
 
 # ============================================================================

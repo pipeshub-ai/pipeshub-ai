@@ -4,9 +4,8 @@ import logging
 import threading
 from typing import Coroutine, List, Optional, Tuple
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -155,9 +154,9 @@ class PostHog:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="posthog",
-        tool_name="capture_event",
-        description="Capture a new event in PostHog",
+        path="/tools/posthog/capture_event",
+        short_description="Capture a new event in PostHog",
+        description="Capture a new event in PostHog with event name, distinct ID, and optional properties/timestamp.",
         parameters=[
             ToolParameter(
                 name="event",
@@ -182,7 +181,7 @@ class PostHog:
                 required=False
             )
         ],
-        returns="JSON with event capture result"
+        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="create")],
     )
     def capture_event(
         self,
@@ -217,9 +216,9 @@ class PostHog:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="posthog",
-        tool_name="get_event",
-        description="Get a single event by ID from PostHog",
+        path="/tools/posthog/get_event",
+        short_description="Get a single event by ID from PostHog",
+        description="Get a single event by its ID from PostHog.",
         parameters=[
             ToolParameter(
                 name="event_id",
@@ -227,9 +226,9 @@ class PostHog:
                 description="Event ID"
             )
         ],
-        returns="JSON with event data"
+        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="read")],
     )
-    def get_event(self, event_id: str) -> Tuple[bool, str]:
+    async def get_event(self, event_id: str) -> Tuple[bool, str]:
         """Get a single event by ID from PostHog."""
         try:
             response = self._run_async(
@@ -241,9 +240,9 @@ class PostHog:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="posthog",
-        tool_name="get_person",
-        description="Get a person by ID from PostHog",
+        path="/tools/posthog/get_person",
+        short_description="Get a person by ID from PostHog",
+        description="Get a person by their ID from PostHog.",
         parameters=[
             ToolParameter(
                 name="person_id",
@@ -251,9 +250,9 @@ class PostHog:
                 description="Person ID"
             )
         ],
-        returns="JSON with person data"
+        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="read")],
     )
-    def get_person(self, person_id: str) -> Tuple[bool, str]:
+    async def get_person(self, person_id: str) -> Tuple[bool, str]:
         """Get a person by ID from PostHog."""
         try:
             response = self._run_async(
@@ -265,9 +264,9 @@ class PostHog:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="posthog",
-        tool_name="update_person",
-        description="Update person properties in PostHog",
+        path="/tools/posthog/update_person",
+        short_description="Update person properties in PostHog",
+        description="Update person properties in PostHog by person ID.",
         parameters=[
             ToolParameter(
                 name="person_id",
@@ -280,7 +279,7 @@ class PostHog:
                 description="JSON object with person properties to update"
             )
         ],
-        returns="JSON with person update result"
+        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="update")],
     )
     def update_person(
         self,
@@ -309,9 +308,9 @@ class PostHog:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="posthog",
-        tool_name="delete_person",
-        description="Delete a person from PostHog",
+        path="/tools/posthog/delete_person",
+        short_description="Delete a person from PostHog",
+        description="Delete a person from PostHog by their ID.",
         parameters=[
             ToolParameter(
                 name="person_id",
@@ -319,9 +318,9 @@ class PostHog:
                 description="Person ID to delete"
             )
         ],
-        returns="JSON with deletion result"
+        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="delete")],
     )
-    def delete_person(self, person_id: str) -> Tuple[bool, str]:
+    async def delete_person(self, person_id: str) -> Tuple[bool, str]:
         """Delete a person from PostHog."""
         try:
             response = self._run_async(
@@ -333,9 +332,9 @@ class PostHog:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="posthog",
-        tool_name="search_events",
-        description="Search for events in PostHog with filtering",
+        path="/tools/posthog/search_events",
+        short_description="Search for events in PostHog with filtering",
+        description="Search for events in PostHog with optional filtering by distinct ID, event name, properties, and pagination.",
         parameters=[
             ToolParameter(
                 name="after",
@@ -374,7 +373,7 @@ class PostHog:
                 required=False
             )
         ],
-        returns="JSON with search results"
+        tags=[Tag(key="category", value="analytics"), Tag(key="type", value="search")],
     )
     def search_events(
         self,

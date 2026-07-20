@@ -637,10 +637,10 @@
           "short": "Schnell",
           "hint": "Bevorzugt schnelle Antworten und weniger Verfeinerung. Gut für einfache Aufgaben."
         },
-        "verify": {
-          "label": "Prüfen",
-          "short": "Prüfen",
-          "hint": "Zusätzliche Prüfung von Fakten und Schritten vor der finalen Antwort."
+        "plan-execute": {
+          "label": "Planen & Ausführen",
+          "short": "Planen & Ausführen",
+          "hint": "Plant zuerst alle Schritte und führt sie dann in der Reihenfolge aus."
         },
         "deep": {
           "label": "Tief",

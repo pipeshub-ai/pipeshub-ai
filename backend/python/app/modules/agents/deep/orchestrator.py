@@ -17,8 +17,9 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.modules.agents.capability_summary import (
     build_capability_summary,
-    build_connector_routing_rules,
-    classify_knowledge_sources,
+)
+from app.modules.agents.context.knowledge_context import (
+    _build_orchestrator_knowledge_context as _build_knowledge_context,
 )
 from app.modules.agents.deep.context_manager import (
     build_conversation_messages,
@@ -452,88 +453,6 @@ def _normalize_tasks(
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
-
-def _build_knowledge_context(state: DeepAgentState, log: logging.Logger) -> str:
-    """Build knowledge context for the orchestrator prompt.
-
-    Uses shared `classify_knowledge_sources` and `build_connector_routing_rules`
-    from capability_summary so the routing logic is maintained in one place.
-    """
-    has_knowledge = state.get("has_knowledge", False)
-    has_tools = bool(state.get("tools"))
-
-    if not has_knowledge and not has_tools:
-        return (
-            "## No Knowledge or Tools Configured\n"
-            "This agent has no knowledge sources or service tools. "
-            "For org-specific questions, inform the user to configure "
-            "knowledge sources or toolsets."
-        )
-
-    if not has_knowledge:
-        return (
-            "## No Knowledge Base Configured\n"
-            "No knowledge sources are configured for this agent. "
-            "Do NOT create retrieval tasks — there is no knowledge base to search."
-        )
-
-    # ── Classify knowledge sources ─────────────────────────────────────────
-    agent_knowledge: list = state.get("agent_knowledge", []) or []
-    connector_configs = state.get("connector_configs") or {}
-    kb_sources, indexed_connectors = classify_knowledge_sources(
-        agent_knowledge,
-        connector_configs=connector_configs if isinstance(connector_configs, dict) else None,
-    )
-
-    knowledge_lines: list[str] = [
-        "## Knowledge Sources Available",
-        "",
-        "An internal knowledge base is configured with indexed documents.",
-        "",
-        "**MANDATORY RULE**: When a knowledge base is available you MUST set "
-        "`can_answer_directly: false` and create retrieval task(s) for ANY substantive "
-        "question — even if you believe you already know the answer. The knowledge base "
-        "contains organisation-specific content your training data does not have. "
-        "Only pure greetings and trivial arithmetic may skip retrieval. "
-        "**The routing rules below still apply**: when the user explicitly names a "
-        "specific connector (e.g. 'use Jira', 'from Confluence'), create retrieval "
-        "tasks for ONLY that connector — do NOT search other sources.",
-    ]
-
-    # ── Routing rules with identity block (handles KB-only, connector-only, mixed) ──
-    if kb_sources or indexed_connectors:
-        routing = build_connector_routing_rules(
-            indexed_connectors,
-            kb_sources=kb_sources,
-            call_format="orchestrator",
-        )
-        knowledge_lines.append(routing)
-    else:
-        # has_knowledge is True but no detailed sources resolved
-        knowledge_lines.append(
-            "\n- Internal knowledge sources are configured (details unavailable).\n"
-            "  Create a generic retrieval task that searches the knowledge base."
-        )
-
-    # ── Retrieval task quality guidance ────────────────────────────────────
-    knowledge_lines.append(
-        "\n**Write rich retrieval task descriptions** — the description IS the "
-        "instruction the retrieval sub-agent receives. Be specific:\n"
-        "  • State the topic and key aspects to cover.\n"
-        "  • Include the connector_id(s) and the connector label.\n"
-        "  • Ask for multiple search query phrasings (different angles / synonyms).\n"
-        "  Example: instead of \"Search KB for X\", write:\n"
-        "  \"Search the Confluence knowledge base (connector_id: abc-123) for X. "
-        "Cover features, pricing, integrations, and edition differences. "
-        "Use at least 3 search queries with different phrasings.\"\n\n"
-        "**Hybrid strategy**: When a service has BOTH indexed content AND live API tools "
-        "(e.g., Confluence pages are indexed AND accessible via the API), create BOTH "
-        "a retrieval task AND an API task in parallel — retrieval finds indexed snapshots "
-        "quickly; the API fetches the latest live version."
-    )
-
-    return "\n".join(knowledge_lines)
-
 
 def _build_tool_guidance(state: DeepAgentState) -> str:
     """

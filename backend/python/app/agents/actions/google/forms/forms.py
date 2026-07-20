@@ -3,9 +3,8 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -148,8 +147,9 @@ class GoogleForms:
             return asyncio.run(coro)
 
     @tool(
-        app_name="forms",
-        tool_name="create_form",
+        path="/tools/forms/create_form",
+        short_description="Create a new Google Form",
+        description="Create a new Google Form with an optional title and description.",
         parameters=[
             ToolParameter(
                 name="title",
@@ -163,7 +163,8 @@ class GoogleForms:
                 description="Description of the form",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="forms"), Tag(key="type", value="create")],
     )
     def create_form(
         self,
@@ -206,8 +207,9 @@ class GoogleForms:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="forms",
-        tool_name="get_form",
+        path="/tools/forms/get_form",
+        short_description="Get form details",
+        description="Get a Google Form's details including questions, settings, and metadata.",
         parameters=[
             ToolParameter(
                 name="form_id",
@@ -215,9 +217,10 @@ class GoogleForms:
                 description="The ID of the form to retrieve",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="forms"), Tag(key="type", value="read")],
     )
-    def get_form(self, form_id: str) -> tuple[bool, str]:
+    async def get_form(self, form_id: str) -> tuple[bool, str]:
         """Get a Google Form"""
         """
         Args:
@@ -237,8 +240,9 @@ class GoogleForms:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="forms",
-        tool_name="batch_update_form",
+        path="/tools/forms/batch_update_form",
+        short_description="Batch update a Google Form",
+        description="Apply batch updates to a Google Form such as adding questions or modifying settings.",
         parameters=[
             ToolParameter(
                 name="form_id",
@@ -253,7 +257,8 @@ class GoogleForms:
                 required=False,
                 items={"type": "object"}
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="forms"), Tag(key="type", value="update")],
     )
     def batch_update_form(
         self,
@@ -291,8 +296,9 @@ class GoogleForms:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="forms",
-        tool_name="get_form_responses",
+        path="/tools/forms/get_form_responses",
+        short_description="Get form responses",
+        description="Get responses submitted to a Google Form with optional filtering and pagination.",
         parameters=[
             ToolParameter(
                 name="form_id",
@@ -318,7 +324,8 @@ class GoogleForms:
                 description="Page token for pagination",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="forms"), Tag(key="type", value="read")],
     )
     def get_form_responses(
         self,
@@ -352,8 +359,9 @@ class GoogleForms:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="forms",
-        tool_name="get_form_response",
+        path="/tools/forms/get_form_response",
+        short_description="Get a specific form response",
+        description="Get a specific response from a Google Form by its response ID.",
         parameters=[
             ToolParameter(
                 name="form_id",
@@ -367,7 +375,8 @@ class GoogleForms:
                 description="The ID of the response",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="forms"), Tag(key="type", value="read")],
     )
     def get_form_response(
         self,
@@ -395,8 +404,9 @@ class GoogleForms:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="forms",
-        tool_name="set_publish_settings",
+        path="/tools/forms/set_publish_settings",
+        short_description="Set form publish settings",
+        description="Set publish settings for a Google Form to control access and visibility.",
         parameters=[
             ToolParameter(
                 name="form_id",
@@ -410,7 +420,8 @@ class GoogleForms:
                 description="Publish settings for the form",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="forms"), Tag(key="type", value="update")],
     )
     def set_publish_settings(
         self,
@@ -447,8 +458,9 @@ class GoogleForms:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="forms",
-        tool_name="create_watch",
+        path="/tools/forms/create_watch",
+        short_description="Create a watch for form responses",
+        description="Create a watch to receive notifications when new responses are submitted to a Google Form.",
         parameters=[
             ToolParameter(
                 name="form_id",
@@ -462,7 +474,8 @@ class GoogleForms:
                 description="Watch settings for the form",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="forms"), Tag(key="type", value="create")],
     )
     def create_watch(
         self,

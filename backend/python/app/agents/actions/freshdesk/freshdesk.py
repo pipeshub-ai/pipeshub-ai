@@ -4,9 +4,8 @@ import logging
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -162,9 +161,9 @@ class FreshDesk:
         })
 
     @tool(
-        app_name="freshdesk",
-        tool_name="create_ticket",
-        description="Create a new support ticket in FreshDesk",
+        path="/tools/freshdesk/create_ticket",
+        short_description="Create a new support ticket in FreshDesk",
+        description="Create a new support ticket in FreshDesk with subject, description, requester email, and optional fields.",
         parameters=[
             ToolParameter(
                 name="subject",
@@ -236,7 +235,7 @@ class FreshDesk:
                 required=False
             )
         ],
-        returns="JSON with created ticket details"
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="create")],
     )
     def create_ticket(
         self,
@@ -278,9 +277,9 @@ class FreshDesk:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="freshdesk",
-        tool_name="get_ticket",
-        description="Get details of a specific ticket",
+        path="/tools/freshdesk/get_ticket",
+        short_description="Get details of a specific ticket",
+        description="Get details of a specific ticket by its ID from FreshDesk.",
         parameters=[
             ToolParameter(
                 name="ticket_id",
@@ -288,9 +287,9 @@ class FreshDesk:
                 description="The ID of the ticket to retrieve (required)"
             )
         ],
-        returns="JSON with ticket details"
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read")],
     )
-    def get_ticket(self, ticket_id: int, include: Optional[str] = None) -> Tuple[bool, str]:
+    async def get_ticket(self, ticket_id: int, include: Optional[str] = None) -> Tuple[bool, str]:
         try:
             response = self._run_async(self.client.get_ticket(id=ticket_id, include=include))
             return self._handle_response(response, "Ticket retrieved successfully")
@@ -299,9 +298,9 @@ class FreshDesk:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="freshdesk",
-        tool_name="update_ticket",
-        description="Update an existing ticket",
+        path="/tools/freshdesk/update_ticket",
+        short_description="Update an existing ticket",
+        description="Update an existing FreshDesk ticket's subject, description, priority, status, or custom fields.",
         parameters=[
             ToolParameter(
                 name="ticket_id",
@@ -345,7 +344,7 @@ class FreshDesk:
                 required=False
             )
         ],
-        returns="JSON with updated ticket details"
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="update")],
     )
     def update_ticket(
         self,
@@ -378,9 +377,9 @@ class FreshDesk:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="freshdesk",
-        tool_name="delete_ticket",
-        description="Delete a ticket (permanently removes it)",
+        path="/tools/freshdesk/delete_ticket",
+        short_description="Delete a ticket",
+        description="Permanently delete a ticket from FreshDesk by its ID.",
         parameters=[
             ToolParameter(
                 name="ticket_id",
@@ -388,9 +387,9 @@ class FreshDesk:
                 description="The ID of the ticket to delete (required)"
             )
         ],
-        returns="JSON with deletion confirmation"
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="delete")],
     )
-    def delete_ticket(self, ticket_id: int) -> Tuple[bool, str]:
+    async def delete_ticket(self, ticket_id: int) -> Tuple[bool, str]:
         try:
             response = self._run_async(self.client.delete_ticket(id=ticket_id))
             return self._handle_response(response, "Ticket deleted successfully")
@@ -399,9 +398,9 @@ class FreshDesk:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="freshdesk",
-        tool_name="create_note",
-        description="Add a note to an existing ticket",
+        path="/tools/freshdesk/create_note",
+        short_description="Add a note to an existing ticket",
+        description="Add a note to an existing FreshDesk ticket, optionally marking it private or notifying specific emails.",
         parameters=[
             ToolParameter(
                 name="ticket_id",
@@ -426,7 +425,7 @@ class FreshDesk:
                 required=False
             )
         ],
-        returns="JSON with created note details"
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="create")],
     )
     def create_note(
         self,
@@ -453,9 +452,9 @@ class FreshDesk:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="freshdesk",
-        tool_name="create_reply",
-        description="Add a reply to an existing ticket",
+        path="/tools/freshdesk/create_reply",
+        short_description="Add a reply to an existing ticket",
+        description="Add a reply to an existing FreshDesk ticket with optional CC/BCC recipients.",
         parameters=[
             ToolParameter(
                 name="ticket_id",
@@ -480,7 +479,7 @@ class FreshDesk:
                 required=False
             )
         ],
-        returns="JSON with created reply details"
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="create")],
     )
     def create_reply(
         self,
@@ -507,9 +506,9 @@ class FreshDesk:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="freshdesk",
-        tool_name="create_agent",
-        description="Create a new agent in FreshDesk",
+        path="/tools/freshdesk/create_agent",
+        short_description="Create a new agent in FreshDesk",
+        description="Create a new agent in FreshDesk with name, email, and optional profile details.",
         parameters=[
             ToolParameter(
                 name="first_name",
@@ -546,7 +545,7 @@ class FreshDesk:
             ToolParameter(name="custom_fields", type=ParameterType.OBJECT, description="Custom field values", required=False),
             ToolParameter(name="workspace_ids", type=ParameterType.ARRAY, description="Workspace IDs (array of numbers)", required=False)
         ],
-        returns="JSON with created agent details"
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="create")],
     )
     def create_agent(
         self,
@@ -606,9 +605,9 @@ class FreshDesk:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="freshdesk",
-        tool_name="search_tickets",
-        description="Search for tickets with various filters",
+        path="/tools/freshdesk/search_tickets",
+        short_description="Search for tickets with various filters",
+        description="Search for FreshDesk tickets using a query string with optional pagination.",
         parameters=[
             ToolParameter(
                 name="query",
@@ -628,7 +627,7 @@ class FreshDesk:
                 required=False
             )
         ],
-        returns="JSON with search results"
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="search")],
     )
     def search_tickets(
         self,

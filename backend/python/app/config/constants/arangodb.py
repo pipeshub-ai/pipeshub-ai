@@ -243,6 +243,14 @@ class CollectionNames(Enum):
     AGENT_HAS_TOOLSET = "agentHasToolset"
     TOOLSET_HAS_TOOL = "toolsetHasTool"
 
+    # Agent Skills collections (agent_loop_lib SkillManager — GraphSkillStore)
+    AGENT_SKILLS = "agentSkills"
+    AGENT_SKILL_VERSIONS = "agentSkillVersions"
+    AGENT_SKILL_CANDIDATES = "agentSkillCandidates"
+
+    # Agent Skills Graph edge — skill-to-skill connectedness (related/requires/replaced_by)
+    AGENT_SKILL_RELATION = "agentSkillRelation"
+
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"
@@ -541,6 +549,16 @@ class RecordRelations(Enum):
     CAUSES = "CAUSES"
     RELATED = "RELATED"
     FOREIGN_KEY = "FOREIGN_KEY"
+    # An output artifact (chart, PDF, spreadsheet, ...) was produced by
+    # running a specific version of a CODE artifact. Auto-captured by the
+    # harness (`sandbox_bridge.py`'s POST_TOOL_USE hook) — never asserted
+    # by the model — carrying `sourceVersion`/`derivedVersion` custom
+    # properties (see `record_relations_schema`, which allows additional
+    # properties). Portable to Neo4j unchanged: it is just another
+    # `relationshipType` value on the existing RECORD_RELATION edge type
+    # (see `config/constants/neo4j.py`), no new edge collection or Neo4j
+    # relationship type required.
+    DERIVED_FROM = "DERIVED_FROM"
 
 
 class EntityRelations(Enum):

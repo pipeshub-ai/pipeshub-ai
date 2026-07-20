@@ -19,39 +19,76 @@ export function parseDownloadMarkers(content: string): {
   return { text: text.trimEnd(), tasks };
 }
 
+/** Fallback mime→artifact-type mapping for markers persisted before the
+ * marker format carried an explicit artifactType segment. Mirrors the
+ * backend's `MIME_TO_ARTIFACT_TYPE` (app/sandbox/artifact_upload.py). */
+function artifactTypeFromMime(mime: string): string {
+  if (mime.startsWith('image/')) return 'IMAGE';
+  if (mime === 'text/csv' || mime.includes('spreadsheetml') || mime === 'application/vnd.ms-excel')
+    return 'SPREADSHEET';
+  if (mime.includes('presentationml') || mime === 'application/vnd.ms-powerpoint')
+    return 'PRESENTATION';
+  if (
+    mime === 'application/pdf' ||
+    mime.includes('wordprocessingml') ||
+    mime === 'text/html' ||
+    mime === 'text/markdown'
+  )
+    return 'DOCUMENT';
+  if (mime === 'application/json') return 'DATA_FILE';
+  return 'OTHER';
+}
+
 /**
- * Parse `::artifact[fileName](downloadUrl){mime|documentId|recordId}` markers
- * from the assistant's final answer content. These are appended by the backend
- * when sandbox tools (coding / database) generate output files, and are the
- * persistent record of artifacts once SSE streaming ends.
+ * Parse `::artifact[fileName](downloadUrl){mime|documentId|recordId|artifactType|version}`
+ * markers from the assistant's final answer content (the last two segments are
+ * optional — older persisted markers only carry the first three). These are
+ * appended by the backend when sandbox tools (coding / database) generate
+ * output files, and are the persistent record of artifacts once SSE streaming
+ * ends.
  *
  * During streaming, artifacts are delivered via SSE `artifact` events; those
  * live in the slot's transient `artifacts` array. After completion, the saved
  * message content is the source of truth — parse the markers back into
  * `ChatArtifact` entries so the panel keeps rendering.
+ *
+ * Deduplicates by artifact identity: conversations persisted with repeated
+ * markers for the same artifact version (a model re-running the same code)
+ * render one card per artifact, not one per re-run.
  */
 export function parseArtifactMarkers(content: string): {
   text: string;
   artifacts: ChatArtifact[];
 } {
   const artifacts: ChatArtifact[] = [];
-  // Greedy on name/url, but braces are delimited; mime|docId|recordId may be empty segments.
+  const seen = new Set<string>();
+  // Greedy on name/url, but braces are delimited; meta segments may be empty.
   const regex = /::artifact\[([^\]]+)\]\(([^)]+)\)\{([^}]*)\}/g;
   const text = content.replace(regex, (_, fileName, url, meta) => {
-    const [mime = '', docId = '', recordId = ''] = String(meta).split('|');
+    const [mime = '', docId = '', recordId = '', rawType = '', rawVersion = ''] =
+      String(meta).split('|');
     const cleanName = String(fileName).trim() || 'artifact';
     const cleanUrl = String(url).trim();
     const cleanMime = mime.trim() || 'application/octet-stream';
     const cleanRecordId = recordId.trim();
     const cleanDocId = docId.trim();
+    const cleanType = rawType.trim();
+    const parsedVersion = Number.parseInt(rawVersion.trim(), 10);
+    const version = Number.isNaN(parsedVersion) ? undefined : parsedVersion;
+
+    const dedupeKey = `${cleanRecordId || cleanDocId || cleanUrl}:${version ?? ''}`;
+    if (seen.has(dedupeKey)) return '';
+    seen.add(dedupeKey);
+
     artifacts.push({
       id: cleanRecordId || cleanDocId || `artifact-${artifacts.length}-${cleanName}`,
       fileName: cleanName,
       mimeType: cleanMime,
       sizeBytes: 0,
       downloadUrl: cleanUrl,
-      artifactType: 'OTHER',
+      artifactType: cleanType || artifactTypeFromMime(cleanMime),
       recordId: cleanRecordId || undefined,
+      version,
     });
     return '';
   });

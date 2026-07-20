@@ -375,8 +375,8 @@ class TestBuildKnowledgeContext:
             "agent_knowledge": [],
             "connector_configs": {},
         }
-        with patch("app.modules.agents.deep.orchestrator.classify_knowledge_sources", return_value=([], [])):
-            with patch("app.modules.agents.deep.orchestrator.build_connector_routing_rules", return_value=""):
+        with patch("app.modules.agents.context.knowledge_context.classify_knowledge_sources", return_value=[]):
+            with patch("app.modules.agents.context.knowledge_context.build_connector_routing_rules", return_value=""):
                 result = _build_knowledge_context(state, log)
                 assert "Knowledge Sources Available" in result
                 assert "MANDATORY RULE" in result
@@ -388,11 +388,11 @@ class TestBuildKnowledgeContext:
             "connector_configs": {"c1": {"name": "Confluence"}},
         }
         with patch(
-            "app.modules.agents.deep.orchestrator.classify_knowledge_sources",
-            return_value=([], [{"connector_id": "c1", "name": "Confluence"}]),
+            "app.modules.agents.context.knowledge_context.classify_knowledge_sources",
+            return_value=[{"connector_id": "c1", "label": "Confluence", "type_key": "confluence", "source_type": "app"}],
         ):
             with patch(
-                "app.modules.agents.deep.orchestrator.build_connector_routing_rules",
+                "app.modules.agents.context.knowledge_context.build_connector_routing_rules",
                 return_value="Routing: search c1",
             ):
                 result = _build_knowledge_context(state, log)

@@ -5,10 +5,12 @@
  * hitting send, through the SSE event sequence, to the final rendered answer.
  *
  * All backend calls are intercepted with page.route() so no live server is
- * needed. The mock SSE body replicates the exact event sequence the real
- * backend emits:
+ * needed. The mock SSE body replicates the AG-UI event sequence the real
+ * backend emits now that `USE_AGUI_PROTOCOL` is the frontend default
+ * (see `chat/api.ts` and `agui-sse-builder.ts`):
  *
- *   connected → status → answer_chunk(s) → complete
+ *   CUSTOM(conversation_created) → TEXT_MESSAGE_START →
+ *   TEXT_MESSAGE_CONTENT(s) → TEXT_MESSAGE_END → RUN_FINISHED
  *
  * Endpoint conventions (from chat/api.ts):
  *   New chat    : POST /api/v1/conversations/stream
@@ -19,6 +21,7 @@
  */
 
 import { test, expect } from '../fixtures/base.fixture';
+import { buildAguiSseBody, buildAguiErrorSseBody, buildAguiPartialSseBody } from './agui-sse-builder';
 
 // ---------------------------------------------------------------------------
 // Mock data builders
@@ -59,96 +62,25 @@ const MOCK_CONVERSATIONS_EMPTY = {
 };
 
 /**
- * Build a minimal but fully valid SSE response body that the
- * app's streamSSERequest / ChatApi.streamMessage handler will parse correctly.
+ * Build a minimal but fully valid AG-UI SSE response body that the app's
+ * `createAGUIEventHandler` (see chat/agui-event-handler.ts) will parse
+ * correctly.
  *
- * Events:
- *  1. connected  — assigns conversationId; triggers URL sync in the page
- *  2. status     — shows "Searching…" indicator during streaming
- *  3. answer_chunk — accumulates into streamingContent
- *  4. complete   — finalises slot, loads historical messages
+ * Frames:
+ *  1. CUSTOM(conversation_created) — assigns conversationId; triggers URL sync
+ *  2. TEXT_MESSAGE_START/CONTENT/END — accumulates into streamingContent
+ *  3. RUN_FINISHED — finalises slot, loads historical messages
  */
 function buildSseBody(question: string, answer: string): string {
-  const events: string[] = [];
-
-  const push = (eventName: string, data: object) =>
-    events.push(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
-
-  push('connected', {
-    message: 'ok',
+  return buildAguiSseBody({
     conversationId: CONV_ID,
-    title: question.slice(0, 60),
+    userMessageId: MSG_USER_ID,
+    botMessageId: MSG_BOT_ID,
+    question,
+    answer,
+    modelInfo: MOCK_MODEL_INFO,
+    requestId: 'req-e2e-001',
   });
-
-  push('status', {
-    status: 'planning',
-    message: 'Searching knowledge base…',
-  });
-
-  push('answer_chunk', {
-    chunk: answer,
-    accumulated: answer,
-    citations: [],
-  });
-
-  // complete.conversation.messages must include both user + bot messages so
-  // that after loadHistoricalMessages() the answer remains visible in the list
-  push('complete', {
-    conversation: {
-      _id: CONV_ID,
-      userId: 'user-e2e',
-      orgId: 'org-e2e',
-      title: question.slice(0, 60),
-      initiator: 'main',
-      messages: [
-        {
-          _id: MSG_USER_ID,
-          messageType: 'user_query',
-          content: question,
-          contentFormat: 'MARKDOWN',
-          citations: [],
-          followUpQuestions: [],
-          referenceData: [],
-          modelInfo: MOCK_MODEL_INFO,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          feedback: [],
-        },
-        {
-          _id: MSG_BOT_ID,
-          messageType: 'bot_response',
-          content: answer,
-          contentFormat: 'MARKDOWN',
-          citations: [],
-          confidence: 'High',
-          followUpQuestions: [],
-          referenceData: [],
-          modelInfo: MOCK_MODEL_INFO,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          feedback: [],
-        },
-      ],
-      isShared: false,
-      isDeleted: false,
-      isArchived: false,
-      lastActivityAt: Date.now(),
-      status: 'active',
-      modelInfo: MOCK_MODEL_INFO,
-      sharedWith: [],
-      conversationErrors: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      __v: 0,
-    },
-    meta: {
-      requestId: 'req-e2e-001',
-      timestamp: new Date().toISOString(),
-      duration: 480,
-    },
-  });
-
-  return events.join('');
 }
 
 /**
@@ -233,17 +165,17 @@ test.describe('Chat — SSE streaming (mocked backend)', () => {
     await expect(page.locator(`text=${QUESTION}`).first()).toBeVisible({ timeout: 10_000 });
   });
 
-  // ── SSE event: connected → URL sync ────────────────────────────────────
+  // ── AG-UI frame: CUSTOM(conversation_created) → URL sync ────────────────
 
   test('URL updates to include conversationId after connected event', async ({ page }) => {
     await sendMessage(page, QUESTION);
 
-    // The connected event fires with conversationId = CONV_ID.
+    // The CUSTOM(conversation_created) frame fires with conversationId = CONV_ID.
     // The page's router.replace() should update the URL accordingly.
     await expect(page).toHaveURL(new RegExp(CONV_ID), { timeout: 15_000 });
   });
 
-  // ── SSE event: status → streaming indicator ─────────────────────────────
+  // ── streaming indicator while the run is in progress ────────────────────
 
   test('streaming spinner / status indicator is visible while answer is loading', async ({ page }) => {
     // Use a delayed mock so we can observe the in-progress state
@@ -270,19 +202,19 @@ test.describe('Chat — SSE streaming (mocked backend)', () => {
     await expect(page.locator(`text=${ANSWER}`).first()).toBeVisible({ timeout: 20_000 });
   });
 
-  // ── SSE event: answer_chunk → answer rendered ───────────────────────────
+  // ── AG-UI frame: TEXT_MESSAGE_CONTENT → answer rendered ─────────────────
 
   test('assistant answer is rendered in the message list', async ({ page }) => {
     await sendMessage(page, QUESTION);
     await expect(page.locator(`text=${ANSWER}`).first()).toBeVisible({ timeout: 20_000 });
   });
 
-  // ── SSE event: complete → streaming flag cleared ─────────────────────────
+  // ── AG-UI frame: RUN_FINISHED → streaming flag cleared ──────────────────
 
   test('stop button disappears after complete event fires', async ({ page }) => {
     await sendMessage(page, QUESTION);
 
-    // Wait for answer to confirm complete event was processed
+    // Wait for answer to confirm RUN_FINISHED was processed
     await expect(page.locator(`text=${ANSWER}`).first()).toBeVisible({ timeout: 20_000 });
 
     // Stop button (square stop icon or stop label) should no longer be present
@@ -300,13 +232,10 @@ test.describe('Chat — SSE streaming (mocked backend)', () => {
     // Override the stream mock with an error response
     await page.route('**/api/v1/conversations/stream', (route) => {
       if (route.request().method() !== 'POST') return route.continue();
-      const errorSse =
-        `event: connected\ndata: ${JSON.stringify({ message: 'ok', conversationId: CONV_ID })}\n\n` +
-        `event: error\ndata: ${JSON.stringify({ error: 'llm_unavailable', message: 'LLM service is temporarily unavailable.' })}\n\n`;
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
-        body: errorSse,
+        body: buildAguiErrorSseBody(CONV_ID, 'LLM service is temporarily unavailable.'),
       });
     });
 
@@ -404,11 +333,8 @@ test.describe('Chat — stop streaming', () => {
     await page.route('**/api/v1/conversations/stream', async (route) => {
       if (route.request().method() !== 'POST') return route.continue();
 
-      // Return only the connected + first chunk — never send complete
-      const partial =
-        `event: connected\ndata: ${JSON.stringify({ message: 'ok', conversationId: 'conv-stop-001' })}\n\n` +
-        `event: status\ndata: ${JSON.stringify({ status: 'planning', message: 'Searching…' })}\n\n` +
-        `event: answer_chunk\ndata: ${JSON.stringify({ chunk: 'Partial answer…', accumulated: 'Partial answer…', citations: [] })}\n\n`;
+      // Return only conversation_created + one text delta — never send RUN_FINISHED
+      const partial = buildAguiPartialSseBody('conv-stop-001', 'Partial answer…');
 
       // Hold the response open briefly then close
       await new Promise<void>((res) => setTimeout(res, 600));

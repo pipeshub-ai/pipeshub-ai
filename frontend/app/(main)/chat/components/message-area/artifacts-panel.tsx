@@ -10,6 +10,8 @@ import type { ChatArtifact } from '../../types';
 interface ArtifactsPanelProps {
   artifacts: ChatArtifact[];
   onPreview?: (artifact: ChatArtifact) => void | Promise<void>;
+  /** Jump to the CODE artifact `artifact.derivedFromCodeArtifactId` was generated from. */
+  onViewSource?: (codeArtifactId: string) => void | Promise<void>;
 }
 
 const MIME_ICONS: Record<string, string> = {
@@ -87,7 +89,7 @@ async function handleDownload(artifact: ChatArtifact): Promise<void> {
   link.remove();
 }
 
-export function ArtifactsPanel({ artifacts, onPreview }: ArtifactsPanelProps) {
+export function ArtifactsPanel({ artifacts, onPreview, onViewSource }: ArtifactsPanelProps) {
   const [collapsed, setCollapsed] = useState(false);
 
   if (!artifacts.length) return null;
@@ -111,7 +113,12 @@ export function ArtifactsPanel({ artifacts, onPreview }: ArtifactsPanelProps) {
       {!collapsed && (
         <Flex direction="column" gap="2">
           {artifacts.map((artifact) => (
-            <ArtifactCard key={artifact.id} artifact={artifact} onPreview={onPreview} />
+            <ArtifactCard
+              key={artifact.id}
+              artifact={artifact}
+              onPreview={onPreview}
+              onViewSource={onViewSource}
+            />
           ))}
         </Flex>
       )}
@@ -247,14 +254,17 @@ function ArtifactThumbnail({ artifact }: { artifact: ChatArtifact }) {
 function ArtifactCard({
   artifact,
   onPreview,
+  onViewSource,
 }: {
   artifact: ChatArtifact;
   onPreview?: (artifact: ChatArtifact) => void | Promise<void>;
+  onViewSource?: (codeArtifactId: string) => void | Promise<void>;
 }) {
   const icon = getIconForMime(artifact.mimeType);
   const showThumbnail = isPreviewableImage(artifact.mimeType);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
+  const [isViewingSource, setIsViewingSource] = useState(false);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -281,6 +291,16 @@ function ArtifactCard({
       await onPreview(artifact);
     } finally {
       if (mountedRef.current) setIsPreviewing(false);
+    }
+  };
+
+  const runViewSource = async () => {
+    if (!onViewSource || !artifact.derivedFromCodeArtifactId || isViewingSource) return;
+    setIsViewingSource(true);
+    try {
+      await onViewSource(artifact.derivedFromCodeArtifactId);
+    } finally {
+      if (mountedRef.current) setIsViewingSource(false);
     }
   };
 
@@ -326,15 +346,49 @@ function ArtifactCard({
       )}
 
       <Flex direction="column" style={{ flex: 1, minWidth: 0 }}>
-        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {artifact.fileName}
-        </Text>
+        <Flex align="center" gap="1">
+          <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {artifact.fileName}
+          </Text>
+          {!!artifact.version && artifact.version > 1 && (
+            <Text
+              size="1"
+              weight="medium"
+              style={{
+                color: 'var(--accent-11)',
+                backgroundColor: 'var(--accent-3)',
+                borderRadius: 'var(--radius-1)',
+                padding: '0 6px',
+                flexShrink: 0,
+              }}
+            >
+              v{artifact.version}
+            </Text>
+          )}
+        </Flex>
         <Text size="1" style={{ color: 'var(--slate-9)' }}>
           {artifact.artifactType} {artifact.sizeBytes > 0 ? `· ${formatFileSize(artifact.sizeBytes)}` : ''}
         </Text>
       </Flex>
 
       <Flex gap="1">
+        {onViewSource && artifact.derivedFromCodeArtifactId && (
+          <IconButton
+            size="1"
+            variant="ghost"
+            onClick={runViewSource}
+            disabled={isViewingSource}
+            aria-label={isViewingSource ? 'Loading source code' : 'View source code'}
+            title="View the code that generated this artifact"
+            style={{ cursor: isViewingSource ? 'wait' : 'pointer' }}
+          >
+            {isViewingSource ? (
+              <Spinner size={16} />
+            ) : (
+              <span className="material-icons-outlined" style={{ fontSize: 18 }}>code</span>
+            )}
+          </IconButton>
+        )}
         {onPreview && (
           <IconButton
             size="1"

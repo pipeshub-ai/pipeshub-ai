@@ -3,9 +3,8 @@ import json
 import logging
 from typing import List, Optional
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -154,8 +153,9 @@ class GoogleSheets:
             return asyncio.run(coro)
 
     @tool(
-        app_name="sheets",
-        tool_name="create_spreadsheet",
+        path="/tools/sheets/create_spreadsheet",
+        short_description="Create a new Google Sheet",
+        description="Create a new Google Sheets spreadsheet with an optional title.",
         parameters=[
             ToolParameter(
                 name="title",
@@ -163,9 +163,10 @@ class GoogleSheets:
                 description="Title of the spreadsheet",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="create")],
     )
-    def create_spreadsheet(self, title: Optional[str] = None) -> tuple[bool, str]:
+    async def create_spreadsheet(self, title: Optional[str] = None) -> tuple[bool, str]:
         """Create a new Google Sheets spreadsheet"""
         """
         Args:
@@ -200,8 +201,9 @@ class GoogleSheets:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="sheets",
-        tool_name="get_spreadsheet",
+        path="/tools/sheets/get_spreadsheet",
+        short_description="Get spreadsheet details",
+        description="Get a Google Sheets spreadsheet's metadata, sheets, and optionally grid data.",
         parameters=[
             ToolParameter(
                 name="spreadsheet_id",
@@ -221,7 +223,8 @@ class GoogleSheets:
                 description="Whether to include grid data",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="read")],
     )
     def get_spreadsheet(
         self,
@@ -252,8 +255,9 @@ class GoogleSheets:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="sheets",
-        tool_name="get_values",
+        path="/tools/sheets/get_values",
+        short_description="Get values from a range",
+        description="Get values from a spreadsheet range with optional formatting and dimension control.",
         parameters=[
             ToolParameter(
                 name="spreadsheet_id",
@@ -279,7 +283,8 @@ class GoogleSheets:
                 description="How values should be rendered (FORMATTED_VALUE, UNFORMATTED_VALUE, FORMULA)",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="read")],
     )
     def get_values(
         self,
@@ -313,8 +318,9 @@ class GoogleSheets:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="sheets",
-        tool_name="update_values",
+        path="/tools/sheets/update_values",
+        short_description="Update values in a range",
+        description="Update values in a spreadsheet range with a 2D array of data.",
         parameters=[
             ToolParameter(
                 name="spreadsheet_id",
@@ -341,7 +347,8 @@ class GoogleSheets:
                 description="How input data should be interpreted (RAW, USER_ENTERED)",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="update")],
     )
     def update_values(
         self,
@@ -387,8 +394,9 @@ class GoogleSheets:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="sheets",
-        tool_name="append_values",
+        path="/tools/sheets/append_values",
+        short_description="Append values to a range",
+        description="Append rows of values to the end of a spreadsheet range.",
         parameters=[
             ToolParameter(
                 name="spreadsheet_id",
@@ -415,7 +423,8 @@ class GoogleSheets:
                 description="How input data should be interpreted (RAW, USER_ENTERED)",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="update")],
     )
     def append_values(
         self,
@@ -461,8 +470,9 @@ class GoogleSheets:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="sheets",
-        tool_name="clear_values",
+        path="/tools/sheets/clear_values",
+        short_description="Clear values from a range",
+        description="Clear all values from a spreadsheet range without removing formatting.",
         parameters=[
             ToolParameter(
                 name="spreadsheet_id",
@@ -476,9 +486,10 @@ class GoogleSheets:
                 description="The range to clear (e.g., 'Sheet1!A1:C10')",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="delete")],
     )
-    def clear_values(self, spreadsheet_id: str, range: str) -> tuple[bool, str]:
+    async def clear_values(self, spreadsheet_id: str, range: str) -> tuple[bool, str]:
         """Clear values from a spreadsheet range"""
         """
         Args:
@@ -504,8 +515,9 @@ class GoogleSheets:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="sheets",
-        tool_name="batch_get_values",
+        path="/tools/sheets/batch_get_values",
+        short_description="Batch get values from multiple ranges",
+        description="Get values from multiple ranges in a spreadsheet in a single request.",
         parameters=[
             ToolParameter(
                 name="spreadsheet_id",
@@ -526,7 +538,8 @@ class GoogleSheets:
                 description="Major dimension (ROWS or COLUMNS)",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="read")],
     )
     def batch_get_values(
         self,

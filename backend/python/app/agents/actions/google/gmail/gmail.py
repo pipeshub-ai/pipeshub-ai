@@ -6,9 +6,14 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from app.agents.actions.google.gmail.utils import GmailUtils
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import (
+    args_template,
+    confirmation,
+    entity_summary,
+    list_summary,
+)
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -25,6 +30,17 @@ from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 
 logger = logging.getLogger(__name__)
+
+
+def _gmail_message_label(message: dict) -> str:
+    payload = message.get("payload") or {}
+    headers = payload.get("headers") or []
+    subject = next(
+        (h.get("value") for h in headers if isinstance(h, dict) and h.get("name") == "Subject"),
+        None,
+    )
+    return subject or message.get("snippet") or message.get("id") or "?"
+
 
 # Pydantic schemas for Gmail tools
 class SendEmailInput(BaseModel):
@@ -183,28 +199,20 @@ class Gmail:
 
 
     @tool(
-        app_name="gmail",
-        tool_name="reply",
-        description="Reply to an email message",
-        args_schema=ReplyInput,
-        when_to_use=[
-            "User wants to reply to an email",
-            "User mentions 'Gmail' or 'email' + wants to reply",
-            "User asks to respond to email"
+        path="/tools/gmail/reply",
+        short_description="Reply to an email message",
+        description="Reply to an email message in Gmail. Sends a reply to an existing email thread.",
+        parameters=[
+            ToolParameter(name="message_id", type=ParameterType.STRING, description="The ID of the email to reply to", required=True),
+            ToolParameter(name="mail_to", type=ParameterType.ARRAY, description="List of email addresses to send the reply to", required=True, items={"type": "string"}),
+            ToolParameter(name="mail_subject", type=ParameterType.STRING, description="The subject of the reply email", required=True),
+            ToolParameter(name="mail_cc", type=ParameterType.ARRAY, description="List of email addresses to CC", required=False, items={"type": "string"}),
+            ToolParameter(name="mail_bcc", type=ParameterType.ARRAY, description="List of email addresses to BCC", required=False, items={"type": "string"}),
+            ToolParameter(name="mail_body", type=ParameterType.STRING, description="The body content of the reply email", required=False),
+            ToolParameter(name="mail_attachments", type=ParameterType.ARRAY, description="List of file paths to attach", required=False, items={"type": "string"}),
+            ToolParameter(name="thread_id", type=ParameterType.STRING, description="The thread ID to maintain conversation context", required=False),
         ],
-        when_not_to_use=[
-            "User wants to send new email (use send_email)",
-            "User wants to search emails (use search_emails)",
-            "User wants info ABOUT Gmail (use retrieval)",
-            "No Gmail/email mention"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Reply to email",
-            "Respond to message",
-            "Reply to this email"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
     )
     async def reply(
         self,
@@ -256,28 +264,18 @@ class Gmail:
             return self._handle_error(e, "send reply")
 
     @tool(
-        app_name="gmail",
-        tool_name="draft_email",
-        description="Create a draft email",
-        args_schema=DraftEmailInput,
-        when_to_use=[
-            "User wants to create a draft email",
-            "User mentions 'Gmail' + wants to draft",
-            "User asks to save email as draft"
+        path="/tools/gmail/draft_email",
+        short_description="Create a draft email",
+        description="Create a draft email in Gmail. The draft is saved but not sent.",
+        parameters=[
+            ToolParameter(name="mail_to", type=ParameterType.ARRAY, description="List of email addresses to send the email to", required=True, items={"type": "string"}),
+            ToolParameter(name="mail_subject", type=ParameterType.STRING, description="The subject of the email", required=True),
+            ToolParameter(name="mail_cc", type=ParameterType.ARRAY, description="List of email addresses to CC", required=False, items={"type": "string"}),
+            ToolParameter(name="mail_bcc", type=ParameterType.ARRAY, description="List of email addresses to BCC", required=False, items={"type": "string"}),
+            ToolParameter(name="mail_body", type=ParameterType.STRING, description="The body content of the email", required=False),
+            ToolParameter(name="mail_attachments", type=ParameterType.ARRAY, description="List of file paths to attach", required=False, items={"type": "string"}),
         ],
-        when_not_to_use=[
-            "User wants to send email (use send_email)",
-            "User wants to search emails (use search_emails)",
-            "User wants info ABOUT Gmail (use retrieval)",
-            "No Gmail/email mention"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Create draft email",
-            "Save email as draft",
-            "Draft an email"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
     )
     async def draft_email(
         self,
@@ -323,28 +321,22 @@ class Gmail:
             return self._handle_error(e, "create draft")
 
     @tool(
-        app_name="gmail",
-        tool_name="send_email",
-        description="Send an email via Gmail",
-        args_schema=SendEmailInput,
-        when_to_use=[
-            "User wants to send an email",
-            "User mentions 'Gmail' or 'email' + wants to send",
-            "User asks to send message"
+        path="/tools/gmail/send_email",
+        short_description="Send an email via Gmail",
+        description="Send an email via Gmail. Composes and delivers the message immediately.",
+        parameters=[
+            ToolParameter(name="mail_to", type=ParameterType.ARRAY, description="List of email addresses to send the email to", required=True, items={"type": "string"}),
+            ToolParameter(name="mail_subject", type=ParameterType.STRING, description="The subject of the email", required=True),
+            ToolParameter(name="mail_cc", type=ParameterType.ARRAY, description="List of email addresses to CC", required=False, items={"type": "string"}),
+            ToolParameter(name="mail_bcc", type=ParameterType.ARRAY, description="List of email addresses to BCC", required=False, items={"type": "string"}),
+            ToolParameter(name="mail_body", type=ParameterType.STRING, description="The body content of the email", required=False),
+            ToolParameter(name="mail_attachments", type=ParameterType.ARRAY, description="List of file paths to attach", required=False, items={"type": "string"}),
+            ToolParameter(name="thread_id", type=ParameterType.STRING, description="The thread ID to maintain conversation context", required=False),
+            ToolParameter(name="message_id", type=ParameterType.STRING, description="The message ID for threading", required=False),
         ],
-        when_not_to_use=[
-            "User wants to reply (use reply)",
-            "User wants to search emails (use search_emails)",
-            "User wants info ABOUT Gmail (use retrieval)",
-            "No Gmail/email mention"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Send email to user@company.com",
-            "Email someone",
-            "Send message via Gmail"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
+        args_summary=lambda args: f"Sending email to {', '.join(args.get('mail_to') or []) or '?'}",
+        result_summary=confirmation("Email sent"),
     )
     async def send_email(
         self,
@@ -396,27 +388,20 @@ class Gmail:
             return self._handle_error(e, "send email")
 
     @tool(
-        app_name="gmail",
-        tool_name="search_emails",
-        description="Search for email messages using Gmail search syntax",
-        args_schema=SearchEmailsInput,
-        when_to_use=[
-            "User wants to search/find emails",
-            "User mentions 'Gmail' or 'email' + wants to search",
-            "User asks to find emails"
+        path="/tools/gmail/search_emails",
+        short_description="Search for email messages using Gmail search syntax",
+        description=(
+            "Search for email messages using Gmail search syntax. "
+            "Supports standard Gmail search operators (from:, to:, subject:, is:unread, etc.)."
+        ),
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="The search query to find emails (Gmail search syntax)", required=True),
+            ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Maximum number of emails to return", required=False, default=10),
+            ToolParameter(name="page_token", type=ParameterType.STRING, description="Token for pagination", required=False),
         ],
-        when_not_to_use=[
-            "User wants to send email (use send_email)",
-            "User wants info ABOUT Gmail (use retrieval)",
-            "No Gmail/email mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Search for emails from user@company.com",
-            "Find emails about 'project'",
-            "Show my unread emails"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
+        args_summary=args_template('Searching Gmail: "{query}"', "query"),
+        result_summary=list_summary(("messages",), lambda m: m.get("subject") or "(no subject)", "email"),
     )
     async def search_emails(
         self,
@@ -492,28 +477,15 @@ class Gmail:
             return self._handle_error(e, "search emails")
 
     @tool(
-        app_name="gmail",
-        tool_name="get_email_details",
-        description="Get a specific email message",
-        args_schema=GetEmailDetailsInput,
-        when_to_use=[
-            "User wants to read a specific email",
-            "User mentions 'Gmail' + has message ID",
-            "User asks to show email content"
+        path="/tools/gmail/get_email_details",
+        short_description="Get a specific email message",
+        description="Get detailed information about a specific email message by its ID, including headers, body, and metadata.",
+        parameters=[
+            ToolParameter(name="message_id", type=ParameterType.STRING, description="The ID of the email to get details for", required=True),
         ],
-        when_not_to_use=[
-            "User wants to search emails (use search_emails)",
-            "User wants to send email (use send_email)",
-            "User wants info ABOUT Gmail (use retrieval)",
-            "No Gmail/email mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get email details",
-            "Show me this email",
-            "Read email message"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching Gmail message {message_id}", "message_id"),
+        result_summary=entity_summary(lambda e: f"Fetched email: {_gmail_message_label(e)}", path=()),
     )
     async def get_email_details(
         self,
@@ -538,28 +510,13 @@ class Gmail:
             return self._handle_error(e, f"get email details for {message_id}")
 
     @tool(
-        app_name="gmail",
-        tool_name="get_email_attachments",
-        description="Get attachments for a specific email",
-        args_schema=GetEmailAttachmentsInput,
-        when_to_use=[
-            "User wants to see email attachments",
-            "User mentions 'Gmail' + wants attachments",
-            "User asks for files attached to email"
+        path="/tools/gmail/get_email_attachments",
+        short_description="Get attachments for a specific email",
+        description="Get the list of attachments for a specific email message, including filenames, MIME types, and sizes.",
+        parameters=[
+            ToolParameter(name="message_id", type=ParameterType.STRING, description="The ID of the email to get attachments for", required=True),
         ],
-        when_not_to_use=[
-            "User wants email content (use get_email_details)",
-            "User wants to search emails (use search_emails)",
-            "User wants info ABOUT Gmail (use retrieval)",
-            "No Gmail/email mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get attachments from email",
-            "Show email attachments",
-            "What files are attached?"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
     )
     async def get_email_attachments(
         self,
@@ -596,28 +553,13 @@ class Gmail:
             return self._handle_error(e, f"get email attachments for {message_id}")
 
     @tool(
-        app_name="gmail",
-        tool_name="get_user_profile",
-        description="Get the authenticated user's Gmail profile",
-        args_schema=GetUserProfileInput,
-        when_to_use=[
-            "User wants their Gmail account info",
-            "User mentions 'Gmail' + wants profile",
-            "User asks about their email account"
+        path="/tools/gmail/get_user_profile",
+        short_description="Get the authenticated user's Gmail profile",
+        description="Get the authenticated user's Gmail profile including email address, total messages, and threads count.",
+        parameters=[
+            ToolParameter(name="user_id", type=ParameterType.STRING, description="The user ID (use 'me' for authenticated user)", required=False, default="me"),
         ],
-        when_not_to_use=[
-            "User wants to send email (use send_email)",
-            "User wants to search emails (use search_emails)",
-            "User wants info ABOUT Gmail (use retrieval)",
-            "No Gmail/email mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get my Gmail profile",
-            "Show my email account",
-            "What's my Gmail address?"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
     )
     async def get_user_profile(
         self,

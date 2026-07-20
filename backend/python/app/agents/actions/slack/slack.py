@@ -8,9 +8,17 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.agents.actions.response_transformer import ResponseTransformer
 from app.agents.actions.slack.config import SlackResponse
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import (
+    args_template,
+    bullet_list,
+    confirmation,
+    entity_summary,
+    error_message,
+    list_summary,
+    parse_json_maybe,
+)
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -39,6 +47,61 @@ USER_ID_PREFIXES = ('U', 'W')
 # Captures the user ID inside a Slack mention like <@U0ABC1234> or <@W0ABC1234>.
 # Used by enrichment to substitute @display_name into message text.
 SLACK_MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)>")
+
+
+# ---------------------------------------------------------------------------
+# Agent-activity summary labels — see `jira.py`'s equivalent block. Slack's
+# envelope (`SlackResponse.to_json()`) is `{"success", "data", "error",
+# "message"}` rather than the `{"message", "data"}` shape most connectors
+# use, but `list_summary`/`entity_summary`/`confirmation` only look for
+# `data`/`error`/`message`, so they still apply unchanged.
+# ---------------------------------------------------------------------------
+
+
+def _slack_message_label(msg: dict) -> str:
+    author = msg.get("user_display_name") or msg.get("user") or "?"
+    text = (msg.get("resolved_text") or msg.get("text") or "").strip().splitlines()
+    preview = text[0][:60] if text else ""
+    return f"{author}: {preview}" if preview else author
+
+
+def _slack_channel_label(channel: dict) -> str:
+    name = channel.get("name")
+    if name:
+        return f"#{name}"
+    return channel.get("user_display_name") or channel.get("id") or "?"
+
+
+def _search_all_result_summary(_args: dict, result: Any) -> Optional[str]:
+    """`search_all` fans out into `data.messages.matches` and
+    `data.files.matches` simultaneously, so a plain `list_summary` (single
+    list) can't describe it — this reports both counts in one line."""
+    if result.is_error:
+        return f"Failed: {error_message(parse_json_maybe(result.content))}"
+    parsed = parse_json_maybe(result.content)
+    if not isinstance(parsed, dict):
+        return None
+    data = parsed.get("data")
+    if not isinstance(data, dict):
+        return None
+    messages = data.get("messages")
+    message_matches = messages.get("matches") if isinstance(messages, dict) else None
+    files = data.get("files")
+    file_matches = files.get("matches") if isinstance(files, dict) else None
+    if not isinstance(message_matches, list) and not isinstance(file_matches, list):
+        return None
+    parts = []
+    if isinstance(message_matches, list):
+        parts.append(f"{len(message_matches)} message{'s' if len(message_matches) != 1 else ''}")
+    if isinstance(file_matches, list):
+        parts.append(f"{len(file_matches)} file{'s' if len(file_matches) != 1 else ''}")
+    header = "Found " + " and ".join(parts) if parts else "No results found"
+    labels = [
+        _slack_message_label(m) for m in (message_matches or []) if isinstance(m, dict)
+    ]
+    if not labels:
+        return header
+    return header + "\n" + bullet_list(labels, total=len(message_matches or []))
 
 
 def _is_user_id(value: Any) -> bool:
@@ -873,30 +936,20 @@ class Slack:
         return channel
 
     @tool(
-        app_name="slack",
-        tool_name="send_message",
-        description="Send a message to a Slack channel using mrkdwn format",
-        args_schema=SendMessageInput,
-        when_to_use=[
-            "User wants to send a message to Slack",
-            "User mentions 'Slack' + wants to send/post message",
-            "User wants to notify someone in Slack",
-            "User asks to 'post in Slack', 'send to Slack', 'message in Slack'"
+        path="/tools/slack/send_message",
+        short_description="Send a message to a Slack channel using mrkdwn format",
+        description=(
+            "Send a message to a Slack channel. Use when user explicitly wants to send/post/write "
+            "a message in Slack. The message will be automatically converted from standard markdown "
+            "to Slack's mrkdwn format. Not for reading/searching messages or general Slack info."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel to send the message to", required=True),
+            ToolParameter(name="message", type=ParameterType.STRING, description="The message to send. Must use Slack's mrkdwn format", required=True),
         ],
-        when_not_to_use=[
-            "User wants to read/search messages (use get_channel_history or search_messages)",
-            "User wants general information about Slack (use retrieval only if no Slack tools available)",
-            "No Slack mention (use other communication tools)",
-            "User asks 'what is Slack' or 'how does Slack work' (use retrieval for general knowledge)"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Send a message to #general",
-            "Post in Slack channel",
-            "Notify the team in Slack"
-        ],
-        category=ToolCategory.COMMUNICATION,
-        llm_description="Send a message to a Slack channel. Use this tool when user explicitly wants to send/post/write a message in Slack. The message will be automatically converted from standard markdown to Slack's mrkdwn format"
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        args_summary=args_template("Sending Slack message to {channel}", "channel"),
+        result_summary=confirmation("Message sent to {channel}", "channel"),
     )
     async def send_message(self, channel: str, message: str) -> Tuple[bool, str]:
         """Send a message to a channel using Slack's mrkdwn format.
@@ -943,42 +996,27 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="get_channel_history",
-        description="Get message history from a Slack channel, optionally filtered by a time window",
-        args_schema=GetChannelHistoryInput,
-        when_to_use=[
-            "User wants to read messages from a Slack channel",
-            "User wants messages from a channel within a time window (e.g. 'last 24 hours', 'last week', 'today', 'since Monday')",
-            "User mentions 'Slack' + wants to see messages/history",
-            "User asks for recent messages in a channel"
-        ],
-        when_not_to_use=[
-            "User wants to send a message (use send_message)",
-            "User wants to keyword-search across messages (use search_messages)",
-            "User wants info ABOUT Slack (use retrieval)",
-            "No Slack mention (use other tools)"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show me messages from #general",
-            "Get Slack channel history",
-            "What was said in #tech in the last 24 hours?",
-            "Messages in #engineering since yesterday",
-            "Today's messages in #general",
-            "What was said in the channel?"
-        ],
-        category=ToolCategory.COMMUNICATION,
-        llm_description=(
-            "Fetch messages from a Slack channel. For time-windowed requests "
-            "(e.g. 'last 24 hours', 'today', 'since yesterday'), set 'oldest' "
-            "(and optionally 'latest') to ISO 8601 dates or datetimes — for "
-            "example '2026-04-30' or '2026-04-30T09:00:00Z'. Naive datetimes "
-            "are treated as UTC. Do NOT pass Unix epoch values; the tool "
-            "converts dates to Slack's internal format. PREFER this tool over "
-            "search_messages whenever the user wants channel messages from a "
-            "time window without a keyword."
+        path="/tools/slack/get_channel_history",
+        short_description="Get message history from a Slack channel",
+        description=(
+            "Fetch messages from a Slack channel, optionally filtered by a time window. "
+            "For time-windowed requests (e.g. 'last 24 hours', 'today', 'since yesterday'), "
+            "set 'oldest' (and optionally 'latest') to ISO 8601 dates or datetimes — for "
+            "example '2026-04-30' or '2026-04-30T09:00:00Z'. Naive datetimes are treated as UTC. "
+            "Do NOT pass Unix epoch values; the tool converts dates to Slack's internal format. "
+            "PREFER this tool over search_messages whenever the user wants channel messages "
+            "from a time window without a keyword. Not for sending messages or keyword search."
         ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel to get the history of", required=True),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of messages to return", required=False),
+            ToolParameter(name="oldest", type=ParameterType.STRING, description="Start of time range as an ISO 8601 date or datetime string. Examples: '2026-04-30' (midnight UTC), '2026-04-30T09:00:00Z'. Naive datetimes are interpreted as UTC.", required=False),
+            ToolParameter(name="latest", type=ParameterType.STRING, description="End of time range as an ISO 8601 date or datetime string. Omit to fetch up to the current time.", required=False),
+            ToolParameter(name="inclusive", type=ParameterType.BOOLEAN, description="Include messages with the exact 'oldest' or 'latest' timestamp", required=False),
+        ],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching history for Slack channel {channel}", "channel"),
+        result_summary=list_summary(("data", "messages"), _slack_message_label, "message"),
     )
     async def get_channel_history(
         self,
@@ -1081,27 +1119,19 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="get_channel_info",
-        description="Get the info of a channel",
-        args_schema=GetChannelInfoInput,
-        when_to_use=[
-            "User wants channel details/info",
-            "User mentions 'Slack' + wants channel information",
-            "User asks about a specific channel"
+        path="/tools/slack/get_channel_info",
+        short_description="Get information about a Slack channel",
+        description=(
+            "Get details about a specific Slack channel including topic, purpose, and metadata. "
+            "Use when user wants channel details or asks about a specific channel. "
+            "Not for fetching messages (use get_channel_history) or sending messages."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel to get the info of", required=True),
         ],
-        when_not_to_use=[
-            "User wants messages (use get_channel_history)",
-            "User wants to send message (use send_message)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get info about #general channel",
-            "What is the #engineering channel?",
-            "Show channel details"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching info for Slack channel {channel}", "channel"),
+        result_summary=entity_summary(lambda c: f"Channel: {_slack_channel_label(c)}", path=("data", "channel")),
     )
     async def get_channel_info(self, channel: str) -> Tuple[bool, str]:
         """Get the info of a channel"""
@@ -1125,27 +1155,17 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="get_user_info",
-        description="Get information about a Slack user",
-        args_schema=GetUserInfoInput,
-        when_to_use=[
-            "User wants Slack user information",
-            "User mentions 'Slack' + wants user details",
-            "User asks about a Slack user"
+        path="/tools/slack/get_user_info",
+        short_description="Get information about a Slack user",
+        description=(
+            "Get details about a Slack user by email or user ID. Returns profile info "
+            "including display name, real name, email, timezone, and admin status. "
+            "Use when user asks about a specific Slack user or needs their details."
+        ),
+        parameters=[
+            ToolParameter(name="user", type=ParameterType.STRING, description="Slack user identifier. Use email or Slack user ID (starts with 'U')", required=True),
         ],
-        when_not_to_use=[
-            "User wants to send message (use send_message)",
-            "User wants messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get info about user@company.com in Slack",
-            "Who is @username in Slack?",
-            "Show Slack user details"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_user_info(self, user: str) -> Tuple[bool, str]:
         """Get the info of a user with transformed response for easy field extraction"""
@@ -1208,35 +1228,22 @@ class Slack:
             slack_response = self._handle_slack_error(e)
             return (slack_response.success, slack_response.to_json())
     @tool(
-        app_name="slack",
-        tool_name="fetch_channels",
-        description="Fetch all conversations in the workspace (public channels, private channels, DMs, group DMs)",
-        when_to_use=[
-            "User wants to list all Slack channels/conversations",
-            "User mentions 'Slack' + wants to see channels/DMs/conversations",
-            "User asks for available channels/conversations",
-            "User wants to enumerate their DMs (returned as 'im' entries with id starting 'D' and a 'user' field for the partner)"
-        ],
-        when_not_to_use=[
-            "User wants channel info (use get_channel_info)",
-            "User wants messages (use get_channel_history; for DMs with a named person use get_dm_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "List all Slack channels",
-            "Show me available channels",
-            "What channels are in Slack?",
-            "Show all conversations including DMs",
-            "List my DMs"
-        ],
-        category=ToolCategory.COMMUNICATION,
-        llm_description=(
-            "Lists all conversations the user can access. Differentiate by 'is_im'/'is_mpim'/'is_private' "
-            "or id prefix (D/G/C). DM entries have no 'name' — only 'id' (D…) and 'user' (U…). "
-            "The DM partner's display name is pre-resolved into 'user_display_name' on each IM entry "
-            "(and 'creator_display_name' for channels), so no extra users_info call is needed."
+        path="/tools/slack/fetch_channels",
+        short_description="Fetch all conversations in the workspace",
+        description=(
+            "Lists all conversations the user can access (public channels, private channels, DMs, group DMs). "
+            "Differentiate by 'is_im'/'is_mpim'/'is_private' or id prefix (D/G/C). "
+            "DM entries have no 'name' — only 'id' (D…) and 'user' (U…). The DM partner's display name "
+            "is pre-resolved into 'user_display_name' on each IM entry (and 'creator_display_name' for channels). "
+            "Not for channel info (use get_channel_info) or messages (use get_channel_history/get_dm_history)."
         ),
+        parameters=[
+            ToolParameter(name="types", type=ParameterType.STRING, description="Comma-separated list of conversation types. Defaults to ALL types: 'public_channel,private_channel,mpim,im'", required=False),
+            ToolParameter(name="exclude_archived", type=ParameterType.BOOLEAN, description="Exclude archived conversations", required=False),
+        ],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        args_summary=lambda _args: "Fetching Slack conversations",
+        result_summary=list_summary(("data", "channels"), _slack_channel_label, "conversation"),
     )
     async def fetch_channels(
         self,
@@ -1310,27 +1317,20 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="search_all",
-        description="Search messages, files, and channels in Slack",
-        args_schema=SearchAllInput,
-        when_to_use=[
-            "User wants to search across Slack (messages/files/channels)",
-            "User mentions 'Slack' + wants to search",
-            "User asks to find something in Slack"
+        path="/tools/slack/search_all",
+        short_description="Search messages, files, and channels in Slack",
+        description=(
+            "Search across all Slack content types including messages, files, and channels. "
+            "Use when user wants to find something in Slack across multiple content types. "
+            "For message-only search use search_messages instead."
+        ),
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="The search query to find messages, files, and channels", required=True),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of results to return", required=False),
         ],
-        when_not_to_use=[
-            "User wants to search only messages (use search_messages)",
-            "User wants info ABOUT Slack (use retrieval)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Search Slack for 'project update'",
-            "Find messages about X in Slack",
-            "Search all Slack content"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="search")],
+        args_summary=args_template('Searching Slack: "{query}"', "query"),
+        result_summary=_search_all_result_summary,
     )
     async def search_all(self, query: str, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Search messages, files, and channels in Slack"""
@@ -1379,27 +1379,17 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="get_channel_members",
-        description="Get the members of a channel",
-        args_schema=GetChannelMembersInput,
-        when_to_use=[
-            "User wants to see who is in a Slack channel",
-            "User mentions 'Slack' + wants channel members",
-            "User asks about channel participants"
+        path="/tools/slack/get_channel_members",
+        short_description="Get the members of a Slack channel",
+        description=(
+            "Get the list of members in a Slack channel by channel name. "
+            "Returns resolved user details (display name, real name, email) for each member. "
+            "Use when user wants to see who is in a channel."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel to get the members of", required=True),
         ],
-        when_not_to_use=[
-            "User wants messages (use get_channel_history)",
-            "User wants channel info (use get_channel_info)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Who is in #general channel?",
-            "Show members of Slack channel",
-            "List channel participants"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_channel_members(self, channel: str) -> Tuple[bool, str]:
         """Get the members of a channel"""
@@ -1440,26 +1430,17 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="get_channel_members_by_id",
-        description="Get the members of a channel by ID",
-        args_schema=GetChannelMembersByIdInput,
-        when_to_use=[
-            "User has channel ID and wants members",
-            "User mentions 'Slack' + has channel ID",
-            "Programmatic access with known channel ID"
+        path="/tools/slack/get_channel_members_by_id",
+        short_description="Get the members of a channel by ID",
+        description=(
+            "Get the list of members in a Slack channel by channel ID. "
+            "Use when you already have the channel ID (e.g., C1234567890). "
+            "If you have a channel name instead, use get_channel_members."
+        ),
+        parameters=[
+            ToolParameter(name="channel_id", type=ParameterType.STRING, description="The channel ID to get the members of", required=True),
         ],
-        when_not_to_use=[
-            "User has channel name (use get_channel_members)",
-            "User wants messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get members of channel C123456",
-            "Who is in channel by ID?"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_channel_members_by_id(self, channel_id: str) -> Tuple[bool, str]:
         """Get the members of a channel by ID"""
@@ -1491,26 +1472,17 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="resolve_user",
-        description="Resolve a Slack user ID to display name and email",
-        args_schema=ResolveUserInput,
-        when_to_use=[
-            "User has Slack user ID and wants name/email",
-            "User mentions 'Slack' + has user ID",
-            "Programmatic access with known user ID"
+        path="/tools/slack/resolve_user",
+        short_description="Resolve a Slack user ID to display name and email",
+        description=(
+            "Resolve a Slack user ID (starts with 'U') to display name, real name, and email. "
+            "Use when you have a user ID and need the user's details. "
+            "If you have an email/name instead, use get_user_info."
+        ),
+        parameters=[
+            ToolParameter(name="user_id", type=ParameterType.STRING, description="The user ID to resolve", required=True),
         ],
-        when_not_to_use=[
-            "User has email/name (use get_user_info)",
-            "User wants to send message (use send_message)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Resolve user ID U123456",
-            "Get name for Slack user ID"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def resolve_user(self, user_id: str) -> Tuple[bool, str]:
         """Resolve a Slack user ID to display name and email"""
@@ -1535,26 +1507,15 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="check_token_info",
-        description="Check Slack token information and available scopes",
-        when_to_use=[
-            "User wants to verify Slack connection/permissions",
-            "Debugging token/scope issues",
-            "Checking Slack authentication status"
-        ],
-        when_not_to_use=[
-            "User wants to use Slack features (use other tools)",
-            "Normal Slack operations",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.UTILITY,
-        typical_queries=[
-            "Check Slack token",
-            "Verify Slack permissions",
-            "What Slack scopes do I have?"
-        ],
-        category=ToolCategory.COMMUNICATION
+        path="/tools/slack/check_token_info",
+        short_description="Check Slack token information and available scopes",
+        description=(
+            "Check Slack token information and available scopes. Use when verifying "
+            "Slack connection, debugging permission issues, or checking authentication status. "
+            "Not for normal Slack operations."
+        ),
+        parameters=[],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="utility")],
     )
     async def check_token_info(self) -> Tuple[bool, str]:
         """Check Slack token information and available scopes"""
@@ -1573,27 +1534,20 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="send_direct_message",
-        description="Send a direct message to a user",
-        args_schema=SendDirectMessageInput,
-        when_to_use=[
-            "User wants to send DM to a specific person",
-            "User mentions 'Slack' + wants to DM someone",
-            "User asks to message someone directly"
+        path="/tools/slack/send_direct_message",
+        short_description="Send a direct message to a user",
+        description=(
+            "Send a direct message (DM) to a specific Slack user. Accepts user ID, email, "
+            "or display name. Use when user wants to DM someone directly. "
+            "For channel messages use send_message instead."
+        ),
+        parameters=[
+            ToolParameter(name="user", type=ParameterType.STRING, description="User ID, email, or display name to send DM to", required=True),
+            ToolParameter(name="message", type=ParameterType.STRING, description="The message to send", required=True),
         ],
-        when_not_to_use=[
-            "User wants to send to channel (use send_message)",
-            "User wants to read messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Send a DM to user@company.com",
-            "Message @username in Slack",
-            "Send direct message to someone"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        args_summary=args_template("Sending Slack DM to {user}", "user"),
+        result_summary=confirmation("Message sent to {user}", "user"),
     )
     async def send_direct_message(self, user: str, message: str) -> Tuple[bool, str]:
         """Send a direct message to a user"""
@@ -1654,43 +1608,25 @@ class Slack:
 
 
     @tool(
-        app_name="slack",
-        tool_name="get_dm_history",
-        description="Get direct message (DM) history with a specific user, optionally filtered by a time window",
-        args_schema=GetDmHistoryInput,
-        when_to_use=[
-            "User wants to read their personal/direct chat with a specific person",
-            "User asks to summarize DMs / personal chats / 1:1 conversation with someone",
-            "User wants their DM thread with a person within a time window (e.g. 'last 24 hours', 'last week', 'today', 'since Monday')",
-            "User mentions 'Slack' + 'DM' / 'direct message' / 'personal chat' with a named person",
-            "User wants the conversation between themselves and another user (not a channel)"
-        ],
-        when_not_to_use=[
-            "User wants channel messages (use get_channel_history)",
-            "User wants to keyword-search across Slack (use search_messages)",
-            "User wants to send a DM (use send_direct_message)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Summarize my DMs with John Doe",
-            "Show my personal chat with user@company.com",
-            "What did I talk about with @john in Slack DMs?",
-            "Get my direct messages with Alice",
-            "Last 24 hours of my DMs with Vishwjeet",
-            "My DMs with bob@company.com since yesterday",
-            "Today's DMs with @alice"
-        ],
-        category=ToolCategory.COMMUNICATION,
-        llm_description=(
+        path="/tools/slack/get_dm_history",
+        short_description="Get direct message history with a specific user",
+        description=(
             "Fetch the 1:1 DM history with a user. Pass the user (email, display name, "
             "real name, or Slack user ID) — NOT a channel ID. For time-windowed requests "
             "(e.g. 'last 24 hours', 'today', 'since yesterday'), set 'oldest' (and "
             "optionally 'latest') to ISO 8601 dates or datetimes — for example "
-            "'2026-04-30' or '2026-04-30T09:00:00Z'. Naive datetimes are treated as "
-            "UTC. "
-            "Use for any 'DM' / 'personal chat' / '1:1 with X' request;"
+            "'2026-04-30' or '2026-04-30T09:00:00Z'. Naive datetimes are treated as UTC. "
+            "Use for any 'DM' / 'personal chat' / '1:1 with X' request. "
+            "Not for channel messages (use get_channel_history) or keyword search (use search_messages)."
         ),
+        parameters=[
+            ToolParameter(name="user", type=ParameterType.STRING, description="DM partner identifier. Accepts email, display name, real name, or Slack user ID (starts with 'U').", required=True),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of messages to return", required=False),
+            ToolParameter(name="oldest", type=ParameterType.STRING, description="Start of time range as an ISO 8601 date or datetime string. Examples: '2026-04-30' (midnight UTC), '2026-04-30T09:00:00Z'. Naive datetimes are interpreted as UTC.", required=False),
+            ToolParameter(name="latest", type=ParameterType.STRING, description="End of time range as an ISO 8601 date or datetime string. Omit to fetch up to the current time.", required=False),
+            ToolParameter(name="inclusive", type=ParameterType.BOOLEAN, description="Include messages with the exact 'oldest' or 'latest' timestamp", required=False),
+        ],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_dm_history(
         self,
@@ -1773,27 +1709,20 @@ class Slack:
 
 
     @tool(
-        app_name="slack",
-        tool_name="reply_to_message",
-        description="Reply to a specific message in a channel",
-        args_schema=ReplyToMessageInput,
-        when_to_use=[
-            "User wants to reply to a specific message",
-            "User mentions 'Slack' + wants to reply",
-            "User asks to respond to a message"
+        path="/tools/slack/reply_to_message",
+        short_description="Reply to a specific message in a channel",
+        description=(
+            "Reply to a specific message in a Slack channel thread. Provide the channel "
+            "and either a thread timestamp or set latest_message=True to reply to the most recent message. "
+            "For sending a new (non-threaded) message, use send_message instead."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel id containing the message (e.g 'C1234567890','G1234567890', 'D1234567890') to reply to", required=True),
+            ToolParameter(name="message", type=ParameterType.STRING, description="The reply message", required=True),
+            ToolParameter(name="thread_ts", type=ParameterType.STRING, description="Timestamp of the parent message to reply to", required=False),
+            ToolParameter(name="latest_message", type=ParameterType.BOOLEAN, description="Whether to reply to the latest message in the channel", required=False),
         ],
-        when_not_to_use=[
-            "User wants to send new message (use send_message)",
-            "User wants to read messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Reply to message in #general",
-            "Respond to a Slack message",
-            "Reply to latest message"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def reply_to_message(self, channel: str, message: str, thread_ts: Optional[str] = None, latest_message: Optional[bool] = None) -> Tuple[bool, str]:
         """Reply to a specific message in a channel"""
@@ -1846,27 +1775,18 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="send_message_to_multiple_channels",
-        description="Send a message to multiple channels",
-        args_schema=SendMessageToMultipleChannelsInput,
-        when_to_use=[
-            "User wants to send same message to multiple channels",
-            "User mentions 'Slack' + wants to broadcast",
-            "User asks to post to several channels"
+        path="/tools/slack/send_message_to_multiple_channels",
+        short_description="Send a message to multiple channels",
+        description=(
+            "Send the same message to multiple Slack channels at once. Message will be "
+            "auto-converted from standard markdown to Slack's mrkdwn format. "
+            "For sending to a single channel, use send_message instead."
+        ),
+        parameters=[
+            ToolParameter(name="channels", type=ParameterType.ARRAY, description="List of channels to send the message to", required=True),
+            ToolParameter(name="message", type=ParameterType.STRING, description="The message to send to all channels", required=True),
         ],
-        when_not_to_use=[
-            "User wants to send to one channel (use send_message)",
-            "User wants to read messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Send message to #general and #engineering",
-            "Broadcast to multiple Slack channels",
-            "Post to several channels"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def send_message_to_multiple_channels(self, channels: List[str], message: str) -> Tuple[bool, str]:
         """Send a message to multiple channels. Message will be auto-converted from standard markdown to Slack mrkdwn."""
@@ -1922,27 +1842,19 @@ class Slack:
 
 
     @tool(
-        app_name="slack",
-        tool_name="add_reaction",
-        description="Add a reaction to a message",
-        args_schema=AddReactionInput,
-        when_to_use=[
-            "User wants to add emoji reaction to message",
-            "User mentions 'Slack' + wants to react",
-            "User asks to react to a message"
+        path="/tools/slack/add_reaction",
+        short_description="Add a reaction to a message",
+        description=(
+            "Add an emoji reaction to a specific Slack message. Provide the channel ID, "
+            "message timestamp, and emoji name (e.g., 'thumbsup', '+1'). "
+            "Use when user wants to react to a message."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'", required=True),
+            ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to add reaction to", required=True),
+            ToolParameter(name="name", type=ParameterType.STRING, description="Name of the emoji reaction (e.g., 'thumbsup', '+1')", required=True),
         ],
-        when_not_to_use=[
-            "User wants to send message (use send_message)",
-            "User wants to read messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Add thumbs up to message",
-            "React with :+1: to message",
-            "Add reaction in Slack"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def add_reaction(self, channel: str, timestamp: str, name: str) -> Tuple[bool, str]:
         """Add a reaction to a message"""
@@ -1971,39 +1883,29 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="search_messages",
-        description="Keyword-search messages in Slack (requires a query term)",
-        args_schema=SearchMessagesInput,
-        when_to_use=[
-            "User wants to find messages containing specific keywords or phrases",
-            "User mentions 'Slack' + wants to find messages by content",
-            "User wants keyword search constrained to messages with/from a specific person (use with_user / from_user)"
-        ],
-        when_not_to_use=[
-            "User wants to browse a channel's recent messages or a time window of a channel — use get_channel_history with oldest/latest instead (search has indexing lag and 'before/after' are exclusive day boundaries — bad for narrow windows)",
-            "User wants the full DM thread with someone (use get_dm_history)",
-            "User wants to search all content types — files, channels (use search_all)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Search for messages about 'project'",
-            "Find messages in #general about X",
-            "Find messages from @alice about deploys",
-            "Search my conversation with bob@company.com for 'roadmap'"
-        ],
-        category=ToolCategory.COMMUNICATION,
-        llm_description=(
-            "Keyword search across Slack messages. Requires a real keyword/phrase "
-            "in 'query'. Do NOT use this for 'all messages in #channel in the last N "
-            "hours/days' — use get_channel_history with oldest/latest instead. "
-            "Slack search has indexing lag (recent messages may not appear) and "
-            "the 'before:'/'after:' modifiers are EXCLUSIVE day boundaries: "
-            "'after:2025-01-01 before:2025-01-02' returns NOTHING (no day strictly "
-            "between them). For 'today's' or 'last 24h' messages, use "
-            "get_channel_history."
+        path="/tools/slack/search_messages",
+        short_description="Keyword-search messages in Slack",
+        description=(
+            "Keyword search across Slack messages. Requires a real keyword/phrase in 'query'. "
+            "Do NOT use this for 'all messages in #channel in the last N hours/days' — use "
+            "get_channel_history with oldest/latest instead. Slack search has indexing lag "
+            "(recent messages may not appear) and the 'before:'/'after:' modifiers are EXCLUSIVE "
+            "day boundaries: 'after:2025-01-01 before:2025-01-02' returns NOTHING. "
+            "For 'today's' or 'last 24h' messages, use get_channel_history. "
+            "Supports with_user/from_user filters for person-specific searches."
         ),
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="The search query to find messages", required=True),
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel to search in", required=False),
+            ToolParameter(name="with_user", type=ParameterType.STRING, description="Filter to messages exchanged with this user. Accepts email, display name, real name, or Slack user ID. Adds Slack's 'with:@user' search modifier.", required=False),
+            ToolParameter(name="from_user", type=ParameterType.STRING, description="Filter to messages authored by this user. Accepts email, display name, real name, or Slack user ID. Adds Slack's 'from:@user' search modifier.", required=False),
+            ToolParameter(name="count", type=ParameterType.INTEGER, description="Maximum number of results to return", required=False),
+            ToolParameter(name="sort", type=ParameterType.STRING, description="Sort order (timestamp, score)", required=False),
+            ToolParameter(name="sort_dir", type=ParameterType.STRING, description="Sort direction: 'asc' or 'desc'", required=False),
+            ToolParameter(name="after", type=ParameterType.STRING, description="Restrict to messages after this date (YYYY-MM-DD). EXCLUSIVE — 'after:2025-01-15' matches from 2025-01-16 onward.", required=False),
+            ToolParameter(name="before", type=ParameterType.STRING, description="Restrict to messages before this date (YYYY-MM-DD). EXCLUSIVE — 'before:2025-01-15' matches up to 2025-01-14.", required=False),
+        ],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="search")],
     )
     async def search_messages(
         self,
@@ -2108,34 +2010,24 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="set_user_status",
-        description="Set or clear user status",
-        args_schema=SetUserStatusInput,
-        when_to_use=[
-            "User wants to set/update their Slack status",
-            "User wants to clear/remove their Slack status",
-            "User mentions 'Slack' + wants to change/clear status",
-            "User asks to update status or make it active/available again",
-            "User wants to set status with expiration/duration"
+        path="/tools/slack/set_user_status",
+        short_description="Set or clear user status",
+        description=(
+            "Set, update, or CLEAR the user's Slack status. To SET a status: pass status_text "
+            "with the desired text. To CLEAR the status (make user appear active/available): pass "
+            "status_text='' (empty string) AND status_emoji='' (empty string). Pass duration_seconds "
+            "as the number of seconds from NOW (e.g., 3600 for 1 hour, 1800 for 30 min). Do NOT pass "
+            "a Unix timestamp - just the duration in seconds. The status_emoji parameter is OPTIONAL "
+            "when setting a status - if unsure which emoji to use, simply omit it. Common emojis: "
+            "calendar (meetings), airplane (travel), house (WFH), palm_tree (vacation). The tool "
+            "calculates the expiration time internally."
+        ),
+        parameters=[
+            ToolParameter(name="status_text", type=ParameterType.STRING, description="Status text to set. Pass empty string '' to CLEAR the status.", required=True),
+            ToolParameter(name="status_emoji", type=ParameterType.STRING, description="OPTIONAL status emoji (e.g., ':calendar:', ':airplane:'). Pass empty string '' to clear. Omit if unsure.", required=False),
+            ToolParameter(name="duration_seconds", type=ParameterType.INTEGER, description="Duration in seconds from NOW. Examples: 1 hour = 3600, 30 minutes = 1800. Do NOT pass a Unix timestamp.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to send message (use send_message)",
-            "User wants to read messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Set my Slack status to 'In a meeting'",
-            "Update my status in Slack",
-            "Change Slack status",
-            "Set status to Away for 1 hour",
-            "Clear my Slack status",
-            "Remove my status",
-            "Set status to active"
-        ],
-        category=ToolCategory.COMMUNICATION,
-        llm_description="Set, update, or CLEAR the user's Slack status. To SET a status: pass status_text with the desired text. To CLEAR the status (make user appear active/available): pass status_text='' (empty string) AND status_emoji='' (empty string). Pass duration_seconds as the number of seconds from NOW (e.g., 3600 for 1 hour, 1800 for 30 min). Do NOT pass a Unix timestamp - just the duration in seconds. The status_emoji parameter is OPTIONAL when setting a status - if you're not sure which emoji to use or the user didn't specify one, simply omit it. Common emojis: calendar (meetings), airplane (travel), house (WFH), palm_tree (vacation). The tool calculates the expiration time internally. No calculator or other tool is needed."
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def set_user_status(self, status_text: str, status_emoji: Optional[str] = None, duration_seconds: Optional[int] = None) -> Tuple[bool, str]:
         """Set user status in Slack.
@@ -2216,27 +2108,18 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="schedule_message",
-        description="Schedule a message to be sent at a specific time",
-        args_schema=ScheduleMessageInput,
-        when_to_use=[
-            "User wants to schedule message for later",
-            "User mentions 'Slack' + wants to schedule",
-            "User asks to send message at specific time"
+        path="/tools/slack/schedule_message",
+        short_description="Schedule a message to be sent at a specific time",
+        description=(
+            "Schedule a message to be sent at a future time in a Slack channel. "
+            "Provide post_at as an ISO 8601 datetime. For immediate sending, use send_message instead."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel to send the message to", required=True),
+            ToolParameter(name="message", type=ParameterType.STRING, description="The message to send", required=True),
+            ToolParameter(name="post_at", type=ParameterType.STRING, description="When to post the message, as an ISO 8601 datetime string. Examples: '2026-05-01T09:00:00Z' (UTC), '2026-05-01T14:30:00+05:30'. Naive datetimes are interpreted as UTC.", required=True),
         ],
-        when_not_to_use=[
-            "User wants to send now (use send_message)",
-            "User wants to read messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Schedule message for tomorrow",
-            "Send message at 3pm in Slack",
-            "Schedule Slack message"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def schedule_message(self, channel: str, message: str, post_at: str) -> Tuple[bool, str]:
         """Schedule a message to be sent at a specific time"""
@@ -2287,27 +2170,17 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="pin_message",
-        description="Pin a message to a channel",
-        args_schema=PinMessageInput,
-        when_to_use=[
-            "User wants to pin a message in channel",
-            "User mentions 'Slack' + wants to pin message",
-            "User asks to pin a message"
+        path="/tools/slack/pin_message",
+        short_description="Pin a message to a channel",
+        description=(
+            "Pin a specific message to a Slack channel. Provide the channel ID and "
+            "message timestamp. Use when user wants to pin an important message."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'", required=True),
+            ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to pin", required=True),
         ],
-        when_not_to_use=[
-            "User wants to send message (use send_message)",
-            "User wants to read messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Pin this message in #general",
-            "Pin a message in Slack",
-            "Make message pinned"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def pin_message(self, channel: str, timestamp: str) -> Tuple[bool, str]:
         """Pin a message to a channel"""
@@ -2334,27 +2207,17 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="get_unread_messages",
-        description="Get unread messages from a channel",
-        args_schema=GetUnreadMessagesInput,
-        when_to_use=[
-            "User wants to see unread/new messages",
-            "User mentions 'Slack' + wants unread messages",
-            "User asks for new messages in channel"
+        path="/tools/slack/get_unread_messages",
+        short_description="Get unread messages from a channel",
+        description=(
+            "Get unread/new messages from a Slack channel. Returns channel info "
+            "alongside recent messages. Use when user wants to see what's new or unread. "
+            "For full message history use get_channel_history instead."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel to check for unread messages", required=True),
         ],
-        when_not_to_use=[
-            "User wants all messages (use get_channel_history)",
-            "User wants to send message (use send_message)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show unread messages in #general",
-            "Get new messages from Slack",
-            "What's unread in channel?"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_unread_messages(self, channel: str) -> Tuple[bool, str]:
         """Get unread messages from a channel"""
@@ -2426,27 +2289,17 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="get_scheduled_messages",
-        description="Get scheduled messages",
-        args_schema=GetScheduledMessagesInput,
-        when_to_use=[
-            "User wants to see scheduled/pending messages",
-            "User mentions 'Slack' + wants scheduled messages",
-            "User asks for pending scheduled messages"
+        path="/tools/slack/get_scheduled_messages",
+        short_description="Get scheduled messages",
+        description=(
+            "Get pending scheduled messages in Slack. Optionally filter by channel. "
+            "Use when user wants to see what messages are queued for future delivery. "
+            "For scheduling a new message, use schedule_message instead."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel to get scheduled messages for", required=False),
         ],
-        when_not_to_use=[
-            "User wants to schedule message (use schedule_message)",
-            "User wants to read messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show scheduled messages",
-            "What messages are scheduled in Slack?",
-            "List pending scheduled messages"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_scheduled_messages(self, channel: Optional[str] = None) -> Tuple[bool, str]:
         """Get scheduled messages"""
@@ -2493,27 +2346,19 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="send_message_with_mentions",
-        description="Send a message with user mentions",
-        args_schema=SendMessageWithMentionsInput,
-        when_to_use=[
-            "User wants to send message and mention users",
-            "User mentions 'Slack' + wants to @mention people",
-            "User asks to notify users in message"
+        path="/tools/slack/send_message_with_mentions",
+        short_description="Send a message with user mentions",
+        description=(
+            "Send a message to a Slack channel with @mentions of specific users. "
+            "The mentions list will be resolved to Slack user IDs and inserted into the message. "
+            "For a simple message without mentions, use send_message instead."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel to send the message to", required=True),
+            ToolParameter(name="message", type=ParameterType.STRING, description="The message to send with mentions", required=True),
+            ToolParameter(name="mentions", type=ParameterType.ARRAY, description="List of users to mention", required=False),
         ],
-        when_not_to_use=[
-            "User wants simple message (use send_message)",
-            "User wants to read messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Send message and mention @user1 and @user2",
-            "Notify team in Slack message",
-            "Send message with mentions"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def send_message_with_mentions(self, channel: str, message: str, mentions: Optional[List[str]] = None) -> Tuple[bool, str]:
         """Send a message with user mentions"""
@@ -2562,27 +2407,18 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="get_users_list",
-        description="Get list of all users in the organization",
-        args_schema=GetUsersListInput,
-        when_to_use=[
-            "User wants to list all Slack users",
-            "User mentions 'Slack' + wants user list",
-            "User asks for all users in workspace"
+        path="/tools/slack/get_users_list",
+        short_description="Get list of all users in the organization",
+        description=(
+            "Get all users in the Slack workspace with pagination. "
+            "Use when user wants to list all Slack users or find workspace members. "
+            "For specific user info, use get_user_info instead."
+        ),
+        parameters=[
+            ToolParameter(name="include_deleted", type=ParameterType.BOOLEAN, description="Include deleted users in the list. Defaults to True.", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of users to return. If not specified, returns ALL users with pagination.", required=False),
         ],
-        when_not_to_use=[
-            "User wants specific user info (use get_user_info)",
-            "User wants to send message (use send_message)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "List all Slack users",
-            "Show me users in workspace",
-            "Get all Slack users"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_users_list(self, include_deleted: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Get list of all users in the organization with pagination"""
@@ -2650,28 +2486,19 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="get_user_conversations",
-        description="Get ALL conversations for the authenticated user (public channels, private channels, DMs, group DMs)",
-        args_schema=GetUserConversationsInput,
-        when_to_use=[
-            "User wants to see their own conversations/channels/DMs",
-            "User mentions 'Slack' + wants their conversations",
-            "User asks 'what channels am I in?', 'show my conversations'"
+        path="/tools/slack/get_user_conversations",
+        short_description="Get all conversations for the authenticated user",
+        description=(
+            "Get ALL conversations (public channels, private channels, DMs, group DMs) "
+            "for the authenticated user. Use when user asks 'what channels am I in?' or "
+            "wants to see their conversations/channels/DMs."
+        ),
+        parameters=[
+            ToolParameter(name="types", type=ParameterType.STRING, description="Comma-separated list of conversation types. Defaults to ALL types: 'public_channel,private_channel,mpim,im'", required=False),
+            ToolParameter(name="exclude_archived", type=ParameterType.BOOLEAN, description="Exclude archived conversations", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of conversations to return. If not specified, returns ALL with pagination.", required=False),
         ],
-        when_not_to_use=[
-            "User wants info about another user (use get_user_info)",
-            "User wants to send message (use send_message)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "What channels am I in?",
-            "Show my Slack conversations",
-            "List my channels and DMs",
-            "Show all my conversations"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_user_conversations(self, types: Optional[str] = None, exclude_archived: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
         """
@@ -2768,27 +2595,17 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="get_user_groups",
-        description="Get list of user groups in the organization",
-        args_schema=GetUserGroupsInput,
-        when_to_use=[
-            "User wants to list Slack user groups",
-            "User mentions 'Slack' + wants user groups",
-            "User asks for all user groups"
+        path="/tools/slack/get_user_groups",
+        short_description="Get list of user groups in the organization",
+        description=(
+            "Get all user groups in the Slack workspace. Optionally include member lists "
+            "and disabled groups. For specific group info, use get_user_group_info instead."
+        ),
+        parameters=[
+            ToolParameter(name="include_users", type=ParameterType.BOOLEAN, description="Include users in each user group", required=False),
+            ToolParameter(name="include_disabled", type=ParameterType.BOOLEAN, description="Include disabled user groups", required=False),
         ],
-        when_not_to_use=[
-            "User wants specific group info (use get_user_group_info)",
-            "User wants user info (use get_user_info)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "List all Slack user groups",
-            "Show user groups in workspace",
-            "Get all user groups"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_user_groups(self, include_users: Optional[bool] = None, include_disabled: Optional[bool] = None) -> Tuple[bool, str]:
         """Get list of user groups in the organization"""
@@ -2828,27 +2645,17 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="get_user_group_info",
-        description="Get information about a specific user group",
-        args_schema=GetUserGroupInfoInput,
-        when_to_use=[
-            "User wants info about a specific user group",
-            "User mentions 'Slack' + wants group details",
-            "User asks about a user group"
+        path="/tools/slack/get_user_group_info",
+        short_description="Get information about a specific user group",
+        description=(
+            "Get details about a specific Slack user group by ID. Returns group metadata, "
+            "members, and other details. For listing all groups, use get_user_groups instead."
+        ),
+        parameters=[
+            ToolParameter(name="usergroup", type=ParameterType.STRING, description="User group ID to get info for", required=True),
+            ToolParameter(name="include_disabled", type=ParameterType.BOOLEAN, description="Include disabled user groups", required=False),
         ],
-        when_not_to_use=[
-            "User wants all groups (use get_user_groups)",
-            "User wants user info (use get_user_info)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get info about user group X",
-            "Show details of Slack user group",
-            "What is in user group?"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_user_group_info(self, usergroup: str, include_disabled: Optional[bool] = None) -> Tuple[bool, str]:
         """Get information about a specific user group"""
@@ -2892,28 +2699,18 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="get_user_channels",
-        description="Get ALL conversations that the authenticated user is a member of (public channels, private channels, DMs, group DMs)",
-        args_schema=GetUserChannelsInput,
-        when_to_use=[
-            "User wants to see their own channels/conversations/DMs",
-            "User mentions 'Slack' + wants their channels",
-            "User asks 'what channels am I in?', 'show my channels'"
+        path="/tools/slack/get_user_channels",
+        short_description="Get all channels the authenticated user is a member of",
+        description=(
+            "Get ALL conversations that the authenticated user is a member of (public channels, "
+            "private channels, DMs, group DMs). Use when user asks 'what channels am I in?' or "
+            "'show my channels'. For all workspace channels (not just user's), use fetch_channels."
+        ),
+        parameters=[
+            ToolParameter(name="exclude_archived", type=ParameterType.BOOLEAN, description="Exclude archived channels", required=False),
+            ToolParameter(name="types", type=ParameterType.STRING, description="Comma-separated list of conversation types. Defaults to ALL types: 'public_channel,private_channel,mpim,im'", required=False),
         ],
-        when_not_to_use=[
-            "User wants all channels in workspace (use fetch_channels)",
-            "User wants info about another user (use get_user_info)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "What channels am I in?",
-            "Show my Slack channels",
-            "List channels I'm a member of",
-            "Show all my conversations"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_user_channels(self, exclude_archived: Optional[bool] = None, types: Optional[str] = None) -> Tuple[bool, str]:
         """
@@ -2984,27 +2781,18 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="delete_message",
-        description="Delete a message from a channel",
-        args_schema=DeleteMessageInput,
-        when_to_use=[
-            "User wants to delete a message",
-            "User mentions 'Slack' + wants to delete",
-            "User asks to remove a message"
+        path="/tools/slack/delete_message",
+        short_description="Delete a message from a channel",
+        description=(
+            "Delete a specific message from a Slack channel. Provide the channel ID and "
+            "message timestamp. Use when user wants to remove/delete a message."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'", required=True),
+            ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to delete", required=True),
+            ToolParameter(name="as_user", type=ParameterType.BOOLEAN, description="Delete the message as the authenticated user", required=False),
         ],
-        when_not_to_use=[
-            "User wants to send message (use send_message)",
-            "User wants to read messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Delete message in #general",
-            "Remove a Slack message",
-            "Delete this message"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def delete_message(self, channel: str, timestamp: str, as_user: Optional[bool] = None) -> Tuple[bool, str]:
         """Delete a message from a channel"""
@@ -3036,27 +2824,20 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="update_message",
-        description="Update an existing message in a channel",
-        args_schema=UpdateMessageInput,
-        when_to_use=[
-            "User wants to edit/update a message",
-            "User mentions 'Slack' + wants to edit message",
-            "User asks to modify a message"
+        path="/tools/slack/update_message",
+        short_description="Update an existing message in a channel",
+        description=(
+            "Edit/update an existing Slack message. Provide the channel ID, message timestamp, "
+            "and new text content. For sending a new message, use send_message instead."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'", required=True),
+            ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to update", required=True),
+            ToolParameter(name="text", type=ParameterType.STRING, description="New text content for the message", required=True),
+            ToolParameter(name="blocks", type=ParameterType.ARRAY, description="Rich message blocks for advanced formatting", required=False),
+            ToolParameter(name="as_user", type=ParameterType.BOOLEAN, description="Update the message as the authenticated user", required=False),
         ],
-        when_not_to_use=[
-            "User wants to send new message (use send_message)",
-            "User wants to read messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Edit message in #general",
-            "Update a Slack message",
-            "Change message text"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def update_message(self, channel: str, timestamp: str, text: str, blocks: Optional[List[Dict]] = None, as_user: Optional[bool] = None) -> Tuple[bool, str]:
         """Update an existing message"""
@@ -3093,27 +2874,17 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="get_message_permalink",
-        description="Get a permalink for a specific message",
-        args_schema=GetMessagePermalinkInput,
-        when_to_use=[
-            "User wants link to a specific message",
-            "User mentions 'Slack' + wants message link",
-            "User asks for message URL"
+        path="/tools/slack/get_message_permalink",
+        short_description="Get a permalink for a specific message",
+        description=(
+            "Get a shareable permalink URL for a specific Slack message. "
+            "Provide the channel ID and message timestamp."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'", required=True),
+            ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to get permalink for", required=True),
         ],
-        when_not_to_use=[
-            "User wants to read messages (use get_channel_history)",
-            "User wants to send message (use send_message)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get link to message",
-            "Share message permalink",
-            "Get message URL"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_message_permalink(self, channel: str, timestamp: str) -> Tuple[bool, str]:
         """Get a permalink for a specific message"""
@@ -3137,27 +2908,18 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="get_reactions",
-        description="Get reactions for a specific message",
-        args_schema=GetReactionsInput,
-        when_to_use=[
-            "User wants to see reactions on a message",
-            "User mentions 'Slack' + wants message reactions",
-            "User asks for emoji reactions"
+        path="/tools/slack/get_reactions",
+        short_description="Get reactions for a specific message",
+        description=(
+            "Get all emoji reactions on a specific Slack message. Returns reaction names "
+            "and the users who reacted. For adding a reaction, use add_reaction instead."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'", required=True),
+            ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to get reactions for", required=True),
+            ToolParameter(name="full", type=ParameterType.BOOLEAN, description="Return full reaction objects", required=False),
         ],
-        when_not_to_use=[
-            "User wants to add reaction (use add_reaction)",
-            "User wants to read messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show reactions on message",
-            "Get emoji reactions",
-            "What reactions does message have?"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_reactions(self, channel: str, timestamp: str, full: Optional[bool] = None) -> Tuple[bool, str]:
         """Get reactions for a specific message"""
@@ -3219,27 +2981,18 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="remove_reaction",
-        description="Remove a reaction from a message",
-        args_schema=RemoveReactionInput,
-        when_to_use=[
-            "User wants to remove emoji reaction",
-            "User mentions 'Slack' + wants to remove reaction",
-            "User asks to unreact"
+        path="/tools/slack/remove_reaction",
+        short_description="Remove a reaction from a message",
+        description=(
+            "Remove an emoji reaction from a specific Slack message. "
+            "Provide the channel ID, message timestamp, and reaction name to remove."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'", required=True),
+            ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to remove reaction from", required=True),
+            ToolParameter(name="name", type=ParameterType.STRING, description="Name of the emoji reaction to remove", required=True),
         ],
-        when_not_to_use=[
-            "User wants to add reaction (use add_reaction)",
-            "User wants to read messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Remove thumbs up from message",
-            "Unreact to message",
-            "Remove reaction in Slack"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def remove_reaction(self, channel: str, timestamp: str, name: str) -> Tuple[bool, str]:
         """Remove a reaction from a message"""
@@ -3265,27 +3018,16 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="get_pinned_messages",
-        description="Get pinned messages from a channel",
-        args_schema=GetPinnedMessagesInput,
-        when_to_use=[
-            "User wants to see pinned messages",
-            "User mentions 'Slack' + wants pinned messages",
-            "User asks for pinned content"
+        path="/tools/slack/get_pinned_messages",
+        short_description="Get pinned messages from a channel",
+        description=(
+            "Get all pinned messages from a Slack channel. Returns the pinned items "
+            "with resolved user details. For pinning a message, use pin_message instead."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel to get pinned messages from", required=True),
         ],
-        when_not_to_use=[
-            "User wants to pin message (use pin_message)",
-            "User wants all messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show pinned messages in #general",
-            "Get pinned messages from Slack",
-            "What's pinned in channel?"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_pinned_messages(self, channel: str) -> Tuple[bool, str]:
         """Get pinned messages from a channel"""
@@ -3321,27 +3063,17 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="unpin_message",
-        description="Unpin a message from a channel",
-        args_schema=UnpinMessageInput,
-        when_to_use=[
-            "User wants to unpin a message",
-            "User mentions 'Slack' + wants to unpin",
-            "User asks to remove pin"
+        path="/tools/slack/unpin_message",
+        short_description="Unpin a message from a channel",
+        description=(
+            "Remove a pin from a specific message in a Slack channel. "
+            "Provide the channel ID and message timestamp."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'", required=True),
+            ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to unpin", required=True),
         ],
-        when_not_to_use=[
-            "User wants to pin message (use pin_message)",
-            "User wants to read messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Unpin message in #general",
-            "Remove pin from message",
-            "Unpin a Slack message"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def unpin_message(self, channel: str, timestamp: str) -> Tuple[bool, str]:
         """Unpin a message from a channel"""
@@ -3366,27 +3098,22 @@ class Slack:
 
 
     @tool(
-        app_name="slack",
-        tool_name="get_thread_replies",
-        description="Get replies in a thread",
-        args_schema=GetThreadRepliesInput,
-        when_to_use=[
-            "User wants to see thread replies",
-            "User mentions 'Slack' + wants thread replies",
-            "User asks for conversation thread"
+        path="/tools/slack/get_thread_replies",
+        short_description="Get replies in a thread",
+        description=(
+            "Get all replies in a Slack thread. Provide the channel ID and parent message "
+            "timestamp. Optionally filter by time range. For replying to a thread, use "
+            "reply_to_message instead. For channel-level messages, use get_channel_history."
+        ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel id containing the thread e.g 'C1234567890','G1234567890', 'D1234567890'", required=True),
+            ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the parent message", required=True),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of replies to return", required=False),
+            ToolParameter(name="oldest", type=ParameterType.STRING, description="Start of time range as an ISO 8601 date or datetime string", required=False),
+            ToolParameter(name="latest", type=ParameterType.STRING, description="End of time range as an ISO 8601 date or datetime string", required=False),
+            ToolParameter(name="inclusive", type=ParameterType.BOOLEAN, description="Include messages with the exact 'oldest' or 'latest' timestamp", required=False),
         ],
-        when_not_to_use=[
-            "User wants to reply (use reply_to_message)",
-            "User wants channel messages (use get_channel_history)",
-            "No Slack mention"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show replies in thread",
-            "Get thread conversation",
-            "What replies are in this thread?"
-        ],
-        category=ToolCategory.COMMUNICATION
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_thread_replies(
         self,
@@ -3457,32 +3184,22 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
 
     @tool(
-        app_name="slack",
-        tool_name="upload_file_to_channel",
-        description="Upload a text file to a Slack channel as a snippet",
-        args_schema=UploadFileToChannelInput,
-        when_to_use=[
-            "User wants to upload a file or transcript to Slack",
-            "User wants to share a meeting transcript in a Slack channel",
-            "User wants to post a text snippet or log to Slack",
-        ],
-        when_not_to_use=[
-            "User wants to send a plain text message (use send_message)",
-            "User wants to search for files (use search_all)",
-            "No Slack mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Upload the meeting transcript to #general",
-            "Share the Teams call transcript in Slack",
-            "Post this file to the engineering channel",
-        ],
-        category=ToolCategory.COMMUNICATION,
-        llm_description=(
+        path="/tools/slack/upload_file_to_channel",
+        short_description="Upload a text file to a Slack channel",
+        description=(
             "Upload a text file (transcript, log, snippet) to a Slack channel. "
             "Pass the full file content in file_content. The file is hosted in "
-            "Slack and rendered as a collapsible snippet with syntax highlighting."
+            "Slack and rendered as a collapsible snippet with syntax highlighting. "
+            "For plain text messages, use send_message instead."
         ),
+        parameters=[
+            ToolParameter(name="channel", type=ParameterType.STRING, description="The channel to share the file in", required=True),
+            ToolParameter(name="filename", type=ParameterType.STRING, description="Name of the file with extension, e.g. 'transcript.txt'. Slack uses the extension for syntax highlighting.", required=True),
+            ToolParameter(name="file_content", type=ParameterType.STRING, description="The full text content of the file to upload", required=True),
+            ToolParameter(name="title", type=ParameterType.STRING, description="Display title for the file in Slack", required=False),
+            ToolParameter(name="initial_comment", type=ParameterType.STRING, description="Message posted alongside the file in the channel", required=False),
+        ],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def upload_file_to_channel(
         self,

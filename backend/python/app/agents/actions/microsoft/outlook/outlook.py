@@ -17,9 +17,9 @@ from app.agents.actions.util.blob_staging import (
 )
 from app.modules.transformers.blob_storage import BlobStorage
 from app.connectors.core.constants import IconPaths
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import list_summary
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -175,6 +175,10 @@ def _response_data(response: object) -> Any:
     if data is None:
         return None
     return _normalize_odata(_serialize_graph_obj(data))
+
+
+def _outlook_message_label(message: dict) -> str:
+    return message.get("subject") or message.get("id") or "(no subject)"
 
 @staticmethod
 def _status_label(status_char: str) -> str:
@@ -728,28 +732,21 @@ class Outlook:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="outlook",
-        tool_name="send_email",
-        description="Send an email via Microsoft Outlook",
-        args_schema=SendMailInput,
-        when_to_use=[
-            "User wants to send an email via Outlook or Microsoft 365",
-            "User mentions 'Outlook' or 'Microsoft email' and wants to send",
-            "User asks to email someone",
+        path="/tools/outlook/send_email",
+        short_description="Send an email via Microsoft Outlook",
+        description=(
+            "Send a new email via Microsoft Outlook. Composes a draft and sends it. "
+            "Supports to, cc, and bcc recipients with plain text or HTML body."
+        ),
+        parameters=[
+            ToolParameter(name="to_recipients", type=ParameterType.LIST, description="List of recipient email addresses", required=True),
+            ToolParameter(name="subject", type=ParameterType.STRING, description="Email subject", required=True),
+            ToolParameter(name="body", type=ParameterType.STRING, description="Email body content (plain text or HTML)", required=True),
+            ToolParameter(name="body_type", type=ParameterType.STRING, description="Body content type: 'Text' or 'HTML'", required=False),
+            ToolParameter(name="cc_recipients", type=ParameterType.LIST, description="List of CC recipient email addresses", required=False),
+            ToolParameter(name="bcc_recipients", type=ParameterType.LIST, description="List of BCC recipient email addresses", required=False),
         ],
-        when_not_to_use=[
-            "User wants to reply to an existing email (use reply_to_message)",
-            "User wants to forward an email (use forward_message)",
-            "User wants to search emails (use search_messages)",
-            "No Outlook/email mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Send an email to john@example.com",
-            "Email the team about the meeting",
-            "Send Outlook message",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
     )
     async def send_email(
         self,
@@ -828,28 +825,14 @@ class Outlook:
             return self._handle_error(e, "send email")
 
     @tool(
-        app_name="outlook",
-        tool_name="reply_to_message",
-        description="Reply to an Outlook email message",
-        args_schema=ReplyToMessageInput,
-        when_to_use=[
-            "User wants to reply to an email in Outlook",
-            "User mentions 'Outlook' and wants to reply",
-            "User asks to respond to an email message",
+        path="/tools/outlook/reply_to_message",
+        short_description="Reply to an Outlook email message",
+        description="Reply to a specific Outlook email message by its ID. Sends a reply only to the original sender.",
+        parameters=[
+            ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the message to reply to", required=True),
+            ToolParameter(name="comment", type=ParameterType.STRING, description="Reply comment / body text", required=True),
         ],
-        when_not_to_use=[
-            "User wants to send a new email (use send_email)",
-            "User wants to reply to all (use reply_all_to_message)",
-            "User wants to search emails (use search_messages)",
-            "No Outlook/email mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Reply to this Outlook email",
-            "Respond to message",
-            "Reply saying I'll be there",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
     )
     async def reply_to_message(
         self,
@@ -870,25 +853,14 @@ class Outlook:
             return self._handle_error(e, "reply to message")
 
     @tool(
-        app_name="outlook",
-        tool_name="reply_all_to_message",
-        description="Reply-all to an Outlook email message",
-        args_schema=ReplyAllToMessageInput,
-        when_to_use=[
-            "User wants to reply-all to an email in Outlook",
-            "User mentions 'Outlook' and wants to reply to all recipients",
+        path="/tools/outlook/reply_all_to_message",
+        short_description="Reply-all to an Outlook email message",
+        description="Reply to all recipients of an Outlook email message by its ID.",
+        parameters=[
+            ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the message to reply-all to", required=True),
+            ToolParameter(name="comment", type=ParameterType.STRING, description="Reply-all comment / body text", required=True),
         ],
-        when_not_to_use=[
-            "User only wants to reply to the sender (use reply_to_message)",
-            "User wants to send a new email (use send_email)",
-            "No Outlook/email mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Reply all to this email",
-            "Respond to everyone on this thread",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
     )
     async def reply_all_to_message(
         self,
@@ -909,25 +881,15 @@ class Outlook:
             return self._handle_error(e, "reply-all to message")
 
     @tool(
-        app_name="outlook",
-        tool_name="forward_message",
-        description="Forward an Outlook email to one or more recipients",
-        args_schema=ForwardMessageInput,
-        when_to_use=[
-            "User wants to forward an Outlook email",
-            "User mentions 'Outlook' and wants to forward a message",
+        path="/tools/outlook/forward_message",
+        short_description="Forward an Outlook email to one or more recipients",
+        description="Forward an existing Outlook email message to one or more recipients, with an optional comment.",
+        parameters=[
+            ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the message to forward", required=True),
+            ToolParameter(name="to_recipients", type=ParameterType.LIST, description="List of recipient email addresses to forward to", required=True),
+            ToolParameter(name="comment", type=ParameterType.STRING, description="Optional comment to include with the forwarded message", required=False),
         ],
-        when_not_to_use=[
-            "User wants to send a new email (use send_email)",
-            "User wants to reply (use reply_to_message)",
-            "No Outlook/email mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Forward this email to sarah@example.com",
-            "Forward the message to the team",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
     )
     async def forward_message(
         self,
@@ -959,35 +921,33 @@ class Outlook:
             return self._handle_error(e, "forward message")
 
     @tool(
-        app_name="outlook",
-        tool_name="search_messages",
+        path="/tools/outlook/search_messages",
+        short_description="Search or list Outlook emails",
         description=(
             "Search or list Outlook emails. Results are returned newest-first by default. "
             "For 'latest/most recent/last email(s)' call with just `top` (e.g. top=1) and "
             "leave `search` and `filter` unset — adding a keyword or date filter when the "
             "user did not specify one will return 0 results."
         ),
-        args_schema=SearchMessagesInput,
-        when_to_use=[
-            "User wants the latest / most recent / last email(s) (call with just `top`, no search/filter)",
-            "User wants to search emails by sender, subject, body, or attachment",
-            "User wants emails matching an OData filter (e.g. unread, flagged, date range)",
-            "User mentions 'Outlook' and wants to find emails",
+        parameters=[
+            ToolParameter(name="search", type=ParameterType.STRING, description="Search query string (OData $search)", required=False),
+            ToolParameter(
+                name="filter", type=ParameterType.STRING,
+                description=(
+                    "OData $filter expression. Datetime literals MUST include a timezone designator — "
+                    "use '2026-05-01T00:00:00Z', not '2026-05-01T00:00:00'. "
+                    "Examples: \"isRead eq false\", \"receivedDateTime ge 2026-05-01T00:00:00Z\"."
+                ),
+                required=False,
+            ),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of messages to return (default 10, max 50)", required=False),
+            ToolParameter(name="orderby", type=ParameterType.STRING, description="OData $orderby expression", required=False),
         ],
-        when_not_to_use=[
-            "User wants to send email (use send_email)",
-            "User wants to read a specific email (use get_message)",
-            "No Outlook/email mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show me my latest email",
-            "Get my last 5 emails",
-            "Search for emails from john@example.com",
-            "Show my unread emails in Outlook",
-            "Find emails about the project",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Searching Outlook: "{args["search"]}"' if args.get("search") else "Fetching Outlook messages"
+        ),
+        result_summary=list_summary(("messages",), _outlook_message_label, "message"),
     )
     async def search_messages(
         self,
@@ -1023,27 +983,13 @@ class Outlook:
             return self._handle_error(e, "search messages")
 
     @tool(
-        app_name="outlook",
-        tool_name="get_message",
-        description="Get the full details of a specific Outlook email message",
-        args_schema=GetMessageInput,
-        when_to_use=[
-            "User wants to read/view a specific Outlook email",
-            "User has a message ID and wants to see its content",
-            "User asks to show email details",
+        path="/tools/outlook/get_message",
+        short_description="Get the full details of a specific Outlook email message",
+        description="Get the full details of a specific Outlook email message by its ID, including subject, body, sender, and recipients.",
+        parameters=[
+            ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the email message to retrieve", required=True),
         ],
-        when_not_to_use=[
-            "User wants to search emails (use search_messages)",
-            "User wants to send email (use send_email)",
-            "No Outlook/email mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get the email with id ABC123",
-            "Show me this Outlook message",
-            "Read the email",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
     )
     async def get_message(
         self,
@@ -1065,26 +1011,14 @@ class Outlook:
             return self._handle_error(e, f"get message {message_id}")
 
     @tool(
-        app_name="outlook",
-        tool_name="list_message_attachments",
-        description="List attachments on an Outlook email message",
-        args_schema=ListMessageAttachmentsInput,
-        when_to_use=[
-            "User wants to see what files are attached to an Outlook email",
-            "Caller needs attachment IDs before downloading or transferring files",
-            "Preparing to copy mail attachments to another platform (Salesforce, Drive, ...)",
+        path="/tools/outlook/list_message_attachments",
+        short_description="List attachments on an Outlook email message",
+        description="List attachments on an Outlook email message. Returns metadata (id, name, contentType, size) without downloading binary content.",
+        parameters=[
+            ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the Outlook message whose attachments should be listed", required=True),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of attachments to return (default 25, max 100)", required=False),
         ],
-        when_not_to_use=[
-            "User wants the attachment file content (use stage_attachment_to_blob)",
-            "User wants the email body (use get_message)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "What files are attached to this email?",
-            "List the attachments on Outlook message <id>",
-            "Show attachments for the latest email from John",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
     )
     async def list_message_attachments(
         self,
@@ -1139,32 +1073,18 @@ class Outlook:
             )
 
     @tool(
-        app_name="outlook",
-        tool_name="stage_attachment_to_blob",
+        path="/tools/outlook/stage_attachment_to_blob",
+        short_description="Download an Outlook attachment to PipesHub blob storage",
         description=(
-            "Download an Outlook attachment and stage it in PipesHub blob "
-            "storage so another toolset can upload it elsewhere."
+            "Download an Outlook attachment and stage it in PipesHub blob storage so another "
+            "toolset can upload it elsewhere (Salesforce, Box, Drive, etc.). Returns a document_id "
+            "that downstream tools can reference."
         ),
-        llm_description=(
-            "Use this when the user wants to copy an Outlook mail attachment "
-            "to another platform (Salesforce, Box, Drive, etc.). It downloads "
-        ),
-        args_schema=StageAttachmentToBlobInput,
-        when_to_use=[
-            "User wants to move an Outlook attachment to another platform",
-            "Caller needs to hand off attachment bytes to another tool",
+        parameters=[
+            ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the Outlook message that owns the attachment", required=True),
+            ToolParameter(name="attachment_id", type=ParameterType.STRING, description="ID of the attachment to download", required=True),
         ],
-        when_not_to_use=[
-            "User just wants to read the email (use get_message)",
-            "User wants the list of attachments without downloading them "
-            "(use list_message_attachments)",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Copy this Outlook attachment to Salesforce",
-            "Stage the attachment so I can upload it elsewhere",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
     )
     async def stage_attachment_to_blob(
         self,
@@ -1370,25 +1290,13 @@ class Outlook:
             )
 
     @tool(
-        app_name="outlook",
-        tool_name="get_mail_folders",
-        description="List mail folders in Microsoft Outlook",
-        args_schema=GetMailFoldersInput,
-        when_to_use=[
-            "User wants to see their Outlook mail folders",
-            "User asks to list email folders",
+        path="/tools/outlook/get_mail_folders",
+        short_description="List mail folders in Microsoft Outlook",
+        description="List mail folders in Microsoft Outlook. Returns folder names, IDs, and message counts.",
+        parameters=[
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of folders to return (default 20)", required=False),
         ],
-        when_not_to_use=[
-            "User wants to search emails (use search_messages)",
-            "No Outlook/email mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show my Outlook folders",
-            "List email folders",
-            "What folders do I have in Outlook?",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
     )
     async def get_mail_folders(
         self,
@@ -1417,27 +1325,15 @@ class Outlook:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="outlook",
-        tool_name="get_calendar_events",
-        description="Get calendar events from Microsoft Outlook within a date range",
-        args_schema=GetCalendarEventsInput,
-        when_to_use=[
-            "User wants to see their Outlook calendar events",
-            "User asks what meetings or events they have",
-            "User wants to check their schedule in Outlook",
+        path="/tools/outlook/get_calendar_events",
+        short_description="Get calendar events from Outlook within a date range",
+        description="Get calendar events from Microsoft Outlook within a specified date/time range. Returns event details including subject, times, attendees, and location.",
+        parameters=[
+            ToolParameter(name="start_datetime", type=ParameterType.STRING, description="Start of the time range in ISO 8601 format (e.g. 2024-01-15T00:00:00Z)", required=True),
+            ToolParameter(name="end_datetime", type=ParameterType.STRING, description="End of the time range in ISO 8601 format (e.g. 2024-01-22T00:00:00Z)", required=True),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of events to return", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a calendar event (use create_calendar_event)",
-            "User wants email (use search_messages or get_message)",
-            "No Outlook/calendar mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show my Outlook calendar for this week",
-            "What meetings do I have tomorrow?",
-            "Get my calendar events from Monday to Friday",
-        ],
-        category=ToolCategory.CALENDAR,
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
     )
     async def get_calendar_events(
         self,
@@ -1475,30 +1371,14 @@ class Outlook:
             return self._handle_error(e, "get calendar events")
 
     @tool(
-        app_name="outlook",
-        tool_name="search_calendar_events",
-        description="Search Outlook calendar events by keyword (searches subject, body, and location)",
-        args_schema=SearchCalendarEventsInput,
-        when_to_use=[
-            "User wants to find calendar events by keyword or phrase",
-            "User asks to search for events containing specific text",
-            "User wants to find events by topic, location, or description",
-            "User wants to find events by recurring event and its id",
+        path="/tools/outlook/search_calendar_events",
+        short_description="Search Outlook calendar events by keyword",
+        description="Search Outlook calendar events by keyword (searches subject, body, and location). Useful for finding events by topic or name.",
+        parameters=[
+            ToolParameter(name="search", type=ParameterType.STRING, description="Search keyword or phrase to find in event subject, body, and location", required=True),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of events to return (default 10)", required=False),
         ],
-        when_not_to_use=[
-            "User wants events in a date range (use get_calendar_events)",
-            "User wants to create or update an event",
-            "No Outlook/calendar search mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Search my Outlook calendar for 'standup'",
-            "Find events about project X",
-            "Which meetings mention the office?",
-            "Update my 'Standup' event ..."
-            "Get my 'Standup' event ..."
-        ],
-        category=ToolCategory.CALENDAR,
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
     )
     async def search_calendar_events(
         self,
@@ -1527,27 +1407,21 @@ class Outlook:
             return self._handle_error(e, "search calendar events")
 
     @tool(
-        app_name="outlook",
-        tool_name="create_calendar_event",
-        description="Create a new calendar event in Microsoft Outlook",
-        args_schema=CreateCalendarEventInput,
-        when_to_use=[
-            "User wants to create a meeting or calendar event in Outlook",
-            "User asks to schedule a meeting",
-            "User wants to add an event to their Outlook calendar",
+        path="/tools/outlook/create_calendar_event",
+        short_description="Create a new calendar event in Microsoft Outlook",
+        description="Create a new calendar event in Microsoft Outlook. Supports attendees, location, online meeting links, and recurrence patterns.",
+        parameters=[
+            ToolParameter(name="subject", type=ParameterType.STRING, description="Title/subject of the event", required=True),
+            ToolParameter(name="start_datetime", type=ParameterType.STRING, description="Start datetime in ISO 8601 format (e.g. 2024-01-15T10:00:00)", required=True),
+            ToolParameter(name="end_datetime", type=ParameterType.STRING, description="End datetime in ISO 8601 format (e.g. 2024-01-15T11:00:00)", required=True),
+            ToolParameter(name="timezone", type=ParameterType.STRING, description="Timezone for the event (e.g. 'UTC', 'America/New_York', 'India Standard Time')", required=False),
+            ToolParameter(name="body", type=ParameterType.STRING, description="Body/description of the event", required=False),
+            ToolParameter(name="location", type=ParameterType.STRING, description="Location of the event", required=False),
+            ToolParameter(name="attendees", type=ParameterType.LIST, description="List of attendee email addresses", required=False),
+            ToolParameter(name="recurrence", type=ParameterType.DICT, description="Recurrence pattern and range dict matching MS Graph API format", required=False),
+            ToolParameter(name="is_online_meeting", type=ParameterType.BOOLEAN, description="Whether to create an online meeting link", required=False),
         ],
-        when_not_to_use=[
-            "User wants to view calendar events (use get_calendar_events)",
-            "User wants to send email (use send_email)",
-            "No Outlook/calendar mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Create a meeting in Outlook for tomorrow at 2pm",
-            "Schedule a 1-hour event called 'Team Sync'",
-            "Add a calendar event to my Outlook",
-        ],
-        category=ToolCategory.CALENDAR,
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
     )
     async def create_calendar_event(
         self,
@@ -1608,25 +1482,13 @@ class Outlook:
             return self._handle_error(e, "create calendar event")
 
     @tool(
-        app_name="outlook",
-        tool_name="get_calendar_event",
-        description="Get details of a specific Outlook calendar event",
-        args_schema=GetCalendarEventInput,
-        when_to_use=[
-            "User wants to see details of a specific Outlook calendar event",
-            "User has an event ID and wants to view it",
+        path="/tools/outlook/get_calendar_event",
+        short_description="Get details of a specific Outlook calendar event",
+        description="Get the full details of a specific Outlook calendar event by its ID, including subject, times, attendees, recurrence, and online meeting info.",
+        parameters=[
+            ToolParameter(name="event_id", type=ParameterType.STRING, description="ID of the calendar event to retrieve", required=True),
         ],
-        when_not_to_use=[
-            "User wants to list events (use get_calendar_events)",
-            "User wants to create an event (use create_calendar_event)",
-            "No Outlook/calendar mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get details of this Outlook event",
-            "Show me the meeting details",
-        ],
-        category=ToolCategory.CALENDAR,
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
     )
     async def get_calendar_event(
         self,
@@ -1644,32 +1506,25 @@ class Outlook:
             return self._handle_error(e, f"get calendar event {event_id}")
 
     @tool(
-        app_name="outlook",
-        tool_name="update_calendar_event",
-        description="Update an existing calendar event in Microsoft Outlook (change subject, time, attendees, location, etc.)",
-        args_schema=UpdateCalendarEventInput,
-        when_to_use=[
-            "User wants to update or modify an existing Outlook calendar event",
-            "User wants to add/remove attendees from an existing meeting",
-            "User wants to change the time, location, or subject of a meeting",
-            "User wants to reschedule a meeting",
+        path="/tools/outlook/update_calendar_event",
+        short_description="Update an existing Outlook calendar event",
+        description=(
+            "Update an existing calendar event in Microsoft Outlook. Can change subject, time, "
+            "attendees, location, body, online meeting status, and recurrence. Only provide fields to update."
+        ),
+        parameters=[
+            ToolParameter(name="event_id", type=ParameterType.STRING, description="ID of the calendar event to update", required=True),
+            ToolParameter(name="subject", type=ParameterType.STRING, description="New title/subject of the event", required=False),
+            ToolParameter(name="start_datetime", type=ParameterType.STRING, description="New start datetime in ISO 8601 format", required=False),
+            ToolParameter(name="end_datetime", type=ParameterType.STRING, description="New end datetime in ISO 8601 format", required=False),
+            ToolParameter(name="timezone", type=ParameterType.STRING, description="Timezone for the event (e.g. 'UTC', 'America/New_York', 'India Standard Time')", required=False),
+            ToolParameter(name="body", type=ParameterType.STRING, description="New body/description (string or dict with 'content' key from API)", required=False),
+            ToolParameter(name="location", type=ParameterType.STRING, description="New location (string or dict with 'displayName' from API)", required=False),
+            ToolParameter(name="attendees", type=ParameterType.LIST, description="Attendee emails as a list of email strings", required=False),
+            ToolParameter(name="is_online_meeting", type=ParameterType.BOOLEAN, description="Whether to create an online meeting link", required=False),
+            ToolParameter(name="recurrence", type=ParameterType.DICT, description="Updated recurrence settings (same structure as create_calendar_event)", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a new event (use create_calendar_event)",
-            "User wants to delete an event (use delete_calendar_event)",
-            "User wants to list events (use get_calendar_events)",
-            "No Outlook/calendar mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Add john@example.com to my 2pm meeting",
-            "Change the meeting to 3pm",
-            "Update the meeting subject to 'Sprint Review'",
-            "Reschedule tomorrow's meeting to Friday",
-            "Extend the meeting to 4pm",
-            "Extend the recurring meeting by 15 days",
-        ],
-        category=ToolCategory.CALENDAR,
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
     )
     async def update_calendar_event(
         self,
@@ -1774,26 +1629,13 @@ class Outlook:
             return self._handle_error(e, f"update calendar event {event_id}")
 
     @tool(
-        app_name="outlook",
-        tool_name="delete_calendar_event",
-        description="Delete a calendar event from Microsoft Outlook",
-        args_schema=DeleteCalendarEventInput,
-        when_to_use=[
-            "User wants to delete or cancel an Outlook calendar event",
-            "User wants to remove a meeting from their calendar",
+        path="/tools/outlook/delete_calendar_event",
+        short_description="Delete a calendar event from Microsoft Outlook",
+        description="Delete a calendar event from Microsoft Outlook by its ID. Permanently removes the event.",
+        parameters=[
+            ToolParameter(name="event_id", type=ParameterType.STRING, description="ID of the calendar event to delete", required=True),
         ],
-        when_not_to_use=[
-            "User wants to update an event (use update_calendar_event)",
-            "User wants to create an event (use create_calendar_event)",
-            "No Outlook/calendar mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Delete my 2pm meeting",
-            "Cancel the meeting with John",
-            "Remove this event from my calendar",
-        ],
-        category=ToolCategory.CALENDAR,
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
     )
     async def delete_calendar_event(
         self,
@@ -1813,8 +1655,8 @@ class Outlook:
             return self._handle_error(e, f"delete calendar event {event_id}")
 
     @tool(
-        app_name="outlook",
-        tool_name="get_recurring_events",
+        path="/tools/outlook/get_recurring_events",
+        short_description="Get all recurring calendar events in a date range",
         description=(
             "Get all recurring calendar events that have occurrences in a date range "
             "(defaults to the next 30 days). Returns each recurring series with its "
@@ -1822,26 +1664,13 @@ class Outlook:
             "this returns ALL recurring events active in the window, not just those "
             "whose series is ending."
         ),
-        args_schema=GetRecurringEventsInput,
-        when_to_use=[
-            "User wants to see all their recurring events or meetings",
-            "User asks what recurring meetings they have coming up",
-            "User wants to list recurring calendar events in a date range",
-            "User wants to know which meetings repeat on their calendar",
+        parameters=[
+            ToolParameter(name="start_date", type=ParameterType.STRING, description="Start of the date range in ISO 8601 format (defaults to now)", required=False),
+            ToolParameter(name="end_date", type=ParameterType.STRING, description="End of the date range in ISO 8601 format (defaults to 30 days from now)", required=False),
+            ToolParameter(name="timezone", type=ParameterType.STRING, description="Windows timezone name (e.g. 'India Standard Time')", required=False),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of recurring event series to return (1–100)", required=False),
         ],
-        when_not_to_use=[
-            "User wants all events including non-recurring (use get_calendar_events)",
-            "User only wants recurring events that are ending soon (use get_recurring_events_ending)",
-            "User wants to create or update an event",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show me all my recurring meetings",
-            "What recurring events do I have in the next month?",
-            "List all repeating meetings on my calendar",
-            "Which meetings recur this week?",
-        ],
-        category=ToolCategory.CALENDAR,
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
     )
     async def get_recurring_events(
         self,
@@ -1935,31 +1764,20 @@ class Outlook:
             return self._handle_error(e, "get recurring events")
 
     @tool(
-        app_name="outlook",
-        tool_name="get_recurring_events_ending",
+        path="/tools/outlook/get_recurring_events_ending",
+        short_description="Get recurring events ending within a time frame",
         description=(
             "Get recurring calendar events whose recurrence series ends within a "
             "specified time frame. Useful for finding recurring meetings that are "
             "about to end or have recently ended."
         ),
-        args_schema=GetRecurringEventsEndingInput,
-        when_to_use=[
-            "User wants to find recurring events that are ending soon",
-            "User wants to know which recurring meetings are expiring",
-            "User wants to review recurring events ending in a date range",
+        parameters=[
+            ToolParameter(name="end_before", type=ParameterType.STRING, description="Fetch recurring events whose recurrence ends before this datetime (ISO 8601)", required=True),
+            ToolParameter(name="end_after", type=ParameterType.STRING, description="Fetch recurring events whose recurrence ends after this datetime (ISO 8601, defaults to now)", required=False),
+            ToolParameter(name="timezone", type=ParameterType.STRING, description="Windows timezone name (e.g. 'India Standard Time')", required=False),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of results to return (1–50)", required=False),
         ],
-        when_not_to_use=[
-            "User wants all events in a date range (use get_calendar_events)",
-            "User wants to create or update an event",
-            "User wants non-recurring events",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Which recurring meetings are ending this month?",
-            "Show me recurring events expiring before March 31",
-            "Find recurring meetings ending soon",
-        ],
-        category=ToolCategory.CALENDAR,
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
     )
     async def get_recurring_events_ending(
         self,
@@ -2041,35 +1859,19 @@ class Outlook:
             return self._handle_error(e, "get recurring events ending")
 
     @tool(
-        app_name="outlook",
-        tool_name="delete_recurring_event_occurrence",
+        path="/tools/outlook/delete_recurring_event_occurrence",
+        short_description="Delete specific occurrences of a recurring event",
         description=(
-            "Take a list of dates and delete the occurrences of the recurring event on those dates."
+            "Delete specific occurrences of a recurring event by date. Takes a list of dates "
+            "and deletes the occurrences of the recurring event on those dates, without affecting "
+            "the rest of the series."
         ),
-        args_schema=DeleteRecurringEventOccurrencesInput,
-        when_to_use=[
-            "User wants to cancel one or more occurrences of a recurring meeting",
-            "User wants to skip a recurring meeting on specific dates",
-            "User wants to delete instances without affecting the whole series",
+        parameters=[
+            ToolParameter(name="event_id", type=ParameterType.STRING, description="The series master event ID of the recurring event", required=True),
+            ToolParameter(name="occurrence_dates", type=ParameterType.LIST, description="List of dates to delete occurrences on (YYYY-MM-DD)", required=True),
+            ToolParameter(name="timezone", type=ParameterType.STRING, description="Windows timezone name (e.g. 'India Standard Time')", required=False),
         ],
-        when_not_to_use=[
-            "User wants to delete the entire series (use delete_calendar_event)",
-            "User wants to update the occurrence (use update_calendar_event)",
-            "User wants to skip weekends/holidays on all future occurrences (use update_recurring_event_with_exclusion)",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Cancel the standup on March 10 and March 17",
-            "Skip the catchup meeting this Friday and next Friday",
-            "Delete the March 25 and April 1 occurrences of my weekly sync",
-            "Delete the occurrences of the recurring event on Holidays",
-            "Delete the occurrences of the recurring event on weekends",
-        ],
-        llm_description=(
-            "Used when deleting the occurrences of the recurring event on specific dates. "
-            "Takes a list of dates and deletes the occurrences of the recurring event on those dates."
-        ),
-        category=ToolCategory.CALENDAR,
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
     )
     async def delete_recurring_event_occurrence(
         self,
@@ -2302,33 +2104,19 @@ class Outlook:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="outlook",
-        tool_name="get_meeting_transcripts",
+        path="/tools/outlook/get_meeting_transcripts",
+        short_description="Get transcripts for a Teams online meeting",
         description=(
             "Get the transcripts for a Microsoft Teams online meeting. "
-            "Accepts either an ical_uid (iCalUId from a calendar event) or "
-            "an event_id (calendar event ID). iCalUId is preferred if available "
-            "as it skips an extra API call. Returns parsed transcript text with "
+            "Accepts either a join_url (preferred, skips one API call) or "
+            "an event_id (calendar event ID). Returns parsed transcript text with "
             "speaker names and timestamps."
         ),
-        args_schema=GetMeetingTranscriptsInput,
-        when_to_use=[
-            "User wants to see the transcript of a Teams meeting",
-            "User asks what was said in a meeting",
-            "User wants meeting notes or minutes from a Teams call",
+        parameters=[
+            ToolParameter(name="join_url", type=ParameterType.STRING, description="The Teams join URL (from event.onlineMeeting.joinUrl). Preferred over event_id.", required=False),
+            ToolParameter(name="event_id", type=ParameterType.STRING, description="The calendar event ID. Fallback when join_url is not available.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to list meetings (use list_online_meetings or get_calendar_events)",
-            "User wants to create a meeting (use create_calendar_event)",
-            "No transcript/meeting-content mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get the transcript of my last Teams meeting",
-            "Show me what was discussed in the meeting",
-            "Fetch meeting transcript for meeting ID ...",
-        ],
-        category=ToolCategory.CALENDAR,
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
     )
     async def get_meeting_transcripts(
         self,

@@ -17,9 +17,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -161,34 +160,29 @@ class DatabaseSandbox:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="database_sandbox",
-        tool_name="execute_sqlite",
-        args_schema=ExecuteSQLiteInput,
-        llm_description=(
+        path="/tools/database_sandbox/execute_sqlite",
+        short_description="Execute SQL in an ephemeral SQLite database",
+        description=(
             "Execute SQL in an ephemeral SQLite database. "
             "The database is created fresh for each execution. "
             "Use setup_sql to create tables and insert data, then use query to SELECT. "
             "Useful for data manipulation, analysis, and demonstrating SQL concepts."
         ),
-        category=ToolCategory.CODE_EXECUTION,
-        is_essential=False,
-        requires_auth=False,
-        when_to_use=[
-            "User wants to run SQL queries on sample data",
-            "User wants to demonstrate a SQL concept",
-            "User needs to manipulate tabular data with SQL",
-            "User wants to create and query a temporary database",
+        parameters=[
+            ToolParameter(
+                name="query",
+                type=ParameterType.STRING,
+                description="SQL statement(s) to execute. Can include CREATE TABLE, INSERT, and SELECT in a single block separated by semicolons.",
+                required=True,
+            ),
+            ToolParameter(
+                name="setup_sql",
+                type=ParameterType.STRING,
+                description="Optional setup SQL to run first (e.g. CREATE TABLE / INSERT statements to populate the database before the main query).",
+                required=False,
+            ),
         ],
-        when_not_to_use=[
-            "User wants to query their own production database (use MariaDB/Redshift tools)",
-            "User just wants a text explanation of SQL",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Run a SQL query to find the top 10 customers by revenue",
-            "Create a table and demonstrate a JOIN",
-            "Analyze this data using SQL",
-        ],
+        tags=[Tag(key="category", value="code_execution"), Tag(key="type", value="action")],
     )
     async def execute_sqlite(self, query: str, setup_sql: str | None = None) -> tuple[bool, str]:
         """Execute SQL in an ephemeral SQLite sandbox."""
@@ -231,30 +225,22 @@ class DatabaseSandbox:
             return self._result(False, {"error": redact_sandbox_paths(str(e))})
 
     @tool(
-        app_name="database_sandbox",
-        tool_name="execute_postgresql",
-        args_schema=ExecutePostgreSQLInput,
-        llm_description=(
+        path="/tools/database_sandbox/execute_postgresql",
+        short_description="Execute SQL against a configured PostgreSQL sandbox instance",
+        description=(
             "Execute a SQL query against a configured PostgreSQL sandbox instance. "
             "Requires a DATABASE_URL to be configured in the sandbox environment. "
             "Use for PostgreSQL-specific SQL features or when connecting to a sandbox PG instance."
         ),
-        category=ToolCategory.CODE_EXECUTION,
-        is_essential=False,
-        requires_auth=False,
-        when_to_use=[
-            "User wants to use PostgreSQL-specific SQL features",
-            "User wants to query a sandbox PostgreSQL instance",
+        parameters=[
+            ToolParameter(
+                name="query",
+                type=ParameterType.STRING,
+                description="SQL query to execute against the configured PostgreSQL sandbox instance.",
+                required=True,
+            ),
         ],
-        when_not_to_use=[
-            "SQLite would suffice for the task",
-            "User just wants a text explanation",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Run a PostgreSQL query with window functions",
-            "Demonstrate PostgreSQL JSON operations",
-        ],
+        tags=[Tag(key="category", value="code_execution"), Tag(key="type", value="action")],
     )
     async def execute_postgresql(self, query: str) -> tuple[bool, str]:
         """Execute SQL against a PostgreSQL sandbox instance."""

@@ -458,7 +458,38 @@ class TestAppendTaskMarkers:
         # Evil marker gone, trusted marker present.
         assert "evil.example" not in result
         assert "https://trusted.example/ok" in result
-        assert "::artifact[good.png](https://trusted.example/ok){image/png|d1|r1}" in result
+        assert "::artifact[good.png](https://trusted.example/ok){image/png|d1|r1||}" in result
+
+    def test_deduplicates_same_artifact_version_across_tasks(self):
+        """A re-run that queued the same artifact (same recordId + version)
+        twice must render exactly ONE download card."""
+        entry = {
+            "fileName": "chart.png",
+            "signedUrl": "https://trusted.example/chart",
+            "mimeType": "image/png",
+            "documentId": "d1",
+            "recordId": "r1",
+            "artifactType": "IMAGE",
+            "version": 1,
+        }
+        tasks = [
+            {"type": "artifacts", "artifacts": [entry]},
+            {"type": "artifacts", "artifacts": [dict(entry)]},
+        ]
+        result = _append_task_markers("Answer", tasks)
+        assert result.count("::artifact[chart.png]") == 1
+        assert "{image/png|d1|r1|IMAGE|1}" in result
+
+    def test_new_version_of_same_artifact_gets_its_own_marker(self):
+        v1 = {
+            "fileName": "chart.png", "signedUrl": "https://u/v1", "mimeType": "image/png",
+            "documentId": "d1", "recordId": "r1", "artifactType": "IMAGE", "version": 1,
+        }
+        v2 = {**v1, "signedUrl": "https://u/v2", "version": 2}
+        result = _append_task_markers("Answer", [
+            {"type": "artifacts", "artifacts": [v1, v2]},
+        ])
+        assert result.count("::artifact[chart.png]") == 2
 
     def test_multiple_markers_joined_with_double_newline(self):
         tasks = [

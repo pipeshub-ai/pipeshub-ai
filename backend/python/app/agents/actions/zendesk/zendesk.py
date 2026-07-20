@@ -3,9 +3,8 @@ import logging
 from typing import List, Optional, Tuple
 
 from app.agents.actions.utils import run_async
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -145,12 +144,13 @@ class Zendesk:
         self.client = ZendeskDataSource(client)
 
     @tool(
-        app_name="zendesk",
-        tool_name="get_current_user",
-        description="Get current user information",
-        parameters=[]
+        path="/tools/zendesk/get_current_user",
+        short_description="Get current user information",
+        description="Get current authenticated Zendesk user information.",
+        parameters=[],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read")],
     )
-    def get_current_user(self) -> Tuple[bool, str]:
+    async def get_current_user(self) -> Tuple[bool, str]:
         """Get current user information"""
         """
         Returns:
@@ -169,9 +169,9 @@ class Zendesk:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="zendesk",
-        tool_name="list_tickets",
-        description="List tickets",
+        path="/tools/zendesk/list_tickets",
+        short_description="List tickets",
+        description="List Zendesk tickets with optional sorting and pagination.",
         parameters=[
             ToolParameter(
                 name="sort_by",
@@ -197,7 +197,8 @@ class Zendesk:
                 description="Page number",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read")],
     )
     def list_tickets(
         self,
@@ -234,9 +235,9 @@ class Zendesk:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="zendesk",
-        tool_name="get_ticket",
-        description="Get a specific ticket",
+        path="/tools/zendesk/get_ticket",
+        short_description="Get a specific ticket",
+        description="Get details of a specific Zendesk ticket by its ID.",
         parameters=[
             ToolParameter(
                 name="ticket_id",
@@ -244,9 +245,10 @@ class Zendesk:
                 description="ID of the ticket to get",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read")],
     )
-    def get_ticket(self, ticket_id: str) -> Tuple[bool, str]:
+    async def get_ticket(self, ticket_id: str) -> Tuple[bool, str]:
         """Get a specific ticket"""
         """
         Args:
@@ -268,9 +270,9 @@ class Zendesk:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="zendesk",
-        tool_name="create_ticket",
-        description="Create a new ticket",
+        path="/tools/zendesk/create_ticket",
+        short_description="Create a new ticket",
+        description="Create a new Zendesk ticket with subject, description, and optional assignment/priority.",
         parameters=[
             ToolParameter(
                 name="subject",
@@ -308,7 +310,8 @@ class Zendesk:
                 description="Status of the ticket",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="create")],
     )
     def create_ticket(
         self,
@@ -351,9 +354,9 @@ class Zendesk:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="zendesk",
-        tool_name="update_ticket",
-        description="Update a ticket",
+        path="/tools/zendesk/update_ticket",
+        short_description="Update a ticket",
+        description="Update an existing Zendesk ticket's subject, description, assignee, priority, or status.",
         parameters=[
             ToolParameter(
                 name="ticket_id",
@@ -391,7 +394,8 @@ class Zendesk:
                 description="New status of the ticket",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="update")],
     )
     def update_ticket(
         self,
@@ -435,9 +439,9 @@ class Zendesk:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="zendesk",
-        tool_name="delete_ticket",
-        description="Delete a ticket",
+        path="/tools/zendesk/delete_ticket",
+        short_description="Delete a ticket",
+        description="Delete a Zendesk ticket by its ID.",
         parameters=[
             ToolParameter(
                 name="ticket_id",
@@ -445,9 +449,10 @@ class Zendesk:
                 description="ID of the ticket to delete",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="delete")],
     )
-    def delete_ticket(self, ticket_id: str) -> Tuple[bool, str]:
+    async def delete_ticket(self, ticket_id: str) -> Tuple[bool, str]:
         """Delete a ticket"""
         """
         Args:
@@ -469,9 +474,9 @@ class Zendesk:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="zendesk",
-        tool_name="list_users",
-        description="List users",
+        path="/tools/zendesk/list_users",
+        short_description="List users",
+        description="List Zendesk users with optional pagination.",
         parameters=[
             ToolParameter(
                 name="per_page",
@@ -485,7 +490,8 @@ class Zendesk:
                 description="Page number",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read")],
     )
     def list_users(
         self,
@@ -516,9 +522,9 @@ class Zendesk:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="zendesk",
-        tool_name="get_user",
-        description="Get a specific user",
+        path="/tools/zendesk/get_user",
+        short_description="Get a specific user",
+        description="Get details of a specific Zendesk user by their ID.",
         parameters=[
             ToolParameter(
                 name="user_id",
@@ -526,9 +532,10 @@ class Zendesk:
                 description="ID of the user to get",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="read")],
     )
-    def get_user(self, user_id: str) -> Tuple[bool, str]:
+    async def get_user(self, user_id: str) -> Tuple[bool, str]:
         """Get a specific user"""
         """
         Args:
@@ -550,9 +557,9 @@ class Zendesk:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="zendesk",
-        tool_name="search_tickets",
-        description="Search tickets",
+        path="/tools/zendesk/search_tickets",
+        short_description="Search tickets",
+        description="Search Zendesk tickets using a query string with optional sorting and pagination.",
         parameters=[
             ToolParameter(
                 name="query",
@@ -584,7 +591,8 @@ class Zendesk:
                 description="Page number",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="customer_support"), Tag(key="type", value="search")],
     )
     def search_tickets(
         self,

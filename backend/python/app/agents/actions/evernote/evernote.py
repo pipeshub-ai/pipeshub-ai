@@ -4,9 +4,8 @@ import logging
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -187,9 +186,9 @@ class Evernote:
         })
 
     @tool(
-        app_name="evernote",
-        tool_name="create_note",
-        description="Create a new note in Evernote",
+        path="/tools/evernote/create_note",
+        short_description="Create a new note in Evernote",
+        description="Create a new note in Evernote with title, content, and optional notebook/tag assignments.",
         parameters=[
             ToolParameter(
                 name="title",
@@ -220,7 +219,7 @@ class Evernote:
                 required=False
             )
         ],
-        returns="JSON with created note details"
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="create")],
     )
     def create_note(
         self,
@@ -248,9 +247,9 @@ class Evernote:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="evernote",
-        tool_name="get_note",
-        description="Get details of a specific note",
+        path="/tools/evernote/get_note",
+        short_description="Get details of a specific note",
+        description="Get details of a specific Evernote note by its GUID, optionally including content and resources.",
         parameters=[
             ToolParameter(
                 name="note_guid",
@@ -270,7 +269,7 @@ class Evernote:
                 required=False
             )
         ],
-        returns="JSON with note details"
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
     )
     def get_note(
         self,
@@ -294,9 +293,9 @@ class Evernote:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="evernote",
-        tool_name="update_note",
-        description="Update an existing note",
+        path="/tools/evernote/update_note",
+        short_description="Update an existing note",
+        description="Update an existing Evernote note's title, content, notebook, tags, or resources.",
         parameters=[
             ToolParameter(
                 name="note_guid",
@@ -334,9 +333,9 @@ class Evernote:
                 required=False
             )
         ],
-        returns="JSON with updated note details"
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="update")],
     )
-    def update_note(
+    async def update_note(
         self,
         note_guid: str,
         title: Optional[str] = None,
@@ -364,9 +363,9 @@ class Evernote:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="evernote",
-        tool_name="delete_note",
-        description="Delete a note from Evernote",
+        path="/tools/evernote/delete_note",
+        short_description="Delete a note from Evernote",
+        description="Delete a note from Evernote by its GUID.",
         parameters=[
             ToolParameter(
                 name="note_guid",
@@ -374,9 +373,9 @@ class Evernote:
                 description="The GUID of the note to delete (required)"
             )
         ],
-        returns="JSON with deletion confirmation"
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="delete")],
     )
-    def delete_note(self, note_guid: str) -> Tuple[bool, str]:
+    async def delete_note(self, note_guid: str) -> Tuple[bool, str]:
         try:
             response = self._run_async(self.client.delete_note(note_guid=note_guid))
             return self._handle_response(response, "Note deleted successfully")
@@ -385,9 +384,9 @@ class Evernote:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="evernote",
-        tool_name="create_notebook",
-        description="Create a new notebook in Evernote",
+        path="/tools/evernote/create_notebook",
+        short_description="Create a new notebook in Evernote",
+        description="Create a new notebook in Evernote with a name and optional stack/default settings.",
         parameters=[
             ToolParameter(
                 name="name",
@@ -407,9 +406,9 @@ class Evernote:
                 required=False
             )
         ],
-        returns="JSON with created notebook details"
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="create")],
     )
-    def create_notebook(
+    async def create_notebook(
         self,
         name: str,
         stack: Optional[str] = None,
@@ -431,9 +430,9 @@ class Evernote:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="evernote",
-        tool_name="get_notebook",
-        description="Get details of a specific notebook",
+        path="/tools/evernote/get_notebook",
+        short_description="Get details of a specific notebook",
+        description="Get details of a specific Evernote notebook by its GUID.",
         parameters=[
             ToolParameter(
                 name="notebook_guid",
@@ -441,7 +440,7 @@ class Evernote:
                 description="The GUID of the notebook to retrieve (required)"
             )
         ],
-        returns="JSON with notebook details"
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
     )
     def get_notebook(self, notebook_guid: str) -> Tuple[bool, str]:
         try:
@@ -452,9 +451,9 @@ class Evernote:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="evernote",
-        tool_name="update_notebook",
-        description="Update an existing notebook",
+        path="/tools/evernote/update_notebook",
+        short_description="Update an existing notebook",
+        description="Update an existing Evernote notebook's name, stack, or default setting.",
         parameters=[
             ToolParameter(
                 name="notebook_guid",
@@ -480,9 +479,9 @@ class Evernote:
                 required=False
             )
         ],
-        returns="JSON with updated notebook details"
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="update")],
     )
-    def update_notebook(
+    async def update_notebook(
         self,
         notebook_guid: str,
         name: Optional[str] = None,
@@ -506,13 +505,13 @@ class Evernote:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="evernote",
-        tool_name="get_default_notebook",
-        description="Get the default notebook for the user",
+        path="/tools/evernote/get_default_notebook",
+        short_description="Get the default notebook for the user",
+        description="Get the default notebook for the authenticated Evernote user.",
         parameters=[],
-        returns="JSON with default notebook details"
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
     )
-    def get_default_notebook(self) -> Tuple[bool, str]:
+    async def get_default_notebook(self) -> Tuple[bool, str]:
         try:
             response = self._run_async(self.client.get_default_notebook())
             return self._handle_response(response, "Default notebook retrieved successfully")
@@ -521,9 +520,9 @@ class Evernote:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="evernote",
-        tool_name="search_notes",
-        description="Search for notes with various filters",
+        path="/tools/evernote/search_notes",
+        short_description="Search for notes with various filters",
+        description="Search for Evernote notes using a query string with optional notebook, tag, and result filters.",
         parameters=[
             ToolParameter(
                 name="query",
@@ -555,9 +554,9 @@ class Evernote:
                 required=False
             )
         ],
-        returns="JSON with search results"
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="search")],
     )
-    def search_notes(
+    async def search_notes(
         self,
         query: str,
         notebook_guid: Optional[str] = None,
@@ -583,13 +582,13 @@ class Evernote:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="evernote",
-        tool_name="get_user_info",
-        description="Get information about the authenticated user",
+        path="/tools/evernote/get_user_info",
+        short_description="Get information about the authenticated user",
+        description="Get information about the authenticated Evernote user.",
         parameters=[],
-        returns="JSON with user information"
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
     )
-    def get_user_info(self) -> Tuple[bool, str]:
+    async def get_user_info(self) -> Tuple[bool, str]:
         try:
             response = self._run_async(self.client.get_user_info())
             return self._handle_response(response, "User information retrieved successfully")

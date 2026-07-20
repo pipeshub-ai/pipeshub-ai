@@ -5,9 +5,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -97,40 +96,24 @@ class DateCalculator:
     # ────────────────────────────────────────────────────────────────────────
 
     @tool(
-        app_name="date_calculator",
-        tool_name="get_exclusion_dates",
+        path="/tools/date_calculator/get_exclusion_dates",
+        short_description="Compute weekend and holiday exclusion dates for a range",
         description=(
             "Compute the COMPLETE list of dates to exclude (weekends and/or holidays) "
             "within a date range. Returns a deduplicated, sorted list of YYYY-MM-DD strings "
-            "ready to pass directly to delete_recurring_event_occurrence."
-        ),
-        args_schema=GetExclusionDatesInput,
-        when_to_use=[
-            "Before calling delete_recurring_event_occurrence to remove weekends and holidays",
-            "When extending a recurring event and need to compute dates to skip",
-            "When creating a recurring event and need to know which occurrences to delete",
-            "Whenever you need a list of Saturdays, Sundays, and/or holidays in a date range",
-        ],
-        when_not_to_use=[
-            "When you already have the exact list of dates to delete",
-        ],
-        primary_intent=ToolIntent.QUESTION,
-        typical_queries=[
-            "Get all weekends and holidays between March 6 and July 1, 2026",
-            "List exclusion dates for the range 2026-03-06 to 2026-07-01 with holidays on 2026-03-26 and 2026-03-31",
-            "Compute dates to skip for a recurring event from today to end of year",
-        ],
-        llm_description=(
-            "Computes the complete, deduplicated list of weekend dates (Saturdays and Sundays) "
-            "and optionally company holiday dates within a given range. Returns the list in "
-            "YYYY-MM-DD format, sorted, ready to pass to delete_recurring_event_occurrence. "
+            "ready to pass directly to delete_recurring_event_occurrence. "
             "Use this instead of computing dates manually — it is deterministic and never misses a date."
         ),
-        category=ToolCategory.UTILITY,
-        is_essential=True,
-        requires_auth=False,
+        parameters=[
+            ToolParameter(name="start_date", type=ParameterType.STRING, description="Start of the date range (YYYY-MM-DD). Dates before this are excluded.", required=True),
+            ToolParameter(name="end_date", type=ParameterType.STRING, description="End of the date range (YYYY-MM-DD). Dates after this are excluded.", required=True),
+            ToolParameter(name="holiday_dates", type=ParameterType.ARRAY, description="Optional list of company holiday dates (YYYY-MM-DD) to include as exclusions. These are combined with weekends. Duplicates are handled automatically.", required=False, items={"type": "string"}),
+            ToolParameter(name="include_saturdays", type=ParameterType.BOOLEAN, description="Whether to include Saturdays in the exclusion list.", required=False, default=True),
+            ToolParameter(name="include_sundays", type=ParameterType.BOOLEAN, description="Whether to include Sundays in the exclusion list.", required=False, default=True),
+        ],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility")],
     )
-    def get_exclusion_dates(
+    async def get_exclusion_dates(
         self,
         start_date: str,
         end_date: str,
@@ -217,34 +200,20 @@ class DateCalculator:
     # ────────────────────────────────────────────────────────────────────────
 
     @tool(
-        app_name="date_calculator",
-        tool_name="list_weekend_dates",
+        path="/tools/date_calculator/list_weekend_dates",
+        short_description="List all weekend dates in a date range",
         description=(
             "List all Saturday and Sunday dates within a date range. "
-            "Returns sorted YYYY-MM-DD strings."
-        ),
-        args_schema=ListWeekendDatesInput,
-        when_to_use=[
-            "When you only need weekend dates without holidays",
-            "When no holiday calendar is available and you need weekends only",
-        ],
-        when_not_to_use=[
-            "When you also need holidays — use get_exclusion_dates instead",
-        ],
-        primary_intent=ToolIntent.QUESTION,
-        typical_queries=[
-            "List all weekends between March and June 2026",
-            "What are the Saturday and Sunday dates from 2026-03-06 to 2026-04-30",
-        ],
-        llm_description=(
-            "Returns all Saturday and Sunday dates in YYYY-MM-DD format for a given range. "
+            "Returns sorted YYYY-MM-DD strings. "
             "Use get_exclusion_dates instead if you also have holidays to include."
         ),
-        category=ToolCategory.UTILITY,
-        is_essential=True,
-        requires_auth=False,
+        parameters=[
+            ToolParameter(name="start_date", type=ParameterType.STRING, description="Start of the date range (YYYY-MM-DD).", required=True),
+            ToolParameter(name="end_date", type=ParameterType.STRING, description="End of the date range (YYYY-MM-DD).", required=True),
+        ],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility")],
     )
-    def list_weekend_dates(self, start_date: str, end_date: str) -> str:
+    async def list_weekend_dates(self, start_date: str, end_date: str) -> str:
         """List all weekend dates in the range."""
         try:
             d_start = date.fromisoformat(start_date)
@@ -283,36 +252,21 @@ class DateCalculator:
     # ────────────────────────────────────────────────────────────────────────
 
     @tool(
-        app_name="date_calculator",
-        tool_name="parse_holiday_dates",
+        path="/tools/date_calculator/parse_holiday_dates",
+        short_description="Extract holiday dates from raw text",
         description=(
             "Extract holiday dates from raw text (e.g., Confluence page content). "
             "Handles multiple date formats: 'January 26, 2026', '26-Jan-2026', "
-            "'2026-01-26', '26/01/2026', etc. Returns a clean list of YYYY-MM-DD strings."
+            "'2026-01-26', '26/01/2026', etc. Returns a clean list of YYYY-MM-DD strings. "
+            "Use this after fetching a Confluence holiday page to get clean YYYY-MM-DD dates."
         ),
-        args_schema=ParseHolidayDatesInput,
-        when_to_use=[
-            "After fetching a Confluence holiday page, to extract dates from the page content",
-            "When you have raw text containing dates and need them in YYYY-MM-DD format",
+        parameters=[
+            ToolParameter(name="text", type=ParameterType.STRING, description="Raw text content from a Confluence page or other source containing holiday dates. The tool will extract all dates it can find in any common format.", required=True),
+            ToolParameter(name="year", type=ParameterType.INTEGER, description="If provided, only return holidays for this year.", required=False),
         ],
-        when_not_to_use=[
-            "When you already have dates in YYYY-MM-DD format",
-        ],
-        primary_intent=ToolIntent.QUESTION,
-        typical_queries=[
-            "Parse holiday dates from this Confluence page content",
-            "Extract dates from the holiday calendar text",
-        ],
-        llm_description=(
-            "Extracts all recognizable dates from raw text (HTML, markdown, plain text). "
-            "Use this after fetching a Confluence holiday page to get clean YYYY-MM-DD dates. "
-            "Pass the raw page content as 'text' and optionally filter by 'year'."
-        ),
-        category=ToolCategory.UTILITY,
-        is_essential=True,
-        requires_auth=False,
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility")],
     )
-    def parse_holiday_dates(self, text: str, year: Optional[int] = None) -> str:
+    async def parse_holiday_dates(self, text: str, year: Optional[int] = None) -> str:
         """Extract dates from raw text content."""
         import re
         from datetime import datetime

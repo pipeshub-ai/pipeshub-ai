@@ -7,9 +7,8 @@ from urllib.parse import quote
 from pydantic import model_validator
 from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -390,22 +389,13 @@ class Zoom:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="zoom",
-        tool_name="get_my_profile",
-        description="Get the authenticated Zoom user's profile.",
-        llm_description="Returns the Zoom user's profile (name, email, timezone, account type). Use user_id='me' for the token owner.",
-        args_schema=GetMyProfileInput,
-        returns="JSON with user profile details",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.COMMUNICATION,
-        when_to_use=[
-            "User wants to know their Zoom account details",
-            "User asks for their Zoom email or timezone",
+        path="/tools/zoom/get_my_profile",
+        short_description="Get the authenticated Zoom user's profile",
+        description="Returns the Zoom user's profile (name, email, timezone, account type). Use user_id='me' for the token owner.",
+        parameters=[
+            ToolParameter(name="user_id", type=ParameterType.STRING, description="Zoom user ID or email. Use 'me' for the authenticated user.", required=False, default="me"),
         ],
-        when_not_to_use=[
-            "User wants to list or manage meetings",
-        ],
-        typical_queries=["My Zoom profile", "What is my Zoom email?", "Get my Zoom account info"],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_my_profile(self, user_id: str = "me") -> Tuple[bool, str]:
         """Get Zoom user profile."""
@@ -422,27 +412,19 @@ class Zoom:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="zoom",
-        tool_name="list_meetings",
-        description="List Zoom meetings for a user.",
-        llm_description=(
+        path="/tools/zoom/list_meetings",
+        short_description="List Zoom meetings for a user",
+        description=(
             "Lists meetings for a user within a date range. Use user_id='me' for the authenticated user. "
             "Optional: search keyword to filter by topic/name."
         ),
-        args_schema=ListMeetingsInput,
-        returns="JSON with list of meetings and pagination token",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.COMMUNICATION,
-        when_to_use=[
-            "User wants to see their Zoom meetings",
-            "User asks for scheduled or upcoming meetings",
-            "User wants to find a meeting by name within a date range",
+        parameters=[
+            ToolParameter(name="from_", type=ParameterType.STRING, description="Start date (YYYY-MM-DD). Required to bound the meeting range.", required=True),
+            ToolParameter(name="to_", type=ParameterType.STRING, description="End date (YYYY-MM-DD). Required to bound the meeting range.", required=True),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of meetings to return.", required=False, default=10),
+            ToolParameter(name="search", type=ParameterType.STRING, description="Search keyword to filter meetings by topic/name.", required=False),
         ],
-        when_not_to_use=[
-            "User wants a single meeting's details (use get_meeting)",
-            "User wants to create a meeting (use create_meeting)",
-        ],
-        typical_queries=["List my Zoom meetings", "Show my scheduled meetings", "Find my standup meetings this week"],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def list_meetings(
         self,
@@ -604,22 +586,14 @@ class Zoom:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="zoom",
-        tool_name="get_meeting",
-        description="Get details of a specific Zoom meeting.",
-        llm_description="Returns a single meeting by meeting_id including join URL, time, and settings.",
-        args_schema=GetMeetingInput,
-        returns="JSON with meeting details",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.COMMUNICATION,
-        when_to_use=[
-            "User wants details of a specific Zoom meeting",
-            "User asks for meeting link or settings",
+        path="/tools/zoom/get_meeting",
+        short_description="Get details of a specific Zoom meeting",
+        description="Returns a single meeting by meeting_id including join URL, time, and settings.",
+        parameters=[
+            ToolParameter(name="meeting_id", type=ParameterType.STRING, description="Zoom meeting ID.", required=True),
+            ToolParameter(name="occurrence_id", type=ParameterType.STRING, description="Occurrence ID for recurring meetings.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to list meetings (use list_meetings)",
-        ],
-        typical_queries=["Get Zoom meeting 123", "Show meeting details", "What is the link for meeting X?"],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_meeting(
         self,
@@ -639,22 +613,9 @@ class Zoom:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="zoom",
-        tool_name="create_meeting",
-        description="Create a new Zoom meeting (including recurring meetings).",
-        args_schema=CreateMeetingInput,
-        returns="JSON with created meeting details including join URL",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.COMMUNICATION,
-        when_to_use=[
-            "User wants to create or schedule a Zoom meeting",
-            "User wants to create a daily, weekly, or monthly recurring meeting",
-        ],
-        when_not_to_use=[
-            "User wants to update an existing meeting (use update_meeting)",
-        ],
-        typical_queries=["Create a Zoom meeting", "Schedule a daily meeting", "Set up a weekly recurring Zoom call"],
-        llm_description=(
+        path="/tools/zoom/create_meeting",
+        short_description="Create a new Zoom meeting (including recurring meetings)",
+        description=(
             "Creates a scheduled or recurring meeting. Required: topic. Optional: start_time (ISO 8601), duration (minutes), timezone, agenda. "
             "For recurring meetings, set type=8 and provide a recurrence object. "
             "IMPORTANT: If the meeting is NOT recurring, completely omit the recurrence field. Do not pass an empty object. "
@@ -662,6 +623,18 @@ class Zoom:
             "Infer timezone from context (e.g. if user is in India use Asia/Kolkata). "
             "Do NOT ask for password or settings unless user explicitly mentions them."
         ),
+        parameters=[
+            ToolParameter(name="user_id", type=ParameterType.STRING, description="Zoom user ID or email. Use 'me' for the authenticated user.", required=True),
+            ToolParameter(name="topic", type=ParameterType.STRING, description="Meeting topic/title.", required=True),
+            ToolParameter(name="start_time", type=ParameterType.STRING, description="Start time in ISO 8601 format (e.g. 2025-03-20T14:00:00Z).", required=False),
+            ToolParameter(name="duration", type=ParameterType.INTEGER, description="Duration in minutes (default 60).", required=False, default=60),
+            ToolParameter(name="timezone", type=ParameterType.STRING, description="Timezone (e.g. Asia/Kolkata). Infer from system prompt, dont ask user.", required=False),
+            ToolParameter(name="agenda", type=ParameterType.STRING, description="Meeting agenda/description.", required=False),
+            ToolParameter(name="type_", type=ParameterType.INTEGER, description="Meeting type: 1=instant, 2=scheduled, 3=recurring (no fixed time), 8=recurring (fixed time).", required=False, default=2),
+            ToolParameter(name="invitees", type=ParameterType.ARRAY, description="List of email addresses to invite to the meeting.", required=False, items={"type": "string"}),
+            ToolParameter(name="recurrence", type=ParameterType.OBJECT, description="Recurrence configuration for type 8 meetings.", required=False),
+        ],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def create_meeting(
         self,
@@ -707,10 +680,9 @@ class Zoom:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="zoom",
-        tool_name="update_meeting",
-        description="Update a Zoom meeting (entire series or specific occurrence).",
-        llm_description=(
+        path="/tools/zoom/update_meeting",
+        short_description="Update a Zoom meeting (entire series or specific occurrence)",
+        description=(
             "Updates only the fields the user explicitly asked to change. "
             "For recurring meetings, omit occurrence_id to update the entire series, or provide occurrence_id to update a single instance. "
             "IMPORTANT: Only populate fields the user mentioned — if user says 'change to 5pm', only set start_time (and timezone if needed). "
@@ -718,19 +690,18 @@ class Zoom:
             "Infer timezone from context (default Asia/Kolkata for India). "
             "Convert natural time like '5pm' to ISO 8601 using today's date."
         ),
-        args_schema=UpdateMeetingInput,
-        returns="JSON confirming update",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.COMMUNICATION,
-        when_to_use=[
-            "User wants to reschedule, rename, or change duration of a meeting",
-            "User wants to update a single occurrence or an entire recurring meeting series",
+        parameters=[
+            ToolParameter(name="meeting_id", type=ParameterType.STRING, description="Zoom meeting ID to update.", required=True),
+            ToolParameter(name="topic", type=ParameterType.STRING, description="New meeting topic. Only set if user asked to rename it.", required=False),
+            ToolParameter(name="start_time", type=ParameterType.STRING, description="New start time in ISO 8601 (e.g. 2026-03-16T17:00:00). Only set if user asked to reschedule.", required=False),
+            ToolParameter(name="duration", type=ParameterType.INTEGER, description="New duration in minutes. Only set if user mentioned it.", required=False),
+            ToolParameter(name="timezone", type=ParameterType.STRING, description="Timezone for start_time. Infer from context; default Asia/Kolkata if user is in India.", required=False),
+            ToolParameter(name="agenda", type=ParameterType.STRING, description="New agenda. Only set if user provided one.", required=False),
+            ToolParameter(name="occurrence_id", type=ParameterType.STRING, description="To update a single occurrence of a recurring meeting, provide the occurrence_id. To update the entire series, leave this blank.", required=False),
+            ToolParameter(name="invitees", type=ParameterType.ARRAY, description="List of email addresses to invite to the meeting.", required=False, items={"type": "string"}),
+            ToolParameter(name="recurrence", type=ParameterType.OBJECT, description="New recurrence configuration. Only set to change the recurrence pattern of the entire series.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a new meeting (use create_meeting)",
-            "User wants to delete a meeting (use delete_meeting)",
-        ],
-        typical_queries=["Reschedule meeting to 5pm", "Update all occurrences of my daily sync", "Change tomorrow's instance of the weekly meeting"],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def update_meeting(
         self,
@@ -782,31 +753,18 @@ class Zoom:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="zoom",
-        tool_name="delete_meeting",
-        description="Delete a Zoom meeting (entire series or specific occurrence).",
-        llm_description=(
+        path="/tools/zoom/delete_meeting",
+        short_description="Delete a Zoom meeting (entire series or specific occurrence)",
+        description=(
             "Deletes a meeting by meeting_id. For recurring meetings, omit occurrence_id to delete the entire series. "
             "Provide occurrence_id to delete only one specific occurrence."
         ),
-        args_schema=DeleteMeetingInput,
-        returns="JSON confirming deletion",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.COMMUNICATION,
-        when_to_use=[
-            "User wants to cancel or delete a Zoom meeting",
-            "User wants to cancel a whole recurring series or just one instance of it",
-            "User wants to delete the occurrences of a recurring meeting",
+        parameters=[
+            ToolParameter(name="meeting_id", type=ParameterType.STRING, description="Zoom meeting ID to delete.", required=True),
+            ToolParameter(name="occurrence_id", type=ParameterType.STRING, description="To delete a single occurrence of a recurring meeting, provide the occurrence_id. To delete the entire series, leave this blank.", required=False),
+            ToolParameter(name="cancel_meeting_reminder", type=ParameterType.BOOLEAN, description="Send cancellation email to registrants.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to reschedule (use update_meeting)",
-        ],
-        typical_queries=[
-            "Cancel Zoom meeting",
-            "Delete the entire sync series",
-            "Cancel tomorrow's instance of my meeting",
-            "Delete the occurrences of the recurring meeting on March 20 and March 21",
-        ],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def delete_meeting(
         self,
@@ -828,22 +786,13 @@ class Zoom:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="zoom",
-        tool_name="list_upcoming_meetings",
-        description="List upcoming Zoom meetings for a user.",
-        llm_description="Returns upcoming meetings for user_id. Use 'me' for the authenticated user.",
-        args_schema=ListUpcomingMeetingsInput,
-        returns="JSON with upcoming meetings",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.COMMUNICATION,
-        when_to_use=[
-            "User wants to see only upcoming Zoom meetings",
+        path="/tools/zoom/list_upcoming_meetings",
+        short_description="List upcoming Zoom meetings for a user",
+        description="Returns upcoming meetings for user_id. Use 'me' for the authenticated user.",
+        parameters=[
+            ToolParameter(name="user_id", type=ParameterType.STRING, description="Zoom user ID or email. Use 'me' for the authenticated user.", required=False, default="me"),
         ],
-        when_not_to_use=[
-            "User wants all meetings (use list_meetings)",
-            "User wants a single meeting (use get_meeting)",
-        ],
-        typical_queries=["My upcoming Zoom meetings", "What's my next Zoom call?"],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def list_upcoming_meetings(self, user_id: str = "me") -> Tuple[bool, str]:
         """List upcoming meetings for a user."""
@@ -856,21 +805,13 @@ class Zoom:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="zoom",
-        tool_name="get_meeting_invitation",
-        description="Get the invitation text for a Zoom meeting.",
-        llm_description="Returns the invitation body (join URL, dial-in details). Use for sharing or displaying invite.",
-        args_schema=GetMeetingInvitationInput,
-        returns="JSON with meeting invitation text",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.COMMUNICATION,
-        when_to_use=[
-            "User wants the meeting invite text or join link",
+        path="/tools/zoom/get_meeting_invitation",
+        short_description="Get the invitation text for a Zoom meeting",
+        description="Returns the invitation body (join URL, dial-in details). Use for sharing or displaying invite.",
+        parameters=[
+            ToolParameter(name="meeting_id", type=ParameterType.STRING, description="Zoom meeting ID.", required=True),
         ],
-        when_not_to_use=[
-            "User wants full meeting details (use get_meeting)",
-        ],
-        typical_queries=["Get Zoom meeting invite", "Meeting join link", "Share meeting details"],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_meeting_invitation(self, meeting_id: str) -> Tuple[bool, str]:
         """Get meeting invitation text."""
@@ -883,27 +824,19 @@ class Zoom:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="zoom",
-        tool_name="list_recurring_meetings_ending_in_range",
-        description="List recurring Zoom meetings whose series ends within a given date range.",
-        llm_description=(
+        path="/tools/zoom/list_recurring_meetings_ending_in_range",
+        short_description="List recurring Zoom meetings ending within a date range",
+        description=(
             "Returns recurring meetings that are ending (final occurrence) within the given from_/to_ window. "
             "Useful for finding series that are about to expire. "
             "Checks recurrence.end_date_time if set, otherwise falls back to the last occurrence's start_time."
         ),
-        args_schema=ListRecurringMeetingsEndingInput,
-        returns="JSON list of recurring meetings ending in range, with their end date and remaining occurrences",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.COMMUNICATION,
-        when_to_use=[
-            "User asks which recurring meetings are ending soon",
-            "User wants to know which series expire this month/week",
+        parameters=[
+            ToolParameter(name="from_", type=ParameterType.STRING, description="Range start in ISO 8601 UTC (e.g. '2026-03-01T00:00:00Z').", required=True),
+            ToolParameter(name="to_", type=ParameterType.STRING, description="Range end in ISO 8601 UTC (e.g. '2026-03-31T23:59:59Z').", required=True),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Max results to return.", required=False, default=10),
         ],
-        when_not_to_use=[
-            "User wants all meetings in a range (use list_meetings)",
-            "User wants a specific meeting's details (use get_meeting)",
-        ],
-        typical_queries=["Which recurring meetings are ending this month?", "Show me series expiring this week"],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def list_recurring_meetings_ending_in_range(
         self,
@@ -1062,25 +995,16 @@ class Zoom:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="zoom",
-        tool_name="get_meeting_transcript",
-        description="Get the transcript for a recorded Zoom meeting.",
-        llm_description=(
+        path="/tools/zoom/get_meeting_transcript",
+        short_description="Get the transcript for a recorded Zoom meeting",
+        description=(
             "Returns transcript metadata and VTT download URL for a recorded meeting. "
             "Requires cloud recording with audio transcription enabled. Scope: cloud_recording:read:meeting_transcript."
         ),
-        args_schema=GetMeetingTranscriptInput,
-        returns="JSON with timestamped transcript (one line per cue: [start - end] text), meeting_id, instance_uuid",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.COMMUNICATION,
-        when_to_use=[
-            "User wants the transcript of a Zoom call",
-            "User asks what was discussed in a recorded meeting",
+        parameters=[
+            ToolParameter(name="meeting_id", type=ParameterType.STRING, description="Meeting ID or UUID of the recorded meeting.", required=True),
         ],
-        when_not_to_use=[
-            "User wants the video/audio recording (use get_meeting_recordings)",
-        ],
-        typical_queries=["Get transcript for meeting 123", "What was said in yesterday's call?"],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_meeting_transcript(self, meeting_id: str) -> Tuple[bool, str]:
         try:
@@ -1156,28 +1080,18 @@ class Zoom:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="zoom",
-        tool_name="list_contacts",
-        description="List the authenticated user's Zoom contacts.",
-        llm_description=(
+        path="/tools/zoom/list_contacts",
+        short_description="List the authenticated user's Zoom contacts",
+        description=(
             "Returns the user's Zoom contacts. "
             "Use type='company' for people in the same org, type='external' for outside contacts. "
             "Omit type to return all. Supports pagination via next_page_token."
         ),
-        args_schema=ListContactsInput,
-        returns="JSON with list of contacts and pagination token",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.COMMUNICATION,
-        when_to_use=[
-            "User wants to see their Zoom contacts",
-            "User asks who is in their Zoom contact list",
-            "User wants to find a contact's email or user ID before inviting them to a meeting",
+        parameters=[
+            ToolParameter(name="type_", type=ParameterType.STRING, description="Filter contacts by type: 'company' (same org), 'external' (outside contacts), or 'personal' (your contacts). Omit to return all.", required=False, enum=["company", "external", "personal"]),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of contacts to return.", required=False, default=10),
         ],
-        when_not_to_use=[
-            "User wants details of a single contact (use get_contact)",
-            "User wants to list meeting participants (use list_meetings)",
-        ],
-        typical_queries=["Show my Zoom contacts", "List company contacts", "Who are my external Zoom contacts?"],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def list_contacts(
         self,
@@ -1237,27 +1151,17 @@ class Zoom:
 
 
     @tool(
-        app_name="zoom",
-        tool_name="get_contact",
-        description="Get details of a specific Zoom contact by email, user ID, or member ID.",
-        llm_description=(
+        path="/tools/zoom/get_contact",
+        short_description="Get details of a specific Zoom contact",
+        description=(
             "Returns full details for a single Zoom contact. "
             "The identifier can be the contact's email address, Zoom user ID, or member ID. "
             "Set query_presence_status=true to also fetch their current availability/presence status."
         ),
-        args_schema=GetContactInput,
-        returns="JSON with contact details including name, email, and optionally presence status",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.COMMUNICATION,
-        when_to_use=[
-            "User wants details of a specific Zoom contact",
-            "User asks for a contact's profile or presence status",
-            "User provides an email or name and wants to look up their Zoom details",
+        parameters=[
+            ToolParameter(name="identifier", type=ParameterType.STRING, description="Contact's user ID, email address, or member ID.", required=True),
         ],
-        when_not_to_use=[
-            "User wants to list all contacts (use list_contacts)",
-        ],
-        typical_queries=["Get contact details for john@example.com", "Is my contact online?", "Look up Zoom user by email"],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_contact(
         self,
@@ -1278,30 +1182,20 @@ class Zoom:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="zoom",
-        tool_name="list_folder_children",
-        description="List files and folders inside a Zoom Docs folder.",
-        llm_description=(
+        path="/tools/zoom/list_folder_children",
+        short_description="List files and folders inside a Zoom Docs folder",
+        description=(
             "Lists the contents (files and sub-folders) of a Zoom Docs folder. "
             "Use folder_id='root' (default) to browse the authenticated user's top-level 'My Docs' folder. "
             "Pass a specific folder_id to drill into any sub-folder. "
             "Supports pagination via next_page_token. "
             "Scope: docs:read:list_files."
         ),
-        args_schema=ListFolderChildrenInput,
-        returns="JSON with list of files and folders inside the specified folder",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.COMMUNICATION,
-        when_to_use=[
-            "User wants to browse their Zoom Docs files",
-            "User asks what's in a Zoom Docs folder",
-            "User wants to list files in their root Docs folder",
-            "User wants to explore contents of a specific folder",
+        parameters=[
+            ToolParameter(name="folder_id", type=ParameterType.STRING, description="The file/folder ID whose children to list. Use 'root' (default) to list the contents of the authenticated user's root 'My Docs' folder. Pass a specific folder ID to drill into a sub-folder.", required=False, default="root"),
+            ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Results per page (max 50).", required=False, default=50),
         ],
-        when_not_to_use=[
-            "User wants files shared with them (use list_shared_files or list_shared_folders)",
-        ],
-        typical_queries=["Show my Zoom Docs files", "What's in my root docs folder?", "List files in folder abc123", "Browse my Zoom documents"],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def list_folder_children(
         self,

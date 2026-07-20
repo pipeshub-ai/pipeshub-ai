@@ -561,6 +561,53 @@ class TestRegistryToolWrapper:
         parsed = json.loads(result)
         assert parsed["status"] == "error"
 
+    def test_format_error_marks_direct_toolset_auth_error(self):
+        """`error_type: "toolset_auth"` is additive — the agent-loop
+        adapter (`tool_adapter.py`) reads it to emit a "not authenticated"
+        SSE event instead of a plain error string; every existing
+        status/message/tool/args consumer is unaffected."""
+        from app.agents.tools.factories.base import ToolsetAuthError
+
+        state = self._make_state()
+        reg_tool = self._make_registry_tool()
+        wrapper = RegistryToolWrapper("app", "tool", reg_tool, state)
+        error = ToolsetAuthError("token expired, please reconnect", title="Jira reconnect required")
+        result = wrapper._format_error(error, {})
+        parsed = json.loads(result)
+        assert parsed["status"] == "error"
+        assert parsed["error_type"] == "toolset_auth"
+        assert parsed["error_title"] == "Jira reconnect required"
+
+    def test_format_error_marks_toolset_auth_error_wrapped_via_cause_chain(self):
+        """`_execute_class_method*` re-raises a `ToolsetAuthError` as
+        `RuntimeError(...) from original` before it reaches `_format_error`
+        — the marker must still be detected via `__cause__`."""
+        from app.agents.tools.factories.base import ToolsetAuthError
+
+        state = self._make_state()
+        reg_tool = self._make_registry_tool()
+        wrapper = RegistryToolWrapper("app", "tool", reg_tool, state)
+        try:
+            try:
+                raise ToolsetAuthError("credentials missing")
+            except ToolsetAuthError as original:
+                raise RuntimeError("Failed to execute class method 'app.tool': credentials missing") from original
+        except RuntimeError as wrapped:
+            result = wrapper._format_error(wrapped, {})
+        parsed = json.loads(result)
+        assert parsed["error_type"] == "toolset_auth"
+
+    def test_format_error_does_not_mark_generic_errors(self):
+        """Regression guard: a plain exception (the overwhelmingly common
+        case) must never pick up the `error_type` marker."""
+        state = self._make_state()
+        reg_tool = self._make_registry_tool()
+        wrapper = RegistryToolWrapper("app", "tool", reg_tool, state)
+        result = wrapper._format_error(ValueError("plain failure"), {})
+        parsed = json.loads(result)
+        assert "error_type" not in parsed
+        assert "error_title" not in parsed
+
     @pytest.mark.asyncio
     async def test_arun_standalone_async(self):
         state = self._make_state()

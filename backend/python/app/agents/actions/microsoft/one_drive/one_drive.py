@@ -21,9 +21,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.models.entities import FileRecord, RecordType
 
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -31,7 +30,6 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
-from app.connectors.core.registry.types import AuthField
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
@@ -867,26 +865,22 @@ class OneDrive:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="onedrive",
-        tool_name="get_drives",
-        description="List all OneDrive drives accessible to the user. MUST be called first to get drive_id before using any other OneDrive tool.",
-        args_schema=GetDrivesInput,
-        when_to_use=[
-            "User mentions 'OneDrive' and wants to see available drives",
-            "User asks 'what drives do I have'",
-            "ALWAYS call this first when drive_id is unknown — almost all other OneDrive tools require it",
-            "Before any file operation (rename, delete, move, copy, search, list) when drive_id is not in conversation history",
+        path="/tools/onedrive/get_drives",
+        short_description="List all OneDrive drives accessible to the user",
+        description=(
+            "List all OneDrive drives accessible to the user. MUST be called first to get drive_id "
+            "before using any other OneDrive tool. Supports OData search, filter, orderby, select, "
+            "top, and skip parameters for pagination and filtering."
+        ),
+        parameters=[
+            ToolParameter(name="search", type=ParameterType.STRING, description="Search query to filter drives", required=False),
+            ToolParameter(name="filter", type=ParameterType.STRING, description="OData filter query for drives", required=False),
+            ToolParameter(name="orderby", type=ParameterType.STRING, description="Field to order results by", required=False),
+            ToolParameter(name="select", type=ParameterType.STRING, description="Comma-separated list of fields to return", required=False),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of drives to return", required=False),
+            ToolParameter(name="skip", type=ParameterType.INTEGER, description="Number of drives to skip for pagination", required=False),
         ],
-        when_not_to_use=[
-            "Drive ID is already known from conversation history or Reference Data",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show me my OneDrive",
-            "List all my drives",
-            "What OneDrive drives do I have access to?",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
     )
     async def get_drives(
         self,
@@ -915,26 +909,18 @@ class OneDrive:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="onedrive",
-        tool_name="get_drive",
-        description="Get details about a specific OneDrive drive including quota and owner",
-        args_schema=GetDriveInput,
-        when_to_use=[
-            "User wants details about a specific drive",
-            "User asks about storage quota or drive owner",
-            "Drive ID is known and user wants drive metadata",
+        path="/tools/onedrive/get_drive",
+        short_description="Get details about a specific OneDrive drive including quota and owner",
+        description=(
+            "Get details about a specific OneDrive drive including quota, owner, and other metadata. "
+            "Requires a drive_id obtained from get_drives."
+        ),
+        parameters=[
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="The ID of the drive to retrieve", required=True),
+            ToolParameter(name="select", type=ParameterType.STRING, description="Comma-separated list of fields to return", required=False),
+            ToolParameter(name="expand", type=ParameterType.STRING, description="Related entities to expand", required=False),
         ],
-        when_not_to_use=[
-            "User wants to list all drives (use get_drives)",
-            "User wants to list files in a drive (use get_files)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get details for my OneDrive",
-            "Show drive storage quota",
-            "Who owns this drive?",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
     )
     async def get_drive(
         self,
@@ -969,28 +955,23 @@ class OneDrive:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="onedrive",
-        tool_name="get_files",
-        description="List files and folders in the root of a OneDrive drive. Requires drive_id — call get_drives first if unknown.",
-        args_schema=GetFilesInput,
-        when_to_use=[
-            "User wants to browse files in OneDrive",
-            "User asks 'what files do I have in OneDrive'",
-            "Listing root-level contents of a drive",
+        path="/tools/onedrive/get_files",
+        short_description="List files and folders in a OneDrive drive or folder",
+        description=(
+            "List files and folders in the root of a OneDrive drive, or inside a specific folder. "
+            "Requires drive_id — call get_drives first if unknown. Supports OData search, filter, "
+            "orderby, select, and top parameters."
+        ),
+        parameters=[
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="The ID of the drive", required=True),
+            ToolParameter(name="folder_id", type=ParameterType.STRING, description="ID of the folder to list children of (defaults to root)", required=False),
+            ToolParameter(name="search", type=ParameterType.STRING, description="Search query to filter files by name or content", required=False),
+            ToolParameter(name="filter", type=ParameterType.STRING, description="OData filter query for files", required=False),
+            ToolParameter(name="orderby", type=ParameterType.STRING, description="Field to order results by (e.g. 'name', 'lastModifiedDateTime')", required=False),
+            ToolParameter(name="select", type=ParameterType.STRING, description="Comma-separated list of fields to return", required=False),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of items to return", required=False),
         ],
-        when_not_to_use=[
-            "User wants to search by keyword (use search_files)",
-            "User wants files inside a specific folder (use get_folder_children)",
-            "User wants details of a single file (use get_file)",
-            "drive_id is unknown — call get_drives first to resolve it",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "List my OneDrive files",
-            "Show files in my OneDrive",
-            "What's in my OneDrive root?",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
     )
     async def get_files(
         self,
@@ -1034,27 +1015,21 @@ class OneDrive:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="onedrive",
-        tool_name="get_folder_children",
-        description="List all files and subfolders inside a specific OneDrive folder",
-        args_schema=GetFolderChildrenInput,
-        when_to_use=[
-            "User wants to browse inside a specific folder",
-            "User asks what's inside a folder by ID",
-            "Navigating a folder hierarchy in OneDrive",
+        path="/tools/onedrive/get_folder_children",
+        short_description="List all files and subfolders inside a specific OneDrive folder",
+        description=(
+            "List all files and subfolders inside a specific OneDrive folder. "
+            "Requires drive_id and folder_id. Supports OData filter, orderby, select, and top parameters."
+        ),
+        parameters=[
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="The ID of the drive", required=True),
+            ToolParameter(name="folder_id", type=ParameterType.STRING, description="The ID of the folder whose children to list", required=True),
+            ToolParameter(name="filter", type=ParameterType.STRING, description="OData filter query", required=False),
+            ToolParameter(name="orderby", type=ParameterType.STRING, description="Field to order results by", required=False),
+            ToolParameter(name="select", type=ParameterType.STRING, description="Comma-separated list of fields to return", required=False),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of items to return", required=False),
         ],
-        when_not_to_use=[
-            "User wants root-level files (use get_files)",
-            "User wants to search across all files (use search_files)",
-            "User wants details of one file (use get_file)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "List files inside this folder",
-            "What's in my Documents folder?",
-            "Show subfolders of a folder",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
     )
     async def get_folder_children(
         self,
@@ -1094,27 +1069,19 @@ class OneDrive:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="onedrive",
-        tool_name="get_file",
-        description="Get metadata and details for a specific file or folder in OneDrive",
-        args_schema=GetFileInput,
-        when_to_use=[
-            "User wants details about a specific file or folder",
-            "User has a file ID and wants metadata (size, dates, type)",
-            "User asks about a specific OneDrive item",
+        path="/tools/onedrive/get_file",
+        short_description="Get metadata and details for a specific file or folder in OneDrive",
+        description=(
+            "Get metadata and details for a specific file or folder in OneDrive, including size, "
+            "dates, type, and other properties. Requires drive_id and item_id."
+        ),
+        parameters=[
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="The ID of the drive", required=True),
+            ToolParameter(name="item_id", type=ParameterType.STRING, description="The ID of the file or folder", required=True),
+            ToolParameter(name="select", type=ParameterType.STRING, description="Comma-separated list of fields to return", required=False),
+            ToolParameter(name="expand", type=ParameterType.STRING, description="Related entities to expand (e.g. 'thumbnails', 'children')", required=False),
         ],
-        when_not_to_use=[
-            "User wants to list multiple files (use get_files)",
-            "User wants to search files (use search_files)",
-            "File ID is unknown (use get_files or search_files first)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get details for this file",
-            "Show file info for item ID",
-            "What is the size and type of this OneDrive file?",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
     )
     async def get_file(
         self,
@@ -1152,29 +1119,20 @@ class OneDrive:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="onedrive",
-        tool_name="search_files",
-        description="Search for files and folders in OneDrive by name, content, or metadata. Requires drive_id — call get_drives first if unknown.",
-        args_schema=SearchFilesInput,
-        when_to_use=[
-            "User wants to find files by keyword or name in OneDrive",
-            "User asks 'find files containing X' or 'search for Y in OneDrive'",
-            "User wants to locate a specific document without knowing its folder",
-            "Use to resolve item_id before file operations (rename, delete, move, copy) when user mentions a file by name",
+        path="/tools/onedrive/search_files",
+        short_description="Search for files and folders in OneDrive by name, content, or metadata",
+        description=(
+            "Search for files and folders in OneDrive by name, content, or metadata. "
+            "Requires drive_id — call get_drives first if unknown. Returns matching items "
+            "with support for top and select parameters."
+        ),
+        parameters=[
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="The ID of the drive to search in", required=True),
+            ToolParameter(name="query", type=ParameterType.STRING, description="Search query string to find files by name, content, or metadata", required=True),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of results to return", required=False),
+            ToolParameter(name="select", type=ParameterType.STRING, description="Comma-separated list of fields to return", required=False),
         ],
-        when_not_to_use=[
-            "User wants to browse all files (use get_files)",
-            "User already knows the file ID (use get_file)",
-            "No search keyword is provided",
-            "drive_id is unknown — call get_drives first to resolve it",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Search for 'budget report' in OneDrive",
-            "Find all PDF files in my OneDrive",
-            "Where is the Q3 presentation?",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
     )
     async def search_files(
         self,
@@ -1212,26 +1170,17 @@ class OneDrive:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="onedrive",
-        tool_name="get_shared_with_me",
-        description="Get all files and folders shared with the current user across OneDrive using the /me/drive/sharedWithMe endpoint. Does not require a drive_id.",
-        args_schema=GetSharedWithMeInput,
-        when_to_use=[
-            "User asks 'what's been shared with me'",
-            "User wants to see OneDrive files shared by colleagues",
-            "User mentions 'shared files' in OneDrive context",
+        path="/tools/onedrive/get_shared_with_me",
+        short_description="Get all files and folders shared with the current user",
+        description=(
+            "Get all files and folders shared with the current user across OneDrive. "
+            "Does not require a drive_id. Returns enriched shared items with sharer info, "
+            "location, and file metadata."
+        ),
+        parameters=[
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of items to return (default 10)", required=False),
         ],
-        when_not_to_use=[
-            "User wants their own files (use get_files)",
-            "User wants to share a file (sharing management not supported)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show files shared with me in OneDrive",
-            "What has my team shared with me?",
-            "List shared OneDrive items",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
     )
     async def get_shared_with_me(
         self,
@@ -1246,27 +1195,20 @@ class OneDrive:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="onedrive",
-        tool_name="search_shared_with_me",
-        description="Search for files and folders by keyword across all OneDrive drives that have content shared with the current user. Discovers shared drives via /me/insights/shared and runs the search query against each one. Does not require a drive_id.",
-        args_schema=SearchSharedWithMeInput,
-        when_to_use=[
-            "User wants to find a file by keyword inside content that has been shared with them",
-            "User asks 'find X in files shared with me' or 'search shared OneDrive items for Y'",
-            "User wants to locate a shared document without knowing which drive it lives in",
+        path="/tools/onedrive/search_shared_with_me",
+        short_description="Search files by keyword across drives shared with the current user",
+        description=(
+            "Search for files and folders by keyword across all OneDrive drives that have content "
+            "shared with the current user. Discovers shared drives via /me/insights/shared and runs "
+            "the search query against each one. Does not require a drive_id."
+        ),
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="Search query string to find files by name, content, or metadata across shared drives", required=True),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of shared items to consider when discovering drives (max 50)", required=False),
+            ToolParameter(name="per_drive_top", type=ParameterType.INTEGER, description="Maximum number of search hits to return per drive", required=False),
+            ToolParameter(name="select", type=ParameterType.STRING, description="Comma-separated list of fields to return for each hit", required=False),
         ],
-        when_not_to_use=[
-            "User wants to search their own drives (use search_files with drive_id)",
-            "User just wants to list shared items without a keyword (use get_shared_with_me)",
-            "No search keyword is provided",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Search shared files for 'budget'",
-            "Find the Q3 deck in things shared with me",
-            "Look up 'contract' across files shared with me",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
     )
     async def search_shared_with_me(
         self,
@@ -1337,27 +1279,18 @@ class OneDrive:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="onedrive",
-        tool_name="create_folder",
-        description="Create a new folder in OneDrive. Requires drive_id — call get_drives first if unknown.",
-        args_schema=CreateFolderInput,
-        when_to_use=[
-            "User wants to create a new folder in OneDrive",
-            "User says 'make a folder' or 'create a directory'",
-            "Organising files requires a new folder",
+        path="/tools/onedrive/create_folder",
+        short_description="Create a new folder in OneDrive",
+        description=(
+            "Create a new folder in OneDrive. Requires drive_id — call get_drives first if unknown. "
+            "Optionally specify a parent folder; defaults to root."
+        ),
+        parameters=[
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="The ID of the drive", required=True),
+            ToolParameter(name="folder_name", type=ParameterType.STRING, description="Name of the new folder to create", required=True),
+            ToolParameter(name="parent_folder_id", type=ParameterType.STRING, description="ID of the parent folder (defaults to root)", required=False),
         ],
-        when_not_to_use=[
-            "User wants to list folders (use get_files)",
-            "User wants to rename a folder (use rename_item)",
-            "drive_id is unknown — call get_drives first to resolve it",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Create a folder named 'Projects' in OneDrive",
-            "Make a new folder inside Documents",
-            "Add a subfolder to my OneDrive",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
     )
     async def create_folder(
         self,
@@ -1395,27 +1328,19 @@ class OneDrive:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="onedrive",
-        tool_name="rename_item",
-        description="Rename a file or folder in OneDrive. Requires drive_id and item_id — resolve via get_drives and search_files first if unknown.",
-        args_schema=RenameItemInput,
-        when_to_use=[
-            "User wants to rename a file or folder in OneDrive",
-            "User says 'rename', 'change the name of' a OneDrive item",
-            "Cascade: get_drives → search_files (to find item_id) → rename_item",
+        path="/tools/onedrive/rename_item",
+        short_description="Rename a file or folder in OneDrive",
+        description=(
+            "Rename a file or folder in OneDrive. Requires drive_id and item_id — resolve via "
+            "get_drives and search_files first if unknown. Preserves the original file extension "
+            "if the new name does not include one."
+        ),
+        parameters=[
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="The ID of the drive", required=True),
+            ToolParameter(name="item_id", type=ParameterType.STRING, description="The ID of the file or folder to rename", required=True),
+            ToolParameter(name="new_name", type=ParameterType.STRING, description="The new name for the item", required=True),
         ],
-        when_not_to_use=[
-            "User wants to move a file (use move_item)",
-            "User wants to copy a file (use copy_item)",
-            "drive_id or item_id is unknown — call get_drives and/or search_files first to resolve them",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Rename this file to 'Final Report'",
-            "Change the folder name in OneDrive",
-            "Rename my OneDrive document",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
     )
     async def rename_item(
         self,
@@ -1463,27 +1388,19 @@ class OneDrive:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="onedrive",
-        tool_name="move_item",
-        description="Move a file or folder to a different folder in OneDrive. Requires drive_id and item_id — resolve via get_drives and search_files first if unknown.",
-        args_schema=MoveItemInput,
-        when_to_use=[
-            "User wants to move a file or folder to another location in OneDrive",
-            "User says 'move', 'transfer', or 'relocate' a OneDrive item",
-            "Cascade: get_drives → search_files (to find item_id and destination folder_id) → move_item",
+        path="/tools/onedrive/move_item",
+        short_description="Move a file or folder to a different folder in OneDrive",
+        description=(
+            "Move a file or folder to a different folder in OneDrive. Requires drive_id and item_id — "
+            "resolve via get_drives and search_files first if unknown. Optionally rename the item during the move."
+        ),
+        parameters=[
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="The ID of the drive", required=True),
+            ToolParameter(name="item_id", type=ParameterType.STRING, description="The ID of the file or folder to move", required=True),
+            ToolParameter(name="new_parent_id", type=ParameterType.STRING, description="The ID of the destination folder", required=True),
+            ToolParameter(name="new_name", type=ParameterType.STRING, description="Optional new name after moving", required=False),
         ],
-        when_not_to_use=[
-            "User wants to copy (use copy_item)",
-            "User wants to rename without moving (use rename_item)",
-            "drive_id or item_id is unknown — call get_drives and/or search_files first to resolve them",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Move this file to the Archive folder",
-            "Transfer my document to a different OneDrive folder",
-            "Move the report into the 2025 folder",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
     )
     async def move_item(
         self,
@@ -1527,26 +1444,18 @@ class OneDrive:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="onedrive",
-        tool_name="get_root_folder",
-        description="Get the root folder of a OneDrive drive",
-        args_schema=GetDriveInput,
-        when_to_use=[
-            "User wants to navigate to the root of a OneDrive drive",
-            "User asks 'show me the top-level folder' or 'go to root'",
-            "Resolving the root drive item to start browsing",
+        path="/tools/onedrive/get_root_folder",
+        short_description="Get the root folder of a OneDrive drive",
+        description=(
+            "Get the root folder of a OneDrive drive. Returns the root drive item metadata. "
+            "Requires drive_id — call get_drives first if unknown."
+        ),
+        parameters=[
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="The ID of the drive to retrieve", required=True),
+            ToolParameter(name="select", type=ParameterType.STRING, description="Comma-separated list of fields to return", required=False),
+            ToolParameter(name="expand", type=ParameterType.STRING, description="Related entities to expand", required=False),
         ],
-        when_not_to_use=[
-            "User wants to list files in root (use get_files)",
-            "User already has a folder ID (use get_folder_children)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get the root folder of my OneDrive",
-            "Navigate to the top of my drive",
-            "Show root drive item",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
     )
     async def get_root_folder(
         self,
@@ -1581,27 +1490,21 @@ class OneDrive:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="onedrive",
-        tool_name="copy_item",
-        description="Copy a file or folder to another location in OneDrive, optionally renaming it. Requires drive_id and item_id — resolve via get_drives and search_files first if unknown.",
-        args_schema=CopyItemInput,
-        when_to_use=[
-            "User wants to duplicate a file or folder in OneDrive",
-            "User says 'copy', 'duplicate', or 'clone' a OneDrive item",
-            "User wants a backup copy in a different folder",
-            "Cascade: get_drives → search_files (to find item_id and destination_folder_id) → copy_item",
+        path="/tools/onedrive/copy_item",
+        short_description="Copy a file or folder to another location in OneDrive",
+        description=(
+            "Copy a file or folder to another location in OneDrive, optionally renaming it. "
+            "Requires drive_id and item_id — resolve via get_drives and search_files first if unknown. "
+            "The copy operation may be asynchronous."
+        ),
+        parameters=[
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="The ID of the source drive", required=True),
+            ToolParameter(name="item_id", type=ParameterType.STRING, description="The ID of the file or folder to copy", required=True),
+            ToolParameter(name="destination_folder_id", type=ParameterType.STRING, description="The ID of the destination folder to copy into", required=True),
+            ToolParameter(name="destination_drive_id", type=ParameterType.STRING, description="The ID of the destination drive (defaults to same drive)", required=False),
+            ToolParameter(name="new_name", type=ParameterType.STRING, description="Optional new name for the copied item", required=False),
         ],
-        when_not_to_use=[
-            "User wants to move (not copy) a file (use move_item)",
-            "drive_id or item_id is unknown — call get_drives and/or search_files first to resolve them",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Copy this file to the Archive folder",
-            "Duplicate my report into the Backup folder",
-            "Make a copy of the presentation in a different folder",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
     )
     async def copy_item(
         self,
@@ -1654,29 +1557,23 @@ class OneDrive:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="onedrive",
-        tool_name="share_item",
-        description="Share a OneDrive file or folder with specific users by email, granting them read, write, or owner access. Requires drive_id and item_id — resolve via get_drives and search_files first if unknown.",
-        args_schema=ShareItemInput,
-        when_to_use=[
-            "User wants to share a file or folder with someone in OneDrive",
-            "User says 'share this file with', 'give access to', or 'invite someone to' a OneDrive item",
-            "User wants to grant read, write, or owner permissions to specific people",
-            "Cascade: get_drives → search_files (to find item_id) → share_item",
+        path="/tools/onedrive/share_item",
+        short_description="Share a OneDrive file or folder with specific users by email",
+        description=(
+            "Share a OneDrive file or folder with specific users by email, granting them read, write, "
+            "or owner access. Requires drive_id and item_id — resolve via get_drives and search_files "
+            "first if unknown. Sends an email invitation to recipients."
+        ),
+        parameters=[
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="The ID of the drive containing the item", required=True),
+            ToolParameter(name="item_id", type=ParameterType.STRING, description="The ID of the file or folder to share", required=True),
+            ToolParameter(name="emails", type=ParameterType.STRING, description="List of email addresses to share the item with", required=True),
+            ToolParameter(name="role", type=ParameterType.STRING, description="Permission role: 'read' (view only), 'write' (edit), or 'owner' (full control)", required=False),
+            ToolParameter(name="message", type=ParameterType.STRING, description="Optional personal message to include in the invitation email", required=False),
+            ToolParameter(name="require_sign_in", type=ParameterType.BOOLEAN, description="Whether recipients must sign in to access the item", required=False),
+            ToolParameter(name="send_invitation", type=ParameterType.BOOLEAN, description="Whether to send an email invitation to recipients", required=False),
         ],
-        when_not_to_use=[
-            "User only wants to view existing permissions (use get_permissions)",
-            "drive_id or item_id is unknown — call get_drives and/or search_files first to resolve them",
-            "User wants to create a public sharing link (use get_permissions to inspect existing links)",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Share this file with john@example.com",
-            "Give Alice edit access to my OneDrive document",
-            "Invite someone to view my OneDrive folder",
-            "Share my presentation with my team",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
     )
     async def share_item(
         self,
@@ -1745,27 +1642,17 @@ class OneDrive:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="onedrive",
-        tool_name="get_download_url",
-        description="Get a short-lived direct download URL for a OneDrive file. Use when the user needs a link to download the file.",
-        args_schema=GetDownloadUrlInput,
-        when_to_use=[
-            "User wants a direct download link for a OneDrive file",
-            "User asks 'give me a download URL' or 'how do I download this file'",
-            "User needs a temporary link to fetch the file contents externally",
+        path="/tools/onedrive/get_download_url",
+        short_description="Get a short-lived direct download URL for a OneDrive file",
+        description=(
+            "Get a short-lived direct download URL for a OneDrive file. "
+            "Requires drive_id and item_id. Returns the file ID, name, size, and a temporary download URL."
+        ),
+        parameters=[
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="The ID of the drive", required=True),
+            ToolParameter(name="item_id", type=ParameterType.STRING, description="The ID of the file", required=True),
         ],
-        when_not_to_use=[
-            "User wants to read the file content directly (use get_file_content or get_file_content_base64)",
-            "User wants a sharing link for others (use share_item to see existing links)",
-            "drive_id or item_id is unknown — call get_drives and/or search_files first",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get a download link for this OneDrive file",
-            "Give me a URL to download my document",
-            "How can I download this file from OneDrive?",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
     )
     async def get_download_url(
         self,
@@ -1810,29 +1697,18 @@ class OneDrive:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="onedrive",
-        tool_name="get_file_content",
-        description="Download and return the text content of a OneDrive file.",
-        args_schema=GetFileContentInput,
-        when_to_use=[
-            "User wants to read, summarise, or ask questions about a OneDrive file",
-            "User says 'read this file', 'what's in this document', or 'summarise this CSV'",
-            "File is a format: PDF, DOCX, XLSX, PPTX, HTML, XML, CSV, TSV, MD, MDX, TXT, DOC, XLS, PPT, etc.",
+        path="/tools/onedrive/get_file_content",
+        short_description="Download and return the text content of a OneDrive file",
+        description=(
+            "Download and return the parsed text content of a OneDrive file. Supports PDF, DOCX, XLSX, "
+            "PPTX, HTML, XML, CSV, TSV, MD, TXT, and other text-based formats. "
+            "Requires drive_id and item_id."
+        ),
+        parameters=[
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="The ID of the drive", required=True),
+            ToolParameter(name="item_id", type=ParameterType.STRING, description="The ID of the text-based file (e.g. .txt, .md, .csv, .json, .html)", required=True),
         ],
-        when_not_to_use=[
-            "File is binary (image, PDF, Office doc) — use get_file_content_base64 instead",
-            "User only wants metadata (size, dates) — use get_file",
-            "User wants a download link — use get_download_url",
-            "drive_id or item_id is unknown — call get_drives and/or search_files first",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Read the contents of this text file in OneDrive",
-            "Summarise the CSV file in my OneDrive",
-            "What does this JSON config file contain?",
-            "Show me what's in notes.txt",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
     )
     async def get_file_content(
         self,
@@ -1911,29 +1787,20 @@ class OneDrive:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="onedrive",
-        tool_name="create_word_file",
-        description="Create a new blank Microsoft Word file (.docx) in OneDrive from scratch via the API.",
-        args_schema=CreateWordFileInput,
-        when_to_use=[
-            "User wants to create a new blank Word file in OneDrive",
-            "User says 'create a Word doc' or 'make a new .docx file'",
-            "User needs an empty Office file to start working in",
+        path="/tools/onedrive/create_word_file",
+        short_description="Create a new Microsoft Word file (.docx) in OneDrive",
+        description=(
+            "Create a new Microsoft Word file (.docx) in OneDrive. Requires drive_id — call "
+            "get_drives first if unknown. Optionally provide text content and a parent folder."
+        ),
+        parameters=[
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="The ID of the drive", required=True),
+            ToolParameter(name="file_name", type=ParameterType.STRING, description="Name of the new file, including extension (.docx)", required=True),
+            ToolParameter(name="file_type", type=ParameterType.STRING, description="Word file type: 'word' (.docx)", required=True),
+            ToolParameter(name="parent_folder_id", type=ParameterType.STRING, description="ID of the parent folder (defaults to root)", required=False),
+            ToolParameter(name="content", type=ParameterType.STRING, description="Content of the file", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a folder (use create_folder)",
-            "User wants to upload an existing file (upload not supported)",
-            "drive_id is unknown — call get_drives first to resolve it",
-            "User wants to edit an existing Office file's content (not supported via API)",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Create a new Word document in OneDrive",
-            "Make a blank Excel spreadsheet in my OneDrive",
-            "Start a new PowerPoint presentation in OneDrive",
-            "Create a .docx file in my Documents folder",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
     )
     async def create_word_file(
         self,
@@ -2032,26 +1899,13 @@ class OneDrive:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="onedrive",
-        tool_name="create_onenote_notebook",
-        description="Create a new OneNote notebook in the user's OneDrive.",
-        args_schema=CreateOneNoteNotebookInput,
-        when_to_use=[
-            "User wants to create a new OneNote notebook",
-            "User says 'create a OneNote', 'make a new notebook', or 'start a OneNote notebook'",
+        path="/tools/onedrive/create_onenote_notebook",
+        short_description="Create a new OneNote notebook in the user's OneDrive",
+        description="Create a new OneNote notebook in the user's OneDrive. Returns the notebook ID and metadata.",
+        parameters=[
+            ToolParameter(name="notebook_name", type=ParameterType.STRING, description="Display name for the new OneNote notebook", required=True),
         ],
-        when_not_to_use=[
-            "User wants to create a Word, Excel, or PowerPoint file (use create_office_file)",
-            "User wants to add a section to an existing notebook (use create_onenote_section)",
-            "User wants to add a page to an existing section (use create_onenote_page)",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Create a new OneNote notebook",
-            "Make a OneNote notebook called 'Meeting Notes'",
-            "Create a OneNote notebook named 'Project Plan'",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
     )
     async def create_onenote_notebook(
         self,
@@ -2080,26 +1934,17 @@ class OneDrive:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="onedrive",
-        tool_name="create_onenote_section",
-        description="Create a new section inside an existing OneNote notebook. Requires the notebook_id — use create_onenote_notebook first if the notebook doesn't exist yet.",
-        args_schema=CreateOneNoteSectionInput,
-        when_to_use=[
-            "User wants to add a section to an existing OneNote notebook",
-            "User says 'add a section', 'create a section in my notebook'",
-            "Cascade: create_onenote_notebook (to get notebook_id) → create_onenote_section",
+        path="/tools/onedrive/create_onenote_section",
+        short_description="Create a new section inside an existing OneNote notebook",
+        description=(
+            "Create a new section inside an existing OneNote notebook. Requires the notebook's webUrl — "
+            "use create_onenote_notebook first if the notebook doesn't exist yet."
+        ),
+        parameters=[
+            ToolParameter(name="web_url", type=ParameterType.STRING, description="The webUrl of the OneNote notebook to create the section in", required=True),
+            ToolParameter(name="section_name", type=ParameterType.STRING, description="Display name for the new section", required=True),
         ],
-        when_not_to_use=[
-            "User wants to create a new notebook (use create_onenote_notebook)",
-            "User wants to create a page (use create_onenote_page)",
-            "notebook_id is unknown — call create_onenote_notebook first",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Add a section called 'Weekly' to my notebook",
-            "Create a new section in my OneNote notebook",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
     )
     async def create_onenote_section(
         self,
@@ -2141,26 +1986,19 @@ class OneDrive:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="onedrive",
-        tool_name="create_onenote_page",
-        description="Create a new page inside an existing OneNote section. Requires the section_id — use create_onenote_section first if the section doesn't exist yet.",
-        args_schema=CreateOneNotePageInput,
-        when_to_use=[
-            "User wants to add a page to an existing OneNote section",
-            "User says 'create a page', 'add a page to my section'",
-            "Cascade: create_onenote_notebook → create_onenote_section (to get section_id) → create_onenote_page",
+        path="/tools/onedrive/create_onenote_page",
+        short_description="Create a new page inside an existing OneNote section",
+        description=(
+            "Create a new page inside an existing OneNote section. Requires the section_id — "
+            "use create_onenote_section first if the section doesn't exist yet. "
+            "Optionally include HTML body content."
+        ),
+        parameters=[
+            ToolParameter(name="section_id", type=ParameterType.STRING, description="The ID of the section to create the page in", required=True),
+            ToolParameter(name="page_title", type=ParameterType.STRING, description="Title for the new page", required=True),
+            ToolParameter(name="page_body_html", type=ParameterType.STRING, description="Optional HTML body content for the page", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a notebook (use create_onenote_notebook)",
-            "User wants to create a section (use create_onenote_section)",
-            "section_id is unknown — call create_onenote_section first",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Add a page titled 'Agenda' to my OneNote section",
-            "Create a new page in my OneNote section with some notes",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
     )
     async def create_onenote_page(
         self,
@@ -2196,26 +2034,16 @@ class OneDrive:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="onedrive",
-        tool_name="get_onenote_sections",
-        description="List all sections in a OneNote notebook. Accepts a drive_id and drive_item_id, resolves the notebook via its webUrl, then returns sections.",
-        args_schema=GetOneNoteSectionsInput,
-        when_to_use=[
-            "User wants to see what sections are in a OneNote notebook",
-            "User says 'list sections', 'show sections in my notebook'",
-            "You need a section_id before creating a page",
-            "Cascade: get_drives → search_files (to find drive_item_id) → get_onenote_sections",
+        path="/tools/onedrive/get_onenote_sections",
+        short_description="List all sections in a OneNote notebook",
+        description=(
+            "List all sections in a OneNote notebook. Resolves the notebook via its webUrl, "
+            "then returns the sections list."
+        ),
+        parameters=[
+            ToolParameter(name="web_url", type=ParameterType.STRING, description="The webUrl of the OneNote notebook to list sections from", required=True),
         ],
-        when_not_to_use=[
-            "drive_id or drive_item_id is unknown — call get_drives / search_files first",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "List the sections in my OneNote notebook",
-            "What sections does this notebook have?",
-            "Show me the sections in 'Meeting Notes'",
-        ],
-        category=ToolCategory.FILE_STORAGE,
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
     )
     async def get_onenote_sections(
         self,

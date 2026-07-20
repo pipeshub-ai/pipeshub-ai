@@ -4,9 +4,9 @@ import uuid
 from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
+from app.agent_loop_lib.tools.tags import TAG_LIFECYCLE_TERMINAL, TAG_UI_ONLY
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -167,10 +167,9 @@ class InternalTools:
         pass
 
     @tool(
-        app_name="internaltools",
-        tool_name="ask_user_question",
-        args_schema=AskUserQuestionInput,
-        llm_description=(
+        path="/tools/internaltools/ask_user_question",
+        short_description="Ask the user a structured question with tappable options",
+        description=(
             "MANDATORY: This is the ONLY way to ask the user ANY question. "
             "NEVER write a question in your response text — always call this tool instead. "
             "Use when: (a) required parameters for a write action are missing and only the user can provide them, "
@@ -186,43 +185,35 @@ class InternalTools:
             "(one priority, one date, one template, one format). "
             "A single call SHOULD and CAN mix multiSelect=true and multiSelect=false questions. "
             "Provide user_intent summarizing your understanding of the query and why you are asking. "
-            "⚠️ Before generating options, analyze the query and decide dynamically: "
-            "(1) Enumerable live data (channels, users, projects, boards, spaces) → check if a READ tool exists that can list them. If yes, call that tool FIRST; use its actual response as options. "
-            "Example: 'Send Hello in a channel' + `teams.list_channels` available → call `list_channels` first, then present the real channel names returned. "
-            "(2) Fixed capability values (issue types, priorities, formats) → derive only from the tool schema; never offer a value the tool does not accept. "
-            "(3) No tool can enumerate the resource → add one `isUserInput:true` option so the user can type it. "
+            "Before generating options, analyze the query and decide dynamically: "
+            "(1) Enumerable live data (channels, users, projects, boards, spaces) — check if a READ tool exists that can list them. If yes, call that tool FIRST; use its actual response as options. "
+            "(2) Fixed capability values (issue types, priorities, formats) — derive only from the tool schema; never offer a value the tool does not accept. "
+            "(3) No tool can enumerate the resource — add one isUserInput:true option so the user can type it. "
             "Every option presented MUST be something the available tools can actually execute."
         ),
-        category=ToolCategory.UTILITY,
-        is_essential=True,
-        requires_auth=False,
-        when_to_use=[
-            "You would otherwise write a question in your response text — use this tool instead",
-            "ANY required parameter for a write action is missing and only the user can provide it",
-            "You need to elicit user preferences before proceeding",
-            "You are about to ask clarifying questions with enumerated options",
-            "You need fast, structured answers through tappable choices",
-            "PowerPoint slide edit intent is ambiguous (e.g. what \"remove points\" should do)",
-            "The user's intent is ambiguous between incompatible goals (e.g. 'help me with the project' could mean search, create task, or generate report)",
-            "The query is too incomplete to act on — no clear topic, no clear action, or a bare fragment like 'do it' / 'handle this' with no antecedent",
-            "MANDATORY: whenever clarification is needed and this tool is available, always use it instead of plain-text questions",
+        parameters=[
+            ToolParameter(
+                name="user_intent",
+                type=ParameterType.STRING,
+                description="Brief summary of your understanding of the user's query and reasoning for why these questions are being asked",
+                required=True,
+            ),
+            ToolParameter(
+                name="questions",
+                type=ParameterType.ARRAY,
+                description="Focused questions with tappable options. Each question independently sets multiSelect.",
+                required=True,
+                items={"type": "object"},
+            ),
         ],
-        when_not_to_use=[
-            "User asks for direct analysis or recommendation with no missing fields",
-            "User asks factual how-to questions",
-            "The request is simple, unambiguous, and all required fields are present",
-            "The question requires open-ended numeric input",
-            "The query is vague on topic but not on intent (e.g. 'what is the process' → use retrieval, don't ask)",
-        ],
-        primary_intent=ToolIntent.QUESTION,
-        typical_queries=[
-            "Build me a financial model",
-            "Help me analyze this data",
-            "Create a budget template",
-            "Make me a presentation about X",
+        tags=[
+            Tag(key="category", value="utility"),
+            Tag(key="type", value="utility"),
+            TAG_UI_ONLY,
+            TAG_LIFECYCLE_TERMINAL,
         ],
     )
-    def ask_user_question(self, user_intent: str, questions: list[AskUserQuestionItemInput]) -> str:
+    async def ask_user_question(self, user_intent: str, questions: list[AskUserQuestionItemInput]) -> str:
         """Return structured interactive questions with a wrapper message."""
         normalized_questions: list[dict[str, Any]] = []
         for item in questions:

@@ -7,12 +7,11 @@ import importlib
 import inspect
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from app.agents.tools.config import ToolMetadata
+from typing import Any
 
 from app.connectors.core.registry.tool_builder import ToolDefinition, ToolsetCategory
+
+AGENT_LOOP_TOOL_META_ATTR = "_agent_tool_meta"
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +76,6 @@ def Toolset(
                 "tags": tool.tags
             } for tool in tools)
 
-        # Store metadata in the class (no authType - it comes from etcd/database when toolset is created)
         # Safely extract category value
         category_value = category
         if hasattr(category, 'value'):
@@ -90,16 +88,15 @@ def Toolset(
         cls._toolset_metadata = {
             "name": name,
             "appGroup": app_group,
-            "supportedAuthTypes": supported_auth_types_list,  # Supported types (user selects one during creation)
+            "supportedAuthTypes": supported_auth_types_list,
             "description": description,
             "category": category_value,
             "config": config or {},
             "tools": tools_dict,
-            "toolsetClass": cls,  # Store reference to the class for tool discovery
-            "isInternal": internal  # Mark as internal if True (not sent to frontend)
+            "toolsetClass": cls,
+            "isInternal": internal
         }
 
-        # Mark class as a toolset
         cls._is_toolset = True
 
         return cls
@@ -129,11 +126,10 @@ class ToolsetRegistry:
         """
         Register a toolset class and its tools in the in-memory registry.
 
-        This extracts metadata from the toolset class (added by @Toolset decorator)
-        and registers individual tools into the global tools registry.
+        Extracts metadata from the toolset class (added by @Toolset decorator)
+        and discovers tools from decorated methods.
         """
         try:
-            # Get metadata from the toolset class (added by @Toolset decorator)
             metadata = getattr(toolset_class, '_toolset_metadata', {})
             if not metadata:
                 logger.warning(f"Class {toolset_class.__name__} missing _toolset_metadata")
@@ -144,62 +140,32 @@ class ToolsetRegistry:
                 logger.warning(f"Toolset class {toolset_class.__name__} missing name in metadata")
                 return False
 
-            # Normalize name
             normalized_name = self._normalize_toolset_name(toolset_name)
-
-            # Discover tools from @tool decorators (single source of truth)
-            # This replaces the old tools list that was passed to @Toolset decorator
             discovered_tools = self._discover_tools_from_class(toolset_class)
 
-            # Convert discovered tools to dict format for frontend API
-            tools = []
-            for func in discovered_tools.values():
-                tool_metadata = func._tool_metadata
+            category_value = category = metadata.get('category', 'app')
+            if hasattr(category, 'value'):
+                category_value = category.value
+            elif not isinstance(category, str):
+                category_value = str(category)
 
-                # Convert to dict format (same as old tools list format)
-                tool_dict = {
-                    'name': tool_metadata.tool_name,
-                    'description': tool_metadata.description,
-                    'parameters': self._convert_parameters_to_dict(tool_metadata),
-                    'returns': tool_metadata.returns,
-                    'examples': tool_metadata.examples,
-                    'tags': tool_metadata.tags
-                }
-                tools.append(tool_dict)
-
-            # Store toolset info
             self._toolsets[normalized_name] = {
                 'class': toolset_class,
                 'name': toolset_name,
                 'normalized_name': normalized_name,
-                'display_name': toolset_name,  # Use toolset name as display name (e.g., "Google Drive", "JIRA")
+                'display_name': toolset_name,
                 'description': metadata.get('description', ''),
-                'category': metadata.get('category', 'app'),
-                'app_group': metadata.get('appGroup', ''),  # Group/category like "Storage", "Project Management"
-                'group': metadata.get('appGroup', ''),  # Alias for consistency with API response
+                'category': category_value,
+                'app_group': metadata.get('appGroup', ''),
+                'group': metadata.get('appGroup', ''),
                 'supported_auth_types': self._normalize_auth_types(metadata.get('supportedAuthTypes', ['API_TOKEN'])),
                 'config': metadata.get('config', {}),
-                'tools': tools,
+                'tools': discovered_tools,
                 'icon_path': self._extract_icon_path(metadata),
-                'isInternal': metadata.get('isInternal', False),  # Store internal flag (backend-only, not sent to frontend)
+                'isInternal': metadata.get('isInternal', False),
             }
 
-            # Tools are already registered in global registry by @tool decorator
-            # We just log here for visibility
-            from app.agents.tools.registry import _global_tools_registry
-            for tool_dict in tools:
-                tool_name = tool_dict.get('name')
-                if tool_name:
-                    full_tool_name = f"{normalized_name}.{tool_name}"
-                    # Check if tool exists in global registry (registered by @tool decorator)
-                    try:
-                        registered_tool = _global_tools_registry.get_tool_by_full_name(full_tool_name)
-                        if registered_tool:
-                            logger.debug(f"Tool '{tool_name}' from toolset '{toolset_name}' registered in global registry")
-                    except Exception:
-                        pass
-
-            logger.info(f"Registered toolset: {toolset_name} ({normalized_name}) with {len(tools)} tools")
+            logger.info(f"Registered toolset: {toolset_name} ({normalized_name}) with {len(discovered_tools)} tools")
             return True
 
         except Exception as e:
@@ -208,18 +174,15 @@ class ToolsetRegistry:
 
     def _extract_icon_path(self, metadata: dict[str, Any]) -> str:
         """Extract icon path from metadata or config"""
-        # Try direct icon_path field
         icon = metadata.get('icon_path')
         if icon:
             return icon
 
-        # Try config.iconPath
         config = metadata.get('config', {})
         icon = config.get('iconPath')
         if icon:
             return icon
 
-        # Default
         return '/icons/toolsets/default.svg'
 
     def _normalize_toolset_name(self, name: str) -> str:
@@ -232,73 +195,94 @@ class ToolsetRegistry:
             return [auth_types]
         return list(auth_types) if auth_types else ['API_TOKEN']
 
-    def _discover_tools_from_class(self, toolset_class: type) -> dict[str, Any]:
+    def _discover_tools_from_class(self, toolset_class: type) -> list[dict[str, Any]]:
+        """Discover tools from @tool decorated methods in a class.
+
+        Supports both the legacy ``_tool_metadata`` and the new
+        ``_agent_tool_meta`` from agent_loop_lib.
+        Returns a list of unified dicts for frontend API consumption.
         """
-        Discover tools from @tool decorated methods in a class.
+        tools: list[dict[str, Any]] = []
+        seen: set[str] = set()
 
-        Args:
-            toolset_class: The toolset class
-
-        Returns:
-            Dictionary mapping tool_name -> function
-        """
-        tools = {}
-
-        # Use inspect.getmembers to properly discover methods (including instance methods)
-        # This is more reliable than dir() for decorated methods
-        for _attr_name, attr in inspect.getmembers(toolset_class, predicate=inspect.isfunction):
+        for attr_name in list(vars(toolset_class)):
             try:
-                # Check if the attribute has _tool_metadata (set by @tool decorator)
-                if hasattr(attr, '_tool_metadata'):
-                    tool_metadata = attr._tool_metadata
-                    tools[tool_metadata.tool_name] = attr
-            except Exception as e:
-                import traceback
-                logger.error(f"Failed to discover tools from class {toolset_class.__name__}: {e}", exc_info=True)
-                logger.debug(f"Full traceback for {toolset_class.__name__}:\n{traceback.format_exc()}")
-                continue
+                attr = vars(toolset_class).get(attr_name)
+                if not (inspect.isfunction(attr) or inspect.ismethod(attr) or
+                        (callable(attr) and hasattr(attr, '__func__'))):
+                    continue
+                actual_func = getattr(attr, '__func__', attr)
 
-        # Also check class __dict__ directly for methods that might not be found by getmembers
-        # This handles cases where methods are defined but not yet bound
-        for attr_name in toolset_class.__dict__:
-            try:
-                attr = toolset_class.__dict__[attr_name]
-                # Check if it's a function or method descriptor
-                if (inspect.isfunction(attr) or inspect.ismethod(attr) or
-                    (callable(attr) and hasattr(attr, '__func__'))):
-                    # Get the actual function if it's a method descriptor
-                    actual_func = getattr(attr, '__func__', attr)
-                    if hasattr(actual_func, '_tool_metadata'):
-                        tool_metadata = actual_func._tool_metadata
-                        tools[tool_metadata.tool_name] = actual_func
+                if hasattr(actual_func, '_tool_metadata'):
+                    meta = actual_func._tool_metadata
+                    tool_name = meta.tool_name
+                    if tool_name in seen:
+                        continue
+                    seen.add(tool_name)
+                    tools.append({
+                        'name': tool_name,
+                        'description': meta.description,
+                        'parameters': self._convert_legacy_parameters(meta),
+                        'returns': getattr(meta, 'returns', None),
+                        'examples': getattr(meta, 'examples', []),
+                        'tags': getattr(meta, 'tags', []),
+                    })
+                elif hasattr(actual_func, AGENT_LOOP_TOOL_META_ATTR):
+                    agent_meta = getattr(actual_func, AGENT_LOOP_TOOL_META_ATTR)
+                    tool_name = agent_meta.path.rsplit("/", 1)[-1]
+                    if tool_name in seen:
+                        continue
+                    seen.add(tool_name)
+                    tools.append({
+                        'name': tool_name,
+                        'description': agent_meta.short_description,
+                        'parameters': self._convert_agent_loop_parameters(agent_meta),
+                        'returns': None,
+                        'examples': [],
+                        'tags': [{'key': t.key, 'value': t.value} for t in getattr(agent_meta, 'tags', [])],
+                    })
             except Exception as e:
-                import traceback
-                logger.error(f"Failed to discover tools from class {toolset_class.__name__}: {e}", exc_info=True)
-                logger.debug(f"Full traceback for {toolset_class.__name__}:\n{traceback.format_exc()}")
+                logger.error("Failed to discover tool from %s.%s: %s", toolset_class.__name__, attr_name, e, exc_info=True)
                 continue
 
         return tools
 
-    def _convert_parameters_to_dict(self, tool_metadata: "ToolMetadata") -> list[dict[str, Any]]:
+    def _convert_legacy_parameters(self, tool_metadata: Any) -> list[dict[str, Any]]:
+        """Convert legacy _tool_metadata parameters to dict format."""
+        return self._convert_parameters_to_dict(tool_metadata)
+
+    def _convert_agent_loop_parameters(self, agent_meta: Any) -> list[dict[str, Any]]:
+        """Convert agent_loop_lib ToolMeta parameters to dict format."""
+        parameters = []
+        for param in getattr(agent_meta, 'parameters', []):
+            param_dict: dict[str, Any] = {
+                "name": param.name,
+                "type": param.type.value if hasattr(param.type, 'value') else 'string',
+                "description": getattr(param, 'description', ''),
+                "required": getattr(param, 'required', False),
+            }
+            if getattr(param, 'default', None) is not None:
+                param_dict["default"] = param.default
+            parameters.append(param_dict)
+        return parameters
+
+    def _convert_parameters_to_dict(self, tool_metadata: Any) -> list[dict[str, Any]]:
         """
         Convert tool parameters to dict format for frontend API.
 
-        Handles both Pydantic schemas (args_schema) and legacy ToolParameter lists.
+        Handles Pydantic schemas (args_schema) and legacy ToolParameter lists.
         """
-        parameters = []
+        parameters: list[dict[str, Any]] = []
 
-        # Check if tool has Pydantic schema (preferred)
         if hasattr(tool_metadata, 'args_schema') and tool_metadata.args_schema:
             schema = tool_metadata.args_schema
-
-            # Convert Pydantic schema fields to parameter dict format
             for field_name, field_info in schema.model_fields.items():
                 param_type = self._map_pydantic_type_to_parameter_type(field_info.annotation)
                 required = field_info.is_required
                 description = field_info.description or f"Parameter {field_name}"
                 default = field_info.default if not required else None
 
-                param_dict = {
+                param_dict: dict[str, Any] = {
                     "name": field_name,
                     "type": param_type,
                     "description": description,
@@ -308,7 +292,6 @@ class ToolsetRegistry:
                     param_dict["default"] = default
                 parameters.append(param_dict)
         elif hasattr(tool_metadata, 'parameters') and tool_metadata.parameters:
-            # Fallback to legacy ToolParameter list
             for param in tool_metadata.parameters:
                 param_dict = {
                     "name": getattr(param, 'name', 'unknown'),
@@ -327,17 +310,14 @@ class ToolsetRegistry:
         import typing
         from typing import get_args, get_origin
 
-        # Handle Optional types
         origin = get_origin(type_hint)
         if origin is typing.Union:
             args = get_args(type_hint)
-            # Optional[X] is Union[X, None]
             non_none_args = [arg for arg in args if arg is not type(None)]
             if non_none_args:
                 type_hint = non_none_args[0]
                 origin = get_origin(type_hint)
 
-        # Map basic types
         if type_hint is str:
             return 'string'
         elif type_hint is int:
@@ -351,7 +331,6 @@ class ToolsetRegistry:
         elif origin is dict:
             return 'object'
 
-        # Default to string
         return 'string'
 
     def discover_toolsets(self, module_paths: list[str]) -> None:
@@ -361,7 +340,6 @@ class ToolsetRegistry:
                 module = importlib.import_module(module_path)
 
                 for _name, obj in inspect.getmembers(module):
-                    # Check for _toolset_metadata (added by @Toolset decorator)
                     if inspect.isclass(obj) and hasattr(obj, '_toolset_metadata'):
                         self.register_toolset(obj)
 
@@ -381,6 +359,7 @@ class ToolsetRegistry:
             'app.agents.actions.coding_sandbox.coding_sandbox',
             'app.agents.actions.database_sandbox.database_sandbox',
             'app.agents.actions.image_generator.image_generator',
+            'app.agents.actions.artifacts.artifacts',
             # Google toolsets
             'app.agents.actions.google.drive.drive',
             'app.agents.actions.google.calendar.calendar',
@@ -445,8 +424,6 @@ class ToolsetRegistry:
             return None
 
         if not serialize:
-            # Return original metadata with dataclass instances intact
-            # Remove non-serializable fields but keep OAuth configs as dataclass instances
             return {
                 'name': metadata.get('name'),
                 'normalized_name': metadata.get('normalized_name'),
@@ -456,23 +433,18 @@ class ToolsetRegistry:
                 'app_group': metadata.get('app_group'),
                 'group': metadata.get('group'),
                 'supported_auth_types': metadata.get('supported_auth_types'),
-                'config': metadata.get('config', {}),  # Keep original config with dataclass instances
+                'config': metadata.get('config', {}),
                 'tools': metadata.get('tools', []),
                 'icon_path': metadata.get('icon_path'),
                 'isInternal': metadata.get('isInternal', False),
             }
 
-        # Serialize for API responses
-        # Sanitize config to remove any non-serializable objects (like OAuth config objects with methods)
         config = metadata.get('config', {})
         sanitized_config = self._sanitize_config(config)
 
-        # Sanitize tools to ensure all fields are serializable
         tools = metadata.get('tools', [])
         sanitized_tools = [self._sanitize_tool_dict(tool) for tool in tools]
 
-        # Return a copy without non-serializable fields (like 'class')
-        # This ensures FastAPI can serialize the response
         return {
             'name': metadata.get('name'),
             'normalized_name': metadata.get('normalized_name'),
@@ -495,31 +467,25 @@ class ToolsetRegistry:
 
         sanitized = {}
         for key, value in config.items():
-            # Preserve _oauth_configs even though it starts with _ (needed for OAuth functionality)
             if key == '_oauth_configs':
-                # Convert OAuth config dataclass instances to dicts for serialization
                 if isinstance(value, dict):
                     sanitized[key] = self._sanitize_oauth_configs(value)
                 else:
                     sanitized[key] = value
                 continue
 
-            # Skip other internal keys that shouldn't be exposed
             if key.startswith('_'):
                 continue
 
-            # Skip non-serializable objects (methods, classes, functions, dataclass instances)
             if callable(value) and not isinstance(value, type):
                 continue
             if isinstance(value, type):
                 continue
 
-            # Skip dataclass instances (like OAuthConfig) - they should be converted to dict elsewhere
             from dataclasses import is_dataclass
             if is_dataclass(value) and not isinstance(value, type):
                 continue
 
-            # Recursively sanitize nested dicts
             if isinstance(value, dict):
                 sanitized[key] = self._sanitize_config(value)
             elif isinstance(value, list):
@@ -529,7 +495,6 @@ class ToolsetRegistry:
                           not (is_dataclass(item) and not isinstance(item, type)) else None)
                     for item in value
                 ]
-                # Remove None values that were filtered out
                 sanitized[key] = [item for item in sanitized[key] if item is not None]
             else:
                 sanitized[key] = value
@@ -543,14 +508,10 @@ class ToolsetRegistry:
         sanitized = {}
         for auth_type, oauth_config in oauth_configs.items():
             if is_dataclass(oauth_config) and not isinstance(oauth_config, type):
-                # Convert dataclass to dict
                 try:
                     sanitized[auth_type] = asdict(oauth_config)
                 except Exception:
-                    # Don't log exception details as they may contain sensitive OAuth config data
-                    # Don't include auth_type in log message to avoid potential sensitive data exposure
                     logger.warning("Failed to convert OAuth config dataclass to dict")
-                    # Fallback: try to get attributes manually
                     sanitized[auth_type] = {
                         attr: getattr(oauth_config, attr, None)
                         for attr in dir(oauth_config)
@@ -570,13 +531,11 @@ class ToolsetRegistry:
 
         sanitized = {}
         for key, value in tool.items():
-            # Skip non-serializable objects
             if callable(value) and not isinstance(value, type):
                 continue
             if isinstance(value, type):
                 continue
 
-            # Recursively sanitize nested structures
             if isinstance(value, dict):
                 sanitized[key] = self._sanitize_config(value)
             elif isinstance(value, list):
@@ -611,16 +570,13 @@ class ToolsetRegistry:
         all_toolsets = []
 
         for normalized_name, metadata in self._toolsets.items():
-            # Filter out internal toolsets (not sent to frontend)
             if metadata.get('isInternal', False):
                 continue
 
-            # Get serialized metadata (OAuth configs converted to dicts)
             serialized_metadata = self.get_toolset_metadata(metadata['name'], serialize=True)
             if not serialized_metadata:
                 continue
 
-            # Build tools list for frontend (ensure all data is serializable)
             tools = []
             if include_tools:
                 tools.extend(
@@ -647,12 +603,11 @@ class ToolsetRegistry:
                 'iconPath': serialized_metadata['icon_path'],
                 'documentationLinks': serialized_cfg.get('documentationLinks', []),
                 'toolCount': len(serialized_metadata.get('tools', [])),
-                'tools': tools,  # Include tools for drag-and-drop
-                'config': serialized_cfg,  # Serialized config (OAuth as dicts)
+                'tools': tools,
+                'config': serialized_cfg,
             }
             all_toolsets.append(toolset_info)
 
-        # Apply search filter
         if search:
             search_lower = search.lower()
             all_toolsets = [
@@ -662,10 +617,8 @@ class ToolsetRegistry:
                 or search_lower in t['appGroup'].lower()
             ]
 
-        # Sort by display name
         all_toolsets.sort(key=lambda x: x['displayName'])
 
-        # Pagination
         total = len(all_toolsets)
         total_pages = (total + limit - 1) // limit if limit > 0 else 1
         start_idx = (page - 1) * limit

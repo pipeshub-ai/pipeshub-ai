@@ -3,9 +3,8 @@ Extended tests for app/agents/actions/retrieval/retrieval.py.
 
 Targets additional coverage for:
 - search_internal_knowledge: status_code 202 and 500 error paths
-- search_internal_knowledge: collection_ids filtering
+- search_internal_knowledge: connector_ids resolving to a KB collection
 - search_internal_knowledge: connector_ids not in agent scope (fallback)
-- search_internal_knowledge: collection_ids not in agent scope (fallback)
 - search_internal_knowledge: multimodal LLM detection
 - search_internal_knowledge: flattened_results empty (uses search_results)
 - search_internal_knowledge: filters is None in state
@@ -129,14 +128,18 @@ class TestSearchStatusCodes:
 
 
 # ============================================================================
-# search_internal_knowledge: collection_ids filtering
+# search_internal_knowledge: connector_ids resolving to a KB collection
+#
+# There is no separate collection_ids parameter — a KB collection's id IS a
+# connector id, so connector_ids alone must resolve into filter_groups["kb"]
+# when the supplied id matches the agent's KB scope rather than its app scope.
 # ============================================================================
 
 
-class TestCollectionIdsFiltering:
+class TestConnectorIdsResolveToKb:
     @pytest.mark.asyncio
-    async def test_collection_ids_within_agent_scope(self):
-        """Only collection IDs within agent scope are used."""
+    async def test_connector_id_matching_kb_scope_within_agent_scope(self):
+        """A connector_ids value that matches agent KB scope routes to filter_groups['kb']."""
         retrieval_service = AsyncMock()
         retrieval_service.search_with_filters = AsyncMock(
             return_value={"status_code": 200, "searchResults": [], "virtual_to_record_map": {}}
@@ -147,15 +150,16 @@ class TestCollectionIdsFiltering:
         )
         r = Retrieval(state=state)
         await r.search_internal_knowledge(
-            query="test", collection_ids=["kb-1", "kb-999"]
+            query="test", connector_ids=["kb-1", "kb-999"]
         )
         call_kwargs = retrieval_service.search_with_filters.call_args[1]
-        # Only kb-1 is in agent scope
+        # Only kb-1 is in agent scope; apps bucket is excluded since none matched.
         assert call_kwargs["filter_groups"]["kb"] == ["kb-1"]
+        assert call_kwargs["filter_groups"]["apps"] == []
 
     @pytest.mark.asyncio
-    async def test_collection_ids_none_in_scope_falls_back(self):
-        """When no collection IDs match scope, fall back to full agent scope."""
+    async def test_connector_id_none_in_scope_falls_back(self):
+        """When no supplied ids match ANY agent scope, fall back to full agent scope."""
         retrieval_service = AsyncMock()
         retrieval_service.search_with_filters = AsyncMock(
             return_value={"status_code": 200, "searchResults": [], "virtual_to_record_map": {}}
@@ -166,11 +170,30 @@ class TestCollectionIdsFiltering:
         )
         r = Retrieval(state=state)
         await r.search_internal_knowledge(
-            query="test", collection_ids=["kb-999"]
+            query="test", connector_ids=["kb-999"]
         )
         call_kwargs = retrieval_service.search_with_filters.call_args[1]
         # Falls back to all agent KB
         assert set(call_kwargs["filter_groups"]["kb"]) == {"kb-1", "kb-2"}
+
+    @pytest.mark.asyncio
+    async def test_connector_id_mix_of_app_and_kb_scopes_both_resolved(self):
+        """A single connector_ids call naming one app id and one KB id scopes to exactly both."""
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters = AsyncMock(
+            return_value={"status_code": 200, "searchResults": [], "virtual_to_record_map": {}}
+        )
+        state = _make_state(
+            retrieval_service=retrieval_service,
+            filters={"apps": ["app-1"], "kb": ["kb-1"]},
+        )
+        r = Retrieval(state=state)
+        await r.search_internal_knowledge(
+            query="test", connector_ids=["app-1", "kb-1"]
+        )
+        call_kwargs = retrieval_service.search_with_filters.call_args[1]
+        assert call_kwargs["filter_groups"]["apps"] == ["app-1"]
+        assert call_kwargs["filter_groups"]["kb"] == ["kb-1"]
 
 
 # ============================================================================
@@ -330,14 +353,14 @@ class TestFiltersNoneInState:
 
 
 # ============================================================================
-# search_internal_knowledge: no connector_ids or collection_ids (defaults)
+# search_internal_knowledge: no connector_ids (defaults)
 # ============================================================================
 
 
 class TestNoFilterIdsProvided:
     @pytest.mark.asyncio
     async def test_no_ids_uses_full_agent_scope(self):
-        """When no connector_ids or collection_ids, uses full agent scope."""
+        """When no connector_ids provided, uses full agent scope."""
         retrieval_service = AsyncMock()
         retrieval_service.search_with_filters = AsyncMock(
             return_value={"status_code": 200, "searchResults": [], "virtual_to_record_map": {}}

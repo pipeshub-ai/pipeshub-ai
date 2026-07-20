@@ -89,7 +89,7 @@ EDGE_DEFINITIONS = [
     {
         "edge_collection": CollectionNames.PERMISSION.value,
         "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value, CollectionNames.GROUPS.value, CollectionNames.ORGS.value],
-        "to_vertex_collections": [CollectionNames.AGENT_INSTANCES.value, CollectionNames.AGENT_TEMPLATES.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value, CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value ],
+        "to_vertex_collections": [CollectionNames.AGENT_INSTANCES.value, CollectionNames.AGENT_TEMPLATES.value, CollectionNames.TEAMS.value, CollectionNames.ROLES.value, CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value, CollectionNames.AGENT_SKILLS.value],
     },
     {
         "edge_collection": CollectionNames.ENTITY_RELATIONS.value,
@@ -111,6 +111,12 @@ EDGE_DEFINITIONS = [
         "edge_collection": CollectionNames.AGENT_HAS_KNOWLEDGE.value,
         "from_vertex_collections": [CollectionNames.AGENT_INSTANCES.value],
         "to_vertex_collections": [CollectionNames.AGENT_KNOWLEDGE.value],
+    },
+    # Agent Skills Graph Edges
+    {
+        "edge_collection": CollectionNames.AGENT_SKILL_RELATION.value,
+        "from_vertex_collections": [CollectionNames.AGENT_SKILLS.value],
+        "to_vertex_collections": [CollectionNames.AGENT_SKILLS.value],
     },
     {
         "edge_collection": CollectionNames.PROSPECT.value,

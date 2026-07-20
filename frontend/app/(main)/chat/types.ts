@@ -43,7 +43,8 @@ export interface ModelInfo {
   modelName: string;
   /**
    * Main assistant: often `quick`, or `agent:<segment>` when restoring agent-style modes.
-   * **Agent** conversations: API uses plain `auto` | `quick` | `verification` | `deep` (no `agent:` prefix).
+   * **Agent** conversations: API uses plain `auto` | `quick` | `planExecute` | `deep` (no `agent:`
+   * prefix); legacy conversations may still carry `verification` (pre-rename alias for `planExecute`).
    */
   chatMode: string;
   modelFriendlyName?: string;
@@ -141,12 +142,12 @@ export type ChatMode = 'chat' | 'search';
 export type QueryMode = 'chat' | 'web-search' | 'image' | 'agent';
 
 /** Strategy when query mode is Agent (toolbar dropdown). */
-export type AgentStrategy = 'auto' | 'quick' | 'verify' | 'deep';
+export type AgentStrategy = 'auto' | 'quick' | 'plan-execute' | 'deep';
 
 /**
- * Segment after `agent:` in the stream API body (differs from {@link AgentStrategy} for verify → verification).
+ * Segment after `agent:` in the stream API body (differs from {@link AgentStrategy} for plan-execute → planExecute).
  */
-export type AgentStrategyApiSegment = 'auto' | 'quick' | 'verification' | 'deep';
+export type AgentStrategyApiSegment = 'auto' | 'quick' | 'planExecute' | 'deep';
 
 /**
  * API `chatMode` for streams (assistant modes + agent strategy variant).
@@ -159,17 +160,23 @@ export type StreamChatModePayload =
   | 'internal_search'
   | `agent:${AgentStrategyApiSegment}`;
 
-/** Maps UI agent strategy to the API `agent:` segment (verify → verification). */
+/** Maps UI agent strategy to the API `agent:` segment (plan-execute → planExecute). */
 export function agentStrategyToApiSegment(strategy: AgentStrategy): AgentStrategyApiSegment {
-  if (strategy === 'verify') return 'verification';
+  if (strategy === 'plan-execute') return 'planExecute';
   return strategy;
 }
 
-/** Segments accepted by agent stream/regenerate HTTP bodies (`chatMode` field). */
+/**
+ * Segments accepted by agent stream/regenerate HTTP bodies (`chatMode` field).
+ * Only the current canonical segments — outgoing requests always go through
+ * {@link agentStrategyToApiSegment}, which never produces the legacy
+ * `verification` wire value; restoring THAT from persisted history is
+ * `apply-conversation-model-info.ts`'s job, not this outgoing-request path.
+ */
 const AGENT_HTTP_CHAT_MODES: readonly AgentStrategyApiSegment[] = [
   'auto',
   'quick',
-  'verification',
+  'planExecute',
   'deep',
 ];
 
@@ -348,6 +355,51 @@ export type SSEEventType =
   | 'restreaming'
   | 'error';
 
+/**
+ * AG-UI wire event type discriminators (`data.type` on every AG-UI frame —
+ * see `backend/python/app/agents/agent_loop/protocol/agui.py::AGUIEventType`
+ * and the Node-side mirror in `backend/nodejs/.../utils/agui.ts`).
+ * Consumed exclusively by `agui-event-handler.ts`; `SSEEventType` above
+ * remains the legacy-protocol vocabulary.
+ */
+export type AGUIWireEventType =
+  | 'RUN_STARTED'
+  | 'RUN_FINISHED'
+  | 'RUN_ERROR'
+  | 'STEP_STARTED'
+  | 'STEP_FINISHED'
+  | 'TEXT_MESSAGE_START'
+  | 'TEXT_MESSAGE_CONTENT'
+  | 'TEXT_MESSAGE_END'
+  | 'REASONING_START'
+  | 'REASONING_MESSAGE_START'
+  | 'REASONING_MESSAGE_CONTENT'
+  | 'REASONING_MESSAGE_END'
+  | 'REASONING_END'
+  | 'TOOL_CALL_START'
+  | 'TOOL_CALL_ARGS'
+  | 'TOOL_CALL_END'
+  | 'TOOL_CALL_RESULT'
+  | 'STATE_DELTA'
+  | 'STATE_SNAPSHOT'
+  | 'CUSTOM'
+  | 'HEARTBEAT';
+
+/** One JSON Patch (RFC 6902) operation, as carried by AG-UI `STATE_DELTA.delta`. */
+export interface AGUIJsonPatchOp {
+  op: string;
+  path: string;
+  value?: unknown;
+}
+
+/** Envelope every AG-UI frame's `data` field satisfies (fields beyond `type` vary per event). */
+export interface AGUIEventEnvelope {
+  type: AGUIWireEventType;
+  runId?: string;
+  parentRunId?: string;
+  [key: string]: unknown;
+}
+
 /** Single option in an ask_user_question tool payload. */
 export interface AskUserQuestionOption {
   id: string;
@@ -399,6 +451,10 @@ export interface SSEArtifactEvent {
   artifactType?: string;
   isTemporary?: boolean;
   recordId?: string;
+  /** Version number in the artifact registry (1-based, increments on each update). */
+  version?: number;
+  /** Id of the CODE artifact this was generated from, if any — lets the UI offer "view source". */
+  derivedFromCodeArtifactId?: string;
 }
 
 /** Artifact metadata attached to a chat slot for display. */
@@ -410,6 +466,10 @@ export interface ChatArtifact {
   downloadUrl: string;
   artifactType: string;
   recordId?: string;
+  /** Version number in the artifact registry (1-based, increments on each update). */
+  version?: number;
+  /** Id of the CODE artifact this was generated from, if any — lets the UI offer "view source". */
+  derivedFromCodeArtifactId?: string;
 }
 
 export interface SSEConnectedEvent {
@@ -522,6 +582,50 @@ export interface ToolCallEntry {
   toolResult: Record<string, unknown>;
 }
 
+/** One model-turn's persisted chain-of-thought (opt-in server-side; see reasoning_persistence.py). */
+export interface ReasoningTurn {
+  messageId?: string;
+  turnIndex?: number;
+  content: string;
+}
+
+/**
+ * One entry in the ordered agent-activity transcript — text, reasoning, a
+ * tool call, or a nested sub-agent's own timeline. Mirrors the Python
+ * `TranscriptCollector`'s `MessagePart` / Node's `IMessagePart` byte-for-
+ * byte; built live from AG-UI wire events during streaming
+ * (`agui-event-handler.ts`) and rendered identically from persisted
+ * `ConversationMessage.parts` after reload — see the "Parts-Based Agent
+ * Message Transcript" plan.
+ *
+ * `resultPreview` is always a bounded preview (~500 chars), never the full
+ * external tool result — the server never sends more than that.
+ */
+export interface MessagePart {
+  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent';
+  content?: string;
+  toolCallId?: string;
+  toolName?: string;
+  args?: string;
+  /** Human-readable summary of `args`, computed server-side. Falls back to `args` when absent. */
+  argsSummary?: string;
+  status?: 'running' | 'completed' | 'failed' | 'blocked';
+  resultPreview?: string;
+  /** Human-readable summary of the tool result, computed server-side from the full (untruncated) output. Falls back to `resultPreview` when absent. */
+  resultSummary?: string;
+  runId?: string;
+  roleName?: string;
+  parts?: MessagePart[];
+  /**
+   * Set ONLY on the one root-level `text` part that IS the final answer
+   * (mirrors Python's `TranscriptCollector.replace_final_text`) — every
+   * other root `text` part is narration (Cursor-Style Agent Transparency
+   * plan) and renders in the activity timeline instead. Never set on
+   * child (sub-agent) text parts.
+   */
+  isFinal?: boolean;
+}
+
 export interface ConversationMessage {
   _id: string;
   messageType: 'user_query' | 'bot_response' | 'tool_call' | 'error';
@@ -539,6 +643,10 @@ export interface ConversationMessage {
   /** File attachments uploaded with this user query (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
   tools?: ToolCallEntry[];
+  /** Present only when the org has reasoning persistence enabled server-side. */
+  reasoning?: ReasoningTurn[];
+  /** Persisted agent-activity transcript (`agui` protocol only) — see MessagePart. */
+  parts?: MessagePart[];
 }
 
 export interface ConversationCompleteData {
@@ -574,6 +682,15 @@ export interface SSEErrorEvent {
   error: string;
   message: string;
   code?: string;
+  /**
+   * Stable error classification the backend derives from the underlying
+   * failure (`rate_limit` / `auth_error` / `server_error` / `timeout` /
+   * `unknown` — see `error_classification.py`). `message` is already a
+   * user-friendly string for any of these, so this is only needed if a
+   * caller wants to branch on the failure kind (e.g. offer a "try again"
+   * affordance for `rate_limit` specifically).
+   */
+  type?: string;
 }
 
 // Status message for display during streaming
@@ -593,7 +710,7 @@ export interface StreamChatRequest {
   modelFriendlyName: string;
   /**
    * `quick` for normal modes; when query mode is Agent, `agent:<segment>`
-   * e.g. `agent:auto`, `agent:verification` (UI “verify” strategy).
+   * e.g. `agent:auto`, `agent:planExecute` (UI “Plan & Execute” strategy).
    */
   chatMode: StreamChatModePayload;
   filters: {
@@ -714,6 +831,15 @@ export interface ChatSlot {
   streamingQuestion: string;
   currentStatusMessage: StatusMessage | null;
   streamingCitationMaps: CitationMaps | null;
+  /**
+   * Live agent-activity transcript for the message currently streaming —
+   * built incrementally from AG-UI events (see `agui-event-handler.ts`'s
+   * `onParts` callback) so thinking/tool-call/sub-agent activity renders
+   * as it happens instead of only appearing after reload. Cleared when a
+   * new stream starts; the array reference is replaced (not mutated) on
+   * every update so it works as a plain render dependency.
+   */
+  streamingParts: MessagePart[];
 
   // ── Per-slot scroll state (persisted across switches) ──
   userScrollOverride: boolean;

@@ -9,14 +9,15 @@ metadata/structure, while retrieval searches file contents.
 
 import json
 import logging
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import bullet_list, parse_json_maybe
 from app.connectors.core.registry.auth_builder import AuthBuilder
-from app.connectors.core.registry.tool_builder import ToolsetBuilder
+from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     KnowledgeHubNodesResponse,
     NodeType,
@@ -30,6 +31,9 @@ from app.modules.agents.qna.chat_state import (
     _extract_kb_app_ids,
     _extract_knowledge_connector_ids,
 )
+
+if TYPE_CHECKING:
+    from app.agent_loop_lib.core.types import ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -158,10 +162,48 @@ def _format_browse_response(response: KnowledgeHubNodesResponse) -> tuple[bool, 
     return True, json.dumps(response.model_dump(exclude_none=True), ensure_ascii=False)
 
 
+# ---------------------------------------------------------------------------
+# Agent-activity summaries for list_files — declared here (colocated with
+# the tool) rather than in a central registry, per `@tool`'s
+# `args_summary`/`result_summary` params (see `agent_loop_lib/tools/
+# decorators.py`). Unlike most connector tools, `list_files`'s success
+# envelope has no `{"message", "data": ...}` wrapper — it's `Knowledge
+# HubNodesResponse.model_dump()` directly, i.e. `{"items": [...], ...}` at
+# the top level — so this needs its own parsing rather than the shared
+# `list_summary`/`entity_summary` factories in `app/agents/actions/util/
+# tool_summaries.py`.
+# ---------------------------------------------------------------------------
+
+
+def _list_files_args_summary(args: dict[str, Any]) -> str | None:
+    query = args.get("query")
+    if isinstance(query, str) and query.strip():
+        return f'Searched Knowledge Hub for "{query.strip()}"'
+    return "Listed files"
+
+
+def _list_files_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    parsed = parse_json_maybe(result.content)
+    if not isinstance(parsed, dict):
+        return None
+    if parsed.get("status") == "error" or parsed.get("success") is False:
+        return f"Listing failed: {parsed.get('message') or parsed.get('error') or 'Unknown error'}"
+    items = parsed.get("items")
+    if not isinstance(items, list):
+        return None
+    if not items:
+        return "No items found"
+    names = [item.get("name") for item in items if isinstance(item, dict) and item.get("name")]
+    header = f"Found {len(items)} item{'s' if len(items) != 1 else ''}"
+    if not names:
+        return header
+    return header + "\n" + bullet_list(names, total=len(items))
+
+
 @ToolsetBuilder("KnowledgeHub")\
     .in_group("Internal Tools")\
     .with_description("Browse and search files in the Knowledge Hub")\
-    .with_category(ToolCategory.UTILITY)\
+    .with_category(ToolsetCategory.UTILITY)\
     .with_auth([
         AuthBuilder.type("NONE").fields([])
     ])\
@@ -175,11 +217,9 @@ class KnowledgeHub:
         self.state: ChatState | None = state
 
     @tool(
-        app_name="knowledgehub",
-        tool_name="list_files",
-        description="List and search all indexed items in the Knowledge Hub by name, structure, or metadata",
-        args_schema=ListFilesInput,
-        llm_description=(
+        path="/tools/knowledgehub/list_files",
+        short_description="List and search indexed items in the Knowledge Hub",
+        description=(
             "List, browse, and search all items indexed in the Knowledge Hub. "
             "This includes every type of record the system indexes from connected services "
             "(use record_types and node_types parameters to filter).\n\n"
@@ -189,27 +229,24 @@ class KnowledgeHub:
             "This tool operates on indexed metadata (names, types, dates, structure). "
             "For searching WITHIN document content, use retrieval.search_internal_knowledge."
         ),
-        category=ToolCategory.KNOWLEDGE,
-        is_essential=False,
-        requires_auth=False,
-        when_to_use=[
-            "User wants to list, browse, or find indexed items by name or metadata",
-            "User asks what items are available in a knowledge source or connector",
-            "User wants to explore the structure or hierarchy of knowledge sources",
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="Search query to find files by name (2-500 chars). Leave empty to browse without searching.", required=False),
+            ToolParameter(name="parent_id", type=ParameterType.STRING, description="ID of the node to browse into. Get the ID from the capability summary or from a previous list_files response. Required for browsing.", required=False),
+            ToolParameter(name="parent_type", type=ParameterType.STRING, description="Type of the parent node. Required when parent_id is provided. Values: 'app' (connector root), 'recordGroup' (KB / space / drive), 'folder' (subfolder), 'record' (file with children).", required=False),
+            ToolParameter(name="node_types", type=ParameterType.ARRAY, description=f"Filter results by node type. All valid values: {_NODE_TYPES_DESC}. Example: ['record'] for files only, ['folder', 'recordGroup'] for containers only.", required=False, items={"type": "string"}),
+            ToolParameter(name="connector_ids", type=ParameterType.ARRAY, description="Filter results to specific connectors by their IDs. Get the connector ID from the capability summary. Only needed for search (query). Not needed when browsing with parent_id.", required=False, items={"type": "string"}),
+            ToolParameter(name="record_group_ids", type=ParameterType.ARRAY, description="Filter search results to specific KB collections by their record group IDs. Get IDs from the capability summary. Only applies to Collection/KB sources.", required=False, items={"type": "string"}),
+            ToolParameter(name="record_types", type=ParameterType.ARRAY, description=f"Filter by record type (only applies to 'record' nodeType). All valid values: {_RECORD_TYPES_DESC}.", required=False, items={"type": "string"}),
+            ToolParameter(name="only_containers", type=ParameterType.BOOLEAN, description="If true, only return containers (folders, KBs, apps) that have children.", required=False, default=False),
+            ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number for pagination (starts at 1).", required=False, default=1),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Number of items per page (1-50).", required=False, default=20),
+            ToolParameter(name="sort_by", type=ParameterType.STRING, description="Sort field: 'name', 'createdAt', 'updatedAt', 'size', 'type'.", required=False, default="updatedAt"),
+            ToolParameter(name="sort_order", type=ParameterType.STRING, description="Sort order: 'asc' or 'desc'.", required=False, default="desc"),
+            ToolParameter(name="flattened", type=ParameterType.BOOLEAN, description="If true, return all nested items recursively instead of direct children only.", required=False, default=False),
         ],
-        when_not_to_use=[
-            "User wants to search WITHIN document content (use retrieval instead)",
-            "User wants to create, update, or delete items",
-            "User asks about a topic rather than listing items",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "What items are in the knowledge base?",
-            "List all indexed items",
-            "Find items named 'policy'",
-            "Show me the folder structure",
-            "What knowledge sources are available?",
-        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=_list_files_args_summary,
+        result_summary=_list_files_result_summary,
     )
     async def list_files(
         self,

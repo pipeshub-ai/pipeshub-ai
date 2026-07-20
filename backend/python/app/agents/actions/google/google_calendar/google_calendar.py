@@ -1,9 +1,8 @@
 import json
 from typing import List, Optional
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.utils.time_conversion import prepare_iso_timestamps
 
 
@@ -22,8 +21,11 @@ class GoogleCalendar:
         self.calendar_id = calendar_id
 
     @tool(
-        app_name="google_calendar",
-        tool_name="get_calendar_events"
+        path="/tools/google_calendar/get_calendar_events",
+        short_description="Get calendar events",
+        description="Get all events from the specified Google Calendar.",
+        parameters=[],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
     )
     def get_calendar_events(
         self,
@@ -44,8 +46,9 @@ class GoogleCalendar:
 
 
     @tool(
-        app_name="google_calendar",
-        tool_name="create_calendar_event",
+        path="/tools/google_calendar/create_calendar_event",
+        short_description="Create a calendar event",
+        description="Create a new event in the specified Google Calendar with the given details.",
         parameters=[
             ToolParameter(
                 name="event_start_time",
@@ -108,7 +111,8 @@ class GoogleCalendar:
                 description="Whether the event is an all-day event",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
     )
     def create_calendar_event(
         self,
@@ -198,8 +202,9 @@ class GoogleCalendar:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="google_calendar",
-        tool_name="update_calendar_event",
+        path="/tools/google_calendar/update_calendar_event",
+        short_description="Update a calendar event",
+        description="Update an existing event in the specified Google Calendar.",
         parameters=[
             ToolParameter(
                 name="event_id",
@@ -268,7 +273,8 @@ class GoogleCalendar:
                 description="Whether the event should be an all-day event",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
     )
     def update_calendar_event(
         self,
@@ -360,8 +366,9 @@ class GoogleCalendar:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="google_calendar",
-        tool_name="delete_calendar_event",
+        path="/tools/google_calendar/delete_calendar_event",
+        short_description="Delete a calendar event",
+        description="Delete an existing event from the specified Google Calendar.",
         parameters=[
             ToolParameter(
                 name="event_id",
@@ -369,7 +376,8 @@ class GoogleCalendar:
                 description="The ID of the event to delete",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="delete")],
     )
     def delete_calendar_event(
         self,
@@ -395,10 +403,13 @@ class GoogleCalendar:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="google_calendar",
-        tool_name="get_calendar_list"
+        path="/tools/google_calendar/get_calendar_list",
+        short_description="Get the list of available calendars",
+        description="Get the list of all available calendars for the authenticated user.",
+        parameters=[],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
     )
-    def get_calendar_list(self) -> tuple[bool, str]:
+    async def get_calendar_list(self) -> tuple[bool, str]:
         """Get the list of available calendars"""
         """
         Returns:
@@ -411,8 +422,11 @@ class GoogleCalendar:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="google_calendar",
-        tool_name="get_calendar_list_by_id"
+        path="/tools/google_calendar/get_calendar_list_by_id",
+        short_description="Get the current calendar by ID",
+        description="Get details of the current calendar by its ID.",
+        parameters=[],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="read")],
     )
     def get_calendar_list_by_id(
         self

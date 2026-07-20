@@ -4,9 +4,8 @@ import logging
 import threading
 from typing import List, Optional, Tuple
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -218,9 +217,9 @@ class GitLab:
         return False, json.dumps({"error": response.error or "Unknown error"})
 
     @tool(
-        app_name="gitlab",
-        tool_name="create_project",
-        description="Create a new project in GitLab",
+        path="/tools/gitlab/create_project",
+        short_description="Create a new project in GitLab",
+        description="Create a new project in GitLab with configurable visibility, namespace, and optional README initialization.",
         parameters=[
             ToolParameter(
                 name="name",
@@ -242,7 +241,7 @@ class GitLab:
             ),
             ToolParameter(
                 name="namespace_id",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The ID of the namespace (group) to create the project in",
                 required=False,
             ),
@@ -254,7 +253,7 @@ class GitLab:
                 default=False,
             ),
         ],
-        returns="JSON with the created project details",
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="create")],
     )
     def create_project(
         self,
@@ -281,9 +280,9 @@ class GitLab:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="gitlab",
-        tool_name="get_project",
-        description="Get details of a specific project from GitLab",
+        path="/tools/gitlab/get_project",
+        short_description="Get details of a specific project from GitLab",
+        description="Get details of a specific project from GitLab by its ID or path.",
         parameters=[
             ToolParameter(
                 name="project_id",
@@ -291,9 +290,9 @@ class GitLab:
                 description="The ID or path of the project (required)",
             ),
         ],
-        returns="JSON with project details",
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
     )
-    def get_project(self, project_id: str) -> Tuple[bool, str]:
+    async def get_project(self, project_id: str) -> Tuple[bool, str]:
         """Get details of a specific project from GitLab."""
         try:
             response = self._run_async(self.client.get_project(project_id=project_id))
@@ -303,9 +302,9 @@ class GitLab:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="gitlab",
-        tool_name="update_project",
-        description="Update an existing project in GitLab",
+        path="/tools/gitlab/update_project",
+        short_description="Update an existing project in GitLab",
+        description="Update an existing project in GitLab, including name, description, and visibility.",
         parameters=[
             ToolParameter(
                 name="project_id",
@@ -331,7 +330,7 @@ class GitLab:
                 required=False,
             ),
         ],
-        returns="JSON with updated project details",
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="update")],
     )
     def update_project(
         self,
@@ -356,9 +355,9 @@ class GitLab:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="gitlab",
-        tool_name="delete_project",
-        description="Delete a project from GitLab",
+        path="/tools/gitlab/delete_project",
+        short_description="Delete a project from GitLab",
+        description="Permanently delete a project from GitLab by its ID or path.",
         parameters=[
             ToolParameter(
                 name="project_id",
@@ -366,9 +365,9 @@ class GitLab:
                 description="The ID or path of the project (required)",
             ),
         ],
-        returns="JSON with success status",
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="delete")],
     )
-    def delete_project(self, project_id: str) -> Tuple[bool, str]:
+    async def delete_project(self, project_id: str) -> Tuple[bool, str]:
         """Delete a project from GitLab."""
         try:
             response = self._run_async(self.client.delete_project(project_id=project_id))
@@ -378,9 +377,9 @@ class GitLab:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="gitlab",
-        tool_name="create_issue",
-        description="Create a new issue in a GitLab project",
+        path="/tools/gitlab/create_issue",
+        short_description="Create a new issue in a GitLab project",
+        description="Create a new issue in a GitLab project with optional assignees, labels, and milestone.",
         parameters=[
             ToolParameter(
                 name="project_id",
@@ -412,12 +411,12 @@ class GitLab:
             ),
             ToolParameter(
                 name="milestone_id",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The ID of the milestone to assign to the issue",
                 required=False,
             ),
         ],
-        returns="JSON with the created issue details",
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="create")],
     )
     def create_issue(
         self,
@@ -446,9 +445,9 @@ class GitLab:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="gitlab",
-        tool_name="get_issue",
-        description="Get details of a specific issue from a GitLab project",
+        path="/tools/gitlab/get_issue",
+        short_description="Get details of a specific issue from a GitLab project",
+        description="Get details of a specific issue from a GitLab project by its internal ID.",
         parameters=[
             ToolParameter(
                 name="project_id",
@@ -457,13 +456,13 @@ class GitLab:
             ),
             ToolParameter(
                 name="issue_iid",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The internal ID of the issue (required)",
             ),
         ],
-        returns="JSON with issue details",
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
     )
-    def get_issue(self, project_id: str, issue_iid: int) -> Tuple[bool, str]:
+    async def get_issue(self, project_id: str, issue_iid: int) -> Tuple[bool, str]:
         """Get details of a specific issue from a GitLab project."""
         try:
             response = self._run_async(
@@ -475,9 +474,9 @@ class GitLab:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="gitlab",
-        tool_name="update_issue",
-        description="Update an existing issue in a GitLab project",
+        path="/tools/gitlab/update_issue",
+        short_description="Update an existing issue in a GitLab project",
+        description="Update an existing issue in a GitLab project, including title, description, labels, and state.",
         parameters=[
             ToolParameter(
                 name="project_id",
@@ -486,7 +485,7 @@ class GitLab:
             ),
             ToolParameter(
                 name="issue_iid",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The internal ID of the issue (required)",
             ),
             ToolParameter(
@@ -520,7 +519,7 @@ class GitLab:
                 required=False,
             ),
         ],
-        returns="JSON with updated issue details",
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="update")],
     )
     def update_issue(
         self,
@@ -549,9 +548,9 @@ class GitLab:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="gitlab",
-        tool_name="delete_issue",
-        description="Delete an issue from a GitLab project",
+        path="/tools/gitlab/delete_issue",
+        short_description="Delete an issue from a GitLab project",
+        description="Delete an issue from a GitLab project by its internal ID.",
         parameters=[
             ToolParameter(
                 name="project_id",
@@ -560,13 +559,13 @@ class GitLab:
             ),
             ToolParameter(
                 name="issue_iid",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The internal ID of the issue (required)",
             ),
         ],
-        returns="JSON with success status",
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="delete")],
     )
-    def delete_issue(self, project_id: str, issue_iid: int) -> Tuple[bool, str]:
+    async def delete_issue(self, project_id: str, issue_iid: int) -> Tuple[bool, str]:
         """Delete an issue from a GitLab project."""
         try:
             response = self._run_async(
@@ -578,9 +577,9 @@ class GitLab:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="gitlab",
-        tool_name="create_merge_request",
-        description="Create a new merge request in a GitLab project",
+        path="/tools/gitlab/create_merge_request",
+        short_description="Create a new merge request in a GitLab project",
+        description="Create a new merge request in a GitLab project with source/target branches, optional assignee, and labels.",
         parameters=[
             ToolParameter(
                 name="project_id",
@@ -610,7 +609,7 @@ class GitLab:
             ),
             ToolParameter(
                 name="assignee_id",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The ID of the user to assign the merge request to",
                 required=False,
             ),
@@ -621,7 +620,7 @@ class GitLab:
                 required=False,
             ),
         ],
-        returns="JSON with the created merge request details",
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="create")],
     )
     def create_merge_request(
         self,
@@ -652,9 +651,9 @@ class GitLab:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="gitlab",
-        tool_name="get_merge_request",
-        description="Get details of a specific merge request from a GitLab project",
+        path="/tools/gitlab/get_merge_request",
+        short_description="Get details of a specific merge request from a GitLab project",
+        description="Get details of a specific merge request from a GitLab project by its internal ID.",
         parameters=[
             ToolParameter(
                 name="project_id",
@@ -663,13 +662,13 @@ class GitLab:
             ),
             ToolParameter(
                 name="merge_request_iid",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The internal ID of the merge request (required)",
             ),
         ],
-        returns="JSON with merge request details",
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
     )
-    def get_merge_request(self, project_id: str, merge_request_iid: int) -> Tuple[bool, str]:
+    async def get_merge_request(self, project_id: str, merge_request_iid: int) -> Tuple[bool, str]:
         """Get details of a specific merge request from a GitLab project."""
         try:
             response = self._run_async(
@@ -681,9 +680,9 @@ class GitLab:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="gitlab",
-        tool_name="merge_merge_request",
-        description="Merge a merge request in a GitLab project",
+        path="/tools/gitlab/merge_merge_request",
+        short_description="Merge a merge request in a GitLab project",
+        description="Merge a merge request in a GitLab project, with options to merge when pipeline succeeds and squash commits.",
         parameters=[
             ToolParameter(
                 name="project_id",
@@ -692,7 +691,7 @@ class GitLab:
             ),
             ToolParameter(
                 name="merge_request_iid",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="The internal ID of the merge request (required)",
             ),
             ToolParameter(
@@ -708,7 +707,7 @@ class GitLab:
                 required=False,
             ),
         ],
-        returns="JSON with merge status",
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="update")],
     )
     def merge_merge_request(
         self,
@@ -733,9 +732,9 @@ class GitLab:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="gitlab",
-        tool_name="search_projects",
-        description="Search for projects in GitLab",
+        path="/tools/gitlab/search_projects",
+        short_description="Search for projects in GitLab",
+        description="Search for projects in GitLab by name or keyword.",
         parameters=[
             ToolParameter(
                 name="query",
@@ -743,9 +742,9 @@ class GitLab:
                 description="The search query string (required)",
             ),
         ],
-        returns="JSON with search results",
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
     )
-    def search_projects(self, query: str) -> Tuple[bool, str]:
+    async def search_projects(self, query: str) -> Tuple[bool, str]:
         """Search for projects in GitLab."""
         try:
             # Note: GitLabDataSource doesn't have a direct search method, so we'll use list_projects with search parameter

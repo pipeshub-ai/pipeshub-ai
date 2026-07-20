@@ -18,10 +18,22 @@ from app.utils.chat_helpers import CitationRefMapper
 # Default persona when the UI does not supply systemPrompt (keep in sync with API defaults).
 DEFAULT_AGENT_SYSTEM_PROMPT = "You are an enterprise questions answering expert"
 
+_DEFAULT_PROMPTS = frozenset({
+    DEFAULT_AGENT_SYSTEM_PROMPT,
+    "You are a helpful assistant",
+    "You are a helpful assistant.",
+    "You are a helpful, friendly AI assistant",
+    "You are a helpful, friendly AI assistant.",
+    "You are a helpful, friendly AI assistant. Respond naturally and concisely.",
+    "You are a workplace productivity assistant. Help users with their connected work tools.",
+    "You are a workplace productivity assistant. Help users with their connected work tools",
+})
+
+
 def is_custom_agent_system_prompt(system_prompt: str | None) -> bool:
     """True when the workspace supplied a persona distinct from the default placeholder."""
     s = (system_prompt or "").strip()
-    return bool(s) and s != DEFAULT_AGENT_SYSTEM_PROMPT
+    return bool(s) and s not in _DEFAULT_PROMPTS
 
 
 class Document(TypedDict):

@@ -2,10 +2,8 @@ import json
 import logging
 from typing import List, Optional, Tuple
 
-from app.agents.actions.utils import run_async
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -143,20 +141,16 @@ class Linear:
         self.client = LinearDataSource(client)
 
     @tool(
-        app_name="linear",
-        tool_name="get_viewer",
-        description="Get current user information",
-        parameters=[]
+        path="/tools/linear/get_viewer",
+        short_description="Get current authenticated Linear user",
+        description="Get current user information from Linear, including display name, email, and account details.",
+        parameters=[],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
-    def get_viewer(self) -> Tuple[bool, str]:
+    async def get_viewer(self) -> Tuple[bool, str]:
         """Get current user information"""
-        """
-        Returns:
-            Tuple[bool, str]: True if successful, False otherwise
-        """
         try:
-            # Use LinearDataSource method
-            response = run_async(self.client.viewer())
+            response = await self.client.viewer()
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -167,29 +161,23 @@ class Linear:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="linear",
-        tool_name="get_user",
-        description="Get user by ID",
+        path="/tools/linear/get_user",
+        short_description="Get a Linear user by ID",
+        description="Get user information from Linear by their user ID, including display name, email, and role.",
         parameters=[
             ToolParameter(
                 name="user_id",
                 type=ParameterType.STRING,
                 description="The ID of the user to get",
-                required=True
+                required=True,
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
-    def get_user(self, user_id: str) -> Tuple[bool, str]:
+    async def get_user(self, user_id: str) -> Tuple[bool, str]:
         """Get user by ID"""
-        """
-        Args:
-            user_id: The ID of the user to get
-        Returns:
-            Tuple[bool, str]: True if successful, False otherwise
-        """
         try:
-            # Use LinearDataSource method
-            response = run_async(self.client.user(id=user_id))
+            response = await self.client.user(id=user_id)
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -200,40 +188,33 @@ class Linear:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="linear",
-        tool_name="get_teams",
-        description="Get teams",
+        path="/tools/linear/get_teams",
+        short_description="List Linear teams",
+        description="Get all teams in the Linear workspace with optional pagination.",
         parameters=[
             ToolParameter(
                 name="first",
                 type=ParameterType.INTEGER,
                 description="Number of teams to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="after",
                 type=ParameterType.STRING,
                 description="Cursor for pagination",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
-    def get_teams(
+    async def get_teams(
         self,
         first: Optional[int] = None,
         after: Optional[str] = None
     ) -> Tuple[bool, str]:
         """Get teams"""
-        """
-        Args:
-            first: Number of teams to return
-            after: Cursor for pagination
-        Returns:
-            Tuple[bool, str]: True if successful, False otherwise
-        """
         try:
-            # Use LinearDataSource method
-            response = run_async(self.client.teams(first=first, after=after))
+            response = await self.client.teams(first=first, after=after)
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -244,29 +225,23 @@ class Linear:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="linear",
-        tool_name="get_team",
-        description="Get team by ID",
+        path="/tools/linear/get_team",
+        short_description="Get a Linear team by ID",
+        description="Get detailed information about a specific Linear team by its ID.",
         parameters=[
             ToolParameter(
                 name="team_id",
                 type=ParameterType.STRING,
                 description="The ID of the team to get",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
-    def get_team(self, team_id: str) -> Tuple[bool, str]:
+    async def get_team(self, team_id: str) -> Tuple[bool, str]:
         """Get team by ID"""
-        """
-        Args:
-            team_id: The ID of the team to get
-        Returns:
-            Tuple[bool, str]: True if successful, False otherwise
-        """
         try:
-            # Use LinearDataSource method
-            response = run_async(self.client.team(id=team_id))
+            response = await self.client.team(id=team_id)
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -277,45 +252,38 @@ class Linear:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="linear",
-        tool_name="get_issues",
-        description="Get issues",
+        path="/tools/linear/get_issues",
+        short_description="List Linear issues",
+        description="Get issues from Linear with optional pagination and filtering. Filter accepts a JSON string of Linear issue filter fields.",
         parameters=[
             ToolParameter(
                 name="first",
                 type=ParameterType.INTEGER,
                 description="Number of issues to return",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="after",
                 type=ParameterType.STRING,
                 description="Cursor for pagination",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="filter",
                 type=ParameterType.STRING,
-                description="Filter for issues",
-                required=False
-            )
-        ]
+                description="Filter for issues as a JSON string",
+                required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
-    def get_issues(
+    async def get_issues(
         self,
         first: Optional[int] = None,
         after: Optional[str] = None,
         filter: Optional[str] = None
     ) -> Tuple[bool, str]:
         """Get issues"""
-        """
-        Args:
-            first: Number of issues to return
-            after: Cursor for pagination
-            filter: Filter for issues
-        Returns:
-            Tuple[bool, str]: True if successful, False otherwise
-        """
         try:
             # Convert string filter (if provided) to dict expected by data source
             filter_dict = None
@@ -327,8 +295,7 @@ class Linear:
                 except Exception:
                     filter_dict = None
 
-            # Use LinearDataSource method
-            response = run_async(self.client.issues(first=first, after=after, filter=filter_dict))
+            response = await self.client.issues(first=first, after=after, filter=filter_dict)
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -339,29 +306,23 @@ class Linear:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="linear",
-        tool_name="get_issue",
-        description="Get issue by ID",
+        path="/tools/linear/get_issue",
+        short_description="Get a Linear issue by ID",
+        description="Get detailed information about a specific Linear issue by its ID, including title, description, state, assignee, and priority.",
         parameters=[
             ToolParameter(
                 name="issue_id",
                 type=ParameterType.STRING,
                 description="The ID of the issue to get",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
-    def get_issue(self, issue_id: str) -> Tuple[bool, str]:
+    async def get_issue(self, issue_id: str) -> Tuple[bool, str]:
         """Get issue by ID"""
-        """
-        Args:
-            issue_id: The ID of the issue to get
-        Returns:
-            Tuple[bool, str]: True if successful, False otherwise
-        """
         try:
-            # Use LinearDataSource method
-            response = run_async(self.client.issue(id=issue_id))
+            response = await self.client.issue(id=issue_id)
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -372,49 +333,50 @@ class Linear:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="linear",
-        tool_name="create_issue",
-        description="Create a new issue",
+        path="/tools/linear/create_issue",
+        short_description="Create a new Linear issue",
+        description="Create a new issue in Linear with a title, team, and optional description, state, assignee, and priority.",
         parameters=[
             ToolParameter(
                 name="team_id",
                 type=ParameterType.STRING,
                 description="The ID of the team",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="title",
                 type=ParameterType.STRING,
                 description="Title of the issue",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="description",
                 type=ParameterType.STRING,
                 description="Description of the issue",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="state_id",
                 type=ParameterType.STRING,
                 description="ID of the state",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="assignee_id",
                 type=ParameterType.STRING,
                 description="ID of the assignee",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="priority",
                 type=ParameterType.INTEGER,
                 description="Priority of the issue (0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
     )
-    def create_issue(
+    async def create_issue(
         self,
         team_id: str,
         title: str,
@@ -424,17 +386,6 @@ class Linear:
         priority: Optional[int] = None
     ) -> Tuple[bool, str]:
         """Create a new issue"""
-        """
-        Args:
-            team_id: The ID of the team
-            title: Title of the issue
-            description: Description of the issue
-            state_id: ID of the state
-            assignee_id: ID of the assignee
-            priority: Priority of the issue (0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low)
-        Returns:
-            Tuple[bool, str]: True if successful, False otherwise
-        """
         try:
             # Build GraphQL input for issueCreate
             issue_input = {"title": title, "teamId": team_id}
@@ -447,8 +398,7 @@ class Linear:
             if priority is not None:
                 issue_input["priority"] = priority
 
-            # Call the correct LinearDataSource method
-            response = run_async(self.client.issueCreate(input=issue_input))
+            response = await self.client.issueCreate(input=issue_input)
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -459,43 +409,44 @@ class Linear:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="linear",
-        tool_name="update_issue",
-        description="Update an issue",
+        path="/tools/linear/update_issue",
+        short_description="Update a Linear issue",
+        description="Update an existing Linear issue's title, description, state, or assignee.",
         parameters=[
             ToolParameter(
                 name="issue_id",
                 type=ParameterType.STRING,
                 description="The ID of the issue to update",
-                required=True
+                required=True,
             ),
             ToolParameter(
                 name="title",
                 type=ParameterType.STRING,
                 description="New title of the issue",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="description",
                 type=ParameterType.STRING,
                 description="New description of the issue",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="state_id",
                 type=ParameterType.STRING,
                 description="New state ID",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="assignee_id",
                 type=ParameterType.STRING,
                 description="New assignee ID",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
     )
-    def update_issue(
+    async def update_issue(
         self,
         issue_id: str,
         title: Optional[str] = None,
@@ -504,16 +455,6 @@ class Linear:
         assignee_id: Optional[str] = None
     ) -> Tuple[bool, str]:
         """Update an issue"""
-        """
-        Args:
-            issue_id: The ID of the issue to update
-            title: New title of the issue
-            description: New description of the issue
-            state_id: New state ID
-            assignee_id: New assignee ID
-        Returns:
-            Tuple[bool, str]: True if successful, False otherwise
-        """
         try:
             # Build GraphQL input for issueUpdate
             update_input = {}
@@ -526,8 +467,7 @@ class Linear:
             if assignee_id is not None:
                 update_input["assigneeId"] = assignee_id
 
-            # Call the correct LinearDataSource method
-            response = run_async(self.client.issueUpdate(id=issue_id, input=update_input))
+            response = await self.client.issueUpdate(id=issue_id, input=update_input)
 
             if response.success:
                 return True, json.dumps({"data": response.data})
@@ -538,29 +478,23 @@ class Linear:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="linear",
-        tool_name="delete_issue",
-        description="Delete an issue",
+        path="/tools/linear/delete_issue",
+        short_description="Delete a Linear issue",
+        description="Permanently delete an issue from Linear by its ID.",
         parameters=[
             ToolParameter(
                 name="issue_id",
                 type=ParameterType.STRING,
                 description="The ID of the issue to delete",
-                required=True
-            )
-        ]
+                required=True,
+            ),
+        ],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
     )
-    def delete_issue(self, issue_id: str) -> Tuple[bool, str]:
+    async def delete_issue(self, issue_id: str) -> Tuple[bool, str]:
         """Delete an issue"""
-        """
-        Args:
-            issue_id: The ID of the issue to delete
-        Returns:
-            Tuple[bool, str]: True if successful, False otherwise
-        """
         try:
-            # Use LinearDataSource method with correct name
-            response = run_async(self.client.issueDelete(id=issue_id))
+            response = await self.client.issueDelete(id=issue_id)
 
             if response.success:
                 return True, json.dumps({"data": response.data})

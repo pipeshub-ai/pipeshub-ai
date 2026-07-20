@@ -4,9 +4,8 @@ import logging
 import threading
 from typing import Coroutine, List, Optional, Tuple
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -148,9 +147,9 @@ class BookStack:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="bookstack",
-        tool_name="create_page",
-        description="Create a new page in BookStack",
+        path="/tools/bookstack/create_page",
+        short_description="Create a new page in BookStack",
+        description="Create a new page in BookStack with a name and optional book/chapter, content, tags, and priority.",
         parameters=[
             ToolParameter(
                 name="name",
@@ -194,9 +193,9 @@ class BookStack:
                 required=False
             )
         ],
-        returns="JSON with page creation result"
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="create")],
     )
-    def create_page(
+    async def create_page(
         self,
         name: str,
         book_id: Optional[int] = None,
@@ -235,9 +234,9 @@ class BookStack:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="bookstack",
-        tool_name="get_page",
-        description="Get a page by ID from BookStack",
+        path="/tools/bookstack/get_page",
+        short_description="Get a page by ID from BookStack",
+        description="Get a page by its ID from BookStack.",
         parameters=[
             ToolParameter(
                 name="page_id",
@@ -245,9 +244,9 @@ class BookStack:
                 description="The ID of the page to retrieve"
             )
         ],
-        returns="JSON with page data"
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
-    def get_page(self, page_id: int) -> Tuple[bool, str]:
+    async def get_page(self, page_id: int) -> Tuple[bool, str]:
         """Get a page by ID from BookStack."""
         try:
             response = self._run_async(
@@ -259,9 +258,9 @@ class BookStack:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="bookstack",
-        tool_name="update_page",
-        description="Update an existing page in BookStack",
+        path="/tools/bookstack/update_page",
+        short_description="Update an existing page in BookStack",
+        description="Update an existing BookStack page's name, content, book/chapter assignment, tags, or priority.",
         parameters=[
             ToolParameter(
                 name="page_id",
@@ -311,9 +310,9 @@ class BookStack:
                 required=False
             )
         ],
-        returns="JSON with page update result"
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="update")],
     )
-    def update_page(
+    async def update_page(
         self,
         page_id: int,
         name: Optional[str] = None,
@@ -354,9 +353,9 @@ class BookStack:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="bookstack",
-        tool_name="delete_page",
-        description="Delete a page from BookStack",
+        path="/tools/bookstack/delete_page",
+        short_description="Delete a page from BookStack",
+        description="Delete a page from BookStack by its ID.",
         parameters=[
             ToolParameter(
                 name="page_id",
@@ -364,9 +363,9 @@ class BookStack:
                 description="The ID of the page to delete"
             )
         ],
-        returns="JSON with deletion result"
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="delete")],
     )
-    def delete_page(self, page_id: int) -> Tuple[bool, str]:
+    async def delete_page(self, page_id: int) -> Tuple[bool, str]:
         """Delete a page from BookStack."""
         try:
             response = self._run_async(
@@ -378,9 +377,9 @@ class BookStack:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="bookstack",
-        tool_name="search_all",
-        description="Search across all content in BookStack",
+        path="/tools/bookstack/search_all",
+        short_description="Search across all content in BookStack",
+        description="Search across all content in BookStack (pages, books, chapters) with optional pagination.",
         parameters=[
             ToolParameter(
                 name="query",
@@ -401,9 +400,9 @@ class BookStack:
                 required=False
             )
         ],
-        returns="JSON with search results"
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="search")],
     )
-    def search_all(
+    async def search_all(
         self,
         query: Optional[str] = None,
         page: Optional[int] = None,

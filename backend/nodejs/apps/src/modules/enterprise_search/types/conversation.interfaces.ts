@@ -92,6 +92,47 @@ export interface IToolCallItem {
   toolResult: any;
 }
 
+/**
+ * One model-turn's chain-of-thought, as accumulated by the Python
+ * `TerminalAnswerStreamer` and attached to `completion_data.reasoning`
+ * (see `reasoning_persistence.py` — additive, gated behind
+ * `PIPESHUB_PERSIST_REASONING`, absent entirely when disabled).
+ */
+export interface IReasoningTurn {
+  messageId?: string;
+  turnIndex?: number;
+  content: string;
+}
+
+/**
+ * One entry in the ordered agent-activity transcript — text, reasoning,
+ * a tool call, or a nested sub-agent's own timeline — assembled by the
+ * Python `TranscriptCollector` (`protocol/transcript_collector.py`) and
+ * attached to `completion_data.parts`. Mirrors that module's `MessagePart`
+ * TypedDict byte-for-byte; kept as one loosely-typed interface (not a
+ * discriminated union) since Mongoose persists this as `Schema.Types.Mixed`
+ * and every field beyond `type` is optional depending on the part kind.
+ *
+ * Only ever carries a bounded preview of any external tool result (see
+ * that module's docstring) — never the full tool payload.
+ */
+export interface IMessagePart {
+  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent';
+  content?: string;
+  toolCallId?: string;
+  toolName?: string;
+  args?: string;
+  /** Human-readable summary of `args`, computed server-side (see PipesHubToolSummarizer). */
+  argsSummary?: string;
+  status?: 'running' | 'completed' | 'failed' | 'blocked';
+  resultPreview?: string;
+  /** Human-readable summary of the tool result, computed server-side from the full (untruncated) output. */
+  resultSummary?: string;
+  runId?: string;
+  roleName?: string;
+  parts?: IMessagePart[];
+}
+
 export interface IMessage {
   messageType: 'user_query' | 'bot_response' | 'error' | 'feedback' | 'system' | 'tool_call';
   content: string;
@@ -113,6 +154,10 @@ export interface IMessage {
   referenceData?: IReferenceDataItem[];
   // Tool call data for tool_call messageType
   tools?: IToolCallItem[];
+  /** Persisted chain-of-thought for this bot_response turn (opt-in, see IReasoningTurn). */
+  reasoning?: IReasoningTurn[];
+  /** Ordered agent-activity transcript for this bot_response turn — see IMessagePart. */
+  parts?: IMessagePart[];
 }
 
 export interface IConversation {
@@ -204,6 +249,10 @@ export interface IAIResponse {
   modelInfo?: IAIModel;
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];
+  /** Present only when `PIPESHUB_PERSIST_REASONING=true` on the Python side. */
+  reasoning?: IReasoningTurn[];
+  /** Ordered agent-activity transcript (`agui` protocol only) — see IMessagePart. */
+  parts?: IMessagePart[];
 }
 
 export interface IAIModel {

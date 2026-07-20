@@ -2229,6 +2229,12 @@ class ArtifactType(str, Enum):
     SPREADSHEET = "SPREADSHEET"
     PRESENTATION = "PRESENTATION"
     DATA_FILE = "DATA_FILE"
+    # Source code (LLM/agent-authored, e.g. the `run_code` program that
+    # produced other artifacts) — first-class so `DERIVED_FROM` lineage
+    # edges always point at a real, versioned, fetchable artifact rather
+    # than a copy of the code embedded only in conversation history. See
+    # `app/services/artifact_registry/`.
+    CODE = "CODE"
     OTHER = "OTHER"
 
 
@@ -2241,6 +2247,15 @@ class ArtifactRecord(Record):
     conversation_id: str | None = Field(default=None, description="Conversation that produced this artifact")
     is_temporary: bool = Field(default=False, description="Whether this artifact is eligible for automatic cleanup")
     expires_at: int | None = Field(default=None, description="Epoch ms timestamp for auto-cleanup of temporary artifacts")
+    # Logical identity within a conversation — stable across versions, used
+    # to match a re-run's output file name against an EXISTING artifact
+    # instead of a new one (see `VersionManager.resolve_by_logical_name`).
+    # Defaults to `record_name` when not set explicitly.
+    logical_name: str | None = Field(default=None, description="Stable logical name unique within the conversation, used to identify successive versions of the same artifact")
+    # SHA-256 of the CURRENT version's content — enables cheap dedup: a
+    # re-run producing byte-identical content skips the version bump
+    # entirely (see `VersionManager.add_version`).
+    content_hash: str | None = Field(default=None, description="SHA-256 hex digest of the current version's content")
 
     def to_arango_artifact_record(self) -> dict:
         """Return artifact sub-record for the ``artifacts`` collection."""
@@ -2259,6 +2274,8 @@ class ArtifactRecord(Record):
             "conversationId": self.conversation_id,
             "isTemporary": self.is_temporary,
             "expiresAt": self.expires_at,
+            "logicalName": self.logical_name or self.record_name,
+            "contentHash": self.content_hash,
         }
 
     @staticmethod
@@ -2313,6 +2330,8 @@ class ArtifactRecord(Record):
             conversation_id=artifact_doc.get("conversationId"),
             is_temporary=artifact_doc.get("isTemporary", False),
             expires_at=artifact_doc.get("expiresAt"),
+            logical_name=artifact_doc.get("logicalName"),
+            content_hash=artifact_doc.get("contentHash"),
         )
 
         

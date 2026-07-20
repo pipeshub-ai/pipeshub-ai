@@ -352,6 +352,11 @@ export function loadHistoricalMessages(
             ...(capturedPayload && isAnswered
               ? { persistedAskUserQuestion: capturedPayload }
               : {}),
+            // Agent-activity transcript (`agui` protocol only — see
+            // TranscriptCollector/buildAIResponseMessage). Absent for the
+            // legacy protocol and every pre-existing conversation; consumers
+            // fall back to plain `content` (see AgentActivityTimeline).
+            ...(msg.parts?.length ? { persistedParts: msg.parts } : {}),
           },
         },
       });

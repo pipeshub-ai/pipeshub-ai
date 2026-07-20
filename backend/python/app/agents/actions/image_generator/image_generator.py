@@ -21,9 +21,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import (
@@ -100,10 +99,9 @@ class ImageGenerator:
         return success, json.dumps(payload, default=str)
 
     @tool(
-        app_name="image_generator",
-        tool_name="generate_image",
-        args_schema=GenerateImageInput,
-        llm_description=(
+        path="/tools/image_generator/generate_image",
+        short_description="Generate a brand-new image from a natural-language prompt using generative AI",
+        description=(
             "Generate a brand-new image from a natural-language prompt using a "
             "generative AI model (OpenAI gpt-image / DALL-E, or Gemini image / Imagen). "
             "Use ONLY for creative imagery: illustrations, concept art, photorealistic "
@@ -119,30 +117,50 @@ class ImageGenerator:
             "The generated image is attached to the response as an artifact; the text "
             "result just acknowledges success and carries metadata."
         ),
-        category=ToolCategory.UTILITY,
-        is_essential=True,
-        requires_auth=False,
-        when_to_use=[
-            "User asks for a creative illustration or artwork",
-            "User asks for a photorealistic scene or concept art",
-            "User asks for a logo, icon, or mockup of something visual",
-            "User asks to 'generate', 'create', 'draw', or 'paint' an image from a description",
+        parameters=[
+            ToolParameter(
+                name="prompt",
+                type=ParameterType.STRING,
+                description=(
+                    "A detailed natural-language description of the image to create. "
+                    "The more specific the prompt, the better the result."
+                ),
+                required=True,
+            ),
+            ToolParameter(
+                name="file_name",
+                type=ParameterType.STRING,
+                description=(
+                    "A short, descriptive, filesystem-safe base file name for the image, "
+                    "WITHOUT extension. Derive it from the subject of the user's request "
+                    "using snake_case (lowercase letters, digits, underscores; 2-40 chars). "
+                    "Examples: 'mona_lisa', 'coffee_shop_logo', 'cat_with_sunglasses', "
+                    "'futuristic_city_skyline'. Do NOT use the model name, timestamps, "
+                    "or random IDs. If the user did not specify a name, invent a concise "
+                    "one that summarises the subject of the image."
+                ),
+                required=True,
+            ),
+            ToolParameter(
+                name="size",
+                type=ParameterType.STRING,
+                description=(
+                    "Image dimensions. One of 1024x1024 (square), 1024x1792 (portrait), "
+                    "or 1792x1024 (landscape)."
+                ),
+                required=False,
+                default="1024x1024",
+                enum=["1024x1024", "1024x1792", "1792x1024"],
+            ),
+            ToolParameter(
+                name="n",
+                type=ParameterType.INTEGER,
+                description="Number of images to generate (1-4).",
+                required=False,
+                default=1,
+            ),
         ],
-        when_not_to_use=[
-            "User wants a chart, graph, plot, or data visualisation (use coding_sandbox.execute_python)",
-            "User wants a diagram, flowchart, or org chart (use coding_sandbox or a diagramming tool)",
-            "User wants a document, spreadsheet, presentation, or PDF",
-            "User wants to edit or annotate an existing image they already have",
-            "The task can be solved by executing code or querying data",
-            "User wants a screenshot of a UI, data, or website",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Generate an image of a sunset over snowy mountains",
-            "Create a minimalist logo for a coffee shop",
-            "Draw a cartoon of a cat wearing sunglasses",
-            "Make a photorealistic image of a futuristic city skyline",
-        ],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action")],
     )
     async def generate_image(
         self,

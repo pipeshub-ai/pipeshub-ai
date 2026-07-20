@@ -331,6 +331,62 @@ class Linear:
 
 ---
 
+### 1a) Give Your Tool a Human-Readable Summary (`args_summary` / `result_summary`)
+
+Every tool call and its result get surfaced to the end user in the chat UI as a short activity line (e.g. "Searching Jira issues: ...", "Found 3 issues"). By default this falls back to a generic formatter that inspects the raw JSON payload, which is serviceable but generic. You can make your tool self-describing by declaring two optional callables directly on the `@tool` decorator — no other file needs to know your tool exists:
+
+- `args_summary(args: dict) -> str | None` — describes the call before it runs, from the arguments alone.
+- `result_summary(args: dict, result: ToolResult) -> str | None` — describes the outcome, from the arguments and the tool's own `ToolResult` (`result.content` is your tool's returned JSON string; `result.is_error` is set when your tool returned `False`).
+
+Both are optional and fail-safe: return `None` (or raise) and the platform falls back to the generic formatter — you never need to handle every shape.
+
+Most connector tools follow one of two JSON envelopes on success — `{"message": ..., "data": {...}}` (single entity) or `{"message": ..., "data": {"<key>": [...]}}` (list) — so `app/agents/actions/util/tool_summaries.py` provides ready-made factories instead of hand-rolling JSON parsing per tool:
+
+- `args_template(template, *arg_keys)` — fills a template from the call's own arguments; returns `None` if any listed key is missing/blank.
+- `list_summary(path, item_label, noun)` — unwraps a list at `path` (a bare key like `"issues"` shorthand for `("data", "issues")`, or an explicit tuple for envelopes that don't nest under `data`) and renders `"Found N {noun}s"` plus a bullet list from `item_label`.
+- `entity_summary(label, *, path=("data",))` — unwraps a single entity and renders one line from `label`.
+- `confirmation(template, *arg_keys)` — for write tools whose confirmation reads better from the call's own arguments than the response body (e.g. `"Comment added to {issue_key}"`).
+
+Worked example (mirrors `app/agents/actions/jira/jira.py`):
+
+```python
+# File: backend/python/app/agents/actions/linear/linear.py
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import args_template, entity_summary, list_summary
+
+
+def _linear_issue_label(issue: dict) -> str:
+    return f"{issue.get('identifier', '?')}: {issue.get('title', '?')}"
+
+
+class Linear:
+    @tool(
+        app_name="linear",
+        tool_name="get_teams",
+        description="Get teams",
+        parameters=[...],
+        args_summary=lambda _args: "Fetching Linear teams",
+        result_summary=list_summary("teams", lambda t: t.get("name", "?"), "team"),
+    )
+    def get_teams(self, first: Optional[int] = None, after: Optional[str] = None) -> Tuple[bool, str]:
+        ...
+
+    @tool(
+        app_name="linear",
+        tool_name="create_issue",
+        description="Create an issue",
+        parameters=[...],
+        args_summary=args_template('Creating Linear issue "{title}"', "title"),
+        result_summary=entity_summary(lambda e: f"Created issue: {_linear_issue_label(e)}"),
+    )
+    def create_issue(self, title: str, ...) -> Tuple[bool, str]:
+        ...
+```
+
+If none of the factories fit your tool's response shape (e.g. a custom envelope, or fields spread across the top level instead of nested under `data`), write a small dedicated function with the same `(args) -> str | None` / `(args, result) -> str | None` signatures and pass it directly — see `_search_all_result_summary` in `app/agents/actions/slack/slack.py` or `_get_file_content_result_summary` in `app/agents/actions/google/drive/drive.py` for examples that parse a bespoke shape.
+
+---
+
 ### 2) Add a Client Factory (Recommended)
 
 Factories standardize how action classes receive clients (tokens, configs). The runtime uses `ClientFactoryRegistry` to instantiate your action classes.

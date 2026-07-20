@@ -636,10 +636,10 @@
           "short": "Rápido",
           "hint": "Prioriza respuestas rápidas y menos iteraciones. Ideal para tareas sencillas."
         },
-        "verify": {
-          "label": "Verificar",
-          "short": "Verificar",
-          "hint": "Añade comprobaciones extra de hechos y pasos antes de la respuesta final."
+        "plan-execute": {
+          "label": "Planificar y Ejecutar",
+          "short": "Planificar y Ejecutar",
+          "hint": "Planifica todos los pasos por adelantado y luego los ejecuta en orden."
         },
         "deep": {
           "label": "Profundo",

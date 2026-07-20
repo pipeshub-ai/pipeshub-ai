@@ -157,6 +157,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     streamingQuestion: '',
     currentStatusMessage: null,
     streamingCitationMaps: null,
+    streamingParts: [],
     userScrollOverride: false,
     savedScrollTop: null,
     savedScrollWasStreaming: false,

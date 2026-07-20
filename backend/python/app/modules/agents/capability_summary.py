@@ -117,14 +117,24 @@ def classify_knowledge_sources(
     agent_knowledge: list[dict[str, Any]],
     *,
     connector_configs: dict[str, Any] | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> list[dict[str, Any]]:
     """
-    Classify agent knowledge into KB document stores and indexed app connectors.
+    Classify agent knowledge into a single, uniform list of retrieval sources.
+
+    KB document stores and indexed app connectors are the SAME concept
+    downstream — both are searched via search_internal_knowledge's single
+    `connector_ids` parameter (there is no separate `collection_ids`) — so
+    they are returned as ONE flat list, discriminated by `source_type`,
+    instead of two parallel lists with two different shapes that every
+    caller had to destructure and re-combine. Callers that need to display
+    KB vs app sources differently (icons, headers, `type_key`/`filters`)
+    filter this list by `source_type` rather than receiving two lists.
 
     This is the single source of truth for knowledge classification used by:
-    - The deep-agent orchestrator (_build_knowledge_context in orchestrator.py)
-    - The qna/react planner (_build_knowledge_context in nodes.py)
-    - The sub-agent tool guidance (_build_sub_agent_tool_guidance in sub_agent.py)
+    - The deep-agent orchestrator (_build_orchestrator_knowledge_context)
+    - The qna/react planner (_build_knowledge_context)
+    - internal_exploration_agent's per-request playbook (domain_agents.py)
+    - The router's capability summary (qna/router.py)
 
     Args:
         agent_knowledge: Raw knowledge list from state["agent_knowledge"]
@@ -132,17 +142,17 @@ def classify_knowledge_sources(
             {"sync": {...}, "indexing": {...}} (from fetch_connector_configs / state).
 
     Returns:
-        (kb_sources, indexed_connectors) where:
-        - kb_sources: list of dicts {"label": str, "collection_ids": list[str]}
-          collection_ids is the KB's own app id (connectorId), passed as the
-          `collection_ids` parameter in search_internal_knowledge calls.
-        - indexed_connectors: list of dicts
-          {"label": str, "type_key": str, "connector_id": str, optional "filters": dict}
-          representing app connectors whose content is indexed and
-          searchable via search_internal_knowledge with the connector_ids filter.
+        list of dicts, each:
+        {"label": str, "connector_id": str, "source_type": "kb" | "app",
+         "type_key": str, optional "filters": dict}
+        - source_type == "kb": a KB document store. `connector_id` is ""
+          when the KB has no id of its own (search the full KB, no id
+          filter needed) — `type_key` is always "" for these.
+        - source_type == "app": an indexed app connector, searchable via
+          search_internal_knowledge's connector_ids filter. Always has a
+          non-empty connector_id — entries without one are skipped.
     """
-    kb_sources: list[dict[str, Any]] = []
-    indexed_connectors: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
 
     for k in (agent_knowledge or []):
         if not isinstance(k, dict):
@@ -153,10 +163,11 @@ def classify_knowledge_sources(
         connector_id = (k.get("connectorId") or "").strip()
 
         if ktype.upper() == "KB":
-            kb_sources.append({
+            sources.append({
                 "label": name or "Knowledge Base",
-                "type": "Collection",
-                "collection_ids": [connector_id] if connector_id else [],
+                "type_key": "",
+                "connector_id": connector_id,
+                "source_type": "kb",
             })
         elif connector_id:
             type_key = ktype.lower().split()[0] if ktype else ""
@@ -165,14 +176,15 @@ def classify_knowledge_sources(
                 "label": label,
                 "type_key": type_key,
                 "connector_id": connector_id,
+                "source_type": "app",
             }
             if connector_configs:
                 fc = connector_configs.get(connector_id)
                 if isinstance(fc, dict) and fc:
                     entry["filters"] = fc
-            indexed_connectors.append(entry)
+            sources.append(entry)
 
-    return kb_sources, indexed_connectors
+    return sources
 
 
 # ---------------------------------------------------------------------------
@@ -231,9 +243,16 @@ def _deduplicate_task_ids(
     return result
 
 
+def _kb_ids(kb: dict[str, Any]) -> list[str]:
+    """A KB source's connector_id as a 0/1-element list, for display code
+    that formats `connector_ids=[...]` (kept list-shaped for the rare case
+    a KB entry has no id, vs. an app connector which always has exactly one)."""
+    cid = kb.get("connector_id")
+    return [cid] if cid else []
+
+
 def build_connector_routing_rules(
-    indexed_connectors: list[dict[str, Any]],
-    kb_sources: list[dict[str, Any]] | None = None,
+    sources: list[dict[str, Any]],
     *,
     call_format: str = "planner",
     kb_only_note: str = "",
@@ -241,9 +260,13 @@ def build_connector_routing_rules(
     """
     Build the retrieval source routing decision rules as a natural-language block.
 
-    Covers TWO distinct parameter paths in search_internal_knowledge:
-      • App connectors → pass `connector_ids: ["<connector_id>"]`
-      • KB collections → pass `collection_ids: ["<record_group_id>"]`
+    Both app connectors and KB collections are searched with the SAME
+    `connector_ids: ["<id>"]` parameter — a KB collection's record_group_id
+    IS its connector_id now, so there is exactly one filter parameter for
+    search_internal_knowledge, never two. KB sources and app connectors are
+    still listed under separate headings below purely for readability (so
+    the LLM can tell "this is a document store" from "this is a live app"),
+    not because they use different call syntax.
 
     Handles multiple connectors of the same type correctly by:
       - Giving each a unique display identity (label + connector_id)
@@ -252,18 +275,18 @@ def build_connector_routing_rules(
         its own individual search call
 
     Args:
-        indexed_connectors: list from classify_knowledge_sources
-            (app connectors with connector_id)
-        kb_sources: list from classify_knowledge_sources
-            (KB collections with optional collection_ids)
+        sources: unified list from classify_knowledge_sources — KB
+            collections and app connectors together, discriminated by
+            `source_type` ("kb" | "app").
         call_format: "planner" → tool-call JSON examples
                      "orchestrator" → task-description examples
-        kb_only_note: fallback text returned when both lists are empty.
+        kb_only_note: fallback text returned when the list is empty.
 
     Returns:
         Formatted routing rules string, or kb_only_note if nothing configured.
     """
-    _kb: list[dict[str, Any]] = kb_sources or []
+    _kb: list[dict[str, Any]] = [s for s in sources if s.get("source_type") == "kb"]
+    indexed_connectors: list[dict[str, Any]] = [s for s in sources if s.get("source_type") == "app"]
 
     if not indexed_connectors and not _kb:
         return kb_only_note
@@ -289,18 +312,19 @@ def build_connector_routing_rules(
 
     if _kb:
         identity_lines.append(
-            "  📚 **KB Collections** (search with `collection_ids` parameter):"
+            "  📚 **KB Collections** (search with `connector_ids` parameter — "
+            "same parameter as app connectors below):"
         )
         for k in _kb:
-            cids = k.get("collection_ids", [])
+            cids = _kb_ids(k)
             if cids:
                 cids_display = ", ".join(f'"{c}"' for c in cids)
                 identity_lines.append(
-                    f'    • **{k["label"]}** — `collection_ids=[{cids_display}]`'
+                    f'    • **{k["label"]}** — `connector_ids=[{cids_display}]`'
                 )
             else:
                 identity_lines.append(
-                    f'    • **{k["label"]}** — omit collection_ids (searches full KB)'
+                    f'    • **{k["label"]}** — omit connector_ids (searches full KB)'
                 )
 
     if indexed_connectors:
@@ -327,15 +351,15 @@ def build_connector_routing_rules(
         # Build the "search all sources" bullet list
         all_src_lines: list[str] = []
         for k in _kb:
-            cids = k.get("collection_ids", [])
+            cids = _kb_ids(k)
             if cids:
                 cids_str = ", ".join(f'"{c}"' for c in cids)
                 all_src_lines.append(
-                    f'     - {k["label"]} (KB): `collection_ids=[{cids_str}]`'
+                    f'     - {k["label"]} (KB): `connector_ids=[{cids_str}]`'
                 )
             else:
                 all_src_lines.append(
-                    f'     - {k["label"]} (KB): omit collection_ids'
+                    f'     - {k["label"]} (KB): omit connector_ids'
                 )
         for c in indexed_connectors:
             all_src_lines.append(
@@ -400,11 +424,9 @@ def build_connector_routing_rules(
             f"{rule3}"
             f"   {rule4_num}. No signals found / truly ambiguous → search ALL {n_total} source(s) in parallel:\n"
             f"{all_src_str}\n\n"
-            f"**Parameter rules (CRITICAL — never mix these up):**\n"
-            f"   • KB collection  → `collection_ids: [\"<record_group_id>\"]`"
-            f"  — NEVER use connector_ids for a KB\n"
-            f"   • App connector  → `connector_ids: [\"<connector_id>\"]`"
-            f"  — NEVER use collection_ids for a connector\n"
+            f"**Parameter rule:**\n"
+            f"   • ONE parameter for every source, KB or app connector alike →"
+            f" `connector_ids: [\"<id>\"]`\n"
             f"   • One call per source — never combine IDs in one call; all calls run in parallel\n"
             f"   • **Default when truly uncertain: search ALL {n_total} source(s)**\n"
         )
@@ -413,26 +435,26 @@ def build_connector_routing_rules(
         routing_decision = (
             f"\n**KB-only configuration** — no app connectors configured:\n\n"
             f"1. Search every KB collection listed above for ALL substantive queries.\n"
-            f"2. **Parameter rules:**\n"
-            f"   • KB with collection_ids → set `collection_ids: [\"<record_group_id>\"]`\n"
-            f"   • KB without collection_ids → omit both collection_ids and connector_ids\n\n"
+            f"2. **Parameter rule:**\n"
+            f"   • KB with an id → set `connector_ids: [\"<id>\"]`\n"
+            f"   • KB without an id → omit connector_ids\n\n"
         )
 
     # ── Call-format examples ─────────────────────────────────────────────────
     if call_format == "planner":
         all_parts: list[str] = []
         for k in _kb:
-            cids = k.get("collection_ids", [])
+            cids = _kb_ids(k)
             if cids:
                 cids_str = ", ".join(f'"{c}"' for c in cids)
                 all_parts.append(
                     f'    {{"name": "retrieval.search_internal_knowledge",'
-                    f' "args": {{"query": "<your query>", "collection_ids": [{cids_str}]}}}}'
+                    f' "args": {{"query": "<your query>", "connector_ids": [{cids_str}]}}}}'
                 )
             else:
                 all_parts.append(
                     f'    {{"name": "retrieval.search_internal_knowledge",'
-                    f' "args": {{"query": "<your query>", "collection_ids": null}}}}'
+                    f' "args": {{"query": "<your query>", "connector_ids": null}}}}'
                 )
         for c in indexed_connectors:
             all_parts.append(
@@ -448,16 +470,16 @@ def build_connector_routing_rules(
                 f'    {{"name": "retrieval.search_internal_knowledge",'
                 f' "args": {{"query": "<your query>", "connector_ids": ["{c0["connector_id"]}"]}}}}',
             )[0]
-        elif _kb and _kb[0].get("collection_ids"):
-            cids_str = ", ".join(f'"{c}"' for c in _kb[0]["collection_ids"])
+        elif _kb and _kb_ids(_kb[0]):
+            cids_str = ", ".join(f'"{c}"' for c in _kb_ids(_kb[0]))
             specific = (
                 f'    {{"name": "retrieval.search_internal_knowledge",'
-                f' "args": {{"query": "<your query>", "collection_ids": [{cids_str}]}}}}'
+                f' "args": {{"query": "<your query>", "connector_ids": [{cids_str}]}}}}'
             )
         else:
             specific = (
                 f'    {{"name": "retrieval.search_internal_knowledge",'
-                f' "args": {{"query": "<your query>", "collection_ids": null}}}}'
+                f' "args": {{"query": "<your query>", "connector_ids": null}}}}'
             )
 
         if n_total > 1:
@@ -485,21 +507,21 @@ def build_connector_routing_rules(
         all_parts: list[str] = []
         for k in _kb:
             slug = _label_slug(k["label"])
-            cids = k.get("collection_ids", [])
+            cids = _kb_ids(k)
             if cids:
                 cids_esc = ", ".join(f'\\"{c}\\"' for c in cids)
                 all_parts.append(
                     f'    {{"task_id": "retrieval_kb_{slug}",'
                     f' "description": "Search the {k["label"]} knowledge base'
-                    f' (collection_ids: [{cids_esc}]) for <topic>.'
-                    f' Call search_internal_knowledge with collection_ids: [{cids_esc}].",'
+                    f' (connector_ids: [{cids_esc}]) for <topic>.'
+                    f' Call search_internal_knowledge with connector_ids: [{cids_esc}].",'
                     f' "domains": ["retrieval"], "depends_on": []}}'
                 )
             else:
                 all_parts.append(
                     f'    {{"task_id": "retrieval_kb_{slug}",'
                     f' "description": "Search the {k["label"]} knowledge base for <topic>.'
-                    f' Call search_internal_knowledge (omit collection_ids and connector_ids).",'
+                    f' Call search_internal_knowledge (omit connector_ids).",'
                     f' "domains": ["retrieval"], "depends_on": []}}'
                 )
         for i, c in enumerate(indexed_connectors):
@@ -531,14 +553,14 @@ def build_connector_routing_rules(
         elif _kb:
             k0   = _kb[0]
             slug = _label_slug(k0["label"])
-            cids = k0.get("collection_ids", [])
+            cids = _kb_ids(k0)
             if cids:
                 cids_esc = ", ".join(f'\\"{c}\\"' for c in cids)
                 specific = (
                     f'    {{"task_id": "retrieval_kb_{slug}",'
                     f' "description": "Search the {k0["label"]} knowledge base'
-                    f' (collection_ids: [{cids_esc}]) for <topic>.'
-                    f' Call search_internal_knowledge with collection_ids: [{cids_esc}].",'
+                    f' (connector_ids: [{cids_esc}]) for <topic>.'
+                    f' Call search_internal_knowledge with connector_ids: [{cids_esc}].",'
                     f' "domains": ["retrieval"], "depends_on": []}}'
                 )
             else:

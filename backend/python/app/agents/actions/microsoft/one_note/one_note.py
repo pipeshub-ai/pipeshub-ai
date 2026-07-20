@@ -4,9 +4,8 @@ import logging
 from typing import Optional, Tuple
 
 from app.agents.actions.utils import run_async
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.one_note.one_note import OneNoteDataSource
 
@@ -26,9 +25,9 @@ class OneNote:
         self.client = OneNoteDataSource(client)
 
     @tool(
-        app_name="one_note",
-        tool_name="get_notebooks",
-        description="Get OneNote notebooks",
+        path="/tools/onenote/get_notebooks",
+        short_description="Get OneNote notebooks",
+        description="Retrieve a list of OneNote notebooks accessible by the current user, optionally limiting the number of results returned.",
         parameters=[
             ToolParameter(
                 name="top",
@@ -36,9 +35,10 @@ class OneNote:
                 description="Number of notebooks to retrieve",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
-    def get_notebooks(self, top: Optional[int] = None) -> Tuple[bool, str]:
+    async def get_notebooks(self, top: Optional[int] = None) -> Tuple[bool, str]:
         """Get OneNote notebooks"""
         """
         Args:
@@ -64,9 +64,9 @@ class OneNote:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="one_note",
-        tool_name="get_notebook",
-        description="Get a specific OneNote notebook",
+        path="/tools/onenote/get_notebook",
+        short_description="Get a specific OneNote notebook",
+        description="Retrieve details of a specific OneNote notebook by its ID, including metadata such as display name and timestamps.",
         parameters=[
             ToolParameter(
                 name="notebook_id",
@@ -74,9 +74,10 @@ class OneNote:
                 description="ID of the notebook",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
-    def get_notebook(self, notebook_id: str) -> Tuple[bool, str]:
+    async def get_notebook(self, notebook_id: str) -> Tuple[bool, str]:
         """Get a specific OneNote notebook"""
         """
         Args:
@@ -98,9 +99,9 @@ class OneNote:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="one_note",
-        tool_name="get_sections",
-        description="Get sections from a OneNote notebook",
+        path="/tools/onenote/get_sections",
+        short_description="Get sections from a OneNote notebook",
+        description="Retrieve all sections within a specific OneNote notebook, including section metadata and contained pages.",
         parameters=[
             ToolParameter(
                 name="notebook_id",
@@ -108,9 +109,10 @@ class OneNote:
                 description="ID of the notebook",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
-    def get_sections(self, notebook_id: str) -> Tuple[bool, str]:
+    async def get_sections(self, notebook_id: str) -> Tuple[bool, str]:
         """Get sections from a OneNote notebook"""
         """
         Args:
@@ -137,9 +139,9 @@ class OneNote:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="one_note",
-        tool_name="get_pages",
-        description="Get pages from a OneNote section",
+        path="/tools/onenote/get_pages",
+        short_description="Get pages from a OneNote section",
+        description="Retrieve all pages within a specific section of a OneNote notebook, including page titles and timestamps.",
         parameters=[
             ToolParameter(
                 name="notebook_id",
@@ -153,9 +155,10 @@ class OneNote:
                 description="ID of the section",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
-    def get_pages(self, notebook_id: str, section_id: str) -> Tuple[bool, str]:
+    async def get_pages(self, notebook_id: str, section_id: str) -> Tuple[bool, str]:
         """Get pages from a OneNote section"""
         """
         Args:
@@ -184,9 +187,9 @@ class OneNote:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="one_note",
-        tool_name="get_page",
-        description="Get a specific OneNote page",
+        path="/tools/onenote/get_page",
+        short_description="Get a specific OneNote page",
+        description="Retrieve a specific OneNote page by its ID, including its content and metadata.",
         parameters=[
             ToolParameter(
                 name="page_id",
@@ -194,9 +197,10 @@ class OneNote:
                 description="ID of the page",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
-    def get_page(self, page_id: str) -> Tuple[bool, str]:
+    async def get_page(self, page_id: str) -> Tuple[bool, str]:
         """Get a specific OneNote page"""
         """
         Args:
@@ -217,9 +221,9 @@ class OneNote:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="one_note",
-        tool_name="create_page",
-        description="Create a new OneNote page",
+        path="/tools/onenote/create_page",
+        short_description="Create a new OneNote page",
+        description="Create a new page in a specific section of a OneNote notebook with a title and HTML content.",
         parameters=[
             ToolParameter(
                 name="notebook_id",
@@ -245,7 +249,8 @@ class OneNote:
                 description="Content of the page (HTML format)",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
     )
     def create_page(
         self,
@@ -286,9 +291,9 @@ class OneNote:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="one_note",
-        tool_name="update_page",
-        description="Update a OneNote page",
+        path="/tools/onenote/update_page",
+        short_description="Update a OneNote page",
+        description="Update the content of an existing OneNote page by its ID with new HTML content.",
         parameters=[
             ToolParameter(
                 name="page_id",
@@ -302,7 +307,8 @@ class OneNote:
                 description="New content for the page (HTML format)",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
     )
     def update_page(
         self,
@@ -329,9 +335,9 @@ class OneNote:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="one_note",
-        tool_name="delete_page",
-        description="Delete a OneNote page",
+        path="/tools/onenote/delete_page",
+        short_description="Delete a OneNote page",
+        description="Delete a specific page from a OneNote notebook section using notebook, section, and page IDs.",
         parameters=[
             ToolParameter(
                 name="notebook_id",
@@ -351,9 +357,10 @@ class OneNote:
                 description="ID of the page",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
     )
-    def delete_page(self, notebook_id: str, section_id: str, page_id: str) -> Tuple[bool, str]:
+    async def delete_page(self, notebook_id: str, section_id: str, page_id: str) -> Tuple[bool, str]:
         """Delete a OneNote page"""
         """
         Args:

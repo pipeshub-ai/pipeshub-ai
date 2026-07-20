@@ -209,6 +209,18 @@ class TestSelectAgentGraph:
         assert result is modern_agent_graph
 
     @pytest.mark.asyncio
+    async def test_plan_execute_mode(self) -> None:
+        from app.api.routes.agent import (
+            _select_agent_graph_for_query,
+            modern_agent_graph,
+        )
+        log = logging.getLogger("test")
+        result = await _select_agent_graph_for_query(
+            {"chatMode": "planExecute"}, log, MagicMock()
+        )
+        assert result is modern_agent_graph
+
+    @pytest.mark.asyncio
     async def test_unknown_mode_returns_legacy(self) -> None:
         from app.api.routes.agent import _select_agent_graph_for_query, agent_graph
         log = logging.getLogger("test")
@@ -349,8 +361,8 @@ class TestAutoSelectGraph:
             "type": "image_url",
             "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="},
         }
-        with patch("app.api.routes.agent.BlobStorage") as bs_cls, patch(
-            "app.api.routes.agent.resolve_attachments",
+        with patch("app.modules.agents.qna.router.BlobStorage") as bs_cls, patch(
+            "app.modules.agents.qna.router.resolve_attachments",
             new_callable=AsyncMock,
         ) as ra:
             bs_cls.return_value = MagicMock()
@@ -1123,40 +1135,38 @@ class TestFilterKnowledgeByEnabledSources:
         assert result[0]["connectorId"] == "google"
 
     def test_kb_filter_with_record_groups(self) -> None:
-        """KB apps are now treated as regular apps - filter by UUID connector IDs in apps list"""
+        """KB entries are UUID connector-ids now, but matched via filters["kb"] — never filters["apps"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
-        # KB apps now have UUID connector IDs and type="KB"
         kb_uuid_1 = "550e8400-e29b-41d4-a716-446655440001"
         kb_uuid_2 = "550e8400-e29b-41d4-a716-446655440002"
         knowledge = [
             {"connectorId": kb_uuid_1, "type": "KB"},
             {"connectorId": kb_uuid_2, "type": "KB"},
         ]
-        # Filter by including only one KB app UUID in apps list
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid_1]})
+        # Filter by including only one KB UUID in the kb list
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid_1]})
         assert len(result) == 1
         assert result[0]["connectorId"] == kb_uuid_1
 
     def test_kb_filter_with_string_filters(self) -> None:
-        """KB apps no longer use string filters - they're regular apps"""
+        """KB entries no longer use string filters - they're regular connectors."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440003"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        # Filter using apps list with KB UUID
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
 
     def test_kb_filter_with_invalid_json_filters(self) -> None:
-        """KB apps are now regular apps - no special invalid filter handling"""
+        """KB entries are regular connectors - no special invalid filter handling."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440004"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        # KB not in apps list, so filtered out
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["some-other-app"]})
+        # KB not in the kb list, so filtered out
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["some-other-kb"]})
         assert len(result) == 0
 
     def test_non_dict_entries_skipped(self) -> None:
@@ -1166,14 +1176,38 @@ class TestFilterKnowledgeByEnabledSources:
         assert len(result) == 1
 
     def test_filtersParsed_fallback(self) -> None:
-        """KB apps are now regular apps with UUID connector IDs"""
+        """KB entries are regular connectors with UUID connector ids, matched via filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440005"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
+
+    def test_kb_entry_not_matched_by_apps_filter(self) -> None:
+        """Regression: a KB entry's id in filters["apps"] must NOT match it —
+        KB entries are only ever enabled via filters["kb"]."""
+        from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440006"
+        knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        assert len(result) == 0
+
+    def test_mixed_kb_and_app_both_kept(self) -> None:
+        """Configuring an app connector must not drop KB entries — each
+        entry is checked against the enabled-set matching its own type."""
+        from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440007"
+        knowledge = [
+            {"connectorId": "confluence-app", "type": "confluence"},
+            {"connectorId": kb_uuid, "type": "KB"},
+        ]
+        result = _filter_knowledge_by_enabled_sources(
+            knowledge, {"apps": ["confluence-app"], "kb": [kb_uuid]},
+        )
+        ids = {k["connectorId"] for k in result}
+        assert ids == {"confluence-app", kb_uuid}
 
 
 
@@ -1609,7 +1643,8 @@ class TestFilterKnowledgeExtended:
         assert len(result) == 1
 
     def test_combined_app_and_kb_filter(self) -> None:
-        """Both regular apps and KB apps are filtered through apps list"""
+        """App connectors are matched via filters["apps"], KB entries via
+        filters["kb"] — each entry checked against the bucket for its own type."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440011"
         knowledge = [
@@ -1618,7 +1653,7 @@ class TestFilterKnowledgeExtended:
             {"connectorId": kb_uuid, "type": "KB"},
         ]
         result = _filter_knowledge_by_enabled_sources(
-            knowledge, {"apps": ["google", kb_uuid]}
+            knowledge, {"apps": ["google"], "kb": [kb_uuid]}
         )
         assert len(result) == 2
         connectors = [r["connectorId"] for r in result]
@@ -2014,24 +2049,24 @@ class TestFilterKnowledgeFull:
         assert result[0]["connectorId"] == "google"
 
     def test_kb_with_string_filters(self) -> None:
-        """KB apps are regular apps now"""
+        """KB entries are regular connectors now, matched via filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440020"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
 
     def test_kb_with_invalid_json_filters(self) -> None:
-        """KB apps filtered by apps list, not by invalid filters"""
+        """KB entries filtered by the kb list, not by invalid filters."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440021"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        # Not in apps list - filtered out
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
+        # Not in kb list - filtered out
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["other-kb"]})
         assert len(result) == 0
 
     def test_non_dict_entry_skipped(self) -> None:
@@ -2041,25 +2076,33 @@ class TestFilterKnowledgeFull:
         assert len(result) == 1
 
     def test_kb_no_matching_record_groups(self) -> None:
-        """KB apps are filtered by UUID in apps list"""
+        """KB entries are filtered by UUID in the kb list, not the apps list."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440022"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        # Not in apps list - filtered out
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
+        # Not in kb list - filtered out
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["other-kb"]})
         assert len(result) == 0
 
     def test_kb_with_filtersParsed(self) -> None:
-        """KB apps are regular apps - filtered by UUID"""
+        """KB entries are regular connectors - filtered by UUID via filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440023"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
+
+    def test_kb_entry_not_matched_by_apps_filter(self) -> None:
+        """A KB entry's id living in filters["apps"] must NOT match it."""
+        from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440024"
+        knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        assert len(result) == 0
 
 
 
@@ -4428,43 +4471,43 @@ class TestFilterKnowledgeByEnabledSourcesFullCoverage:
         assert result[0]["connectorId"] == "app1"
 
     def test_kb_filter_with_matching_record_groups(self) -> None:
-        """KB apps are regular apps - filter by UUID"""
+        """KB entries are regular connectors - filtered by UUID via filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440030"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
 
     def test_kb_filter_no_matching_record_groups(self) -> None:
-        """KB apps filtered out when not in apps list"""
+        """KB entries filtered out when not in the kb list"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440031"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["other-kb"]})
         assert len(result) == 0
 
     def test_kb_filter_with_json_string_filters(self) -> None:
-        """KB apps filtered by UUID"""
+        """KB entries filtered by UUID via filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440032"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
 
     def test_kb_filter_invalid_json_filters(self) -> None:
-        """KB apps filtered by UUID, not by invalid filters"""
+        """KB entries filtered by UUID, not by invalid filters"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440033"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["other-kb"]})
         assert len(result) == 0
 
     def test_non_dict_skipped(self) -> None:
@@ -4472,6 +4515,29 @@ class TestFilterKnowledgeByEnabledSourcesFullCoverage:
         knowledge = ["not a dict", None, 42]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["a1"]})
         assert len(result) == 0
+
+    def test_kb_entry_not_matched_by_apps_filter(self) -> None:
+        """A KB entry's id living in filters["apps"] must NOT match it —
+        it is only ever enabled via filters["kb"]."""
+        from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440034"
+        knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        assert len(result) == 0
+
+    def test_mixed_kb_and_app_both_kept(self) -> None:
+        """Regression: configuring an app connector must not drop KB entries."""
+        from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440035"
+        knowledge = [
+            {"connectorId": "app1", "type": "confluence"},
+            {"connectorId": kb_uuid, "type": "KB"},
+        ]
+        result = _filter_knowledge_by_enabled_sources(
+            knowledge, {"apps": ["app1"], "kb": [kb_uuid]},
+        )
+        ids = {k["connectorId"] for k in result}
+        assert ids == {"app1", kb_uuid}
 
 
 class TestParseToolsetsEdgeCases:

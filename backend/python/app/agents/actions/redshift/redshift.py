@@ -6,9 +6,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 from app.connectors.core.constants import IconPaths
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -161,12 +160,11 @@ class Redshift:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="redshift",
-        tool_name="list_schemas",
-        description="List all schemas in the connected Redshift database",
-        args_schema=ListSchemasInput,
+        path="/tools/redshift/list_schemas",
+        short_description="List all schemas in the Redshift database",
+        description="List all schemas in the connected Redshift database. Returns a JSON list of schema names.",
         parameters=[],
-        returns="JSON list of schema names",
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
     )
     async def list_schemas(self) -> tuple[bool, str]:
         """List all schemas in the connected Redshift database."""
@@ -193,15 +191,15 @@ class Redshift:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="redshift",
-        tool_name="list_schemas_and_tables",
+        path="/tools/redshift/list_schemas_and_tables",
+        short_description="List all schemas and their tables in one call",
         description=(
             "List all schemas and their tables in the connected Redshift database in a single call. "
-            "Use this as the first step to understand the database structure before querying."
+            "Use this as the first step to understand the database structure before querying. "
+            "Returns a JSON object with schemas, each containing their list of tables."
         ),
-        args_schema=ListSchemasAndTablesInput,
         parameters=[],
-        returns="JSON object with schemas, each containing their list of tables",
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
     )
     async def list_schemas_and_tables(self) -> tuple[bool, str]:
         """List all schemas and tables in the Redshift database in one call."""
@@ -246,10 +244,9 @@ class Redshift:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="redshift",
-        tool_name="get_table_ddl",
-        description="Get the CREATE TABLE statement for a specific table in a Redshift schema",
-        args_schema=GetTableDDLInput,
+        path="/tools/redshift/get_table_ddl",
+        short_description="Get the CREATE TABLE DDL for a specific table",
+        description="Get the CREATE TABLE statement for a specific table in a Redshift schema. Returns a JSON payload with the table DDL.",
         parameters=[
             ToolParameter(
                 name="schema_name",
@@ -264,7 +261,7 @@ class Redshift:
                 required=True,
             ),
         ],
-        returns="JSON payload with table DDL",
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
     )
     async def get_table_ddl(
         self,
@@ -300,13 +297,13 @@ class Redshift:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="redshift",
-        tool_name="get_schema_ddl",
+        path="/tools/redshift/get_schema_ddl",
+        short_description="Get DDL for all tables in a schema",
         description=(
             "Fetch CREATE TABLE statements for all tables in a given Redshift schema. "
-            "Useful for understanding the full structure of a schema like 'public', 'analytics', or 'staging'."
+            "Useful for understanding the full structure of a schema like 'public', 'analytics', or 'staging'. "
+            "Returns a JSON list of table DDLs for the given schema."
         ),
-        args_schema=GetSchemaDDLInput,
         parameters=[
             ToolParameter(
                 name="schema_name",
@@ -315,7 +312,7 @@ class Redshift:
                 required=True,
             ),
         ],
-        returns="JSON list of table DDLs for the given schema",
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
     )
     async def get_schema_ddl(
         self,
@@ -370,10 +367,12 @@ class Redshift:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="redshift",
-        tool_name="get_tables_schema",
-        description="Fetch schema (columns, primary keys, foreign keys) for a specific list of tables in a Redshift schema",
-        args_schema=GetTablesSchemaInput,
+        path="/tools/redshift/get_tables_schema",
+        short_description="Get column and key info for specific tables",
+        description=(
+            "Fetch schema details (columns, primary keys, foreign keys) for a specific list of tables "
+            "in a Redshift schema. Returns a JSON schema payload for the requested tables."
+        ),
         parameters=[
             ToolParameter(
                 name="schema_name",
@@ -388,7 +387,7 @@ class Redshift:
                 required=True,
             ),
         ],
-        returns="JSON schema payload for the requested tables",
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
     )
     async def get_tables_schema(
         self,
@@ -446,13 +445,13 @@ class Redshift:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="redshift",
-        tool_name="fetch_db_schema",
+        path="/tools/redshift/fetch_db_schema",
+        short_description="Fetch full database schema with all tables and views",
         description=(
             "Fetch the full schema of the connected Redshift database: all schemas, "
-            "their tables with columns, primary/foreign keys, and optionally views."
+            "their tables with columns, primary/foreign keys, and optionally views. "
+            "Returns a JSON schema payload grouped by schema."
         ),
-        args_schema=FetchDBSchemaInput,
         parameters=[
             ToolParameter(
                 name="include_views",
@@ -461,7 +460,7 @@ class Redshift:
                 required=False,
             ),
         ],
-        returns="JSON schema payload grouped by schema",
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
     )
     async def fetch_db_schema(
         self,
@@ -563,10 +562,13 @@ class Redshift:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="redshift",
-        tool_name="execute_query",
-        description="Execute a SQL query against the connected Redshift database",
-        args_schema=ExecuteQueryInput,
+        path="/tools/redshift/execute_query",
+        short_description="Execute a SQL query against Redshift",
+        description=(
+            "Execute a SQL query against the connected Redshift database. "
+            "Returns a JSON response including row count and data. "
+            "Results are limited to 100 rows for display; larger result sets are exported as CSV in the background."
+        ),
         parameters=[
             ToolParameter(
                 name="query",
@@ -575,7 +577,7 @@ class Redshift:
                 required=True,
             ),
         ],
-        returns="JSON query response including row count and data",
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="write")],
     )
     async def execute_query(
         self,
@@ -681,10 +683,9 @@ class Redshift:
 
 
     @tool(
-        app_name="redshift",
-        tool_name="list_tables",
-        description="List all tables in a specific Redshift schema",
-        args_schema=ListTablesInput,
+        path="/tools/redshift/list_tables",
+        short_description="List all tables in a specific schema",
+        description="List all tables in a specific Redshift schema. Returns a JSON list of tables in the given schema.",
         parameters=[
             ToolParameter(
                 name="schema_name",
@@ -693,7 +694,7 @@ class Redshift:
                 required=True,
             ),
         ],
-        returns="JSON list of tables in the given schema",
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
     )
     async def list_tables(
         self,

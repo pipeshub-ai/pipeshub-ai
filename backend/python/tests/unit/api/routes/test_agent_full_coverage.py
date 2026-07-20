@@ -50,45 +50,70 @@ class TestFilterKnowledgeByEnabledSources:
         assert len(result) == 1
         assert result[0]["connectorId"] == "app1"
 
-    def test_kb_filter_with_matching_record_groups(self):
-        """KB apps filtered by UUID"""
+    def test_kb_filter_with_matching_id(self):
+        """KB entries are matched against filters["kb"], not filters["apps"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440050"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
 
-    def test_kb_filter_no_matching_record_groups(self):
-        """KB apps filtered out when not in apps list"""
+    def test_kb_filter_no_matching_id(self):
+        """KB entries filtered out when their id isn't in filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440051"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["other-kb"]})
         assert len(result) == 0
 
-    def test_kb_filter_with_json_string_filters(self):
-        """KB apps filtered by UUID"""
+    def test_kb_entry_never_matched_against_apps_filter(self):
+        """Regression: a KB entry's id living in filters["apps"] must NOT
+        match it — KB entries are only ever enabled via filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440052"
-        knowledge = [
-            {"connectorId": kb_uuid, "type": "KB"},
-        ]
+        knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
-        assert len(result) == 1
+        assert len(result) == 0
 
-    def test_kb_filter_invalid_json_filters(self):
-        """KB apps filtered by UUID, not by invalid filters"""
+    def test_mixed_kb_and_app_both_kept(self):
+        """Regression for the bug where configuring an app connector
+        (non-empty filters["apps"]) silently dropped every KB entry
+        because only filters["apps"] was checked, never filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
-        kb_uuid = "550e8400-e29b-41d4-a716-446655440053"
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440054"
+        app_id = "00a974a6-71b6-4dd3-98f6-f5d544ef44d6"
         knowledge = [
             {"connectorId": kb_uuid, "type": "KB"},
+            {"connectorId": app_id, "type": "confluence"},
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
-        assert len(result) == 0
+        result = _filter_knowledge_by_enabled_sources(
+            knowledge, {"apps": [app_id], "kb": [kb_uuid]},
+        )
+        connector_ids = {k["connectorId"] for k in result}
+        assert connector_ids == {kb_uuid, app_id}
+
+    def test_no_kb_selected_sentinel_excludes_all_kb_entries(self):
+        """The NO_KB_SELECTED sentinel means 'user selected zero KBs' —
+        it must not accidentally match a real connectorId."""
+        from app.api.routes.agent import (
+            NO_KB_SELECTED_FILTER,
+            _filter_knowledge_by_enabled_sources,
+        )
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440055"
+        app_id = "00a974a6-71b6-4dd3-98f6-f5d544ef44d7"
+        knowledge = [
+            {"connectorId": kb_uuid, "type": "KB"},
+            {"connectorId": app_id, "type": "confluence"},
+        ]
+        result = _filter_knowledge_by_enabled_sources(
+            knowledge, {"apps": [app_id], "kb": [NO_KB_SELECTED_FILTER]},
+        )
+        assert len(result) == 1
+        assert result[0]["connectorId"] == app_id
 
     def test_non_dict_skipped(self):
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
@@ -696,10 +721,10 @@ class TestBuildAgentCapabilityContext:
             ],
         }
         with patch("app.modules.agents.capability_summary.classify_knowledge_sources",
-                   return_value=([], [{"label": "Jira", "type_key": "jira", "filters": None}])), \
+                   return_value=[{"label": "Jira", "type_key": "jira", "connector_id": "c1", "source_type": "app"}]), \
              patch("app.modules.agents.capability_summary.format_connector_filter_lines",
                    return_value=[]):
-            block, n_k, ic, kb, tools = _build_agent_capability_context(query_info)
+            block, n_k, sources, tools = _build_agent_capability_context(query_info)
         assert n_k == 1
         assert len(tools) == 2
         assert "jira.search" in block
@@ -711,20 +736,20 @@ class TestBuildAgentCapabilityContext:
             "filters": {"apps": ["app1"], "kb": ["rg1"]},
         }
         with patch("app.modules.agents.capability_summary.classify_knowledge_sources",
-                   return_value=([], [])), \
+                   return_value=[]), \
              patch("app.modules.agents.capability_summary.format_connector_filter_lines",
                    return_value=[]):
-            block, n_k, _, _, _ = _build_agent_capability_context(query_info)
+            block, n_k, _, _ = _build_agent_capability_context(query_info)
         assert n_k == 2
         assert "2 total" in block
 
     def test_no_knowledge_no_tools(self):
         from app.api.routes.agent import _build_agent_capability_context
         with patch("app.modules.agents.capability_summary.classify_knowledge_sources",
-                   return_value=([], [])), \
+                   return_value=[]), \
              patch("app.modules.agents.capability_summary.format_connector_filter_lines",
                    return_value=[]):
-            block, n_k, _, _, tools = _build_agent_capability_context({})
+            block, n_k, _, tools = _build_agent_capability_context({})
         assert n_k == 0
         assert "none configured" in block
         assert tools == []
@@ -734,10 +759,10 @@ class TestBuildAgentCapabilityContext:
         from app.api.routes.agent import _build_agent_capability_context
         query_info = {"tools": ["web_search", "calculator"]}
         with patch("app.modules.agents.capability_summary.classify_knowledge_sources",
-                   return_value=([], [])), \
+                   return_value=[]), \
              patch("app.modules.agents.capability_summary.format_connector_filter_lines",
                    return_value=[]):
-            block, _, _, _, tools = _build_agent_capability_context(query_info)
+            block, _, _, tools = _build_agent_capability_context(query_info)
         assert len(tools) == 2
         assert tools[0]["full_name"] == "web_search"
 
@@ -748,10 +773,10 @@ class TestBuildAgentCapabilityContext:
             "toolsets": [{"tools": [{"fullName": "jira.search", "description": "Search all issues"}]}],
         }
         with patch("app.modules.agents.capability_summary.classify_knowledge_sources",
-                   return_value=([], [])), \
+                   return_value=[]), \
              patch("app.modules.agents.capability_summary.format_connector_filter_lines",
                    return_value=[]):
-            block, _, _, _, _ = _build_agent_capability_context(query_info)
+            block, _, _, _ = _build_agent_capability_context(query_info)
         assert "Search all issues" in block
 
     def test_tool_without_fullname_skipped(self):
@@ -761,10 +786,10 @@ class TestBuildAgentCapabilityContext:
             "toolsets": [{"tools": [{"fullName": "", "description": "bad"}, {"fullName": "ok.tool"}]}],
         }
         with patch("app.modules.agents.capability_summary.classify_knowledge_sources",
-                   return_value=([], [])), \
+                   return_value=[]), \
              patch("app.modules.agents.capability_summary.format_connector_filter_lines",
                    return_value=[]):
-            _, _, _, _, tools = _build_agent_capability_context(query_info)
+            _, _, _, tools = _build_agent_capability_context(query_info)
         assert len(tools) == 1
 
 
@@ -1222,15 +1247,16 @@ class TestAutoSelectGraph:
         structured = AsyncMock()
         mock_llm.with_structured_output = MagicMock(return_value=structured)
         mock_decision = MagicMock()
-        mock_decision.chatMode = "react"
+        mock_decision.route = "react"
+        mock_decision.reasoning = "test"
         structured.ainvoke = AsyncMock(return_value=mock_decision)
         blob_store = AsyncMock()
 
-        with patch("app.api.routes.agent._build_agent_capability_context",
-                   return_value=("cap_block", 0, [], [], [])), \
-             patch("app.api.routes.agent._build_prior_routing_messages",
+        with patch("app.modules.agents.qna.router.build_capability_context",
+                   return_value=("cap_block", 0, [], [])), \
+             patch("app.modules.agents.qna.router.build_prior_routing_messages",
                    new_callable=AsyncMock, return_value=[]), \
-             patch("app.api.routes.agent.resolve_attachments",
+             patch("app.modules.agents.qna.router.resolve_attachments",
                    new_callable=AsyncMock, return_value=[{"type": "image_url", "image_url": {"url": "base64..."}}]):
             result = await _auto_select_graph(
                 {"query": "analyze this", "attachments": [{"id": "a1"}]},
@@ -1260,6 +1286,14 @@ class TestSelectAgentGraphForQuery:
         from app.api.routes.agent import _select_agent_graph_for_query, modern_agent_graph
         result = await _select_agent_graph_for_query(
             {"chatMode": "verification"}, MagicMock(), MagicMock()
+        )
+        assert result is modern_agent_graph
+
+    @pytest.mark.asyncio
+    async def test_plan_execute_mode(self):
+        from app.api.routes.agent import _select_agent_graph_for_query, modern_agent_graph
+        result = await _select_agent_graph_for_query(
+            {"chatMode": "planExecute"}, MagicMock(), MagicMock()
         )
         assert result is modern_agent_graph
 
