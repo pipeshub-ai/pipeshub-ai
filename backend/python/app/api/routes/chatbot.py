@@ -63,6 +63,10 @@ from app.utils.fetch_slack_thread import (
 )
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.fetch_url_tool import create_fetch_url_tool
+from app.utils.pattern_match import (
+    execute_pattern_match_pipeline,
+    merge_pattern_match_results,
+)
 from app.utils.streaming import (
     create_sse_event,
     stream_llm_response_with_tools,
@@ -127,8 +131,10 @@ def create_internal_search_tool(
     graph_provider: IGraphDBProvider,
     ref_mapper: CitationRefMapper,
     final_results: list[dict[str, Any]],
+    config_service: ConfigurationService | None = None,
 ):
     """Factory that creates a LangChain tool wrapping retrieval search."""
+    tool_logger = logging.getLogger(__name__ + ".search_tool")
 
     @tool("search_internal_knowledge", args_schema=InternalSearchToolArgs)
     async def search_internal_knowledge_tool(
@@ -147,13 +153,45 @@ def create_internal_search_tool(
         Returns: Retrieved record blocks with metadata for citation, or {"ok": false, "error": "..."}.
         """
         try:
-            result = await retrieval_service.search_with_filters(
-                queries=[query],
-                org_id=org_id,
-                user_id=user_id,
-                limit=limit,
-                filter_groups=filter_groups,
+            parallel_tasks = [
+                retrieval_service.search_with_filters(
+                    queries=[query],
+                    org_id=org_id,
+                    user_id=user_id,
+                    limit=limit,
+                    filter_groups=filter_groups,
+                ),
+            ]
+            pm_task_idx = None
+            if config_service:
+                pm_task_idx = len(parallel_tasks)
+                parallel_tasks.append(
+                    execute_pattern_match_pipeline(
+                        query=query,
+                        config_service=config_service,
+                        org_id=org_id,
+                        user_id=user_id,
+                        graph_provider=graph_provider,
+                        filters=filter_groups,
+                        logger_instance=tool_logger,
+                    )
+                )
+
+            parallel_results = await asyncio.gather(
+                *parallel_tasks, return_exceptions=True,
             )
+
+            result = parallel_results[0]
+            if isinstance(result, Exception):
+                raise result
+
+            raw_pm_records: list[dict] = []
+            if pm_task_idx is not None:
+                pm_result = parallel_results[pm_task_idx]
+                if isinstance(pm_result, Exception):
+                    tool_logger.warning("Pattern match failed: %s", pm_result)
+                else:
+                    raw_pm_records = pm_result
 
             search_results = result.get("searchResults", [])
             virtual_to_record_map = result.get("virtual_to_record_map", {})
@@ -171,11 +209,26 @@ def create_internal_search_tool(
                 virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
             )
 
+            if raw_pm_records:
+                pm_blocks = await merge_pattern_match_results(
+                    raw_records=raw_pm_records,
+                    virtual_record_id_to_result=virtual_record_id_to_result,
+                    user_id=user_id,
+                    org_id=org_id,
+                    blob_store=blob_store,
+                    graph_provider=graph_provider,
+                    is_multimodal_llm=is_multimodal_llm,
+                    logger_instance=tool_logger,
+                )
+                if pm_blocks:
+                    flattened_results.extend(pm_blocks)
+                    tool_logger.info("Tool path: pattern match added %d blocks", len(pm_blocks))
+
             existing_keys = {
                 (r["virtual_record_id"], r["block_index"]) for r in final_results
             }
             temp_final_results = sorted(flattened_results, key=flattened_result_sort_key)
-            
+
             for r in flattened_results:
                 key = (r["virtual_record_id"], r["block_index"])
                 if key not in existing_keys:
@@ -868,6 +921,7 @@ async def _generate_internal_search_stream(
                     graph_provider=graph_provider,
                     ref_mapper=ref_mapper,
                     final_results=final_results,
+                    config_service=config_service,
                 )
 
                 tools = [search_tool]
@@ -909,13 +963,35 @@ async def _generate_internal_search_stream(
                 # --- Standard path: upfront retrieval (first query, no attachments) ---
                 yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
 
-                result = await retrieval_service.search_with_filters(
-                    queries=all_queries,
-                    org_id=org_id,
-                    user_id=user_id,
-                    limit=query_info.limit,
-                    filter_groups=query_info.filters,
+                parallel_results = await asyncio.gather(
+                    retrieval_service.search_with_filters(
+                        queries=all_queries,
+                        org_id=org_id,
+                        user_id=user_id,
+                        limit=query_info.limit,
+                        filter_groups=query_info.filters,
+                    ),
+                    execute_pattern_match_pipeline(
+                        query=query_info.query,
+                        config_service=config_service,
+                        org_id=org_id,
+                        user_id=user_id,
+                        graph_provider=graph_provider,
+                        filters=query_info.filters,
+                        logger_instance=logger,
+                    ),
+                    return_exceptions=True,
                 )
+
+                result = parallel_results[0]
+                if isinstance(result, Exception):
+                    raise result
+
+                raw_pm_records: list[dict] = []
+                if isinstance(parallel_results[1], Exception):
+                    logger.warning("Pattern match failed: %s", parallel_results[1])
+                else:
+                    raw_pm_records = parallel_results[1]
 
                 search_results = result.get("searchResults", [])
                 virtual_to_record_map = result.get("virtual_to_record_map", {})
@@ -936,6 +1012,21 @@ async def _generate_internal_search_stream(
                 )
 
                 final_results = sorted(flattened_results, key=flattened_result_sort_key)
+
+                if raw_pm_records:
+                    pm_blocks = await merge_pattern_match_results(
+                        raw_records=raw_pm_records,
+                        virtual_record_id_to_result=virtual_record_id_to_result,
+                        user_id=user_id,
+                        org_id=org_id,
+                        blob_store=blob_store,
+                        graph_provider=graph_provider,
+                        is_multimodal_llm=is_multimodal_llm,
+                        logger_instance=logger,
+                    )
+                    if pm_blocks:
+                        final_results.extend(pm_blocks)
+                        logger.info("Standard path: pattern match added %d blocks", len(pm_blocks))
 
                 has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
                 has_slack_connector = await has_slack_connector_configured(graph_provider, user_id, org_id)

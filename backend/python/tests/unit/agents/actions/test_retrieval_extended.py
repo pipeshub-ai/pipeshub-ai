@@ -575,10 +575,9 @@ class TestExecuteParallelSearchStorageGate:
         retrieval = Retrieval(state=state)
 
         with patch(
-            "app.agents.actions.retrieval.retrieval.StoragePatternMatch"
-        ) as mock_storage_tool_cls:
-            mock_storage_tool_cls.return_value.find_records = AsyncMock()
-
+            "app.agents.actions.retrieval.retrieval.run_pattern_match",
+            new_callable=AsyncMock,
+        ) as mock_run_pm:
             semantic_response, raw_pattern_records = await retrieval._execute_parallel_search(
                 search_query="revenue",
                 filter_groups={"apps": ["conn-1"], "kb": []},
@@ -589,7 +588,7 @@ class TestExecuteParallelSearchStorageGate:
                 logger_instance=state["logger"],
             )
 
-            mock_storage_tool_cls.return_value.find_records.assert_not_awaited()
+            mock_run_pm.assert_not_awaited()
 
         assert raw_pattern_records == []
         assert semantic_response == {"status_code": 200, "searchResults": []}
@@ -604,12 +603,10 @@ class TestExecuteParallelSearchStorageGate:
         retrieval = Retrieval(state=state)
 
         with patch(
-            "app.agents.actions.retrieval.retrieval.StoragePatternMatch"
-        ) as mock_storage_tool_cls:
-            mock_storage_tool_cls.return_value.find_records = AsyncMock(
-                return_value=(True, json.dumps({"records": []}))
-            )
-
+            "app.agents.actions.retrieval.retrieval.run_pattern_match",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_run_pm:
             await retrieval._execute_parallel_search(
                 search_query="revenue",
                 filter_groups={"apps": ["conn-1"], "kb": []},
@@ -620,7 +617,7 @@ class TestExecuteParallelSearchStorageGate:
                 logger_instance=state["logger"],
             )
 
-            mock_storage_tool_cls.return_value.find_records.assert_awaited_once()
+            mock_run_pm.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_fails_closed_when_config_read_raises(self):
@@ -632,10 +629,9 @@ class TestExecuteParallelSearchStorageGate:
         retrieval = Retrieval(state=state)
 
         with patch(
-            "app.agents.actions.retrieval.retrieval.StoragePatternMatch"
-        ) as mock_storage_tool_cls:
-            mock_storage_tool_cls.return_value.find_records = AsyncMock()
-
+            "app.agents.actions.retrieval.retrieval.run_pattern_match",
+            new_callable=AsyncMock,
+        ) as mock_run_pm:
             semantic_response, raw_pattern_records = await retrieval._execute_parallel_search(
                 search_query="revenue",
                 filter_groups={"apps": ["conn-1"], "kb": []},
@@ -646,7 +642,7 @@ class TestExecuteParallelSearchStorageGate:
                 logger_instance=state["logger"],
             )
 
-            mock_storage_tool_cls.return_value.find_records.assert_not_awaited()
+            mock_run_pm.assert_not_awaited()
 
         assert raw_pattern_records == []
         assert semantic_response == {"status_code": 200, "searchResults": []}

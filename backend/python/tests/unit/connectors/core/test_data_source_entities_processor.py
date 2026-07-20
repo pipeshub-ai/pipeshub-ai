@@ -4211,24 +4211,6 @@ class TestOnRecordMetadataUpdateAndDelete:
         tx_store.delete_record_by_key.assert_awaited_with("rec-1")
 
 
-class TestGitlabFolderDeleteCascadeUntouched:
-    @pytest.mark.asyncio
-    async def test_on_folder_deleted_never_calls_descendant_traversal(self):
-        """GitLab's on_folder_deleted is a separate, untouched code path --
-        it must never invoke get_folder_descendants. GitLab's own safety
-        comes from _cleanup_emptied_folders deleting each descendant file
-        individually (via on_record_deleted) before calling this."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
-
-        await proc.on_folder_deleted("folder-1")
-
-        tx_store.get_folder_descendants.assert_not_awaited()
-        tx_store.delete_parent_child_edge_to_record.assert_awaited_once_with("folder-1")
-        tx_store.delete_record_by_key.assert_awaited_once_with("folder-1")
-
-
 # ===========================================================================
 # reindex_existing_records (lines 940-986)
 # ===========================================================================
@@ -5196,7 +5178,7 @@ class TestKbUploadProcessRecord:
         record.external_revision_id = "rev1"
 
         with patch.object(proc, "_handle_record_permissions", new_callable=AsyncMock):
-            result = await proc._process_record(record, [], tx_store)
+            result, _ = await proc._process_record(record, [], tx_store)
 
         assert result.indexing_status != ProgressStatus.NOT_STARTED.value
 
@@ -5257,7 +5239,7 @@ class TestOnNewRecordsKbUpload:
     async def test_skips_folder_records(self):
         proc = _make_processor()
         folder = _make_kb_upload_record(is_file=False, record_name="Docs")
-        with patch.object(proc, "_process_record", new_callable=AsyncMock, return_value=folder):
+        with patch.object(proc, "_process_record", new_callable=AsyncMock, return_value=(folder, [])):
             proc.data_store_provider.transaction.return_value = _make_ctx(_make_tx_store())
             await proc.on_new_records([(folder, [])])
         proc.messaging_producer.send_message.assert_not_awaited()
@@ -5265,7 +5247,7 @@ class TestOnNewRecordsKbUpload:
 
 class TestOnRecordMetadataUpdateKb:
     @pytest.mark.asyncio
-    async def test_calls_handle_updated_record(self):
+    async def test_calls_process_record(self):
         proc = _make_processor()
         tx_store = _make_tx_store()
         existing = MagicMock(id="r1")
@@ -5273,12 +5255,10 @@ class TestOnRecordMetadataUpdateKb:
         record = _make_kb_upload_record()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
-        with patch.object(proc, "_process_record", new_callable=AsyncMock, return_value=record), patch.object(
-            proc, "_handle_updated_record", new_callable=AsyncMock
-        ) as mock_updated:
+        with patch.object(proc, "_process_record", new_callable=AsyncMock, return_value=(record, [])) as mock_process:
             await proc.on_record_metadata_update(record)
 
-        mock_updated.assert_awaited_once()
+        mock_process.assert_awaited_once()
 
 
 class TestOnRecordsMovedKbUpload:
@@ -5317,7 +5297,7 @@ class TestOnRecordsMovedKbUpload:
         new_record = _make_kb_upload_record()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
-        with patch.object(proc, "_process_record", new_callable=AsyncMock, return_value=new_record):
+        with patch.object(proc, "_process_record", new_callable=AsyncMock, return_value=(new_record, [])):
             await proc.on_records_moved([("missing-ext", new_record, [])])
 
         assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "newRecord"

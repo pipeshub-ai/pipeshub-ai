@@ -16,14 +16,16 @@ from langgraph.types import StreamWriter
 from pydantic import BaseModel, Field
 
 from app.agents.actions.storage_search.storage_search import (
-    StoragePatternMatch,
     _validate_command,
     is_local_storage,
+)
+from app.utils.pattern_match import (
+    merge_pattern_match_results,
+    run_pattern_match,
 )
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
 from app.agents.tools.models import ToolIntent
-from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder
@@ -33,7 +35,6 @@ from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
     get_flattened_results,
-    get_record,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,8 +42,6 @@ logger = logging.getLogger(__name__)
 # Cap the divisor to prevent excessively small per-source limits when many
 # knowledge sources are configured simultaneously.
 _MAX_RETRIEVAL_SOURCES_DIVISOR = 5
-_MAX_PATTERN_MATCH_RECORDS = 5
-_PATTERN_MATCH_TIMEOUT = 15
 
 
 def _normalize_list_param(value: str | list[str] | None) -> list[str] | None:
@@ -267,8 +266,8 @@ class Retrieval:
             # final_results = final_results[:adjusted_limit]
 
             if raw_pattern_records:
-                pm_blocks = await self._merge_pattern_match_blocks(
-                    raw_pattern_records=raw_pattern_records,
+                pm_blocks = await merge_pattern_match_results(
+                    raw_records=raw_pattern_records,
                     virtual_record_id_to_result=virtual_record_id_to_result,
                     user_id=user_id,
                     org_id=org_id,
@@ -460,7 +459,7 @@ class Retrieval:
                 )
 
         run_semantic = not disable_semantic
-        run_pattern_match = (
+        should_run_pm = (
             pm_command_valid
             and bool(connector_ids_in_scope)
             and pattern_storage_is_local
@@ -482,12 +481,16 @@ class Retrieval:
                 ),
             )
 
-        if run_pattern_match:
+        if should_run_pm:
             pm_task_idx = len(parallel_tasks)
             parallel_tasks.append(
-                self._run_pattern_match(
+                run_pattern_match(
+                    config_service=self.state.get("config_service"),
+                    org_id=self.state.get("org_id", ""),
+                    user_id=self.state.get("user_id", ""),
+                    graph_provider=self.state.get("graph_provider"),
                     command=command,
-                    connector_ids_in_scope=connector_ids_in_scope,
+                    connector_ids=connector_ids_in_scope,
                     logger_instance=logger_instance,
                 )
             )
@@ -555,160 +558,6 @@ class Retrieval:
         final_results = search_results if not flattened_results else flattened_results
         return final_results, virtual_record_id_to_result
 
-    # ------------------------------------------------------------------
-    # Pattern match: dedup, fetch, and block extraction
-    # ------------------------------------------------------------------
-
-    async def _merge_pattern_match_blocks(
-        self,
-        *,
-        raw_pattern_records: list[dict],
-        virtual_record_id_to_result: dict[str, dict],
-        user_id: str,
-        org_id: str,
-        blob_store: "BlobStorage",
-        graph_provider: Any,
-        is_multimodal_llm: bool,
-        logger_instance: logging.Logger,
-    ) -> list[dict]:
-        """Full pattern match pipeline: dedup → targeted permission check → fetch → flatten.
-
-        Instead of scanning all accessible records for the connector (broad),
-        this checks only the specific vrids returned by grep — orders of
-        magnitude cheaper for large connectors.
-
-        Returns enriched block entries to append to final_results, processed
-        through the same get_flattened_results pipeline as semantic search.
-        """
-        # Step 1: Dedup by vrid (same record can appear across connectors)
-        seen_vrids: set[str] = set()
-        unique_records: list[dict] = []
-        for r in raw_pattern_records:
-            vrid = r.get("virtual_record_id")
-            if vrid and vrid not in seen_vrids:
-                seen_vrids.add(vrid)
-                unique_records.append(r)
-
-        # Step 2: Remove records already in semantic results (already accessible + fetched)
-        semantic_vrids = set(virtual_record_id_to_result.keys())
-        new_records = [
-            r for r in unique_records
-            if r.get("virtual_record_id") not in semantic_vrids
-        ][:_MAX_PATTERN_MATCH_RECORDS]
-
-        if not new_records:
-            return []
-
-        # Step 3: Targeted permission check for just these vrids
-        check_vrids = [r["virtual_record_id"] for r in new_records]
-        accessible_vrids = await graph_provider.check_vrids_accessible(
-            user_id=user_id,
-            org_id=org_id,
-            virtual_record_ids=check_vrids,
-        )
-
-        if not accessible_vrids:
-            logger_instance.info(
-                "Pattern match: %d records checked, none accessible",
-                len(new_records),
-            )
-            return []
-
-        accessible_records = [
-            r for r in new_records
-            if r.get("virtual_record_id") in accessible_vrids
-        ]
-        logger_instance.info(
-            "Pattern match: %d accessible of %d checked (%d raw, %d unique)",
-            len(accessible_records), len(new_records),
-            len(raw_pattern_records), len(unique_records),
-        )
-
-        # Step 4: Fetch blob content for accessible records
-        frontend_url = await self._get_frontend_url(blob_store)
-
-        fetch_tasks = []
-        for rec in accessible_records:
-            vrid = rec["virtual_record_id"]
-            record_id = accessible_vrids[vrid]
-            fetch_tasks.append(self._fetch_pattern_record(
-                vrid=vrid,
-                record_id=record_id,
-                virtual_record_id_to_result=virtual_record_id_to_result,
-                blob_store=blob_store,
-                org_id=org_id,
-                graph_provider=graph_provider,
-                frontend_url=frontend_url,
-                logger_instance=logger_instance,
-            ))
-        await asyncio.gather(*fetch_tasks, return_exceptions=True)
-
-        # Step 5: Build synthetic search results and flatten through the same
-        # pipeline as semantic search (get_flattened_results) — ensures identical
-        # block enrichment, table grouping, fragment handling, and citation format
-        synthetic_results = self._build_synthetic_search_results(
-            accessible_records, virtual_record_id_to_result, org_id, logger_instance,
-        )
-        if not synthetic_results:
-            return []
-
-        flattened = await get_flattened_results(
-            synthetic_results,
-            blob_store,
-            org_id,
-            is_multimodal_llm,
-            virtual_record_id_to_result,
-            graph_provider=graph_provider,
-        )
-        logger_instance.info("Pattern match: %d flattened blocks", len(flattened))
-        return flattened if flattened else []
-
-    @staticmethod
-    def _build_synthetic_search_results(
-        records: list[dict],
-        virtual_record_id_to_result: dict[str, dict],
-        org_id: str,
-        logger_instance: logging.Logger,
-    ) -> list[dict]:
-        """Create synthetic vector-DB-format search results from PM records.
-
-        These are fed into get_flattened_results so PM blocks go through
-        the exact same enrichment pipeline as semantic search blocks.
-        """
-        results: list[dict] = []
-        for rec in records:
-            vrid = rec["virtual_record_id"]
-            record = virtual_record_id_to_result.get(vrid)
-            if not record:
-                continue
-            block_containers = record.get("block_containers", {})
-            blocks = block_containers.get("blocks", [])
-
-            if not blocks:
-                results.append({
-                    "metadata": {
-                        "virtualRecordId": vrid,
-                        "blockIndex": 0,
-                        "isBlockGroup": False,
-                    },
-                    "score": 0.0,
-                })
-                continue
-
-            for idx in range(len(blocks)):
-                results.append({
-                    "metadata": {
-                        "virtualRecordId": vrid,
-                        "blockIndex": idx,
-                        "isBlockGroup": False,
-                        "isBlock": True,
-                        "orgId": org_id,
-                    },
-                    "score": 0.0,
-                })
-
-        logger_instance.info("Pattern match: %d synthetic search results", len(results))
-        return results
 
     # ------------------------------------------------------------------
     # Helpers
@@ -727,18 +576,6 @@ class Retrieval:
             pass
         return False
 
-    @staticmethod
-    async def _get_frontend_url(blob_store: "BlobStorage") -> str | None:
-        """Resolve the frontend public URL from config service."""
-        try:
-            endpoints_config = await blob_store.config_service.get_config(
-                config_node_constants.ENDPOINTS.value, default={},
-            )
-            if isinstance(endpoints_config, dict):
-                return endpoints_config.get("frontend", {}).get("publicEndpoint")
-        except Exception:
-            pass
-        return None
 
     # ------------------------------------------------------------------
     # State accumulation
@@ -821,101 +658,4 @@ class Retrieval:
         )
         return summary + "\n".join(formatted_records)
 
-    # ------------------------------------------------------------------
-    # Pattern match: grep execution
-    # ------------------------------------------------------------------
 
-    async def _run_pattern_match(
-        self,
-        *,
-        command: str,
-        connector_ids_in_scope: list[str],
-        logger_instance: logging.Logger,
-    ) -> list[dict]:
-        """Run grep pattern match across connectors and return raw (unfiltered) records.
-
-        Permission filtering is done by the caller using a separate
-        apps-only permission map so that metadata filters don't incorrectly
-        exclude accessible records.
-        """
-        if not connector_ids_in_scope or not self.state:
-            return []
-
-        storage_tool = StoragePatternMatch(self.state)
-
-        async def _search_connector(connector_id: str) -> list[dict]:
-            success, output = await storage_tool.find_records(
-                connector_id=connector_id,
-                command=command,
-                max_results=10,
-            )
-            if not success:
-                logger_instance.debug("Pattern match failed for connector %s: %s", connector_id, output)
-                return []
-
-            try:
-                parsed = json.loads(output)
-            except (json.JSONDecodeError, TypeError):
-                return []
-
-            records = parsed.get("records", [])
-            logger_instance.debug(
-                "Pattern match connector=%s: %d found", connector_id, len(records),
-            )
-            return records
-
-        tasks = [_search_connector(cid) for cid in connector_ids_in_scope]
-        try:
-            results_per_connector = await asyncio.wait_for(
-                asyncio.gather(*tasks, return_exceptions=True),
-                timeout=_PATTERN_MATCH_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            logger_instance.warning("Pattern match timed out after %ds", _PATTERN_MATCH_TIMEOUT)
-            return []
-
-        all_records: list[dict] = []
-        for result in results_per_connector:
-            if isinstance(result, Exception):
-                logger_instance.warning("Pattern match connector error: %s", result)
-                continue
-            all_records.extend(result)
-
-        return all_records
-
-    # ------------------------------------------------------------------
-    # Pattern match: single record fetch
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    async def _fetch_pattern_record(
-        *,
-        vrid: str,
-        record_id: str,
-        virtual_record_id_to_result: dict,
-        blob_store: "BlobStorage",
-        org_id: str,
-        graph_provider: Any,
-        frontend_url: str | None,
-        logger_instance: logging.Logger,
-    ) -> None:
-        """Fetch blob content for a single pattern match record into virtual_record_id_to_result."""
-        try:
-            graph_record = await graph_provider.get_document(
-                document_key=record_id,
-                collection=CollectionNames.RECORDS.value,
-            )
-            if not graph_record:
-                logger_instance.debug("Pattern match record %s: graph document not found for record_id=%s", vrid, record_id)
-                return
-            await get_record(
-                vrid,
-                virtual_record_id_to_result,
-                blob_store,
-                org_id,
-                {vrid: graph_record},
-                graph_provider,
-                frontend_url,
-            )
-        except Exception as e:
-            logger_instance.warning("Failed to fetch pattern match record %s: %s", vrid, e)
