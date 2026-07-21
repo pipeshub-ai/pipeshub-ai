@@ -18,9 +18,12 @@ from app.exceptions.indexing_exceptions import (
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
+    _classify_aiohttp_transport_error,
     _extract_status_code,
     _get_root_cause,
     _is_retryable_status,
+    _iter_exception_chain,
+    format_exception_chain,
 )
 
 
@@ -834,6 +837,205 @@ class TestMessageErrorType:
     def test_no_handled_type(self):
         """Test that HANDLED type no longer exists."""
         assert not hasattr(MessageErrorType, "HANDLED")
+
+
+class TestIterExceptionChain:
+    """Test the _iter_exception_chain utility function."""
+
+    def test_iter_simple_exception(self):
+        """Test that a simple exception yields itself."""
+        exc = ValueError("test error")
+        chain = list(_iter_exception_chain(exc))
+        assert len(chain) == 1
+        assert chain[0] is exc
+
+    def test_iter_exception_with_cause(self):
+        """Test that __cause__ chain is iterated correctly."""
+        original = ValueError("original")
+        wrapped = RuntimeError("wrapped")
+        wrapped.__cause__ = original
+
+        chain = list(_iter_exception_chain(wrapped))
+        assert len(chain) == 2
+        assert chain[0] is wrapped
+        assert chain[1] is original
+
+    def test_iter_exception_with_context(self):
+        """Test that __context__ chain is iterated when __cause__ is absent."""
+        original = ValueError("original")
+        wrapped = RuntimeError("wrapped")
+        wrapped.__context__ = original
+
+        chain = list(_iter_exception_chain(wrapped))
+        assert len(chain) == 2
+        assert chain[0] is wrapped
+        assert chain[1] is original
+
+    def test_iter_multiple_levels(self):
+        """Test iteration with multiple levels of exception chaining."""
+        deepest = ValueError("deepest")
+        middle = RuntimeError("middle")
+        middle.__cause__ = deepest
+        outer = Exception("outer")
+        outer.__cause__ = middle
+
+        chain = list(_iter_exception_chain(outer))
+        assert len(chain) == 3
+        assert chain[0] is outer
+        assert chain[1] is middle
+        assert chain[2] is deepest
+
+    def test_iter_prefers_cause_over_context(self):
+        """Test that __cause__ is preferred over __context__."""
+        cause_exc = ValueError("cause")
+        context_exc = RuntimeError("context")
+        wrapped = Exception("wrapped")
+        wrapped.__cause__ = cause_exc
+        wrapped.__context__ = context_exc
+
+        chain = list(_iter_exception_chain(wrapped))
+        assert len(chain) == 2
+        assert chain[0] is wrapped
+        assert chain[1] is cause_exc
+
+    def test_iter_handles_circular_reference(self):
+        """Test that circular references don't cause infinite loops."""
+        exc1 = ValueError("exc1")
+        exc2 = RuntimeError("exc2")
+        exc1.__cause__ = exc2
+        exc2.__cause__ = exc1
+
+        chain = list(_iter_exception_chain(exc1))
+        assert len(chain) == 2
+        assert chain[0] is exc1
+        assert chain[1] is exc2
+
+
+class TestFormatExceptionChain:
+    """Test the format_exception_chain utility function."""
+
+    def test_format_single_exception(self):
+        """Test formatting a simple exception."""
+        exc = ValueError("test error")
+        formatted = format_exception_chain(exc)
+        assert "ValueError: test error" in formatted
+        assert "Caused by" not in formatted
+
+    def test_format_two_level_chain(self):
+        """Test formatting a two-level exception chain."""
+        original = ValueError("original error")
+        wrapped = RuntimeError("wrapped error")
+        wrapped.__cause__ = original
+
+        formatted = format_exception_chain(wrapped)
+        assert "RuntimeError: wrapped error" in formatted
+        assert "Caused by: ValueError: original error" in formatted
+
+    def test_format_three_level_chain(self):
+        """Test formatting a three-level exception chain."""
+        deepest = ValueError("deepest")
+        middle = RuntimeError("middle")
+        middle.__cause__ = deepest
+        outer = Exception("outer")
+        outer.__cause__ = middle
+
+        formatted = format_exception_chain(outer)
+        lines = formatted.split("\n")
+        assert len(lines) == 3
+        assert "Exception: outer" in lines[0]
+        assert "Caused by: RuntimeError: middle" in lines[1]
+        assert "Caused by: ValueError: deepest" in lines[2]
+
+    def test_format_indentation(self):
+        """Test that nested exceptions have proper indentation."""
+        original = ValueError("original")
+        wrapped = RuntimeError("wrapped")
+        wrapped.__cause__ = original
+
+        formatted = format_exception_chain(wrapped)
+        lines = formatted.split("\n")
+        assert not lines[0].startswith(" ")
+        assert lines[1].startswith("   ")
+
+    def test_format_with_context(self):
+        """Test formatting when using __context__ instead of __cause__."""
+        original = ValueError("original")
+        wrapped = RuntimeError("wrapped")
+        wrapped.__context__ = original
+
+        formatted = format_exception_chain(wrapped)
+        assert "RuntimeError: wrapped" in formatted
+        assert "Caused by: ValueError: original" in formatted
+
+
+class TestClassifyAiohttpTransportError:
+    """Test the _classify_aiohttp_transport_error utility function."""
+
+    def test_client_connection_error_is_transient(self):
+        """Test that ClientConnectionError is classified as transient."""
+        try:
+            import aiohttp
+
+            exc = aiohttp.ClientConnectionError("Connection refused")
+            result = _classify_aiohttp_transport_error(exc)
+            assert result == MessageErrorType.TRANSIENT
+        except ImportError:
+            pytest.skip("aiohttp not available")
+
+    def test_server_disconnected_error_is_transient(self):
+        """Test that ServerDisconnectedError is classified as transient."""
+        try:
+            import aiohttp
+
+            exc = aiohttp.ServerDisconnectedError("Server disconnected")
+            result = _classify_aiohttp_transport_error(exc)
+            assert result == MessageErrorType.TRANSIENT
+        except ImportError:
+            pytest.skip("aiohttp not available")
+
+    def test_server_timeout_error_is_transient(self):
+        """Test that ServerTimeoutError is classified as transient."""
+        try:
+            import aiohttp
+
+            exc = aiohttp.ServerTimeoutError("Server timeout")
+            result = _classify_aiohttp_transport_error(exc)
+            assert result == MessageErrorType.TRANSIENT
+        except ImportError:
+            pytest.skip("aiohttp not available")
+
+    def test_client_payload_error_is_transient(self):
+        """Test that ClientPayloadError is classified as transient."""
+        try:
+            import aiohttp
+
+            exc = aiohttp.ClientPayloadError("Payload error")
+            result = _classify_aiohttp_transport_error(exc)
+            assert result == MessageErrorType.TRANSIENT
+        except ImportError:
+            pytest.skip("aiohttp not available")
+
+    def test_non_transport_error_returns_none(self):
+        """Test that non-transport aiohttp errors return None."""
+        try:
+            import aiohttp
+
+            exc = aiohttp.ClientResponseError(
+                request_info=MagicMock(),
+                history=(),
+                status=404,
+                message="Not Found",
+            )
+            result = _classify_aiohttp_transport_error(exc)
+            assert result is None
+        except ImportError:
+            pytest.skip("aiohttp not available")
+
+    def test_non_aiohttp_error_returns_none(self):
+        """Test that non-aiohttp errors return None."""
+        exc = ValueError("Not an aiohttp error")
+        result = _classify_aiohttp_transport_error(exc)
+        assert result is None
 
 
 if __name__ == "__main__":

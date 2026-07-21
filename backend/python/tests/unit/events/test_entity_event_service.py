@@ -475,6 +475,52 @@ class TestHandleAppDisabled:
         assert result is False
 
     @pytest.mark.asyncio
+    async def test_app_disabled_removes_live_connector_instance(self):
+        svc, logger, gp, container = _make_service()
+        gp.get_document = AsyncMock(return_value={
+            "name": "Drive", "type": "FILE", "appGroup": "Google",
+            "createdAtTimestamp": 1000000,
+        })
+        gp.batch_upsert_nodes = AsyncMock()
+        live_connector = MagicMock()
+        live_connector.cleanup = AsyncMock()
+        container.connectors_map = {"conn-1": live_connector}
+
+        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            result = await svc.process_event("appDisabled", {
+                "orgId": "org-1",
+                "apps": ["Drive"],
+                "connectorId": "conn-1",
+            })
+        assert result is True
+        assert "conn-1" not in container.connectors_map
+        live_connector.cleanup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_app_disabled_connector_cleanup_error_tolerated(self):
+        svc, logger, gp, container = _make_service()
+        gp.get_document = AsyncMock(return_value={
+            "name": "Drive", "type": "FILE", "appGroup": "Google",
+            "createdAtTimestamp": 1000000,
+        })
+        gp.batch_upsert_nodes = AsyncMock()
+        live_connector = MagicMock()
+        live_connector.cleanup = AsyncMock(side_effect=Exception("cleanup failed"))
+        container.connectors_map = {"conn-1": live_connector}
+
+        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            result = await svc.process_event("appDisabled", {
+                "orgId": "org-1",
+                "apps": ["Drive"],
+                "connectorId": "conn-1",
+            })
+        assert result is True
+        # Popped before cleanup, so the map entry is gone even on cleanup failure
+        assert "conn-1" not in container.connectors_map
+
+    @pytest.mark.asyncio
     async def test_cancel_sync_error_handled(self):
         svc, logger, gp, _ = _make_service()
         gp.get_document = AsyncMock(return_value={

@@ -387,19 +387,13 @@ class EventProcessor:
 
     async def _check_duplicate_by_md5(
         self,
-        content: bytes | str,
+        content: bytes | str | dict | list | None,
         doc: dict[str, Any],
     ) -> bool:
-        """
-        Check for duplicate records by MD5 hash and handle accordingly.
+        """Check for duplicate records by MD5 hash and handle accordingly.
 
-        Args:
-            content: The content to hash (bytes or string)
-            doc: The document dictionary to update
-
-        Returns:
-            True if duplicate was found and handled (caller should return early)
-            False if no duplicate found (caller should proceed with processing)
+        Returns True if a duplicate was found and handled (caller should skip),
+        False otherwise.
         """
         # Calculate MD5 from content
         existing_md5_checksum = doc.get("md5Checksum")
@@ -409,7 +403,9 @@ class EventProcessor:
         md5_checksum = None
 
         if content:
-            if isinstance(content, str):
+            if isinstance(content, (dict, list)):
+                content = json.dumps(content, sort_keys=True, ensure_ascii=False).encode('utf-8')
+            elif isinstance(content, str):
                 content = content.encode('utf-8')
             content_for_hash = self._normalize_content_for_dedup(content=content, record_type=record_type, mime_type=mime_type)
             md5_checksum = hashlib.md5(content_for_hash).hexdigest()
@@ -572,7 +568,13 @@ class EventProcessor:
 
             file_content = event_data.get("buffer")
 
-            # Debug: log buffer used for MD5 (to trace why Google Doc copies get different MD5)
+            # Connector streaming or JSON API responses may deliver already-parsed
+            # Python objects (dict/list) instead of raw bytes.  Serialize them back
+            # to a deterministic JSON byte string so every downstream consumer
+            # (MD5 hashing, parsers, service pipeline) receives bytes uniformly.
+            if isinstance(file_content, (dict, list)):
+                file_content = json.dumps(file_content, sort_keys=True, ensure_ascii=False).encode("utf-8")
+
             content_len = len(file_content) if file_content else 0
             doc_md5_from_connector = doc.get("md5Checksum")
             self.logger.debug(
@@ -1055,6 +1057,30 @@ class EventProcessor:
                     json_content=file_content,
                     virtual_record_id=virtual_record_id,
                     record_type="SQL_VIEW",
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+
+            elif extension == ExtensionTypes.JSON.value or mime_type == MimeTypes.JSON.value:
+                async for event in self.processor.process_structured_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    file_content=file_content,
+                    virtual_record_id=virtual_record_id,
+                    extension=ExtensionTypes.JSON.value,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+
+            elif extension in {ExtensionTypes.YAML.value, ExtensionTypes.YML.value} or mime_type == MimeTypes.YAML.value:
+                async for event in self.processor.process_structured_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    file_content=file_content,
+                    virtual_record_id=virtual_record_id,
+                    extension=ExtensionTypes.YAML.value,
                     event_type=event_type,
                     prev_virtual_record_id=prev_virtual_record_id,
                 ):

@@ -274,60 +274,6 @@ async def _stream_artifact_from_storage(
     return Response(content=buffer or b"", media_type=mime)
 
 
-async def _stream_google_api_request(request: HttpRequest, error_context: str = "download") -> AsyncGenerator[bytes, None]:
-    """
-    Helper function to stream data from a Google API request using MediaIoBaseDownload.
-
-    Args:
-        request: Google API request object (from files().get_media() or files().export_media())
-        error_context: Context string for error messages (e.g., "PDF export", "file export")
-    Yields:
-        bytes: Chunks of data from the download
-    """
-    buffer = io.BytesIO()
-    try:
-        downloader = MediaIoBaseDownload(buffer, request)
-        done = False
-
-        while not done:
-            try:
-                _, done = downloader.next_chunk()
-
-                buffer.seek(0)
-                chunk = buffer.read()
-
-                if chunk:  # Only yield if we have data
-                    yield chunk
-
-                # Clear buffer for next chunk
-                buffer.seek(0)
-                buffer.truncate(0)
-
-                # Yield control back to event loop
-                await asyncio.sleep(0)
-
-            except HttpError as http_error:
-                logger.error(f"HTTP error during {error_context}: {str(http_error)}")
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail=f"Error during {error_context}: {str(http_error)}",
-                ) from http_error
-            except Exception as chunk_error:
-                logger.error(f"Error during {error_context} chunk: {str(chunk_error)}")
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail=f"Error during {error_context}",
-                ) from chunk_error
-    except Exception as stream_error:
-        logger.error(f"Error in {error_context} stream: {str(stream_error)}")
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=f"Error setting up {error_context} stream",
-        ) from stream_error
-    finally:
-        buffer.close()
-
-
 class ReindexFailedRequest(BaseModel):
     connector: str  # GOOGLE_DRIVE, GOOGLE_MAIL, KNOWLEDGE_BASE
     origin: str     # CONNECTOR, UPLOAD
@@ -6148,6 +6094,7 @@ async def _ensure_connector_initialized(
             )
         scope = connector_doc.get(ConnectorRequestKeys.SCOPE, ConnectorScope.PERSONAL.value)
         created_by = connector_doc.get("createdBy", "")
+        org_id = connector_doc.get("orgId")
 
         # Create connector using factory
         connector = await ConnectorFactory.create_connector(
@@ -6158,6 +6105,7 @@ async def _ensure_connector_initialized(
             connector_id=connector_id,
             scope=scope,
             created_by=created_by,
+            org_id=org_id,
             notification_service=container.connector_notification_service(),
         )
 

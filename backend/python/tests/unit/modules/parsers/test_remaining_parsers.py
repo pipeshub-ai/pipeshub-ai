@@ -7,7 +7,7 @@
 
 import subprocess
 from io import BytesIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -252,6 +252,31 @@ class TestXLSParser:
         with pytest.raises(subprocess.CalledProcessError) as exc:
             parser.convert_xls_to_xlsx(b"fake xls binary")
         assert exc.value.returncode == 1
+
+    @pytest.mark.asyncio
+    async def test_parse_uses_async_libreoffice_subprocess_path(self):
+        """Regression test: .parse() (the entry point used by the parsing
+        service) must go through the async LibreOffice conversion helper —
+        not the sync subprocess.run-based convert_xls_to_xlsx — so it never
+        blocks the event loop.
+        """
+        mock_excel_parser = MagicMock()
+        mock_result = MagicMock()
+        mock_excel_parser.parse = AsyncMock(return_value=mock_result)
+
+        from app.modules.parsers.excel.xls_parser import XLSParser
+        parser = XLSParser(excel_parser=mock_excel_parser)
+
+        fake_xlsx_bytes = b"PK\x03\x04converted xlsx"
+        with patch(
+            "app.modules.parsers.excel.xls_parser.convert_with_libreoffice",
+            AsyncMock(return_value=fake_xlsx_bytes),
+        ) as mock_convert:
+            result = await parser.parse(b"fake xls binary", "report.xls")
+
+        mock_convert.assert_awaited_once_with(b"fake xls binary", "xls", "xlsx")
+        mock_excel_parser.parse.assert_awaited_once_with(fake_xlsx_bytes, "report.xls")
+        assert result is mock_result
 
 
 # ============================================================================

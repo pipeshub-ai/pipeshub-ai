@@ -194,9 +194,17 @@ class ConnectorFactory:
         connector_id: str,
         scope: str,
         created_by: str,
+        org_id: str | None = None,
         **kwargs,
     ) -> BaseConnector | None:
-        """Create a connector instance"""
+        """Create a connector instance.
+
+        ``org_id`` is bound here (not forwarded to the connector) and applied to the
+        connector's entities processor after creation. The processor's initialize()
+        resolves an arbitrary orgs[0] fallback; connectors read
+        ``self.data_entities_processor.org_id`` live at sync time, so overriding it
+        here makes every record/edge use the connector's actual org (multi-org fix).
+        """
         connector_class = cls.get_connector_class(name)
         if not connector_class:
             logger.error(f"Unknown connector type: {name} {connector_id}")
@@ -213,8 +221,11 @@ class ConnectorFactory:
                 created_by=created_by,
                 **kwargs,
             )
-            if connector is not None and notification_service is not None:
-                connector._notification_service = notification_service
+            if connector is not None:
+                if org_id and getattr(connector, "data_entities_processor", None) is not None:
+                    connector.data_entities_processor.org_id = org_id
+                if notification_service is not None:
+                    connector._notification_service = notification_service
             logger.info(f"Created {name} {connector_id} connector successfully")
             return connector
         except Exception as e:
