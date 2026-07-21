@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -45,12 +44,11 @@ class TestConnectorRecordContent:
         body = resp.json()
         assert_response_matches_openapi_operation(body, _OPERATION_ID)
 
-        record = body["record"]
-        assert record["id"] == record_id
-        assert record["org_id"] == self.connectors._client.org_id
-        assert record["record_type"] == "FILE"
-        assert record["virtual_record_id"]
-        assert indexed_text_record["record_name_stem"] in record["record_name"]
+        assert set(body.keys()) == {"content"}, body
+        content = body["content"]
+        assert isinstance(content, str) and content, "content should be a non-empty string"
+        assert record_id in content
+        assert indexed_text_record["record_name_stem"] in content
 
     def test_get_record_content_returns_parsed_content(
         self, indexed_text_record: dict[str, str]
@@ -61,42 +59,39 @@ class TestConnectorRecordContent:
 
         resp = self.connectors.get_record_content(record_id)
         assert resp.status_code == 200, resp.text
-        record = resp.json()["record"]
+        content = resp.json()["content"]
 
-        # context_metadata is a pre-formatted header plus an LLM-written summary, so
-        # assert only the deterministic lines — the prose is paraphrased, never verbatim.
-        context_metadata = record["context_metadata"]
-        assert f"Record ID       : {record_id}" in context_metadata, context_metadata[:500]
-        assert indexed_text_record["record_name_stem"] in context_metadata
+        # content leads with the pre-formatted metadata header plus an LLM-written
+        # summary, so assert only the deterministic Record ID line — the prose is
+        # paraphrased, never verbatim.
+        assert f"Record ID       : {record_id}" in content, content[:500]
+        assert indexed_text_record["record_name_stem"] in content
 
-        # block_containers carries the parsed text itself, so the uploaded sentinel
-        # must survive here verbatim.
-        blocks = record["block_containers"]["blocks"]
-        assert blocks, "block_containers.blocks should not be empty for a parsed txt record"
-        assert sentinel in json.dumps(blocks), (
-            f"uploaded sentinel {sentinel!r} missing from parsed blocks: "
-            f"{json.dumps(blocks)[:500]}"
+        # the parsed block text is flattened into the same string, so the uploaded
+        # sentinel must survive here verbatim.
+        assert sentinel in content, (
+            f"uploaded sentinel {sentinel!r} missing from content: {content[:500]}"
         )
+
+        # the per-block Citation ID / Block Index scaffolding is stripped from the string.
+        for marker in ("Block Index", "Citation ID"):
+            assert marker not in content, f"unexpected scaffolding {marker!r} in content"
 
     def test_get_record_content_agrees_with_record_metadata(
         self, indexed_text_record: dict[str, str]
     ) -> None:
-        """snake_case content response and camelCase metadata response describe one record."""
+        """The content string and the camelCase metadata response describe one record."""
         record_id = indexed_text_record["record_id"]
 
         resp = self.connectors.get_record_content(record_id)
         assert resp.status_code == 200, resp.text
-        content_record = resp.json()["record"]
+        content = resp.json()["content"]
 
         metadata_record = self.kb.get_record(record_id)["record"]
 
-        assert content_record["id"] == metadata_record["id"]
-        assert content_record["record_name"] == metadata_record["recordName"]
-        assert content_record["record_type"] == metadata_record["recordType"]
-        assert "recordName" not in content_record, (
-            "content response must stay snake_case — camelCase keys mean the two "
-            "record shapes have been mixed up"
-        )
+        assert metadata_record["id"] == record_id
+        assert indexed_text_record["record_name_stem"] in metadata_record["recordName"]
+        assert indexed_text_record["record_name_stem"] in content
 
     # ---------------------------------------------------------------- negative
 

@@ -3981,128 +3981,22 @@ components:
       description: |
         Response returned by GET /connectors/record/{recordId}/content.
 
-        **Note on field naming:** the `record` object here uses `snake_case`
-        keys (`record_name`, `record_type`, ...). This is intentionally a
-        different shape than `GetRecordByIdResponseSchema` (the metadata-only
-        endpoint, under the Knowledge Base tag), whose `record` object uses
-        `camelCase` Arango field names (`recordName`, `recordType`, ...). Do
-        not mix field names between the two responses.
+        `content` is the record's full parsed content flattened into a single
+        plain-text string: a metadata header (title, source, key fields, and a
+        short summary), then the record's block/table text in reading order, and
+        finally a foreign-key related-tables footer for `SQL_TABLE` records.
 
-        The `record` object's shape also varies by record type — only the
-        fields common to all record types are listed explicitly below.
-        Notable type-specific additions:
-        - `SQL_TABLE` records add `fk_parent_record_ids` and
-          `fk_child_record_ids` (arrays of record IDs) describing foreign-key
-          relations to other tables.
-        - `TICKET` records (e.g. Jira) refresh `context_metadata` with live
-          ticket fields (status, assignee, comments) at request time rather
-          than the last-indexed snapshot.
+        For `TICKET` records (e.g. Jira) the metadata header is refreshed with
+        live ticket fields (status, assignee, comments) at request time rather
+        than the last-indexed snapshot. `content` may be empty for records with
+        no extractable text (e.g. image-only or not-yet-parsed records).
       required:
-        - record
+        - content
       properties:
-        record:
-          type: object
-          additionalProperties: true
-          required:
-            - id
-            - org_id
-            - record_name
-            - record_type
-            - virtual_record_id
-          properties:
-            id:
-              type: string
-              description: Record ID — same value as the `{recordId}` path parameter.
-            org_id:
-              type: string
-            record_name:
-              type: string
-            record_type:
-              $ref: '#/components/schemas/RecordTypeEnum'
-            virtual_record_id:
-              type: string
-              description: >-
-                Stable content identifier used internally to deduplicate
-                identical file content across records.
-            connector_name:
-              $ref: '#/components/schemas/ConnectorNameEnum'
-            connector_id:
-              type: string
-              nullable: true
-            version:
-              type: integer
-              nullable: true
-            origin:
-              type: string
-              nullable: true
-              description: How the record entered PipesHub, e.g. `UPLOAD` or `CONNECTOR`.
-            mime_type:
-              type: string
-              nullable: true
-            weburl:
-              type: string
-              nullable: true
-              description: Link back to the record at its original source, when available.
-            source_created_at:
-              type: integer
-              format: int64
-              nullable: true
-              description: Epoch milliseconds when the record was created at its source.
-            source_updated_at:
-              type: integer
-              format: int64
-              nullable: true
-              description: Epoch milliseconds when the record was last modified at its source.
-            context_metadata:
-              type: string
-              description: >-
-                Pre-formatted, human/LLM-readable text summary of the record
-                (title, source, key fields, and a content excerpt). This is
-                usually the best single field to read for "what is this
-                record about" — prefer it over parsing `block_containers`
-                unless the raw structured content is needed.
-            block_containers:
-              type: object
-              description: >-
-                The record's parsed content, broken into `blocks` (paragraphs,
-                table cells, code snippets, images, ...) and `block_groups`
-                (higher-level groupings such as tables, sections, or list
-                blocks that reference member blocks by index range).
-              additionalProperties: true
-              properties:
-                blocks:
-                  type: array
-                  items:
-                    type: object
-                    additionalProperties: true
-                    description: >-
-                      A single content unit. Common fields: `id`, `index`,
-                      `type` (e.g. `TEXT`, `TABLE_CELL`, `CODE`, `IMAGE`),
-                      and `data` (the block's content, shape depends on
-                      `type`).
-                block_groups:
-                  type: array
-                  items:
-                    type: object
-                    additionalProperties: true
-                    description: >-
-                      A grouping of related blocks. Common fields: `id`,
-                      `index`, `type` (e.g. `TABLE`, `SECTION`, `LIST`), and
-                      `children` (index ranges into `blocks`/`block_groups`).
-            fk_parent_record_ids:
-              type: array
-              items:
-                type: string
-              description: >-
-                `SQL_TABLE` records only — IDs of tables this table
-                references via a foreign key.
-            fk_child_record_ids:
-              type: array
-              items:
-                type: string
-              description: >-
-                `SQL_TABLE` records only — IDs of tables that reference this
-                table via a foreign key.
+        content:
+          type: string
+          description: >-
+            The record's full parsed content as a single plain-text string.
 
     DeleteRecordResponseSchema:
       type: object
@@ -29226,10 +29120,11 @@ paths:
           (name, type, indexing status, size) — no content.
         - `GET /knowledgeBase/stream/record/{recordId}` returns the original,
           unparsed file bytes — use it to download/open the source file.
-        - **This endpoint** returns the already-parsed, structured content
-          (see `context_metadata` and `block_containers` on the response) —
-          use it when you need the record's actual textual/tabular content
-          without downloading and re-parsing the original file yourself.
+        - **This endpoint** returns the record's full parsed content as a
+          single plain-text `content` string (a metadata header, then the
+          block/table text in reading order, then any foreign-key related
+          tables) — use it when you need the record's actual textual/tabular
+          content without downloading and re-parsing the original file yourself.
 
         **Typical flow:** obtain a `recordId` from a `pipeshub_search` hit or
         a chat citation's `recordId`, then call this endpoint to read the
@@ -29258,7 +29153,10 @@ paths:
             type: string
       responses:
         '200':
-          description: Successful operation
+          description: |
+            Successful operation. When the record has no available content
+            (e.g. not indexed), `content` is the literal `No record found`
+            rather than an error status.
           content:
             application/json:
               schema:
@@ -29273,12 +29171,6 @@ paths:
           description: |
             OAuth token is missing the `connector:read` scope, or the
             authenticated user does not have access to this record.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: Record not found, or its content is not yet available (e.g. not indexed)
           content:
             application/json:
               schema:

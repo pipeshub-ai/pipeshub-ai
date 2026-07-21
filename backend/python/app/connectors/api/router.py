@@ -81,6 +81,7 @@ from app.models.entities import Record, RecordType
 from app.services.featureflag.config.config import CONFIG
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.api_call import make_api_call
+from app.utils.chat_helpers import record_to_text
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
@@ -1405,9 +1406,15 @@ async def get_record_content(
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to fetch record content") from e
 
     if not result.get("ok") or not result.get("records"):
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record content is not available")
+        return {"content": "No record found"}
 
-    return {"record": result["records"][0]}
+    try:
+        content = record_to_text(result["records"][0])
+    except Exception as e:
+        logger.error(f"Error formatting record content for {record_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to format record content") from e
+
+    return {"content": content}
 
 
 @router.delete("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE, OAuthScopes.KB_DELETE))])
