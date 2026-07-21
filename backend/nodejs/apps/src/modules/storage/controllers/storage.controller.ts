@@ -356,6 +356,42 @@ export class StorageController {
     }
   }
 
+  async deleteByConnector(
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const { connectorId } = req.params;
+
+      const prefix = getFullDocumentPath(String(orgId), `records/${connectorId}`);
+      const adapter = await this.initializeStorageAdapter(req);
+
+      await adapter.deleteObject(prefix);
+
+      const descendantLower = `${prefix}/`;
+      const descendantUpper = `${prefix}0`;
+
+      const deleteResult = await DocumentModel.deleteMany({
+        $or: [
+          { documentPath: prefix },
+          { documentPath: { $gte: descendantLower, $lt: descendantUpper } },
+        ],
+      });
+
+      this.logger.info(
+        `Deleted ${deleteResult.deletedCount} storage documents for connector ${connectorId}`,
+      );
+
+      res.status(HTTP_STATUS.OK).json({
+        deleted: deleteResult.deletedCount,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async moveTree(
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,

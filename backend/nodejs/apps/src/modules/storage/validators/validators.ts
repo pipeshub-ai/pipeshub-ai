@@ -127,6 +127,13 @@ export const RollBackToPreviousVersionSchema = GetBufferSchema.extend({
   }),
 });
 
+export const ConnectorIdParams = z.object({
+  params: z.object({
+    connectorId: z.string().min(1),
+  }),
+  headers: Headers,
+});
+
 export const CreateDocumentSchema = z.object({
   body: z.object({
     documentName: z.string(),

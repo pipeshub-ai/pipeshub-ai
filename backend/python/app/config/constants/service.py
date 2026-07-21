@@ -104,6 +104,7 @@ class Routes(Enum):
     STORAGE_BUFFER = "/api/v1/document/internal/{documentId}/buffer"
     STORAGE_GET = "/api/v1/document/internal/{documentId}"
     STORAGE_MOVE_TREE = "/api/v1/document/internal/move-tree"
+    STORAGE_DELETE_CONNECTOR = "/api/v1/document/internal/connector/{connector_id}"
 
 
 class WebhookConfig(Enum):

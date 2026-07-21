@@ -95,41 +95,36 @@ class StorageCleanupHelper:
     # Storage document operations
     # ------------------------------------------------------------------
 
-    # async def _delete_storage_document(self, org_id: str, document_id: str) -> None:
-    #     """Call DELETE /api/v1/document/internal/{documentId}/?purge=true."""
-    #     headers, nodejs_endpoint = await self._get_auth_headers_and_endpoint(org_id)
-    #     delete_url = (
-    #         f"{nodejs_endpoint}"
-    #         f"{Routes.STORAGE_DELETE.value.format(documentId=document_id)}"
-    #         "?purge=true"
-    #     )
-    #     async with aiohttp.ClientSession() as session:
-    #         async with session.delete(delete_url, headers=headers) as resp:
-    #             if resp.status == 404:
-    #                 self.logger.info("Storage document %s already gone", document_id)
-    #                 return
-    #             if resp.status not in (
-    #                 HttpStatusCode.SUCCESS.value,
-    #                 HttpStatusCode.NO_CONTENT.value,
-    #             ):
-    #                 error_text = await resp.text()
-    #                 raise Exception(
-    #                     f"Delete failed: {resp.status} {error_text[:200]}"
-    #                 )
-    #     self.logger.info("✅ Purged storage document: %s", document_id)
+    async def delete_connector_storage(
+        self, org_id: str, connector_id: str
+    ) -> int:
+        """Delete all blobs and MongoDB storage documents for a connector.
 
-
-    # async def _delete_connector_blob(self, org_id: str, connector_id: str) -> None:
-    #     """Call DELETE /api/v1/document/internal/connector/{connectorId}"""
-    #     headers, nodejs_endpoint = await self._get_auth_headers_and_endpoint(org_id)
-    #     delete_url = f"{nodejs_endpoint}{Routes.STORAGE_DELETE_CONNECTOR.value.format(connectorId=connector_id)}"
-    #     async with aiohttp.ClientSession() as session:
-    #         async with session.delete(delete_url, headers=headers) as resp:
-    #             if resp.status != HttpStatusCode.SUCCESS.value:
-    #                 error_text = await resp.text()
-    #                 raise Exception(
-    #                     f"Delete failed: {resp.status} {error_text[:200]}"
-    #                 )
+        Returns the number of storage documents deleted.
+        """
+        headers, nodejs_endpoint = await self._get_auth_headers_and_endpoint(
+            org_id
+        )
+        delete_url = (
+            f"{nodejs_endpoint}"
+            f"{Routes.STORAGE_DELETE_CONNECTOR.value.format(connector_id=connector_id)}"
+        )
+        async with aiohttp.ClientSession() as session:
+            async with session.delete(delete_url, headers=headers) as resp:
+                if resp.status != HttpStatusCode.SUCCESS.value:
+                    error_text = await resp.text()
+                    raise Exception(
+                        f"Connector storage delete failed: "
+                        f"{resp.status} {error_text[:200]}"
+                    )
+                body = await resp.json()
+                deleted = body.get("deleted", 0)
+        self.logger.info(
+            "Deleted %d storage documents for connector %s",
+            deleted,
+            connector_id,
+        )
+        return deleted
 
     # ------------------------------------------------------------------
     # Public API
