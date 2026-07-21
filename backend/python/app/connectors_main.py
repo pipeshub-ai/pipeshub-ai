@@ -458,6 +458,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Start messaging producer first
     try:
         await start_messaging_producer(app_container)
+        startup_service.set_messaging_producer(app_container.messaging_producer)
         logger.info("✅ Messaging producer started successfully")
     except Exception as e:
         logger.error(f"❌ Failed to start messaging producer: {str(e)}")
