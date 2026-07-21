@@ -818,10 +818,23 @@ class OdooConnector(BaseConnector):
                 detail="Record not found or access denied",
             )
 
-        activities, messages = await asyncio.gather(
+        # Activities/messages are enrichment, not core content — a transient
+        # failure fetching one shouldn't block indexing the lead's core fields.
+        activities_result, messages_result = await asyncio.gather(
             self.data_source.list_activities(res_model="crm.lead", res_id=lead_id),
             self.data_source.list_messages(res_model="crm.lead", res_id=lead_id),
+            return_exceptions=True,
         )
+        if isinstance(activities_result, BaseException):
+            self.logger.error(f"Failed to fetch activities for lead {lead_id}: {activities_result}")
+            activities = []
+        else:
+            activities = activities_result
+        if isinstance(messages_result, BaseException):
+            self.logger.error(f"Failed to fetch messages for lead {lead_id}: {messages_result}")
+            messages = []
+        else:
+            messages = messages_result
 
         lines: List[str] = [
             f"Name: {lead.name}",
