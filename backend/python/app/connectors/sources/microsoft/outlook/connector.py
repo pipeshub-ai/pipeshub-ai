@@ -539,7 +539,6 @@ class OutlookConnector(BaseConnector):
                     )
                 else:
                     response: UsersGroupsResponse = await self.external_users_client.users_user_list_user(
-                        next_url=next_url,
                         select=OutlookAPIFields.USER_SYNC_SELECT_FIELDS,
                     )
 
@@ -552,7 +551,7 @@ class OutlookConnector(BaseConnector):
 
                 for user in user_data:
                     # Azure AD guest users have no mailbox in this tenant; never sync them.
-                    if getattr(user, "user_type", None) == "Guest":
+                    if user.user_type == "Guest":
                         self.logger.info(
                             "Skipping guest user %s (userType=Guest): no mailbox in this tenant",
                             user.mail or user.user_principal_name,
