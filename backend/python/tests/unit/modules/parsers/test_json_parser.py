@@ -277,7 +277,9 @@ class TestObjectArray:
         assert len(rows) == 3
         table_group = next(g for g in bc.block_groups if g.type == GroupType.TABLE)
         assert table_group.table_metadata.num_of_rows == 3
-        assert table_group.table_metadata.num_of_cells == 3
+        # Columns are the union of keys across rows (a, b, c) → 3 rows × 3 cols.
+        assert table_group.table_metadata.num_of_cols == 3
+        assert table_group.table_metadata.num_of_cells == 9
 
 
 class TestMixedArray:
