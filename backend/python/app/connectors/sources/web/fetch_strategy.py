@@ -466,12 +466,6 @@ async def fetch_url_with_fallback(
                         result.retry_after = delay
                         return result
 
-                    logger.warning(
-                        "⚠️ [%s] HTTP %s for %s, backing off %.0fs (attempt %d)",
-                        strategy_name, status, url, delay, _rl_attempt + 1,
-                    )
-                    await asyncio.sleep(delay)
-
                     if exp_delay >= MAX_RATE_LIMIT_BACKOFF:
                         logger.warning(
                             "⚠️ [%s] HTTP %s persists after max backoff (%.0fs) for %s, trying next strategy",
@@ -479,6 +473,12 @@ async def fetch_url_with_fallback(
                         )
                         last_failed_result = result
                         break
+
+                    logger.warning(
+                        "⚠️ [%s] HTTP %s for %s, backing off %.0fs (attempt %d)",
+                        strategy_name, status, url, delay, _rl_attempt + 1,
+                    )
+                    await asyncio.sleep(delay)
 
                     _rl_attempt += 1
                     continue
