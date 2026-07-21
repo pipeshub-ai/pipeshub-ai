@@ -3,7 +3,6 @@ import base64
 import io
 import os
 import re
-import sys
 import tempfile
 import uuid
 from logging import Logger
@@ -12,17 +11,9 @@ from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
-import chardet
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
-
-# Talon imports cchardet, which does not support Python 3.12; chardet provides
-# the compatible API Talon needs.
-sys.modules["cchardet"] = chardet
-from talon import quotations  # noqa: E402
-
-quotations.register_xpath_extensions()
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -76,6 +67,7 @@ from app.connectors.sources.google.common.datasource_refresh import (
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
+from app.connectors.sources.google.gmail.talon_utils import quotations
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -1323,7 +1315,13 @@ class GoogleGmailIndividualConnector(BaseConnector):
             latest_reply_html = ""
 
             if raw_html:
-                latest_reply_html = quotations.extract_from_html(raw_html)
+                try:
+                    latest_reply_html = quotations.extract_from_html(raw_html)
+                except Exception as extract_error:
+                    self.logger.warning(
+                        f"Failed to extract latest reply from HTML for message {message_id}: {extract_error}"
+                    )
+                    latest_reply_html = raw_html
                 if not latest_reply_html:
                     latest_reply_html = raw_html
 

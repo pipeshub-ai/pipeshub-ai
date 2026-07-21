@@ -214,7 +214,16 @@ class Processor:
 
 
     async def process_gmail_message(
-        self, recordName, recordId, version, source, orgId, mail_content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
+        self,
+        recordName: str,
+        recordId: str,
+        version: int | str,
+        source: str,
+        orgId: str,
+        mail_content: bytes | str,
+        virtual_record_id: str,
+        event_type: Optional[str] = None,
+        prev_virtual_record_id: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process Gmail message, yielding phase completion events."""
 
