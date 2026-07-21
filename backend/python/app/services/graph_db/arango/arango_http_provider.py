@@ -98,6 +98,7 @@ from app.schema.arango.documents import (
 )
 from app.schema.arango.edges import (
     agent_has_knowledge_schema,
+    agent_has_skill_schema,
     agent_has_toolset_schema,
     agent_skill_relation_schema,
     basic_edge_schema,
@@ -201,6 +202,7 @@ EDGE_COLLECTIONS = [
     (CollectionNames.AGENT_HAS_TOOLSET.value, agent_has_toolset_schema),
     (CollectionNames.TOOLSET_HAS_TOOL.value, toolset_has_tool_schema),
     (CollectionNames.AGENT_SKILL_RELATION.value, agent_skill_relation_schema),
+    (CollectionNames.AGENT_HAS_SKILL.value, agent_has_skill_schema),
     (CollectionNames.PROSPECT.value, prospect_schema),
     (CollectionNames.CUSTOMER.value, customer_schema),
     (CollectionNames.LEAD.value, lead_schema),
@@ -20240,6 +20242,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }}
             )
 
+            // Get linked skills (agentHasSkill -> agentSkills) — mirrors
+            // linked_toolsets/linked_knowledge above; kept deliberately
+            // flat (no nested join) since a skill carries no sub-entities
+            // analogous to a toolset's tools.
+            LET linked_skills = (
+                FOR edge IN {CollectionNames.AGENT_HAS_SKILL.value}
+                    FILTER edge._from == agent_path
+                    LET skill = DOCUMENT(edge._to)
+                    FILTER skill != null
+                    RETURN {{
+                        name: skill.name,
+                        description: skill.description,
+                        category: skill.category,
+                        subcategory: skill.subcategory,
+                        version: skill.version,
+                        status: skill.status
+                    }}
+            )
+
             // shareWithOrg: when org_id is provided match the specific org node;
             // when org_id is absent check whether any Orgs collection node has a
             // permission edge to this agent (source collection check, not type field)
@@ -20264,6 +20285,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             RETURN MERGE(agent, {{
                 toolsets: linked_toolsets,
                 knowledge: linked_knowledge,
+                skills: linked_skills,
                 shareWithOrg: share_with_org
             }})
             """

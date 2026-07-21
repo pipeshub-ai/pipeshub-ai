@@ -154,6 +154,7 @@ export function AgentBuilderSidebar(props: {
     'knowledge-apps': true,
     'knowledge-collections': true,
     tools: true,
+    skills: true,
   });
 
   const filtered = useMemo(() => filterTemplatesBySearch(nodeTemplates, search), [nodeTemplates, search]);
@@ -168,6 +169,7 @@ export function AgentBuilderSidebar(props: {
   const kbIndividuals = filtered.filter(
     (t) => t.category === 'knowledge' && t.type.startsWith('kb-') && t.type !== 'kb-group'
   );
+  const skillTemplates = filtered.filter((t) => t.category === 'skills');
 
   const toggle = useCallback(
     (key: string, defaultWhenUnset: boolean = DEFAULT_KNOWLEDGE_NEST_EXPANDED) => {
@@ -460,6 +462,46 @@ export function AgentBuilderSidebar(props: {
                 webSearchAttached={webSearchAttached}
               />
             </Box>
+          ) : null}
+
+          <SectionHeader
+            title={t('agentBuilder.skillsSection')}
+            icon="psychology"
+            open={expanded.skills}
+            onToggle={() => toggle('skills')}
+          />
+          {expanded.skills ? (
+            loading ? (
+              <Box className="agent-builder-palette-nest">
+                <AgentBuilderPaletteSkeletonList count={3} />
+              </Box>
+            ) : (
+              <Box className="agent-builder-palette-nest">
+                {skillTemplates.length === 0 ? (
+                  <Text size="1" style={{ color: 'var(--olive-11)', padding: '4px 8px', fontStyle: 'italic' }}>
+                    {t('agentBuilder.noSkills')}
+                  </Text>
+                ) : (
+                  skillTemplates.map((tmpl) => (
+                    <DraggableRow
+                      key={tmpl.type}
+                      comfortable
+                      data={prepareDragData(tmpl)}
+                      disabled={paletteStructureLocked}
+                      onBlocked={paletteStructureLocked ? onPaletteDragBlocked : undefined}
+                    >
+                      <MaterialIcon
+                        name="psychology"
+                        size={PALETTE_ICON_SIZE}
+                        color="var(--olive-11)"
+                        style={{ flexShrink: 0 }}
+                      />
+                      <span style={paletteRowLabelStyle}>{tmpl.label}</span>
+                    </DraggableRow>
+                  ))
+                )}
+              </Box>
+            )
           ) : null}
         </Box>
       </ScrollArea>

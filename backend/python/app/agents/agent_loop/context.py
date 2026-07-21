@@ -55,6 +55,14 @@ class AgentContext(BaseModel):
     apps: list[str] | None = None
     kb: list[str] | None = None
     agent_knowledge: list[dict[str, Any]] | None = None
+    # Names of skills explicitly assigned to this agent in Agent Builder
+    # (`AGENT_HAS_SKILL` edges — see `_parse_skills`/`_create_skill_edges`
+    # in `api/routes/agent.py`). Empty/None means no explicit assignment:
+    # `skills_wiring.build_skill_manager` then leaves the manager
+    # unwrapped, preserving today's full creator+builtin catalog. Non-empty
+    # triggers a `ScopedSkillManager` wrap that narrows the catalog/search/
+    # activation surface to exactly this allowlist.
+    agent_skills: list[str] | None = None
     connector_configs: dict[str, Any] | None = None
     filters: dict[str, Any] | None = None
     has_sql_connector: bool = False
@@ -269,6 +277,7 @@ class AgentContext(BaseModel):
             apps=state.get("apps"),
             kb=state.get("kb"),
             agent_knowledge=state.get("agent_knowledge"),
+            agent_skills=state.get("agent_skills"),
             connector_configs=state.get("connector_configs"),
             filters=state.get("filters"),
             has_sql_connector=bool(state.get("has_sql_connector", False)),
@@ -322,6 +331,7 @@ class AgentContext(BaseModel):
             "apps": self.apps,
             "kb": self.kb,
             "agent_knowledge": self.agent_knowledge,
+            "agent_skills": self.agent_skills,
             "connector_configs": self.connector_configs,
             "filters": self.filters,
             "has_sql_connector": self.has_sql_connector,

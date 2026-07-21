@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.modules.providers.skills.base import SkillCandidate
 from app.agent_loop_lib.modules.providers.skills.evaluator import RubricSkillEvaluator
@@ -153,6 +155,34 @@ class TestRevisionRoundTrip:
 
         versions_after_rollback = await store.list_versions("deploy-service")
         assert {v.version for v in versions_after_rollback} == {"1.0.0", "1.0.1"}
+
+    async def test_snapshot_ids_dont_collide_within_the_same_millisecond(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression test for a real bug: `_snapshot_revision` used to key
+        the archived-version doc's `id` on `(skill_key, now)` where `now` is
+        an epoch-millisecond timestamp. Two snapshots landing in the same
+        millisecond (trivial under a fast test, and not impossible under
+        rapid successive edits in production) collided and the second
+        `batch_upsert_nodes` call silently overwrote the first snapshot,
+        losing a whole revision from history. Freezing `get_epoch_timestamp_in_ms`
+        to a constant reproduces the collision deterministically; the fix
+        keys the doc `id` on `(skill_key, version)` instead, which is safe
+        because versions are monotonically bumped and never reused."""
+        import app.agents.agent_loop.skills.graph_store as graph_store_module
+
+        monkeypatch.setattr(graph_store_module, "get_epoch_timestamp_in_ms", lambda: 1_000_000)
+
+        graph = FakeGraphProvider()
+        store = _store(graph)
+
+        await store.create_skill("deploy-service", _SKILL_MD)
+        updated_md = _SKILL_MD.replace("Step 2. Push it.", "Step 2. Push it.\nStep 3. Verify health.")
+        await store.update_skill("deploy-service", updated_md)
+        await store.rollback("deploy-service", "1.0.0")
+
+        versions = await store.list_versions("deploy-service")
+        assert {v.version for v in versions} == {"1.0.0", "1.0.1"}
 
     async def test_rollback_unknown_version_raises(self) -> None:
         graph = FakeGraphProvider()
@@ -309,6 +339,61 @@ class TestOrgIsolation:
 
         assert (await org1_tracker.get_experience("deploy-service")).total_activations == 1
         assert (await org2_tracker.get_experience("deploy-service")).total_activations == 0
+
+
+class TestCreatorScoping:
+    """`visibility_scope` (the REST management API's creator-only read
+    filter — see `GraphSkillStore.__init__`'s docstring) must hide another
+    user's skills from `list_skills`/`get_skill`/history reads while
+    leaving builtin-sourced skills visible to everyone, and must never
+    affect the unscoped (`visibility_scope=None`) runtime path."""
+
+    async def test_unscoped_store_sees_every_creator(self) -> None:
+        graph = FakeGraphProvider()
+        creator_store = GraphSkillStore(graph, "org-1", "user-1")
+        await creator_store.create_skill("deploy-service", _SKILL_MD)
+
+        unscoped = GraphSkillStore(graph, "org-1", "user-2")
+        assert await unscoped.get_skill("deploy-service") is not None
+        assert {m.name for m in await unscoped.list_skills()} == {"deploy-service"}
+
+    async def test_scoped_store_hides_another_users_skill(self) -> None:
+        graph = FakeGraphProvider()
+        creator_store = GraphSkillStore(graph, "org-1", "user-1")
+        await creator_store.create_skill("deploy-service", _SKILL_MD)
+
+        other_users_view = GraphSkillStore(graph, "org-1", "user-2", visibility_scope="user-2")
+        assert await other_users_view.get_skill("deploy-service") is None
+        assert await other_users_view.exists("deploy-service") is False
+        assert await other_users_view.list_skills() == []
+
+        owners_view = GraphSkillStore(graph, "org-1", "user-1", visibility_scope="user-1")
+        assert await owners_view.get_skill("deploy-service") is not None
+        assert {m.name for m in await owners_view.list_skills()} == {"deploy-service"}
+
+    async def test_builtin_skill_stays_visible_regardless_of_scope(self) -> None:
+        graph = FakeGraphProvider()
+        creator_store = GraphSkillStore(graph, "org-1", "seed-identity")
+        await creator_store.create_skill("deploy-service", _SKILL_MD)
+        doc = graph._col("agentSkills")["org-1_deploy-service"]
+        doc["source"] = "builtin"
+
+        someone_elses_view = GraphSkillStore(graph, "org-1", "user-2", visibility_scope="user-2")
+        assert await someone_elses_view.get_skill("deploy-service") is not None
+        assert {m.name for m in await someone_elses_view.list_skills()} == {"deploy-service"}
+
+    async def test_scoped_history_reads_hidden_for_non_owner(self) -> None:
+        graph = FakeGraphProvider()
+        creator_store = GraphSkillStore(graph, "org-1", "user-1")
+        await creator_store.create_skill("deploy-service", _SKILL_MD)
+        await creator_store.update_skill("deploy-service", _SKILL_MD.replace("Push it.", "Push it now."))
+
+        other_users_view = GraphSkillStore(graph, "org-1", "user-2", visibility_scope="user-2")
+        assert await other_users_view.list_versions("deploy-service") == []
+        assert await other_users_view.get_version("deploy-service", "1.0.0") is None
+
+        owners_view = GraphSkillStore(graph, "org-1", "user-1", visibility_scope="user-1")
+        assert len(await owners_view.list_versions("deploy-service")) == 1
 
 
 class TestSkillManagerCandidateDelegation:

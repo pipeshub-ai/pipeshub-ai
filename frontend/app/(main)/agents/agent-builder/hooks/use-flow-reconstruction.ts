@@ -11,7 +11,7 @@ import {
 import { WEB_SEARCH_PROVIDER_META } from '../../../workspace/web-search/types';
 import { FLOW_EDGE } from '../flow-theme';
 import { selectPreferredModel, llmNodeTypeSlug } from '../agent-model-utils';
-import type { AgentConfiguredModel, AgentToolset, AgentToolDefinition } from '../../types';
+import type { AgentConfiguredModel, AgentToolset, AgentToolDefinition, AgentSkillReference } from '../../types';
 import type { AgentReconstructionSource, FlowNodeData } from '../types';
 
 /** Reconstructed model config — unified shape for both object and legacy string entries. */
@@ -79,6 +79,7 @@ export function useAgentBuilderReconstruction(): {
           knowledge: { x: 500, baseY: 400 },     // Layer 2: Knowledge & Context
           llm: { x: 950, baseY: 400 },           // Layer 3: LLMs
           tools: { x: 1400, baseY: 400 },        // Layer 4: Toolsets (separate layer)
+          skills: { x: 1400, baseY: 750 },       // Layer 4b: Skills (below toolsets, same column)
           agent: { x: 1850, baseY: 400 },        // Layer 5: Agent Core
           output: { x: 2300, baseY: 400 },       // Layer 6: Response Output
         },
@@ -121,6 +122,7 @@ export function useAgentBuilderReconstruction(): {
         tools: 0,
         toolsets: toolsetsCount,
         knowledge: agent.knowledge?.length || 0,
+        skills: agent.skills?.length || 0,
       };
 
 
@@ -170,6 +172,7 @@ export function useAgentBuilderReconstruction(): {
         if (counts.knowledge > 0) addPositions('knowledge', counts.knowledge, 1.0);
         if (counts.llm > 0) addPositions('llm', counts.llm, 1.5);
         if (counts.toolsets > 0) addPositions('tools', counts.toolsets, 1.0);
+        if (counts.skills > 0) addPositions('skills', counts.skills, 1.0);
 
         if (connectedPositions.length === 0) {
           return { x: layout.layers.agent.x, y: layout.layers.agent.baseY };
@@ -692,6 +695,40 @@ export function useAgentBuilderReconstruction(): {
         webSearchNodes.push(wsNode);
       }
 
+      // 4c. Skill nodes — each assigned skill is its own catalog-pick node (mirrors toolsets, no per-tool granularity).
+      const skillNodes: Node<FlowNodeData>[] = [];
+      if (agent.skills && agent.skills.length > 0) {
+        agent.skills.forEach((skill: AgentSkillReference, index: number) => {
+          const skillName = skill.name || '';
+          if (!skillName) return;
+          nodeCounter += 1;
+          const nodeId = `skill-${nodeCounter}`;
+          const skillNode: Node<FlowNodeData> = {
+            id: nodeId,
+            type: 'flowNode',
+            position: calculateOptimalPosition('skills', index, counts.skills),
+            data: {
+              id: nodeId,
+              type: `skill-${skillName}`,
+              label: normalizeDisplayName(skillName),
+              description: skill.description || t('agentBuilder.skillNodeTemplateDescription'),
+              icon: 'psychology',
+              category: 'skills',
+              config: {
+                skillName,
+                skillDescription: skill.description,
+                skillCategory: skill.category,
+              },
+              inputs: [],
+              outputs: ['output'],
+              isConfigured: true,
+            },
+          };
+          nodes.push(skillNode);
+          skillNodes.push(skillNode);
+        });
+      }
+
       // 5. Create Agent Core with optimal centered positioning
       const agentPosition = calculateAgentPosition();
       const agentCoreNode: Node<FlowNodeData> = {
@@ -711,7 +748,7 @@ export function useAgentBuilderReconstruction(): {
             routing: 'auto',
             allowMultipleLLMs: true,
           },
-          inputs: ['input', 'toolsets', 'knowledge', 'llms'],
+          inputs: ['input', 'toolsets', 'knowledge', 'llms', 'skills'],
           outputs: ['response'],
           isConfigured: true,
         },
@@ -798,6 +835,19 @@ export function useAgentBuilderReconstruction(): {
           target: 'agent-core-1',
           sourceHandle: 'results',
           targetHandle: 'toolsets',
+          type: 'smoothstep',
+          style: edgeStyle,
+          animated: false,
+        });
+      });
+
+      skillNodes.forEach((skillNode) => {
+        edges.push({
+          id: `e-skill-agent-${(edgeCounter += 1)}`,
+          source: skillNode.id,
+          target: 'agent-core-1',
+          sourceHandle: 'output',
+          targetHandle: 'skills',
           type: 'smoothstep',
           style: edgeStyle,
           animated: false,

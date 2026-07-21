@@ -104,6 +104,7 @@ class Neo4jRelationshipType(Enum):
     AGENT_HAS_KNOWLEDGE = "AGENT_HAS_KNOWLEDGE"
     AGENT_HAS_TOOLSET = "AGENT_HAS_TOOLSET"
     TOOLSET_HAS_TOOL = "TOOLSET_HAS_TOOL"
+    AGENT_HAS_SKILL = "AGENT_HAS_SKILL"
 
     # Agent Skills relationships
     AGENT_SKILL_RELATION = "AGENT_SKILL_RELATION"
@@ -191,6 +192,7 @@ EDGE_COLLECTION_TO_RELATIONSHIP: dict[str, str] = {
     CollectionNames.AGENT_HAS_KNOWLEDGE.value: Neo4jRelationshipType.AGENT_HAS_KNOWLEDGE.value,
     CollectionNames.AGENT_HAS_TOOLSET.value: Neo4jRelationshipType.AGENT_HAS_TOOLSET.value,
     CollectionNames.TOOLSET_HAS_TOOL.value: Neo4jRelationshipType.TOOLSET_HAS_TOOL.value,
+    CollectionNames.AGENT_HAS_SKILL.value: Neo4jRelationshipType.AGENT_HAS_SKILL.value,
     CollectionNames.AGENT_SKILL_RELATION.value: Neo4jRelationshipType.AGENT_SKILL_RELATION.value,
     CollectionNames.SOLD_IN.value: Neo4jRelationshipType.SOLD_IN.value,
     CollectionNames.DEAL_OF.value: Neo4jRelationshipType.DEAL_OF.value,

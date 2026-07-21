@@ -173,14 +173,31 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         user_id: str,
         *,
         validator: SkillValidator | None = None,
+        visibility_scope: str | None = None,
     ) -> None:
+        """`visibility_scope`, when set, narrows every read to skills whose
+        `createdBy` matches it, EXCEPT builtin-sourced skills (`source ==
+        "builtin"`), which always stay org-visible regardless of scope —
+        see the plan's "Creator scoping" architecture decision. `None`
+        (the default, used by the agent runtime) preserves today's
+        behavior: every org-scoped skill is visible. The REST management
+        API passes the acting user's id here so `GET /skills` only ever
+        lists the caller's own skills, never a co-worker's."""
         self._graph = graph_provider
         self._org_id = org_id
         self._user_id = user_id
         self._validator = validator or SkillValidator()
+        self._visibility_scope = visibility_scope
 
     def _key(self, name: str) -> str:
         return f"{self._org_id}_{name}"
+
+    def _is_visible(self, doc: dict) -> bool:
+        if self._visibility_scope is None:
+            return True
+        if doc.get("source") == SkillSource.BUILTIN.value:
+            return True
+        return doc.get("createdBy") == self._visibility_scope
 
     # ---- internal doc <-> domain-model mapping -----------------------------
 
@@ -286,12 +303,15 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         doc = await self._graph.get_document(self._key(name), _SKILLS)
         if doc is None or doc.get("orgId") != self._org_id:
             return None
+        if not self._is_visible(doc):
+            return None
         return doc
 
     # ---- SkillReader --------------------------------------------------
 
     async def list_skills(self, filter: SkillFilter | None = None) -> list[SkillMetadata]:
         docs = await self._graph.get_nodes_by_filters(_SKILLS, {"orgId": self._org_id})
+        docs = [d for d in docs if self._is_visible(d)]
         metadatas = [self._doc_to_metadata(d) for d in docs]
         if filter is not None:
             metadatas = [m for m in metadatas if matches_filter(m, filter)]
@@ -427,6 +447,8 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
     # ---- SkillHistoryReader ----------------------------------------------
 
     async def list_versions(self, name: str) -> list[SkillVersionInfo]:
+        if await self._get_org_doc(name) is None:
+            return []
         docs = await self._graph.get_nodes_by_filters(_VERSIONS, {"orgId": self._org_id, "name": name})
         versions = [
             SkillVersionInfo(
@@ -441,6 +463,8 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         return versions
 
     async def get_version(self, name: str, version: str) -> Skill | None:
+        if await self._get_org_doc(name) is None:
+            return None
         archived = await self._get_version_doc(name, version)
         if archived is None:
             return None
@@ -485,13 +509,27 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         return docs[0] if docs else None
 
     async def _snapshot_revision(self, current_doc: dict, now: int) -> None:
+        """Archives `current_doc` into `agentSkillVersions` before it's
+        overwritten by the caller's `update_skill`/`rollback`.
+
+        The doc `id` is keyed on `(skill_key, version)`, NOT `(skill_key,
+        now)`: `now` is an epoch-millisecond timestamp, and two snapshot
+        calls landing in the same millisecond (trivially reproducible in a
+        fast test, and not impossible under real concurrent/rapid edits)
+        would collide and silently overwrite each other via
+        `batch_upsert_nodes`'s id-based upsert — losing a whole revision.
+        `version` is safe here specifically because it's monotonically
+        bumped and never reused (see `rollback`'s docstring), so it's a
+        stronger uniqueness key than a timestamp for this skill's history.
+        """
         skill_key = _doc_id(current_doc) or self._key(current_doc["name"])
+        version = current_doc.get("version") or "1.0.0"
         version_doc = {
-            "id": f"{skill_key}_{now}",
+            "id": f"{skill_key}_v{version}",
             "orgId": self._org_id,
             "skillKey": skill_key,
             "name": current_doc["name"],
-            "version": current_doc.get("version") or "1.0.0",
+            "version": version,
             "content": current_doc.get("content", ""),
             **_resources_to_fields(_resources_from_doc(current_doc)),
             "summary": "",

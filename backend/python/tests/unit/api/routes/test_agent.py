@@ -2251,6 +2251,147 @@ class TestCreateKnowledgeEdges:
         assert result[0]["connectorId"] == "c1"
 
 
+# ---------------------------------------------------------------------------
+# _parse_skills
+# ---------------------------------------------------------------------------
+
+class TestParseSkills:
+    def test_none_returns_empty(self) -> None:
+        from app.api.routes.agent import _parse_skills
+        assert _parse_skills(None) == []
+
+    def test_empty_list_returns_empty(self) -> None:
+        from app.api.routes.agent import _parse_skills
+        assert _parse_skills([]) == []
+
+    def test_not_a_list_returns_empty(self) -> None:
+        from app.api.routes.agent import _parse_skills
+        assert _parse_skills("pdf-extractor") == []
+
+    def test_list_of_dicts_with_name(self) -> None:
+        from app.api.routes.agent import _parse_skills
+        raw = [{"name": "pdf-extractor"}, {"name": "csv-summarizer"}]
+        assert _parse_skills(raw) == ["pdf-extractor", "csv-summarizer"]
+
+    def test_list_of_plain_strings(self) -> None:
+        from app.api.routes.agent import _parse_skills
+        assert _parse_skills(["pdf-extractor", "csv-summarizer"]) == ["pdf-extractor", "csv-summarizer"]
+
+    def test_deduplicates_preserving_order(self) -> None:
+        from app.api.routes.agent import _parse_skills
+        raw = [{"name": "pdf-extractor"}, "csv-summarizer", {"name": "pdf-extractor"}]
+        assert _parse_skills(raw) == ["pdf-extractor", "csv-summarizer"]
+
+    def test_strips_whitespace(self) -> None:
+        from app.api.routes.agent import _parse_skills
+        assert _parse_skills(["  pdf-extractor  "]) == ["pdf-extractor"]
+
+    def test_skips_blank_and_malformed_entries(self) -> None:
+        from app.api.routes.agent import _parse_skills
+        raw = [{"name": ""}, {"name": "   "}, {"notname": "x"}, 42, None, {"name": "valid"}]
+        assert _parse_skills(raw) == ["valid"]
+
+
+# ---------------------------------------------------------------------------
+# _create_skill_edges
+# ---------------------------------------------------------------------------
+
+class TestCreateSkillEdges:
+    @pytest.mark.asyncio
+    async def test_empty_names_returns_empty_without_db_calls(self) -> None:
+        from app.api.routes.agent import _create_skill_edges
+        graph_provider = AsyncMock()
+        result = await _create_skill_edges(
+            "agent1", [], "org1", "uk1", graph_provider, logging.getLogger("test")
+        )
+        assert result == []
+        graph_provider.get_document.assert_not_called()
+        graph_provider.batch_create_edges.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_links_owned_skill(self) -> None:
+        from app.api.routes.agent import _create_skill_edges
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"orgId": "org1", "createdBy": "uk1", "source": "custom"}
+        )
+        graph_provider.batch_create_edges = AsyncMock(return_value=True)
+        result = await _create_skill_edges(
+            "agent1", ["pdf-extractor"], "org1", "uk1", graph_provider, logging.getLogger("test")
+        )
+        assert result == ["pdf-extractor"]
+        graph_provider.batch_create_edges.assert_awaited_once()
+        edges = graph_provider.batch_create_edges.await_args.args[0]
+        assert edges[0]["skillName"] == "pdf-extractor"
+        assert edges[0]["_from"] == "agentInstances/agent1"
+
+    @pytest.mark.asyncio
+    async def test_links_builtin_skill_regardless_of_creator(self) -> None:
+        from app.api.routes.agent import _create_skill_edges
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"orgId": "org1", "createdBy": "someone-else", "source": "builtin"}
+        )
+        graph_provider.batch_create_edges = AsyncMock(return_value=True)
+        result = await _create_skill_edges(
+            "agent1", ["web-search"], "org1", "uk1", graph_provider, logging.getLogger("test")
+        )
+        assert result == ["web-search"]
+
+    @pytest.mark.asyncio
+    async def test_skips_skill_not_found(self) -> None:
+        from app.api.routes.agent import _create_skill_edges
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value=None)
+        result = await _create_skill_edges(
+            "agent1", ["missing-skill"], "org1", "uk1", graph_provider, logging.getLogger("test")
+        )
+        assert result == []
+        graph_provider.batch_create_edges.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_skill_from_other_org(self) -> None:
+        from app.api.routes.agent import _create_skill_edges
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={"orgId": "org-other", "createdBy": "uk1"})
+        result = await _create_skill_edges(
+            "agent1", ["cross-org-skill"], "org1", "uk1", graph_provider, logging.getLogger("test")
+        )
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_skips_skill_not_owned_by_user(self) -> None:
+        from app.api.routes.agent import _create_skill_edges
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(
+            return_value={"orgId": "org1", "createdBy": "someone-else", "source": "custom"}
+        )
+        result = await _create_skill_edges(
+            "agent1", ["colleagues-skill"], "org1", "uk1", graph_provider, logging.getLogger("test")
+        )
+        assert result == []
+        graph_provider.batch_create_edges.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mixed_valid_and_invalid_only_links_valid(self) -> None:
+        from app.api.routes.agent import _create_skill_edges
+        graph_provider = AsyncMock()
+
+        async def fake_get_document(key: str, *_args: object, **_kwargs: object) -> dict | None:
+            if key == "org1_good-skill":
+                return {"orgId": "org1", "createdBy": "uk1", "source": "custom"}
+            return None
+
+        graph_provider.get_document = AsyncMock(side_effect=fake_get_document)
+        graph_provider.batch_create_edges = AsyncMock(return_value=True)
+        result = await _create_skill_edges(
+            "agent1", ["good-skill", "bad-skill"], "org1", "uk1", graph_provider, logging.getLogger("test")
+        )
+        assert result == ["good-skill"]
+        edges = graph_provider.batch_create_edges.await_args.args[0]
+        assert len(edges) == 1
+
+
 # ===========================================================================
 # Route handler tests — askAI
 # ===========================================================================

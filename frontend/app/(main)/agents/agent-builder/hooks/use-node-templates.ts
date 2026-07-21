@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { Connector } from '@/app/(main)/workspace/connectors/types';
-import type { KnowledgeBaseForBuilder, AgentToolsListRow } from '../../types';
+import type { KnowledgeBaseForBuilder, AgentToolsListRow, SkillForBuilder } from '../../types';
 import type { AvailableLlmModel } from '@/chat/types';
 import type { NodeTemplate } from '../types';
 import {
@@ -27,7 +27,8 @@ export function useAgentBuilderNodeTemplates(
   availableTools: AgentToolsListRow[],
   availableModels: AvailableLlmModel[],
   availableKnowledgeBases: KnowledgeBaseForBuilder[],
-  configuredConnectors: Connector[]
+  configuredConnectors: Connector[],
+  availableSkills: SkillForBuilder[] = []
 ): { nodeTemplates: NodeTemplate[] } {
   const { t } = useTranslation();
   const nodeTemplates = useMemo(() => {
@@ -84,7 +85,7 @@ export function useAgentBuilderNodeTemplates(
           routing: 'auto',
           allowMultipleLLMs: true,
         },
-        inputs: ['input', 'toolsets', 'knowledge', 'llms'],
+        inputs: ['input', 'toolsets', 'knowledge', 'llms', 'skills'],
         outputs: ['response'],
         category: 'agent',
       },
@@ -224,6 +225,20 @@ export function useAgentBuilderNodeTemplates(
         outputs: ['context'],
         category: 'knowledge' as const,
       })),
+      ...availableSkills.map((skill) => ({
+        type: `skill-${skill.name}`,
+        label: normalizeDisplayName(skill.name),
+        description: skill.description || t('agentBuilder.skillNodeTemplateDescription'),
+        icon: 'psychology',
+        defaultConfig: {
+          skillName: skill.name,
+          skillDescription: skill.description,
+          skillCategory: skill.category,
+        },
+        inputs: [],
+        outputs: ['output'],
+        category: 'skills' as const,
+      })),
       {
         type: 'web-search',
         label: t('agentBuilder.webSearch'),
@@ -251,7 +266,7 @@ export function useAgentBuilderNodeTemplates(
     ];
 
     return templates;
-  }, [availableTools, availableModels, availableKnowledgeBases, configuredConnectors, t]);
+  }, [availableTools, availableModels, availableKnowledgeBases, configuredConnectors, availableSkills, t]);
 
   return { nodeTemplates };
 }

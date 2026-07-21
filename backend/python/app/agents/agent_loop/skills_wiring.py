@@ -52,16 +52,7 @@ from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.hooks.events import HookEvent
 from app.agent_loop_lib.hooks.middleware.builtin.skill_learning import SkillLearning
 from app.agent_loop_lib.hooks.middleware.builtin.skill_preloading import skill_preloading
-from app.agent_loop_lib.modules.providers.skills.base import SkillSource
-from app.agent_loop_lib.modules.providers.skills.evaluator import RubricSkillEvaluator
-from app.agent_loop_lib.modules.providers.skills.extractor import LLMSkillExtractor
-from app.agent_loop_lib.modules.providers.skills.governor import (
-    AutoApproveGovernor,
-    ManualReviewGovernor,
-    SkillGovernor,
-)
-from app.agent_loop_lib.modules.providers.skills.manager import SkillManager, SkillManagerConfig
-from app.agent_loop_lib.modules.providers.skills.validator import SkillValidator
+from app.agent_loop_lib.modules.providers.skills.manager import SkillManager
 from app.agent_loop_lib.tools.builtin.data.skills import (
     LoadSkillResourceTool,
     LoadSkillTool,
@@ -70,12 +61,7 @@ from app.agent_loop_lib.tools.builtin.data.skills import (
     SkillsListTool,
 )
 from app.agent_loop_lib.tools.errors import DuplicateToolNameError, DuplicateToolPathError
-from app.agent_loop_lib.transport.registry import LazyTransport
-from app.agents.agent_loop.skills.audit_governor import AuditGovernor
-from app.agents.agent_loop.skills.builtin_seeder import SEED_IDENTITY, BuiltinSkillSeeder
-from app.agents.agent_loop.skills.graph_store import GraphSkillStore
-from app.agents.agent_loop.skills.graph_tracker import GraphUsageTracker
-from app.agents.agent_loop.skills.semantic_index import SemanticSkillIndex
+from app.agents.agent_loop.skills.manager_factory import build_runtime_skill_manager
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.registry import HookRegistry
@@ -109,10 +95,6 @@ _SKILL_TOOL_NAMES = ("skills_list", "load_skill", "load_skill_resource", "skill_
 # code.
 DOMAIN_SHARED_SKILL_TOOL_NAMES = frozenset({"skills_list", "load_skill", "load_skill_resource", "skill_search"})
 _SKILL_WRITER_MAX_TURNS = 8
-_BUILTIN_PACKS_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills", "builtin_packs")
-
-_builtin_seeder: BuiltinSkillSeeder | None = None
-_builtin_seeder_load_failed = False
 
 # Adapted from `roles/builtin/skill_writer.py::SKILL_WRITER_ROLE` — cannot
 # reuse it verbatim because that role's prompt ends with "call
@@ -150,104 +132,30 @@ def skills_enabled() -> bool:
     return os.getenv("PIPESHUB_ENABLE_SKILLS", "true").strip().lower() == "true"
 
 
-def _get_builtin_seeder() -> BuiltinSkillSeeder | None:
-    """Parses + validates `builtin_packs/` at most once per process — every
-    org's `build_skill_manager()` call reuses the same in-memory packs
-    (see `BuiltinSkillSeeder`'s docstring: "parsed once, reused across
-    orgs"). A load/validation failure is logged once and cached as a
-    permanent no-op for the process rather than retried every request."""
-    global _builtin_seeder, _builtin_seeder_load_failed
-    if _builtin_seeder is None and not _builtin_seeder_load_failed:
-        try:
-            _builtin_seeder = BuiltinSkillSeeder(_BUILTIN_PACKS_ROOT)
-        except Exception:
-            _builtin_seeder_load_failed = True
-            logger.exception("skills_wiring: failed to load builtin_packs/ — builtin skills disabled")
-    return _builtin_seeder
-
-
-async def _sync_builtin_skills(context: "AgentContext", manager: SkillManager) -> None:
-    """Seeds/upgrades this org's per-org copies of the in-repo builtin
-    skill packs, gated by a cheap version check so a fully up-to-date org
-    never pays for a sync round-trip. Failures are swallowed (logged) —
-    builtin seeding is an enhancement, not a hard dependency for skills to
-    work at all this turn."""
-    seeder = _get_builtin_seeder()
-    if seeder is None:
-        return
-    current = {
-        m.name: m.pack_version for m in manager.catalog_snapshot() if m.source == SkillSource.BUILTIN
-    }
-    if current == seeder.pack_versions:
-        return
-    seed_store = GraphSkillStore(context.graph_provider, context.org_id, SEED_IDENTITY)
-    try:
-        await seeder.sync(seed_store)
-    except Exception:
-        logger.exception("skills_wiring: builtin skill seeding failed for org %s", context.org_id)
-        return
-    await manager.refresh()
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    return os.getenv(name, str(default)).strip().lower() == "true"
-
-
-def _governor(config: SkillManagerConfig, context: "AgentContext") -> SkillGovernor:
-    """Mirrors `manager.py::_default_governor` (private there — Interface
-    Segregation means the manager itself doesn't need to know which
-    governor it got) and layers `AuditGovernor` on top when a graph
-    provider is available, per the plan's Phase 4."""
-    base: SkillGovernor = (
-        ManualReviewGovernor() if config.write_approval
-        else AutoApproveGovernor() if config.auto_approve
-        else ManualReviewGovernor()
-    )
-    if context.graph_provider is None:
-        return base
-    return AuditGovernor(base, context.graph_provider, context.org_id, context.user_id)
-
-
 async def build_skill_manager(
     context: "AgentContext", transport_registry: "TransportRegistry",
 ) -> SkillManager | None:
-    """`None` when this request has no graph provider wired — the store
-    hard-depends on `IGraphDBProvider` (unlike the filesystem store used
-    for CLI/dev), so skills are unavailable rather than silently degraded
-    to some other backend. Callers must check for `None` and skip the
-    rest of this module's wiring."""
-    if context.graph_provider is None:
-        logger.warning(
-            "skills_wiring: PIPESHUB_ENABLE_SKILLS is on but no graph_provider is set on "
-            "this request's context — skills will not be available this turn"
-        )
+    """Composition (store/index/tracker/governor assembly, builtin-pack
+    seeding) lives in `manager_factory.py`'s `build_runtime_skill_manager`,
+    shared with the REST management API's `build_management_skill_manager`
+    so the two profiles can never drift apart on anything but the one
+    deliberate difference (creator visibility scope) documented there.
+
+    When this request's agent has an explicit skill assignment
+    (`context.agent_skills` — see `AgentContext`/`_parse_skills` in
+    `api/routes/agent.py`), the returned manager is additionally wrapped in
+    `ScopedSkillManager` (Phase 4 of the plan) so the prompt overview and
+    all 5 skill tools only ever see/load that allowlist. An agent with NO
+    explicit assignment (empty/None) keeps today's behavior — the full
+    creator+builtin catalog, unfiltered."""
+    manager = await build_runtime_skill_manager(context, transport_registry)
+    if manager is None:
         return None
+    agent_skill_names = getattr(context, "agent_skills", None)
+    if agent_skill_names:
+        from app.agents.agent_loop.skills.scoped_manager import ScopedSkillManager
 
-    config = SkillManagerConfig(
-        auto_approve=_env_bool("PIPESHUB_SKILLS_AUTO_APPROVE", False),
-        # Governance-safe default for an enterprise product: candidates
-        # queue for review rather than auto-persisting (see manager.py's
-        # `_default_governor` docstring for why write_approval always wins).
-        write_approval=_env_bool("PIPESHUB_SKILLS_WRITE_APPROVAL", True),
-        learning_enabled=_env_bool("PIPESHUB_SKILLS_LEARNING_ENABLED", True),
-        catalog_render_limit=int(os.getenv("PIPESHUB_SKILLS_CATALOG_RENDER_LIMIT", "40")),
-    )
-
-    store = GraphSkillStore(context.graph_provider, context.org_id, context.user_id)
-    index = SemanticSkillIndex(context.retrieval_service)
-    tracker = GraphUsageTracker(context.graph_provider, context.org_id, context.user_id)
-    extractor = (
-        LLMSkillExtractor(LazyTransport(transport_registry, "langchain"))
-        if config.learning_enabled else None
-    )
-    evaluator = RubricSkillEvaluator(index=index)
-
-    manager = SkillManager(
-        store=store, index=index, tracker=tracker, validator=SkillValidator(),
-        extractor=extractor, evaluator=evaluator, governor=_governor(config, context), config=config,
-    )
-    await manager.start()
-    await _sync_builtin_skills(context, manager)
+        return ScopedSkillManager(manager, set(agent_skill_names))
     return manager
 
 

@@ -5,6 +5,7 @@ export const NODE_TYPES_WITHOUT_INPUT_HANDLES = {
   CONNECTOR_GROUPS: (type: string) => type.startsWith('connector-group-'),
   LLM_MODELS: (type: string) => type.startsWith('llm-'),
   WEB_SEARCH: (type: string) => type === 'web-search',
+  SKILLS: (type: string) => type.startsWith('skill-'),
 } as const;
 
 export const NODE_TYPES_WITHOUT_OUTPUT_HANDLES = {

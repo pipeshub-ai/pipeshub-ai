@@ -27,6 +27,7 @@ export default defineConfig({
       'app/(main)/chat/__tests__/agui-event-handler.test.ts',
       'app/(main)/chat/components/message-area/__tests__/agent-activity.test.tsx',
       'app/(main)/chat/utils/__tests__/parse-download-markers.test.ts',
+      'app/(main)/workspace/skills/personal/__tests__/api.test.ts',
     ],
     passWithNoTests: false,
   },

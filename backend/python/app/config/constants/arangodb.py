@@ -251,6 +251,9 @@ class CollectionNames(Enum):
     # Agent Skills Graph edge — skill-to-skill connectedness (related/requires/replaced_by)
     AGENT_SKILL_RELATION = "agentSkillRelation"
 
+    # Agent -> Skill assignment edge (Agent Builder), mirrors AGENT_HAS_TOOLSET
+    AGENT_HAS_SKILL = "agentHasSkill"
+
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"

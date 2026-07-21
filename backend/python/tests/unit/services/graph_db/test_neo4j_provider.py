@@ -285,13 +285,15 @@ class TestGetAgent:
         self, neo4j_provider: Neo4jProvider
     ):
         # New batched projection order: agent → toolsets → knowledge → batched
-        # app/KB doc lookup (via client.execute_query) → org-share.
+        # app/KB doc lookup (via client.execute_query) → skills → org-share.
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
                 [{"agent_id": "agent-1", "toolset": {"_key": "ts1", "name": "Toolset1", "tools": []}}],  # toolsets
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{}"}],  # knowledge
                 [{"n": {"id": "conn-1", "name": "Jira", "type": "APP"}}],  # batched app-doc lookup
+                [{"name": "pdf-extractor", "description": "Extracts tables", "category": "docs",
+                  "subcategory": None, "version": "1.0.0", "status": "active"}],  # skills
                 [{"share_with_org": True}],  # org share query
             ]
         )
@@ -306,6 +308,10 @@ class TestGetAgent:
         assert result["toolsets"] == [{"_key": "ts1", "name": "Toolset1", "tools": []}]
         assert result["knowledge"][0]["name"] == "Jira"
         assert result["knowledge"][0]["type"] == "APP"
+        assert result["skills"] == [{
+            "name": "pdf-extractor", "description": "Extracts tables", "category": "docs",
+            "subcategory": None, "version": "1.0.0", "status": "active",
+        }]
         assert result["shareWithOrg"] is True
 
     @pytest.mark.asyncio
@@ -317,6 +323,7 @@ class TestGetAgent:
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
                 [],  # toolsets query
                 [],  # knowledge query
+                [],  # skills query
                 [],  # org share query
             ]
         )
@@ -329,6 +336,7 @@ class TestGetAgent:
         assert result is not None
         assert result["toolsets"] == []
         assert result["knowledge"] == []
+        assert result["skills"] == []
         assert result["shareWithOrg"] is False
 
     @pytest.mark.asyncio
@@ -341,6 +349,7 @@ class TestGetAgent:
                 [],  # toolsets query
                 [{"agent_id": "agent-1", "_key": "k1", "connectorId": "conn-1", "filters": "{not-json"}],  # knowledge
                 [{"n": {"id": "conn-1", "name": "Connector One", "type": "APP"}}],  # batched app-doc lookup
+                [],  # skills query
                 [],  # org share query
             ]
         )
@@ -360,6 +369,51 @@ class TestGetAgent:
         result = await neo4j_provider.get_agent("agent-1")
 
         assert result is None
+
+
+class TestProjectAgentSkills:
+    @pytest.mark.asyncio
+    async def test_returns_empty_list_when_no_skills_assigned(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+
+        result = await neo4j_provider._project_agent_skills("agent-1")
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_maps_rows_to_skill_dicts(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[
+                {
+                    "name": "pdf-extractor", "description": "Extracts tables",
+                    "category": "docs", "subcategory": "tables",
+                    "version": "1.2.0", "status": "active",
+                },
+                {
+                    "name": "csv-cleaner", "description": "Cleans CSV data",
+                    "category": "docs", "subcategory": None,
+                    "version": "2.0.0", "status": "deprecated",
+                },
+            ]
+        )
+
+        result = await neo4j_provider._project_agent_skills("agent-1", transaction="txn-1")
+
+        assert result == [
+            {
+                "name": "pdf-extractor", "description": "Extracts tables",
+                "category": "docs", "subcategory": "tables",
+                "version": "1.2.0", "status": "active",
+            },
+            {
+                "name": "csv-cleaner", "description": "Cleans CSV data",
+                "category": "docs", "subcategory": None,
+                "version": "2.0.0", "status": "deprecated",
+            },
+        ]
+        call_args = neo4j_provider.client.execute_query.await_args
+        assert call_args.kwargs["parameters"] == {"agent_id": "agent-1"}
+        assert call_args.kwargs["txn_id"] == "txn-1"
 
 
 class TestCheckAgentPermission:

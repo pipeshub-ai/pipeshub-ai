@@ -119,6 +119,11 @@ EDGE_DEFINITIONS = [
         "to_vertex_collections": [CollectionNames.AGENT_SKILLS.value],
     },
     {
+        "edge_collection": CollectionNames.AGENT_HAS_SKILL.value,
+        "from_vertex_collections": [CollectionNames.AGENT_INSTANCES.value],
+        "to_vertex_collections": [CollectionNames.AGENT_SKILLS.value],
+    },
+    {
         "edge_collection": CollectionNames.PROSPECT.value,
         "from_vertex_collections": [CollectionNames.ORGS.value],
         "to_vertex_collections": [CollectionNames.ORGS.value],

@@ -1078,6 +1078,85 @@ async def _create_knowledge_edges(
     return created_knowledge
 
 
+def _parse_skills(raw_skills: list[Any]) -> list[str]:
+    """Parse the agent payload's `skills: [{name}] | [name, ...]` field into
+    a de-duplicated, order-preserving list of skill names.
+
+    Unlike `_parse_toolsets`/`_parse_knowledge_sources`, this never creates
+    anything: skill NODES already exist in `agentSkills` (owned by the
+    Skills management API — `api/routes/skills.py`), so agent create/update
+    only ever links to a skill that's already there. `_create_skill_edges`
+    below re-validates existence/ownership at write time regardless of
+    what the client claims here.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+    if not raw_skills or not isinstance(raw_skills, list):
+        return names
+    for entry in raw_skills:
+        name = entry.get("name") if isinstance(entry, dict) else entry if isinstance(entry, str) else None
+        if not isinstance(name, str):
+            continue
+        name = name.strip()
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
+
+
+async def _create_skill_edges(
+    agent_key: str,
+    skill_names: list[str],
+    org_id: str,
+    user_key: str,
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+    transaction: str | None = None,
+) -> list[str]:
+    """Create `agentHasSkill` edges from an agent to each assigned skill —
+    mirrors `_create_toolset_edges`/`_create_knowledge_edges` in shape, but
+    never creates a skill node: skills are owned by the Skills management
+    API, this only links to ones that already exist.
+
+    Defense in depth (mirrors `GraphSkillStore._is_visible`): a name is
+    only linked when it resolves to an existing skill in this org AND
+    (the acting user created it OR it's a `builtin`-sourced skill) — a
+    user can only assign their own skills (or org-wide builtins) to an
+    agent, never a co-worker's. Any name that doesn't resolve is logged
+    and skipped rather than failing the whole create/update — a stale
+    skill reference in the payload should never block agent creation.
+    """
+    if not skill_names:
+        return []
+
+    skills_collection = CollectionNames.AGENT_SKILLS.value
+    time = get_epoch_timestamp_in_ms()
+    edges: list[dict[str, Any]] = []
+    linked_names: list[str] = []
+
+    for name in skill_names:
+        skill_key = f"{org_id}_{name}"
+        skill_doc = await graph_provider.get_document(skill_key, skills_collection, transaction=transaction)
+        if not skill_doc or skill_doc.get("orgId") != org_id:
+            logger.warning(f"Skipping unknown skill '{name}' for agent {agent_key}")
+            continue
+        if skill_doc.get("source") != "builtin" and skill_doc.get("createdBy") != user_key:
+            logger.warning(f"Skipping skill '{name}' not owned by user {user_key} for agent {agent_key}")
+            continue
+        edges.append({
+            "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
+            "_to": f"{skills_collection}/{skill_key}",
+            "skillName": name,
+            "createdAtTimestamp": time,
+            "updatedAtTimestamp": time,
+        })
+        linked_names.append(name)
+
+    if edges:
+        await graph_provider.batch_create_edges(edges, CollectionNames.AGENT_HAS_SKILL.value, transaction=transaction)
+    return linked_names
+
+
 async def _enrich_agent_models(agent: dict[str, Any], config_service: ConfigurationService, logger: Logger) -> None:
     """Enrich agent models with full configurations from etcd"""
     model_entries = agent.get("models", [])
@@ -1726,9 +1805,10 @@ async def create_agent(request: Request) -> JSONResponse:
                 "At least one reasoning model is required. Please add a reasoning model to your configuration."
             )
 
-        # Parse toolsets and knowledge BEFORE starting transaction
+        # Parse toolsets, knowledge, and skills BEFORE starting transaction
         toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
         knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
+        skill_names = _parse_skills(body.get("skills", []))
         web_search_attachment = _parse_web_search(body.get("webSearch"))
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
@@ -1762,12 +1842,13 @@ async def create_agent(request: Request) -> JSONResponse:
         created_toolsets = []
         failed_toolsets = []
         created_knowledge = []
+        linked_skills: list[str] = []
 
         try:
             # Start transaction for ALL agent creation operations
             graph_provider = services["graph_provider"]
             transaction_id = await graph_provider.begin_transaction(
-                read=[],
+                read=[CollectionNames.AGENT_SKILLS.value],
                 write=[
                     CollectionNames.AGENT_INSTANCES.value,
                     CollectionNames.PERMISSION.value,
@@ -1777,6 +1858,7 @@ async def create_agent(request: Request) -> JSONResponse:
                     CollectionNames.TOOLSET_HAS_TOOL.value,
                     CollectionNames.AGENT_KNOWLEDGE.value,
                     CollectionNames.AGENT_HAS_KNOWLEDGE.value,
+                    CollectionNames.AGENT_HAS_SKILL.value,
                 ]
             )
             logger.debug(f"Started transaction for agent creation: {agent_key}")
@@ -1995,6 +2077,16 @@ async def create_agent(request: Request) -> JSONResponse:
 
                 logger.debug(f"Created {len(created_knowledge)} knowledge source(s) for agent: {agent_key}")
 
+            # Step 5: Link assigned skills (within same transaction) — mirrors
+            # AGENT_HAS_TOOLSET/AGENT_HAS_KNOWLEDGE above but never creates a
+            # skill node, only edges to skills that already exist.
+            if skill_names:
+                linked_skills = await _create_skill_edges(
+                    agent_key, skill_names, org_key, user_key, graph_provider, logger,
+                    transaction=transaction_id,
+                )
+                logger.debug(f"Linked {len(linked_skills)} skill(s) for agent: {agent_key}")
+
             # Commit transaction - ALL or NOTHING
             await graph_provider.commit_transaction(transaction_id)
             transaction_id = None
@@ -2020,6 +2112,7 @@ async def create_agent(request: Request) -> JSONResponse:
             **agent,
             "toolsets": created_toolsets,
             "knowledge": created_knowledge,
+            "skills": [{"name": n} for n in linked_skills],
         }
         response_agent["webSearch"] = _format_web_search_for_response(
             response_agent.get("webSearch"),
@@ -2681,6 +2774,46 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     ) from e
             else:
                 logger.info(f"All knowledge sources removed for agent {agent_id}")
+
+        # Update skill assignments if provided in request (even if empty array - means unassign all).
+        # Unlike toolsets/knowledge, this never deletes NODES — only this agent's
+        # AGENT_HAS_SKILL edges — since skills are owned by the Skills
+        # management API, not by whichever agent happens to reference them.
+        if "skills" in body:
+            skill_names = _parse_skills(body.get("skills", []))
+            graph_provider = services["graph_provider"]
+            agent_full_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
+            transaction_id = None
+            try:
+                transaction_id = await graph_provider.begin_transaction(
+                    read=[CollectionNames.AGENT_SKILLS.value],
+                    write=[CollectionNames.AGENT_HAS_SKILL.value],
+                )
+                deleted_skill_edges = await graph_provider.delete_all_edges_for_node(
+                    agent_full_id, CollectionNames.AGENT_HAS_SKILL.value, transaction=transaction_id,
+                )
+                logger.debug(f"Removed {deleted_skill_edges} existing agent->skill edge(s) for agent {agent_id}")
+
+                linked_skills = (
+                    await _create_skill_edges(
+                        agent_id, skill_names, org_key, user_key, graph_provider, logger,
+                        transaction=transaction_id,
+                    )
+                    if skill_names else []
+                )
+                await graph_provider.commit_transaction(transaction_id)
+                transaction_id = None
+                logger.info(f"Linked {len(linked_skills)} skill(s) for agent {agent_id}")
+            except Exception as e:
+                if transaction_id:
+                    try:
+                        await graph_provider.rollback_transaction(transaction_id)
+                    except Exception as abort_error:
+                        logger.error(f"Failed to abort transaction: {abort_error}")
+                logger.error(f"Failed to update skill assignments for agent {agent_id}: {e}", exc_info=True)
+                raise HTTPException(
+                    status_code=500, detail=f"Failed to update skill assignments: {str(e)}",
+                ) from e
 
         return JSONResponse(
             status_code=200,
@@ -3495,6 +3628,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "currentTime": chat_query.currentTime,
             "toolsets": agent_toolsets,
             "knowledge": agent_knowledge,
+            "skills": [s["name"] for s in agent.get("skills", []) if isinstance(s, dict) and s.get("name")] or None,
             "connector_configs": connector_configs,
             "toolsetConfigs": toolset_configs,
             "conversationId": chat_query.conversationId,

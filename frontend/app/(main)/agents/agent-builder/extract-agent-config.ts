@@ -4,6 +4,7 @@ import type {
   AgentFormPayload,
   AgentWebSearchAttachment,
   KnowledgeReference,
+  SkillReference,
   ToolsetReference,
 } from './types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
@@ -302,6 +303,19 @@ export function extractAgentConfigFromFlow(
     }
   }
 
+  const skillNames = new Set<string>();
+  if (agentCoreNode) {
+    edges.forEach((edge) => {
+      if (edge.target !== agentCoreNode.id || edge.targetHandle !== 'skills') return;
+      const sourceNode = nodes.find((n) => n.id === edge.source);
+      const st = sourceNode?.data?.type ?? '';
+      if (!st.startsWith('skill-')) return;
+      const skillName = (sourceNode!.data.config?.skillName as string) || st.slice('skill-'.length);
+      if (skillName) skillNames.add(skillName);
+    });
+  }
+  const skills: SkillReference[] = Array.from(skillNames).map((name) => ({ name }));
+
   const toolsets: ToolsetReference[] = toolsetsInternal.map((ts) => ({
     id: ts.instanceId || ts.name,
     instanceId: ts.instanceId,
@@ -336,6 +350,7 @@ export function extractAgentConfigFromFlow(
       : currentAgent?.instructions,
     toolsets,
     knowledge,
+    skills,
     models,
     webSearch,
     tags: currentAgent?.tags?.length ? currentAgent.tags : ['flow-based', 'visual-workflow'],

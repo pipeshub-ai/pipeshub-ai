@@ -17514,6 +17514,41 @@ class Neo4jProvider(IGraphDBProvider):
 
         return result_map
 
+    async def _project_agent_skills(
+        self, agent_id: str, transaction: str | None = None
+    ) -> list[dict]:
+        """Fetch skills explicitly assigned to a single agent (agentHasSkill -> AgentSkills).
+
+        Mirrors the ``linked_skills`` AQL subquery in the Arango provider's
+        ``get_agent``. Kept separate from ``_project_agents_toolsets_and_knowledge``
+        because, like Arango, skill enrichment is only needed for the single-agent
+        fetch (``get_agent``), not the list projection used by ``get_all_agents``.
+        Flat by design — a skill carries no sub-entities analogous to a toolset's tools.
+        """
+        agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+        skill_label = collection_to_label(CollectionNames.AGENT_SKILLS.value)
+        agent_has_skill_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_SKILL.value)
+
+        query = f"""
+        MATCH (agent:{agent_label} {{id: $agent_id}})-[:{agent_has_skill_rel}]->(skill:{skill_label})
+        RETURN skill.name AS name, skill.description AS description, skill.category AS category,
+               skill.subcategory AS subcategory, skill.version AS version, skill.status AS status
+        """
+        result = await self.client.execute_query(
+            query, parameters={"agent_id": agent_id}, txn_id=transaction
+        )
+        return [
+            {
+                "name": row["name"],
+                "description": row["description"],
+                "category": row["category"],
+                "subcategory": row["subcategory"],
+                "version": row["version"],
+                "status": row["status"],
+            }
+            for row in result or []
+        ]
+
     async def get_agent(self, agent_id: str, org_id: str | None = None, transaction: str | None = None) -> dict | None:
         """
         Fetch the complete agent document with linked graph data.
@@ -17525,6 +17560,7 @@ class Neo4jProvider(IGraphDBProvider):
         - Agent document
         - Linked toolsets with their tools (via agentHasToolset -> toolsetHasTool)
         - Linked knowledge with filters (via agentHasKnowledge)
+        - Linked skills (via agentHasSkill)
         - shareWithOrg flag (requires org_id to evaluate the ORG permission edge)
         """
         try:
@@ -17557,6 +17593,7 @@ class Neo4jProvider(IGraphDBProvider):
             agent_projection = projection.get(agent_id, {"toolsets": [], "knowledge": []})
             agent["toolsets"] = agent_projection["toolsets"]
             agent["knowledge"] = agent_projection["knowledge"]
+            agent["skills"] = await self._project_agent_skills(agent_id, transaction)
 
             # shareWithOrg: when org_id is provided match the specific org node;
             # when org_id is absent check whether any Orgs label node has a

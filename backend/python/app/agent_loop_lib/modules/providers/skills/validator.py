@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from pydantic import BaseModel
+
 from app.agent_loop_lib.core.exceptions import AgentLoopError
 from app.agent_loop_lib.modules.providers.skills.base import Skill
 
@@ -25,6 +27,26 @@ MAX_CATEGORY_LENGTH = 64
 
 _NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _CATEGORY_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+# Soft (warning-only) thresholds from agentskills.io ecosystem guidance —
+# never block a save, just surface a lint hint in the editor (see
+# `SkillValidator.lint`). Kept separate from the hard MAX_* limits above,
+# which the store enforces unconditionally.
+BODY_LINE_WARN_THRESHOLD = 500
+BODY_TOKEN_WARN_THRESHOLD = 5000  # ~4 chars/token heuristic, no tokenizer dependency here
+REFERENCE_DEPTH_WARN = 1  # "one level deep from SKILL.md" per spec guidance
+_WORKFLOW_SUMMARY_HINTS = (
+    "first,", "then,", "step 1", "step 2", "1)", "2)", "1.", "2.",
+)
+
+
+class SkillLintWarning(BaseModel):
+    """One non-blocking spec-conformance hint — `code` is stable/machine-
+    matchable (for the frontend to render a specific icon/action), `message`
+    is the human-readable text."""
+
+    code: str
+    message: str
 
 
 class SkillFormatError(AgentLoopError):
@@ -89,3 +111,55 @@ class SkillValidator:
                 f"Skill 'name' ({skill.metadata.name!r}) must match its directory name "
                 f"({expected_name!r})"
             )
+
+    def lint(self, skill: Skill) -> list[SkillLintWarning]:
+        """Non-blocking agentskills.io conformance hints — called by the
+        `/skills/validate` route (and, before that, by the editor's save
+        pipeline) IN ADDITION TO `validate_skill`, never instead of it: a
+        warning never prevents a save, but `validate_skill`'s
+        `SkillFormatError` always does. Deterministic and cheap (no I/O,
+        no LLM) by the same design constraint as the rest of this class."""
+        warnings: list[SkillLintWarning] = []
+        body = skill.body
+
+        line_count = body.count("\n") + 1
+        if line_count > BODY_LINE_WARN_THRESHOLD:
+            warnings.append(SkillLintWarning(
+                code="body_too_long",
+                message=(
+                    f"Body is {line_count} lines — agentskills.io guidance recommends staying "
+                    f"under {BODY_LINE_WARN_THRESHOLD} lines; move detail into a bundled "
+                    "reference file instead."
+                ),
+            ))
+        approx_tokens = len(body) // 4
+        if approx_tokens > BODY_TOKEN_WARN_THRESHOLD:
+            warnings.append(SkillLintWarning(
+                code="body_token_estimate_high",
+                message=(
+                    f"Body is roughly {approx_tokens} tokens (~{BODY_TOKEN_WARN_THRESHOLD}+ is "
+                    "the guidance ceiling) — consider splitting into resources loaded on demand."
+                ),
+            ))
+
+        description_lower = skill.metadata.description.lower()
+        if any(hint in description_lower for hint in _WORKFLOW_SUMMARY_HINTS):
+            warnings.append(SkillLintWarning(
+                code="description_summarizes_workflow",
+                message=(
+                    "Description reads like a step-by-step summary. Per Anthropic's testing, "
+                    "models follow the description instead of reading the body — describe WHAT "
+                    "the skill does and WHEN to use it, not HOW."
+                ),
+            ))
+
+        for path in (*skill.resources.get("scripts", []), *skill.resources.get("references", []),
+                     *skill.resources.get("assets", [])):
+            if path.count("/") > REFERENCE_DEPTH_WARN:
+                warnings.append(SkillLintWarning(
+                    code="reference_nested_too_deep",
+                    message=f"Resource {path!r} is nested more than one level deep from SKILL.md.",
+                ))
+                break
+
+        return warnings

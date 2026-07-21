@@ -471,6 +471,24 @@ agent_skill_relation_schema = {
     "message": "Document does not match the agent skill relation schema.",
 }
 
+# Agent -> Skill (agentHasSkill) — per-agent skill assignment, mirrors
+# agent_has_toolset_schema/agent_has_knowledge_schema exactly.
+agent_has_skill_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["createdAtTimestamp"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the agent has skill schema.",
+}
+
 
 # future schema
 
