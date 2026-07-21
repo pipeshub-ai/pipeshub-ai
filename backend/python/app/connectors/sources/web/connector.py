@@ -118,6 +118,7 @@ class RetryUrl:
     last_attempted: int
     depth: int = 0                  # depth at which the URL was first encountered
     referer: str | None = None   # referer at the time of first attempt
+    retry_after: float | None = None  # server-requested backoff (seconds)
 
 class Status(Enum):
     PENDING = "PENDING"
@@ -1059,8 +1060,12 @@ class WebConnector(BaseConnector):
 
                 for domain, candidates in domain_map.items():
                     if domain not in self._domain_next_retry_at:
-                        min_retries = min(c.retries for c in candidates)
-                        backoff = min(_BACKOFF_BASE * (2 ** min_retries), _BACKOFF_CAP)
+                        server_delays = [c.retry_after for c in candidates if c.retry_after]
+                        if server_delays:
+                            backoff = max(server_delays)
+                        else:
+                            min_retries = min(c.retries for c in candidates)
+                            backoff = min(_BACKOFF_BASE * (2 ** min_retries), _BACKOFF_CAP)
                         self._domain_next_retry_at[domain] = now + backoff
                         self.logger.info(
                             "Rate-limited on %s: backing off %.0fs before retry (%d URL(s))",
@@ -1305,6 +1310,9 @@ class WebConnector(BaseConnector):
                 await probe.close()
 
             if not rendered.success or not (rendered.html or "").strip():
+                self.logger.warning(
+                    "⚠️ CSR probe for %s returned no content — defaulting to headless", url,
+                )
                 return True
 
             js_result = rendered.js_execution_result or {}
@@ -1488,6 +1496,7 @@ class WebConnector(BaseConnector):
                     last_attempted=get_epoch_timestamp_in_ms(),
                     depth=depth,
                     referer=referer,
+                    retry_after=getattr(result, "retry_after", None),
                 )
             return None
         elif not result.success:
