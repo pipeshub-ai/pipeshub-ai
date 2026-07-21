@@ -6,6 +6,7 @@ import pytest
 
 from app.models.blocks import BlockType, DataFormat, GroupSubType, GroupType
 from app.modules.parsers.json.json_parser import JSONParser
+from app.modules.transformers.block_container_validator import BlockContainerValidator
 from app.services.parsing.interface import ParseError, ParseErrorCode
 
 
@@ -16,6 +17,10 @@ def parser():
 
 def _bytes(data) -> bytes:
     return json.dumps(data).encode("utf-8")
+
+
+def _warning_codes(issues) -> set[str]:
+    return {issue.code for issue in issues}
 
 
 class TestSupportedFormats:
@@ -42,6 +47,12 @@ class TestParseErrors:
     async def test_invalid_json_raises(self, parser):
         with pytest.raises(ParseError) as exc_info:
             await parser.parse(b"{not valid json", "bad.json")
+        assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
+
+    @pytest.mark.asyncio
+    async def test_invalid_utf8_raises_parse_failed(self, parser):
+        with pytest.raises(ParseError) as exc_info:
+            await parser.parse(b"\xff\xfe{", "bad_encoding.json")
         assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
 
 
@@ -206,6 +217,8 @@ class TestObjectArray:
         assert table_group.type == GroupType.TABLE
         assert table_group.name == "users"
         assert table_group.table_metadata.num_of_rows == 2
+        assert table_group.table_metadata.num_of_cols == 2
+        assert table_group.table_metadata.num_of_cells == 4
         assert table_group.table_metadata.column_names == ["name", "role"]
         assert table_group.content_hash is not None
 
@@ -224,9 +237,27 @@ class TestObjectArray:
         assert len(bc.block_groups) == 2
         root, table_group = bc.block_groups
         assert table_group.type == GroupType.TABLE
+        assert table_group.table_metadata.num_of_rows == 3
+        assert table_group.table_metadata.num_of_cols == 1
+        assert table_group.table_metadata.num_of_cells == 3
         assert root.children.block_group_ranges[0].start == table_group.index
         assert root.children.block_ranges == []
         assert len(bc.blocks) == 3
+
+    @pytest.mark.asyncio
+    async def test_uneven_row_columns_unioned_in_metadata(self, parser):
+        data = {
+            "items": [
+                {"a": 1},
+                {"a": 2, "b": 3},
+            ]
+        }
+        result = await parser.parse(_bytes(data), "items.json")
+        table_group = next(g for g in result.block_container.block_groups if g.type == GroupType.TABLE)
+        assert table_group.table_metadata.num_of_rows == 2
+        assert table_group.table_metadata.num_of_cols == 2
+        assert table_group.table_metadata.num_of_cells == 4
+        assert table_group.table_metadata.column_names == ["a", "b"]
 
     @pytest.mark.asyncio
     async def test_nested_dict_within_row_is_flattened(self, parser):
@@ -244,6 +275,9 @@ class TestObjectArray:
         bc = result.block_container
         rows = [b for b in bc.blocks if b.type == BlockType.TABLE_ROW]
         assert len(rows) == 3
+        table_group = next(g for g in bc.block_groups if g.type == GroupType.TABLE)
+        assert table_group.table_metadata.num_of_rows == 3
+        assert table_group.table_metadata.num_of_cells == 3
 
 
 class TestMixedArray:
@@ -277,11 +311,50 @@ class TestTopLevelShapes:
         assert bc.block_groups[0].children.block_ranges == []
 
     @pytest.mark.asyncio
+    async def test_top_level_empty_array(self, parser):
+        result = await parser.parse(_bytes([]), "empty_list.json")
+        bc = result.block_container
+        assert len(bc.block_groups) == 1
+        assert bc.blocks == []
+        assert bc.block_groups[0].children.block_ranges == []
+        assert bc.block_groups[0].children.block_group_ranges == []
+
+    @pytest.mark.asyncio
     async def test_top_level_bare_scalar(self, parser):
         result = await parser.parse(_bytes("hello"), "bare.json")
         bc = result.block_container
         assert len(bc.blocks) == 1
         assert bc.blocks[0].data == "hello"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value,expected", [
+        (42, "42"),
+        (3.14, "3.14"),
+        (True, "True"),
+        (None, "None"),
+    ])
+    async def test_top_level_bare_non_string_scalars(self, parser, value, expected):
+        result = await parser.parse(_bytes(value), "scalar.json")
+        assert len(result.block_container.blocks) == 1
+        assert result.block_container.blocks[0].data == expected
+
+    @pytest.mark.asyncio
+    async def test_unicode_values_preserved(self, parser):
+        data = {"title": "日本語テスト", "emoji": "🚀"}
+        result = await parser.parse(_bytes(data), "unicode.json")
+        text = result.block_container.blocks[0].data
+        assert "日本語テスト" in text
+        assert "🚀" in text
+
+    @pytest.mark.asyncio
+    async def test_numeric_and_nested_empty_values(self, parser):
+        data = {"count": 0, "ratio": 0.5, "empty_obj": {}, "empty_list": []}
+        result = await parser.parse(_bytes(data), "nums.json")
+        text = result.block_container.blocks[0].data
+        assert "count: 0" in text
+        assert "ratio: 0.5" in text
+        assert "empty_obj: {}" in text
+        assert "empty_list: []" in text
 
 
 class TestContentHash:
@@ -314,3 +387,53 @@ class TestParseDataFormatTagging:
         bc = parser.parse_data({"a": "x"}, "a.yaml", data_format=DataFormat.YAML)
         assert bc.block_groups[0].format == DataFormat.YAML
         assert bc.blocks[0].format == DataFormat.YAML
+
+
+class TestStateIsolation:
+
+    def test_parse_data_resets_state_between_calls(self, parser):
+        bc1 = parser.parse_data({"a": 1}, "a.json")
+        bc2 = parser.parse_data({"b": 2, "c": 3}, "b.json")
+
+        assert len(bc1.blocks) == 1
+        assert len(bc2.blocks) == 1
+        assert bc1.blocks[0].data == "a: 1"
+        assert "b: 2" in bc2.blocks[0].data
+        assert "c: 3" in bc2.blocks[0].data
+        assert len(bc1.block_groups) == 1
+        assert len(bc2.block_groups) == 1
+
+    @pytest.mark.asyncio
+    async def test_sequential_async_parses_do_not_leak_blocks(self, parser):
+        first = await parser.parse(_bytes({"x": 1}), "first.json")
+        second = await parser.parse(
+            _bytes({"users": [{"id": 1}, {"id": 2}]}),
+            "second.json",
+        )
+
+        assert len(first.block_container.blocks) == 1
+        assert first.block_container.blocks[0].data == "x: 1"
+        assert len(second.block_container.block_groups) == 2
+        assert len(second.block_container.blocks) == 2
+
+
+class TestValidatorCompatibility:
+
+    @pytest.mark.asyncio
+    async def test_flat_json_passes_block_container_validator(self, parser):
+        result = await parser.parse(_bytes({"name": "Widget", "price": 100}), "widget.json")
+        warnings = BlockContainerValidator().validate(result.block_container)
+        assert "TEXT_FORMAT_UNEXPECTED" not in _warning_codes(warnings)
+
+    @pytest.mark.asyncio
+    async def test_table_json_sets_num_of_cells_for_validator(self, parser):
+        data = {
+            "rows": [
+                {"name": "a", "value": 1},
+                {"name": "b", "value": 2},
+            ]
+        }
+        result = await parser.parse(_bytes(data), "rows.json")
+        warnings = BlockContainerValidator().validate(result.block_container)
+        assert "TABLE_METADATA_NUM_CELLS_MISSING" not in _warning_codes(warnings)
+        assert "TEXT_FORMAT_UNEXPECTED" not in _warning_codes(warnings)

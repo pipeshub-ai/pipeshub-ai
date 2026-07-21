@@ -477,9 +477,17 @@ class TestTextBlocks:
         assert _validator().validate(container) == []
 
     def test_text_format_unexpected_warns(self):
-        container = _container(blocks=[_text_block(0, fmt=DataFormat.JSON)])
+        container = _container(blocks=[_text_block(0, fmt=DataFormat.XML)])
         warnings = _validator().validate(container)
         assert "TEXT_FORMAT_UNEXPECTED" in _warning_codes(warnings)
+
+    def test_valid_json_format(self):
+        container = _container(blocks=[_text_block(0, fmt=DataFormat.JSON)])
+        assert _validator().validate(container) == []
+
+    def test_valid_yaml_format(self):
+        container = _container(blocks=[_text_block(0, fmt=DataFormat.YAML)])
+        assert _validator().validate(container) == []
 
 
 # ---------------------------------------------------------------------------

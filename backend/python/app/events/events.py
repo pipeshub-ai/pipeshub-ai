@@ -1062,6 +1062,30 @@ class EventProcessor:
                 ):
                     yield event
 
+            elif extension in {ExtensionTypes.JSON.value} or mime_type == MimeTypes.JSON.value:
+                async for event in self.processor.process_structured_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    file_content=file_content,
+                    virtual_record_id=virtual_record_id,
+                    extension=ExtensionTypes.JSON.value,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+
+            elif extension in {ExtensionTypes.YAML.value, ExtensionTypes.YML.value} or mime_type == MimeTypes.YAML.value:
+                async for event in self.processor.process_structured_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    file_content=file_content,
+                    virtual_record_id=virtual_record_id,
+                    extension=ExtensionTypes.YAML.value,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    yield event
+
             elif (
                  extension in {
                     ExtensionTypes.PNG.value,
