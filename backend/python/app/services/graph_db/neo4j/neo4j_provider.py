@@ -4219,13 +4219,18 @@ class Neo4jProvider(IGraphDBProvider):
         """
         start_time = time.time()
         try:
-            # Build metadata filter conditions
+            # Build metadata filter conditions.
+            # Labels are intentionally omitted from these EXISTS patterns — nodes
+            # are stored with plural labels (Categories, Subcategories1/2/3,
+            # Departments, Topics, Languages) but the dedicated relationship types
+            # already uniquely identify the target node type, so label-free
+            # matching is both correct and immune to future label drift.
             metadata_conditions = []
             if metadata_filters:
                 if metadata_filters.get("departments"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_DEPARTMENT]->(dept:Department)
+                        MATCH (r)-[:BELONGS_TO_DEPARTMENT]->(dept)
                         WHERE dept.departmentName IN $departmentNames
                     }
                     """)
@@ -4233,7 +4238,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("categories"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(cat:Category)
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(cat)
                         WHERE cat.name IN $categoryNames
                     }
                     """)
@@ -4241,7 +4246,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("subcategories1"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat)
                         WHERE subcat.name IN $subcat1Names
                     }
                     """)
@@ -4249,7 +4254,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("subcategories2"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat)
                         WHERE subcat.name IN $subcat2Names
                     }
                     """)
@@ -4257,7 +4262,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("subcategories3"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat)
                         WHERE subcat.name IN $subcat3Names
                     }
                     """)
@@ -4265,7 +4270,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("languages"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_LANGUAGE]->(lang:Language)
+                        MATCH (r)-[:BELONGS_TO_LANGUAGE]->(lang)
                         WHERE lang.name IN $languageNames
                     }
                     """)
@@ -4273,8 +4278,19 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("topics"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_TOPIC]->(topic:Topic)
+                        MATCH (r)-[:BELONGS_TO_TOPIC]->(topic)
                         WHERE topic.name IN $topicNames
+                    }
+                    """)
+
+                if metadata_filters.get("records"):
+                    metadata_conditions.append("r.recordName IN $recordNames")
+
+                if metadata_filters.get("record_groups"):
+                    metadata_conditions.append("""
+                    EXISTS {
+                        MATCH (r)-[:BELONGS_TO]->(rg)
+                        WHERE rg.name IN $recordGroupNames
                     }
                     """)
 
@@ -4409,6 +4425,10 @@ class Neo4jProvider(IGraphDBProvider):
                     parameters["languageNames"] = metadata_filters["languages"]
                 if metadata_filters.get("topics"):
                     parameters["topicNames"] = metadata_filters["topics"]
+                if metadata_filters.get("records"):
+                    parameters["recordNames"] = metadata_filters["records"]
+                if metadata_filters.get("record_groups"):
+                    parameters["recordGroupNames"] = metadata_filters["record_groups"]
 
             # Execute query
             results = await self.client.execute_query(query, parameters=parameters)
@@ -4453,13 +4473,15 @@ class Neo4jProvider(IGraphDBProvider):
         """
         start_time = time.time()
         try:
-            # Build metadata filter conditions
+            # Build metadata filter conditions.
+            # Labels are intentionally omitted — see _get_virtual_ids_for_connector
+            # for the full rationale (plural stored labels vs singular filter labels).
             metadata_conditions = []
             if metadata_filters:
                 if metadata_filters.get("departments"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_DEPARTMENT]->(dept:Department)
+                        MATCH (r)-[:BELONGS_TO_DEPARTMENT]->(dept)
                         WHERE dept.departmentName IN $departmentNames
                     }
                     """)
@@ -4467,7 +4489,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("categories"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(cat:Category)
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(cat)
                         WHERE cat.name IN $categoryNames
                     }
                     """)
@@ -4475,7 +4497,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("subcategories1"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat)
                         WHERE subcat.name IN $subcat1Names
                     }
                     """)
@@ -4483,7 +4505,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("subcategories2"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat)
                         WHERE subcat.name IN $subcat2Names
                     }
                     """)
@@ -4491,7 +4513,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("subcategories3"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat)
                         WHERE subcat.name IN $subcat3Names
                     }
                     """)
@@ -4499,7 +4521,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("languages"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_LANGUAGE]->(lang:Language)
+                        MATCH (r)-[:BELONGS_TO_LANGUAGE]->(lang)
                         WHERE lang.name IN $languageNames
                     }
                     """)
@@ -4507,8 +4529,19 @@ class Neo4jProvider(IGraphDBProvider):
                 if metadata_filters.get("topics"):
                     metadata_conditions.append("""
                     EXISTS {
-                        MATCH (r)-[:BELONGS_TO_TOPIC]->(topic:Topic)
+                        MATCH (r)-[:BELONGS_TO_TOPIC]->(topic)
                         WHERE topic.name IN $topicNames
+                    }
+                    """)
+
+                if metadata_filters.get("records"):
+                    metadata_conditions.append("r.recordName IN $recordNames")
+
+                if metadata_filters.get("record_groups"):
+                    metadata_conditions.append("""
+                    EXISTS {
+                        MATCH (r)-[:BELONGS_TO]->(rg)
+                        WHERE rg.name IN $recordGroupNames
                     }
                     """)
 
@@ -4586,6 +4619,10 @@ class Neo4jProvider(IGraphDBProvider):
                     parameters["languageNames"] = metadata_filters["languages"]
                 if metadata_filters.get("topics"):
                     parameters["topicNames"] = metadata_filters["topics"]
+                if metadata_filters.get("records"):
+                    parameters["recordNames"] = metadata_filters["records"]
+                if metadata_filters.get("record_groups"):
+                    parameters["recordGroupNames"] = metadata_filters["record_groups"]
 
             # Execute query
             results = await self.client.execute_query(query, parameters=parameters)
@@ -4614,7 +4651,8 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         user_id: str,
         org_id: str,
-        filters: dict[str, list[str]] | None = None
+        filters: dict[str, list[str]] | None = None,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, str]:
         """
         Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
@@ -4634,15 +4672,24 @@ class Neo4jProvider(IGraphDBProvider):
                     'subcategories3': [subcat3_ids],
                     'languages': [language_ids],
                     'topics': [topic_ids],
+                    'records': [record_names],
+                    'record_groups': [record_group_names],
                     'kb': [kb_ids],
                     'apps': [connector_ids]
                 }
+            time_range (dict[str, int] | None): Optional source-creation bounds (epoch ms).
+                Not yet implemented for Neo4j; when provided, results are not filtered by time.
 
         Returns:
             Dict[str, str]: Mapping of virtualRecordId -> recordId
         """
         start_time = time.time()
-        self.logger.debug(
+        if time_range:
+            self.logger.warning(
+                "time_range filtering on sourceCreatedAtTimestamp is not yet supported for Neo4j; "
+                "ignoring time_range and returning unfiltered accessible records"
+            )
+        self.logger.info(
             f"Getting accessible virtual record IDs for user {user_id} in org {org_id} with filters {filters}"
         )
 
@@ -19386,3 +19433,162 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error("❌ Failed to get app creator user: %s", str(e))
             return None
+
+    # ==================== Entity Vector Sync ====================
+
+    # Neo4j label + name-field per entity type
+    _ENTITY_LABEL_MAP: dict[str, tuple[str, str]] = {
+        "category": ("Categories", "name"),
+        "subcategory": ("Subcategories1", "name"),
+        "topic": ("Topics", "name"),
+        "department": ("Departments", "departmentName"),
+        "person": ("Person", "email"),
+        "record": ("Record", "recordName"),
+        "record_group": ("RecordGroup", "name"),
+    }
+
+    # Relationship type for record → entity edge count
+    _ENTITY_REL_MAP: dict[str, str] = {
+        "category": "BELONGS_TO_CATEGORY",
+        "subcategory": "BELONGS_TO_CATEGORY",
+        "topic": "BELONGS_TO_TOPIC",
+        "department": "BELONGS_TO_DEPARTMENT",
+        "language": "BELONGS_TO_LANGUAGE",
+        "record_group": "BELONGS_TO",
+    }
+
+    async def get_entities_for_sync(
+        self,
+        org_id: str,
+        entity_types: list[str] | None = None,
+        since_timestamp: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Retrieve entity nodes from Neo4j for bulk/incremental vector sync."""
+        from app.config.constants.neo4j import Neo4jLabel
+        results: list[dict[str, Any]] = []
+        types_to_fetch = entity_types or list(self._ENTITY_LABEL_MAP.keys())
+
+        for entity_type in types_to_fetch:
+            if entity_type not in self._ENTITY_LABEL_MAP:
+                self.logger.debug("Skipping unsupported entity type: %s", entity_type)
+                continue
+            label, name_field = self._ENTITY_LABEL_MAP[entity_type]
+
+            since_filter = ""
+            bind_params: dict[str, Any] = {}
+            if since_timestamp:
+                since_filter = "AND n.createdAtTimestamp >= $since"
+                bind_params["since"] = since_timestamp
+
+            if entity_type == "department":
+                query = f"""
+                MATCH (o:Organization {{id: $org_id}})-[:ORG_DEPARTMENT_RELATION]->(n:{label})
+                WHERE true {since_filter}
+                RETURN n.id AS id, n.{name_field} AS name, n.description AS description
+                """
+                bind_params["org_id"] = org_id
+            elif entity_type == "record":
+                # Records are org-scoped directly (no relationship hop) and only
+                # fully-indexed records should be resolvable as filter facets.
+                query = f"""
+                MATCH (n:{label})
+                WHERE n.orgId = $org_id AND n.indexingStatus = $completedStatus {since_filter}
+                RETURN n.id AS id, n.{name_field} AS name, null AS description
+                """
+                bind_params["org_id"] = org_id
+                bind_params["completedStatus"] = ProgressStatus.COMPLETED.value
+            else:
+                query = f"""
+                MATCH (n:{label})
+                WHERE true {since_filter}
+                RETURN n.id AS id, n.{name_field} AS name, n.description AS description
+                """
+
+            try:
+                rows = await self.client.execute_query(query, parameters=bind_params)
+            except Exception as exc:
+                self.logger.error(
+                    "get_entities_for_sync: Neo4j query failed for type %s: %s", entity_type, exc
+                )
+                continue
+
+            for row in rows:
+                node_id = row.get("id", "")
+                if not node_id:
+                    continue
+                results.append(
+                    {
+                        "entityId": node_id,
+                        "entityType": entity_type,
+                        "name": row.get("name", ""),
+                        "orgId": org_id,
+                        "description": row.get("description", "") or "",
+                        "parentEntityId": None,
+                        "parentEntityType": None,
+                    }
+                )
+
+        # subcategories level 2 and 3
+        if entity_types is None or "subcategory" in entity_types:
+            for label in ("Subcategories2", "Subcategories3"):
+                since_filter = ""
+                bind_params = {}
+                if since_timestamp:
+                    since_filter = "AND n.createdAtTimestamp >= $since"
+                    bind_params["since"] = since_timestamp
+                query = f"""
+                MATCH (n:{label})
+                WHERE true {since_filter}
+                RETURN n.id AS id, n.name AS name, n.description AS description
+                """
+                try:
+                    rows = await self.client.execute_query(query, parameters=bind_params)
+                except Exception as exc:
+                    self.logger.error(
+                        "get_entities_for_sync: Neo4j %s query failed: %s", label, exc
+                    )
+                    continue
+                for row in rows:
+                    node_id = row.get("id", "")
+                    if not node_id:
+                        continue
+                    results.append(
+                        {
+                            "entityId": node_id,
+                            "entityType": "subcategory",
+                            "name": row.get("name", ""),
+                            "orgId": org_id,
+                            "description": row.get("description", "") or "",
+                            "parentEntityId": None,
+                            "parentEntityType": None,
+                        }
+                    )
+
+        return results
+
+    async def get_entity_record_count(
+        self, entity_id: str, entity_type: str, org_id: str
+    ) -> int:
+        """Count records linked to an entity via its relationship type in Neo4j."""
+        rel_type = self._ENTITY_REL_MAP.get(entity_type)
+        if not rel_type:
+            return 0
+        label_info = self._ENTITY_LABEL_MAP.get(entity_type)
+        if not label_info:
+            return 0
+        label = label_info[0]
+
+        query = f"""
+        MATCH (r:Record)-[:{rel_type}]->(e:{label} {{id: $entity_id}})
+        RETURN count(r) AS cnt
+        """
+        try:
+            rows = await self.client.execute_query(
+                query, parameters={"entity_id": entity_id}
+            )
+            return int(rows[0].get("cnt", 0)) if rows else 0
+        except Exception as exc:
+            self.logger.error(
+                "get_entity_record_count failed for %s/%s: %s", entity_type, entity_id, exc
+            )
+            return 0

@@ -579,6 +579,27 @@ class EventService:
                     f"Orphaned configuration may remain."
                 )
 
+            # Remove connector reference from entity vector store (reference-counted).
+            # Entities shared across connectors are only deleted when all source
+            # connectors are removed AND entityCount == 0.
+            if hasattr(self.app_container, "entity_vector_store"):
+                try:
+                    entity_vector_store = await self.app_container.entity_vector_store()
+                    if entity_vector_store is not None:
+                        await entity_vector_store.remove_all_connector_references(
+                            org_id=org_id,
+                            connector_id=connector_id,
+                        )
+                        self.logger.info(
+                            f"✅ Entity vector store references removed for connector {connector_id}"
+                        )
+                except Exception as evt_err:
+                    self.logger.error(
+                        f"❌ Failed to remove entity vector store references for "
+                        f"connector {connector_id}: {evt_err}. "
+                        f"Orphaned entity vectors may remain — use entity-sync/trigger to repair."
+                    )
+
             self.logger.info(f"✅ Async deletion complete for connector {connector_id}")
             return True
 

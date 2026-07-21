@@ -557,3 +557,93 @@ class TestEmptyAgentFilters:
         call_kwargs = retrieval_service.search_with_filters.call_args[1]
         # No match, agent apps is empty too
         assert call_kwargs["filter_groups"]["apps"] == []
+
+
+# ============================================================================
+# _resolve_entity_filters_with_llm: record / record_group mapping
+# ============================================================================
+
+
+class TestResolveEntityFiltersWithLLMRecordMapping:
+    """Direct unit tests for _resolve_entity_filters_with_llm's type -> key mapping."""
+
+    def _make_llm(self, selected_entities, reasoning="test"):
+        from app.agents.actions.retrieval.retrieval import _EntityFilterDecision
+
+        mock_llm = MagicMock()
+        mock_structured = AsyncMock(return_value=_EntityFilterDecision(
+            selected_entities=selected_entities,
+            reasoning=reasoning,
+        ))
+        mock_llm.with_structured_output = MagicMock(return_value=MagicMock(
+            ainvoke=mock_structured,
+        ))
+        return mock_llm
+
+    @pytest.mark.asyncio
+    async def test_record_entity_maps_to_records_key(self):
+        from app.agents.actions.retrieval.retrieval import _resolve_entity_filters_with_llm
+
+        candidates = [
+            {"entityId": "rec-1", "entityType": "record", "name": "Q3 Security Report", "score": 0.9},
+        ]
+        llm = self._make_llm(["Q3 Security Report"])
+
+        result = await _resolve_entity_filters_with_llm(
+            query="find the Q3 Security Report", candidates=candidates, llm=llm, log=MagicMock()
+        )
+
+        assert result.get("records") == ["Q3 Security Report"]
+        assert "record_groups" not in result
+
+    @pytest.mark.asyncio
+    async def test_record_group_entity_maps_to_record_groups_key(self):
+        from app.agents.actions.retrieval.retrieval import _resolve_entity_filters_with_llm
+
+        candidates = [
+            {"entityId": "rg-1", "entityType": "record_group", "name": "Legal Contracts", "score": 0.9},
+        ]
+        llm = self._make_llm(["Legal Contracts"])
+
+        result = await _resolve_entity_filters_with_llm(
+            query="what's in the Legal Contracts folder?", candidates=candidates, llm=llm, log=MagicMock()
+        )
+
+        assert result.get("record_groups") == ["Legal Contracts"]
+        assert "records" not in result
+
+    @pytest.mark.asyncio
+    async def test_mixed_entity_types_partition_correctly(self):
+        """categories/topics/records/record_groups are partitioned into separate keys."""
+        from app.agents.actions.retrieval.retrieval import _resolve_entity_filters_with_llm
+
+        candidates = [
+            {"entityId": "cat-1", "entityType": "category", "name": "Legal Document", "score": 0.9},
+            {"entityId": "rec-1", "entityType": "record", "name": "Q3 Security Report", "score": 0.8},
+            {"entityId": "rg-1", "entityType": "record_group", "name": "Legal Contracts", "score": 0.7},
+        ]
+        llm = self._make_llm(["Legal Document", "Q3 Security Report", "Legal Contracts"])
+
+        result = await _resolve_entity_filters_with_llm(
+            query="legal stuff", candidates=candidates, llm=llm, log=MagicMock()
+        )
+
+        assert result.get("categories") == ["Legal Document"]
+        assert result.get("records") == ["Q3 Security Report"]
+        assert result.get("record_groups") == ["Legal Contracts"]
+
+    @pytest.mark.asyncio
+    async def test_unselected_record_candidate_omitted(self):
+        """A record candidate not selected by the LLM must not appear in the result."""
+        from app.agents.actions.retrieval.retrieval import _resolve_entity_filters_with_llm
+
+        candidates = [
+            {"entityId": "rec-1", "entityType": "record", "name": "Unrelated Doc", "score": 0.9},
+        ]
+        llm = self._make_llm([])  # LLM selects nothing
+
+        result = await _resolve_entity_filters_with_llm(
+            query="completely different topic", candidates=candidates, llm=llm, log=MagicMock()
+        )
+
+        assert result == {}

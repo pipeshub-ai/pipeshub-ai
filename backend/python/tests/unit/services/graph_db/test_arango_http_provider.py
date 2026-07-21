@@ -18581,6 +18581,219 @@ class TestGetKbVirtualIdsMetadataDetailed:
 
 
 # ---------------------------------------------------------------------------
+# sourceCreatedAtTimestamp time_range filters
+# ---------------------------------------------------------------------------
+
+
+class TestSourceCreatedTimeRangeFilters:
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_forwards_time_range(
+        self, connected_provider
+    ):
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["app1"],
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={},
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={},
+        ) as mock_kb:
+            time_range = {
+                "source_created_after_ms": 1000,
+                "source_created_before_ms": 2000,
+            }
+            await connected_provider.get_accessible_virtual_record_ids(
+                "user1", "org1", time_range=time_range
+            )
+            for call in mock_connector.await_args_list:
+                assert call.kwargs.get("time_range") == time_range
+            mock_kb.assert_awaited_once()
+            assert mock_kb.await_args.kwargs.get("time_range") == time_range
+
+    @pytest.mark.asyncio
+    async def test_get_accessible_virtual_record_ids_omits_when_none(
+        self, connected_provider
+    ):
+        with patch.object(
+            connected_provider, "_get_user_app_ids",
+            new_callable=AsyncMock, return_value=["app1"],
+        ), patch.object(
+            connected_provider, "_get_virtual_ids_for_connector",
+            new_callable=AsyncMock, return_value={},
+        ) as mock_connector, patch.object(
+            connected_provider, "_get_kb_virtual_ids",
+            new_callable=AsyncMock, return_value={},
+        ):
+            await connected_provider.get_accessible_virtual_record_ids("user1", "org1")
+            assert mock_connector.await_args.kwargs.get("time_range") is None
+
+    @pytest.mark.asyncio
+    async def test_connector_aql_injects_time_filter_and_binds(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        time_range = {
+            "source_created_after_ms": 1000,
+            "source_created_before_ms": 2000,
+        }
+        await connected_provider._get_virtual_ids_for_connector(
+            "u1", "org1", "c1", time_range=time_range
+        )
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" in query
+        assert "FILTER record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
+        assert bind_vars["sourceCreatedAfterMs"] == 1000
+        assert bind_vars["sourceCreatedBeforeMs"] == 2000
+
+    @pytest.mark.asyncio
+    async def test_connector_aql_only_after_bound(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider._get_virtual_ids_for_connector(
+            "u1", "org1", "c1", time_range={"source_created_after_ms": 1000}
+        )
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" in query
+        assert "FILTER record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" not in query
+        assert "sourceCreatedBeforeMs" not in bind_vars
+
+    @pytest.mark.asyncio
+    async def test_connector_aql_only_before_bound(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider._get_virtual_ids_for_connector(
+            "u1", "org1", "c1", time_range={"source_created_before_ms": 2000}
+        )
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
+        assert "FILTER record.sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" not in query
+        assert "sourceCreatedAfterMs" not in bind_vars
+
+    @pytest.mark.asyncio
+    async def test_connector_aql_no_time_range_unchanged(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider._get_virtual_ids_for_connector("u1", "org1", "c1")
+        query_without = connected_provider.execute_query.call_args[0][0]
+        connected_provider.execute_query.reset_mock()
+        await connected_provider._get_virtual_ids_for_connector(
+            "u1", "org1", "c1", time_range=None
+        )
+        query_with_none = connected_provider.execute_query.call_args[0][0]
+        assert query_without == query_with_none
+
+    @pytest.mark.asyncio
+    async def test_kb_aql_injects_time_filter_and_binds(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        time_range = {
+            "source_created_after_ms": 1000,
+            "source_created_before_ms": 2000,
+        }
+        await connected_provider._get_kb_virtual_ids("u1", "org1", time_range=time_range)
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" in query
+        assert "FILTER record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
+        assert bind_vars["sourceCreatedAfterMs"] == 1000
+        assert bind_vars["sourceCreatedBeforeMs"] == 2000
+
+    @pytest.mark.asyncio
+    async def test_kb_aql_only_after_bound(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider._get_kb_virtual_ids(
+            "u1", "org1", time_range={"source_created_after_ms": 1000}
+        )
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" in query
+        assert "sourceCreatedBeforeMs" not in bind_vars
+
+    @pytest.mark.asyncio
+    async def test_kb_aql_only_before_bound(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider._get_kb_virtual_ids(
+            "u1", "org1", time_range={"source_created_before_ms": 2000}
+        )
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
+        assert "sourceCreatedAfterMs" not in bind_vars
+
+    # --- updated_after / updated_before (sourceLastModifiedTimestamp) ---
+
+    @pytest.mark.asyncio
+    async def test_connector_aql_updated_after_injects_modified_filter(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        time_range = {"source_updated_after_ms": 5000}
+        await connected_provider._get_virtual_ids_for_connector(
+            "u1", "org1", "c1", time_range=time_range
+        )
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceLastModifiedTimestamp >= @sourceUpdatedAfterMs" in query
+        assert bind_vars["sourceUpdatedAfterMs"] == 5000
+        assert "sourceCreatedAfterMs" not in bind_vars
+
+    @pytest.mark.asyncio
+    async def test_connector_aql_updated_both_bounds(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        time_range = {"source_updated_after_ms": 5000, "source_updated_before_ms": 9000}
+        await connected_provider._get_virtual_ids_for_connector(
+            "u1", "org1", "c1", time_range=time_range
+        )
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceLastModifiedTimestamp >= @sourceUpdatedAfterMs" in query
+        assert "FILTER record.sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs" in query
+        assert bind_vars["sourceUpdatedAfterMs"] == 5000
+        assert bind_vars["sourceUpdatedBeforeMs"] == 9000
+
+    @pytest.mark.asyncio
+    async def test_connector_aql_created_and_updated_combined(self, connected_provider):
+        """Both created_* and updated_* keys in the same time_range produce four FILTER clauses."""
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        time_range = {
+            "source_created_after_ms": 1000,
+            "source_created_before_ms": 2000,
+            "source_updated_after_ms": 5000,
+            "source_updated_before_ms": 9000,
+        }
+        await connected_provider._get_virtual_ids_for_connector(
+            "u1", "org1", "c1", time_range=time_range
+        )
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "sourceCreatedAtTimestamp >= @sourceCreatedAfterMs" in query
+        assert "sourceCreatedAtTimestamp <= @sourceCreatedBeforeMs" in query
+        assert "sourceLastModifiedTimestamp >= @sourceUpdatedAfterMs" in query
+        assert "sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs" in query
+        assert bind_vars["sourceCreatedAfterMs"] == 1000
+        assert bind_vars["sourceUpdatedAfterMs"] == 5000
+
+    @pytest.mark.asyncio
+    async def test_kb_aql_updated_after_injects_modified_filter(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        time_range = {"source_updated_after_ms": 7777}
+        await connected_provider._get_kb_virtual_ids("u1", "org1", time_range=time_range)
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "FILTER record.sourceLastModifiedTimestamp >= @sourceUpdatedAfterMs" in query
+        assert bind_vars["sourceUpdatedAfterMs"] == 7777
+
+    @pytest.mark.asyncio
+    async def test_kb_aql_updated_both_bounds(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        time_range = {"source_updated_after_ms": 7777, "source_updated_before_ms": 9999}
+        await connected_provider._get_kb_virtual_ids("u1", "org1", time_range=time_range)
+        query = connected_provider.execute_query.call_args[0][0]
+        bind_vars = connected_provider.execute_query.call_args[1]["bind_vars"]
+        assert "sourceLastModifiedTimestamp >= @sourceUpdatedAfterMs" in query
+        assert "sourceLastModifiedTimestamp <= @sourceUpdatedBeforeMs" in query
+        assert bind_vars["sourceUpdatedAfterMs"] == 7777
+        assert bind_vars["sourceUpdatedBeforeMs"] == 9999
+
+
+# ---------------------------------------------------------------------------
 # check_toolset_instance_in_use (line 17984 - empty return)
 # ---------------------------------------------------------------------------
 

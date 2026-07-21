@@ -233,6 +233,9 @@ services:
   neo4j:
     image: neo4j:5.26.0
     restart: always
+    ports:
+      - "7474:7474"
+      - "7687:7687"
     environment:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-your_password}
       - NEO4J_PLUGINS=["apoc"]
@@ -319,6 +322,9 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.15
+    ports:
+      - "6333:6333"
+      - "6334:6334"
     environment:
       - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
       # Performance optimizations

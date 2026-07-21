@@ -1,4 +1,5 @@
 import logging
+from typing import Optional
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -13,6 +14,7 @@ from app.models.blocks import (
 )
 from app.models.entities import Record, RecordGroupType
 from app.modules.transformers.blob_storage import BlobStorage
+from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.modules.transformers.vectorstore import VectorStore
@@ -22,13 +24,22 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class SinkOrchestrator(Transformer):
-    def __init__(self, graphdb: GraphDBTransformer, blob_storage: BlobStorage, vector_store: VectorStore, graph_provider: IGraphDBProvider, logger) -> None:
+    def __init__(
+        self,
+        graphdb: GraphDBTransformer,
+        blob_storage: BlobStorage,
+        vector_store: VectorStore,
+        graph_provider: IGraphDBProvider,
+        logger,
+        entity_vector_store: Optional[EntityVectorStore] = None,
+    ) -> None:
         super().__init__()
         self.graphdb = graphdb
         self.logger = logging.getLogger(__name__)
         self.blob_storage = blob_storage
         self.vector_store = vector_store
         self.graph_provider = graph_provider
+        self.entity_vector_store = entity_vector_store
         self.logger = logger
 
     # This is not a good long-term solution and should be improved in the future.
@@ -183,6 +194,45 @@ class SinkOrchestrator(Transformer):
             await self._update_indexing_status(ctx)
             # await self.graphdb.apply(ctx)
             await self._save_reconciliation_metadata(ctx)
+            await self._sync_record_name_entity(ctx)
+
+    async def _sync_record_name_entity(self, ctx: TransformContext) -> None:
+        """Sync the record's name into the entities vector collection.
+
+        Runs after successful vector-store indexing so the record's name is
+        resolvable as a filter facet (entityType=record) alongside categories,
+        topics, etc. Best-effort: failures here must not fail the record
+        pipeline since the record is already searchable via the records
+        collection.
+        """
+        if not self.entity_vector_store:
+            return
+        record = ctx.record
+        if not record.record_name or not record.record_name.strip():
+            return
+        try:
+            from app.models.entities import EntityRecord, EntityType
+
+            timestamp = get_epoch_timestamp_in_ms()
+            await self.entity_vector_store.upsert_entity(
+                EntityRecord(
+                    entity_id=record.id,
+                    entity_type=EntityType.RECORD,
+                    name=record.record_name,
+                    org_id=record.org_id,
+                    connector_id=record.connector_id,
+                    source_connectors=[record.connector_id] if record.connector_id else [],
+                    extraction_sources=["system"],
+                    first_seen_timestamp=timestamp,
+                    last_confirmed_timestamp=timestamp,
+                )
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "Record name entity sync failed for record %s (non-fatal): %s",
+                record.id,
+                exc,
+            )
 
     async def _update_indexing_status(self, ctx: TransformContext) -> None:
         """Mark indexingStatus=COMPLETED without touching extractionStatus."""
@@ -215,11 +265,29 @@ class SinkOrchestrator(Transformer):
         ``extractionStatus=COMPLETED`` once it finishes.  Callers should
         ensure ``ctx.record.semantic_metadata`` is populated before calling
         this method.
+
+        After graph enrichment, the entities touched during this run are
+        synced to the entity vector store (non-blocking: failures are logged
+        but do not affect the record's extractionStatus).
         """
-        await self.graphdb.apply(ctx)
+        touched_entities = await self.graphdb.apply(ctx)
         self.logger.info(
             "✅ Graph enrichment completed for record %s", ctx.record.id
         )
+
+        if self.entity_vector_store and touched_entities:
+            try:
+                await self.entity_vector_store.sync_entities_from_metadata(
+                    org_id=ctx.record.org_id,
+                    new_entities=touched_entities,
+                )
+            except Exception as exc:
+                # Entity sync is best-effort; do not fail the record pipeline
+                self.logger.warning(
+                    "Entity vector sync failed for record %s (non-fatal): %s",
+                    ctx.record.id,
+                    exc,
+                )
 
     async def _save_reconciliation_metadata(self, ctx: TransformContext) -> None:
         if ctx.reconciliation_context and ctx.reconciliation_context.new_metadata:

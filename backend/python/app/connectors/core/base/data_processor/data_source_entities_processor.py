@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -23,6 +23,8 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     CommentRecord,
+    EntityRecord,
+    EntityType as KGEntityType,
     FileRecord,
     LinkPublicStatus,
     LinkRecord,
@@ -46,6 +48,7 @@ from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
+    from app.modules.transformers.entity_vectorstore import EntityVectorStore
     from app.services.messaging.interface.producer import IMessagingProducer
 
 ARANGO_NODE_ID_PARTS = 2 # ArangoDB node IDs are in format "collection/id"
@@ -106,11 +109,27 @@ class DataSourceEntitiesProcessor:
         RecordRelations.FOREIGN_KEY.value,
     ]
 
-    def __init__(self, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
+    def __init__(
+        self,
+        logger,
+        data_store_provider: DataStoreProvider,
+        config_service: ConfigurationService,
+        entity_vector_store: Optional["EntityVectorStore"] = None,
+    ) -> None:
         self.logger = logger
         self.data_store_provider: DataStoreProvider = data_store_provider
         self.config_service: ConfigurationService = config_service
         self.org_id = ""
+        self._entity_vector_store: Optional["EntityVectorStore"] = entity_vector_store
+
+    def set_entity_vector_store(self, store: "EntityVectorStore") -> None:
+        """Set (or replace) the EntityVectorStore used for connector entity sync.
+
+        Called from the connector container after the store is initialised.
+        Backward-compatible: connectors that don't call this method simply
+        skip entity vector sync.
+        """
+        self._entity_vector_store = store
 
     async def initialize(self) -> None:
         from app.services.messaging.utils import MessagingUtils
@@ -129,6 +148,19 @@ class DataSourceEntitiesProcessor:
                 raise Exception("No organizations found in the database. Cannot initialize DataSourceEntitiesProcessor.")
             # Use backward-compatible field access
             self.org_id = orgs[0].get("id", orgs[0].get("_key"))
+
+    async def _sync_entities_to_vector_store(self, entities: List[EntityRecord]) -> None:
+        """Best-effort entity vector sync. Errors are logged but not re-raised."""
+        if not self._entity_vector_store or not entities:
+            return
+        try:
+            await self._entity_vector_store.upsert_entities_batch(entities)
+        except Exception as exc:
+            self.logger.warning(
+                "Entity vector sync failed for %d entities (non-fatal): %s",
+                len(entities),
+                exc,
+            )
 
     
     def _create_placeholder_parent_record(
@@ -1453,6 +1485,25 @@ class DataSourceEntitiesProcessor:
                     if record_group.parent_record_group_id:
                         await tx_store.create_record_groups_relation(record_group.id, record_group.parent_record_group_id)
 
+            # Sync record group entities to vector store (best-effort)
+            if self._entity_vector_store:
+                rg_entities: List[EntityRecord] = [
+                    EntityRecord(
+                        entity_id=rg.id,
+                        entity_type=KGEntityType.RECORD_GROUP,
+                        name=rg.name,
+                        org_id=self.org_id,
+                        description=rg.description or "",
+                        connector_id=rg.connector_id,
+                        source_connectors=[rg.connector_id] if rg.connector_id else [],
+                        extraction_sources=["connector"],
+                        first_seen_timestamp=get_epoch_timestamp_in_ms(),
+                        last_confirmed_timestamp=get_epoch_timestamp_in_ms(),
+                    )
+                    for rg, _ in record_groups
+                ]
+                await self._sync_entities_to_vector_store(rg_entities)
+
         except Exception as e:
             self.logger.error(f"Transaction on_new_record_groups failed: {str(e)}")
             raise e
@@ -1496,6 +1547,25 @@ class DataSourceEntitiesProcessor:
 
             async with self.data_store_provider.transaction() as tx_store:
                 await tx_store.batch_upsert_app_users(users)
+
+            # Sync person entities to vector store (best-effort, non-blocking)
+            if self._entity_vector_store:
+                person_entities: List[EntityRecord] = [
+                    EntityRecord(
+                        entity_id=user.id,
+                        entity_type=KGEntityType.PERSON,
+                        name=user.full_name or user.email,
+                        org_id=self.org_id,
+                        description=user.title or "",
+                        connector_id=user.connector_id,
+                        source_connectors=[user.connector_id],
+                        extraction_sources=["connector"],
+                        first_seen_timestamp=get_epoch_timestamp_in_ms(),
+                        last_confirmed_timestamp=get_epoch_timestamp_in_ms(),
+                    )
+                    for user in users
+                ]
+                await self._sync_entities_to_vector_store(person_entities)
 
         except Exception as e:
             self.logger.error(f"Transaction on_new_users failed: {str(e)}")

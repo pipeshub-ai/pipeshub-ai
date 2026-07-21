@@ -351,6 +351,25 @@ class VectorStore(Transformer):
     # Image helpers
     # ------------------------------------------------------------------
 
+    async def index_record_summary(
+        self,
+        record_id: str,
+        virtual_record_id: str,
+        org_id: str,
+        semantic_metadata: SemanticMetadata,
+    ) -> None:
+        """Embed the record-level summary after extraction completes."""
+        summary_doc = self._build_record_summary_document(
+            record_id, virtual_record_id, org_id, semantic_metadata
+        )
+        if summary_doc is None:
+            return
+
+        summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
+        await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id)
+        await self._process_document_chunks([summary_doc], record_id)
+        self.logger.info("✅ Indexed record summary for record %s", record_id)
+
     async def _normalize_image_to_base64(self, image_uri: str) -> str | None:
         try:
             if not image_uri or not isinstance(image_uri, str):

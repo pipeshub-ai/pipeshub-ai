@@ -182,10 +182,18 @@ class KafkaUtils:
         if not event_processor:
             event_processor = await app_container.event_processor()
         config_service = app_container.config_service()
+        entity_vector_store = None
+        try:
+            entity_vector_store = await app_container.entity_vector_store()
+        except Exception as exc:
+            logger.warning(
+                "entity_vector_store unavailable for record event handler (non-fatal): %s", exc
+            )
         record_event_service = RecordEventHandler(
             logger=logger,
             config_service=config_service,
             event_processor=event_processor,
+            entity_vector_store=entity_vector_store,
         )
 
         async def handle_record_message(message: StreamMessage) -> AsyncGenerator[PipelineEvent, None]:

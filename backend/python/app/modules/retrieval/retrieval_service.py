@@ -325,7 +325,8 @@ class RetrievalService:
         filter_groups: dict[str, list[str]] | None = None,
         limit: int = 20,
         virtual_record_ids_from_tool: list[str] | None = None,
-        knowledge_search:bool = False,
+        knowledge_search: bool = False,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Perform semantic search on records the given user may access (graph permission checks)."""
 
@@ -348,7 +349,9 @@ class RetrievalService:
                     filters[metadata_key] = values
 
             init_tasks = [
-                self._get_accessible_virtual_ids_task(user_id, org_id, filters, self.graph_provider),
+                self._get_accessible_virtual_ids_task(
+                    user_id, org_id, filters, self.graph_provider, time_range=time_range
+                ),
                 self._get_user_cached(user_id)  # Get user info in parallel with caching
             ]
 
@@ -647,7 +650,12 @@ class RetrievalService:
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
     async def _get_accessible_virtual_ids_task(
-        self, user_id: str, org_id: str, filters: dict[str, list[str]], graph_provider: IGraphDBProvider
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]],
+        graph_provider: IGraphDBProvider,
+        time_range: dict[str, int] | None = None,
     ) -> dict[str, str]:
         """
         Separate task for getting accessible virtualRecordId -> recordId mapping (optimized version).
@@ -656,7 +664,7 @@ class RetrievalService:
         user has permission to access, preventing cross-connector leakage.
         """
         return await graph_provider.get_accessible_virtual_record_ids(
-            user_id=user_id, org_id=org_id, filters=filters
+            user_id=user_id, org_id=org_id, filters=filters, time_range=time_range
         )
 
     async def _get_user_cached(self, user_id: str) -> dict[str, Any] | None:
