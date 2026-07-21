@@ -126,6 +126,36 @@ class TestStoreLifecycle:
         await store.clear(ORG, CONN)
         assert await store.get(ORG, CONN) is None
 
+    async def test_close_discovery_matching_run_id_closes(self) -> None:
+        store, _ = make_store()
+        await store.start_run(ORG, CONN, run_id="r1")
+        await store.add_discovered(ORG, CONN, 5)
+        await store.close_discovery(ORG, CONN, expected_run_id="r1")
+        data = await store.get(ORG, CONN)
+        assert data["phase"] == SyncPhase.INDEXING
+        assert data["total"] == 5
+
+    async def test_close_discovery_stale_run_id_is_noop(self) -> None:
+        # A cancelled task carrying an old run_id must not close the newer run
+        # that replaced it (start_run already wrote a fresh runId).
+        store, _ = make_store()
+        await store.start_run(ORG, CONN, run_id="r2")
+        await store.add_discovered(ORG, CONN, 7)
+        await store.close_discovery(ORG, CONN, expected_run_id="r1")
+        data = await store.get(ORG, CONN)
+        assert data["phase"] == SyncPhase.DISCOVERING
+        assert data["total"] == 0
+
+    async def test_is_current_run(self) -> None:
+        store, _ = make_store()
+        # No run stored yet -> treat as current so callers fall back.
+        assert await store.is_current_run(ORG, CONN, "r1") is True
+        await store.start_run(ORG, CONN, run_id="r2")
+        assert await store.is_current_run(ORG, CONN, "r2") is True
+        assert await store.is_current_run(ORG, CONN, "r1") is False
+        # No run_id to compare -> cannot tell, treat as current.
+        assert await store.is_current_run(ORG, CONN, None) is True
+
 
 class TestSummarizeRun:
     def test_none_run_is_idle_inactive(self) -> None:

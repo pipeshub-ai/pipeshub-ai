@@ -57,6 +57,17 @@ export class ConflictError extends HttpError {
   }
 }
 
+/**
+ * A connector sync is already running and the caller did not ask to override it.
+ * Distinct code (vs plain CONFLICT) so the client can offer "cancel & restart"
+ * instead of a generic error toast.
+ */
+export class ConnectorSyncInProgressError extends HttpError {
+  constructor(message: string, metadata?: ErrorMetadata) {
+    super('CONNECTOR_SYNC_IN_PROGRESS', message, HTTP_STATUS.CONFLICT, metadata);
+  }
+}
+
 export class TooManyRequestsError extends HttpError {
   constructor(message: string, metadata?: ErrorMetadata) {
     super(

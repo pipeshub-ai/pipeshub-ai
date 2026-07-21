@@ -1,6 +1,7 @@
 """Generic Connector Factory for creating and managing connectors"""
 
 import logging
+from typing import Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -363,11 +364,21 @@ class ConnectorFactory:
             store = None
 
         await _set_status(AppStatus.SYNCING.value)
+        run_id: Optional[str] = None
         if store and org_id:
-            await store.start_run(org_id, connector_id, full_sync=False)
+            run_id = await store.start_run(org_id, connector_id, full_sync=False)
         try:
             await connector.run_sync()
         finally:
-            if store and org_id:
-                await store.close_discovery(org_id, connector_id)
-            await _set_status(AppStatus.IDLE.value)
+            # A manual (Kafka-driven) sync can supersede this startup-resume run;
+            # in that case leave status/progress to the newer run rather than
+            # clobbering it back to IDLE. See EventService._run_sync_and_clear_status.
+            if store and org_id and not await store.is_current_run(org_id, connector_id, run_id):
+                logger.info(
+                    f"Startup sync for connector {connector_id} was superseded by a newer run; "
+                    "leaving status and progress to the newer run"
+                )
+            else:
+                if store and org_id:
+                    await store.close_discovery(org_id, connector_id, expected_run_id=run_id)
+                await _set_status(AppStatus.IDLE.value)

@@ -14,6 +14,7 @@ export default defineConfig({
       'app/components/ui/__tests__/help-tooltip.test.ts',
       'app/(main)/workspace/connectors/utils/__tests__/manual-indexing-tooltip.test.ts',
       'app/(main)/workspace/connectors/utils/__tests__/sync-progress-view.test.ts',
+      'app/(main)/workspace/connectors/utils/__tests__/sync-conflict-copy.test.ts',
       'lib/socket/__tests__/notification-socket.test.ts',
       'app/(main)/knowledge-base/utils/__tests__/indexing-progress.test.ts',
       'app/(main)/knowledge-base/utils/__tests__/kb-table-item-actions.test.ts',

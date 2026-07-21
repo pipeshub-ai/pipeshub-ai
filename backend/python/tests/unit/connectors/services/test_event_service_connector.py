@@ -565,6 +565,34 @@ class TestRunSyncAndClearStatus:
             # Should not raise
             await service._run_sync_and_clear_status(mock_conn, "c1")
 
+    @pytest.mark.asyncio
+    async def test_owning_run_closes_discovery_and_clears(self, service):
+        mock_conn = AsyncMock()
+        mock_conn.run_sync = AsyncMock()
+        store = AsyncMock()
+        store.is_current_run = AsyncMock(return_value=True)
+        store.close_discovery = AsyncMock()
+        with patch.object(service, "_update_app_status", new_callable=AsyncMock), \
+             patch.object(service, "_sync_progress_store", new_callable=AsyncMock, return_value=store):
+            await service._run_sync_and_clear_status(mock_conn, "c1", "org1", "run-A")
+            store.close_discovery.assert_awaited_once_with("org1", "c1", expected_run_id="run-A")
+            service._update_app_status.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_superseded_run_leaves_state_untouched(self, service):
+        # A newer run took over (start_run wrote a new runId, then cancelled us):
+        # our finally must not close discovery or flip status back to IDLE.
+        mock_conn = AsyncMock()
+        mock_conn.run_sync = AsyncMock()
+        store = AsyncMock()
+        store.is_current_run = AsyncMock(return_value=False)
+        store.close_discovery = AsyncMock()
+        with patch.object(service, "_update_app_status", new_callable=AsyncMock), \
+             patch.object(service, "_sync_progress_store", new_callable=AsyncMock, return_value=store):
+            await service._run_sync_and_clear_status(mock_conn, "c1", "org1", "run-A")
+            store.close_discovery.assert_not_awaited()
+            service._update_app_status.assert_not_awaited()
+
 
 # ===========================================================================
 # _handle_reindex

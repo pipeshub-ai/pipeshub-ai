@@ -355,8 +355,16 @@ export function InstanceCard({
               borderTop: '1px solid var(--gray-a3)',
             }}
           >
-            <SyncButton connectorId={instance._key} connectorType={instance.type} />
-            <FullSyncButton connectorId={instance._key} connectorType={instance.type} />
+            <SyncButton
+              connectorId={instance._key}
+              connectorType={instance.type}
+              currentStatus={instance.status}
+            />
+            <FullSyncButton
+              connectorId={instance._key}
+              connectorType={instance.type}
+              currentStatus={instance.status}
+            />
           </Flex>
         )}
       </Flex>

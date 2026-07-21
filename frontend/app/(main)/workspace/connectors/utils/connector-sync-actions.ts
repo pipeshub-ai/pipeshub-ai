@@ -1,4 +1,6 @@
+import type { AxiosError } from 'axios';
 import { isElectron } from '@/lib/electron';
+import { isProcessedError } from '@/lib/api/api-error';
 import { ConnectorsApi } from '../api';
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { useConnectorsStore } from '../store';
@@ -6,6 +8,31 @@ import type { ConnectorInstance } from '../types';
 import { isLocalFsConnectorType } from './local-fs-helpers';
 import { fullResyncElectronLocalSync } from './electron-local-sync';
 import { refreshConnectorInstanceDetails } from './refresh-instance-details';
+
+/** Matches the Node `ConnectorSyncInProgressError` code (HttpError prefixes `HTTP_`). */
+const SYNC_IN_PROGRESS_CODE = 'HTTP_CONNECTOR_SYNC_IN_PROGRESS';
+
+/**
+ * Thrown by {@link runConnectorResync} when the backend rejects the trigger
+ * because a sync is already running and `force` was not set. Callers catch this
+ * to prompt "cancel current & restart" instead of surfacing a generic error.
+ */
+export class ConnectorSyncInProgressError extends Error {
+  constructor() {
+    super('A sync is already in progress for this connector.');
+    this.name = 'ConnectorSyncInProgressError';
+  }
+}
+
+/** Read the nested `error.code` off a reshaped API error's original Axios error. */
+function apiErrorCode(err: unknown): string | undefined {
+  if (!isProcessedError(err) || err.statusCode !== 409) return undefined;
+  const axiosErr = err.originalError as
+    | AxiosError<{ error?: { code?: string } }>
+    | undefined;
+  const code = axiosErr?.response?.data?.error?.code;
+  return typeof code === 'string' ? code : undefined;
+}
 
 /**
  * Where the resync was actually performed. Local-FS connectors are
@@ -68,8 +95,10 @@ export async function runConnectorResync(args: {
   connectorId: string;
   connectorType: string;
   fullSync?: boolean;
+  /** Cancel any in-flight sync and restart (skips the backend's in-progress guard). */
+  force?: boolean;
 }): Promise<ResyncOutcome> {
-  const { connectorId, connectorType, fullSync = false } = args;
+  const { connectorId, connectorType, fullSync = false, force = false } = args;
   if (isLocalFsConnectorType(connectorType)) {
     if (!isElectron()) {
       return { kind: 'requires-desktop' };
@@ -78,7 +107,14 @@ export async function runConnectorResync(args: {
     await applyPostResyncInstanceRefresh(connectorId, true);
     return { kind: 'electron-local' };
   }
-  await ConnectorsApi.resyncConnector(connectorId, connectorType, fullSync);
+  try {
+    await ConnectorsApi.resyncConnector(connectorId, connectorType, fullSync, force);
+  } catch (err) {
+    if (apiErrorCode(err) === SYNC_IN_PROGRESS_CODE) {
+      throw new ConnectorSyncInProgressError();
+    }
+    throw err;
+  }
   await applyPostResyncInstanceRefresh(connectorId, fullSync);
   return { kind: 'backend' };
 }

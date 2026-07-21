@@ -17,7 +17,11 @@ import { useConnectorSyncProgress } from '../../utils/use-connector-sync-progres
 import { ConnectorSyncProgress, describeSyncProgress } from '../connector-sync-progress';
 import { useToastStore } from '@/lib/store/toast-store';
 import { deriveSyncStatus } from '../instance-card/utils';
-import { runConnectorResync } from '../../utils/connector-sync-actions';
+import {
+  runConnectorResync,
+  ConnectorSyncInProgressError,
+} from '../../utils/connector-sync-actions';
+import { useSyncConflictGuard } from '../../utils/use-sync-conflict-guard';
 import { isElectron } from '@/lib/electron';
 import { isLocalFsConnectorType } from '../../utils/local-fs-helpers';
 import {
@@ -230,31 +234,55 @@ export function OverviewTab({
     fetchInstanceStats,
   ]);
 
-  const handleOverviewResync = useCallback(async () => {
-    const connectorId = instance._key;
-    if (!connectorId || !instance.isActive || isHeaderSyncBusy) return;
-    try {
-      setIsHeaderSyncBusy(true);
-      const outcome = await runConnectorResync({
-        connectorId,
-        connectorType: instance.type,
-      });
-      if (outcome.kind === 'requires-desktop') {
-        addToast({
-          variant: 'info',
-          title: 'Open the Pipeshub desktop app on the machine that owns this folder to resync.',
+  const { guard: syncConflictGuard, dialog: syncConflictDialog } = useSyncConflictGuard();
+
+  const runOverviewResync = useCallback(
+    async (force: boolean) => {
+      const connectorId = instance._key;
+      if (!connectorId) return;
+      try {
+        setIsHeaderSyncBusy(true);
+        const outcome = await runConnectorResync({
+          connectorId,
+          connectorType: instance.type,
+          force,
         });
-        return;
+        if (outcome.kind === 'requires-desktop') {
+          addToast({
+            variant: 'info',
+            title: 'Open the Pipeshub desktop app on the machine that owns this folder to resync.',
+          });
+          return;
+        }
+        addToast({ variant: 'success', title: 'Sync started' });
+        bumpCatalogRefresh();
+      } catch (error) {
+        if (error instanceof ConnectorSyncInProgressError) {
+          throw error;
+        }
+        console.error('Failed to start sync', { connectorId, error });
+        addToast({ variant: 'error', title: 'Failed to start sync' });
+      } finally {
+        setIsHeaderSyncBusy(false);
       }
-      addToast({ variant: 'success', title: 'Sync started' });
-      bumpCatalogRefresh();
-    } catch (error) {
-      console.error('Failed to start sync', { connectorId, error });
-      addToast({ variant: 'error', title: 'Failed to start sync' });
-    } finally {
-      setIsHeaderSyncBusy(false);
-    }
-  }, [instance._key, instance.type, instance.isActive, isHeaderSyncBusy, addToast, bumpCatalogRefresh]);
+    },
+    [instance._key, instance.type, addToast, bumpCatalogRefresh]
+  );
+
+  const handleOverviewResync = useCallback(() => {
+    if (!instance._key || !instance.isActive || isHeaderSyncBusy) return;
+    void syncConflictGuard(runOverviewResync, {
+      requestedFullSync: false,
+      currentStatus: instance.status,
+    });
+  }, [
+    instance._key,
+    instance.isActive,
+    instance.status,
+    isHeaderSyncBusy,
+    runOverviewResync,
+    syncConflictGuard,
+  ]);
 
   const handleReindexFailed = useCallback(async () => {
     const connectorId = instance._key;
@@ -298,6 +326,7 @@ export function OverviewTab({
 
   return (
     <Flex direction="column" gap="5" style={{ padding: '0' }}>
+      {syncConflictDialog}
       {/* ── Current sync progress (run-scoped) ── */}
       {showRunProgress && (
         <Flex

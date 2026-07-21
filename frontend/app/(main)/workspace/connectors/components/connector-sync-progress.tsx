@@ -118,7 +118,12 @@ function DeterminateBar({ percent }: { percent: number }) {
           width: `${Math.max(0, Math.min(100, percent))}%`,
           height: '100%',
           borderRadius: 'var(--radius-full)',
-          backgroundColor: 'var(--blue-9)',
+          // Sweeping gradient (shared shimmer-sweep keyframe) so the fill reads
+          // as actively working rather than a static blue block.
+          background:
+            'linear-gradient(90deg, var(--blue-9) 0%, var(--blue-9) 35%, var(--blue-7) 50%, var(--blue-9) 65%, var(--blue-9) 100%)',
+          backgroundSize: '200% 100%',
+          animation: 'shimmer-sweep 1.4s linear infinite',
           transition: 'width 300ms ease',
         }}
       />
@@ -194,9 +199,11 @@ export function ConnectorSyncProgress({
           </Text>
         ) : null}
       </Flex>
-      {view.mode === 'indexing' ? (
+      {view.mode === 'indexing' && view.percent > 0 ? (
         <DeterminateBar percent={view.percent} />
       ) : (
+        // At 0% (nothing terminal yet) a determinate fill is invisible, so show
+        // the moving indeterminate bar until real progress lands.
         <IndeterminateBar />
       )}
     </Flex>

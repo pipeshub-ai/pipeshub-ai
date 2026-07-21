@@ -14,6 +14,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
   ConflictError,
+  ConnectorSyncInProgressError,
   ForbiddenError,
   InternalServerError,
   NotFoundError,
@@ -2053,6 +2054,103 @@ const validateConnectorNotLocked = async (
   }
 };
 
+const SYNC_IN_PROGRESS_MESSAGES: Record<string, string> = {
+  FULL_SYNCING: 'A full sync is already in progress for this connector.',
+  SYNCING: 'A sync is already in progress for this connector.',
+};
+
+/**
+ * True when the run-scoped progress store reports an active run. `apps.status`
+ * only reflects the discovery phase (it flips back to IDLE while records are
+ * still indexing), so this covers the indexing phase too. Fails open: a lookup
+ * error must never block a legitimate resync.
+ */
+const isConnectorSyncRunActive = async (
+  connectorId: string,
+  orgId: string,
+  appConfig: AppConfig,
+  headers: Record<string, string>,
+): Promise<boolean> => {
+  try {
+    const queryParams = new URLSearchParams();
+    queryParams.append('org_id', orgId);
+    queryParams.append('connector_id', connectorId);
+    const response = await executeConnectorCommand(
+      `${appConfig.connectorBackend}/api/v1/sync-progress?${queryParams.toString()}`,
+      HttpMethod.GET,
+      headers,
+    );
+    if (response.statusCode !== 200) {
+      return false;
+    }
+    const body = response.data as { data?: { isActive?: boolean } } | undefined;
+    return Boolean(body?.data?.isActive);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Gate a resync trigger. Rejects when a sync is already running unless the
+ * caller passed `force` (the client's explicit "cancel current & restart").
+ * `isLocked` is the brief full-sync prep window and is never force-able:
+ * racing that section can corrupt state, so it always 409s.
+ *
+ * "In progress" spans both phases: discovery (reflected by `apps.status`) and
+ * indexing (status is back to IDLE but the run-scoped store still reports
+ * `isActive`). Checking status first avoids the extra call during discovery.
+ */
+const validateConnectorSyncAvailable = async (
+  connectorId: string,
+  orgId: string,
+  appConfig: AppConfig,
+  headers: Record<string, string>,
+  opts: { force: boolean; requestedFullSync: boolean },
+): Promise<void> => {
+  const response = await executeConnectorCommand(
+    `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
+    HttpMethod.GET,
+    headers,
+  );
+
+  const data = response.data as ConnectorInstanceLock | undefined;
+  if (response.statusCode !== 200 || !data?.connector) {
+    return;
+  }
+
+  const connector = data.connector;
+  if (connector.isLocked) {
+    const status = connector.status ?? '';
+    throw new ConflictError(
+      LOCK_MESSAGES[status] ??
+        'Another operation is in progress. Please wait and try again.',
+    );
+  }
+
+  if (opts.force) {
+    return;
+  }
+
+  const status = (connector.status ?? '').toUpperCase();
+  let inProgress = status === 'SYNCING' || status === 'FULL_SYNCING';
+  if (!inProgress) {
+    inProgress = await isConnectorSyncRunActive(
+      connectorId,
+      orgId,
+      appConfig,
+      headers,
+    );
+  }
+
+  if (inProgress) {
+    throw new ConnectorSyncInProgressError(
+      SYNC_IN_PROGRESS_MESSAGES[status] ??
+        'A sync is already in progress for this connector.',
+      { currentStatus: status, requestedFullSync: opts.requestedFullSync },
+    );
+  }
+};
+
 const normalizeAppName = (value: string): string =>
   value.replace(' ', '').toLowerCase();
 
@@ -2117,6 +2215,7 @@ export const resyncConnectorRecords =
       const orgId = req.user?.orgId;
       const connectorName = req.body.connectorName;
       const fullSync = req.body.fullSync || false;
+      const force = req.body.force === true;
       if (!userId || !orgId) {
         throw new BadRequestError('User not authenticated');
       }
@@ -2132,10 +2231,12 @@ export const resyncConnectorRecords =
         req.headers as Record<string, string>,
       );
 
-      await validateConnectorNotLocked(
+      await validateConnectorSyncAvailable(
         connectorId,
+        orgId,
         appConfig,
         req.headers as Record<string, string>,
+        { force, requestedFullSync: fullSync },
       );
 
       const resyncConnectorPayload = {

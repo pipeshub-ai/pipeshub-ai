@@ -342,7 +342,12 @@ export const ConnectorsApi = {
    * Resync records for a connector instance.
    * `connectorType` must be the connector **type** (e.g. "Google Drive"), matching the legacy UI.
    */
-  async resyncConnector(connectorId: string, connectorType: string, fullSync?: boolean) {
+  async resyncConnector(
+    connectorId: string,
+    connectorType: string,
+    fullSync?: boolean,
+    force?: boolean
+  ) {
     if (!connectorType) {
       throw new Error('resyncConnector: connectorType is required');
     }
@@ -351,7 +356,11 @@ export const ConnectorsApi = {
       {
         connectorName: connectorType,
         ...(fullSync !== undefined ? { fullSync } : {}),
-      }
+        ...(force ? { force: true } : {}),
+      },
+      // A 409 here means "sync already running" — the caller turns that into a
+      // confirm-and-restart prompt, so skip the global error toast.
+      { suppressErrorToast: true }
     );
     return data;
   },

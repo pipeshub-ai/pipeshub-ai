@@ -283,8 +283,9 @@ class EventService:
         self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id}, full_sync: {effective_full_sync} (payload: {full_sync}, pending: {pending_full_sync})")
 
         store = await self._sync_progress_store()
+        run_id: str | None = None
         if store:
-            await store.start_run(org_id, connector_id, full_sync=effective_full_sync)
+            run_id = await store.start_run(org_id, connector_id, full_sync=effective_full_sync)
 
         if effective_full_sync:
             # --- Full sync: acquire lock for the prep phase ---
@@ -327,7 +328,7 @@ class EventService:
                     self.logger.error(f"Error deleting connector sync edges for {connector_id}: {edge_error}")
 
                 # Schedule the background sync task
-                await sync_task_manager.start_sync(connector_id, self._run_sync_and_clear_status(connector, connector_id, org_id))
+                await sync_task_manager.start_sync(connector_id, self._run_sync_and_clear_status(connector, connector_id, org_id, run_id))
                 self.logger.info(f"Started full sync task for {connector_name} {connector_id}")
 
                 # Clear only when we consumed a persisted pending flag (avoids redundant writes on manual full sync).
@@ -369,12 +370,18 @@ class EventService:
                 self.logger.error(f"❌ Failed to set SYNCING status for connector {connector_id}: {status_err}")
                 # Non-fatal: proceed with sync even if status write failed
 
-            await sync_task_manager.start_sync(connector_id, self._run_sync_and_clear_status(connector, connector_id, org_id))
+            await sync_task_manager.start_sync(connector_id, self._run_sync_and_clear_status(connector, connector_id, org_id, run_id))
             self.logger.info(f"Started sync task for {connector_name} {connector_id}")
 
         return True
 
-    async def _run_sync_and_clear_status(self, connector: BaseConnector, connector_id: str, org_id: str | None = None) -> None:
+    async def _run_sync_and_clear_status(
+        self,
+        connector: BaseConnector,
+        connector_id: str,
+        org_id: str | None = None,
+        run_id: str | None = None,
+    ) -> None:
         """Wrap run_sync() so that status is cleared to null when the task finishes."""
         start = time.monotonic()
         try:
@@ -386,17 +393,29 @@ class EventService:
             self.logger.info(
                 f"✅ Sync finished for connector {connector_id} — total time: {elapsed_str}"
             )
-            # Discovery is complete once run_sync() returns; freeze the run total so
-            # the indexing phase can drive "Indexing X of Y" while apps.status is IDLE.
-            if org_id:
-                store = await self._sync_progress_store()
-                if store:
-                    await store.close_discovery(org_id, connector_id)
-            try:
-                await self._update_app_status(connector_id, status=AppStatus.IDLE.value)
-                self.logger.info(f"✅ Cleared status for connector {connector_id} after sync")
-            except Exception as clear_err:
-                self.logger.error(f"❌ Failed to clear status for connector {connector_id}: {clear_err}")
+            # A concurrent re-trigger cancels this task and starts a fresh run
+            # (start_run writes a new runId, then start_sync cancels us). Our
+            # finally then runs: if we blindly closed discovery + set IDLE we
+            # would clobber the newer run's progress/status. Only touch state we
+            # still own. (No early return here — a bare `return` in a finally
+            # block would swallow the CancelledError that cancellation raises.)
+            store = await self._sync_progress_store() if org_id else None
+            superseded = store is not None and not await store.is_current_run(org_id, connector_id, run_id)
+            if superseded:
+                self.logger.info(
+                    f"Sync task for connector {connector_id} was superseded by a newer run; "
+                    "leaving status and progress to the newer run"
+                )
+            else:
+                # Discovery is complete once run_sync() returns; freeze the run total so
+                # the indexing phase can drive "Indexing X of Y" while apps.status is IDLE.
+                if org_id and store:
+                    await store.close_discovery(org_id, connector_id, expected_run_id=run_id)
+                try:
+                    await self._update_app_status(connector_id, status=AppStatus.IDLE.value)
+                    self.logger.info(f"✅ Cleared status for connector {connector_id} after sync")
+                except Exception as clear_err:
+                    self.logger.error(f"❌ Failed to clear status for connector {connector_id}: {clear_err}")
 
     async def _handle_reindex(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Handle reindex event for a connector with pagination support.

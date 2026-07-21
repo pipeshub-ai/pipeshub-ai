@@ -188,14 +188,29 @@ class ConnectorSyncProgressStore:
         except Exception as e:
             self.logger.debug(f"add_discovered failed for {connector_id}: {e}")
 
-    async def close_discovery(self, org_id: str, connector_id: str) -> None:
-        """Freeze the run total to what was discovered and enter INDEXING."""
+    async def close_discovery(
+        self,
+        org_id: str,
+        connector_id: str,
+        *,
+        expected_run_id: Optional[str] = None,
+    ) -> None:
+        """Freeze the run total to what was discovered and enter INDEXING.
+
+        When ``expected_run_id`` is given, this is a no-op unless it matches the
+        run currently stored. This prevents a cancelled/superseded sync task's
+        cleanup from closing discovery on the newer run that replaced it.
+        """
         if not self._redis or not org_id or not connector_id:
             return
         key = self._key(org_id, connector_id)
         try:
             if not await self._redis.exists(key):
                 return
+            if expected_run_id is not None:
+                current_run_id = await self._redis.hget(key, "runId")
+                if current_run_id != expected_run_id:
+                    return
             discovered = int(await self._redis.hget(key, "discovered") or 0)
             await self._redis.hset(
                 key, mapping={"phase": SyncPhase.INDEXING, "total": discovered}
@@ -223,6 +238,29 @@ class ConnectorSyncProgressStore:
             await self._touch(key)
         except Exception as e:
             self.logger.debug(f"record_result failed for {connector_id}: {e}")
+
+    async def is_current_run(
+        self, org_id: str, connector_id: str, run_id: Optional[str]
+    ) -> bool:
+        """True if ``run_id`` is still the run stored for this connector.
+
+        Returns True when we cannot tell (Redis unavailable, no run_id, or no
+        run stored) so callers fall back to their pre-run-scoped behaviour and
+        never get stuck. A superseding run always writes a fresh ``runId`` via
+        ``start_run`` before the old task's cleanup runs, so a mismatch here
+        reliably means "someone else owns this connector now".
+        """
+        if not self._redis or not org_id or not connector_id or not run_id:
+            return True
+        key = self._key(org_id, connector_id)
+        try:
+            current_run_id = await self._redis.hget(key, "runId")
+        except Exception as e:
+            self.logger.debug(f"is_current_run failed for {connector_id}: {e}")
+            return True
+        if current_run_id is None:
+            return True
+        return current_run_id == run_id
 
     async def get(self, org_id: str, connector_id: str) -> Optional[dict[str, Any]]:
         if not self._redis or not org_id or not connector_id:
