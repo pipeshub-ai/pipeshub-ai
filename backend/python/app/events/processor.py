@@ -214,10 +214,18 @@ class Processor:
 
 
     async def process_gmail_message(
-        self, recordName, recordId, version, source, orgId, html_content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
+        self,
+        recordName: str,
+        recordId: str,
+        version: int | str,
+        source: str,
+        orgId: str,
+        mail_content: bytes | str,
+        virtual_record_id: str,
+        event_type: Optional[str] = None,
+        prev_virtual_record_id: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process Gmail message, yielding phase completion events."""
-        self.logger.info("🚀 Processing Gmail Message")
 
         try:
             async for event in self.process_html_document(
@@ -226,14 +234,14 @@ class Processor:
                 version=version,
                 source=source,
                 orgId=orgId,
-                html_binary=html_content,
+                html_binary=mail_content,
                 virtual_record_id=virtual_record_id,
                 event_type=event_type,
                 prev_virtual_record_id=prev_virtual_record_id,
             ):
                 yield event
 
-            self.logger.info("✅ Gmail Message processing completed successfully using markdown conversion.")
+            self.logger.info("✅ Gmail Message processing completed successfully using HTML processing.")
 
         except Exception as e:
             self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
@@ -1602,8 +1610,6 @@ class Processor:
                 doc_id=recordId,
                 details={"error": str(e)},
             ) from e
-
-
 
     async def _mark_record(self, record_id, indexing_status: ProgressStatus) -> None:
         record = await self.graph_provider.get_document(

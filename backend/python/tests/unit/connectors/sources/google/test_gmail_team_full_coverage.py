@@ -1366,7 +1366,7 @@ class TestStreamMailRecord:
 
     @pytest.mark.asyncio
     async def test_stream_mail_preserves_links(self, connector):
-        """markdownify keeps <a> href as [text](url) in the streamed output."""
+        """HTML anchor tags are preserved in the streamed output."""
         html = '<p>See the <a href="https://example.com/doc">document</a> here.</p>'
         body_data = base64.urlsafe_b64encode(html.encode()).decode()
         gmail_service = MagicMock()
@@ -1388,11 +1388,11 @@ class TestStreamMailRecord:
                 streamed_chunks.append(chunk)
 
         combined = b"".join(streamed_chunks).decode()
-        assert "[document](https://example.com/doc)" in combined
+        assert '<a href="https://example.com/doc">document</a>' in combined
 
     @pytest.mark.asyncio
     async def test_stream_mail_preserves_images(self, connector):
-        """markdownify keeps <img> as ![alt](src) in the streamed output."""
+        """HTML img tags are preserved in the streamed output."""
         html = '<p>Logo: <img src="https://example.com/logo.png" alt="Logo" /></p>'
         body_data = base64.urlsafe_b64encode(html.encode()).decode()
         gmail_service = MagicMock()
@@ -1414,11 +1414,11 @@ class TestStreamMailRecord:
                 streamed_chunks.append(chunk)
 
         combined = b"".join(streamed_chunks).decode()
-        assert "![Logo](https://example.com/logo.png)" in combined
+        assert '<img src="https://example.com/logo.png" alt="Logo"' in combined
 
     @pytest.mark.asyncio
     async def test_stream_mail_reply_extraction_strips_quoted_content(self, connector):
-        """EmailReplyParser latest_reply is used when it finds a quoted block."""
+        """talon quotations.extract_from_html strips quoted reply blocks."""
         reply_text = "Thanks for your message!"
         html = (
             f"<p>{reply_text}</p>"
@@ -1474,8 +1474,8 @@ class TestStreamMailRecord:
         assert combined == ""
 
     @pytest.mark.asyncio
-    async def test_stream_mail_falls_back_to_full_text_when_no_reply_extracted(self, connector):
-        """When EmailReplyParser returns no latest_reply, the full clean_text is streamed."""
+    async def test_stream_mail_falls_back_to_full_html_when_no_reply_extracted(self, connector):
+        """When talon returns no extracted reply, the full raw HTML is streamed."""
         html = "<p>A standalone message with no quoted reply.</p>"
         body_data = base64.urlsafe_b64encode(html.encode()).decode()
         gmail_service = MagicMock()
@@ -1486,24 +1486,43 @@ class TestStreamMailRecord:
         record.id = "rec-fallback"
         record.record_name = "Standalone Email"
 
-        mock_parsed = MagicMock()
-        mock_parsed.latest_reply = ""
-
         streamed_chunks: list[bytes] = []
 
         with patch(
-            "app.connectors.sources.google.gmail.team.connector.EmailReplyParser"
-        ) as mock_parser_cls, patch(
+            "app.connectors.sources.google.gmail.team.connector.quotations.extract_from_html",
+            return_value="",
+        ), patch(
             "app.connectors.sources.google.gmail.team.connector.create_stream_record_response",
             side_effect=lambda gen, **kwargs: gen,
         ):
-            mock_parser_cls.return_value.read.return_value = mock_parsed
             stream_gen = await connector._stream_mail_record(gmail_service, "msg-1", record)
             async for chunk in stream_gen:
                 streamed_chunks.append(chunk)
 
         combined = b"".join(streamed_chunks).decode()
-        assert "standalone message" in combined
+        assert combined == html
+
+    @pytest.mark.asyncio
+    async def test_stream_mail_uses_html_mime_type(self, connector):
+        """Streamed mail records are served as text/html."""
+        html = "<html><body>Hello world</body></html>"
+        body_data = base64.urlsafe_b64encode(html.encode()).decode()
+        gmail_service = MagicMock()
+        gmail_service.users().messages().get().execute.return_value = {
+            "payload": {"mimeType": "text/html", "body": {"data": body_data}}
+        }
+        record = MagicMock()
+        record.id = "rec-1"
+        record.record_name = "Test Email"
+
+        with patch(
+            "app.connectors.sources.google.gmail.team.connector.create_stream_record_response"
+        ) as mock_stream:
+            mock_stream.return_value = MagicMock()
+            await connector._stream_mail_record(gmail_service, "msg-1", record)
+
+        mock_stream.assert_called_once()
+        assert mock_stream.call_args.kwargs["mime_type"] == "text/html"
 
 
 class TestRunFullSync:
