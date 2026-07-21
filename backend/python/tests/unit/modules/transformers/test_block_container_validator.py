@@ -20,6 +20,10 @@ from app.modules.transformers.block_container_validator import (
     BlockContainerValidator,
     Severity,
     ValidationIssue,
+    _MAX_CANDIDATES,
+    _decode_b64_prefix,
+    _is_image_data,
+    contains_base64_image,
 )
 
 
@@ -857,11 +861,209 @@ class TestValidatorHelpers:
     def test_block_type_enum(self):
         assert BlockContainerValidator._block_type(_text_block(0)) == "text"
 
+    def test_block_type_none(self):
+        assert BlockContainerValidator._block_type(_block_construct(type=None)) is None
+
+    def test_block_type_plain_string(self):
+        assert BlockContainerValidator._block_type(_block_construct(type="text")) == "text"
+
     def test_group_type_enum(self):
         assert BlockContainerValidator._group_type(_table_group(0)) == "table"
+
+    def test_group_type_none(self):
+        assert BlockContainerValidator._group_type(
+            BlockGroup.model_construct(index=0, type=None)
+        ) is None
+
+    def test_group_type_plain_string(self):
+        assert BlockContainerValidator._group_type(
+            BlockGroup.model_construct(index=0, type="table")
+        ) == "table"
 
     def test_format_enum(self):
         assert BlockContainerValidator._format(DataFormat.JSON) == "json"
 
     def test_format_none(self):
         assert BlockContainerValidator._format(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Batch 9: base64 image helpers + remaining uncovered branches
+# ---------------------------------------------------------------------------
+
+
+class TestIsImageData:
+    def test_too_short(self):
+        assert _is_image_data(b"PNG") is False
+
+    def test_png_jpeg_gif(self):
+        assert _is_image_data(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8) is True
+        assert _is_image_data(b"\xff\xd8\xff" + b"\x00" * 8) is True
+        assert _is_image_data(b"GIF87a" + b"\x00" * 8) is True
+        assert _is_image_data(b"GIF89a" + b"\x00" * 8) is True
+
+    def test_webp_requires_secondary_marker(self):
+        assert _is_image_data(b"RIFF" + b"\x00" * 4 + b"WEBP" + b"\x00") is True
+        assert _is_image_data(b"RIFF" + b"\x00" * 4 + b"WAVE") is False
+        assert _is_image_data(b"RIFFSHORT") is False
+
+    def test_tiff_ico_cur(self):
+        assert _is_image_data(b"II\x2a\x00" + b"\x00" * 4) is True
+        assert _is_image_data(b"MM\x00\x2a" + b"\x00" * 4) is True
+        assert _is_image_data(b"\x00\x00\x01\x00" + b"\x00" * 4) is True
+        assert _is_image_data(b"\x00\x00\x02\x00" + b"\x00" * 4) is True
+
+    def test_heic_avif_ftyp_brands(self):
+        for brand in (b"avif", b"avis", b"heic", b"heix", b"mif1"):
+            data = b"\x00\x00\x00\x18ftyp" + brand + b"\x00" * 4
+            assert _is_image_data(data) is True
+        assert _is_image_data(b"\x00\x00\x00\x18ftypmp41" + b"\x00" * 4) is False
+
+    def test_unknown_bytes(self):
+        assert _is_image_data(b"NOTANIMAGE!!!!") is False
+
+
+class TestDecodeB64Prefix:
+    def test_too_short_returns_none(self):
+        assert _decode_b64_prefix("abc") is None
+
+    def test_decodes_png_prefix(self):
+        import base64
+
+        raw = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20).decode()
+        decoded = _decode_b64_prefix(raw)
+        assert decoded is not None
+        assert decoded.startswith(b"\x89PNG")
+
+    def test_base64url_and_whitespace(self):
+        import base64
+
+        raw = base64.urlsafe_b64encode(b"\xff\xd8\xff" + b"\x00" * 20).decode()
+        # insert whitespace + use urlsafe alphabet
+        spaced = raw[:8] + "\n" + raw[8:]
+        decoded = _decode_b64_prefix(spaced)
+        assert decoded is not None
+        assert decoded.startswith(b"\xff\xd8\xff")
+
+    def test_both_decode_paths_fail_returns_none(self):
+        from unittest.mock import patch
+
+        with patch(
+            "app.modules.transformers.block_container_validator.base64.b64decode",
+            side_effect=Exception("bad b64"),
+        ):
+            assert _decode_b64_prefix("ABCDEFGH") is None
+
+    def test_validate_false_fallback(self):
+        import base64
+
+        payload = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20).decode()
+        # Non-alphabet char fails strict validate=True; validate=False still decodes
+        messy = payload[:10] + "!" + payload[10:]
+        decoded = _decode_b64_prefix(messy)
+        assert decoded is not None
+        assert _is_image_data(decoded)
+
+
+class TestContainsBase64Image:
+    def test_data_uri_png(self):
+        import base64
+
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20).decode()
+        assert contains_base64_image(f"prefix data:image/png;base64,{png_b64} suffix")
+
+    def test_raw_base64_jpeg(self):
+        import base64
+
+        jpeg_b64 = base64.b64encode(b"\xff\xd8\xff" + b"\x00" * 20).decode()
+        assert contains_base64_image(jpeg_b64)
+
+    def test_non_image_base64_false(self):
+        import base64
+
+        text_b64 = base64.b64encode(b"hello world!!!!!!").decode()
+        assert contains_base64_image(text_b64) is False
+
+    def test_data_uri_non_image_payload_continues(self):
+        import base64
+
+        # Valid data-URI shape whose payload is not an image → keep scanning
+        payload = base64.b64encode(b"not-an-image-bytes!!").decode()
+        assert contains_base64_image(f"data:image/png;base64,{payload}") is False
+
+    def test_max_candidates_stops_raw_scanning(self):
+        import base64
+
+        # Separate with '.' so the raw regex cannot merge candidates across whitespace
+        filler = base64.b64encode(b"x" * 24).decode()
+        text = ".".join([filler] * (_MAX_CANDIDATES + 5))
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20).decode()
+        assert contains_base64_image(text + "." + png_b64) is False
+
+    def test_max_candidates_stops_data_uri_scanning(self):
+        import base64
+
+        filler = base64.b64encode(b"x" * 24).decode()
+        uris = ".".join(
+            [f"data:image/png;base64,{filler}" for _ in range(_MAX_CANDIDATES + 3)]
+        )
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20).decode()
+        assert contains_base64_image(uris + f".data:image/png;base64,{png_b64}") is False
+
+
+class TestTextContainsBase64Image:
+    def test_text_block_with_embedded_png_errors(self):
+        import base64
+
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20).decode()
+        container = _container(
+            blocks=[_text_block(0, data=f"see data:image/png;base64,{png_b64}")]
+        )
+        _assert_raises_with_codes(container, "TEXT_DATA_CONTAINS_BASE64_IMAGE")
+
+
+class TestParentChainOutOfRangeBreak:
+    def test_walk_breaks_on_out_of_range_ancestor(self):
+        """Line 320: chain walk stops when an ancestor parent_index is OOB."""
+        container = _container(
+            block_groups=[
+                _block_group(0, parent_index=1),
+                _block_group(1, parent_index=99),
+            ]
+        )
+        # group[1] → PARENT_INDEX_OUT_OF_RANGE; group[0] walk hits break at 320
+        _assert_raises_with_codes(container, "PARENT_INDEX_OUT_OF_RANGE")
+
+
+class TestTableRowParentOutOfRangeExit:
+    def test_parent_index_out_of_range_skips_type_check(self):
+        """637→exit: parent_index set but out of range — no TABLE_ROW_PARENT_* issue."""
+        issues: list[ValidationIssue] = []
+        block = _table_row_block(0, data={"cells": ["a"]}, parent_index=5)
+        BlockContainerValidator._check_table_row_parent(
+            block, [_table_group(0)], 1, 0, "block[0]", issues
+        )
+        assert issues == []
+
+    def test_parent_is_table_exits_cleanly(self):
+        issues: list[ValidationIssue] = []
+        block = _table_row_block(0, data={"cells": ["a"]}, parent_index=0)
+        BlockContainerValidator._check_table_row_parent(
+            block, [_table_group(0)], 1, 0, "block[0]", issues
+        )
+        assert issues == []
+
+
+class TestTableGroupOutOfBoundsChildRangeContinue:
+    def test_oob_child_range_continued(self):
+        """Line 668: OOB children ranges are skipped in _check_table_groups."""
+        # Also triggers structural CHILDREN_BLOCK_INDEX_OUT_OF_RANGE
+        children = BlockGroupChildren(block_ranges=[IndexRange(start=5, end=5)])
+        groups = [
+            _table_group(0, children=children, table_metadata=TableMetadata(num_of_cells=1))
+        ]
+        with pytest.raises(BlockContainerValidationError) as exc_info:
+            _validator().validate(_container(blocks=[], block_groups=groups))
+        codes = _error_codes(exc_info.value)
+        assert "CHILDREN_BLOCK_INDEX_OUT_OF_RANGE" in codes
+        assert "TABLE_CHILD_NOT_TABLE_ROW" not in codes

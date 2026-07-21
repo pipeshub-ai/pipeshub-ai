@@ -439,3 +439,69 @@ class TestValidatorCompatibility:
         warnings = BlockContainerValidator().validate(result.block_container)
         assert "TABLE_METADATA_NUM_CELLS_MISSING" not in _warning_codes(warnings)
         assert "TEXT_FORMAT_UNEXPECTED" not in _warning_codes(warnings)
+
+
+class TestParseMetadataAndHelpers:
+    @pytest.mark.asyncio
+    async def test_parse_returns_metadata(self, parser):
+        result = await parser.parse(_bytes({"a": 1}), "meta.json")
+        assert result.metadata == {"record_name": "meta.json"}
+
+    def test_root_summary_shapes(self, parser):
+        assert "top-level object with 2 entries" in parser._build_root_summary(
+            {"a": 1, "b": 2}, "x.json"
+        )
+        assert "top-level array with 1 entry" in parser._build_root_summary([1], "x.json")
+        assert "top-level scalar with 1 entry" in parser._build_root_summary("hi", "x.json")
+
+    def test_safe_dumps_fallback_on_error(self, parser):
+        from unittest.mock import patch
+
+        class Boom:
+            def __str__(self):
+                return "boom-obj"
+
+        with patch(
+            "app.modules.parsers.json.json_parser.json.dumps",
+            side_effect=TypeError("cannot serialize"),
+        ):
+            assert parser._safe_dumps(Boom()) == "boom-obj"
+
+
+class TestDepthLimitObjectArray:
+    def test_object_array_at_max_depth_dumps_json(self, parser):
+        """Nested object_array past MAX_DEPTH is dumped as JSON text (not a table)."""
+        # Build nesting of nested_objects to reach MAX_DEPTH, then an object_array leaf.
+        data = {"items": [{"id": 1}, {"id": 2}]}
+        for _ in range(parser.MAX_DEPTH):
+            data = {"wrap": data}
+
+        bc = parser.parse_data(data, "deep.json")
+        assert not any(g.type == GroupType.TABLE for g in bc.block_groups)
+        assert any('"id"' in (b.data or "") for b in bc.blocks if isinstance(b.data, str))
+
+
+class TestTopLevelMixedArray:
+    @pytest.mark.asyncio
+    async def test_top_level_mixed_array_dumps_json(self, parser):
+        data = [1, {"a": 1}, "x"]
+        result = await parser.parse(_bytes(data), "mixed_top.json")
+        bc = result.block_container
+        assert len(bc.block_groups) == 1
+        assert len(bc.blocks) == 1
+        assert bc.blocks[0].format == DataFormat.JSON
+        assert '"a"' in bc.blocks[0].data
+
+
+class TestEmptyObjectArrayTableSummary:
+    def test_all_non_dict_items_skipped_empty_columns(self, parser):
+        # Ratio still classifies as object_array (>= 0.6 dicts), but after skip
+        # of non-dicts we can also hit empty column_names via all-skipped edge:
+        # force via parse_data on a list that classify as object_array with only
+        # dicts that become empty after flatten — use empty dicts.
+        data = {"items": [{}, {}, {}]}
+        bc = parser.parse_data(data, "empty_rows.json")
+        table = next(g for g in bc.block_groups if g.type == GroupType.TABLE)
+        assert table.table_metadata.num_of_rows == 3
+        assert table.table_metadata.column_names == []
+        assert "fields: none" in table.data["table_summary"]
