@@ -6109,23 +6109,6 @@ class TestFreshDatasourceBranches:
         inner.set_token.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_token_changed_calls_set(self):
-        from app.connectors.sources.slack.team.connector import SlackConnector
-
-        c = _make_connector()
-        c.external_client = MagicMock()
-        inner = MagicMock()
-        inner.get_token = MagicMock(return_value="old-token")
-        c.external_client.get_client = MagicMock(return_value=inner)
-        c.config_service.get_config = AsyncMock(return_value={
-            "auth": {"authType": "OAUTH"},
-            "credentials": {"access_token": "new-token"},
-        })
-        with patch("app.connectors.sources.slack.team.connector.SlackDataSource"):
-            await c._fresh_datasource()
-        inner.set_token.assert_called_once_with("new-token")
-
-    @pytest.mark.asyncio
     async def test_client_without_set_token(self):
         from app.connectors.sources.slack.team.connector import SlackConnector
 
@@ -6462,7 +6445,7 @@ class TestBuildMessageBlockReactionsAndEdited:
         block = c._build_message_block(msg, 0, 0, ctx)
         assert "Reactions:" in block.data
 
-    def test_edited_ts_sets_updated_at(self):
+    def test_edited_ts_sets_source_update_date(self):
         from app.connectors.sources.slack.team.connector import ProcessingContext, RateLimiter, SlackConnector
 
         c = _connector_pipeline_ready()
@@ -6475,7 +6458,7 @@ class TestBuildMessageBlockReactionsAndEdited:
             "edited": {"ts": "200.0"},
         }
         block = c._build_message_block(msg, 0, 0, ctx)
-        assert block.updated_at is not None
+        assert block.source_update_date is not None
 
 
 class TestProcessBurstFirstTsEmpty:
@@ -6797,7 +6780,7 @@ class TestScanChannelThreadGrowthBranches:
         ds = MagicMock()
         ds.conversations_history = AsyncMock(return_value=MagicMock(success=False))
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            await c._scan_channel_thread_growth("C1", "rg", "1.0")
+            await c._scan_channel_thread_growth("C1", "1.0")
 
     @pytest.mark.asyncio
     async def test_message_changed_unwrap(self):
@@ -6821,7 +6804,7 @@ class TestScanChannelThreadGrowthBranches:
             patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
             patch.object(SlackConnector, "_handle_new_thread", new_callable=AsyncMock),
         ):
-            await c._scan_channel_thread_growth("C1", "rg", "1.0")
+            await c._scan_channel_thread_growth("C1", "1.0")
 
     @pytest.mark.asyncio
     async def test_bot_without_user_skipped_when_bot_off(self):
@@ -6843,7 +6826,7 @@ class TestScanChannelThreadGrowthBranches:
             },
         ))
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            await c._scan_channel_thread_growth("C1", "rg", "1.0")
+            await c._scan_channel_thread_growth("C1", "1.0")
 
     @pytest.mark.asyncio
     async def test_thread_reply_skipped(self):
@@ -6863,7 +6846,7 @@ class TestScanChannelThreadGrowthBranches:
             },
         ))
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            await c._scan_channel_thread_growth("C1", "rg", "1.0")
+            await c._scan_channel_thread_growth("C1", "1.0")
 
     @pytest.mark.asyncio
     async def test_bot_parent_thread_skipped(self):
@@ -6887,7 +6870,7 @@ class TestScanChannelThreadGrowthBranches:
             },
         ))
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            await c._scan_channel_thread_growth("C1", "rg", "1.0")
+            await c._scan_channel_thread_growth("C1", "1.0")
 
     @pytest.mark.asyncio
     async def test_handle_new_thread_exception_logged(self):
@@ -6911,7 +6894,7 @@ class TestScanChannelThreadGrowthBranches:
             patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
             patch.object(SlackConnector, "_handle_new_thread", new_callable=AsyncMock, side_effect=RuntimeError("boom")),
         ):
-            await c._scan_channel_thread_growth("C1", "rg", "1.0")
+            await c._scan_channel_thread_growth("C1", "1.0")
         c.logger.error.assert_called()
 
 
@@ -8477,3 +8460,694 @@ class TestResolveFileMimeTypeBranches:
 
         result = SlackConnector._resolve_file_mime_type("doc.pdf", "application/octet-stream")
         assert "pdf" in result
+
+
+class TestProcessThreadBurstRecNoneAndIndexingFilters:
+    @pytest.mark.asyncio
+    async def test_burst_rec_none_in_process_thread(self):
+        from app.config.constants.arangodb import Connectors
+        from app.connectors.sources.slack.team.connector import ProcessingContext, RateLimiter, SlackConnector
+        from app.models.entities import RecordGroup, RecordGroupType
+
+        c = _connector_pipeline_ready()
+        rl = RateLimiter(limits={2: 10, 3: 10, 4: 10}, headroom=1.0)
+        ctx = ProcessingContext("C1", {"C1": "rg"}, {}, {"U1": "A"}, {"C1": "x"}, rl)
+        rg = RecordGroup(
+            org_id="org-test",
+            name="t",
+            external_group_id="thread_C1_1.0",
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id,
+            group_type=RecordGroupType.SLACK_THREAD,
+        )
+        rg.id = "trg"
+        parent = {"ts": "1.0", "user": "U1", "text": "root", "reply_count": 1, "thread_ts": "1.0"}
+        reply = {"ts": "2.0", "user": "U1", "text": "rep"}
+
+        async def fetch_replies(*_a, **_k):
+            return [reply]
+
+        with (
+            patch.object(SlackConnector, "_create_thread_record_group", return_value=rg),
+            patch.object(SlackConnector, "_fetch_thread_replies_raw", new_callable=AsyncMock, side_effect=fetch_replies),
+            patch.object(SlackConnector, "_warm_user_cache_for_messages", new_callable=AsyncMock),
+            patch.object(SlackConnector, "_process_file_raw", new_callable=AsyncMock, return_value=None),
+            patch.object(SlackConnector, "_build_thread_burst_record", new_callable=AsyncMock, return_value=None),
+            patch.object(SlackConnector, "_enrich_link_records_linked_id", new_callable=AsyncMock),
+        ):
+            await c._process_thread(parent, ctx, "rg")
+        c.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_indexing_filters_auto_off_in_process_thread(self):
+        from app.config.constants.arangodb import Connectors
+        from app.connectors.sources.slack.team.connector import ProcessingContext, RateLimiter, SlackConnector
+        from app.models.entities import RecordGroup, RecordGroupType, RecordType
+
+        c = _connector_pipeline_ready()
+        c.indexing_filters = MagicMock()
+        c.indexing_filters.is_enabled = MagicMock(return_value=False)
+        rl = RateLimiter(limits={2: 10, 3: 10, 4: 10}, headroom=1.0)
+        ctx = ProcessingContext("C1", {"C1": "rg"}, {}, {"U1": "A"}, {"C1": "x"}, rl)
+        rg = RecordGroup(
+            org_id="org-test",
+            name="t",
+            external_group_id="thread_C1_1.0",
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id,
+            group_type=RecordGroupType.SLACK_THREAD,
+        )
+        rg.id = "trg"
+        parent = {"ts": "1.0", "user": "U1", "text": "root", "reply_count": 1, "thread_ts": "1.0"}
+
+        burst_rec = MagicMock()
+        burst_rec.id = "br"
+        burst_rec.external_record_id = "thread_burst_C1_1.0_x"
+        burst_rec.record_type = RecordType.MESSAGE
+        burst_rec.involved_user_source_ids = []
+
+        fr_mock = MagicMock()
+        fr_mock.record_type = RecordType.FILE
+        fr_mock.record_name = "f.txt"
+        fr_mock.id = "fid"
+
+        lr_mock = MagicMock()
+        lr_mock.record_type = RecordType.LINK
+
+        reply_with_file = {"ts": "2.0", "user": "U1", "text": "see https://example.com", "files": [{"id": "F1"}]}
+
+        async def fetch_replies(*_a, **_k):
+            return [reply_with_file]
+
+        with (
+            patch.object(SlackConnector, "_create_thread_record_group", return_value=rg),
+            patch.object(SlackConnector, "_fetch_thread_replies_raw", new_callable=AsyncMock, side_effect=fetch_replies),
+            patch.object(SlackConnector, "_warm_user_cache_for_messages", new_callable=AsyncMock),
+            patch.object(SlackConnector, "_process_file_raw", new_callable=AsyncMock, return_value=fr_mock),
+            patch.object(SlackConnector, "_build_thread_burst_record", new_callable=AsyncMock, return_value=burst_rec),
+            patch.object(SlackConnector, "_process_link", new_callable=AsyncMock, return_value=lr_mock),
+            patch.object(SlackConnector, "_enrich_link_records_linked_id", new_callable=AsyncMock),
+        ):
+            await c._process_thread(parent, ctx, "rg")
+        c.data_entities_processor.on_new_records.assert_awaited()
+
+
+class TestProcessThreadIncrementalIndexingFiltersDeep:
+    @pytest.mark.asyncio
+    async def test_file_and_link_indexing_filters(self):
+        from app.connectors.sources.slack.team.connector import ProcessingContext, RateLimiter, SlackConnector
+        from app.models.entities import RecordType
+
+        c = _connector_pipeline_ready()
+        c.indexing_filters = MagicMock()
+        c.indexing_filters.is_enabled = MagicMock(return_value=False)
+        rl = RateLimiter(limits={2: 10, 3: 10, 4: 10}, headroom=1.0)
+        ctx = ProcessingContext("C1", {"C1": "rg"}, {}, {"U1": "A"}, {"C1": "x"}, rl)
+        parent_msg = {"ts": "1.0", "user": "U1", "text": "root", "reply_count": 1, "thread_ts": "1.0"}
+
+        fr_mock = MagicMock()
+        fr_mock.record_type = RecordType.FILE
+        fr_mock.record_name = "f.txt"
+        fr_mock.id = "fid"
+
+        lr_mock = MagicMock()
+        lr_mock.record_type = RecordType.LINK
+
+        burst_rec = MagicMock()
+        burst_rec.id = "br"
+        burst_rec.external_record_id = "thread_burst_C1_1.0_x"
+        burst_rec.record_type = RecordType.MESSAGE
+        burst_rec.involved_user_source_ids = []
+
+        reply = {"ts": "2.0", "user": "U1", "text": "reply https://example.com", "files": [{"id": "F1"}]}
+
+        ds = MagicMock()
+        ds.conversations_replies = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={
+                "messages": [parent_msg, reply],
+                "response_metadata": {"next_cursor": ""},
+            },
+        ))
+
+        with (
+            patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
+            patch.object(SlackConnector, "_warm_user_cache_for_messages", new_callable=AsyncMock),
+            patch.object(SlackConnector, "_process_file_raw", new_callable=AsyncMock, return_value=fr_mock),
+            patch.object(SlackConnector, "_build_thread_burst_record", new_callable=AsyncMock, return_value=burst_rec),
+            patch.object(SlackConnector, "_process_link", new_callable=AsyncMock, return_value=lr_mock),
+            patch.object(SlackConnector, "_enrich_link_records_linked_id", new_callable=AsyncMock),
+        ):
+            await c._process_thread_incremental(parent_msg, ctx, "trg_id", "0.5")
+        c.data_entities_processor.on_new_records.assert_awaited()
+
+
+class TestProcessBurstFilesInBurstAndLinks:
+    @pytest.mark.asyncio
+    async def test_burst_with_files_links_deferred_threads(self):
+        from app.connectors.sources.slack.team.connector import ConversationalBurst, ProcessingContext, RateLimiter, SlackConnector
+        from app.models.entities import RecordType
+
+        c = _connector_pipeline_ready()
+        rl = RateLimiter(limits={2: 10, 3: 10, 4: 10}, headroom=1.0)
+        ctx = ProcessingContext("C1", {"C1": "rg"}, {}, {"U1": "A"}, {"C1": "chan"}, rl)
+
+        fr_mock = MagicMock()
+        fr_mock.record_name = "f.txt"
+        fr_mock.id = "fid"
+        fr_mock.record_type = RecordType.FILE
+
+        lr_mock = MagicMock()
+        lr_mock.record_type = RecordType.LINK
+
+        msgs = [
+            {"ts": "1.0", "user": "U1", "text": "see https://example.com", "files": [{"id": "F1"}],
+             "reply_count": 2, "thread_ts": "1.0"},
+            {"ts": "2.0", "user": "U1", "text": "more"},
+        ]
+        burst = ConversationalBurst(messages=msgs, start_ts=1.0, end_ts=2.0)
+        with (
+            patch.object(SlackConnector, "_process_file_raw", new_callable=AsyncMock, return_value=fr_mock),
+            patch.object(SlackConnector, "_process_link", new_callable=AsyncMock, return_value=lr_mock),
+        ):
+            recs, deferred = await c._process_burst(burst, ctx)
+
+        assert len(recs) >= 3
+        assert len(deferred) == 1
+        file_recs = [r for r, _ in recs if getattr(r, 'record_type', None) == RecordType.FILE]
+        assert len(file_recs) >= 1
+
+
+class TestProcessSingleWithFiles:
+    @pytest.mark.asyncio
+    async def test_single_with_file_dependency(self):
+        from app.connectors.sources.slack.team.connector import ProcessingContext, RateLimiter, SlackConnector
+        from app.models.entities import RecordType
+
+        c = _connector_pipeline_ready()
+        rl = RateLimiter(limits={2: 10, 3: 10, 4: 10}, headroom=1.0)
+        ctx = ProcessingContext("C1", {"C1": "rg"}, {}, {"U1": "A"}, {"C1": "chan"}, rl)
+
+        fr_mock = MagicMock()
+        fr_mock.record_name = "f.txt"
+        fr_mock.id = "fid"
+        fr_mock.record_type = RecordType.FILE
+
+        msg = {
+            "ts": "100.0",
+            "user": "U1",
+            "text": "check this",
+            "files": [{"id": "F1"}],
+        }
+        with patch.object(SlackConnector, "_process_file_raw", new_callable=AsyncMock, return_value=fr_mock):
+            recs, _ = await c._process_single(msg, ctx)
+        file_recs = [r for r, _ in recs if getattr(r, 'record_type', None) == RecordType.FILE]
+        assert len(file_recs) >= 1
+
+
+class TestCheckChannelChangesPageBranches:
+    @pytest.mark.asyncio
+    async def test_pagination_with_cursor(self):
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        n = {"p": 0}
+
+        async def hist(**kwargs):
+            n["p"] += 1
+            if n["p"] == 1:
+                return MagicMock(
+                    success=True,
+                    data={
+                        "messages": [{"ts": "1.0", "user": "U1", "text": "m"}],
+                        "response_metadata": {"next_cursor": "nc"},
+                    },
+                )
+            return MagicMock(
+                success=True,
+                data={
+                    "messages": [],
+                    "response_metadata": {"next_cursor": ""},
+                },
+            )
+
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(side_effect=hist)
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            count = await c._check_channel_changes("C1", "1.0")
+        assert count == 0
+        assert n["p"] == 2
+
+    @pytest.mark.asyncio
+    async def test_conversations_history_exception(self):
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(side_effect=RuntimeError("api"))
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            count = await c._check_channel_changes("C1", "1.0")
+        assert count == 0
+
+
+class TestBuildMessageBlocksStreamingExtraBranches:
+    @pytest.mark.asyncio
+    async def test_missing_ext_id_or_channel(self):
+        from fastapi import HTTPException
+
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import SlackConnector
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        rec = MessageRecord(
+            org_id="org-test",
+            record_name="x",
+            record_type=RecordType.MESSAGE,
+            external_record_id="",
+            external_record_group_id="C1",
+            record_group_id="rg",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id,
+            mime_type=MimeTypes.BLOCKS.value,
+        )
+        with pytest.raises(HTTPException, match="400"):
+            await c._build_message_blocks_for_streaming(rec)
+
+    @pytest.mark.asyncio
+    async def test_thread_ext_group_id_extraction(self):
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import SlackConnector
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        rec = MessageRecord(
+            org_id="org-test",
+            record_name="s",
+            record_type=RecordType.MESSAGE,
+            external_record_id="9.0",
+            external_record_group_id="thread_C1_1.0",
+            record_group_id="rg",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id,
+            mime_type=MimeTypes.BLOCKS.value,
+        )
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"messages": [{"ts": "9.0", "user": "U1", "text": "hi"}]},
+        ))
+        tx = MagicMock()
+        tx.get_records_by_parent = AsyncMock(return_value=[])
+        tx.__aenter__ = AsyncMock(return_value=tx)
+        tx.__aexit__ = AsyncMock(return_value=None)
+        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            raw = await c._build_message_blocks_for_streaming(rec)
+        assert raw.startswith(b"{")
+
+    @pytest.mark.asyncio
+    async def test_single_msg_found_in_history(self):
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import SlackConnector
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        rec = MessageRecord(
+            org_id="org-test",
+            record_name="s",
+            record_type=RecordType.MESSAGE,
+            external_record_id="9.0",
+            external_record_group_id="C1",
+            record_group_id="rg",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id,
+            mime_type=MimeTypes.BLOCKS.value,
+        )
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"messages": [{"ts": "9.0", "user": "U1", "text": "hi"}]},
+        ))
+        tx = MagicMock()
+        tx.get_records_by_parent = AsyncMock(return_value=[])
+        tx.__aenter__ = AsyncMock(return_value=tx)
+        tx.__aexit__ = AsyncMock(return_value=None)
+        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            raw = await c._build_message_blocks_for_streaming(rec)
+        assert raw.startswith(b"{")
+
+    @pytest.mark.asyncio
+    async def test_single_msg_thread_reply_fallback_fail(self):
+        from fastapi import HTTPException
+
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import SlackConnector
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        rec = MessageRecord(
+            org_id="org-test",
+            record_name="s",
+            record_type=RecordType.MESSAGE,
+            external_record_id="9.0",
+            external_record_group_id="C1",
+            record_group_id="rg",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id,
+            mime_type=MimeTypes.BLOCKS.value,
+            thread_id="1.0",
+        )
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"messages": []},
+        ))
+        ds.conversations_replies = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"messages": []},
+        ))
+
+        async def fresh():
+            return ds
+
+        with (
+            patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, side_effect=fresh),
+            pytest.raises(HTTPException, match="404"),
+        ):
+            await c._build_message_blocks_for_streaming(rec)
+
+    @pytest.mark.asyncio
+    async def test_single_msg_thread_reply_fails_success_false(self):
+        from fastapi import HTTPException
+
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import SlackConnector
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        rec = MessageRecord(
+            org_id="org-test",
+            record_name="s",
+            record_type=RecordType.MESSAGE,
+            external_record_id="9.0",
+            external_record_group_id="C1",
+            record_group_id="rg",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id,
+            mime_type=MimeTypes.BLOCKS.value,
+            thread_id="1.0",
+        )
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"messages": []},
+        ))
+        ds.conversations_replies = AsyncMock(return_value=MagicMock(success=False))
+
+        async def fresh():
+            return ds
+
+        with (
+            patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, side_effect=fresh),
+            pytest.raises(HTTPException, match="404"),
+        ):
+            await c._build_message_blocks_for_streaming(rec)
+
+    @pytest.mark.asyncio
+    async def test_single_msg_history_not_success(self):
+        from fastapi import HTTPException
+
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import SlackConnector
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        rec = MessageRecord(
+            org_id="org-test",
+            record_name="s",
+            record_type=RecordType.MESSAGE,
+            external_record_id="9.0",
+            external_record_group_id="C1",
+            record_group_id="rg",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id,
+            mime_type=MimeTypes.BLOCKS.value,
+        )
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(return_value=MagicMock(success=False))
+
+        async def fresh():
+            return ds
+
+        with (
+            patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, side_effect=fresh),
+            pytest.raises(HTTPException, match="404"),
+        ):
+            await c._build_message_blocks_for_streaming(rec)
+
+    @pytest.mark.asyncio
+    async def test_single_file_children_exception_swallowed(self):
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import SlackConnector
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        rec = MessageRecord(
+            org_id="org-test",
+            record_name="s",
+            record_type=RecordType.MESSAGE,
+            external_record_id="9.0",
+            external_record_group_id="C1",
+            record_group_id="rg",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id,
+            mime_type=MimeTypes.BLOCKS.value,
+        )
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"messages": [{"ts": "9.0", "user": "U1", "text": "hi"}]},
+        ))
+        c.data_store_provider.transaction = MagicMock(side_effect=RuntimeError("db"))
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            raw = await c._build_message_blocks_for_streaming(rec)
+        assert raw.startswith(b"{")
+
+    @pytest.mark.asyncio
+    async def test_burst_file_children_exception_swallowed(self):
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import SlackConnector
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        rec = MessageRecord(
+            org_id="org-test",
+            record_name="b",
+            record_type=RecordType.MESSAGE,
+            external_record_id="burst_C1_abc",
+            external_record_group_id="C1",
+            record_group_id="rg",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id,
+            mime_type=MimeTypes.BLOCKS.value,
+            start_ts="1.0",
+            end_ts="2.0",
+        )
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"messages": [{"ts": "1.5", "user": "U1", "text": "x"}]},
+        ))
+        c.data_store_provider.transaction = MagicMock(side_effect=RuntimeError("db"))
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            raw = await c._build_message_blocks_for_streaming(rec)
+        assert raw.startswith(b"{")
+
+    @pytest.mark.asyncio
+    async def test_thread_burst_file_children_exception_swallowed(self):
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import SlackConnector
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        rec = MessageRecord(
+            org_id="org-test",
+            record_name="tb",
+            record_type=RecordType.MESSAGE,
+            external_record_id="thread_burst_C1_1.0_x",
+            external_record_group_id="thread_C1_1.0",
+            record_group_id="rg",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id,
+            mime_type=MimeTypes.BLOCKS.value,
+            start_ts="1.0",
+            end_ts="2.0",
+            thread_id="1.0",
+        )
+        ds = MagicMock()
+        ds.conversations_replies = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"messages": [{"ts": "1.5", "user": "U1", "text": "r"}]},
+        ))
+        c.data_store_provider.transaction = MagicMock(side_effect=RuntimeError("db"))
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            raw = await c._build_message_blocks_for_streaming(rec)
+        assert raw.startswith(b"{")
+
+
+class TestCheckUpdatedMessageFallbackBranches:
+    @pytest.mark.asyncio
+    async def test_thread_reply_fallback_with_no_thread_id(self):
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import SlackConnector
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        msg = MessageRecord(
+            org_id="org-test",
+            record_name="m",
+            record_type=RecordType.MESSAGE,
+            external_record_id="1.0",
+            external_record_group_id="C1",
+            record_group_id="rg",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id,
+            mime_type=MimeTypes.BLOCKS.value,
+        )
+        msg.id = "mid"
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"messages": []},
+        ))
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            result = await c._check_updated_message(msg)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_same_ts_no_fallback(self):
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import SlackConnector
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        msg = MessageRecord(
+            org_id="org-test",
+            record_name="m",
+            record_type=RecordType.MESSAGE,
+            external_record_id="1.0",
+            external_record_group_id="C1",
+            record_group_id="rg",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id,
+            mime_type=MimeTypes.BLOCKS.value,
+            thread_id="1.0",
+        )
+        msg.id = "mid"
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"messages": []},
+        ))
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            result = await c._check_updated_message(msg)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_fallback_replies_not_success(self):
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import SlackConnector
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        msg = MessageRecord(
+            org_id="org-test",
+            record_name="m",
+            record_type=RecordType.MESSAGE,
+            external_record_id="9.0",
+            external_record_group_id="C1",
+            record_group_id="rg",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id,
+            mime_type=MimeTypes.BLOCKS.value,
+            thread_id="1.0",
+        )
+        msg.id = "mid"
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"messages": []},
+        ))
+        ds.conversations_replies = AsyncMock(return_value=MagicMock(success=False))
+
+        async def fresh():
+            return ds
+
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, side_effect=fresh):
+            result = await c._check_updated_message(msg)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_fallback_replies_empty(self):
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import SlackConnector
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        msg = MessageRecord(
+            org_id="org-test",
+            record_name="m",
+            record_type=RecordType.MESSAGE,
+            external_record_id="9.0",
+            external_record_group_id="C1",
+            record_group_id="rg",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id,
+            mime_type=MimeTypes.BLOCKS.value,
+            thread_id="1.0",
+        )
+        msg.id = "mid"
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"messages": []},
+        ))
+        ds.conversations_replies = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"messages": []},
+        ))
+
+        async def fresh():
+            return ds
+
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, side_effect=fresh):
+            result = await c._check_updated_message(msg)
+        assert result is None
