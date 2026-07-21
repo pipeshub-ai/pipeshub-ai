@@ -280,6 +280,9 @@ class TestOcrCoverageGaps:
         proc.config_service.get_config = AsyncMock(
             return_value={"ocr": [], "llm": [{"provider": "openai"}, {"provider": "mm"}]}
         )
+        proc.graph_provider.get_document = AsyncMock(
+            return_value=_record(recordName="a.pdf")
+        )
         handler = MagicMock()
         handler.process_document = AsyncMock(return_value={"pages": []})
 
@@ -289,7 +292,10 @@ class TestOcrCoverageGaps:
             "app.events.processor.OCRHandler", return_value=handler
         ), patch(
             "app.events.processor.DoclingProcessor"
-        ):
+        ), patch(
+            "app.events.processor.IndexingPipeline"
+        ) as MockPipeline:
+            MockPipeline.return_value.apply = AsyncMock()
             events = await _collect(
                 proc.process_pdf_document_with_ocr(
                     "a.pdf", "r1", "1", "kb", "o1", b"%PDF", "vr1"
@@ -298,6 +304,7 @@ class TestOcrCoverageGaps:
 
         handler.process_document.assert_awaited_once()
         assert any(e.event == IndexingEvent.PARSING_COMPLETE for e in events)
+        assert any(e.event == IndexingEvent.INDEXING_COMPLETE for e in events)
 
     @pytest.mark.asyncio
     async def test_vlm_empty_create_blocks_skips_page(self):
@@ -443,7 +450,12 @@ class TestOcrCoverageGaps:
                     {
                         "content": "hello",
                         "page_number": 1,
-                        "bounding_box": [{"x": 1, "y": 2}, {"x": 3, "y": 4}],
+                        "bounding_box": [
+                            {"x": 1, "y": 2},
+                            {"x": 3, "y": 4},
+                            {"x": 5, "y": 6},
+                            {"x": 7, "y": 8},
+                        ],
                     },
                     {
                         "content": "bad-bbox",
@@ -528,38 +540,34 @@ class TestEnhanceTablesCoverageGaps:
     @pytest.mark.asyncio
     async def test_blockgroup_children_edge_filters(self):
         proc = _make_processor()
+        # Keep row_blocks/row_dicts aligned: every TABLE_ROW that enters row_blocks
+        # must also contribute a row_dict (data with a "cells" key).
         blocks = [
             Block(index=0, type=BlockType.TEXT, format=DataFormat.TXT, data="t"),
             Block(
                 index=1,
                 type=BlockType.TABLE_ROW,
                 format=DataFormat.JSON,
-                data=None,
+                data={"cells": ["c1"]},
+                table_row_metadata=TableRowMetadata(is_header=True),
             ),
             Block(
                 index=2,
                 type=BlockType.TABLE_ROW,
                 format=DataFormat.JSON,
-                data={"cells": ["c1"]},
-                table_row_metadata=TableRowMetadata(is_header=True),
+                data={"cells": "not-list"},
             ),
             Block(
                 index=3,
                 type=BlockType.TABLE_ROW,
                 format=DataFormat.JSON,
-                data={"cells": "not-list"},
+                data={"cells": ["v"]},
             ),
             Block(
                 index=4,
                 type=BlockType.TABLE_ROW,
                 format=DataFormat.JSON,
-                data={"cells": ["v"]},
-            ),
-            Block(
-                index=5,
-                type=BlockType.TABLE_ROW,
-                format=DataFormat.JSON,
-                data=None,
+                data={"cells": ["w"]},
             ),
         ]
         bg = BlockGroup(
@@ -568,8 +576,8 @@ class TestEnhanceTablesCoverageGaps:
             data={"table_markdown": "| A |"},
             table_metadata=TableMetadata(),
         )
-        # ranges: OOB (10-11), TEXT (0), no cells (1), header (2), non-list cells (3), good (4), data None (5)
-        bg.children = BlockGroupChildren.from_indices(block_indices=[10, 0, 1, 2, 3, 4, 5])
+        # OOB (10), TEXT (0), header (1), non-list cells (2), good (3), extra non-header (4)
+        bg.children = BlockGroupChildren.from_indices(block_indices=[10, 0, 1, 2, 3, 4])
         container = BlocksContainer(blocks=blocks, block_groups=[bg])
         response = MagicMock(summary="s", headers=["A"])
 
@@ -581,11 +589,87 @@ class TestEnhanceTablesCoverageGaps:
             "app.utils.indexing_helpers.get_rows_text",
             new_callable=AsyncMock,
             return_value=(["only one desc"], []),
+        ) as mock_rows:
+            await proc._enhance_tables_with_llm(container)
+
+        mock_rows.assert_awaited_once()
+        # Header skipped; sole description maps to first non-header row_blocks entry
+        # (index 2 — non-list cells), later non-header rows get nothing.
+        assert blocks[1].data.get("row_natural_language_text") is None
+        assert blocks[2].data.get("row_natural_language_text") == "only one desc"
+        assert blocks[3].data.get("row_natural_language_text") is None
+        assert blocks[4].data.get("row_natural_language_text") is None
+
+    @pytest.mark.asyncio
+    async def test_blockgroup_row_without_cells_skipped_for_row_dicts(self):
+        """Cover no-cells filter (751): TABLE_ROW enters row_blocks but not row_dicts."""
+        proc = _make_processor()
+        row_no_cells = Block(
+            index=0,
+            type=BlockType.TABLE_ROW,
+            format=DataFormat.JSON,
+            data={"no_cells": True},
+        )
+        bg = BlockGroup(
+            index=0,
+            type=GroupType.TABLE,
+            data={"table_markdown": "| A |"},
+        )
+        bg.children = BlockGroupChildren.from_indices(block_indices=[0])
+        container = BlocksContainer(blocks=[row_no_cells], block_groups=[bg])
+        response = MagicMock(summary="s", headers=["A"])
+
+        with patch(
+            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            new_callable=AsyncMock,
+            return_value=response,
+        ), patch(
+            "app.utils.indexing_helpers.get_rows_text",
+            new_callable=AsyncMock,
+        ) as mock_rows:
+            await proc._enhance_tables_with_llm(container)
+
+        mock_rows.assert_not_awaited()
+        assert "row_natural_language_text" not in row_no_cells.data
+
+    @pytest.mark.asyncio
+    async def test_blockgroup_falsy_data_skips_description_write(self):
+        """Cover falsy row_block.data write skip (820)."""
+        proc = _make_processor()
+        row_cleared = MagicMock()
+        row_cleared.type = BlockType.TABLE_ROW
+        row_cleared.table_row_metadata = None
+        row_cleared.data = {"cells": ["z"]}
+
+        bg = MagicMock()
+        bg.type = GroupType.TABLE
+        bg.index = 0
+        bg.data = {"table_markdown": "| A |"}
+        bg.table_metadata = None
+        bg.description = None
+        bg.children = BlockGroupChildren.from_indices(block_indices=[0])
+
+        container = MagicMock()
+        container.block_groups = [bg]
+        container.blocks = [row_cleared]
+        response = MagicMock(summary="s", headers=["A"])
+
+        async def _rows(*_a, **_k):
+            row_cleared.data = None
+            return (["d1"], [])
+
+        with patch(
+            "app.utils.indexing_helpers.get_table_summary_n_headers",
+            new_callable=AsyncMock,
+            return_value=response,
+        ), patch(
+            "app.utils.indexing_helpers.get_rows_text",
+            new_callable=AsyncMock,
+            side_effect=_rows,
         ):
             await proc._enhance_tables_with_llm(container)
 
-        # header skipped; fewer descriptions than non-header rows; data=None row skipped for write
-        assert blocks[4].data.get("row_natural_language_text") == "only one desc"
+        assert row_cleared.data is None
 
     @pytest.mark.asyncio
     async def test_legacy_list_children_edge_filters(self):
