@@ -151,6 +151,7 @@ async def _fetch_multiple_records_impl(
     graph_provider: IGraphDBProvider | None = None,
     blob_store: BlobStorage | None = None,
     org_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Fetch multiple complete records at once.
@@ -206,8 +207,13 @@ async def _fetch_multiple_records_impl(
                 found_record = await _enrich_sql_table_with_fk_relations(found_record, graph_provider)
             found_records.append(found_record)
             continue
-
-        if org_id and graph_provider:
+        
+        if org_id and graph_provider and user_id:
+            access = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
+            if not access:
+                not_available_ids.append(record_id)
+                continue
+        
             try:
                 graphDb_record = await graph_provider.get_document(
                                 document_key=record_id,
@@ -272,6 +278,7 @@ def create_fetch_full_record_tool(
     org_id: str | None = None,
     graph_provider: IGraphDBProvider | None = None,
     blob_store: BlobStorage | None = None,
+    user_id: str | None = None,
 ) -> Callable:
     """
     Factory function to create the tool with runtime dependencies injected.
@@ -310,6 +317,7 @@ def create_fetch_full_record_tool(
                 org_id=org_id,
                 graph_provider=graph_provider,
                 blob_store=blob_store,
+                user_id=user_id,
             )
         except Exception as e:
             # Return error as dict
