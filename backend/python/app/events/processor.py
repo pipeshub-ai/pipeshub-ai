@@ -219,17 +219,20 @@ class Processor:
         """Process Gmail message, yielding phase completion events."""
 
         try:
-            async for event in self.process_md_document(
+            async for event in self.process_html_document(
                 recordName=recordName,
                 recordId=recordId,
-                md_binary=mail_content,
+                version=version,
+                source=source,
+                orgId=orgId,
+                html_binary=mail_content,
                 virtual_record_id=virtual_record_id,
                 event_type=event_type,
                 prev_virtual_record_id=prev_virtual_record_id,
             ):
                 yield event
 
-            self.logger.info("✅ Gmail Message processing completed successfully using markdown conversion.")
+            self.logger.info("✅ Gmail Message processing completed successfully using HTML processing.")
 
         except Exception as e:
             self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
@@ -1599,25 +1602,6 @@ class Processor:
                 details={"error": str(e)},
             ) from e
 
-
-
-    def _dump_block_containers(self, recordId, recordName, block_containers: BlocksContainer) -> None:
-        """Debug helper: dump the parsed block containers to a JSON file for inspection."""
-        try:
-            dump_dir = Path(r"C:\Harshit\Programs\blobs")
-            dump_dir.mkdir(parents=True, exist_ok=True)
-
-            safe_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in str(recordName or recordId))
-            dump_path = dump_dir / f"{safe_name}_{recordId}_block_containers.json"
-
-            dump_path.write_text(
-                json.dumps(block_containers.model_dump(mode="json"), indent=2, default=str),
-                encoding="utf-8",
-            )
-            self.logger.info(f"📝 Dumped block containers for record {recordId} to {dump_path}")
-        except Exception as e:
-            self.logger.error(f"❌ Failed to dump block containers for record {recordId}: {str(e)}")
-
     async def _mark_record(self, record_id, indexing_status: ProgressStatus) -> None:
         record = await self.graph_provider.get_document(
                         record_id, CollectionNames.RECORDS.value
@@ -1836,7 +1820,6 @@ class Processor:
             )
 
             self.logger.info(f"📦 Block containers for record {recordId}: {block_containers}")
-            self._dump_block_containers(recordId, recordName, block_containers)
 
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 

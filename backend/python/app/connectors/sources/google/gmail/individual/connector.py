@@ -3,6 +3,7 @@ import base64
 import io
 import os
 import re
+import sys
 import tempfile
 import uuid
 from logging import Logger
@@ -11,11 +12,17 @@ from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
+import chardet
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
-from mailparser_reply import EmailReplyParser
-from markdownify import markdownify
+
+# Talon imports cchardet, which does not support Python 3.12; chardet provides
+# the compatible API Talon needs.
+sys.modules["cchardet"] = chardet
+from talon import quotations  # noqa: E402
+
+quotations.register_xpath_extensions()
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -1292,20 +1299,6 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 detail=f"Failed to stream file from Drive: {str(drive_error)}"
             )
 
-    def _dump_raw_html(self, message_id: str, raw_html: str) -> None:
-        """Debug helper: persist the raw Gmail HTML payload for inspection."""
-        try:
-            dump_dir = Path(r"C:\Harshit\Programs\htmls")
-            dump_dir.mkdir(parents=True, exist_ok=True)
-
-            safe_id = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in str(message_id))
-            dump_path = dump_dir / f"{safe_id}.html"
-
-            dump_path.write_text(raw_html, encoding="utf-8")
-            self.logger.info(f"📝 Dumped raw HTML for message {message_id} to {dump_path}")
-        except Exception as e:
-            self.logger.error(f"❌ Failed to dump raw HTML for message {message_id}: {str(e)}")
-
     async def _stream_mail_record(
         self,
         gmail_service,
@@ -1327,30 +1320,19 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 mail_content_base64.encode("ASCII")
             ).decode("utf-8", errors="replace")
 
-            self._dump_raw_html(message_id, raw_html)
-
-            latest_reply_text = ""
+            latest_reply_html = ""
 
             if raw_html:
-                # --- STEP 1: Smart Conversion (HTML -> Text) ---
-                clean_text = markdownify(raw_html, heading_style="ATX").strip()
+                latest_reply_html = quotations.extract_from_html(raw_html)
 
-                # --- STEP 2: Extract Reply ---
-                email_parser = EmailReplyParser(languages=['en'])
-                parsed_mail = email_parser.read(clean_text)
-
-                latest_reply_text = parsed_mail.latest_reply
-
-                if not latest_reply_text:
-                    latest_reply_text = clean_text
 
             async def message_stream() -> AsyncGenerator[bytes, None]:
-                yield latest_reply_text.encode("utf-8")
+                yield latest_reply_html.encode("utf-8")
 
             return create_stream_record_response(
                 message_stream(),
                 filename=f"{record.record_name}",
-                mime_type="text/plain",
+                mime_type="text/html",
                 fallback_filename=f"record_{record.id}"
             )
 
