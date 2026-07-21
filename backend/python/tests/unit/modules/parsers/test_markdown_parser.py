@@ -325,6 +325,27 @@ class TestMarkdownParserShim:
 
         assert hasattr(mp, "MarkdownParserProtocol")
 
+    def test_protocol_extract_and_replace_images_body(self):
+        from app.modules.parsers.markdown.markdown_parser import MarkdownParserProtocol
+
+        class _Concrete(MarkdownParserProtocol):
+            pass
+
+        instance = _Concrete()
+        result = instance.extract_and_replace_images("")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_protocol_parse_to_blocks_body(self):
+        from app.modules.parsers.markdown.markdown_parser import MarkdownParserProtocol
+
+        class _Concrete(MarkdownParserProtocol):
+            pass
+
+        instance = _Concrete()
+        result = await instance.parse_to_blocks("")
+        assert result is None
+
     def test_markdown_parser_can_select_docling_backend(self):
         with patch.dict("os.environ", {"PARSER_BACKEND": "docling"}, clear=False):
             with patch.dict("sys.modules", _DOCLING_MOCKS):
@@ -384,6 +405,8 @@ class TestMarkdownParserShim:
 class TestMarkdownItParserParseFlow:
     @pytest.mark.asyncio
     async def test_parse_with_images_builds_caption_map(self, markdownit_parser):
+        from app.modules.parsers.image_parser.image_parser import ImageParser
+
         expected = BlocksContainer(blocks=[], block_groups=[])
         images = [
             {
@@ -395,8 +418,9 @@ class TestMarkdownItParserParseFlow:
         with patch.object(
             markdownit_parser, "extract_and_replace_images", return_value=("# Hi", images)
         ), \
-             patch(
-                 "app.modules.parsers.markdown.markdown_it_parser.ImageParser.urls_to_base64",
+             patch.object(
+                 ImageParser,
+                 "urls_to_base64",
                  new_callable=AsyncMock,
                  return_value=["data:image/png;base64,LOGO"],
              ), \
@@ -414,6 +438,38 @@ class TestMarkdownItParserParseFlow:
             name="readme.md",
         )
         assert result.block_container is expected
+
+    @pytest.mark.asyncio
+    async def test_parse_skips_none_base64_urls(self, markdownit_parser):
+        from app.modules.parsers.image_parser.image_parser import ImageParser
+
+        expected = BlocksContainer(blocks=[], block_groups=[])
+        images = [
+            {"url": "https://a.com/1.png", "alt_text": "", "new_alt_text": "Image_1"},
+            {"url": "https://a.com/2.png", "alt_text": "", "new_alt_text": "Image_2"},
+        ]
+        with patch.object(
+            markdownit_parser, "extract_and_replace_images", return_value=("# Hi", images)
+        ), \
+             patch.object(
+                 ImageParser,
+                 "urls_to_base64",
+                 new_callable=AsyncMock,
+                 return_value=[None, "data:image/png;base64,OK"],
+             ), \
+             patch.object(
+                 markdownit_parser,
+                 "parse_to_blocks",
+                 new_callable=AsyncMock,
+                 return_value=expected,
+             ) as mock_parse:
+            await markdownit_parser.parse(b"# Hi", "readme.md")
+
+        mock_parse.assert_awaited_once_with(
+            "# Hi",
+            caption_map={"Image_2": "data:image/png;base64,OK"},
+            name="readme.md",
+        )
 
     @pytest.mark.asyncio
     async def test_parse_accepts_str_content(self, markdownit_parser):

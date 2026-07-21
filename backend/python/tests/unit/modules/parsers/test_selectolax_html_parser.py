@@ -1286,6 +1286,15 @@ class TestSelectolaxExtractAndReplaceImages:
         _, images = parser.extract_and_replace_images(html)
         assert [img["new_alt_text"] for img in images] == ["Image_1", "Image_2"]
 
+    def test_srcset_with_empty_first_entry(self, parser: SelectolaxHtmlParser) -> None:
+        html = '<img src="" srcset=", https://example.com/b.png 2x" alt="x">'
+        _, images = parser.extract_and_replace_images(html)
+        assert images == []
+
+    def test_skips_img_without_src_or_srcset(self, parser: SelectolaxHtmlParser) -> None:
+        _, images = parser.extract_and_replace_images('<img alt="no-src-no-srcset">')
+        assert images == []
+
 
 class TestSelectolaxHtmlParserParseFlow:
     @pytest.mark.asyncio
@@ -1326,3 +1335,28 @@ class TestSelectolaxHtmlParserParseFlow:
              ):
             result = await parser.parse("<p>ok</p>", "s.html")
         assert result.metadata == {"record_name": "s.html"}
+
+    @pytest.mark.asyncio
+    async def test_parse_skips_none_base64_urls(
+        self, parser: SelectolaxHtmlParser
+    ) -> None:
+        images = [
+            {"url": "https://a.com/1.png", "alt_text": "", "new_alt_text": "Image_1"},
+            {"url": "https://a.com/2.png", "alt_text": "", "new_alt_text": "Image_2"},
+        ]
+        expected = BlocksContainer(blocks=[], block_groups=[])
+        with patch.object(parser, "_prepare_html", return_value=("<p>x</p>", images)), \
+             patch(
+                 "app.modules.parsers.html_parser.selectolax_html_parser.ImageParser.urls_to_base64",
+                 new_callable=AsyncMock,
+                 return_value=[None, "data:image/png;base64,OK"],
+             ), \
+             patch.object(
+                 parser, "parse_to_blocks", new_callable=AsyncMock, return_value=expected
+             ) as mock_blocks:
+            await parser.parse(b"<img>", "doc.html")
+
+        mock_blocks.assert_awaited_once_with(
+            "<p>x</p>",
+            caption_map={"Image_2": "data:image/png;base64,OK"},
+        )

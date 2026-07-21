@@ -333,6 +333,11 @@ class TestDoclingExtractAndReplaceImages:
         _, images = parser.extract_and_replace_images(html)
         assert images == []
 
+    def test_srcset_with_empty_first_entry(self, parser):
+        html = '<img src="" srcset=", https://example.com/b.png 2x" alt="x">'
+        _, images = parser.extract_and_replace_images(html)
+        assert images == []
+
 
 # ---------------------------------------------------------------------------
 # _apply_caption_map
@@ -373,6 +378,25 @@ class TestApplyCaptionMap:
         container = BlocksContainer(blocks=[block], block_groups=[])
         _apply_caption_map(container, {"Image_1": "data:image/png;base64,xyz"}, logger)
         logger.warning.assert_called_once()
+
+    def test_skips_non_image_blocks(self):
+        logger = MagicMock()
+        block = Block(index=0, type=BlockType.TEXT.value, data="text")
+        container = BlocksContainer(blocks=[block], block_groups=[])
+        _apply_caption_map(container, {"Image_1": "data:image/png;base64,xyz"}, logger)
+        assert block.data == "text"
+
+    def test_skips_image_block_with_empty_captions(self):
+        logger = MagicMock()
+        block = Block(
+            index=0,
+            type=BlockType.IMAGE.value,
+            image_metadata=ImageMetadata(captions=[]),
+            data=None,
+        )
+        container = BlocksContainer(blocks=[block], block_groups=[])
+        _apply_caption_map(container, {"Image_1": "data:image/png;base64,xyz"}, logger)
+        assert block.data is None
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +491,36 @@ class TestDoclingHtmlParse:
         mock_parse_to_blocks.assert_awaited_once_with(
             "<p>x</p>",
             caption_map={"Image_1": "data:image/png;base64,ENC"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_parse_skips_none_base64_urls(self, parser):
+        from app.models.blocks import BlocksContainer
+
+        expected_blocks = BlocksContainer(blocks=[], block_groups=[])
+        images = [
+            {"url": "https://example.com/a.png", "alt_text": "a", "new_alt_text": "Image_1"},
+            {"url": "https://example.com/b.png", "alt_text": "b", "new_alt_text": "Image_2"},
+        ]
+        with patch.object(parser, "clean_html", side_effect=lambda x: x), \
+             patch.object(parser, "replace_relative_image_urls", side_effect=lambda x: x), \
+             patch.object(parser, "extract_and_replace_images", return_value=("<p>x</p>", images)), \
+             patch(
+                 "app.modules.parsers.html_parser.docling_html_parser.ImageParser.urls_to_base64",
+                 new_callable=AsyncMock,
+                 return_value=[None, "data:image/png;base64,OK"],
+             ), \
+             patch.object(
+                 parser,
+                 "parse_to_blocks",
+                 new_callable=AsyncMock,
+                 return_value=expected_blocks,
+             ) as mock_parse_to_blocks:
+            await parser.parse(b"<img>", "doc.html")
+
+        mock_parse_to_blocks.assert_awaited_once_with(
+            "<p>x</p>",
+            caption_map={"Image_2": "data:image/png;base64,OK"},
         )
 
     @pytest.mark.asyncio
