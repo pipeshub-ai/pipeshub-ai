@@ -3,7 +3,7 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
-import { Flex, Text, Box, Badge } from '@radix-ui/themes';
+import { Flex, Text, Badge } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import {
   OverviewStatsGridShimmer,
@@ -13,6 +13,8 @@ import {
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { fetchInstanceStats } from '../../utils/fetch-instance-stats';
+import { useConnectorSyncProgress } from '../../utils/use-connector-sync-progress';
+import { ConnectorSyncProgress, describeSyncProgress } from '../connector-sync-progress';
 import { useToastStore } from '@/lib/store/toast-store';
 import { deriveSyncStatus } from '../instance-card/utils';
 import { runConnectorResync } from '../../utils/connector-sync-actions';
@@ -86,6 +88,31 @@ function deriveRecordsStatus(
   };
 }
 
+function SyncBreakdownItem({
+  label,
+  value,
+  tone = 'default',
+}: {
+  label: string;
+  value: number;
+  tone?: 'default' | 'amber';
+}) {
+  return (
+    <Flex direction="column" gap="1" style={{ minWidth: 64 }}>
+      <Text size="1" weight="medium" style={{ color: 'var(--gray-10)', textTransform: 'uppercase', letterSpacing: '0.04px' }}>
+        {label}
+      </Text>
+      <Text
+        size="3"
+        weight="medium"
+        style={{ color: tone === 'amber' ? 'var(--amber-11)' : 'var(--gray-12)' }}
+      >
+        {value}
+      </Text>
+    </Flex>
+  );
+}
+
 // ========================================
 // OverviewTab
 // ========================================
@@ -122,6 +149,12 @@ export function OverviewTab({
     connectorConfig ?? (instance._key ? instanceConfigs[instance._key] : undefined);
   const syncStatus = deriveSyncStatus(instance, stats ?? undefined, configForDerive);
   const isSyncing = syncStatus === 'syncing';
+
+  const { progress: syncProgress } = useConnectorSyncProgress(
+    instance._key,
+    instance.status,
+    Boolean(instance._key) && instance.supportsSync
+  );
   const showReindexFailedAction =
     Boolean(recordsStatus && recordsStatus.failed > 0) && !showStatsShimmer;
   const showManualIndexAction =
@@ -257,42 +290,50 @@ export function OverviewTab({
     }
   }, [instance._key, instance.type, instance.isActive, isManualIndexBusy, addToast, fetchInstanceStats]);
 
-  // Show sync progress bar for syncing
-  const showProgressBar = isSyncing && instance.syncProgress;
+  // Run-scoped progress is shown while a sync/indexing run is active; when idle
+  // it collapses to nothing and the Records Status grid below is the coverage view.
+  const syncProgressView = describeSyncProgress(syncProgress, instance.status);
+  const showRunProgress = syncProgressView.mode === 'discovering' || syncProgressView.mode === 'indexing';
+  const runData = syncProgress?.run;
 
   return (
     <Flex direction="column" gap="5" style={{ padding: '0' }}>
-      {/* ── Sync progress bar ── */}
-      {showProgressBar && instance.syncProgress && (
-        <Flex direction="column" gap="2">
-          <Flex align="center" justify="between">
-            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              {t('workspace.connectors.overview.progressPercent', { n: instance.syncProgress.percentage ?? 0 })}
-            </Text>
-          </Flex>
-          <Box
-            style={{
-              width: '100%',
-              height: 6,
-              borderRadius: 'var(--radius-full)',
-              backgroundColor: 'var(--gray-a3)',
-              overflow: 'hidden',
-            }}
-          >
-            <Box
-              style={{
-                width: `${instance.syncProgress.percentage ?? 0}%`,
-                height: '100%',
-                borderRadius: 'var(--radius-full)',
-                backgroundColor: 'var(--jade-9)',
-                transition: 'width 300ms ease',
-              }}
-            />
-          </Box>
+      {/* ── Current sync progress (run-scoped) ── */}
+      {showRunProgress && (
+        <Flex
+          direction="column"
+          gap="3"
+          style={{
+            backgroundColor: 'var(--olive-2)',
+            border: '1px solid var(--olive-3)',
+            borderRadius: 'var(--radius-2)',
+            padding: 16,
+          }}
+        >
+          <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
+            Current sync
+          </Text>
+          <ConnectorSyncProgress
+            progress={syncProgress}
+            status={instance.status}
+            variant="detail"
+          />
+          {runData && (
+            <Flex gap="4" wrap="wrap">
+              <SyncBreakdownItem label="Queued this sync" value={runData.discovered} />
+              <SyncBreakdownItem label="Indexed" value={runData.indexed} />
+              {runData.failed > 0 && (
+                <SyncBreakdownItem label="Failed" value={runData.failed} tone="amber" />
+              )}
+              {runData.skipped > 0 && (
+                <SyncBreakdownItem label="Skipped" value={runData.skipped} />
+              )}
+            </Flex>
+          )}
         </Flex>
       )}
 
-      {/* ── Records Status section ── */}
+      {/* ── Overall Records section (lifetime coverage) ── */}
       <Flex
         direction="column"
         gap="3"
@@ -305,7 +346,7 @@ export function OverviewTab({
       >
         <Flex align="start" gap="2">
           <Text size="3" weight="medium" style={{ color: 'var(--gray-12)', flex: 1, minWidth: 0 }}>
-            {t('workspace.connectors.overview.recordsStatus')}
+            Overall records
           </Text>
           {instance.isActive && (
             <Flex
@@ -445,10 +486,10 @@ export function OverviewTab({
           </Flex>
         </Flex>
         ) : null}
-      </Flex>
+          </Flex>
 
-      {/* ── Indexed Records by Type section ── */}
-      <Flex direction="column" gap="3">
+          {/* ── Indexed Records by Type section ── */}
+          <Flex direction="column" gap="3">
         <Flex align="center" justify="between">
           <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.connectors.overview.recordsByType')}

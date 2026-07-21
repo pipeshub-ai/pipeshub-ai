@@ -439,13 +439,6 @@ export interface ConnectorInstance extends Connector {
   enabledBy?: { name: string; avatar?: string };
   /** Last synced timestamp */
   lastSynced?: string | null;
-  /** Sync progress info */
-  syncProgress?: {
-    total?: number;
-    synced?: number;
-    percentage?: number;
-    label?: string;
-  };
 }
 
 /** Electron local-folder watcher state per connector instance */
@@ -483,6 +476,53 @@ export interface RecordTypeStats {
   recordType: string;
   total: number;
   indexingStatus: IndexingStatus;
+}
+
+/** Sync run phase for connector sync progress. */
+export type SyncProgressPhase = 'DISCOVERING' | 'INDEXING' | 'DONE' | 'IDLE';
+
+/** Run-scoped counters for the current (or most recent) sync run. */
+export interface SyncProgressRun {
+  runId: string | null;
+  phase: SyncProgressPhase;
+  discovered: number;
+  indexed: number;
+  failed: number;
+  skipped: number;
+  total: number;
+  processed: number;
+  /** null while discovery is still open (total unknown) -> indeterminate. */
+  percent: number | null;
+  fullSync: boolean;
+  startedAt: number;
+  heartbeatAt: number;
+  isStale: boolean;
+  isActive: boolean;
+}
+
+/** Lifetime indexing coverage, used as the idle fallback. */
+export interface SyncProgressCoverage {
+  total?: number;
+  indexed?: number;
+  failed?: number;
+  skipped?: number;
+  inProgress?: number;
+  queued?: number;
+  indexingStatus?: Record<string, number>;
+}
+
+/** GET /api/v1/connectors/{connectorId}/sync-progress -> data */
+export interface ConnectorSyncProgress {
+  connectorId: string;
+  isActive: boolean;
+  phase: SyncProgressPhase;
+  run: SyncProgressRun;
+  coverage: SyncProgressCoverage;
+}
+
+export interface ConnectorSyncProgressResponse {
+  success: boolean;
+  data: ConnectorSyncProgress;
 }
 
 /** Response from GET /api/v1/connectors/{connectorId}/stats */

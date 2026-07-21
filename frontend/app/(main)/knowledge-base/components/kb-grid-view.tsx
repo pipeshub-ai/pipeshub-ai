@@ -7,6 +7,8 @@ import { FileIcon, FolderIcon } from '@/app/components/ui';
 import { formatSize } from '@/lib/utils/formatters';
 import { CARD_ICONS } from './grid-card-icons';
 import {
+  isFolderLikeTableItem,
+  isWebPathPlaceholder,
   runItemMenuOpenFromMenu,
   shouldHideIndexingStatusForHubRecord,
   shouldShowDownloadForTableItem,
@@ -83,7 +85,7 @@ function GridCard({
 
   // Determine if item is a file (record) for extension preservation
   const isFile = isKnowledgeHubNode(item)
-    ? item.nodeType === 'record'
+    ? item.nodeType === 'record' && !isWebPathPlaceholder(item)
     : item.type === 'file';
 
   // Split name into base and extension for files
@@ -157,9 +159,7 @@ function GridCard({
     !!onReindex,
   );
 
-  const isFolder = isHubNode
-    ? ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType)
-    : item.type === 'folder';
+  const isFolder = isFolderLikeTableItem(item);
   const containerRollup = isHubNode ? item.indexingRollup ?? null : null;
   const syncStatus = isHubNode ? item.syncStatus ?? null : null;
   const isSyncing = isActiveConnectorSync(syncStatus);

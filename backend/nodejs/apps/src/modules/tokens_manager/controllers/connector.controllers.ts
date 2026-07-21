@@ -1915,6 +1915,70 @@ export const getConnectorStats =
     }
   };
 
+export const getConnectorSyncProgress =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { userId, orgId } = req.user || {};
+
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+
+      if (!req.params.connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+
+      try {
+        const queryParams = new URLSearchParams();
+        queryParams.append('org_id', orgId);
+        queryParams.append('connector_id', req.params.connectorId);
+        const response = await executeConnectorCommand(
+          `${appConfig.connectorBackend}/api/v1/sync-progress?${queryParams.toString()}`,
+          HttpMethod.GET,
+          req.headers as Record<string, string>,
+        );
+
+        if (response.statusCode !== 200) {
+          throw new InternalServerError(
+            'Failed to get connector sync progress via Python service',
+          );
+        }
+
+        res.status(200).json(response.data);
+      } catch (pythonServiceError: any) {
+        logger.error('Error calling Python service for sync progress', {
+          userId,
+          orgId,
+          error: pythonServiceError.message,
+          response: pythonServiceError.response?.data,
+          requestId: req.context?.requestId,
+        });
+
+        if (pythonServiceError.response?.status === 403) {
+          throw new ForbiddenError(
+            'You do not have permission to access connector sync progress',
+          );
+        } else if (pythonServiceError.response?.status === 404) {
+          throw new NotFoundError('Connector not found');
+        } else {
+          throw new InternalServerError(
+            `Failed to get connector sync progress: ${pythonServiceError.message}`,
+          );
+        }
+      }
+    } catch (error: any) {
+      logger.error('Error getting connector sync progress', {
+        connectorId: req.params.connectorId,
+        error,
+      });
+      next(error);
+      return;
+    }
+  };
+
 interface ConnectorInfo {
   _key: string;
 }

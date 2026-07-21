@@ -2756,7 +2756,6 @@ function KnowledgeBasePageContent() {
               pageViewMode={pageViewMode}
               breadcrumbs={isAllRecordsMode ? allRecordsBreadcrumbs : tableData?.breadcrumbs?.slice(1)}
               currentTitle={currentTitle}
-              currentNodeRollup={currentNodeRollup}
               currentNodeSyncStatus={currentNodeSyncStatus}
               onBreadcrumbClick={handleBreadcrumbClick}
               onInfoClick={handleFolderInfoClick}

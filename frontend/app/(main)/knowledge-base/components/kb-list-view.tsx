@@ -28,6 +28,8 @@ import {
   isActiveConnectorSync,
 } from './indexing-progress-indicator';
 import {
+  isFolderLikeTableItem,
+  isWebPathPlaceholder,
   runItemMenuOpenFromMenu,
   shouldHideIndexingStatusForHubRecord,
   shouldShowDownloadForTableItem,
@@ -178,7 +180,7 @@ function TableRow({
 
   // Determine if item is a file (record) for extension preservation
   const isFile = isKnowledgeHubNode(item)
-    ? item.nodeType === 'record'
+    ? item.nodeType === 'record' && !isWebPathPlaceholder(item)
     : item.type === 'file';
 
   // Split name into base and extension for files
@@ -252,9 +254,12 @@ function TableRow({
     !!onReindex,
   );
 
-  const isFolder = isHubNode
-    ? ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType)
-    : item.type === 'folder';
+  const isFolder = isFolderLikeTableItem(item);
+  const displayNodeType = isKnowledgeHubNode(item) && isWebPathPlaceholder(item)
+    ? 'folder'
+    : isKnowledgeHubNode(item)
+      ? item.nodeType
+      : undefined;
   const activeProgressView =
     isKnowledgeHubNode(item) && (item.indexingStatus === 'IN_PROGRESS' || item.indexingStatus === 'QUEUED')
       ? getIndexingProgressView(item)
@@ -431,7 +436,7 @@ function TableRow({
       >
         <KbNodeNameIcon
           isKnowledgeHub={isKnowledgeHubNode(item)}
-          nodeType={isKnowledgeHubNode(item) ? item.nodeType : undefined}
+          nodeType={displayNodeType}
           connector={isKnowledgeHubNode(item) ? item.connector : undefined}
           subType={isKnowledgeHubNode(item) ? item.subType : undefined}
           extension={isKnowledgeHubNode(item) ? item.extension : undefined}

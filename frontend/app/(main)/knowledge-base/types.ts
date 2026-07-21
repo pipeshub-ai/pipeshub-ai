@@ -394,6 +394,7 @@ export interface EnhancedFolderTreeNode extends FolderTreeNode {
   extension?: string | null;
   mimeType?: string | null;
   indexingStatus?: IndexingStatus | null;
+  isInternal?: boolean;
 }
 
 export type SidebarSection = 'shared' | 'private';

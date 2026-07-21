@@ -174,6 +174,12 @@ export function FolderTreeItem({
 
   const hideLeafRecordReindex =
     enhancedNode.nodeType === 'record' && !hasDescendants;
+  const isWebPathPlaceholder =
+    enhancedNode.nodeType === 'record' &&
+    enhancedNode.isInternal === true &&
+    enhancedNode.connector?.toUpperCase() === 'WEB' &&
+    hasDescendants;
+  const displayNodeType = isWebPathPlaceholder ? 'folder' : enhancedNode.nodeType;
 
   const { options: reindexMenuOptions, showMenu: showReindexMenu } = getReindexMenuState(
     getReindexNodeFromHubItem({
@@ -309,7 +315,7 @@ export function FolderTreeItem({
           <Box style={{ marginRight: '4px', flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>
             <KbNodeNameIcon
               isKnowledgeHub
-              nodeType={enhancedNode.nodeType}
+              nodeType={displayNodeType}
               connector={enhancedNode.connector}
               subType={enhancedNode.subType}
               extension={enhancedNode.extension}

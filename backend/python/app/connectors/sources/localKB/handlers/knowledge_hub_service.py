@@ -43,6 +43,20 @@ def _rollup_container_type(node_type: str | None) -> str | None:
         return NodeType.FOLDER.value
     return None
 
+def _is_web_path_placeholder(item: NodeItem) -> bool:
+    """Internal web connector URL path records behave as navigable containers."""
+    return (
+        _get_node_type_value(item.nodeType) == NodeType.RECORD.value
+        and item.isInternal is True
+        and (item.connector or '').upper() == 'WEB'
+        and item.hasChildren is True
+    )
+
+def _rollup_container_type_for_item(item: NodeItem) -> str | None:
+    if _is_web_path_placeholder(item):
+        return NodeType.RECORD.value
+    return _rollup_container_type(_get_node_type_value(item.nodeType))
+
 FOLDER_MIME_TYPES = [
     'application/vnd.folder',
     'application/vnd.google-apps.folder',
@@ -850,7 +864,7 @@ class KnowledgeHubService:
         containers: list[dict] = []
 
         for item in items:
-            rollup_type = _rollup_container_type(_get_node_type_value(item.nodeType))
+            rollup_type = _rollup_container_type_for_item(item)
             if rollup_type and item.id:
                 containers.append({"id": item.id, "type": rollup_type})
 

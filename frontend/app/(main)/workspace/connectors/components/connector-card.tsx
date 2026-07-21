@@ -18,6 +18,8 @@ interface ConnectorCardProps {
   activeInstanceCount?: number;
   /** Number of instances with isActive=false. */
   inactiveInstanceCount?: number;
+  /** Number of instances currently running a source sync (SYNCING/FULL_SYNCING). */
+  syncingInstanceCount?: number;
   /** Fired when "+ Setup" is clicked (registry / first-time setup). */
   onSetup?: (connector: Connector) => void;
   /**
@@ -38,6 +40,7 @@ export function ConnectorCard({
   variant,
   activeInstanceCount = 0,
   inactiveInstanceCount = 0,
+  syncingInstanceCount = 0,
   onSetup,
   onAddInstance,
   onCardClick,
@@ -111,6 +114,7 @@ export function ConnectorCard({
         <ActiveInstanceBar
           activeCount={activeInstanceCount}
           inactiveCount={inactiveInstanceCount}
+          syncingCount={syncingInstanceCount}
           onAdd={() => {
             if (onAddInstance) {
               onAddInstance(connector);
@@ -180,11 +184,13 @@ function SetupButton({ onClick }: { onClick?: () => void }) {
 function ActiveInstanceBar({
   activeCount,
   inactiveCount,
+  syncingCount = 0,
   onAdd,
   onBadgeClick,
 }: {
   activeCount: number;
   inactiveCount: number;
+  syncingCount?: number;
   onAdd?: () => void;
   onBadgeClick?: () => void;
 }) {
@@ -197,6 +203,15 @@ function ActiveInstanceBar({
     onBadgeClick?.();
   };
 
+  // Aggregate cue only: multiple instances of the same type sync independently,
+  // so there is no honest single percentage to show at the type-card level.
+  const syncingLabel =
+    syncingCount > 0
+      ? activeCount > 1
+        ? `${syncingCount} of ${activeCount} syncing`
+        : 'Syncing…'
+      : null;
+
   return (
     <Flex align="center" gap="2" style={{ width: '100%', overflow: 'hidden' }}>
       {/* Scrollable pills container */}
@@ -206,6 +221,31 @@ function ActiveInstanceBar({
         className="no-scrollbar"
         style={{ flex: 1, overflowX: 'auto', minWidth: 0 }}
       >
+        {/* Syncing cue (no percentage) */}
+        {syncingLabel && (
+          <Flex
+            align="center"
+            justify="center"
+            gap="1"
+            onClick={handleBadgeClick}
+            style={{
+              flexShrink: 0,
+              height: 28,
+              borderRadius: 'var(--radius-2)',
+              backgroundColor: 'var(--indigo-a3)',
+              padding: '0 8px',
+              cursor: 'pointer',
+            }}
+          >
+            <span style={{ display: 'inline-flex', animation: 'spin 0.8s linear infinite' }}>
+              <MaterialIcon name="progress_activity" size={14} color="var(--indigo-a11)" />
+            </span>
+            <Text size="1" weight="medium" style={{ color: 'var(--indigo-a11)', whiteSpace: 'nowrap' }}>
+              {syncingLabel}
+            </Text>
+          </Flex>
+        )}
+
         {/* Active pill */}
         {activeCount > 0 && (
           <Flex

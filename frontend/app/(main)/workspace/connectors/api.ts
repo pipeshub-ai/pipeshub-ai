@@ -9,6 +9,8 @@ import type {
   ConnectorConfig,
   FilterOptionsResponse,
   ConnectorStatsResponse,
+  ConnectorSyncProgress,
+  ConnectorSyncProgressResponse,
 } from './types';
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
@@ -421,5 +423,16 @@ export const ConnectorsApi = {
       `${BASE_URL}/${connectorId}/stats`
     );
     return data;
+  },
+
+  /** Fetch run-scoped sync/indexing progress for a connector instance */
+  async getConnectorSyncProgress(
+    connectorId: string
+  ): Promise<ConnectorSyncProgress | null> {
+    const { data } = await apiClient.get<ConnectorSyncProgressResponse>(
+      `${BASE_URL}/${connectorId}/sync-progress`,
+      { suppressErrorToast: true }
+    );
+    return data?.data ?? null;
   },
 };

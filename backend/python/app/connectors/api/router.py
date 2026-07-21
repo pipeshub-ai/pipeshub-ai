@@ -75,6 +75,10 @@ from app.connectors.sources.local_fs.models import (
     LocalFsFileEventSubmissionResponse,
 )
 from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.sync_progress_store import (
+    get_connector_sync_progress_store,
+    summarize_run,
+)
 from app.containers.connector import ConnectorAppContainer
 from app.core.signed_url import SignedUrlHandler
 from app.models.entities import Record, RecordType
@@ -1540,6 +1544,71 @@ async def get_connector_stats_endpoint(
     except Exception as e:
         logger.error(f"Error getting connector stats: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Internal server error while getting connector stats: {str(e)}") from e
+
+def _coverage_from_stats(stats_data: dict[str, Any] | None) -> dict[str, Any]:
+    """Reduce the lifetime stats payload to the fields the progress UI needs."""
+    stats = (stats_data or {}).get("stats", {}) or {}
+    by_status = stats.get("indexingStatus", {}) or {}
+    indexed = int(by_status.get("COMPLETED", 0) or 0) + int(by_status.get("EMPTY", 0) or 0)
+    skipped = (
+        int(by_status.get("FILE_TYPE_NOT_SUPPORTED", 0) or 0)
+        + int(by_status.get("AUTO_INDEX_OFF", 0) or 0)
+    )
+    return {
+        "total": int(stats.get("total", 0) or 0),
+        "indexed": indexed,
+        "failed": int(by_status.get("FAILED", 0) or 0),
+        "skipped": skipped,
+        "inProgress": int(by_status.get("IN_PROGRESS", 0) or 0),
+        "queued": int(by_status.get("QUEUED", 0) or 0),
+        "indexingStatus": by_status,
+    }
+
+@router.get("/api/v1/sync-progress", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
+async def get_connector_sync_progress_endpoint(
+    request: Request,
+    org_id: str,
+    connector_id: str,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict[str, Any]:
+    """Run-scoped connector sync/indexing progress with lifetime coverage fallback."""
+    logger = request.app.container.logger()
+    try:
+        run = None
+        try:
+            store = await get_connector_sync_progress_store(
+                logger, request.app.container.config_service()
+            )
+            if store:
+                run = await store.get(org_id, connector_id)
+        except Exception as store_err:
+            logger.debug(f"Sync progress store unavailable: {store_err}")
+
+        coverage: dict[str, Any] = {}
+        try:
+            stats_result = await graph_provider.get_connector_stats(org_id, connector_id)
+            if stats_result.get("success"):
+                coverage = _coverage_from_stats(stats_result.get("data"))
+        except Exception as stats_err:
+            logger.debug(f"Failed to load coverage stats for {connector_id}: {stats_err}")
+
+        run_view = summarize_run(run)
+        return {
+            "success": True,
+            "data": {
+                "connectorId": connector_id,
+                "isActive": run_view["isActive"],
+                "phase": run_view["phase"],
+                "run": run_view,
+                "coverage": coverage,
+            },
+        }
+    except Exception as e:
+        logger.error(f"Error getting connector sync progress: {str(e)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Internal server error while getting connector sync progress: {str(e)}",
+        ) from e
 
 @router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked_for_record_group)])
 @inject

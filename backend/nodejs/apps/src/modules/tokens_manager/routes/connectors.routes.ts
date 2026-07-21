@@ -53,6 +53,7 @@ import {
   getConnectorSchema,
   getActiveAgentInstances,
   getConnectorStats,
+  getConnectorSyncProgress,
   reindexFailedRecords,
   resyncConnectorRecords,
 } from '../controllers/connector.controllers';
@@ -531,6 +532,18 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_READ, OAuthScopeNames.KB_READ),
     ValidationMiddleware.validate(getConnectorStatsSchema),
     getConnectorStats(config),
+  );
+
+  /**
+   * GET /:connectorId/sync-progress
+   * Get run-scoped sync/indexing progress for a connector instance
+   */
+  router.get(
+    '/:connectorId/sync-progress',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_READ, OAuthScopeNames.KB_READ),
+    ValidationMiddleware.validate(getConnectorStatsSchema),
+    getConnectorSyncProgress(config),
   );
 
   /**

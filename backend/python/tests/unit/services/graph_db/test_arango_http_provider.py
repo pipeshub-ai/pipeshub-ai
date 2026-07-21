@@ -75,6 +75,39 @@ def connected_provider(provider):
     return provider
 
 
+class TestIndexingRollups:
+    @pytest.mark.asyncio
+    async def test_record_container_rollup_traverses_record_relation_descendants(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [
+            {
+                "id": "web-path-1",
+                "status": "COMPLETED",
+                "stage": "COMPLETED",
+                "cnt": 4,
+            }
+        ]
+
+        result = await connected_provider.get_indexing_rollups(
+            org_id="org-1",
+            containers=[{"id": "web-path-1", "type": "record"}],
+            transaction="txn-1",
+        )
+
+        connected_provider.http_client.execute_aql.assert_awaited_once()
+        query = connected_provider.http_client.execute_aql.await_args.args[0]
+        kwargs = connected_provider.http_client.execute_aql.await_args.kwargs
+        assert "OUTBOUND CONCAT(@record_prefix, cid) @@record_relations" in query
+        assert "FILTER doc.isInternal != true" in query
+        assert kwargs["bind_vars"]["ids"] == ["web-path-1"]
+        assert kwargs["bind_vars"]["record_prefix"] == "records/"
+        assert kwargs["txn_id"] == "txn-1"
+        assert result == {
+            "web-path-1": [
+                {"status": "COMPLETED", "stage": "COMPLETED", "cnt": 4}
+            ]
+        }
+
+
 # ---------------------------------------------------------------------------
 # __init__
 # ---------------------------------------------------------------------------

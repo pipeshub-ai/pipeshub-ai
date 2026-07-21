@@ -15991,7 +15991,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if not containers:
             return rollups
 
-        ids_by_type: dict[str, list[str]] = {"app": [], "recordGroup": [], "folder": []}
+        ids_by_type: dict[str, list[str]] = {"app": [], "recordGroup": [], "folder": [], "record": []}
         for c in containers:
             c_id = c.get("id")
             c_type = c.get("type")
@@ -16079,6 +16079,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "record_prefix": f"{CollectionNames.RECORDS.value}/",
                     "rel_types": [RecordRelations.PARENT_CHILD.value, RecordRelations.ATTACHMENT.value],
                     "ids": ids_by_type["folder"],
+                },
+            )
+
+        if ids_by_type["record"]:
+            queries["record"] = (
+                f"""
+                FOR cid IN @ids
+                FOR doc, edge, path IN 1..100 OUTBOUND CONCAT(@record_prefix, cid) @@record_relations
+                    FILTER path.edges[*].relationshipType ALL IN @rel_types
+                    FILTER doc.isInternal != true
+                    {leaf_filter}
+                    {group_return}
+                """,
+                {
+                    **base_bind,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "record_prefix": f"{CollectionNames.RECORDS.value}/",
+                    "rel_types": [RecordRelations.PARENT_CHILD.value, RecordRelations.ATTACHMENT.value],
+                    "ids": ids_by_type["record"],
                 },
             )
 

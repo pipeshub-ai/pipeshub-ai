@@ -587,6 +587,7 @@ class RecordEventHandler(BaseEventService):
                 )
                 if record is None:
                     return
+                await self._track_indexing_outcome(record, ProgressStatus.FAILED.value)
                 virtual_record_id = record.get("virtualRecordId")
                 self.logger.info(f"🔄 Current record {record_id} has failed, triggering next queued duplicate")
                 await self._trigger_next_queued_duplicate(record_id,virtual_record_id)
@@ -598,6 +599,7 @@ class RecordEventHandler(BaseEventService):
                 if record is not None:
                     indexing_status = record.get("indexingStatus")
                     virtual_record_id = record.get("virtualRecordId")
+                    await self._track_indexing_outcome(record, indexing_status)
                     if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
                         await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
                     elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
@@ -606,6 +608,44 @@ class RecordEventHandler(BaseEventService):
                         await self._trigger_next_queued_duplicate(record_id, virtual_record_id)
                 else:
                     self.logger.warning(f"Record {record_id} not found in database")
+
+    # Terminal indexing states, bucketed for run-scoped connector progress.
+    _INDEXED_STATES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
+    _FAILED_STATES = frozenset({ProgressStatus.FAILED.value})
+    _SKIPPED_STATES = frozenset({
+        ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+        ProgressStatus.AUTO_INDEX_OFF.value,
+    })
+
+    async def _track_indexing_outcome(self, record: dict, indexing_status: str | None) -> None:
+        """Best-effort: bump the connector run-scoped indexed/failed/skipped counter.
+
+        No-op unless the record belongs to a connector with an active tracked run.
+        """
+        try:
+            if record.get("origin") != OriginTypes.CONNECTOR.value:
+                return
+            connector_id = record.get("connectorId")
+            org_id = record.get("orgId")
+            if not connector_id or not org_id:
+                return
+            if indexing_status in self._INDEXED_STATES:
+                outcome = "indexed"
+            elif indexing_status in self._FAILED_STATES:
+                outcome = "failed"
+            elif indexing_status in self._SKIPPED_STATES:
+                outcome = "skipped"
+            else:
+                return
+
+            from app.connectors.services.sync_progress_store import (
+                get_connector_sync_progress_store,
+            )
+            store = await get_connector_sync_progress_store(self.logger, self.config_service)
+            if store:
+                await store.record_result(org_id, connector_id, outcome=outcome)
+        except Exception as e:
+            self.logger.debug(f"Failed to track indexing outcome for sync progress: {e}")
 
     async def __update_document_status(
         self,

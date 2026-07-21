@@ -7596,14 +7596,14 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> dict:
         """Aggregate indexable-leaf-record status counts per container subtree.
 
-        Runs at most one query per container type (app / recordGroup / folder).
+        Runs at most one query per container type (app / recordGroup / folder / record).
         Folder and internal placeholder records are excluded from the counts.
         """
         rollups: dict[str, list[dict]] = {}
         if not containers:
             return rollups
 
-        ids_by_type: dict[str, list[str]] = {"app": [], "recordGroup": [], "folder": []}
+        ids_by_type: dict[str, list[str]] = {"app": [], "recordGroup": [], "folder": [], "record": []}
         for c in containers:
             c_id = c.get("id")
             c_type = c.get("type")
@@ -7635,6 +7635,13 @@ class Neo4jProvider(IGraphDBProvider):
             "folder": f"""
             UNWIND $ids AS cid
             MATCH path = (folder:Record {{id: cid}})-[:RECORD_RELATION*1..100]->(r:Record)
+            WHERE all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+              AND {leaf_filter}
+            {ret}
+            """,
+            "record": f"""
+            UNWIND $ids AS cid
+            MATCH path = (parent:Record {{id: cid}})-[:RECORD_RELATION*1..100]->(r:Record)
             WHERE all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
               AND {leaf_filter}
             {ret}
