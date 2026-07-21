@@ -104,6 +104,8 @@ containers:
         table_group = next(g for g in bc.block_groups if g.type == GroupType.TABLE)
         assert table_group.name == "containers"
         assert table_group.table_metadata.num_of_rows == 2
+        assert table_group.table_metadata.num_of_cols == 2
+        assert table_group.table_metadata.num_of_cells == 4
 
         rows = [b for b in bc.blocks if b.type == BlockType.TABLE_ROW]
         assert len(rows) == 2
@@ -142,3 +144,30 @@ class TestDelegationToJSONParser:
         bc = parser.parse_data({"a": "x"}, "a.yaml")
         assert bc.block_groups[0].format == DataFormat.YAML
         assert bc.blocks[0].format == DataFormat.YAML
+
+
+class TestDockerComposeShape:
+
+    @pytest.mark.asyncio
+    async def test_services_nested_mapping_builds_groups(self, parser):
+        content = b"""
+version: "3.8"
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: mydb
+"""
+        result = await parser.parse(content, "docker-compose.yml")
+        bc = result.block_container
+
+        assert bc.block_groups[0].format == DataFormat.YAML
+        assert any(g.name == "services" for g in bc.block_groups)
+        assert len(bc.blocks) >= 1
+        joined = " ".join(b.data if isinstance(b.data, str) else str(b.data) for b in bc.blocks)
+        assert "redis" in joined or any(g.name == "redis" for g in bc.block_groups)
+        assert "postgres" in joined or any(g.name == "postgres" for g in bc.block_groups)
