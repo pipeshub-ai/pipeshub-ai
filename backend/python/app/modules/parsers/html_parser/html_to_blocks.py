@@ -47,7 +47,10 @@ Block / group mapping (mirrors markdown_to_blocks.MarkdownToBlocksConverter):
                          data:image src; HTTP src alone does not emit a block)
 
     div / section /… → recurse into children, or emit Block(TEXT, PARAGRAPH) when
-                       the node has text but no block-level descendants
+                       the node has text but no block-level descendants.
+                       Bare text siblings of nested blocks (e.g. Gmail HTML
+                       ``<div>text<div><img></div></div>``) are emitted as
+                       paragraph blocks during child walks.
 
     script / style / noscript / template / svg / meta / link / head → skipped
 """
@@ -1247,8 +1250,8 @@ class _DomWalker:
     ) -> tuple[LexborNode | None, int]:
         """Return the next element sibling after ``start``, skipping text nodes and skip tags.
 
-        Text nodes between block elements are whitespace in practice and are
-        already dropped by ``_process_node``, so they are safely skipped here.
+        Text nodes between block elements are handled separately by
+        ``_process_node`` (non-whitespace orphans become paragraphs).
         Returns ``(None, -1)`` when no element sibling remains.
         """
         for idx in range(start, len(children)):
@@ -1320,7 +1323,19 @@ class _DomWalker:
         structure are both preserved.
         """
         tag = _tag_name(node)
-        if not tag or tag in _SKIP_TAGS:
+        if tag in _SKIP_TAGS:
+            return
+        if not tag:
+            # Bare text sibling of containers/blocks (common in email HTML).
+            # Whitespace-only and non-text nodes (e.g. comments) are ignored.
+            data = node.text(deep=False, strip=False).strip()
+            if data:
+                self._emit_with_image_splits(
+                    block_type=BlockType.TEXT,
+                    sub_type=BlockSubType.PARAGRAPH,
+                    format=DataFormat.TXT,
+                    segments=[_Segment(kind="text", text=data)],
+                )
             return
 
         if tag in _HEADING_TAGS:

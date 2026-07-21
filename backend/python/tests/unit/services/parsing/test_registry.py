@@ -122,3 +122,31 @@ def test_set_and_get_fallback_chain() -> None:
 def test_get_fallback_chain_empty_when_not_set() -> None:
     registry = ParserRegistry()
     assert registry.get_fallback_chain("pdf") == []
+
+
+def test_resolve_maps_code_mime_and_extension_to_txt() -> None:
+    registry = ParserRegistry()
+    parser = _make_parser(ParserProvider.DEFAULT)
+    registry.register("txt", ParserProvider.DEFAULT, parser)
+    registry.set_default("txt", ParserProvider.DEFAULT)
+
+    assert registry.resolve("text/x-python", "py") is parser
+    assert registry.resolve("", "ts") is parser
+    assert registry.resolve("application/javascript", "") is parser
+    assert registry.resolve("text/javascript", "") is parser
+    assert registry.resolve("text/x-python-script", "") is parser
+    assert registry.resolve("text/x-script.python", "") is parser
+    assert registry.resolve("text/x-sh", "") is parser
+    assert registry.resolve("text/x-shellscript", "") is parser
+
+
+def test_resolve_maps_image_jpg_and_heic_mime() -> None:
+    registry = ParserRegistry()
+    parser = _make_parser(ParserProvider.DEFAULT)
+    registry.register("jpg", ParserProvider.DEFAULT, parser)
+    registry.register("heic", ParserProvider.DEFAULT, parser)
+    registry.set_default("jpg", ParserProvider.DEFAULT)
+    registry.set_default("heic", ParserProvider.DEFAULT)
+
+    assert registry.resolve("image/jpg", "") is parser
+    assert registry.resolve("image/heic", "") is parser

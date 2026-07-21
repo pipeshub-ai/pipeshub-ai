@@ -481,6 +481,23 @@ class TestLists:
         assert len(paragraphs) == 1
         assert paragraphs[0].data == "hello world"
 
+    def test_bare_text_sibling_of_nested_blocks_emitted_as_paragraph(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        """Gmail-style mixed content: text + nested div/img must keep the text."""
+        html = (
+            '<div dir="ltr">'
+            "An airplane is a fixed-wing aircraft."
+            "<div><br></div>"
+            '<div><img src="cid:ii_mrtb2uoe0" alt="image.png"><br></div>'
+            "</div>"
+        )
+        container = converter.convert(html)
+        paragraphs = [b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH]
+        assert len(paragraphs) == 1
+        assert paragraphs[0].data == "An airplane is a fixed-wing aircraft."
+        assert paragraphs[0].format == DataFormat.TXT
+
 
 class TestTables:
     def test_table_produces_rows(self, converter: HtmlToBlocksConverter) -> None:
