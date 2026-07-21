@@ -719,6 +719,19 @@ class Neo4jProvider(IGraphDBProvider):
         """
         arango_node = neo4j_node.copy()
 
+        # Nested maps are JSON properties in Neo4j. Decode at the provider
+        # boundary so every query/projection has the same Arango-shaped value.
+        for key, value in list(arango_node.items()):
+            if not isinstance(value, str):
+                continue
+            if key == "indexingProgress":
+                try:
+                    decoded = json.loads(value)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if isinstance(decoded, dict):
+                    arango_node[key] = decoded
+
         # Convert id to _key
         if "id" in arango_node:
             arango_node["_key"] = arango_node["id"]
@@ -7977,34 +7990,36 @@ class Neo4jProvider(IGraphDBProvider):
             "coalesce(r.isInternal, false) = false "
             "AND NOT EXISTS { MATCH (r)-[:IS_OF_TYPE]->(f:File) WHERE f.isFile = false }"
         )
-        ret = "RETURN cid AS id, r.indexingStatus AS status, r.indexingStage AS stage, count(*) AS cnt"
+        ret = "RETURN cid AS id, r.indexingStatus AS status, r.indexingStage AS stage, count(DISTINCT r) AS cnt"
 
         queries = {
             # Records carry connectorId = owning app id (mirrors the ArangoDB rollup),
             # which is robust to how RecordGroup/App edges are wired.
             "app": f"""
-            UNWIND $ids AS cid
-            MATCH (r:Record {{connectorId: cid, orgId: $org_id}})
-            WHERE {leaf_filter}
+            MATCH (r:Record)
+            WHERE r.connectorId IN $ids AND r.orgId = $org_id AND {leaf_filter}
+            WITH r.connectorId AS cid, r
             {ret}
             """,
             "recordGroup": f"""
             UNWIND $ids AS cid
             MATCH (rg0:RecordGroup {{id: cid}})<-[:BELONGS_TO*0..10]-(rg:RecordGroup)<-[:BELONGS_TO]-(r:Record)
-            WHERE {leaf_filter}
+            WHERE rg0.orgId = $org_id AND r.orgId = $org_id AND {leaf_filter}
             {ret}
             """,
             "folder": f"""
             UNWIND $ids AS cid
-            MATCH path = (folder:Record {{id: cid}})-[:RECORD_RELATION*1..100]->(r:Record)
-            WHERE all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+            MATCH path = (folder:Record {{id: cid}})-[:RECORD_RELATION*1..20]->(r:Record)
+            WHERE folder.orgId = $org_id AND r.orgId = $org_id
+              AND all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
               AND {leaf_filter}
             {ret}
             """,
             "record": f"""
             UNWIND $ids AS cid
-            MATCH path = (parent:Record {{id: cid}})-[:RECORD_RELATION*1..100]->(r:Record)
-            WHERE all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+            MATCH path = (parent:Record {{id: cid}})-[:RECORD_RELATION*1..20]->(r:Record)
+            WHERE parent.orgId = $org_id AND r.orgId = $org_id
+              AND all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
               AND {leaf_filter}
             {ret}
             """,
@@ -13401,7 +13416,8 @@ class Neo4jProvider(IGraphDBProvider):
                         ELSE 'record'
                     END,
                     subType: record.recordType,
-                    syncStatus: sync_status
+                    syncStatus: sync_status,
+                    isInternal: coalesce(record.isInternal, false)
                 }
                 WHEN rg IS NOT NULL THEN {
                     id: rg.id,

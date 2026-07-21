@@ -104,20 +104,28 @@ def stage_for_status(status: ProgressStatus) -> IndexingStage | None:
 # Terminal statuses (done or intentionally-not-indexed) count as fully "resolved"
 # so a container can reach 100% even when some records failed or were skipped;
 # the failed/skipped counts are surfaced separately for visibility.
-_RESOLVED_STATUSES = frozenset({
+INDEXED_STATUSES = frozenset({
     ProgressStatus.COMPLETED.value,
-    ProgressStatus.FAILED.value,
+    ProgressStatus.EMPTY.value,
+})
+FAILED_STATUSES = frozenset({ProgressStatus.FAILED.value})
+SKIPPED_STATUSES = frozenset({
     ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
     ProgressStatus.AUTO_INDEX_OFF.value,
-    ProgressStatus.EMPTY.value,
     ProgressStatus.ENABLE_MULTIMODAL_MODELS.value,
 })
-_QUEUED_STATUSES = frozenset({
-    ProgressStatus.QUEUED.value,
-    ProgressStatus.NOT_STARTED.value,
-    ProgressStatus.PAUSED.value,
-    None,
-})
+_RESOLVED_STATUSES = INDEXED_STATUSES | FAILED_STATUSES | SKIPPED_STATUSES
+
+
+def terminal_outcome_for_status(status: str | None) -> str | None:
+    """Map terminal indexing states to consistent connector-progress buckets."""
+    if status in INDEXED_STATUSES:
+        return "indexed"
+    if status in FAILED_STATUSES:
+        return "failed"
+    if status in SKIPPED_STATUSES:
+        return "skipped"
+    return None
 # Partial credit for an IN_PROGRESS record, refined by its coarse stage.
 _STAGE_WEIGHT: dict[str | None, float] = {
     IndexingStage.QUEUED.value: 0.10,
@@ -151,13 +159,13 @@ def build_container_rollup(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
         stage = row.get("stage")
         total += cnt
 
-        if status == ProgressStatus.COMPLETED.value:
+        if status in INDEXED_STATUSES:
             completed += cnt
             weighted += cnt
-        elif status == ProgressStatus.FAILED.value:
+        elif status in FAILED_STATUSES:
             failed += cnt
             weighted += cnt
-        elif status in _RESOLVED_STATUSES:
+        elif status in SKIPPED_STATUSES:
             skipped += cnt
             weighted += cnt
         elif status == ProgressStatus.IN_PROGRESS.value:

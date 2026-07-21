@@ -228,8 +228,8 @@ export function formatRollupFailureDetail(
 
 /** Build the container-row display model from an aggregated rollup. */
 export function getRollupProgressView(rollup: IndexingRollup): RollupProgressView {
-  const done = rollup.completed + rollup.failed + rollup.skipped;
-  const hasErrors = !rollup.isActive && rollup.failed > 0;
+  const hasNonIndexedResults = rollup.failed > 0 || rollup.skipped > 0;
+  const hasErrors = !rollup.isActive && hasNonIndexedResults;
 
   const detail =
     !rollup.isActive && hasErrors
@@ -239,8 +239,10 @@ export function getRollupProgressView(rollup: IndexingRollup): RollupProgressVie
     isActive: rollup.isActive,
     percent: Math.max(0, Math.min(100, rollup.percent)),
     label: rollup.isActive
-      ? `${done} of ${rollup.total} indexed`
-      : `${rollup.total} indexed`,
+      ? `${rollup.completed} of ${rollup.total} indexed`
+      : hasNonIndexedResults
+        ? `${rollup.completed} of ${rollup.total} indexed`
+        : `${rollup.total} indexed`,
     detail,
     hasErrors,
   };

@@ -162,6 +162,37 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
     };
   }, [recordId, revokeBlobUrl, t]);
 
+  const polledIndexingStatus = recordDetails?.record.indexingStatus;
+  useEffect(() => {
+    if (polledIndexingStatus !== 'QUEUED' && polledIndexingStatus !== 'IN_PROGRESS') {
+      return undefined;
+    }
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      if (typeof document !== 'undefined' && document.hidden) {
+        timer = setTimeout(() => void poll(), 5000);
+        return;
+      }
+      try {
+        const details = await KnowledgeBaseApi.getRecordDetails(recordId, {
+          suppressErrorToast: true,
+        });
+        if (!cancelled) setRecordDetails(details);
+      } catch {
+        // Keep the existing record visible and retry; progress polling is best effort.
+      }
+      if (!cancelled) timer = setTimeout(() => void poll(), 5000);
+    };
+
+    timer = setTimeout(() => void poll(), 5000);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [polledIndexingStatus, recordId]);
+
   useEffect(() => () => revokeBlobUrl(), [revokeBlobUrl]);
 
   useEffect(() => {

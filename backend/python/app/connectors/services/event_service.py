@@ -296,8 +296,6 @@ class EventService:
 
         store = await self._sync_progress_store()
         run_id: str | None = None
-        if store:
-            run_id = await store.start_run(org_id, connector_id, full_sync=effective_full_sync)
 
         if effective_full_sync:
             # --- Full sync: acquire lock for the prep phase ---
@@ -339,6 +337,12 @@ class EventService:
                 except Exception as edge_error:
                     self.logger.error(f"Error deleting connector sync edges for {connector_id}: {edge_error}")
 
+                # Do not create progress state until the destructive preparation
+                # succeeded; otherwise a failed prep leaves a phantom active run.
+                if store:
+                    run_id = await store.start_run(
+                        org_id, connector_id, full_sync=effective_full_sync
+                    )
                 # Schedule the background sync task
                 await sync_task_manager.start_sync(connector_id, self._run_sync_and_clear_status(connector, connector_id, org_id, run_id))
                 self.logger.info(f"Started full sync task for {connector_name} {connector_id}")
@@ -382,6 +386,10 @@ class EventService:
                 self.logger.error(f"❌ Failed to set SYNCING status for connector {connector_id}: {status_err}")
                 # Non-fatal: proceed with sync even if status write failed
 
+            if store:
+                run_id = await store.start_run(
+                    org_id, connector_id, full_sync=effective_full_sync
+                )
             await sync_task_manager.start_sync(connector_id, self._run_sync_and_clear_status(connector, connector_id, org_id, run_id))
             self.logger.info(f"Started sync task for {connector_name} {connector_id}")
 
@@ -396,8 +404,21 @@ class EventService:
     ) -> None:
         """Wrap run_sync() so that status is cleared to null when the task finishes."""
         start = time.monotonic()
+        failed = False
         try:
-            await connector.run_sync()
+            from app.connectors.services.sync_run_context import (
+                reset_sync_run_id,
+                set_sync_run_id,
+            )
+
+            token = set_sync_run_id(run_id)
+            try:
+                await connector.run_sync()
+            finally:
+                reset_sync_run_id(token)
+        except BaseException:
+            failed = True
+            raise
         finally:
             elapsed = time.monotonic() - start
             mins, secs = divmod(elapsed, 60)
@@ -428,6 +449,11 @@ class EventService:
                     self.logger.info(f"✅ Cleared status for connector {connector_id} after sync")
                 except Exception as clear_err:
                     self.logger.error(f"❌ Failed to clear status for connector {connector_id}: {clear_err}")
+                if failed:
+                    self.logger.error(
+                        "Connector sync %s failed before discovery completed; progress may be partial",
+                        connector_id,
+                    )
 
     async def _handle_reindex(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Handle reindex event for a connector with pagination support.

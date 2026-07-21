@@ -4,6 +4,7 @@ import React, { useCallback, useState } from 'react';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 import { ConnectorSyncInProgressError } from './connector-sync-actions';
 import { describeSyncConflict } from './sync-conflict-copy';
+import { useToastStore } from '@/lib/store/toast-store';
 
 interface PendingConflict {
   requestedFullSync: boolean;
@@ -22,6 +23,7 @@ interface PendingConflict {
 export function useSyncConflictGuard() {
   const [pending, setPending] = useState<PendingConflict | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const addToast = useToastStore((state) => state.addToast);
 
   const guard = useCallback(
     async (
@@ -48,11 +50,17 @@ export function useSyncConflictGuard() {
     setConfirming(true);
     try {
       await pending.retry();
+    } catch (error) {
+      console.error('Unable to restart connector sync', error);
+      addToast({
+        variant: 'error',
+        title: 'Could not restart the sync. Please try again.',
+      });
     } finally {
       setConfirming(false);
       setPending(null);
     }
-  }, [pending]);
+  }, [addToast, pending]);
 
   const copy = pending
     ? describeSyncConflict(pending.currentStatus, pending.requestedFullSync)

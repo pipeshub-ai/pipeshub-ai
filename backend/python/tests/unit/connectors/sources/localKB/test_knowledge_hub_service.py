@@ -428,6 +428,51 @@ class TestAttachIndexingRollups:
         mock_graph_provider.get_indexing_rollups.assert_not_awaited()
         assert item.indexingRollup is None
 
+    @pytest.mark.asyncio
+    async def test_internal_current_record_attaches_child_rollup(self, service, mock_graph_provider):
+        current_node = CurrentNode(
+            id="web-path-1",
+            name="docs.pipeshub.com/ai-models/llm/",
+            nodeType="record",
+            subType="FILE",
+            isInternal=True,
+        )
+        mock_graph_provider.get_indexing_rollups.return_value = {
+            "web-path-1": [{"status": "IN_PROGRESS", "stage": "INDEXING", "cnt": 2}],
+        }
+
+        await service._attach_indexing_rollups(
+            [], org_id="org-1", current_node=current_node
+        )
+
+        mock_graph_provider.get_indexing_rollups.assert_awaited_once_with(
+            org_id="org-1",
+            containers=[{"id": "web-path-1", "type": "record"}],
+        )
+        assert current_node.indexingRollup is not None
+        assert current_node.indexingRollup.isActive is True
+
+    @pytest.mark.asyncio
+    async def test_duplicate_item_and_current_node_only_query_once(self, service, mock_graph_provider):
+        item = self._web_path_placeholder()
+        current_node = CurrentNode(
+            id=item.id,
+            name=item.name,
+            nodeType="record",
+            subType="FILE",
+            isInternal=True,
+        )
+        mock_graph_provider.get_indexing_rollups.return_value = {}
+
+        await service._attach_indexing_rollups(
+            [item], org_id="org-1", current_node=current_node
+        )
+
+        mock_graph_provider.get_indexing_rollups.assert_awaited_once_with(
+            org_id="org-1",
+            containers=[{"id": "web-path-1", "type": "record"}],
+        )
+
 
 # ============================================================================
 # get_nodes - main entry point

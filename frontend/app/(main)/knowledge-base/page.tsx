@@ -1375,24 +1375,43 @@ function KnowledgeBasePageContent() {
         currentState.allRecordsSort,
         currentState.allRecordsPagination
       );
+      // Polling only patches row/current-node progress. Do not recompute counts,
+      // breadcrumbs or filter facets on every refresh.
+      params.include = 'indexingRollup';
       const nodeType = searchParams.get('nodeType');
       const nodeId = searchParams.get('nodeId');
       const data = nodeType && nodeId
-        ? await KnowledgeHubApi.loadFolderData(nodeType as NodeType, nodeId, params)
-        : await KnowledgeHubApi.getAllRootItems(params);
+        ? await KnowledgeHubApi.loadFolderData(nodeType as NodeType, nodeId, params, {
+            suppressErrorToast: true,
+          })
+        : await KnowledgeHubApi.getAllRootItems(params, { suppressErrorToast: true });
       patchVisibleRecordProgress(data.items, data.currentNode);
       return;
     }
 
     const nodeType = selectedNode?.nodeType ?? searchParams.get('nodeType');
     const nodeId = selectedNode?.nodeId ?? searchParams.get('nodeId') ?? searchParams.get('folderId');
-    if (!nodeType || !nodeId) return;
 
     const params = buildFilterParams(
       { ...currentState.filter, searchQuery: currentState.searchQuery },
       currentState.sort,
       currentState.collectionsPagination
     );
+    params.include = 'indexingRollup';
+    if (!nodeType || !nodeId) {
+      const useFlattenedSearch = hasKnowledgeHubFlatteningFilters(
+        currentState.filter,
+        currentState.searchQuery
+      );
+      const data = await KnowledgeHubApi.getNavigationNodes(
+        useFlattenedSearch
+          ? { ...params, origins: 'COLLECTION' }
+          : { ...params, nodeTypes: 'app', origins: 'COLLECTION', flattened: false },
+        { suppressErrorToast: true }
+      );
+      patchVisibleRecordProgress(data.items, data.currentNode);
+      return;
+    }
     const data = await KnowledgeHubApi.loadFolderData(nodeType as NodeType, nodeId, params, {
       suppressErrorToast: true,
     });

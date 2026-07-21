@@ -223,7 +223,12 @@ function hasPendingServices(
   if (!services) return false;
   return Object.entries(services).some(([key, status]) => {
     const detailStatus = details?.[key]?.status;
-    return status !== 'healthy' || detailStatus === 'starting' || detailStatus === 'pending';
+    return (
+      status === 'starting' ||
+      status === 'pending' ||
+      detailStatus === 'starting' ||
+      detailStatus === 'pending'
+    );
   });
 }
 

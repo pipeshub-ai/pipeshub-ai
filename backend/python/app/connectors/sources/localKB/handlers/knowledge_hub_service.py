@@ -242,6 +242,7 @@ class KnowledgeHubService:
                         name=parent_info['name'],
                         nodeType=parent_info['nodeType'],
                         subType=parent_info.get('subType'),
+                        isInternal=bool(parent_info.get('isInternal', False)),
                     )
 
             # Build applied filters
@@ -717,6 +718,7 @@ class KnowledgeHubService:
                 nodeType=node_info['nodeType'],
                 subType=node_info.get('subType'),
                 syncStatus=node_info.get('syncStatus'),
+                isInternal=bool(node_info.get('isInternal', False)),
             )
         return None
 
@@ -863,17 +865,31 @@ class KnowledgeHubService:
         error is swallowed and the affected nodes simply carry no rollup.
         """
         containers: list[dict] = []
+        seen_containers: set[tuple[str, str]] = set()
+
+        def add_container(container_id: str, container_type: str) -> None:
+            key = (container_id, container_type)
+            if key not in seen_containers:
+                seen_containers.add(key)
+                containers.append({"id": container_id, "type": container_type})
 
         for item in items:
             rollup_type = _rollup_container_type_for_item(item)
             if rollup_type and item.id:
-                containers.append({"id": item.id, "type": rollup_type})
+                add_container(item.id, rollup_type)
 
         current_rollup_type = (
             _rollup_container_type(current_node.nodeType) if current_node else None
         )
+        if (
+            current_node
+            and current_rollup_type is None
+            and current_node.nodeType == NodeType.RECORD.value
+            and current_node.isInternal
+        ):
+            current_rollup_type = "record"
         if current_node and current_rollup_type and current_node.id:
-            containers.append({"id": current_node.id, "type": current_rollup_type})
+            add_container(current_node.id, current_rollup_type)
 
         if not containers:
             return

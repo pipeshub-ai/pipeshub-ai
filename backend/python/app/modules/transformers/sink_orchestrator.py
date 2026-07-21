@@ -147,12 +147,13 @@ class SinkOrchestrator(Transformer):
             raise Exception(f"Record {record_id} not found in database")
 
         if skip_vector_store:
+            timestamp = get_epoch_timestamp_in_ms()
             success = await self.graph_provider.batch_update_nodes(
                 [
                     {
                         "id": record_id,
                         "virtualRecordId": record.virtual_record_id,
-                        "indexingStatus": ProgressStatus.NOT_STARTED.value,
+                        "indexingStatus": ProgressStatus.COMPLETED.value,
                         "isDirty": False,
                         **build_indexing_progress(IndexingStage.COMPLETED, timestamp=timestamp),
                     }
@@ -199,6 +200,7 @@ class SinkOrchestrator(Transformer):
                     "indexingStatus": ProgressStatus.COMPLETED.value,
                     "lastIndexTimestamp": timestamp,
                     "isDirty": False,
+                    **build_indexing_progress(IndexingStage.COMPLETED, timestamp=timestamp),
                 }
             ],
             CollectionNames.RECORDS.value,

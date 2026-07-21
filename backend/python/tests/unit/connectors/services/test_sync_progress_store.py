@@ -25,10 +25,12 @@ class FakeRedis:
     def __init__(self) -> None:
         self.store: dict[str, dict[str, str]] = {}
         self.expiries: dict[str, int] = {}
+        self.eval_calls = 0
 
-    async def delete(self, key: str) -> None:
-        self.store.pop(key, None)
-        self.expiries.pop(key, None)
+    async def delete(self, *keys: str) -> None:
+        for key in keys:
+            self.store.pop(key, None)
+            self.expiries.pop(key, None)
 
     async def hset(self, key, field=None, value=None, mapping=None) -> int:
         h = self.store.setdefault(key, {})
@@ -58,6 +60,46 @@ class FakeRedis:
     async def hgetall(self, key):
         return dict(self.store.get(key, {}))
 
+    async def eval(self, script, numkeys, *keys_and_args):
+        self.eval_calls += 1
+        keys = keys_and_args[:numkeys]
+        args = keys_and_args[numkeys:]
+        key = keys[0]
+        if "HINCRBY" in script:
+            expected_run_id, field, count, heartbeat, outcome_id, ttl = args
+            if key not in self.store:
+                return 0
+            if expected_run_id and await self.hget(key, "runId") != expected_run_id:
+                return 0
+            if outcome_id:
+                outcome_key = keys[1]
+                seen = self.store.setdefault(outcome_key, {})
+                if outcome_id in seen:
+                    return 0
+                seen[outcome_id] = "1"
+                await self.expire(outcome_key, int(ttl))
+            await self.hincrby(key, field, int(count))
+            await self.hset(key, "heartbeatAt", heartbeat)
+            await self.expire(key, int(ttl))
+            return 1
+
+        expected_run_id, phase, heartbeat, ttl = args
+        if key not in self.store:
+            return 0
+        if expected_run_id and await self.hget(key, "runId") != expected_run_id:
+            return 0
+        discovered = await self.hget(key, "discovered") or "0"
+        await self.hset(
+            key,
+            mapping={
+                "phase": phase,
+                "total": discovered,
+                "heartbeatAt": heartbeat,
+            },
+        )
+        await self.expire(key, int(ttl))
+        return 1
+
 
 def make_store() -> tuple[ConnectorSyncProgressStore, FakeRedis]:
     redis = FakeRedis()
@@ -83,7 +125,7 @@ class TestStoreLifecycle:
         assert data["fullSync"] is True
 
     async def test_add_discovered_only_when_run_exists(self) -> None:
-        store, _ = make_store()
+        store, redis = make_store()
         # No run yet -> no-op (must not create the key).
         await store.add_discovered(ORG, CONN, 5)
         assert await store.get(ORG, CONN) is None
@@ -93,6 +135,7 @@ class TestStoreLifecycle:
         await store.add_discovered(ORG, CONN, 3)
         data = await store.get(ORG, CONN)
         assert data["discovered"] == 8
+        assert redis.eval_calls == 3
 
     async def test_close_discovery_freezes_total(self) -> None:
         store, _ = make_store()
@@ -119,6 +162,21 @@ class TestStoreLifecycle:
         assert data["indexed"] == 2
         assert data["failed"] == 1
         assert data["skipped"] == 1
+
+    async def test_record_result_is_run_scoped_and_idempotent(self) -> None:
+        store, _ = make_store()
+        await store.start_run(ORG, CONN, run_id="r1")
+        await store.record_result(
+            ORG, CONN, outcome="indexed", run_id="r1", record_id="record-1"
+        )
+        await store.record_result(
+            ORG, CONN, outcome="indexed", run_id="r1", record_id="record-1"
+        )
+        await store.record_result(
+            ORG, CONN, outcome="indexed", run_id="obsolete", record_id="record-2"
+        )
+        data = await store.get(ORG, CONN)
+        assert data["indexed"] == 1
 
     async def test_clear_removes_run(self) -> None:
         store, _ = make_store()

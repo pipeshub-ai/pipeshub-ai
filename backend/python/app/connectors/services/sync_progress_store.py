@@ -41,7 +41,9 @@ class SyncPhase:
 _NUMERIC_FIELDS = ("discovered", "indexed", "failed", "skipped", "total")
 
 # A run whose heartbeat is older than this is treated as stalled (crashed
-# indexer, dropped Kafka messages) so the UI does not spin forever.
+# indexer, dropped Kafka messages) so the UI does not spin forever. Indexers
+# heartbeat while processing, so this is a true liveness signal rather than a
+# limit on the duration of a single large document.
 STALE_THRESHOLD_MS = 30 * 60 * 1000
 
 
@@ -117,6 +119,41 @@ class ConnectorSyncProgressStore:
     KEY_PREFIX = "connector_sync_progress:"
     # Runs that never settle (crashed indexer, lost messages) self-expire.
     TTL_SECONDS = 24 * 60 * 60
+    # Counter updates sit on the per-record hot path. Keep the existence guard,
+    # increment, heartbeat and TTL refresh atomic and to one Redis round-trip.
+    _INCREMENT_IF_PRESENT_SCRIPT = """
+        if redis.call('EXISTS', KEYS[1]) == 0 then
+            return 0
+        end
+        if ARGV[1] ~= '' and redis.call('HGET', KEYS[1], 'runId') ~= ARGV[1] then
+            return 0
+        end
+        if ARGV[5] ~= '' then
+            if redis.call('SADD', KEYS[2], ARGV[5]) == 0 then
+                return 0
+            end
+            redis.call('EXPIRE', KEYS[2], ARGV[6])
+        end
+        redis.call('HINCRBY', KEYS[1], ARGV[2], ARGV[3])
+        redis.call('HSET', KEYS[1], 'heartbeatAt', ARGV[4])
+        redis.call('EXPIRE', KEYS[1], ARGV[6])
+        return 1
+    """
+    _CLOSE_DISCOVERY_SCRIPT = """
+        if redis.call('EXISTS', KEYS[1]) == 0 then
+            return 0
+        end
+        if ARGV[1] ~= '' and redis.call('HGET', KEYS[1], 'runId') ~= ARGV[1] then
+            return 0
+        end
+        local discovered = redis.call('HGET', KEYS[1], 'discovered') or '0'
+        redis.call('HSET', KEYS[1],
+            'phase', ARGV[2],
+            'total', discovered,
+            'heartbeatAt', ARGV[3])
+        redis.call('EXPIRE', KEYS[1], ARGV[4])
+        return 1
+    """
 
     def __init__(self, logger: logging.Logger, redis_client) -> None:
         self.logger = logger
@@ -133,12 +170,19 @@ class ConnectorSyncProgressStore:
         # from_url returns a client synchronously (see app/health/health.py); the
         # connection is established lazily on first command.
         redis_client = aioredis.from_url(  # type: ignore[no-untyped-call]
-            redis_url, encoding="utf-8", decode_responses=True
+            redis_url,
+            encoding="utf-8",
+            decode_responses=True,
+            socket_connect_timeout=1,
+            socket_timeout=2,
         )
         return cls(logger, redis_client)
 
     def _key(self, org_id: str, connector_id: str) -> str:
         return f"{self.KEY_PREFIX}{org_id}:{connector_id}"
+
+    def _outcomes_key(self, org_id: str, connector_id: str, run_id: str) -> str:
+        return f"{self._key(org_id, connector_id)}:outcomes:{run_id}"
 
     async def start_run(
         self,
@@ -176,15 +220,14 @@ class ConnectorSyncProgressStore:
             self.logger.debug(f"start_run failed for {connector_id}: {e}")
         return run_id
 
-    async def add_discovered(self, org_id: str, connector_id: str, count: int = 1) -> None:
+    async def add_discovered(
+        self, org_id: str, connector_id: str, count: int = 1, *, run_id: str | None = None
+    ) -> None:
         if not self._redis or count <= 0 or not org_id or not connector_id:
             return
         key = self._key(org_id, connector_id)
         try:
-            if not await self._redis.exists(key):
-                return
-            await self._redis.hincrby(key, "discovered", count)
-            await self._touch(key)
+            await self._increment_if_present(key, "discovered", count, expected_run_id=run_id)
         except Exception as e:
             self.logger.debug(f"add_discovered failed for {connector_id}: {e}")
 
@@ -205,22 +248,28 @@ class ConnectorSyncProgressStore:
             return
         key = self._key(org_id, connector_id)
         try:
-            if not await self._redis.exists(key):
-                return
-            if expected_run_id is not None:
-                current_run_id = await self._redis.hget(key, "runId")
-                if current_run_id != expected_run_id:
-                    return
-            discovered = int(await self._redis.hget(key, "discovered") or 0)
-            await self._redis.hset(
-                key, mapping={"phase": SyncPhase.INDEXING, "total": discovered}
+            now = int(time.time() * 1000)
+            await self._redis.eval(
+                self._CLOSE_DISCOVERY_SCRIPT,
+                1,
+                key,
+                expected_run_id or "",
+                SyncPhase.INDEXING,
+                now,
+                self.TTL_SECONDS,
             )
-            await self._touch(key)
         except Exception as e:
             self.logger.debug(f"close_discovery failed for {connector_id}: {e}")
 
     async def record_result(
-        self, org_id: str, connector_id: str, *, outcome: str
+        self,
+        org_id: str,
+        connector_id: str,
+        *,
+        outcome: str,
+        run_id: str | None = None,
+        record_id: str | None = None,
+        count: int = 1,
     ) -> None:
         """Record one record reaching a terminal indexing state.
 
@@ -228,14 +277,19 @@ class ConnectorSyncProgressStore:
         connector has no tracked run (key absent).
         """
         field = {"indexed": "indexed", "failed": "failed", "skipped": "skipped"}.get(outcome)
-        if not self._redis or not field or not org_id or not connector_id:
+        if not self._redis or not field or not org_id or not connector_id or count <= 0:
             return
         key = self._key(org_id, connector_id)
         try:
-            if not await self._redis.exists(key):
-                return
-            await self._redis.hincrby(key, field, 1)
-            await self._touch(key)
+            outcomes_key = self._outcomes_key(org_id, connector_id, run_id) if run_id and record_id else ""
+            await self._increment_if_present(
+                key,
+                field,
+                count,
+                expected_run_id=run_id,
+                outcome_key=outcomes_key,
+                outcome_id=f"{outcome}:{record_id}" if record_id else None,
+            )
         except Exception as e:
             self.logger.debug(f"record_result failed for {connector_id}: {e}")
 
@@ -279,14 +333,38 @@ class ConnectorSyncProgressStore:
         if not self._redis or not org_id or not connector_id:
             return
         try:
-            await self._redis.delete(self._key(org_id, connector_id))
+            key = self._key(org_id, connector_id)
+            run_id = await self._redis.hget(key, "runId")
+            keys = [key]
+            if run_id:
+                keys.append(self._outcomes_key(org_id, connector_id, run_id))
+            await self._redis.delete(*keys)
         except Exception as e:
             self.logger.debug(f"clear sync progress failed for {connector_id}: {e}")
 
-    async def _touch(self, key: str) -> None:
+    async def _increment_if_present(
+        self,
+        key: str,
+        field: str,
+        count: int,
+        *,
+        expected_run_id: str | None = None,
+        outcome_key: str = "",
+        outcome_id: str | None = None,
+    ) -> None:
         now = int(time.time() * 1000)
-        await self._redis.hset(key, "heartbeatAt", now)
-        await self._redis.expire(key, self.TTL_SECONDS)
+        await self._redis.eval(
+            self._INCREMENT_IF_PRESENT_SCRIPT,
+            2,
+            key,
+            outcome_key or f"{key}:noop",
+            expected_run_id or "",
+            field,
+            count,
+            now,
+            outcome_id or "",
+            self.TTL_SECONDS,
+        )
 
     @staticmethod
     def _normalize(raw: dict[str, str]) -> dict[str, Any]:

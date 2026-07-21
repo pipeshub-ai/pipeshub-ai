@@ -1074,7 +1074,10 @@ class DataSourceEntitiesProcessor:
                         records_to_publish.append(processed_record)
 
             if records_to_publish:
-                discovered_by_connector: dict[tuple[str, str], int] = {}
+                from app.connectors.services.sync_run_context import get_sync_run_id
+
+                sync_run_id = get_sync_run_id()
+                discovered_by_connector: dict[tuple[str, str, str | None], int] = {}
                 for record in records_to_publish:
                     # Skip publishing indexing events for records with AUTO_INDEX_OFF status
                     if hasattr(record, 'indexing_status') and record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
@@ -1099,15 +1102,18 @@ class DataSourceEntitiesProcessor:
                         self.logger.debug(f"Skipping newRecord event for KB folder {record.id}")
                         continue
 
+                    payload = record.to_kafka_record()
+                    if sync_run_id:
+                        payload["syncRunId"] = sync_run_id
                     await self.messaging_producer.send_message(
                             "record-events",
-                            {"eventType": "newRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
+                            {"eventType": "newRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": payload},
                             key=record.id
                         )
                     record_org_id = getattr(record, "org_id", "") or self.org_id
                     connector_id = getattr(record, "connector_id", "")
                     if record_org_id and connector_id:
-                        key = (record_org_id, connector_id)
+                        key = (record_org_id, connector_id, sync_run_id)
                         discovered_by_connector[key] = discovered_by_connector.get(key, 0) + 1
 
                 await self._track_discovered(discovered_by_connector)
@@ -1115,7 +1121,9 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Transaction on_new_records failed: {str(e)}")
             raise e
 
-    async def _track_discovered(self, discovered_by_connector: dict[tuple[str, str], int]) -> None:
+    async def _track_discovered(
+        self, discovered_by_connector: dict[tuple[str, str, str | None], int]
+    ) -> None:
         """Best-effort: count records queued for indexing by the active sync run."""
         if not discovered_by_connector:
             return
@@ -1126,8 +1134,11 @@ class DataSourceEntitiesProcessor:
             store = await get_connector_sync_progress_store(self.logger, self.config_service)
             if not store:
                 return
-            for (record_org_id, connector_id), count in discovered_by_connector.items():
-                await store.add_discovered(record_org_id, connector_id, count)
+            for (record_org_id, connector_id, run_id), count in discovered_by_connector.items():
+                # Only connector-run discovery owns a run-scoped counter. Manual
+                # reindex/webhook events must not inflate an unrelated active run.
+                if run_id:
+                    await store.add_discovered(record_org_id, connector_id, count, run_id=run_id)
         except Exception as e:
             self.logger.debug(f"Failed to track discovered records for sync progress: {e}")
 
@@ -1136,7 +1147,19 @@ class DataSourceEntitiesProcessor:
         org_id = getattr(record, "org_id", "") or self.org_id
         connector_id = getattr(record, "connector_id", "")
         if org_id and connector_id:
-            await self._track_discovered({(org_id, connector_id): 1})
+            from app.connectors.services.sync_run_context import get_sync_run_id
+
+            await self._track_discovered({(org_id, connector_id, get_sync_run_id()): 1})
+
+    @staticmethod
+    def _kafka_payload(record: Record) -> dict:
+        """Preserve the discovery run on asynchronous record events."""
+        from app.connectors.services.sync_run_context import get_sync_run_id
+
+        payload = record.to_kafka_record()
+        if run_id := get_sync_run_id():
+            payload["syncRunId"] = run_id
+        return payload
 
 
     @retry_on_deadlock()
@@ -1158,7 +1181,7 @@ class DataSourceEntitiesProcessor:
 
             await self.messaging_producer.send_message(
                 "record-events",
-                {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
+                {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": self._kafka_payload(processed_record)},
                 key=record.id
             )
             await self._track_record_queued(processed_record)
@@ -1281,7 +1304,7 @@ class DataSourceEntitiesProcessor:
                     {
                         "eventType": "newRecord",
                         "timestamp": get_epoch_timestamp_in_ms(),
-                        "payload": record.to_kafka_record(),
+                        "payload": self._kafka_payload(record),
                     },
                     key=record.id,
                 )
@@ -1302,7 +1325,7 @@ class DataSourceEntitiesProcessor:
                     {
                         "eventType": "updateRecord",
                         "timestamp": get_epoch_timestamp_in_ms(),
-                        "payload": record.to_kafka_record(),
+                        "payload": self._kafka_payload(record),
                     },
                     key=record.id,
                 )
@@ -1413,7 +1436,7 @@ class DataSourceEntitiesProcessor:
                     skipped_records += 1
                     continue
 
-                payload = record.to_kafka_record()
+                payload = self._kafka_payload(record)
 
                 await self.messaging_producer.send_message(
                     "record-events",

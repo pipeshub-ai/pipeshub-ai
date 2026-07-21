@@ -9,6 +9,7 @@ export interface ConnectorServiceCommandOptions {
   headers?: Record<string, string>;
   queryParams?: Record<string, string | number | boolean>;
   body?: any;
+  timeoutMs?: number;
 }
 
 export interface ConnectorServiceResponse<T> {
@@ -25,11 +26,13 @@ const logger = Logger.getInstance({
 export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResponse<T>> {
   private method: HttpMethod;
   private body?: any;
+  private timeoutMs?: number;
 
   constructor(options: ConnectorServiceCommandOptions) {
     super(options.uri, options.queryParams, options.headers);
     this.method = options.method;
     this.body = this.sanitizeBody(options.body);
+    this.timeoutMs = options.timeoutMs;
     this.headers = this.sanitizeHeaders(options.headers || {});
   }
   
@@ -40,6 +43,7 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
       method: this.method,
       headers: this.headers,
       body: this.body,
+      signal: this.timeoutMs ? AbortSignal.timeout(this.timeoutMs) : undefined,
     };
 
     try {

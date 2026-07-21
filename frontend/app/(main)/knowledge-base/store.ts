@@ -35,6 +35,32 @@ import type {
   AllRecordsPagination,
 } from './types';
 
+const sameIndexingProgress = (
+  left: KnowledgeHubNode['indexingProgress'],
+  right: KnowledgeHubNode['indexingProgress']
+) =>
+  left === right ||
+  (left?.current === right?.current &&
+    left?.total === right?.total &&
+    left?.unit === right?.unit &&
+    left?.phase === right?.phase &&
+    left?.message === right?.message);
+
+const sameIndexingRollup = (
+  left: KnowledgeHubNode['indexingRollup'],
+  right: KnowledgeHubNode['indexingRollup']
+) =>
+  left === right ||
+  (left?.total === right?.total &&
+    left?.completed === right?.completed &&
+    left?.inProgress === right?.inProgress &&
+    left?.queued === right?.queued &&
+    left?.failed === right?.failed &&
+    left?.skipped === right?.skipped &&
+    left?.percent === right?.percent &&
+    left?.status === right?.status &&
+    left?.isActive === right?.isActive);
+
 // Enable Immer support for Map and Set
 enableMapSet();
 
@@ -734,6 +760,15 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
           const patchItem = (item: KnowledgeHubNode) => {
             const fresh = byId.get(item.id);
             if (!fresh) return item;
+            const unchanged =
+              item.indexingStatus === fresh.indexingStatus &&
+              item.indexingStage === fresh.indexingStage &&
+              item.lastActivityTimestamp === fresh.lastActivityTimestamp &&
+              item.syncStatus === fresh.syncStatus &&
+              item.reason === fresh.reason &&
+              sameIndexingProgress(item.indexingProgress, fresh.indexingProgress) &&
+              sameIndexingRollup(item.indexingRollup, fresh.indexingRollup);
+            if (unchanged) return item;
             return {
               ...item,
               indexingStatus: fresh.indexingStatus,
@@ -746,22 +781,57 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
             };
           };
 
+          const patchItems = (existing: KnowledgeHubNode[]) => {
+            let changed = false;
+            const patched = existing.map((item) => {
+              const next = patchItem(item);
+              if (next !== item) changed = true;
+              return next;
+            });
+            return changed ? patched : existing;
+          };
+
           if (state.tableData?.items) {
-            state.tableData.items = state.tableData.items.map(patchItem);
+            const patched = patchItems(state.tableData.items);
+            if (patched !== state.tableData.items) state.tableData.items = patched;
           }
           if (state.allRecordsTableData?.items) {
-            state.allRecordsTableData.items = state.allRecordsTableData.items.map(patchItem);
+            const patched = patchItems(state.allRecordsTableData.items);
+            if (patched !== state.allRecordsTableData.items) {
+              state.allRecordsTableData.items = patched;
+            }
           }
 
           // Keep the header aggregate (the container you're inside) live too.
           if (currentNode?.id) {
             if (state.tableData?.currentNode?.id === currentNode.id) {
-              state.tableData.currentNode.indexingRollup = currentNode.indexingRollup;
-              state.tableData.currentNode.syncStatus = currentNode.syncStatus;
+              if (
+                !sameIndexingRollup(
+                  state.tableData.currentNode.indexingRollup,
+                  currentNode.indexingRollup
+                )
+              ) {
+                state.tableData.currentNode.indexingRollup = currentNode.indexingRollup;
+              }
+              if (state.tableData.currentNode.syncStatus !== currentNode.syncStatus) {
+                state.tableData.currentNode.syncStatus = currentNode.syncStatus;
+              }
             }
             if (state.allRecordsTableData?.currentNode?.id === currentNode.id) {
-              state.allRecordsTableData.currentNode.indexingRollup = currentNode.indexingRollup;
-              state.allRecordsTableData.currentNode.syncStatus = currentNode.syncStatus;
+              if (
+                !sameIndexingRollup(
+                  state.allRecordsTableData.currentNode.indexingRollup,
+                  currentNode.indexingRollup
+                )
+              ) {
+                state.allRecordsTableData.currentNode.indexingRollup =
+                  currentNode.indexingRollup;
+              }
+              if (
+                state.allRecordsTableData.currentNode.syncStatus !== currentNode.syncStatus
+              ) {
+                state.allRecordsTableData.currentNode.syncStatus = currentNode.syncStatus;
+              }
             }
           }
         }),

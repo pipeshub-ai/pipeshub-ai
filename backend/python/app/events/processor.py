@@ -1,5 +1,6 @@
 import io
 import json
+import time
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
@@ -114,6 +115,7 @@ class Processor:
 
         # Initialize Docling client for external service
         self.docling_client = DoclingClient()
+        self._last_extraction_progress_emit: dict[str, float] = {}
 
     def _create_transform_context(
         self,
@@ -144,6 +146,11 @@ class Processor:
         """
         if not record_id or total <= 0:
             return
+        now = time.monotonic()
+        previous = self._last_extraction_progress_emit.get(record_id, 0)
+        if current < total and now - previous < 2:
+            return
+        self._last_extraction_progress_emit[record_id] = now
         try:
             progress = build_indexing_substage_progress(
                 current=current,
@@ -168,6 +175,9 @@ class Processor:
                 record_id,
                 str(e),
             )
+        finally:
+            if current >= total:
+                self._last_extraction_progress_emit.pop(record_id, None)
 
     async def process_image(self, record_id, content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Process image content, yielding phase completion events."""

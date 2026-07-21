@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useRef, useSyncExternalStore } from 'react';
 import { Box, Flex, Text, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
@@ -13,6 +13,31 @@ import {
   type IndexingProgressInput,
 } from '../utils/indexing-progress';
 
+let progressClockNow = Date.now();
+let progressClockTimer: number | undefined;
+const progressClockListeners = new Set<() => void>();
+
+function subscribeProgressClock(listener: () => void): () => void {
+  progressClockListeners.add(listener);
+  if (progressClockTimer === undefined) {
+    progressClockNow = Date.now();
+    progressClockTimer = window.setInterval(() => {
+      progressClockNow = Date.now();
+      progressClockListeners.forEach((notify) => notify());
+    }, 2000);
+  }
+  return () => {
+    progressClockListeners.delete(listener);
+    if (progressClockListeners.size === 0 && progressClockTimer !== undefined) {
+      window.clearInterval(progressClockTimer);
+      progressClockTimer = undefined;
+    }
+  };
+}
+
+const subscribeNoop = () => () => {};
+const getProgressClockSnapshot = () => progressClockNow;
+
 export function IndexingProgressIndicator({
   record,
   compact = false,
@@ -20,15 +45,38 @@ export function IndexingProgressIndicator({
   record: IndexingProgressInput;
   compact?: boolean;
 }) {
-  const [now, setNow] = useState(() => Date.now());
+  const active = isActiveIndexingStatus(record.indexingStatus);
+  const needsEstimateClock =
+    active && record.indexingStage === 'EXTRACTING' && !record.indexingProgress;
+  const localExtractionStartedAt = useRef<number | null>(null);
+  if (needsEstimateClock && record.lastActivityTimestamp == null) {
+    localExtractionStartedAt.current ??= Date.now();
+  } else {
+    localExtractionStartedAt.current = null;
+  }
+  // All visible active rows share one clock instead of allocating one interval
+  // per row. Rows still update together, preserving smooth extraction estimates.
+  const now = useSyncExternalStore(
+    needsEstimateClock ? subscribeProgressClock : subscribeNoop,
+    getProgressClockSnapshot,
+    getProgressClockSnapshot
+  );
 
-  useEffect(() => {
-    if (!isActiveIndexingStatus(record.indexingStatus)) return undefined;
-    const interval = window.setInterval(() => setNow(Date.now()), 2000);
-    return () => window.clearInterval(interval);
-  }, [record.indexingStatus]);
-
-  const view = getIndexingProgressView(record, now);
+  const view = getIndexingProgressView(
+    localExtractionStartedAt.current == null
+      ? record
+      : { ...record, lastActivityTimestamp: localExtractionStartedAt.current },
+    now
+  );
+  const recordKey = (record as { id?: string }).id ?? record;
+  const progressRef = useRef({ recordKey, maxPercent: 0 });
+  if (progressRef.current.recordKey !== recordKey) {
+    progressRef.current = { recordKey, maxPercent: 0 };
+  }
+  if (view.isActive) {
+    progressRef.current.maxPercent = Math.max(progressRef.current.maxPercent, view.percent);
+  }
+  const displayedPercent = view.isActive ? progressRef.current.maxPercent : view.percent;
   const activeColor = 'var(--blue-9)';
   const activeText = 'var(--blue-11)';
   const isMoving = view.isActive;
@@ -40,10 +88,10 @@ export function IndexingProgressIndicator({
     <Flex direction="column" gap="1" style={{ minWidth: compact ? 180 : 240, maxWidth: compact ? 240 : 320 }}>
       <Flex align="center" justify="between" gap="2">
         <Text size="1" weight="medium" style={{ color: activeText, whiteSpace: 'nowrap' }}>
-          In progress
+          {view.label}
         </Text>
         <Text size="1" weight="medium" style={{ color: activeText, whiteSpace: 'nowrap' }}>
-          {view.percent}%
+          {displayedPercent}%
         </Text>
       </Flex>
       <Flex align="center" gap="1" style={{ minWidth: 0 }}>
@@ -78,8 +126,13 @@ export function IndexingProgressIndicator({
       </Flex>
       <Box style={{ height: 3, borderRadius: '9999px', background: 'var(--slate-4)', overflow: 'hidden' }}>
         <Box
+          role="progressbar"
+          aria-label={`${view.label} indexing progress`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={displayedPercent}
           style={{
-            width: `${view.percent}%`,
+            width: `${displayedPercent}%`,
             height: '100%',
             borderRadius: '9999px',
             background: barBackground,
@@ -243,7 +296,8 @@ export function ContainerRollupIndicator({
 
 /** True while the owning connector is fetching from its source. */
 export function isActiveConnectorSync(status?: ConnectorSyncStatus | null): boolean {
-  return status === 'SYNCING' || status === 'FULL_SYNCING';
+  const normalized = (status ?? '').toUpperCase();
+  return normalized === 'SYNCING' || normalized === 'FULL_SYNCING';
 }
 
 /**

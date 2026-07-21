@@ -1934,14 +1934,23 @@ export const getConnectorSyncProgress =
 
       try {
         const queryParams = new URLSearchParams();
-        queryParams.append('org_id', orgId);
         queryParams.append('connector_id', req.params.connectorId);
         const response = await executeConnectorCommand(
           `${appConfig.connectorBackend}/api/v1/sync-progress?${queryParams.toString()}`,
           HttpMethod.GET,
           req.headers as Record<string, string>,
+          undefined,
+          5_000,
         );
 
+        if (response.statusCode === 403) {
+          throw new ForbiddenError(
+            'You do not have permission to access connector sync progress',
+          );
+        }
+        if (response.statusCode === 404) {
+          throw new NotFoundError('Connector not found');
+        }
         if (response.statusCode !== 200) {
           throw new InternalServerError(
             'Failed to get connector sync progress via Python service',
@@ -1958,17 +1967,13 @@ export const getConnectorSyncProgress =
           requestId: req.context?.requestId,
         });
 
-        if (pythonServiceError.response?.status === 403) {
-          throw new ForbiddenError(
-            'You do not have permission to access connector sync progress',
-          );
-        } else if (pythonServiceError.response?.status === 404) {
-          throw new NotFoundError('Connector not found');
-        } else {
-          throw new InternalServerError(
-            `Failed to get connector sync progress: ${pythonServiceError.message}`,
-          );
-        }
+        throw pythonServiceError instanceof ForbiddenError ||
+          pythonServiceError instanceof NotFoundError ||
+          pythonServiceError instanceof InternalServerError
+          ? pythonServiceError
+          : new InternalServerError(
+              `Failed to get connector sync progress: ${pythonServiceError.message}`,
+            );
       }
     } catch (error: any) {
       logger.error('Error getting connector sync progress', {
@@ -2041,18 +2046,21 @@ const SYNC_IN_PROGRESS_MESSAGES: Record<string, string> = {
  */
 const isConnectorSyncRunActive = async (
   connectorId: string,
-  orgId: string,
   appConfig: AppConfig,
   headers: Record<string, string>,
 ): Promise<boolean> => {
   try {
     const queryParams = new URLSearchParams();
-    queryParams.append('org_id', orgId);
     queryParams.append('connector_id', connectorId);
+    // This guard only needs the active-run bit. Avoid the graph statistics
+    // query used for settled-state UI coverage.
+    queryParams.append('include_coverage', 'false');
     const response = await executeConnectorCommand(
       `${appConfig.connectorBackend}/api/v1/sync-progress?${queryParams.toString()}`,
       HttpMethod.GET,
       headers,
+      undefined,
+      5_000,
     );
     if (response.statusCode !== 200) {
       return false;
@@ -2076,7 +2084,6 @@ const isConnectorSyncRunActive = async (
  */
 const validateConnectorSyncAvailable = async (
   connectorId: string,
-  orgId: string,
   appConfig: AppConfig,
   headers: Record<string, string>,
   opts: { force: boolean; requestedFullSync: boolean },
@@ -2110,7 +2117,6 @@ const validateConnectorSyncAvailable = async (
   if (!inProgress) {
     inProgress = await isConnectorSyncRunActive(
       connectorId,
-      orgId,
       appConfig,
       headers,
     );
@@ -2190,7 +2196,6 @@ export const resyncConnectorRecords =
 
       await validateConnectorSyncAvailable(
         connectorId,
-        orgId,
         appConfig,
         req.headers as Record<string, string>,
         { force, requestedFullSync: fullSync },

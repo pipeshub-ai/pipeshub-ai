@@ -538,7 +538,7 @@ function TableRow({
       </Flex>
 
       {/* Status — active indexing shows full progression; terminal statuses stay compact. */}
-      <Flex align="center" justify="center" style={{ width: '260px', padding: '0 var(--space-2)' }}>
+      <Flex align="center" justify="center" style={{ width: 'clamp(120px, 22vw, 260px)', padding: '0 var(--space-2)' }}>
         {(() => {
           if (shouldHideIndexingStatusForHubRecord(item)) {
             return (
@@ -745,7 +745,7 @@ export function KbListView({
         <TableHeaderCell label="File Name" field="name" flex={1} sort={sort} onSort={onSort} />
 
         {/* Status */}
-        <TableHeaderCell label="Status" width="260px" sort={sort} onSort={onSort} />
+        <TableHeaderCell label="Status" width="clamp(120px, 22vw, 260px)" sort={sort} onSort={onSort} />
 
         {/* Source - Only shown in All Records mode */}
         {showSourceColumn && (

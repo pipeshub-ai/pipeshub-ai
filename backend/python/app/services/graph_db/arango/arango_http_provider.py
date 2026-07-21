@@ -14742,7 +14742,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             name: record.recordName,
             nodeType: record.mimeType IN @folder_mime_types ? "folder" : "record",
             subType: record.recordType,
-            syncStatus: sync_status
+            syncStatus: sync_status,
+            isInternal: record.isInternal == true
         } : (rg != null AND rg._key != null AND rg.groupName != null ? {
             id: rg._key,
             name: rg.groupName,
@@ -15564,13 +15565,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if ids_by_type["app"]:
             queries["app"] = (
                 f"""
-                FOR cid IN @ids
                 FOR doc IN @@records
-                    FILTER doc.connectorId == cid
+                    FILTER doc.connectorId IN @ids
                     FILTER doc.orgId == @org_id
                     FILTER doc.isInternal != true
                     {leaf_filter}
-                    {group_return}
+                    COLLECT id = doc.connectorId,
+                            status = doc.indexingStatus,
+                            stage = doc.indexingStage
+                        WITH COUNT INTO cnt
+                    RETURN {{ id, status, stage, cnt }}
                 """,
                 {**base_bind, "ids": ids_by_type["app"]},
             )
@@ -15603,7 +15607,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 f"""
                 FOR cid IN @ids
                 FOR doc, edge, path IN 1..100 OUTBOUND CONCAT(@record_prefix, cid) @@record_relations
-                    FILTER path.edges[*].relationshipType ALL IN @rel_types
+                    OPTIONS {{ order: "bfs", uniqueVertices: "global" }}
+                    PRUNE edge.relationshipType NOT IN @rel_types
+                    FILTER edge.relationshipType IN @rel_types
+                    FILTER doc.orgId == @org_id
                     FILTER doc.isInternal != true
                     {leaf_filter}
                     {group_return}
@@ -15622,7 +15629,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 f"""
                 FOR cid IN @ids
                 FOR doc, edge, path IN 1..100 OUTBOUND CONCAT(@record_prefix, cid) @@record_relations
-                    FILTER path.edges[*].relationshipType ALL IN @rel_types
+                    OPTIONS {{ order: "bfs", uniqueVertices: "global" }}
+                    PRUNE edge.relationshipType NOT IN @rel_types
+                    FILTER edge.relationshipType IN @rel_types
+                    FILTER doc.orgId == @org_id
                     FILTER doc.isInternal != true
                     {leaf_filter}
                     {group_return}

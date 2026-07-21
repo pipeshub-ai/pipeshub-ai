@@ -1023,16 +1023,31 @@ class VectorStore(Transformer):
         completed_documents = progress_offset
         total_documents = progress_total or len(langchain_document_chunks)
         progress_lock = asyncio.Lock()
+        last_progress_emit = time.monotonic()
 
         async def process_batch(batch_start: int, batch: List[Document]) -> int:
-            nonlocal completed_documents
+            nonlocal completed_documents, last_progress_emit
             try:
                 await self._embed_and_upsert_documents(batch, record_id)
                 async with progress_lock:
                     completed_documents += len(batch)
+                    now = time.monotonic()
+                    should_emit = (
+                        completed_documents >= total_documents
+                        or now - last_progress_emit >= 2.0
+                    )
+                    if should_emit:
+                        last_progress_emit = now
+                        progress_current = completed_documents
+                    else:
+                        progress_current = None
+                # Graph persistence is observability, not part of embedding
+                # correctness. Do not serialize concurrent batches on its I/O,
+                # and emit at most every two seconds (plus the final update).
+                if progress_current is not None:
                     await self._update_indexing_progress(
                         record_id,
-                        current=completed_documents,
+                        current=progress_current,
                         total=total_documents,
                     )
                 return len(batch)

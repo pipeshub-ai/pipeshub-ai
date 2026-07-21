@@ -379,7 +379,16 @@ class ConnectorFactory:
         if store and org_id:
             run_id = await store.start_run(org_id, connector_id, full_sync=False)
         try:
-            await connector.run_sync()
+            from app.connectors.services.sync_run_context import (
+                reset_sync_run_id,
+                set_sync_run_id,
+            )
+
+            token = set_sync_run_id(run_id)
+            try:
+                await connector.run_sync()
+            finally:
+                reset_sync_run_id(token)
         finally:
             # A manual (Kafka-driven) sync can supersede this startup-resume run;
             # in that case leave status/progress to the newer run rather than

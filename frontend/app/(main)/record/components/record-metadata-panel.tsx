@@ -500,7 +500,7 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                   ) : null}
                 </Flex>
               </Flex>
-              {record.indexingStatus === 'IN_PROGRESS' ? (
+              {record.indexingStatus === 'QUEUED' || record.indexingStatus === 'IN_PROGRESS' ? (
                 <IndexingProgressRow record={record} />
               ) : null}
               {fileSizeDisplay ? (

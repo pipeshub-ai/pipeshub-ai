@@ -119,6 +119,7 @@ class CurrentNode(BaseModel):
     nodeType: str = Field(..., description="Current node type (app, recordGroup, folder, record)")
     subType: Optional[str] = Field(None, description="Sub-type: connector name for apps/recordGroups, recordType for records")
     syncStatus: Optional[str] = Field(None, description="Owning connector's sync status (IDLE, SYNCING, FULL_SYNCING) when browsing connector content")
+    isInternal: bool = Field(False, description="True when this is an internal connector path record")
     indexingRollup: Optional[IndexingRollup] = Field(None, description="Aggregated indexing progress across this container's subtree")
 
     class Config:

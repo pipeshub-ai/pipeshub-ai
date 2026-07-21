@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect } from 'react';
+import useSWR from 'swr';
 import { ConnectorsApi } from '../api';
 import { isActiveConnectorSyncStatus } from './sync-progress-view';
 import type { ConnectorSyncProgress } from '../types';
@@ -19,48 +20,30 @@ export function useConnectorSyncProgress(
   status?: string | null,
   enabled = true
 ): { progress: ConnectorSyncProgress | null; loading: boolean } {
-  const [progress, setProgress] = useState<ConnectorSyncProgress | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  // Keep the latest status visible to the running poll chain without resetting it.
-  const statusRef = useRef(status);
-  statusRef.current = status;
-
-  useEffect(() => {
-    if (!connectorId || !enabled) {
-      return undefined;
+  const activeStatus = isActiveConnectorSyncStatus(status);
+  const key = connectorId && enabled ? `connector-sync-progress:${connectorId}` : null;
+  const { data, isLoading, mutate } = useSWR<ConnectorSyncProgress | null>(
+    key,
+    () => ConnectorsApi.getConnectorSyncProgress(connectorId!),
+    {
+      // SWR shares one cache/in-flight request between the instance card and
+      // open Overview panel, preventing duplicate polling for the same connector.
+      dedupingInterval: ACTIVE_POLL_MS,
+      refreshInterval: (latest) =>
+        Boolean(latest?.isActive) || activeStatus ? ACTIVE_POLL_MS : 0,
+      refreshWhenHidden: false,
+      revalidateOnFocus: false,
+      revalidateOnReconnect: true,
     }
+  );
 
-    let cancelled = false;
-    let timer: number | undefined;
+  // An optimistic status transition should show progress immediately rather
+  // than waiting for the next scheduled refresh. Concurrent consumers dedupe it.
+  useEffect(() => {
+    if (activeStatus && key) {
+      void mutate();
+    }
+  }, [activeStatus, key, mutate]);
 
-    const tick = async (): Promise<void> => {
-      try {
-        const data = await ConnectorsApi.getConnectorSyncProgress(connectorId);
-        if (cancelled) return;
-        setProgress(data);
-        const keepPolling =
-          Boolean(data?.isActive) || isActiveConnectorSyncStatus(statusRef.current);
-        if (keepPolling && !cancelled) {
-          timer = window.setTimeout(() => {
-            void tick();
-          }, ACTIVE_POLL_MS);
-        }
-      } catch {
-        // Best-effort: on transient errors, stop polling until deps change.
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    setLoading(true);
-    void tick();
-
-    return () => {
-      cancelled = true;
-      if (timer) window.clearTimeout(timer);
-    };
-  }, [connectorId, status, enabled]);
-
-  return { progress, loading };
+  return { progress: data ?? null, loading: isLoading };
 }

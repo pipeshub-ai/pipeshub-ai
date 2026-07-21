@@ -68,9 +68,12 @@ function StatusRow({
   );
 }
 
-function IndeterminateBar() {
+function IndeterminateBar({ label }: { label: string }) {
   return (
     <Box
+      role="progressbar"
+      aria-label={label}
+      aria-valuetext="Progress is being calculated"
       style={{
         position: 'relative',
         width: '100%',
@@ -80,12 +83,6 @@ function IndeterminateBar() {
         overflow: 'hidden',
       }}
     >
-      <style>{`
-        @keyframes connectorIndeterminate {
-          0% { transform: translateX(-100%); }
-          100% { transform: translateX(320%); }
-        }
-      `}</style>
       <Box
         style={{
           position: 'absolute',
@@ -102,9 +99,14 @@ function IndeterminateBar() {
   );
 }
 
-function DeterminateBar({ percent }: { percent: number }) {
+function DeterminateBar({ percent, label }: { percent: number; label: string }) {
   return (
     <Box
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.max(0, Math.min(100, percent))}
       style={{
         width: '100%',
         height: 6,
@@ -187,6 +189,8 @@ export function ConnectorSyncProgress({
     <Flex direction="column" gap="2" style={{ width: '100%', minWidth: 0 }}>
       <Flex align="center" justify="between" gap="2">
         <Text
+          role="status"
+          aria-live="polite"
           size={variant === 'detail' ? '2' : '1'}
           weight="medium"
           style={{ color: 'var(--gray-12)', whiteSpace: 'nowrap' }}
@@ -200,11 +204,11 @@ export function ConnectorSyncProgress({
         ) : null}
       </Flex>
       {view.mode === 'indexing' && view.percent > 0 ? (
-        <DeterminateBar percent={view.percent} />
+        <DeterminateBar percent={view.percent} label={view.label} />
       ) : (
         // At 0% (nothing terminal yet) a determinate fill is invisible, so show
         // the moving indeterminate bar until real progress lands.
-        <IndeterminateBar />
+        <IndeterminateBar label={view.label} />
       )}
     </Flex>
   );

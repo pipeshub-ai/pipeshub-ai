@@ -62,6 +62,14 @@ export function describeSyncProgress(
   const coverage = progress?.coverage;
   const total = coverage?.total ?? 0;
   const failed = coverage?.failed ?? 0;
+  const pending = (coverage?.inProgress ?? 0) + (coverage?.queued ?? 0);
+  if (pending > 0) {
+    return {
+      mode: 'indexing',
+      label: `${pending} record${pending === 1 ? '' : 's'} still processing`,
+      percent: 0,
+    };
+  }
   if (total > 0) {
     return { mode: 'settled', label: 'Indexed', failed, hasErrors: failed > 0 };
   }

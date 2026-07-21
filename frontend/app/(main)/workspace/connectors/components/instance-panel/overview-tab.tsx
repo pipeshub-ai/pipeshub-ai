@@ -373,7 +373,7 @@ export function OverviewTab({
       >
         <Flex align="start" gap="2">
           <Text size="3" weight="medium" style={{ color: 'var(--gray-12)', flex: 1, minWidth: 0 }}>
-            Overall records
+            {t('workspace.connectors.overview.recordsStatus')}
           </Text>
           {instance.isActive && (
             <Flex
