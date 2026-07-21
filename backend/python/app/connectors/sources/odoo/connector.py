@@ -26,6 +26,7 @@ narrow for how a given org actually uses Odoo teams.
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -78,7 +79,7 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.odoo.odoo import OdooClient, OdooClientBuilder
-from app.sources.external.odoo.odoo import CrmLead, OdooDataSource
+from app.sources.external.odoo.odoo import CrmLead, OdooDataSource, Partner
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -208,21 +209,22 @@ class OdooConnector(BaseConnector):
         self.data_source: Optional[OdooDataSource] = None
         self.base_url = ""
         self.batch_size = 100
-
-        # id -> email, built during _sync_users(); used to attach owner
-        # permissions to leads without a per-lead user lookup.
         self._user_email_by_id: Dict[int, str] = {}
-        # res.partner id -> email, for resolving mail.followers subscribers
-        # (followers are stored as partner_id, not user_id) back to a known
-        # internal user. Followers that don't match any entry here are
-        # external contacts, not PipesHub users — silently skipped.
         self._user_email_by_partner_id: Dict[int, str] = {}
+
+        self._stage_is_won: Dict[int, bool] = {}
 
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
 
     def _create_sync_points(self) -> None:
         self.record_sync_point = SyncPoint(
+            connector_id=self.connector_id,
+            org_id=self.data_entities_processor.org_id,
+            sync_data_point_type=SyncDataPointType.RECORDS,
+            data_store_provider=self.data_store_provider,
+        )
+        self.contact_sync_point = SyncPoint(
             connector_id=self.connector_id,
             org_id=self.data_entities_processor.org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
@@ -265,6 +267,15 @@ class OdooConnector(BaseConnector):
             self.client = client
             self.base_url = client.url
             self.data_source = OdooDataSource(client)
+            await self._load_creator_email()
+            if not self.creator_email and self.created_by:
+                # Odoo is TEAM-scoped, so the base class's _load_creator_email()
+                # (which only resolves for PERSONAL scope) is a no-op here.
+                creator_user = await self.data_entities_processor.get_user_by_user_id(
+                    self.created_by
+                )
+                if creator_user:
+                    self.creator_email = creator_user.email
 
             self.logger.info("Odoo client initialized successfully.")
             return True
@@ -299,12 +310,6 @@ class OdooConnector(BaseConnector):
         await self._run_sync(full_sync=False)
 
     async def _run_sync(self, full_sync: bool) -> None:
-        """full_sync=True (the "Full sync" button / first-ever sync) ignores
-        the stored write_date cursor and re-fetches every lead — this is
-        what actually lets a connector-code change (e.g. a new field we
-        now want to backfill) reach leads that haven't changed in Odoo
-        since they were first synced. full_sync=False only fetches what's
-        genuinely new since the last run."""
         try:
             label = "full" if full_sync else "incremental"
             self.logger.info(f"Starting Odoo {label} sync.")
@@ -319,8 +324,14 @@ class OdooConnector(BaseConnector):
             self.logger.info("Syncing sales teams...")
             await self._sync_teams()
 
+            self.logger.info("Syncing stages...")
+            await self._sync_stages()
+
             self.logger.info("Syncing leads/opportunities...")
             await self._sync_leads(full_sync=full_sync)
+
+            self.logger.info("Syncing contacts (res.partner)...")
+            await self._sync_contacts(full_sync=full_sync)
 
             self.logger.info(f"Odoo {label} sync completed.")
         except Exception as ex:
@@ -363,22 +374,32 @@ class OdooConnector(BaseConnector):
         await self.data_entities_processor.on_new_app_users(app_users)
         self.logger.info(f"Synced {len(app_users)} Odoo users.")
 
-    # -- Teams -------------------------------------------------------------
+    # -- Stages ------------------------------------------------------------
+
+    async def _sync_stages(self) -> None:
+        if not self.data_source:
+            return
+        stages = await self.data_source.list_stages()
+        self._stage_is_won = {stage.id: stage.is_won for stage in stages}
+        self.logger.info(f"Loaded {len(stages)} CRM stages.")
+
+    # -- Teams / record-groups ---------------------------------------------
+
+    # External group ID used for leads that have no sales team assigned.
+    _UNASSIGNED_TEAM_EXTERNAL_GROUP_ID = "crm.team/__unassigned__"
+    # External group ID for the Contacts record group.
+    _CONTACTS_EXTERNAL_GROUP_ID = "res.partner/__contacts__"
 
     @staticmethod
     def _team_external_group_id(team_id: int) -> str:
         return f"crm.team/{team_id}"
 
     async def _sync_teams(self) -> None:
-        """Sales teams as RecordGroups — purely structural (lets leads show
-        up in the All Records browse tree, which only lists RecordGroups
-        under an app, never bare records). Small, rarely-changing list —
-        full refresh every run, no separate incremental cursor."""
         if not self.data_source:
             return
 
         teams = await self.data_source.list_teams()
-        groups = [
+        groups: list[tuple[RecordGroup, list]] = [
             (
                 RecordGroup(
                     name=team.name or f"Team {team.id}",
@@ -392,15 +413,69 @@ class OdooConnector(BaseConnector):
             )
             for team in teams
         ]
-        if groups:
-            await self.data_entities_processor.on_new_record_groups(groups)
-        self.logger.info(f"Synced {len(groups)} Odoo sales teams.")
+        
+        groups.append(
+            (
+                RecordGroup(
+                    name="Unassigned",
+                    org_id=self.data_entities_processor.org_id,
+                    external_group_id=self._UNASSIGNED_TEAM_EXTERNAL_GROUP_ID,
+                    connector_name=Connectors.ODOO,
+                    connector_id=self.connector_id,
+                    group_type=RecordGroupType.PROJECT,
+                ),
+                [],
+            )
+        )
+        await self.data_entities_processor.on_new_record_groups(groups)
+        self.logger.info(f"Synced {len(groups) - 1} Odoo sales teams + 1 Unassigned group.")
+
+        # Always ensure the Contacts group exists so contact records appear
+        # in the All Records browse tree.
+        contacts_group: list[tuple[RecordGroup, list]] = [
+            (
+                RecordGroup(
+                    name="Contacts",
+                    org_id=self.data_entities_processor.org_id,
+                    external_group_id=self._CONTACTS_EXTERNAL_GROUP_ID,
+                    connector_name=Connectors.ODOO,
+                    connector_id=self.connector_id,
+                    group_type=RecordGroupType.PROJECT,
+                ),
+                [],
+            )
+        ]
+        await self.data_entities_processor.on_new_record_groups(contacts_group)
+        self.logger.info("Ensured 'Contacts' record group exists.")
 
     # -- Leads -------------------------------------------------------------
 
     def _get_lead_type_filter(self) -> Optional[List[str]]:
+        """Returns the selected lead types, or None if all types should sync.
+        Both ["lead", "opportunity"] selected is the same as no filter."""
         values = self.sync_filters.get_value("lead_type")
-        return list(values) if values else None
+        if not values:
+            return None
+        types = list(values)
+        # If user picked both options, treat as "no filter" to avoid two
+        # separate Odoo calls.
+        if set(types) >= {"lead", "opportunity"}:
+            return None
+        return types
+
+    def _get_modified_since_filter(self) -> Optional[str]:
+        """Fix #1: Read the configured 'modified' datetime filter and return
+        it as an Odoo-style naive-UTC string ("YYYY-MM-DD HH:MM:SS"), or
+        None if the user didn't configure one.
+        The filter uses IS_AFTER semantics — start_iso is the lower bound."""
+        f = self.sync_filters.get("modified")
+        if f is None or f.is_empty():
+            return None
+        start_iso, _ = f.get_datetime_iso()  # e.g. "2024-01-15T10:30:00"
+        if start_iso is None:
+            return None
+        # Convert ISO 8601 ("T" separator) → Odoo write_date format (" " separator)
+        return start_iso.replace("T", " ")
 
     async def _sync_leads(self, full_sync: bool = False) -> None:
         if not self.data_source:
@@ -409,52 +484,54 @@ class OdooConnector(BaseConnector):
         current_timestamp = _odoo_now()
         sync_key = generate_record_sync_point_key("odoo", "leads", "global")
         sync_point = await self.record_sync_point.read_sync_point(sync_key)
-        # full_sync ignores the stored cursor entirely — this is what lets
-        # a connector-code change (e.g. a newly-added field) reach leads
-        # that haven't changed in Odoo since they were first synced.
-        last_write_date = None if full_sync else sync_point.get("write_date")
+        cursor_write_date = None if full_sync else sync_point.get("write_date")
+        configured_since = self._get_modified_since_filter()
+        if cursor_write_date and configured_since:
+            last_write_date = max(cursor_write_date, configured_since)
+        else:
+            last_write_date = cursor_write_date or configured_since
 
         allowed_types = self._get_lead_type_filter()
+        type_passes: List[Optional[str]] = allowed_types if allowed_types else [None]
 
         batch_records: List[Tuple[DealRecord, List[Permission]]] = []
-        offset = 0
 
-        while True:
-            leads = await self.data_source.list_leads(
-                updated_since=last_write_date,
-                include_archived=True,
-                limit=self.batch_size,
-                offset=offset,
-            )
-            if not leads:
-                break
+        for lead_type_pass in type_passes:
+            offset = 0
+            while True:
+                leads = await self.data_source.list_leads(
+                    lead_type=lead_type_pass,
+                    updated_since=last_write_date,
+                    include_archived=True,
+                    limit=self.batch_size,
+                    offset=offset,
+                )
+                if not leads:
+                    break
 
-            followers_by_lead = await self._fetch_followers_by_lead(
-                [lead.id for lead in leads]
-            )
-
-            for lead in leads:
-                if allowed_types and lead.type not in allowed_types:
-                    continue
-
-                record, permissions, is_new = await self._process_lead(
-                    lead, followers_by_lead.get(lead.id, [])
+                followers_by_lead = await self._fetch_followers_by_lead(
+                    [lead.id for lead in leads]
                 )
 
-                if is_new:
-                    batch_records.append((record, permissions))
-                    if len(batch_records) >= self.batch_size:
-                        await self.data_entities_processor.on_new_records(batch_records)
-                        batch_records = []
-                else:
-                    await self.data_entities_processor.on_record_content_update(record)
-                    await self.data_entities_processor.on_updated_record_permissions(
-                        record, permissions
+                for lead in leads:
+                    record, permissions, is_new = await self._process_lead(
+                        lead, followers_by_lead.get(lead.id, [])
                     )
 
-            offset += len(leads)
-            if len(leads) < self.batch_size:
-                break
+                    if is_new:
+                        batch_records.append((record, permissions))
+                        if len(batch_records) >= self.batch_size:
+                            await self.data_entities_processor.on_new_records(batch_records)
+                            batch_records = []
+                    else:
+                        await self.data_entities_processor.on_record_content_update(record)
+                        await self.data_entities_processor.on_updated_record_permissions(
+                            record, permissions
+                        )
+
+                offset += len(leads)
+                if len(leads) < self.batch_size:
+                    break
 
         if batch_records:
             await self.data_entities_processor.on_new_records(batch_records)
@@ -480,6 +557,131 @@ class OdooConnector(BaseConnector):
             if partner_id is not None:
                 by_lead[follower.res_id].append(partner_id)
         return by_lead
+
+    # -- Contacts (res.partner) -------------------------------------------
+
+    async def _sync_contacts(self, full_sync: bool = False) -> None:
+        """Sync Odoo contacts (res.partner) as RecordType.OTHERS records
+        inside a dedicated 'Contacts' record group. Uses its own write_date
+        cursor so it advances independently from leads."""
+        if not self.data_source:
+            return
+
+        current_timestamp = _odoo_now()
+        sync_key = generate_record_sync_point_key("odoo", "contacts", "global")
+        sync_point = await self.contact_sync_point.read_sync_point(sync_key)
+        cursor_write_date = None if full_sync else sync_point.get("write_date")
+
+        # Apply the same user-configured modified-date floor used for leads.
+        configured_since = self._get_modified_since_filter()
+        if cursor_write_date and configured_since:
+            last_write_date = max(cursor_write_date, configured_since)
+        else:
+            last_write_date = cursor_write_date or configured_since
+
+        batch_records: List[Tuple[Record, List[Permission]]] = []
+        offset = 0
+        total = 0
+
+        while True:
+            partners = await self.data_source.list_partners(
+                updated_since=last_write_date,
+                limit=self.batch_size,
+                offset=offset,
+            )
+            if not partners:
+                break
+
+            for partner in partners:
+                record, permissions, is_new = await self._process_contact(partner)
+
+                if is_new:
+                    batch_records.append((record, permissions))
+                    if len(batch_records) >= self.batch_size:
+                        await self.data_entities_processor.on_new_records(batch_records)
+                        batch_records = []
+                else:
+                    await self.data_entities_processor.on_record_content_update(record)
+                    await self.data_entities_processor.on_updated_record_permissions(
+                        record, permissions
+                    )
+                total += 1
+
+            offset += len(partners)
+            if len(partners) < self.batch_size:
+                break
+
+        if batch_records:
+            await self.data_entities_processor.on_new_records(batch_records)
+
+        await self.contact_sync_point.update_sync_point(
+            sync_key, {"write_date": current_timestamp}
+        )
+        self.logger.info(f"Finished syncing {total} Odoo contacts.")
+
+    async def _process_contact(
+        self, partner: Partner
+    ) -> Tuple[Record, List[Permission], bool]:
+        """Map a res.partner row to a base Record(RecordType.OTHERS) inside
+        the Contacts record group, with the connector creator as fallback owner
+        (contacts have no per-record ownership concept in Odoo)."""
+        external_id = f"res.partner/{partner.id}"
+
+        async with self.data_store_provider.transaction() as tx_store:
+            existing_record = await tx_store.get_record_by_external_id(
+                connector_id=self.connector_id, external_id=external_id
+            )
+        is_new = existing_record is None
+
+        created_at_ms = _parse_odoo_datetime(partner.create_date) or get_epoch_timestamp_in_ms()
+        updated_at_ms = _parse_odoo_datetime(partner.write_date) or get_epoch_timestamp_in_ms()
+
+        display_name = partner.name or f"Contact #{partner.id}"
+
+        record = Record(
+            id=existing_record.id if existing_record else str(uuid.uuid4()),
+            record_name=display_name,
+            external_record_id=external_id,
+            connector_name=Connectors.ODOO,
+            connector_id=self.connector_id,
+            record_type=RecordType.OTHERS,
+            origin=OriginTypes.CONNECTOR,
+            org_id=self.data_entities_processor.org_id,
+            version=0 if is_new else existing_record.version + 1,
+            external_revision_id=partner.write_date,
+            external_record_group_id=self._CONTACTS_EXTERNAL_GROUP_ID,
+            record_group_type=RecordGroupType.PROJECT,
+            weburl=f"{self.base_url}/web#id={partner.id}&model=res.partner&view_type=form",
+            mime_type=MimeTypes.PLAIN_TEXT.value,
+            created_at=created_at_ms,
+            updated_at=updated_at_ms,
+            source_created_at=created_at_ms,
+            source_updated_at=updated_at_ms,
+            inherit_permissions=False,
+        )
+
+        # Contacts have no owner in Odoo — fall back to connector creator.
+        permissions: List[Permission] = []
+        fallback = self._creator_owner_permission()
+        if fallback:
+            permissions.append(fallback)
+
+        return record, permissions, is_new
+
+    def _creator_owner_permission(self) -> Optional[Permission]:
+        """Fallback OWNER grant so records with no resolvable Odoo owner/
+        follower don't end up with zero permissions. Must key off
+        creator_email (an actual email), not created_by (an internal user
+        id) — permission resolution for EntityType.USER matches by email
+        only (see data_source_entities_processor._handle_record_permissions)."""
+        if not self.creator_email:
+            return None
+        return Permission(
+            external_id=self.created_by,
+            email=self.creator_email,
+            type=PermissionType.OWNER,
+            entity_type=EntityType.USER,
+        )
 
     def _build_lead_permissions(
         self, owner_id: Optional[int], follower_partner_ids: List[int]
@@ -514,6 +716,11 @@ class OdooConnector(BaseConnector):
                 )
             )
 
+        if not permissions:
+            fallback = self._creator_owner_permission()
+            if fallback:
+                permissions.append(fallback)
+
         return permissions
 
     async def _process_lead(
@@ -531,7 +738,11 @@ class OdooConnector(BaseConnector):
         permissions = self._build_lead_permissions(owner_id, follower_partner_ids or [])
 
         team_id = _m2o_id(lead.team_id)
-        external_group_id = self._team_external_group_id(team_id) if team_id is not None else None
+        external_group_id = (
+            self._team_external_group_id(team_id)
+            if team_id is not None
+            else self._UNASSIGNED_TEAM_EXTERNAL_GROUP_ID
+        )
 
         created_at_ms = _parse_odoo_datetime(lead.create_date) or get_epoch_timestamp_in_ms()
         updated_at_ms = _parse_odoo_datetime(lead.write_date) or get_epoch_timestamp_in_ms()
@@ -567,7 +778,7 @@ class OdooConnector(BaseConnector):
             conversion_probability=lead.probability,
             type=lead.type,
             owner_id=str(owner_id) if owner_id is not None else None,
-            is_won=lead.probability >= 100,
+            is_won=self._stage_is_won.get(_m2o_id(lead.stage_id) or -1, False),
             is_closed=not lead.active,
             created_date=_str_or_none(lead.create_date),
             close_date=_str_or_none(lead.date_closed),
@@ -578,10 +789,12 @@ class OdooConnector(BaseConnector):
     # -- Record access -------------------------------------------------------
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
-        """Odoo has no signed-download-URL concept for CRM records — link
-        straight into the backend form view instead."""
-        lead_id = record.external_record_id.split("/")[-1]
-        return f"{self.base_url}/web#id={lead_id}&model=crm.lead&view_type=form"
+        """Odoo has no signed-download-URL concept — link straight into the
+        backend form view. Dispatches on external_record_id prefix."""
+        parts = record.external_record_id.split("/")
+        model = parts[0] if len(parts) >= 2 else "crm.lead"
+        rec_id = parts[-1]
+        return f"{self.base_url}/web#id={rec_id}&model={model}&view_type=form"
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         if not self.data_source:
@@ -590,6 +803,13 @@ class OdooConnector(BaseConnector):
                 detail="Odoo connector not initialized",
             )
 
+        # Dispatch on the model embedded in the external_record_id.
+        if record.external_record_id.startswith("res.partner/"):
+            return await self._stream_contact(record)
+        return await self._stream_lead(record)
+
+    async def _stream_lead(self, record: Record) -> StreamingResponse:
+        assert self.data_source is not None  # guarded by stream_record()
         lead_id = int(record.external_record_id.split("/")[-1])
         lead = await self.data_source.get_lead(lead_id)
         if lead is None:
@@ -598,20 +818,162 @@ class OdooConnector(BaseConnector):
                 detail="Record not found or access denied",
             )
 
-        summary = "\n".join([
+        activities, messages = await asyncio.gather(
+            self.data_source.list_activities(res_model="crm.lead", res_id=lead_id),
+            self.data_source.list_messages(res_model="crm.lead", res_id=lead_id),
+        )
+
+        lines: List[str] = [
             f"Name: {lead.name}",
             f"Type: {lead.type}",
             f"Stage: {_m2o_name(lead.stage_id) or ''}",
-            f"Expected revenue: {lead.expected_revenue}",
-            f"Probability: {lead.probability}",
-            f"Description: {_str_or_none(lead.description) or ''}",
-        ]).encode("utf-8")
+            f"Priority: {lead.priority}",
+            f"Expected Revenue: {lead.expected_revenue}",
+            f"Probability: {lead.probability}%",
+        ]
+
+        # Contact / company info
+        if _str_or_none(lead.partner_name):
+            lines.append(f"Company: {lead.partner_name}")
+        if _str_or_none(lead.contact_name):
+            lines.append(f"Contact: {lead.contact_name}")
+        if _str_or_none(lead.email_from):
+            lines.append(f"Email: {lead.email_from}")
+        if _str_or_none(lead.phone):
+            lines.append(f"Phone: {lead.phone}")
+        if _str_or_none(lead.function):
+            lines.append(f"Job Position: {lead.function}")
+        if _str_or_none(lead.website):
+            lines.append(f"Website: {lead.website}")
+
+        # Address
+        addr_parts = [
+            _str_or_none(lead.street),
+            _str_or_none(lead.city),
+            _m2o_name(lead.state_id),
+            _m2o_name(lead.country_id),
+        ]
+        addr = ", ".join(p for p in addr_parts if p)
+        if addr:
+            lines.append(f"Address: {addr}")
+
+        # UTM / marketing attribution
+        if _m2o_name(lead.source_id):
+            lines.append(f"Source: {_m2o_name(lead.source_id)}")
+        if _m2o_name(lead.medium_id):
+            lines.append(f"Medium: {_m2o_name(lead.medium_id)}")
+        if _m2o_name(lead.campaign_id):
+            lines.append(f"Campaign: {_m2o_name(lead.campaign_id)}")
+        if _str_or_none(lead.referred):
+            lines.append(f"Referred By: {lead.referred}")
+
+        # Key dates
+        if _str_or_none(lead.date_deadline):
+            lines.append(f"Expected Close: {lead.date_deadline}")
+        if _str_or_none(lead.date_closed):
+            lines.append(f"Close Date: {lead.date_closed}")
+        if _m2o_name(lead.lost_reason_id):
+            lines.append(f"Lost Reason: {_m2o_name(lead.lost_reason_id)}")
+
+        # Description / internal notes
+        if _str_or_none(lead.description):
+            lines.append(f"Description:\n{lead.description}")
+
+        # Chatter messages (notes + emails logged on the lead)
+        if messages:
+            lines.append("\n--- Messages ---")
+            for msg in messages:
+                author = _m2o_name(msg.author_id) or "Unknown"
+                date = _str_or_none(msg.date) or ""
+                subject = _str_or_none(msg.subject) or ""
+                body = _str_or_none(msg.body) or ""
+                # Strip minimal HTML tags from body (Odoo sends HTML chatter)
+                body = body.replace("<br>", "\n").replace("<br/>", "\n")
+                body = re.sub(r"<[^>]+>", "", body).strip()
+                if subject:
+                    lines.append(f"[{date}] {author} — {subject}")
+                if body:
+                    lines.append(body)
+
+        # Scheduled activities
+        if activities:
+            lines.append("\n--- Activities ---")
+            for act in activities:
+                atype = _m2o_name(act.activity_type_id) or "Activity"
+                deadline = _str_or_none(act.date_deadline) or ""
+                summary = _str_or_none(act.summary) or ""
+                note = _str_or_none(act.note) or ""
+                assigned = _m2o_name(act.user_id) or ""
+                parts = [f"[{deadline}] {atype}"]
+                if assigned:
+                    parts.append(f"assigned to {assigned}")
+                if summary:
+                    parts.append(f"— {summary}")
+                lines.append(" ".join(parts))
+                if note:
+                    lines.append(note)
+
+        content = "\n".join(lines).encode("utf-8")
 
         async def _content_stream() -> AsyncGenerator[bytes, None]:
-            yield summary
+            yield content
 
         return create_stream_record_response(
             _content_stream(),
+            filename=record.record_name,
+            mime_type=MimeTypes.PLAIN_TEXT.value,
+            fallback_filename=f"record_{record.id}",
+        )
+
+    async def _stream_contact(self, record: Record) -> StreamingResponse:
+        """Stream a res.partner contact as plain text for indexing."""
+        assert self.data_source is not None  # guarded by stream_record()
+        partner_id = int(record.external_record_id.split("/")[-1])
+        partner = await self.data_source.get_partner(partner_id)
+        if partner is None:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail="Contact not found or access denied",
+            )
+
+        lines: List[str] = [f"Name: {partner.name}"]
+
+        if partner.is_company:
+            lines.append("Type: Company")
+        else:
+            lines.append("Type: Individual Contact")
+
+        if _str_or_none(partner.email):
+            lines.append(f"Email: {partner.email}")
+        if _str_or_none(partner.phone):
+            lines.append(f"Phone: {partner.phone}")
+        if _str_or_none(partner.mobile):
+            lines.append(f"Mobile: {partner.mobile}")
+        if _str_or_none(partner.function):
+            lines.append(f"Job Position: {partner.function}")
+
+        # Parent company (for individual contacts linked to a company)
+        if _m2o_name(partner.parent_id):
+            lines.append(f"Company: {_m2o_name(partner.parent_id)}")
+
+        # Address
+        addr_parts = [
+            _str_or_none(partner.street),
+            _str_or_none(partner.city),
+            _m2o_name(partner.state_id),
+            _m2o_name(partner.country_id),
+        ]
+        addr = ", ".join(p for p in addr_parts if p)
+        if addr:
+            lines.append(f"Address: {addr}")
+
+        content = "\n".join(lines).encode("utf-8")
+
+        async def _contact_stream() -> AsyncGenerator[bytes, None]:
+            yield content
+
+        return create_stream_record_response(
+            _contact_stream(),
             filename=record.record_name,
             mime_type=MimeTypes.PLAIN_TEXT.value,
             fallback_filename=f"record_{record.id}",
@@ -633,34 +995,50 @@ class OdooConnector(BaseConnector):
             if not self.data_source:
                 raise Exception("Odoo client not initialized. Call init() first.")
 
-            # Refresh the owner/follower email maps — reindex can run
-            # without a preceding _sync_leads() in this connector instance.
+            # Refresh email maps — reindex can run without a preceding _sync_leads().
             await self._sync_users()
+            # Also refresh stage map so is_won stays accurate on reindex.
+            await self._sync_stages()
 
             updated_records: List[Tuple[Record, List[Permission]]] = []
             non_updated_records: List[Record] = []
 
             for record in records:
                 try:
-                    lead_id = int(record.external_record_id.split("/")[-1])
-                    lead = await self.data_source.get_lead(lead_id)
-                    if lead is None:
-                        continue
-                    if lead.write_date != record.external_revision_id:
-                        followers = await self.data_source.list_followers(
-                            "crm.lead", [lead_id]
-                        )
-                        follower_partner_ids = [
-                            pid
-                            for f in followers
-                            if (pid := _m2o_id(f.partner_id)) is not None
-                        ]
-                        updated_record, permissions, _is_new = await self._process_lead(
-                            lead, follower_partner_ids
-                        )
-                        updated_records.append((updated_record, permissions))
+                    is_contact = record.external_record_id.startswith("res.partner/")
+                    rec_id = int(record.external_record_id.split("/")[-1])
+
+                    if is_contact:
+                        partner = await self.data_source.get_partner(rec_id)
+                        if partner is None:
+                            continue
+                        if partner.write_date != record.external_revision_id:
+                            updated_record, permissions, _is_new = (
+                                await self._process_contact(partner)
+                            )
+                            updated_records.append((updated_record, permissions))
+                        else:
+                            non_updated_records.append(record)
                     else:
-                        non_updated_records.append(record)
+                        lead = await self.data_source.get_lead(rec_id)
+                        if lead is None:
+                            continue
+                        if lead.write_date != record.external_revision_id:
+                            followers = await self.data_source.list_followers(
+                                "crm.lead", [rec_id]
+                            )
+                            follower_partner_ids = [
+                                pid
+                                for f in followers
+                                if (pid := _m2o_id(f.partner_id)) is not None
+                            ]
+                            updated_record, permissions, _is_new = (
+                                await self._process_lead(lead, follower_partner_ids)
+                            )
+                            updated_records.append((updated_record, permissions))
+                        else:
+                            non_updated_records.append(record)
+
                 except Exception as e:
                     self.logger.error(f"Error checking record {record.id} at source: {e}")
                     continue
