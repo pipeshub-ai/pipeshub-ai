@@ -64,6 +64,29 @@ describe('parseArtifactMarkers', () => {
     expect(isTrustedApiUrl(artifacts[0].downloadUrl!)).toBe(false);
     expect(isSignedUrl(artifacts[0].downloadUrl!)).toBe(false);
   });
+
+  it('strips short-form ::artifact[name] markers that LLMs hallucinate', () => {
+    const content = 'Done – I updated the file.\n\n::artifact[football_rivals_poster.png]';
+    const { text, artifacts } = parseArtifactMarkers(content);
+    expect(text).toBe('Done – I updated the file.');
+    expect(artifacts).toHaveLength(0);
+  });
+
+  it('strips short-form ::artifact[name](url) markers without braces', () => {
+    const content = 'Output:\n\n::artifact[data.csv](https://example.com/file)';
+    const { text, artifacts } = parseArtifactMarkers(content);
+    expect(text).toBe('Output:');
+    expect(artifacts).toHaveLength(0);
+  });
+
+  it('strips short-form markers while preserving full-form ones', () => {
+    const content =
+      'Here is output.\n\n::artifact[poster.png]\n\n::artifact[chart.png](record:r1){image/png|d1|r1||2}';
+    const { text, artifacts } = parseArtifactMarkers(content);
+    expect(text).toBe('Here is output.');
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0]).toMatchObject({ fileName: 'chart.png', recordId: 'r1', version: 2 });
+  });
 });
 
 describe('parseDownloadMarkers', () => {

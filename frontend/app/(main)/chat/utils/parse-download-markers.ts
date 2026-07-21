@@ -54,7 +54,7 @@ export function parseArtifactMarkers(content: string): {
   const seen = new Set<string>();
   // Greedy on name/url, but braces are delimited; meta segments may be empty.
   const regex = /::artifact\[([^\]]+)\]\(([^)]+)\)\{([^}]*)\}/g;
-  const text = content.replace(regex, (_, fileName, url, meta) => {
+  let text = content.replace(regex, (_, fileName, url, meta) => {
     const [mime = '', docId = '', recordId = '', rawType = '', rawVersion = ''] =
       String(meta).split('|');
     const cleanName = String(fileName).trim() || 'artifact';
@@ -88,6 +88,11 @@ export function parseArtifactMarkers(content: string): {
     );
     return '';
   });
+  // Strip short-form `::artifact[name]` or `::artifact[name](url)` remnants.
+  // LLMs sometimes hallucinate the marker syntax without the full `{meta}`
+  // block — these are not backend-authored and carry no useful metadata, so
+  // just remove them to avoid rendering raw directive text in the markdown.
+  text = text.replace(/::artifact\[[^\]]+\](?:\([^)]*\))?/g, '');
   return { text: text.trimEnd(), artifacts };
 }
 

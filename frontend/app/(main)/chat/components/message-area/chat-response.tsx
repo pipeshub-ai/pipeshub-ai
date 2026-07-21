@@ -250,6 +250,110 @@ export const ChatResponse = React.memo(function ChatResponse({
     },
     [setPreviewFile, setPreviewMode],
   );
+
+  /**
+   * Streams `artifact.recordId` at `overrideVersion` (defaulting to
+   * `artifact.version`) and replaces the preview panel's content in place.
+   * Used both for the initial "Preview" click (`ArtifactsPanel.onPreview`)
+   * and for every later version switch (bound back to this same function as
+   * `ChatPreviewFile.onVersionChange`) — one code path, so streaming options
+   * (PDF conversion for PPT/DOCX, mime resolution, DOCX blob handling) never
+   * drift between the two entry points.
+   */
+  const loadArtifactPreview = useCallback(
+    async (artifact: ChatArtifact, overrideVersion?: number) => {
+      const version = overrideVersion ?? artifact.version;
+      const recordId = artifact.recordId;
+      const isSwitch = overrideVersion !== undefined;
+      const latestVersion = recordId ? latestArtifactVersions?.get(recordId) : undefined;
+      const effectiveLatest =
+        latestVersion !== undefined && version !== undefined
+          ? Math.max(latestVersion, version)
+          : latestVersion ?? version;
+      const onVersionChange = recordId
+        ? (v: number) => loadArtifactPreview(artifact, v)
+        : undefined;
+
+      if (recordId) {
+        // A version switch (not the initial open) — keep the current
+        // content on screen and only flip the small spinner in the version
+        // pill, so the panel doesn't flash back to the loading skeleton.
+        if (isSwitch) {
+          const current = useChatStore.getState().previewFile;
+          if (current?.id === recordId) setPreviewFile({ ...current, isSwitchingVersion: true });
+        }
+        try {
+          const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+          const streamAsPdf =
+            isPresentationFile(artifact.mimeType, artifact.fileName) ||
+            isLegacyWordDocFile(artifact.mimeType, artifact.fileName);
+          const streamOptions = {
+            ...(streamAsPdf ? { convertTo: 'application/pdf' } : {}),
+            ...(version !== undefined ? { version } : {}),
+          };
+          const blob = await KnowledgeBaseApi.streamRecord(
+            recordId,
+            Object.keys(streamOptions).length > 0 ? streamOptions : undefined,
+          );
+          const resolvedType = resolvePreviewMimeAfterStream(
+            artifact.mimeType,
+            artifact.fileName,
+            blob,
+            streamAsPdf,
+          );
+          const isDocx = isDocxFile(artifact.mimeType, artifact.fileName);
+          const objectUrl = isDocx ? '' : URL.createObjectURL(blob);
+
+          // Release the previous blob URL now that nothing references it —
+          // otherwise every version switch leaks one object URL.
+          const previous = useChatStore.getState().previewFile;
+          if (previous?.url?.startsWith('blob:')) URL.revokeObjectURL(previous.url);
+
+          setPreviewFile({
+            id: recordId,
+            url: objectUrl,
+            blob: isDocx ? blob : undefined,
+            name: artifact.fileName,
+            type: resolvedType,
+            size: artifact.sizeBytes,
+            hideFileDetails: true,
+            showDownload: true,
+            version,
+            latestVersion: effectiveLatest,
+            onVersionChange,
+            isSwitchingVersion: false,
+          });
+          return;
+        } catch {
+          if (isSwitch) {
+            // Keep showing the last successfully loaded version rather than
+            // falling back to a stale/foreign URL below.
+            const current = useChatStore.getState().previewFile;
+            if (current?.id === recordId) setPreviewFile({ ...current, isSwitchingVersion: false });
+            return;
+          }
+          // Initial-open failure — fall through to the URL-classification
+          // fallback below (never trusts an arbitrary marker URL, see
+          // `ArtifactsPanel`'s `handleDownload` docstring for the same rule).
+        }
+      }
+
+      setPreviewFile({
+        id: artifact.id,
+        url: artifact.downloadUrl,
+        name: artifact.fileName,
+        type: artifact.mimeType,
+        size: artifact.sizeBytes,
+        hideFileDetails: true,
+        showDownload: true,
+        version,
+        latestVersion: effectiveLatest,
+        onVersionChange,
+      });
+    },
+    [latestArtifactVersions, setPreviewFile],
+  );
+
   const pendingAskUserQuestion = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.pendingAskUserQuestion ?? null : null
   );
@@ -417,54 +521,7 @@ export const ChatResponse = React.memo(function ChatResponse({
               <ArtifactsPanel
                 artifacts={effectiveArtifacts}
                 latestArtifactVersions={latestArtifactVersions}
-                onPreview={async (artifact) => {
-                  if (artifact.recordId) {
-                    try {
-                      const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
-                      const streamAsPdf =
-                        isPresentationFile(artifact.mimeType, artifact.fileName) ||
-                        isLegacyWordDocFile(artifact.mimeType, artifact.fileName);
-                      const streamOptions = {
-                        ...(streamAsPdf ? { convertTo: 'application/pdf' } : {}),
-                        ...(artifact.version !== undefined ? { version: artifact.version } : {}),
-                      };
-                      const blob = await KnowledgeBaseApi.streamRecord(
-                        artifact.recordId,
-                        Object.keys(streamOptions).length > 0 ? streamOptions : undefined,
-                      );
-                      const resolvedType = resolvePreviewMimeAfterStream(
-                        artifact.mimeType,
-                        artifact.fileName,
-                        blob,
-                        streamAsPdf,
-                      );
-                      const isDocx = isDocxFile(artifact.mimeType, artifact.fileName);
-                      const objectUrl = isDocx ? '' : URL.createObjectURL(blob);
-                      useChatStore.getState().setPreviewFile({
-                        id: artifact.recordId,
-                        url: objectUrl,
-                        blob: isDocx ? blob : undefined,
-                        name: artifact.fileName,
-                        type: resolvedType,
-                        size: artifact.sizeBytes,
-                        hideFileDetails: true,
-                        showDownload: true,
-                      });
-                      return;
-                    } catch {
-                      // Fall back to raw URL
-                    }
-                  }
-                  useChatStore.getState().setPreviewFile({
-                    id: artifact.id,
-                    url: artifact.downloadUrl,
-                    name: artifact.fileName,
-                    type: artifact.mimeType,
-                    size: artifact.sizeBytes,
-                    hideFileDetails: true,
-                    showDownload: true,
-                  });
-                }}
+                onPreview={loadArtifactPreview}
                 onViewSource={async (codeArtifactId) => {
                   // The code artifact is registered through the same pipeline as any
                   // other record, so it streams/previews via the standard KB record

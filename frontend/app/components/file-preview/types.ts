@@ -98,6 +98,11 @@ export interface FilePreviewProps {
      * (e.g. connector records that exist only as a web URL with no stored file).
      */
     previewRenderable?: boolean;
+    /**
+     * Artifact registry version currently loaded. Omitted for previews that
+     * aren't version-tracked artifacts.
+     */
+    version?: number;
   };
   
   /** Initially active tab */
@@ -161,6 +166,24 @@ export interface FilePreviewProps {
    * to keep behaviour stable for previews that don't expect it.
    */
   showDownload?: boolean;
+
+  /**
+   * Highest known version for `file` — enables the version-switcher header
+   * control when greater than `file.version`. Omit (or equal to
+   * `file.version`) to hide the dropdown affordance while still showing the
+   * static "v{n}" badge.
+   */
+  latestVersion?: number;
+
+  /**
+   * Called with the chosen version number when the user picks a different
+   * entry from the version switcher. Omit to disable the switcher entirely
+   * even when `file.version`/`latestVersion` are set.
+   */
+  onVersionChange?: (version: number) => void | Promise<void>;
+
+  /** True while a version switch triggered by `onVersionChange` is in flight. */
+  isSwitchingVersion?: boolean;
 }
 
 /**

@@ -11,6 +11,7 @@ import { FilePreviewTabs } from './file-preview-tabs';
 import { FilePreviewRenderer } from './renderers/file-preview-renderer';
 import { FileDetailsTab } from './file-details-tab';
 import { CitationsPanel } from './citations-panel';
+import { VersionSwitcher } from './version-switcher';
 import { useCitationSync } from './use-citation-sync';
 import { usePdfZoom } from './use-pdf-zoom';
 import { downloadPreviewFile, getTabsForSource, shouldShowPagination, resolvePreviewIconExtension } from './utils';
@@ -62,6 +63,9 @@ export function FilePreviewInlinePanel({
   initialCitationId,
   hideFileDetails,
   showDownload,
+  latestVersion,
+  onVersionChange,
+  isSwitchingVersion,
   showLeftEdgeResizeHandle = false,
   onPointerDownLeftEdgeResize,
   style,
@@ -195,6 +199,14 @@ export function FilePreviewInlinePanel({
           >
             {file.name}
           </Text>
+          {file.version !== undefined && onVersionChange && (
+            <VersionSwitcher
+              version={file.version}
+              latestVersion={latestVersion ?? file.version}
+              onVersionChange={onVersionChange}
+              isSwitching={isSwitchingVersion}
+            />
+          )}
         </Flex>
 
         <Flex align="center" gap="1">

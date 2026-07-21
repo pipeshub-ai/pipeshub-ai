@@ -1172,6 +1172,10 @@ async def handle_simple_mode(
 _LLM_ARTIFACT_MARKER_RE = re.compile(
     r"::artifact\[[^\]]+\]\([^)]+\)\{[^}]*\}",
 )
+# Short-form variant LLMs sometimes hallucinate (no `(url){meta}` block).
+_LLM_ARTIFACT_SHORT_MARKER_RE = re.compile(
+    r"::artifact\[[^\]]+\](?:\([^)]*\))?(?!\{)",
+)
 _LLM_DOWNLOAD_MARKER_RE = re.compile(
     r"::download_conversation_task\[[^\]]+\]\([^)]+\)",
 )
@@ -1187,6 +1191,7 @@ def _strip_llm_authored_markers(answer: str) -> str:
     if not answer:
         return answer
     stripped = _LLM_ARTIFACT_MARKER_RE.sub("", answer)
+    stripped = _LLM_ARTIFACT_SHORT_MARKER_RE.sub("", stripped)
     stripped = _LLM_DOWNLOAD_MARKER_RE.sub("", stripped)
     return stripped
 

@@ -271,6 +271,53 @@ function humanizeToolName(name: string): string {
   return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
 }
 
+/** Known `{app}__` prefixes → human-friendly connector/toolset display name.
+ * Falls back to title-casing the raw prefix for unknown connectors. */
+const TOOLSET_DISPLAY_NAMES: Record<string, string> = {
+  retrieval: 'Knowledge Base',
+  knowledgehub: 'Knowledge Hub',
+  dynamic: 'Web',
+  sql: 'SQL',
+  jira: 'Jira',
+  jira_data_center: 'Jira DC',
+  slack: 'Slack',
+  confluence: 'Confluence',
+  confluence_data_center: 'Confluence DC',
+  github: 'GitHub',
+  google_drive: 'Google Drive',
+  google_calendar: 'Google Calendar',
+  gmail: 'Gmail',
+  clickup: 'ClickUp',
+  one_drive: 'OneDrive',
+  sharepoint: 'SharePoint',
+  teams: 'Teams',
+  outlook: 'Outlook',
+  zoom: 'Zoom',
+  salesforce: 'Salesforce',
+  mariadb: 'MariaDB',
+  redshift: 'Redshift',
+  coding_sandbox: 'Code',
+  database_sandbox: 'Database',
+  image_generator: 'Image',
+  artifacts: 'Artifacts',
+  lumos: 'Lumos',
+};
+
+/** Extracts the toolset/connector prefix from a namespaced tool name and
+ * returns its human-friendly display name. Returns `undefined` for tools
+ * without a namespace prefix, for internal/utility tools, or when the
+ * activity label (from TOOL_ACTIVITY_LABELS) already implies the connector. */
+function extractToolsetLabel(toolName: string | undefined): string | undefined {
+  if (!toolName || !toolName.includes('__')) return undefined;
+  if (TOOL_ACTIVITY_LABELS[toolName]) return undefined;
+  const prefix = toolName.slice(0, toolName.lastIndexOf('__'));
+  if (!prefix) return undefined;
+  if (TOOLSET_DISPLAY_NAMES[prefix]) return TOOLSET_DISPLAY_NAMES[prefix];
+  const words = prefix.split(/[_\-\s]+/).filter(Boolean);
+  if (words.length === 0) return undefined;
+  return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
 /** Derived, model-independent label for a tool-call part — never blank, never
  * the raw `toolName` verbatim for unknown tools (falls back to a humanized
  * version instead). */
@@ -319,6 +366,7 @@ function ToolSummaryText({ content }: { content: string }) {
 export function ToolCallCard({ part }: { part: MessagePart }) {
   const [expanded, setExpanded] = useState(false);
   const status = part.status ?? 'running';
+  const toolsetLabel = extractToolsetLabel(part.toolName);
 
   return (
     <Box
@@ -349,6 +397,22 @@ export function ToolCallCard({ part }: { part: MessagePart }) {
         <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', flex: 1 }}>
           {toolActivityLabel(part)}
         </Text>
+        {toolsetLabel && (
+          <Text
+            size="1"
+            style={{
+              color: 'var(--slate-9)',
+              backgroundColor: 'var(--slate-a3)',
+              padding: '1px 6px',
+              borderRadius: 'var(--radius-2)',
+              fontSize: '11px',
+              lineHeight: '16px',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {toolsetLabel}
+          </Text>
+        )}
         <MaterialIcon
           name={expanded ? 'expand_less' : 'expand_more'}
           size={ICON_SIZES.PRIMARY}
@@ -425,6 +489,9 @@ function ToolCallGroup({ parts }: { parts: MessagePart[] }) {
   const anyFailed = parts.some((part) => part.status === 'failed');
   const status: NonNullable<MessagePart['status']> = anyRunning ? 'running' : anyFailed ? 'failed' : 'completed';
 
+  const toolsetLabels = [...new Set(parts.map((p) => extractToolsetLabel(p.toolName)).filter(Boolean))] as string[];
+  const groupToolsetLabel = toolsetLabels.length === 1 ? toolsetLabels[0] : undefined;
+
   return (
     <Box
       style={{
@@ -454,6 +521,22 @@ function ToolCallGroup({ parts }: { parts: MessagePart[] }) {
         <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', flex: 1 }}>
           {label}
         </Text>
+        {groupToolsetLabel && (
+          <Text
+            size="1"
+            style={{
+              color: 'var(--slate-9)',
+              backgroundColor: 'var(--slate-a3)',
+              padding: '1px 6px',
+              borderRadius: 'var(--radius-2)',
+              fontSize: '11px',
+              lineHeight: '16px',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {groupToolsetLabel}
+          </Text>
+        )}
         <MaterialIcon
           name={expanded ? 'expand_less' : 'expand_more'}
           size={ICON_SIZES.PRIMARY}

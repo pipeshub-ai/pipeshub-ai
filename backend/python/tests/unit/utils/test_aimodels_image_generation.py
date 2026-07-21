@@ -348,3 +348,186 @@ class TestGeminiAdapterGenerate:
             images = await adapter.generate("mixed", n=1)
 
         assert images == [b"PNG"]
+
+
+# ---------------------------------------------------------------------------
+# ImageGenerationAdapter.edit() -- base class default
+# ---------------------------------------------------------------------------
+
+
+class TestBaseAdapterEdit:
+    @pytest.mark.asyncio
+    async def test_base_class_edit_raises_not_implemented(self):
+        adapter = ImageGenerationAdapter()
+        adapter.provider = "someProvider"
+        adapter.model = "some-model"
+
+        with pytest.raises(NotImplementedError, match="someProvider"):
+            await adapter.edit("change it", input_image=b"png-bytes")
+
+
+# ---------------------------------------------------------------------------
+# OpenAI adapter.edit()
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAIAdapterEdit:
+    @pytest.mark.asyncio
+    async def test_edit_decodes_b64_for_gpt_image(self):
+        adapter = get_image_generation_model("openAI", _openai_config())
+
+        png_bytes = b"\x89PNG\r\n\x1a\nedited"
+        b64 = base64.b64encode(png_bytes).decode("ascii")
+        mock_response = SimpleNamespace(data=[SimpleNamespace(b64_json=b64)])
+
+        mock_client = MagicMock()
+        mock_client.images.edit = AsyncMock(return_value=mock_response)
+        mock_client.close = AsyncMock()
+
+        with patch("openai.AsyncOpenAI", return_value=mock_client):
+            images = await adapter.edit(
+                "add a hat", input_image=b"source-png", size="1024x1024", n=1,
+            )
+
+        assert images == [png_bytes]
+        mock_client.images.edit.assert_awaited_once()
+        call_kwargs = mock_client.images.edit.await_args.kwargs
+        assert call_kwargs["model"] == "gpt-image-1"
+        assert call_kwargs["prompt"] == "add a hat"
+        assert call_kwargs["size"] == "1024x1024"
+        assert call_kwargs["n"] == 1
+        assert call_kwargs["image"].read() == b"source-png"
+        assert "response_format" not in call_kwargs
+        mock_client.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_edit_passes_response_format_for_dalle(self):
+        adapter = get_image_generation_model("openAI", _openai_config("dall-e-2"))
+        mock_response = SimpleNamespace(
+            data=[SimpleNamespace(b64_json=base64.b64encode(b"x").decode())]
+        )
+        mock_client = MagicMock()
+        mock_client.images.edit = AsyncMock(return_value=mock_response)
+        mock_client.close = AsyncMock()
+
+        with patch("openai.AsyncOpenAI", return_value=mock_client):
+            await adapter.edit("y", input_image=b"src", size="1024x1024", n=1)
+
+        call_kwargs = mock_client.images.edit.await_args.kwargs
+        assert call_kwargs["response_format"] == "b64_json"
+
+    @pytest.mark.asyncio
+    async def test_edit_downloads_url_fallback(self):
+        adapter = get_image_generation_model("openAI", _openai_config())
+        mock_response = SimpleNamespace(
+            data=[SimpleNamespace(b64_json=None, url="https://cdn.example/edited.png")]
+        )
+        mock_client = MagicMock()
+        mock_client.images.edit = AsyncMock(return_value=mock_response)
+        mock_client.close = AsyncMock()
+
+        mock_http_response = MagicMock()
+        mock_http_response.content = b"downloaded-edit"
+        mock_http_response.raise_for_status = MagicMock()
+
+        mock_http_client = MagicMock()
+        mock_http_client.get = AsyncMock(return_value=mock_http_response)
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("openai.AsyncOpenAI", return_value=mock_client), patch(
+            "httpx.AsyncClient", return_value=mock_http_client
+        ):
+            images = await adapter.edit("x", input_image=b"src", size="1024x1024", n=1)
+
+        assert images == [b"downloaded-edit"]
+
+    @pytest.mark.asyncio
+    async def test_edit_uses_litellm_proxy_base_url(self):
+        adapter = get_image_generation_model(
+            "litellmProxy",
+            {
+                "configuration": {
+                    "apiKey": "sk-proxy",
+                    "model": "gpt-image-1",
+                    "endpoint": "https://proxy.example/v1",
+                },
+                "isDefault": True,
+            },
+        )
+        mock_response = SimpleNamespace(
+            data=[SimpleNamespace(b64_json=base64.b64encode(b"ok").decode())]
+        )
+        mock_client = MagicMock()
+        mock_client.images.edit = AsyncMock(return_value=mock_response)
+        mock_client.close = AsyncMock()
+
+        with patch("openai.AsyncOpenAI", return_value=mock_client) as mock_cls:
+            images = await adapter.edit("z", input_image=b"src", size="1024x1024", n=1)
+
+        assert images == [b"ok"]
+        assert mock_cls.call_args.kwargs["base_url"] == "https://proxy.example/v1"
+
+
+# ---------------------------------------------------------------------------
+# Gemini adapter.edit()
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiAdapterEdit:
+    @pytest.mark.asyncio
+    async def test_edit_sends_image_and_prompt_as_multimodal_content(self):
+        adapter = get_image_generation_model(
+            "gemini", _gemini_config("gemini-2.5-flash-image"),
+        )
+
+        inline = SimpleNamespace(data=b"EDITED_PNG")
+        part = SimpleNamespace(inline_data=inline)
+        content = SimpleNamespace(parts=[part])
+        candidate = SimpleNamespace(content=content)
+        response = SimpleNamespace(candidates=[candidate])
+
+        fake_client = MagicMock()
+        fake_client.aio.models.generate_content = AsyncMock(return_value=response)
+        fake_part_cls = MagicMock()
+        fake_part_cls.from_bytes = MagicMock(return_value="FAKE_PART")
+
+        with patch("google.genai.Client", return_value=fake_client), patch(
+            "google.genai.types.Part", fake_part_cls,
+        ):
+            images = await adapter.edit(
+                "make it blue", input_image=b"source-bytes", n=1,
+            )
+
+        assert images == [b"EDITED_PNG"]
+        fake_part_cls.from_bytes.assert_called_once_with(
+            data=b"source-bytes", mime_type="image/png",
+        )
+        kwargs = fake_client.aio.models.generate_content.await_args.kwargs
+        assert kwargs["contents"] == ["FAKE_PART", "make it blue"]
+
+    @pytest.mark.asyncio
+    async def test_edit_imagen_model_raises_not_implemented(self):
+        adapter = get_image_generation_model(
+            "gemini", _gemini_config("imagen-4.0-generate-001"),
+        )
+
+        with pytest.raises(NotImplementedError, match="Imagen"):
+            await adapter.edit("x", input_image=b"src")
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter adapter.edit() -- no native edit endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestOpenRouterAdapterEdit:
+    @pytest.mark.asyncio
+    async def test_edit_not_implemented(self):
+        adapter = get_image_generation_model(
+            "openRouter",
+            {"configuration": {"apiKey": "sk", "model": "flux/dev"}, "isDefault": True},
+        )
+
+        with pytest.raises(NotImplementedError, match="openRouter"):
+            await adapter.edit("x", input_image=b"src")
