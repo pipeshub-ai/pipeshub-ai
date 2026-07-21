@@ -305,11 +305,9 @@ const TOOLSET_DISPLAY_NAMES: Record<string, string> = {
 
 /** Extracts the toolset/connector prefix from a namespaced tool name and
  * returns its human-friendly display name. Returns `undefined` for tools
- * without a namespace prefix, for internal/utility tools, or when the
- * activity label (from TOOL_ACTIVITY_LABELS) already implies the connector. */
+ * without a namespace prefix. */
 function extractToolsetLabel(toolName: string | undefined): string | undefined {
   if (!toolName || !toolName.includes('__')) return undefined;
-  if (TOOL_ACTIVITY_LABELS[toolName]) return undefined;
   const prefix = toolName.slice(0, toolName.lastIndexOf('__'));
   if (!prefix) return undefined;
   if (TOOLSET_DISPLAY_NAMES[prefix]) return TOOLSET_DISPLAY_NAMES[prefix];
@@ -394,16 +392,14 @@ export function ToolCallCard({ part }: { part: MessagePart }) {
           color={TOOL_STATUS_COLOR[status]}
           style={status === 'running' ? { animation: 'spin 1s linear infinite' } : undefined}
         />
-        <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', flex: 1 }}>
-          {toolActivityLabel(part)}
-        </Text>
         {toolsetLabel && (
           <Text
             size="1"
+            weight="medium"
             style={{
-              color: 'var(--slate-9)',
-              backgroundColor: 'var(--slate-a3)',
-              padding: '1px 6px',
+              color: 'var(--accent-11)',
+              backgroundColor: 'var(--accent-a3)',
+              padding: '2px 8px',
               borderRadius: 'var(--radius-2)',
               fontSize: '11px',
               lineHeight: '16px',
@@ -413,6 +409,9 @@ export function ToolCallCard({ part }: { part: MessagePart }) {
             {toolsetLabel}
           </Text>
         )}
+        <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', flex: 1 }}>
+          {toolActivityLabel(part)}
+        </Text>
         <MaterialIcon
           name={expanded ? 'expand_less' : 'expand_more'}
           size={ICON_SIZES.PRIMARY}
@@ -518,16 +517,14 @@ function ToolCallGroup({ parts }: { parts: MessagePart[] }) {
           color={TOOL_STATUS_COLOR[status]}
           style={status === 'running' ? { animation: 'spin 1s linear infinite' } : undefined}
         />
-        <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', flex: 1 }}>
-          {label}
-        </Text>
         {groupToolsetLabel && (
           <Text
             size="1"
+            weight="medium"
             style={{
-              color: 'var(--slate-9)',
-              backgroundColor: 'var(--slate-a3)',
-              padding: '1px 6px',
+              color: 'var(--accent-11)',
+              backgroundColor: 'var(--accent-a3)',
+              padding: '2px 8px',
               borderRadius: 'var(--radius-2)',
               fontSize: '11px',
               lineHeight: '16px',
@@ -537,6 +534,9 @@ function ToolCallGroup({ parts }: { parts: MessagePart[] }) {
             {groupToolsetLabel}
           </Text>
         )}
+        <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', flex: 1 }}>
+          {label}
+        </Text>
         <MaterialIcon
           name={expanded ? 'expand_less' : 'expand_more'}
           size={ICON_SIZES.PRIMARY}
