@@ -14,6 +14,7 @@ import os
 import re
 import time
 import traceback
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
@@ -9480,178 +9481,6 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to get and validate folder in KB: {str(e)}")
             return None
 
-    async def create_folder(
-        self,
-        kb_id: str,
-        folder_name: str,
-        org_id: str,
-        parent_folder_id: str | None = None,
-        transaction: str | None = None
-    ) -> dict | None:
-        """
-        Create folder with proper RECORDS document and IS_OF_TYPE edge.
-
-        Creates:
-        1. RECORDS document (recordType="FILES")
-        2. FILES document (isFile=False)
-        3. IS_OF_TYPE edge (RECORDS -> FILES)
-        4. RECORD_RELATIONS edges (RECORDS -> RECORDS for parent-child)
-        5. BELONGS_TO edge (RECORDS -> RECORD_GROUPS)
-        """
-        try:
-            folder_id = str(uuid.uuid4())
-            timestamp = get_epoch_timestamp_in_ms()
-
-            location = "KB root" if parent_folder_id is None else f"folder {parent_folder_id}"
-            self.logger.debug(f"🚀 Creating folder '{folder_name}' in {location}")
-
-            # Step 1: Validate parent folder exists (if nested)
-            if parent_folder_id:
-                parent_folder = await self.get_and_validate_folder_in_kb(kb_id, parent_folder_id, transaction)
-                if not parent_folder:
-                    raise ValueError(f"Parent folder {parent_folder_id} not found in KB {kb_id}")
-
-                self.logger.debug(f"✅ Validated parent folder: {parent_folder.get('name') or parent_folder.get('recordName')}")
-
-            # Step 2: Check for name conflicts in the target location
-            existing_folder = await self.find_folder_by_name_in_parent(
-                kb_id=kb_id,
-                folder_name=folder_name,
-                parent_folder_id=parent_folder_id,
-                transaction=transaction
-            )
-
-            if existing_folder:
-                self.logger.warning(f"⚠️ Name conflict: '{folder_name}' already exists in {location}")
-                return {
-                    "id": existing_folder.get("id") or existing_folder.get("_key"),
-                    "name": existing_folder.get("recordName") or existing_folder.get("name"),
-                    "webUrl": existing_folder.get("webUrl", ""),
-                    "parent_folder_id": parent_folder_id,
-                    "exists": True,
-                    "success": True
-                }
-
-            # Step 3: Create RECORDS document for folder
-            # Determine parent: for immediate children of record group, externalParentId should be null
-            # For nested folders (under another folder), use parent folder ID
-            # Note: externalParentId is used to distinguish immediate children (null) from nested children (parent folder ID)
-            external_parent_id = parent_folder_id if parent_folder_id else None
-
-            record_data = {
-                "id": folder_id,
-                "orgId": org_id,
-                "recordName": folder_name,
-                "externalRecordId": f"kb_folder_{folder_id}",
-                "connectorId": kb_id,
-                "externalGroupId": kb_id,  # KB app ID
-                "externalParentId": external_parent_id,  # None for root, parent folder ID for nested
-                "externalRootGroupId": kb_id,  # KB app ID (root knowledge base)
-                "recordType": RecordTypes.FILE.value,
-                "version": 0,
-                "origin": OriginTypes.UPLOAD.value,  # KB folders are uploaded/created locally
-                "connectorName": Connectors.KNOWLEDGE_BASE.value,
-                "mimeType": "application/vnd.folder",
-                "webUrl": f"/kb/{kb_id}/folder/{folder_id}",
-                "createdAtTimestamp": timestamp,
-                "updatedAtTimestamp": timestamp,
-                "lastSyncTimestamp": timestamp,
-                "sourceCreatedAtTimestamp": timestamp,
-                "sourceLastModifiedTimestamp": timestamp,
-                "isDeleted": False,
-                "isArchived": False,
-                "isVLMOcrProcessed": False,  # Required field with default
-                "indexingStatus": "COMPLETED",
-                "extractionStatus": "COMPLETED",
-                "isLatestVersion": True,
-                "isDirty": False,
-            }
-
-            self.logger.debug(
-                f"Creating folder RECORDS: root={not parent_folder_id}, "
-                f"parent={external_parent_id}, kb={kb_id}"
-            )
-
-            self.logger.debug(
-                f"Creating folder RECORDS: root={not parent_folder_id}, "
-                f"parent={external_parent_id}, kb={kb_id}"
-            )
-
-            # Step 4: Create FILES document for folder (file metadata)
-            folder_data = {
-                "id": folder_id,
-                "orgId": org_id,
-                "name": folder_name,
-                "isFile": False,
-                "extension": None,
-            }
-
-            # Step 5: Insert both documents
-            await self.batch_upsert_nodes([record_data], CollectionNames.RECORDS.value, transaction)
-            await self.batch_upsert_nodes([folder_data], CollectionNames.FILES.value, transaction)
-
-            # Step 6: Create IS_OF_TYPE edge (RECORDS -> FILES)
-            is_of_type_edge = {
-                "from_id": folder_id,
-                "from_collection": CollectionNames.RECORDS.value,
-                "to_id": folder_id,
-                "to_collection": CollectionNames.FILES.value,
-                "createdAtTimestamp": timestamp,
-                "updatedAtTimestamp": timestamp,
-            }
-            await self.batch_create_edges([is_of_type_edge], CollectionNames.IS_OF_TYPE.value, transaction)
-
-            # Step 7: Create relationships
-            # BELONGS_TO edge: RECORDS -> App (KB is now an App node, not a RecordGroup)
-            kb_relationship_edge = {
-                "from_id": folder_id,
-                "from_collection": CollectionNames.RECORDS.value,
-                "to_id": kb_id,
-                "to_collection": CollectionNames.APPS.value,
-                "entityType": Connectors.KNOWLEDGE_BASE.value,
-                "createdAtTimestamp": timestamp,
-                "updatedAtTimestamp": timestamp,
-            }
-            await self.batch_create_edges([kb_relationship_edge], CollectionNames.BELONGS_TO.value, transaction)
-
-            # INHERIT_PERMISSIONS edge: RECORDS -> App (KB is now an App node)
-            inherit_permission_edge = {
-                "from_id": folder_id,
-                "from_collection": CollectionNames.RECORDS.value,
-                "to_id": kb_id,
-                "to_collection": CollectionNames.APPS.value,
-                "createdAtTimestamp": timestamp,
-                "updatedAtTimestamp": timestamp,
-            }
-            await self.batch_create_edges([inherit_permission_edge], CollectionNames.INHERIT_PERMISSIONS.value, transaction)
-
-            # Create parent-child relationship ONLY for nested folders (NOT for root folders)
-            # Root folders are identified by BELONGS_TO edge + absence of RECORD_RELATIONS edge
-            if parent_folder_id:
-                # Nested folder: Parent Record -> Child Record via RECORD_RELATIONS
-                parent_child_edge = {
-                    "from_id": parent_folder_id,
-                    "from_collection": CollectionNames.RECORDS.value,
-                    "to_id": folder_id,
-                    "to_collection": CollectionNames.RECORDS.value,
-                    "relationshipType": "PARENT_CHILD",
-                    "createdAtTimestamp": timestamp,
-                    "updatedAtTimestamp": timestamp,
-                }
-                await self.batch_create_edges([parent_child_edge], CollectionNames.RECORD_RELATIONS.value, transaction)
-
-            self.logger.debug(f"✅ Folder '{folder_name}' created successfully with RECORDS document")
-            return {
-                "id": folder_id,
-                "name": folder_name,
-                "webUrl": record_data["webUrl"],
-                "exists": False,
-                "success": True
-            }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to create folder '{folder_name}': {str(e)}")
-            raise
 
     async def get_folder_contents(
         self,
@@ -9700,331 +9529,139 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to get folder contents: {str(e)}")
             return None
 
-    async def update_folder(
+
+    async def delete_records_recursive(
         self,
-        folder_id: str,
-        updates: dict,
-        transaction: str | None = None
-    ) -> dict:
-        """
-        Update folder details in both FILES and RECORDS collections.
-
-        Updates FILES.name and RECORDS.recordName + updatedAtTimestamp
-        """
-        try:
-            self.logger.debug(f"🚀 Updating folder {folder_id}")
-
-            # First, get existing File and Record nodes to check if they exist and get current names
-            get_nodes_query = """
-            MATCH (file:File {id: $folder_id})
-            OPTIONAL MATCH (record:Record {id: $folder_id})
-            RETURN file.name AS file_name, record.recordName AS record_name
-            """
-            nodes_check = await self.client.execute_query(
-                get_nodes_query,
-                parameters={"folder_id": folder_id},
-                txn_id=transaction
-            )
-
-            if not nodes_check:
-                self.logger.warning(f"⚠️ File node not found for folder {folder_id}")
-                return {"success": False, "reason": "Folder not found"}
-
-            # Get existing File name to preserve if not in updates (required by Neo4j constraint)
-            file_name = nodes_check[0].get("file_name") if nodes_check else None
-
-            # Step 1: Update FILES collection with updates (matching Arango: UPDATE folder WITH @updates)
-            # Build SET clause dynamically based on what's in updates
-            set_clauses = []
-            params = {"folder_id": folder_id}
-
-            for key, value in updates.items():
-                set_clauses.append(f"file.{key} = ${key}")
-                params[key] = value
-
-            # If name is not in updates, preserve existing name (required by Neo4j constraint)
-            # This ensures the constraint is satisfied even when name is not being updated
-            if "name" not in updates and file_name:
-                set_clauses.append("file.name = $existing_name")
-                params["existing_name"] = file_name
-
-            # Only update if there are changes or if we need to preserve name
-            if set_clauses:
-                query_file = """
-                MATCH (file:File {id: $folder_id})
-                SET """ + ", ".join(set_clauses) + """
-                RETURN file
-                """
-                file_result = await self.client.execute_query(
-                    query_file,
-                    parameters=params,
-                    txn_id=transaction
-                )
-
-                if not file_result:
-                    self.logger.warning(f"⚠️ Failed to update File node for folder {folder_id}")
-                    return {"success": False, "reason": "Failed to update file node"}
-
-            # Step 2: Update RECORDS collection (matching Arango behavior)
-            # Arango does: recordName = updates.get("name") - can be None if name not in updates
-            updated_at_timestamp = get_epoch_timestamp_in_ms()
-
-            if "name" in updates:
-                # Update both recordName and updatedAtTimestamp (matching Arango: updates.get("name"))
-                query_record = """
-                MATCH (record:Record {id: $folder_id})
-                SET record.recordName = $recordName,
-                    record.updatedAtTimestamp = $updatedAtTimestamp
-                RETURN record
-                """
-                results = await self.client.execute_query(
-                    query_record,
-                    parameters={
-                        "folder_id": folder_id,
-                        "recordName": updates.get("name"),  # Can be None/empty, matching Arango behavior
-                        "updatedAtTimestamp": updated_at_timestamp
-                    },
-                    txn_id=transaction
-                )
-            else:
-                # Only update updatedAtTimestamp (name not in updates, so don't change recordName)
-                query_record = """
-                MATCH (record:Record {id: $folder_id})
-                SET record.updatedAtTimestamp = $updatedAtTimestamp
-                RETURN record
-                """
-                results = await self.client.execute_query(
-                    query_record,
-                    parameters={
-                        "folder_id": folder_id,
-                        "updatedAtTimestamp": updated_at_timestamp
-                    },
-                    txn_id=transaction
-                )
-
-            if results:
-                self.logger.debug("✅ Folder updated successfully")
-                return {"success": True, "updatedCount": 1}
-
-            self.logger.warning("⚠️ Record node not found")
-            return {"success": False, "reason": "Record not found"}
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to update folder: {str(e)}")
-            return {"success": False, "reason": str(e)}
-
-    async def delete_folder(
-        self,
-        kb_id: str,
-        folder_id: str,
+        record_ids: list[str],
+        connector_id: str,
         transaction: str | None = None,
     ) -> dict:
-        """Delete a folder with ALL nested content."""
+        """Delete records (files, folders, or any type) and ALL their containment
+        descendants — the single generic recursive delete for KB and connectors.
+
+        A folder is just a record with PARENT_CHILD children, so there is no folder/file
+        special-casing: each root is deleted with its whole containment subtree (via
+        PARENT_CHILD + ATTACHMENT; reference relations are removed by DETACH DELETE but
+        never traversed). Roots are scoped by ``connectorId == $connector_id`` (kb_id for a
+        KB). ``DETACH DELETE`` removes each node together with all its relationships, so
+        inheritPermissions/permissions/entityRelations go too. Emits a deleteRecord per
+        record with a virtualRecordId (Qdrant cleanup), connectorName/origin from the record.
+        """
         try:
+            if not record_ids:
+                return {
+                    "success": True, "deleted_records": [], "failed_records": [],
+                    "total_requested": 0, "successfully_deleted": 0, "failed_count": 0,
+                    "eventData": None,
+                }
+            node_collections = [CollectionNames.RECORDS.value] + list(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
             txn_id = transaction
             if transaction is None:
                 txn_id = await self.begin_transaction(
                     read=[],
-                    write=[
-                        CollectionNames.FILES.value,
-                        CollectionNames.RECORDS.value,
+                    write=node_collections + [
                         CollectionNames.RECORD_RELATIONS.value,
-                        CollectionNames.BELONGS_TO.value,
                         CollectionNames.IS_OF_TYPE.value,
+                        CollectionNames.BELONGS_TO.value,
+                        CollectionNames.PERMISSION.value,
+                        CollectionNames.INHERIT_PERMISSIONS.value,
                     ],
                 )
             try:
-                # Step 1: Collect inventory - target folder + all nested content
                 inventory_query = """
-                MATCH (target_folder:Record {id: $folder_id})
-                MATCH (target_folder)-[:IS_OF_TYPE]->(target_file:File {isFile: false})
-
-                // Get all subfolders via RECORD_RELATION traversal (up to 20 levels deep)
-                OPTIONAL MATCH path = (target_folder)-[:RECORD_RELATION*1..20]->(subfolder:Record)
-                WHERE all(rel IN relationships(path) WHERE rel.relationshipType = 'PARENT_CHILD')
-                OPTIONAL MATCH (subfolder)-[:IS_OF_TYPE]->(subfolder_file:File {isFile: false})
-                WHERE subfolder_file IS NOT NULL
-
-                WITH target_folder, target_file,
-                     collect(DISTINCT subfolder.id) AS all_subfolders
-
-                WITH target_folder, target_file,
-                     [target_folder.id] + all_subfolders AS all_folders
-
-                // Get all file records (non-folders) nested in these folders
-                // Only match records that have IS_OF_TYPE -> File {isFile: true}
-                OPTIONAL MATCH path2 = (target_folder)-[:RECORD_RELATION*1..20]->(file_record:Record)
-                WHERE all(rel IN relationships(path2) WHERE rel.relationshipType = 'PARENT_CHILD')
-                OPTIONAL MATCH (file_record)-[:IS_OF_TYPE]->(file_rec_file:File)
-                WHERE file_rec_file IS NOT NULL AND file_rec_file.isFile = true
-
-                WITH target_folder, all_folders,
-                     collect(DISTINCT CASE
-                         WHEN file_record IS NOT NULL AND file_rec_file IS NOT NULL
-                         THEN {record: file_record, file_record: file_rec_file}
-                         ELSE null
-                     END) AS records_with_details_raw,
-                     collect(DISTINCT file_rec_file.id) AS file_record_ids
-
-                // Filter out null entries from records_with_details
-                WITH target_folder, all_folders, file_record_ids,
-                     [item IN records_with_details_raw WHERE item IS NOT NULL] AS records_with_details
-
-                // Get File node IDs for all folders (BEFORE deleting edges)
-                UNWIND all_folders AS folder_id
-                OPTIONAL MATCH (f:Record {id: folder_id})-[:IS_OF_TYPE]->(folder_file:File {isFile: false})
-
-                WITH target_folder, all_folders, file_record_ids, records_with_details,
-                     collect(DISTINCT folder_file.id) AS folder_file_node_ids
-
+                // 1. Validate roots by connectorId
+                UNWIND $record_ids AS rid
+                OPTIONAL MATCH (rec:Record {id: rid})
+                WITH collect(DISTINCT CASE
+                        WHEN rec IS NOT NULL AND (rec.isDeleted IS NULL OR rec.isDeleted <> true) AND rec.connectorId = $connector_id
+                        THEN rec ELSE null END) AS roots_raw
+                WITH [r IN roots_raw WHERE r IS NOT NULL] AS valid_roots
+                WITH valid_roots, [r IN valid_roots | r.id] AS valid_root_keys
+                // 2. Containment subtree (PARENT_CHILD + ATTACHMENT), depth-0 inclusive
+                UNWIND (CASE WHEN size(valid_roots) = 0 THEN [null] ELSE valid_roots END) AS root
+                OPTIONAL MATCH path = (root)-[:RECORD_RELATION*0..20]->(v:Record)
+                WHERE root IS NOT NULL AND all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+                WITH valid_root_keys, collect(DISTINCT v) AS all_vertices
+                // 3. Attach each record's isOfType type doc (any label)
+                UNWIND (CASE WHEN size(all_vertices) = 0 THEN [null] ELSE all_vertices END) AS vert
+                OPTIONAL MATCH (vert)-[:IS_OF_TYPE]->(t)
+                WITH valid_root_keys,
+                     collect(DISTINCT CASE WHEN vert IS NOT NULL THEN {record: vert, type_doc: t} ELSE null END) AS rwt_raw
                 RETURN {
-                    folder_exists: target_folder IS NOT NULL,
-                    target_folder: target_folder.id,
-                    all_folders: all_folders,
-                    subfolders: all_folders[1..],
-                    records_with_details: records_with_details,
-                    file_records: file_record_ids,
-                    folder_file_nodes: folder_file_node_ids,
-                    total_folders: size(all_folders),
-                    total_subfolders: size(all_folders) - 1,
-                    total_records: size(records_with_details),
-                    total_file_records: size(file_record_ids)
+                    valid_root_keys: valid_root_keys,
+                    records_with_type: [x IN rwt_raw WHERE x IS NOT NULL]
                 } AS inventory
                 """
-
                 inv_results = await self.client.execute_query(
                     inventory_query,
-                    parameters={"folder_id": folder_id},
-                    txn_id=txn_id
+                    parameters={"record_ids": record_ids, "connector_id": connector_id},
+                    txn_id=txn_id,
                 )
-
                 inventory = inv_results[0]["inventory"] if inv_results else {}
+                valid_root_keys = inventory.get("valid_root_keys", [])
+                records_with_type = inventory.get("records_with_type", [])
+                record_keys = [rt["record"]["id"] for rt in records_with_type if rt.get("record")]
+                failed_records = [
+                    {"record_id": rid, "reason": "Validation failed"}
+                    for rid in record_ids if rid not in valid_root_keys
+                ]
 
-                self.logger.debug(f"inventory: {inventory}")
-
-                if not inventory.get("folder_exists"):
-                    if transaction is None and txn_id:
-                        await self.rollback_transaction(txn_id)
-                    return {"success": False, "eventData": None}
-
-                records_with_details = inventory.get("records_with_details", [])
-                all_record_keys = [rd["record"]["id"] for rd in records_with_details if rd.get("record")]
-                all_folders = inventory.get("all_folders", [])
-                file_records = inventory.get("file_records", [])
-                folder_file_nodes = inventory.get("folder_file_nodes", [])
-
-                # Step 2: Delete ALL edges connected to records and folders
-                all_ids = all_record_keys + all_folders
-                if all_ids:
-                    self.logger.debug(f"🗑️ Step 2: Deleting all relationships for {len(all_ids)} nodes...")
-                    edges_cleanup = """
-                    UNWIND $all_ids AS node_id
-                    MATCH (node:Record {id: node_id})
-                    OPTIONAL MATCH (node)-[r]-()
-                    WITH collect(DISTINCT r) AS all_edges
-                    UNWIND all_edges AS edge
-                    WITH edge WHERE edge IS NOT NULL
-                    DELETE edge
-                    RETURN count(edge) AS edges_deleted
-                    """
-
-                    edge_results = await self.client.execute_query(
-                        edges_cleanup,
-                        parameters={"all_ids": all_ids},
-                        txn_id=txn_id
-                    )
-
-                    edges_deleted = edge_results[0]["edges_deleted"] if edge_results else 0
-                    self.logger.debug(f"✅ Deleted {edges_deleted} relationships")
-
-                # Step 3: Delete ALL File nodes (both files and folders)
-                # Combine File node IDs from both files and folders (collected in inventory)
-                all_file_node_ids = file_records + folder_file_nodes
-
-                if all_file_node_ids:
-                    self.logger.debug(f"🗑️ Step 3: Deleting {len(all_file_node_ids)} File nodes ({len(file_records)} files + {len(folder_file_nodes)} folders)...")
-                    delete_all_file_nodes = """
-                    MATCH (file:File)
-                    WHERE file.id IN $file_node_ids
-                    DELETE file
-                    """
+                if record_keys:
+                    # Delete the isOfType type docs (any label) via the record, then the
+                    # records themselves; DETACH DELETE removes every relationship on each
+                    # node (the dynamic edge sweep — inheritPermissions/permissions/etc.).
                     await self.client.execute_query(
-                        delete_all_file_nodes,
-                        parameters={"file_node_ids": all_file_node_ids},
-                        txn_id=txn_id
+                        "MATCH (r:Record)-[:IS_OF_TYPE]->(t) WHERE r.id IN $record_ids DETACH DELETE t",
+                        parameters={"record_ids": record_keys}, txn_id=txn_id,
                     )
-                    self.logger.debug(f"✅ Deleted {len(all_file_node_ids)} File nodes")
-
-                # Step 4: Delete RECORD nodes for files
-                if all_record_keys:
-                    self.logger.debug(f"🗑️ Step 4: Deleting {len(all_record_keys)} file Record nodes...")
-                    delete_file_records = """
-                    MATCH (record:Record)
-                    WHERE record.id IN $record_ids
-                    DELETE record
-                    """
                     await self.client.execute_query(
-                        delete_file_records,
-                        parameters={"record_ids": all_record_keys},
-                        txn_id=txn_id
+                        "MATCH (r:Record) WHERE r.id IN $record_ids DETACH DELETE r",
+                        parameters={"record_ids": record_keys}, txn_id=txn_id,
                     )
-                    self.logger.debug(f"✅ Deleted {len(all_record_keys)} file Record nodes")
-
-                # Step 5: Delete RECORD nodes for folders (in reverse order - deepest first)
-                if all_folders:
-                    self.logger.debug(f"🗑️ Step 5: Deleting {len(all_folders)} folder Record nodes...")
-                    # Reverse to delete deepest folders first
-                    reversed_folders = list(reversed(all_folders))
-                    delete_folder_records = """
-                    MATCH (folder:Record)
-                    WHERE folder.id IN $folder_ids
-                    DELETE folder
-                    """
-                    await self.client.execute_query(
-                        delete_folder_records,
-                        parameters={"folder_ids": reversed_folders},
-                        txn_id=txn_id
-                    )
-                    self.logger.debug(f"✅ Deleted {len(all_folders)} folder Record nodes")
-
                 if transaction is None and txn_id:
                     await self.commit_transaction(txn_id)
 
-                self.logger.info(f"✅ Folder {folder_id} and nested content deleted.")
-
-                # Step: Prepare event data for all deleted file records (router will publish)
                 event_payloads = []
                 try:
-                    for record_data in records_with_details:  # Already contains only file records
-                        delete_payload = await self._create_deleted_record_event_payload(
-                            record_data["record"], record_data.get("file_record")
-                        )
+                    for rt in records_with_type:
+                        rec = rt.get("record") or {}
+                        if not rec.get("virtualRecordId"):
+                            continue
+                        type_doc = rt.get("type_doc") or {}
+                        delete_payload = await self._create_deleted_record_event_payload(rec, type_doc)
                         if delete_payload:
-                            delete_payload["connectorName"] = Connectors.KNOWLEDGE_BASE.value
-                            delete_payload["origin"] = OriginTypes.UPLOAD.value
+                            delete_payload["connectorName"] = rec.get("connectorName")
+                            delete_payload["origin"] = rec.get("origin")
                             event_payloads.append(delete_payload)
                 except Exception as e:
                     self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
-
                 event_data = {
                     "eventType": "deleteRecord",
                     "topic": "record-events",
-                    "payloads": event_payloads
+                    "payloads": event_payloads,
                 } if event_payloads else None
 
+                deleted_records = [
+                    {"record_id": rt["record"]["id"], "name": rt["record"].get("recordName", "Unknown")}
+                    for rt in records_with_type if rt.get("record")
+                ]
                 return {
                     "success": True,
-                    "eventData": event_data
+                    "deleted_records": deleted_records,
+                    "failed_records": failed_records,
+                    "total_requested": len(record_ids),
+                    "successfully_deleted": len(valid_root_keys),
+                    "failed_count": len(failed_records),
+                    "eventData": event_data,
                 }
-
             except Exception as db_error:
                 if transaction is None and txn_id:
                     await self.rollback_transaction(txn_id)
                 raise db_error
-
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete folder: {str(e)}")
-            return {"success": False, "eventData": None}
+            self.logger.error(f"❌ Failed to delete records recursively: {str(e)}")
+            return {"success": False, "reason": str(e), "code": 500, "eventData": None}
+
 
     async def find_folder_by_name_in_parent(
         self,
@@ -10190,6 +9827,24 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to fetch existing file names: {str(e)}")
             return set()
 
+    def _normalize_name(self, name: str | None) -> str | None:
+        """Normalize a file/folder name to NFC and trim whitespace."""
+        if name is None:
+            return None
+        try:
+            return unicodedata.normalize("NFC", str(name)).strip()
+        except Exception:
+            return str(name).strip()
+
+    def _normalized_name_variants_lower(self, name: str) -> list[str]:
+        """Provide lowercase variants for equality comparisons (NFC and NFD)."""
+        nfc = self._normalize_name(name) or ""
+        try:
+            nfd = unicodedata.normalize("NFD", nfc)
+        except Exception:
+            nfd = nfc
+        return [nfc.lower(), nfd.lower()]
+
     async def validate_folder_exists_in_kb(
         self,
         kb_id: str,
@@ -10249,18 +9904,15 @@ class Neo4jProvider(IGraphDBProvider):
 
             user_role = await self.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
+                if user_role is None:
+                    # No role at all → hide existence (404), same as the read path.
+                    return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
                 kb_name = await self._fetch_kb_name(kb_id)
                 kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
-                if user_role is None:
-                    reason = (
-                        f"You do not have access to knowledge base {kb_label}. "
-                        "OWNER or WRITER role is required to create folders."
-                    )
-                else:
-                    reason = (
-                        f"Insufficient permissions on knowledge base {kb_label}. "
-                        f"OWNER or WRITER role required, but your role is: {user_role}."
-                    )
+                reason = (
+                    f"Insufficient permissions on knowledge base {kb_label}. "
+                    f"OWNER or WRITER role required, but your role is: {user_role}."
+                )
                 return {"valid": False, "success": False, "code": 403, "reason": reason}
 
             return {
@@ -10273,72 +9925,6 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             return {"valid": False, "success": False, "code": 500, "reason": str(e)}
 
-    async def upload_records(
-        self,
-        kb_id: str,
-        user_id: str,
-        org_id: str,
-        files: list[dict],
-        parent_folder_id: str | None = None,  # None = KB root, str = specific folder
-    ) -> dict:
-        """
-        Upload records/files to a knowledge base.
-        - KB root upload (parent_folder_id=None)
-        - Folder upload (parent_folder_id=folder_id)
-
-        This method follows the same structure as ArangoHTTPProvider:
-        1. Validate user permissions and target location
-        2. Analyze folder structure relative to upload target
-        3. Execute upload in single transaction
-        """
-        try:
-            upload_type = "folder" if parent_folder_id else "KB root"
-            self.logger.debug(f"🚀 Starting unified upload to {upload_type} in KB {kb_id}")
-            self.logger.debug(f"📊 Processing {len(files)} files")
-
-            # Step 1: Validate user permissions and target location
-            validation_result = await self._validate_upload_context(
-                kb_id=kb_id,
-                user_id=user_id,
-                org_id=org_id,
-                parent_folder_id=parent_folder_id
-            )
-            if not validation_result["valid"]:
-                return validation_result
-
-            # Step 2: Analyze folder structure relative to upload target
-            folder_analysis = self._analyze_upload_structure(files, validation_result)
-            self.logger.debug(f"📁 Structure analysis: {folder_analysis['summary']}")
-
-            # Step 3: Execute upload in single transaction
-            result = await self._execute_upload_transaction(
-                kb_id=kb_id,
-                user_id=user_id,
-                org_id=org_id,
-                files=files,
-                folder_analysis=folder_analysis,
-                validation_result=validation_result
-            )
-
-            if result["success"]:
-                return {
-                    "success": True,
-                    "message": self._generate_upload_message(result, upload_type),
-                    "totalCreated": result["total_created"],
-                    "foldersCreated": result["folders_created"],
-                    "createdFolders": result["created_folders"],
-                    "failedFiles": result["failed_files"],
-                    "skippedFiles": result.get("skipped_files", []),
-                    "kbId": kb_id,
-                    "parentFolderId": parent_folder_id,
-                    "eventData": result.get("eventData"),
-                }
-            else:
-                return result
-
-        except Exception as e:
-            self.logger.error(f"❌ Unified upload failed: {str(e)}")
-            return {"success": False, "reason": f"Upload failed: {str(e)}", "code": 500}
 
     # ==================== Upload Helper Methods ====================
 
@@ -10396,18 +9982,15 @@ class Neo4jProvider(IGraphDBProvider):
 
             user_role = await self.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
+                if user_role is None:
+                    # No role at all → hide existence (404), same as the read path.
+                    return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
                 kb_name = await self._fetch_kb_name(kb_id)
                 kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
-                if user_role is None:
-                    reason = (
-                        f"You do not have access to knowledge base {kb_label}. "
-                        "OWNER or WRITER role is required to upload files."
-                    )
-                else:
-                    reason = (
-                        f"Insufficient permissions on knowledge base {kb_label}. "
-                        f"OWNER or WRITER role required, but your role is: {user_role}."
-                    )
+                reason = (
+                    f"Insufficient permissions on knowledge base {kb_label}. "
+                    f"OWNER or WRITER role required, but your role is: {user_role}."
+                )
                 return {"valid": False, "success": False, "code": 403, "reason": reason}
 
             if parent_folder_id:
@@ -10524,163 +10107,7 @@ class Neo4jProvider(IGraphDBProvider):
             }
         }
 
-    async def _execute_upload_transaction(
-        self,
-        kb_id: str,
-        user_id: str,
-        org_id: str,
-        files: list[dict],
-        folder_analysis: dict,
-        validation_result: dict
-    ) -> dict:
-        """Execute upload in single transaction"""
-        transaction = None
-        try:
-            # Start transaction
-            transaction = await self.begin_transaction(
-                read=[],
-                write=[
-                    CollectionNames.RECORDS.value,
-                    CollectionNames.FILES.value,
-                    CollectionNames.IS_OF_TYPE.value,
-                    CollectionNames.BELONGS_TO.value,
-                    CollectionNames.RECORD_RELATIONS.value,
-                    CollectionNames.INHERIT_PERMISSIONS.value,
-                ]
-            )
-            timestamp = get_epoch_timestamp_in_ms()
 
-            # Step 1: Ensure all needed folders exist
-            folder_map = await self._ensure_folders_exist(
-                kb_id=kb_id,
-                org_id=org_id,
-                folder_analysis=folder_analysis,
-                validation_result=validation_result,
-                transaction=transaction,
-                timestamp=timestamp
-            )
-
-            # Step 2: Update file destinations with folder IDs
-            self._populate_file_destinations(folder_analysis, folder_map)
-
-            # Step 3: Create all records and relationships
-            creation_result = await self._create_records(
-                kb_id=kb_id,
-                org_id=org_id,
-                files=files,
-                folder_analysis=folder_analysis,
-                transaction=transaction,
-                timestamp=timestamp
-            )
-
-            if creation_result["total_created"] > 0 or len(folder_map) > 0:
-                # Commit transaction; event publishing is done by the router
-                await self.commit_transaction(transaction)
-                self.logger.debug("✅ Upload transaction committed successfully")
-
-                # Build event payloads for router to publish (no publishing here)
-                event_payloads = await self._build_upload_event_payloads(kb_id, {
-                    "created_files_data": creation_result["created_files_data"],
-                    "total_created": creation_result["total_created"]
-                })
-                event_data = None
-                if event_payloads:
-                    event_data = {
-                        "topic": "record-events",
-                        "eventType": "newRecord",
-                        "payloads": event_payloads,
-                    }
-
-                return {
-                    "success": True,
-                    "total_created": creation_result["total_created"],
-                    "folders_created": len(folder_map),
-                    "created_folders": [
-                        {"id": folder_id}
-                        for folder_id in folder_map.values()
-                    ],
-                    "failed_files": creation_result["failed_files"],
-                    "skipped_files": creation_result.get("skipped_files", []),
-                    "eventData": event_data,
-                }
-            else:
-                # Nothing created - rollback
-                await self.rollback_transaction(transaction)
-                self.logger.debug("🔄 Transaction rolled back - no items to create")
-                return {
-                    "success": True,
-                    "total_created": 0,
-                    "folders_created": 0,
-                    "created_folders": [],
-                    "failed_files": creation_result["failed_files"],
-                    "skipped_files": creation_result.get("skipped_files", []),
-                }
-
-        except Exception as e:
-            if transaction:
-                try:
-                    await self.rollback_transaction(transaction)
-                    self.logger.debug("🔄 Transaction rolled back due to error")
-                except Exception as abort_error:
-                    self.logger.error(f"❌ Failed to rollback transaction: {str(abort_error)}")
-
-            self.logger.error(f"❌ Upload transaction failed: {str(e)}")
-            return {"success": False, "reason": f"Transaction failed: {str(e)}", "code": 500}
-
-    async def _ensure_folders_exist(
-        self,
-        kb_id: str,
-        org_id: str,
-        folder_analysis: dict,
-        validation_result: dict,
-        transaction: str,
-        timestamp: int
-    ) -> dict[str, str]:
-        """Ensure all folders in hierarchy exist, creating them if needed"""
-        folder_map = {}  # hierarchy_path -> folder_id
-        upload_parent_folder_id = None
-        if validation_result["upload_target"] == "folder":
-            upload_parent_folder_id = validation_result["parent_folder"].get("id") or validation_result["parent_folder"].get("_key")
-
-        for hierarchy_path in folder_analysis["sorted_folder_paths"]:
-            folder_info = folder_analysis["folder_hierarchy"][hierarchy_path]
-            folder_name = folder_info["name"]
-            parent_hierarchy_path = folder_info["parent_path"]
-
-            # Determine parent folder ID
-            parent_folder_id = None
-            if parent_hierarchy_path:
-                parent_folder_id = folder_map.get(parent_hierarchy_path)
-                if parent_folder_id is None:
-                    raise Exception(f"Parent folder creation failed for path: {parent_hierarchy_path}")
-            elif upload_parent_folder_id:
-                parent_folder_id = upload_parent_folder_id
-
-            # Check if folder already exists
-            existing_folder = await self.find_folder_by_name_in_parent(
-                kb_id=kb_id,
-                folder_name=folder_name,
-                parent_folder_id=parent_folder_id,
-                transaction=transaction
-            )
-
-            if existing_folder:
-                folder_map[hierarchy_path] = existing_folder.get("id") or existing_folder.get("_key")
-                self.logger.debug(f"✅ Folder exists: {folder_name}")
-            else:
-                # Create new folder
-                folder = await self.create_folder(
-                    kb_id=kb_id,
-                    org_id=org_id,
-                    folder_name=folder_name,
-                    parent_folder_id=parent_folder_id,
-                    transaction=transaction
-                )
-                folder_id = folder['id']
-                folder_map[hierarchy_path] = folder_id
-                self.logger.debug(f"✅ Created folder: {folder_name} -> {folder_id}")
-
-        return folder_map
 
     def _populate_file_destinations(self, folder_analysis: dict, folder_map: dict[str, str]) -> None:
         """Update file destinations with resolved folder IDs"""
@@ -10690,201 +10117,6 @@ class Neo4jProvider(IGraphDBProvider):
                 if hierarchy_path in folder_map:
                     destination["folder_id"] = folder_map[hierarchy_path]
 
-    async def _create_records(
-        self,
-        kb_id: str,
-        org_id: str,
-        files: list[dict],
-        folder_analysis: dict,
-        transaction: str,
-        timestamp: int
-    ) -> dict:
-        """Create all records and relationships"""
-        total_created = 0
-        failed_files = []
-        skipped_files: list[dict] = []
-        created_files_data = []  # For event publishing
-        # Tracks names accepted in THIS batch. The pre-fetched existing-name
-        # sets are built before the loop and do not reflect files written during
-        # iteration, so intra-batch duplicates must still be caught here.
-        # Keyed by (parent_folder_id, name_lower, mime_str).
-        seen_in_batch: set[tuple[str, str, str]] = set()
-
-        kb_connector_id = kb_id
-
-        # Pre-compute unique parent IDs so we issue one query per parent instead
-        # of one per file.
-        unique_parent_ids: set[str | None] = set()
-        for idx in range(len(files)):
-            dest = folder_analysis["file_destinations"][idx]
-            if dest["type"] == "root":
-                unique_parent_ids.add(folder_analysis.get("parent_folder_id"))
-            else:
-                pid = dest.get("folder_id")
-                if pid:
-                    unique_parent_ids.add(pid)
-
-        existing_names_per_parent: dict[str | None, set[tuple[str, str]]] = {}
-        for pid in unique_parent_ids:
-            existing_names_per_parent[pid] = await self._fetch_existing_file_names_in_parent(
-                kb_id=kb_id, parent_folder_id=pid, transaction=transaction
-            )
-
-        for index, file_data in enumerate(files):
-            try:
-                destination = folder_analysis["file_destinations"][index]
-                parent_folder_id = None
-
-                if destination["type"] == "root":
-                    parent_folder_id = folder_analysis.get("parent_folder_id")
-                else:
-                    parent_folder_id = destination.get("folder_id")
-                    if not parent_folder_id:
-                        failed_files.append(file_data["filePath"])
-                        continue
-
-                # Extract data from file_data
-                record_data = file_data["record"].copy()
-                file_record_data = file_data["fileRecord"].copy()
-
-                # Skip files whose name+mime already exists in the target parent
-                # (pre-fetched set) or collides with an earlier file in this batch.
-                conflict_name = file_record_data.get("name") or record_data.get("recordName") or ""
-                conflict_mime = file_record_data.get("mimeType")
-                batch_key = (
-                    str(parent_folder_id or ""),
-                    conflict_name.lower(),
-                    str(conflict_mime or ""),
-                )
-                name_mime_key = (conflict_name.lower(), str(conflict_mime or ""))
-                has_db_conflict = name_mime_key in existing_names_per_parent.get(
-                    parent_folder_id, set()
-                )
-                if has_db_conflict or batch_key in seen_in_batch:
-                    self.logger.warning(
-                        "⚠️ Skipping file due to name conflict: '%s'", conflict_name
-                    )
-                    skipped_files.append({
-                        "filePath": file_data.get("filePath", ""),
-                        "name": conflict_name,
-                        "reason": "DUPLICATE_NAME",
-                    })
-                    continue
-                seen_in_batch.add(batch_key)
-
-                # Enrich record with KB-specific fields
-                external_parent_id = parent_folder_id if parent_folder_id else None
-                record_data.setdefault("externalGroupId", kb_id)
-                record_data.setdefault("externalParentId", external_parent_id)
-                record_data.setdefault("externalRootGroupId", kb_id)
-                record_data.setdefault("connectorId", kb_connector_id)
-                record_data.setdefault("connectorName", Connectors.KNOWLEDGE_BASE.value)
-                record_data.setdefault("lastSyncTimestamp", timestamp)
-                record_data.setdefault("isVLMOcrProcessed", False)
-                record_data.setdefault("extractionStatus", "NOT_STARTED")
-                record_data.setdefault("isLatestVersion", True)
-                record_data.setdefault("isDirty", False)
-
-                # Convert _key to id for Neo4j
-                record_id = record_data.get("_key") or record_data.get("id")
-                file_id = file_record_data.get("_key") or file_record_data.get("id")
-
-                record_data["id"] = record_id
-                file_record_data["id"] = file_id
-
-                # Also ensure _key is set for event publishing (Kafka expects _key)
-                record_data["_key"] = record_id
-                file_record_data["_key"] = file_id
-
-                # Create nodes
-                await self.batch_upsert_nodes([record_data], CollectionNames.RECORDS.value, transaction)
-                await self.batch_upsert_nodes([file_record_data], CollectionNames.FILES.value, transaction)
-
-                # Create edges
-                edges = []
-
-                # IS_OF_TYPE edge
-                edges.append({
-                    "from_id": record_id,
-                    "from_collection": CollectionNames.RECORDS.value,
-                    "to_id": file_id,
-                    "to_collection": CollectionNames.FILES.value,
-                    "createdAtTimestamp": timestamp,
-                    "updatedAtTimestamp": timestamp,
-                })
-
-                # BELONGS_TO edge (record -> KB app)
-                edges.append({
-                    "from_id": record_id,
-                    "from_collection": CollectionNames.RECORDS.value,
-                    "to_id": kb_id,
-                    "to_collection": CollectionNames.APPS.value,
-                    "entityType": Connectors.KNOWLEDGE_BASE.value,
-                    "createdAtTimestamp": timestamp,
-                    "updatedAtTimestamp": timestamp,
-                })
-
-                # Record -> KB inheritPermissions edge
-                edges.append({
-                    "from_id": record_id,
-                    "from_collection": CollectionNames.RECORDS.value,
-                    "to_id": kb_id,
-                    "to_collection": CollectionNames.APPS.value,
-                    "createdAtTimestamp": timestamp,
-                    "updatedAtTimestamp": timestamp,
-                })
-
-                # RECORD_RELATIONS edge (if has parent)
-                if parent_folder_id:
-                    edges.append({
-                        "from_id": parent_folder_id,
-                        "from_collection": CollectionNames.RECORDS.value,
-                        "to_id": record_id,
-                        "to_collection": CollectionNames.RECORDS.value,
-                        "relationshipType": "PARENT_CHILD",
-                        "createdAtTimestamp": timestamp,
-                        "updatedAtTimestamp": timestamp,
-                    })
-
-                # Create edges by type
-                is_of_type_edges = [e for e in edges if e.get("to_collection") == CollectionNames.FILES.value]
-                # belongsTo edges have entityType set (e.g., Connectors.KNOWLEDGE_BASE.value)
-                belongs_to_edges = [e for e in edges if e.get("entityType") == Connectors.KNOWLEDGE_BASE.value]
-                # inheritPermission edges point to Apps (KB) or RecordGroups and have no entityType
-                inherit_permission_edges = [
-                    e for e in edges
-                    if e.get("to_collection") in (CollectionNames.APPS.value, CollectionNames.RECORD_GROUPS.value)
-                    and not e.get("entityType")
-                ]
-                parent_child_edges = [e for e in edges if e.get("relationshipType") == "PARENT_CHILD"]
-
-                if is_of_type_edges:
-                    await self.batch_create_edges(is_of_type_edges, CollectionNames.IS_OF_TYPE.value, transaction)
-                if belongs_to_edges:
-                    await self.batch_create_edges(belongs_to_edges, CollectionNames.BELONGS_TO.value, transaction)
-                if inherit_permission_edges:
-                    await self.batch_create_edges(inherit_permission_edges, CollectionNames.INHERIT_PERMISSIONS.value, transaction)
-                if parent_child_edges:
-                    await self.batch_create_edges(parent_child_edges, CollectionNames.RECORD_RELATIONS.value, transaction)
-
-                # Store created file data for event publishing
-                created_files_data.append({
-                    "record": record_data,
-                    "fileRecord": file_record_data
-                })
-
-                total_created += 1
-
-            except Exception as e:
-                self.logger.error(f"Failed to create record for {file_data.get('filePath')}: {str(e)}")
-                failed_files.append(file_data["filePath"])
-
-        return {
-            "total_created": total_created,
-            "failed_files": failed_files,
-            "skipped_files": skipped_files,
-            "created_files_data": created_files_data
-        }
 
     def _generate_upload_message(self, result: dict, upload_type: str) -> str:
         """Generate success message"""
@@ -10906,135 +10138,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         return message + "."
 
-    async def _build_upload_event_payloads(self, kb_id: str, result: dict) -> list[dict]:
-        """
-        Build event payloads for uploaded records. Does NOT publish; caller (router) publishes.
-        Returns list of payloads for eventData.payloads (topic=record-events, eventType=newRecord).
-        """
-        try:
-            created_files_data = result.get("created_files_data", [])
 
-            if not created_files_data:
-                self.logger.debug("No new records were created, no event payloads.")
-                return []
 
-            # Get storage endpoint
-            try:
-                endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
-                if endpoints and isinstance(endpoints, dict):
-                    storage_url = endpoints.get("storage", {}).get("endpoint", "http://localhost:3000")
-                else:
-                    self.logger.warning("⚠️ Endpoints config not found, using default storage URL")
-                    storage_url = "http://localhost:3000"
-            except Exception as config_error:
-                self.logger.error(f"❌ Failed to get storage config: {str(config_error)}")
-                storage_url = "http://localhost:3000"  # Fallback
-
-            payloads: list[dict] = []
-            for file_data in created_files_data:
-                try:
-                    record_doc = file_data.get("record")
-                    file_doc = file_data.get("fileRecord")
-
-                    if record_doc and file_doc:
-                        create_payload = await self._create_new_record_event_payload(
-                            record_doc, file_doc, storage_url
-                        )
-                        if create_payload:
-                            payloads.append(create_payload)
-                        else:
-                            self.logger.warning(f"⚠️ Skipping payload for record {record_doc.get('_key')} - payload creation failed")
-                    else:
-                        self.logger.warning(f"⚠️ Incomplete file data, skipping payload: {file_data}")
-                except Exception as payload_error:
-                    self.logger.error(f"❌ Failed to build event payload for record: {str(payload_error)}")
-
-            return payloads
-        except Exception as e:
-            self.logger.error(f"❌ Critical error building upload event payloads for KB {kb_id}: {str(e)}", exc_info=True)
-            return []
-
-    async def _create_new_record_event_payload(self, record_doc: dict, file_doc: dict, storage_url: str) -> dict:
-        """
-        Creates NewRecordEvent payload to publish to Kafka.
-        """
-        try:
-            record_id = record_doc.get("_key") or record_doc.get("id")
-            self.logger.debug(f"🚀 Preparing NewRecordEvent for record_id: {record_id}")
-
-            signed_url_route = (
-                f"{storage_url}/api/v1/document/internal/{record_doc['externalRecordId']}/download"
-            )
-            timestamp = get_epoch_timestamp_in_ms()
-
-            # Construct the payload matching the Node.js NewRecordEvent interface
-            return {
-                "orgId": record_doc.get("orgId"),
-                "recordId": record_id,
-                "recordName": record_doc.get("recordName"),
-                "recordType": record_doc.get("recordType"),
-                "version": record_doc.get("version", 1),
-                "signedUrlRoute": signed_url_route,
-                "origin": record_doc.get("origin"),
-                "extension": file_doc.get("extension", ""),
-                "mimeType": file_doc.get("mimeType", ""),
-                "createdAtTimestamp": str(record_doc.get("createdAtTimestamp") or timestamp),
-                "updatedAtTimestamp": str(record_doc.get("updatedAtTimestamp") or timestamp),
-                "sourceCreatedAtTimestamp": str(
-                    record_doc.get("sourceCreatedAtTimestamp")
-                    or record_doc.get("createdAtTimestamp")
-                    or timestamp
-                ),
-            }
-
-        except Exception:
-            self.logger.error(
-                f"❌ Failed to publish NewRecordEvent for record_id: {record_doc.get('_key', 'N/A')}",
-                exc_info=True
-            )
-            return {}
-
-    async def _create_update_record_event_payload(
-        self,
-        record: dict,
-        file_record: dict | None = None,
-        *,
-        content_changed: bool = True,
-    ) -> dict | None:
-        """Create update record event payload matching Node.js format for reindexing."""
-        try:
-            endpoints = await self.config_service.get_config(
-                config_node_constants.ENDPOINTS.value
-            )
-            storage_url = (endpoints or {}).get("storage", {}).get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
-
-            record_id = record.get("_key") or record.get("id")
-            signed_url_route = f"{storage_url}/api/v1/document/internal/{record.get('externalRecordId')}/download"
-
-            extension = ""
-            mime_type = ""
-            if file_record:
-                extension = file_record.get("extension", "")
-                mime_type = file_record.get("mimeType", "")
-
-            return {
-                "orgId": record.get("orgId"),
-                "recordId": record_id,
-                "version": record.get("version", 1),
-                "extension": extension,
-                "mimeType": mime_type,
-                "signedUrlRoute": signed_url_route,
-                "updatedAtTimestamp": str(record.get("updatedAtTimestamp") or get_epoch_timestamp_in_ms()),
-                "sourceLastModifiedTimestamp": str(
-                    record.get("sourceLastModifiedTimestamp")
-                    or record.get("updatedAtTimestamp")
-                    or get_epoch_timestamp_in_ms()
-                ),
-                "contentChanged": content_changed,
-            }
-        except Exception as e:
-            self.logger.error(f"❌ Failed to create update record event payload: {str(e)}")
-            return None
 
     async def reset_indexing_status_to_queued_for_record_ids(self, record_ids: list[str]) -> None:
         """
@@ -11163,199 +10268,6 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to create reindex event payload: {str(e)}")
             raise
 
-    async def delete_records(
-        self,
-        record_ids: list[str],
-        kb_id: str,
-        folder_id: str | None = None,
-        transaction: str | None = None,
-    ) -> dict:
-        """Delete multiple records."""
-        try:
-            if not record_ids:
-                return {
-                    "success": True,
-                    "deleted_records": [],
-                    "failed_records": [],
-                    "total_requested": 0,
-                    "successfully_deleted": 0,
-                    "failed_count": 0,
-                }
-
-            txn_id = transaction
-            if transaction is None:
-                txn_id = await self.begin_transaction(
-                    read=[],
-                    write=[
-                        CollectionNames.RECORDS.value,
-                        CollectionNames.FILES.value,
-                        CollectionNames.RECORD_RELATIONS.value,
-                        CollectionNames.IS_OF_TYPE.value,
-                        CollectionNames.BELONGS_TO.value,
-                    ],
-                )
-
-            try:
-                # Step 1: Validate records
-                validation_query = """
-                UNWIND $record_ids AS rid
-
-                OPTIONAL MATCH (record:Record {id: rid})
-
-                WITH rid, record,
-                     record IS NOT NULL AS record_exists,
-                     CASE WHEN record IS NOT NULL THEN coalesce(record.isDeleted, false) <> true ELSE false END AS record_not_deleted
-
-                // Check KB relationship
-                OPTIONAL MATCH (record)-[kb_rel:BELONGS_TO]->(kb:App {id: $kb_id, type: "KB"})
-                WHERE record IS NOT NULL
-
-                // Check folder relationship (if folder_id provided)
-                OPTIONAL MATCH (parent:Record {id: $folder_id})-[folder_rel:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(record)
-                WHERE record IS NOT NULL AND $folder_id IS NOT NULL
-
-                // Get file record
-                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
-                WHERE record IS NOT NULL
-
-                WITH rid, record, file,
-                     record_exists AND record_not_deleted AND kb_rel IS NOT NULL AND
-                     (CASE WHEN $folder_id IS NOT NULL THEN folder_rel IS NOT NULL ELSE true END) AS is_valid
-
-                RETURN {
-                    record_id: rid,
-                    record: record,
-                    file_record: file,
-                    is_valid: is_valid
-                } AS record_data
-                """
-
-                val_results = await self.client.execute_query(
-                    validation_query,
-                    parameters={
-                        "record_ids": record_ids,
-                        "kb_id": kb_id,
-                        "folder_id": folder_id
-                    },
-                    txn_id=txn_id
-                )
-
-                # Separate valid and invalid records
-                valid_records = []
-                invalid_records = []
-
-                for result in val_results:
-                    record_data = result["record_data"]
-                    if record_data["is_valid"]:
-                        valid_records.append(record_data)
-                    else:
-                        invalid_records.append(record_data)
-
-                failed_records = [{"record_id": r["record_id"], "reason": "Validation failed"} for r in invalid_records]
-
-                if not valid_records:
-                    if transaction is None and txn_id:
-                        await self.commit_transaction(txn_id)
-                    return {
-                        "success": True,
-                        "deleted_records": [],
-                        "failed_records": failed_records,
-                        "total_requested": len(record_ids),
-                        "successfully_deleted": 0,
-                        "failed_count": len(failed_records),
-                    }
-
-                valid_record_ids = [r["record_id"] for r in valid_records]
-                file_record_ids = [r["file_record"]["id"] for r in valid_records if r.get("file_record")]
-
-                # Step 2: Delete edges
-                edges_cleanup = """
-                UNWIND $record_ids AS record_id
-
-                // Delete RECORD_RELATION edges
-                OPTIONAL MATCH (r1:Record {id: record_id})-[rr:RECORD_RELATION]-()
-                DELETE rr
-
-                WITH record_id
-                OPTIONAL MATCH ()-[rr2:RECORD_RELATION]->(r2:Record {id: record_id})
-                DELETE rr2
-
-                WITH record_id
-                // Delete IS_OF_TYPE edges
-                OPTIONAL MATCH (record:Record {id: record_id})-[iot:IS_OF_TYPE]->()
-                DELETE iot
-
-                WITH record_id
-                // Delete BELONGS_TO edges
-                OPTIONAL MATCH (record:Record {id: record_id})-[bt:BELONGS_TO]->()
-                DELETE bt
-                """
-
-                await self.client.execute_query(
-                    edges_cleanup,
-                    parameters={"record_ids": valid_record_ids},
-                    txn_id=txn_id
-                )
-
-                # Step 3: Delete FILE nodes
-                if file_record_ids:
-                    delete_files = """
-                    MATCH (file:File)
-                    WHERE file.id IN $file_ids
-                    DELETE file
-                    """
-                    await self.client.execute_query(
-                        delete_files,
-                        parameters={"file_ids": file_record_ids},
-                        txn_id=txn_id
-                    )
-
-                # Step 4: Delete RECORD nodes
-                delete_records_query = """
-                MATCH (record:Record)
-                WHERE record.id IN $record_ids
-                DELETE record
-                """
-                await self.client.execute_query(
-                    delete_records_query,
-                    parameters={"record_ids": valid_record_ids},
-                    txn_id=txn_id
-                )
-
-                deleted_records = [
-                    {
-                        "record_id": r["record_id"],
-                        "name": r.get("record", {}).get("recordName", "Unknown")
-                    } for r in valid_records
-                ]
-
-                if transaction is None and txn_id:
-                    await self.commit_transaction(txn_id)
-
-                return {
-                    "success": True,
-                    "deleted_records": deleted_records,
-                    "failed_records": failed_records,
-                    "total_requested": len(record_ids),
-                    "successfully_deleted": len(deleted_records),
-                    "failed_count": len(failed_records),
-                }
-
-            except Exception as db_error:
-                if transaction is None and txn_id:
-                    await self.rollback_transaction(txn_id)
-                raise db_error
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to delete records: {str(e)}")
-            return {
-                "success": False,
-                "deleted_records": [],
-                "failed_records": [{"record_id": rid, "reason": str(e)} for rid in record_ids],
-                "total_requested": len(record_ids),
-                "successfully_deleted": 0,
-                "failed_count": len(record_ids),
-            }
 
     async def _create_deleted_record_event_payload(
         self,
@@ -11384,256 +10296,6 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
             return {}
 
-    async def delete_knowledge_base(
-        self,
-        kb_id: str,
-        transaction: str | None = None,
-    ) -> dict:
-        """
-        Delete a knowledge base with ALL nested content
-        - All folders (recursive, any depth)
-        - All records in all folders
-        - All file records
-        - All edges (belongs_to, record_relations, is_of_type, permissions)
-        - The KB document itself
-        """
-        try:
-            # Create transaction if not provided
-            should_commit = False
-            if transaction is None:
-                should_commit = True
-                try:
-                    transaction = await self.begin_transaction(
-                        read=[],
-                        write=[
-                            CollectionNames.APPS.value,
-                            CollectionNames.FILES.value,
-                            CollectionNames.RECORDS.value,
-                            CollectionNames.RECORD_RELATIONS.value,
-                            CollectionNames.BELONGS_TO.value,
-                            CollectionNames.IS_OF_TYPE.value,
-                            CollectionNames.PERMISSION.value,
-                            CollectionNames.ORG_APP_RELATION.value,
-                            CollectionNames.USER_APP_RELATION.value,
-                        ],
-                    )
-                    self.logger.info(f"🔄 Transaction created for complete KB {kb_id} deletion")
-                except Exception as tx_error:
-                    self.logger.error(f"❌ Failed to create transaction: {str(tx_error)}")
-                    return {"success": False}
-
-            try:
-                # Step 1: Get complete inventory of what we're deleting using graph traversal
-                # This collects ALL records/folders at any depth via BELONGS_TO edges BEFORE deletion
-                inventory_query = """
-                MATCH (kb:App {id: $kb_id, type: "KB"})
-
-                // Get all records/folders that belong to this KB
-                OPTIONAL MATCH (record:Record)-[:BELONGS_TO]->(kb)
-
-                // Get file details for each record
-                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
-
-                WITH kb,
-                     collect(DISTINCT record) AS all_records,
-                     collect(DISTINCT {
-                         file_id: file.id,
-                         is_folder: file.isFile = false,
-                         record_id: record.id,
-                         record: record,
-                         file_doc: file
-                     }) AS all_files_with_details
-
-                // Separate folders and file records
-                WITH kb,
-                     all_records,
-                     [item IN all_files_with_details WHERE item.is_folder = true | item.record_id] AS folder_keys,
-                     [item IN all_files_with_details WHERE item.is_folder = false | {
-                         record: item.record,
-                         file_record: item.file_doc
-                     }] AS file_records,
-                     [item IN all_files_with_details | item.file_id] AS file_keys
-
-                RETURN {
-                    kb_exists: kb IS NOT NULL,
-                    record_ids: [r IN all_records | r.id],
-                    file_ids: file_keys,
-                    folder_keys: folder_keys,
-                    records_with_details: file_records,
-                    total_folders: size(folder_keys),
-                    total_records: size(all_records)
-                } AS inventory
-                """
-
-                inv_results = await self.client.execute_query(
-                    inventory_query,
-                    parameters={"kb_id": kb_id},
-                    txn_id=transaction
-                )
-
-                inventory = inv_results[0]["inventory"] if inv_results else {}
-
-                self.logger.debug(f"inventory: {inventory}")
-                # return False
-
-                if not inventory.get("kb_exists"):
-                    self.logger.warning(f"⚠️ KB {kb_id} not found, deletion considered successful.")
-                    if should_commit:
-                        await self.commit_transaction(transaction)
-                    return {"success": True, "eventData": None}
-
-                records_with_details = inventory.get("records_with_details", [])
-                all_record_ids = inventory.get("record_ids", [])
-                all_file_ids = inventory.get("file_ids", [])
-
-                self.logger.debug(f"folder_keys: {inventory.get('folder_keys', [])}")
-                self.logger.debug(f"total_folders: {inventory.get('total_folders', 0)}")
-                self.logger.debug(f"total_records: {inventory.get('total_records', 0)}")
-
-                # Step 2: Delete ALL relationships first (prevents orphaned edges)
-                self.logger.debug("🗑️ Step 2: Deleting all relationships...")
-
-                if all_record_ids:
-                    # First, delete all relationships connected to the records (comprehensive approach)
-                    edges_cleanup_query = """
-                    UNWIND $record_ids AS record_id
-                    MATCH (record:Record {id: record_id})
-                    OPTIONAL MATCH (record)-[r]-()
-                    WITH collect(DISTINCT r) AS all_edges
-                    UNWIND all_edges AS edge
-                    WITH edge WHERE edge IS NOT NULL
-                    DELETE edge
-                    RETURN count(edge) AS edges_deleted
-                    """
-
-                    edge_results = await self.client.execute_query(
-                        edges_cleanup_query,
-                        parameters={
-                            "record_ids": all_record_ids
-                        },
-                        txn_id=transaction
-                    )
-
-                    edges_deleted = edge_results[0]["edges_deleted"] if edge_results else 0
-                    self.logger.debug(f"✅ Deleted {edges_deleted} edges for records")
-
-                    # Also delete KB-related edges
-                    kb_edges_query = """
-                    MATCH (kb:App {id: $kb_id, type: "KB"})
-                    OPTIONAL MATCH (kb)-[r]-()
-                    WITH collect(DISTINCT r) AS kb_edges
-                    UNWIND kb_edges AS edge
-                    WITH edge WHERE edge IS NOT NULL
-                    DELETE edge
-                    RETURN count(edge) AS kb_edges_deleted
-                    """
-
-                    kb_edge_results = await self.client.execute_query(
-                        kb_edges_query,
-                        parameters={"kb_id": kb_id},
-                        txn_id=transaction
-                    )
-
-                    kb_edges_deleted = kb_edge_results[0]["kb_edges_deleted"] if kb_edge_results else 0
-                    self.logger.debug(f"✅ Deleted {kb_edges_deleted} edges for KB {kb_id}")
-
-                # Step 3: Delete all FILE nodes
-                if all_file_ids:
-                    self.logger.debug(f"🗑️ Step 3: Deleting {len(all_file_ids)} FILE nodes...")
-                    delete_files_query = """
-                    MATCH (file:File)
-                    WHERE file.id IN $file_ids
-                    DELETE file
-                    RETURN count(file) AS deleted
-                    """
-
-                    file_results = await self.client.execute_query(
-                        delete_files_query,
-                        parameters={"file_ids": all_file_ids},
-                        txn_id=transaction
-                    )
-
-                    files_deleted = file_results[0]["deleted"] if file_results else 0
-                    self.logger.debug(f"✅ Deleted {files_deleted} FILE nodes")
-
-                # Step 4: Delete all RECORD nodes
-                if all_record_ids:
-                    self.logger.debug(f"🗑️ Step 4: Deleting {len(all_record_ids)} RECORD nodes...")
-                    delete_records_query = """
-                    MATCH (record:Record)
-                    WHERE record.id IN $record_ids
-                    DELETE record
-                    RETURN count(record) AS deleted
-                    """
-
-                    record_results = await self.client.execute_query(
-                        delete_records_query,
-                        parameters={"record_ids": all_record_ids},
-                        txn_id=transaction
-                    )
-
-                    records_deleted = record_results[0]["deleted"] if record_results else 0
-                    self.logger.debug(f"✅ Deleted {records_deleted} RECORD nodes")
-
-                # Step 5: Delete any remaining relationships on the KB node, then delete the KB App itself
-                self.logger.debug(f"🗑️ Step 5: Deleting remaining KB relationships and KB App {kb_id}...")
-                delete_kb_query = """
-                MATCH (kb:App {id: $kb_id, type: "KB"})
-                OPTIONAL MATCH (kb)-[r]-()
-                DELETE r, kb
-                RETURN count(kb) AS deleted
-                """
-
-                kb_results = await self.client.execute_query(
-                    delete_kb_query,
-                    parameters={"kb_id": kb_id},
-                    txn_id=transaction
-                )
-
-                kb_deleted = kb_results[0]["deleted"] if kb_results else 0
-                self.logger.debug(f"✅ Deleted KB App: {kb_deleted}")
-
-                # Step 6: Commit transaction
-                if should_commit:
-                    await self.commit_transaction(transaction)
-
-                # Step 7: Prepare event data for all deleted records (router will publish)
-                event_payloads = []
-                try:
-                    for record_data in records_with_details:
-                        delete_payload = await self._create_deleted_record_event_payload(
-                            record_data["record"], record_data.get("file_record")
-                        )
-                        if delete_payload:
-                            delete_payload["connectorName"] = Connectors.KNOWLEDGE_BASE.value
-                            delete_payload["origin"] = OriginTypes.UPLOAD.value
-                            event_payloads.append(delete_payload)
-                except Exception as e:
-                    self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
-
-                event_data = {
-                    "eventType": "deleteRecord",
-                    "topic": "record-events",
-                    "payloads": event_payloads
-                } if event_payloads else None
-
-                self.logger.info(f"KB {kb_id} and ALL contents deleted successfully.")
-                return {
-                    "success": True,
-                    "eventData": event_data
-                }
-
-            except Exception as db_error:
-                self.logger.error(f"❌ Database error during KB deletion: {str(db_error)}")
-                if should_commit and transaction:
-                    await self.rollback_transaction(transaction)
-                    self.logger.debug("🔄 Transaction aborted due to error")
-                raise db_error
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to delete KB {kb_id}: {str(e)}")
-            self.logger.error(traceback.format_exc())
-            return {"success": False, "reason": str(e)}
 
     async def create_kb_permissions(
         self,
@@ -13302,36 +11964,6 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Count KB owners failed: {str(e)}")
             return 0
 
-    async def create_parent_child_edge(
-        self,
-        parent_id: str,
-        child_id: str,
-        parent_collection: str = "records",
-        child_collection: str = "records",
-        collection: str = "recordRelations",
-        transaction: str | None = None
-    ) -> bool:
-        """Create parent-child relationship edge."""
-        try:
-            parent_label = collection_to_label(parent_collection)
-            child_label = collection_to_label(child_collection)
-            rel_type = edge_collection_to_relationship(collection)
-
-            query = f"""
-            MATCH (parent:{parent_label} {{id: $parent_id}})
-            MATCH (child:{child_label} {{id: $child_id}})
-            MERGE (parent)-[r:{rel_type} {{relationshipType: "PARENT_CHILD"}}]->(child)
-            RETURN count(r) > 0 as created
-            """
-            results = await self.client.execute_query(
-                query,
-                parameters={"parent_id": parent_id, "child_id": child_id},
-                txn_id=transaction
-            )
-            return results[0].get("created", False) if results else False
-        except Exception as e:
-            self.logger.error(f"❌ Create parent-child edge failed: {str(e)}")
-            return False
 
     async def delete_edges_by_relationship_types(
         self,
@@ -13794,92 +12426,7 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Is record folder check failed: {str(e)}")
             return False
 
-    async def update_record(
-        self,
-        record_id: str,
-        user_id: str,
-        updates: dict,
-        file_metadata: dict | None = None,
-        transaction: str | None = None
-    ) -> dict | None:
-        """Update a record by ID with automatic event payload generation for reindexing."""
-        try:
-            timestamp = get_epoch_timestamp_in_ms()
-            processed_updates = {**updates, "updatedAtTimestamp": timestamp}
-            if file_metadata:
-                processed_updates.setdefault("sourceLastModifiedTimestamp", file_metadata.get("lastModified", timestamp))
 
-            query = """
-            MATCH (r:Record {id: $record_id})
-            SET r += $updates
-            RETURN r
-            """
-            results = await self.client.execute_query(
-                query,
-                parameters={"record_id": record_id, "updates": processed_updates},
-                txn_id=transaction
-            )
-            if not results:
-                return {"success": False, "code": 404, "reason": "Record not found"}
-
-            updated_record = results[0].get("r", {})
-
-            # Create event payload for router to publish (after successful update)
-            event_data = None
-            try:
-                file_record = await self.get_document(
-                    record_id, CollectionNames.FILES.value, transaction=transaction
-                )
-                content_changed = file_metadata is not None
-
-                update_payload = await self._create_update_record_event_payload(
-                    updated_record, file_record, content_changed=content_changed
-                )
-                if update_payload:
-                    event_data = {
-                        "eventType": "updateRecord",
-                        "topic": "record-events",
-                        "payload": update_payload
-                    }
-            except Exception as event_error:
-                self.logger.error(f"❌ Failed to create update event payload: {str(event_error)}")
-
-            return {
-                "success": True,
-                "updatedRecord": updated_record,
-                "recordId": record_id,
-                "timestamp": timestamp,
-                "eventData": event_data
-            }
-        except Exception as e:
-            self.logger.error(f"❌ Update record failed: {str(e)}")
-            return {"success": False, "code": 500, "reason": str(e)}
-
-    async def update_record_external_parent_id(
-        self,
-        record_id: str,
-        new_parent_id: str | None = None,
-        external_parent_id: str | None = None,
-        transaction: str | None = None
-    ) -> bool:
-        """Update record's external parent ID."""
-        try:
-            # Accept both param names for compatibility (interface uses new_parent_id)
-            parent_val = new_parent_id if new_parent_id is not None else external_parent_id
-            query = """
-            MATCH (r:Record {id: $record_id})
-            SET r.externalParentId = $parent_val
-            RETURN count(r) > 0 AS updated
-            """
-            results = await self.client.execute_query(
-                query,
-                parameters={"record_id": record_id, "parent_val": parent_val},
-                txn_id=transaction
-            )
-            return results[0].get("updated", False) if results else False
-        except Exception as e:
-            self.logger.error(f"❌ Update record external parent ID failed for {record_id}: {str(e)}")
-            raise
 
     def _create_typed_record_from_neo4j_simple(self, record_data: dict) -> Record | None:
         """
@@ -14977,8 +13524,9 @@ class Neo4jProvider(IGraphDBProvider):
             WITH record, permission_role, parent_id
             WHERE permission_role IS NOT NULL AND permission_role <> ''
 
+            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file_info:File)
             OPTIONAL MATCH (record)-[child_rel:RECORD_RELATION {{relationshipType: 'PARENT_CHILD'}}]->(child:Record)
-            WITH record, permission_role, parent_id, count(DISTINCT child) > 0 AS has_children
+            WITH record, permission_role, parent_id, file_info, count(DISTINCT child) > 0 AS has_children
 
             RETURN collect({{
                 id: record.id,
@@ -14992,9 +13540,9 @@ class Neo4jProvider(IGraphDBProvider):
                 indexingStatus: record.indexingStatus,
                 createdAt: coalesce(record.createdAtTimestamp, 0),
                 updatedAt: coalesce(record.updatedAtTimestamp, 0),
-                sizeInBytes: record.sizeInBytes,
+                sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
                 mimeType: record.mimeType,
-                extension: record.extension,
+                extension: file_info.extension,
                 webUrl: record.webUrl,
                 hasChildren: has_children,
                 userRole: permission_role,
