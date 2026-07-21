@@ -64,7 +64,7 @@ DEFAULT_MESSAGE_FIELDS = [
 DEFAULT_PARTNER_FIELDS = [
     "id", "name", "email", "phone", "function",
     "street", "city", "state_id", "country_id",
-    "is_company", "parent_id", "write_date",
+    "is_company", "parent_id", "create_date", "write_date",
 ]
 
 DEFAULT_USER_FIELDS = ["id", "name", "email", "login", "active", "partner_id"]
@@ -216,6 +216,7 @@ class Partner(BaseModel):
     country_id: Any = None
     is_company: bool = False
     parent_id: Any = None
+    create_date: str | None = None
     write_date: str | None = None
 
 
