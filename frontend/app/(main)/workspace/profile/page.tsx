@@ -10,6 +10,7 @@ import {
   GeneralSection,
   RolesPermissionsSection,
   PasswordSecuritySection,
+  NotificationsSection,
 } from "./components";
 import { LottieLoader } from "@/app/components/ui/lottie-loader";
 import { useProfilePage } from "./hooks/use-profile-page";
@@ -114,11 +115,16 @@ export default function ProfilePage() {
         </Box>
 
         {/* ── Password & Security section ── */}
-        {/* Extra bottom padding so save bar doesn't overlap last section */}
-        <Box style={{ marginBottom: 80 }}>
+        <Box style={{ marginBottom: 'var(--space-5)' }}>
           <PasswordSecuritySection
             onChangePasswordClick={() => setChangePasswordOpen(true)}
           />
+        </Box>
+
+        {/* ── Notifications section ── */}
+        {/* Extra bottom padding so save bar doesn't overlap last section */}
+        <Box id="notifications" style={{ marginBottom: 80 }}>
+          <NotificationsSection />
         </Box>
       </Box>
 

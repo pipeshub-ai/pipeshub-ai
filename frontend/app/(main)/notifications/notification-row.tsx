@@ -8,6 +8,7 @@ import { Spinner } from '@/app/components/ui/spinner';
 import { useTranslation } from 'react-i18next';
 import type { NotificationListItem, NotificationSeverity } from './api';
 import { NOTIFICATIONS_PANEL_TOOLTIP_CLASS } from './notification-filter-menu';
+import { notificationHref } from './notification-link';
 
 export type NotificationRowAction =
   | 'markRead'
@@ -15,14 +16,6 @@ export type NotificationRowAction =
   | 'archive'
   | 'unarchive'
   | 'dismiss';
-
-/** App-relative paths from the API may omit a leading slash; Next.js Link needs one. */
-function notificationHref(redirectLink: string): string | null {
-  const trimmed = redirectLink.trim();
-  if (!trimmed) return null;
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
-}
 
 function formatRelativeTime(
   iso: string | undefined,

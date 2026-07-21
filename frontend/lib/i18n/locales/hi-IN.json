@@ -218,7 +218,20 @@
     "filterTooltip": "फ़िल्टर: {{filter}}",
     "loadFailed": "सूचनाएँ लोड करने में विफल",
     "updateFailed": "सूचना अपडेट नहीं हो सकी",
-    "removeFailed": "सूचना हटाने में विफल"
+    "removeFailed": "सूचना हटाने में विफल",
+    "desktop": {
+      "promptTitle": "डेस्कटॉप सूचनाएँ चालू करें",
+      "promptDescription": "जब आप कहीं और काम कर रहे हों तब भी अलर्ट पाएं ताकि कोई अपडेट छूटे नहीं।",
+      "allow": "अनुमति दें",
+      "askLater": "बाद में पूछें",
+      "dismiss": "खारिज करें",
+      "enabledTitle": "डेस्कटॉप सूचनाएँ सक्षम हैं",
+      "blockedTitle": "सूचनाएँ अवरुद्ध हैं",
+      "blockedDescription": "डेस्कटॉप अलर्ट पाने के लिए अपने ब्राउज़र सेटिंग्स में इस साइट की सूचनाएँ अनुमति दें।",
+      "promptAckTitle": "ठीक है",
+      "settingsHint": "आप कभी भी Workspace → Profile → Notifications में जाकर डेस्कटॉप सूचनाएँ सक्षम कर सकते हैं।",
+      "openSettings": "सेटिंग्स खोलें"
+    }
   },
   "action": {
     "find": "खोजें",
@@ -2112,6 +2125,13 @@
         "accountPassword": "Account Password",
         "followEmailDescription": "Please follow the instructions in the email to finish setting your password",
         "changePassword": "Change Password"
+      },
+      "notifications": {
+        "title": "सूचनाएँ",
+        "desktop": "डेस्कटॉप सूचनाएँ",
+        "desktopDescription": "जब आप कहीं और काम कर रहे हों और नई सूचनाएँ आएं तो ब्राउज़र अलर्ट दिखाएं।",
+        "blockedHint": "इस साइट के लिए सूचनाएँ अवरुद्ध हैं। डेस्कटॉप अलर्ट सक्षम करने के लिए अपने ब्राउज़र सेटिंग्स में अनुमति दें।",
+        "unsupported": "इस ब्राउज़र में डेस्कटॉप सूचनाएँ समर्थित नहीं हैं।"
       },
       "rolesPermissions": {
         "title": "Roles & Permissions",

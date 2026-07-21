@@ -10,6 +10,7 @@ export default defineConfig({
     globals: false,
     include: [
       'app/(main)/notifications/__tests__/store.test.ts',
+      'app/(main)/notifications/__tests__/browser-notifications.test.ts',
       'app/(main)/notifications/__tests__/useNotificationSocket.test.tsx',
       'app/components/ui/__tests__/help-tooltip.test.ts',
       'app/(main)/workspace/connectors/utils/__tests__/manual-indexing-tooltip.test.ts',
