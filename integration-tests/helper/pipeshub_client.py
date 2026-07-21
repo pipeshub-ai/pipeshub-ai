@@ -10,10 +10,12 @@ Supports:
 import base64
 import json
 import logging
+import mimetypes
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Sequence
 from urllib.parse import urlparse
 
 import requests
@@ -228,12 +230,16 @@ class PipeshubClient:
         self._invalidate_access_token()
         self._fetch_access_token()
 
-    def _headers(self, is_admin: bool = True) -> Dict[str, str]:
+    def _headers(
+        self, is_admin: bool = True, extra: Optional[Dict[str, str]] = None
+    ) -> Dict[str, str]:
         self._ensure_access_token()
         headers = {
             "Authorization": f"Bearer {self._access_token}",
             "Content-Type": "application/json",
         }
+        if extra:
+            headers.update(extra)
         return headers
 
     def _request_json(
@@ -242,6 +248,7 @@ class PipeshubClient:
         path: str,
         *,
         is_admin: bool = True,
+        extra_headers: Optional[Dict[str, str]] = None,
         **kwargs: Any,
     ) -> Any:
         """Authorized JSON API request; refresh on expiry, retry once on 401."""
@@ -250,7 +257,7 @@ class PipeshubClient:
         last_resp: Optional[requests.Response] = None
         for attempt in range(2):
             self._ensure_access_token()
-            headers = self._headers(is_admin=is_admin)
+            headers = self._headers(is_admin=is_admin, extra=extra_headers)
             kwargs_with_headers = {**kwargs, "headers": headers}
             last_resp = requests.request(method, url, **kwargs_with_headers)
             if last_resp.status_code == 401 and attempt == 0:
@@ -704,7 +711,7 @@ class PipeshubClient:
             parent_id: Internal graph node id (connector id for app; RecordGroup.id for space)
             only_containers: When True, return only nodes that can have children (sidebar mode)
             page: 1-indexed page number
-            limit: Items per page (max 200 on API)
+            limit: Items per page (max 100 on API)
             sort_by: Optional sort field (name, createdAt, updatedAt, size, type)
             sort_order: Optional sort order (asc, desc)
 
@@ -727,6 +734,258 @@ class PipeshubClient:
             params["sortOrder"] = sort_order
 
         return self._request_json("GET", path, params=params)
+
+    # --------------------------------------------------------------------- #
+    # Public API - Knowledge Base seeding (create / upload / wait)
+    # --------------------------------------------------------------------- #
+    def create_knowledge_base(self, name: str) -> str:
+        """Create a Knowledge Base and return its id.
+
+        POST /api/v1/knowledgeBase/ with ``{"kbName": name}`` (Node gateway).
+        Returns the new KB id from the response (``id`` / ``_key`` / ``kbId``).
+        """
+        data = self._request_json(
+            "POST",
+            "/api/v1/knowledgeBase/",
+            json={"kbName": name},
+        )
+        kb = data if isinstance(data, dict) else {}
+        # Response shape varies slightly across versions; accept the common keys.
+        kb_id = (
+            kb.get("id")
+            or kb.get("_key")
+            or kb.get("kbId")
+            or (kb.get("knowledgeBase") or {}).get("id")
+            or (kb.get("data") or {}).get("id")
+        )
+        if not kb_id:
+            raise PipeshubClientError(
+                f"Create KB {name!r} returned no id; body={kb}"
+            )
+        return str(kb_id)
+
+    def list_knowledge_bases(self) -> List[Dict[str, Any]]:
+        """List the org's Knowledge Bases (GET /api/v1/knowledgeBase/)."""
+        data = self._request_json(
+            "GET", "/api/v1/knowledgeBase/", params={"page": 1, "limit": 100}
+        )
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("knowledgeBases", "kbs", "items", "data"):
+                val = data.get(key)
+                if isinstance(val, list):
+                    return val
+        return []
+
+    def find_knowledge_base_id(self, name: str) -> Optional[str]:
+        """Return the id of a KB matching ``name`` exactly, or None."""
+        for kb in self.list_knowledge_bases():
+            if not isinstance(kb, dict):
+                continue
+            if kb.get("name") == name or kb.get("kbName") == name:
+                kb_id = kb.get("id") or kb.get("_key") or kb.get("kbId")
+                if kb_id:
+                    return str(kb_id)
+        return None
+
+    def upload_files_to_kb(
+        self, kb_id: str, file_paths: Sequence[Path], *, is_versioned: bool = True
+    ) -> List[Dict[str, Any]]:
+        """Upload one or more files into a KB root via multipart/form-data.
+
+        POST /api/v1/knowledgeBase/{kbId}/upload with repeated ``files`` parts.
+        Returns the ``records`` list from the response.
+        """
+        url = self._url(f"/api/v1/knowledgeBase/{kb_id}/upload")
+        opened: list = []
+        try:
+            multipart: list = []
+            for p in file_paths:
+                path = Path(p)
+                mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+                fh = path.open("rb")
+                opened.append(fh)
+                multipart.append(("files", (path.name, fh, mime)))
+            multipart.append(("isVersioned", (None, "true" if is_versioned else "false")))
+
+            for attempt in range(2):
+                self._ensure_access_token()
+                # Multipart: only send Authorization; let requests set the
+                # Content-Type boundary itself.
+                resp = requests.post(
+                    url,
+                    headers={"Authorization": f"Bearer {self._access_token}"},
+                    files=multipart,
+                    timeout=self.timeout_seconds,
+                )
+                if resp.status_code == 401 and attempt == 0:
+                    self._invalidate_access_token()
+                    # Re-open file handles consumed by the failed attempt.
+                    for fh in opened:
+                        fh.seek(0)
+                    continue
+                data = self._handle_response(resp)
+                records = data.get("records") if isinstance(data, dict) else None
+                return records or []
+        finally:
+            for fh in opened:
+                try:
+                    fh.close()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _extract_records(data: Any) -> List[Dict[str, Any]]:
+        """Pull a records list out of the various record-listing response shapes."""
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("records", "items", "data"):
+                val = data.get(key)
+                if isinstance(val, list):
+                    return val
+                if isinstance(val, dict):
+                    for inner in ("records", "items"):
+                        if isinstance(val.get(inner), list):
+                            return val[inner]
+        return []
+
+    def list_records(
+        self,
+        *,
+        kb_id: Optional[str] = None,
+        connector_ids: Optional[Sequence[str]] = None,
+        indexing_status: Optional[str] = None,
+        page: int = 1,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """List records, optionally scoped to a KB or connector(s) and a status.
+
+        Uses ``GET /api/v1/knowledgeBase/{kbId}/records`` when ``kb_id`` is given,
+        otherwise the unified ``GET /api/v1/knowledgeBase/records`` (which accepts
+        a ``connectors`` filter). Both accept an ``indexingStatus`` filter.
+        """
+        params: Dict[str, Any] = {"page": page, "limit": limit}
+        if connector_ids:
+            params["connectors"] = ",".join(connector_ids)
+        if indexing_status:
+            params["indexingStatus"] = indexing_status
+        path = (
+            f"/api/v1/knowledgeBase/{kb_id}/records"
+            if kb_id
+            else "/api/v1/knowledgeBase/records"
+        )
+        return self._extract_records(self._request_json("GET", path, params=params))
+
+    def wait_for_completed_records(
+        self,
+        *,
+        kb_id: Optional[str] = None,
+        connector_id: Optional[str] = None,
+        expected_min: int = 1,
+        timeout: int = 300,
+        poll_interval: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Poll until at least ``expected_min`` records reach COMPLETED indexing.
+
+        Scope is a KB (``kb_id``) or a connector (``connector_id``). Returns the
+        COMPLETED records. Raises ``TimeoutError`` on timeout.
+        """
+        label = f"kb={kb_id}" if kb_id else f"connector={connector_id}"
+        connector_ids = [connector_id] if connector_id else None
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            recs = self.list_records(
+                kb_id=kb_id,
+                connector_ids=connector_ids,
+                indexing_status="COMPLETED",
+            )
+            if len(recs) >= expected_min:
+                logger.info("✅ %s has %d COMPLETED record(s)", label, len(recs))
+                return recs
+            logger.info(
+                "⏳ Waiting for indexing %s (%d/%d COMPLETED, %.0fs left)",
+                label, len(recs), expected_min, deadline - time.time(),
+            )
+            time.sleep(poll_interval)
+        raise TimeoutError(
+            f"Timed out waiting for {expected_min} COMPLETED record(s) for {label} "
+            f"after {timeout}s"
+        )
+
+    # --------------------------------------------------------------------- #
+    # Public API - AI model / web-search provider config (admin)
+    # --------------------------------------------------------------------- #
+    def list_ai_models(self, model_type: str) -> List[Dict[str, Any]]:
+        """List configured AI models of a given type (e.g. ``embedding``)."""
+        data = self._request_json(
+            "GET",
+            f"/api/v1/configurationManager/ai-models/{model_type}",
+            extra_headers={"X-Is-Admin": "true"},
+        )
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("models", "data", "items"):
+                val = data.get(key)
+                if isinstance(val, list):
+                    return val
+        return []
+
+    def add_embedding_model(
+        self, *, provider: str, model: str, api_key: str, is_default: bool = True
+    ) -> Dict[str, Any]:
+        """Configure an embedding model via the ai-models providers endpoint."""
+        return self._request_json(
+            "POST",
+            "/api/v1/configurationManager/ai-models/providers",
+            extra_headers={"X-Is-Admin": "true"},
+            json={
+                "modelType": "embedding",
+                "provider": provider,
+                "configuration": {"model": model, "apiKey": api_key},
+                "isMultimodal": False,
+                "isReasoning": False,
+                "isDefault": is_default,
+                "contextLength": None,
+            },
+        )
+
+    def list_web_search_providers(self) -> List[Dict[str, Any]]:
+        """List configured web-search providers."""
+        data = self._request_json(
+            "GET",
+            "/api/v1/configurationManager/web-search/providers",
+            extra_headers={"X-Is-Admin": "true"},
+        )
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("providers", "data", "items"):
+                val = data.get(key)
+                if isinstance(val, list):
+                    return val
+        return []
+
+    def add_web_search_provider(
+        self,
+        *,
+        provider: str = "duckduckgo",
+        configuration: Optional[Dict[str, Any]] = None,
+        is_default: bool = True,
+    ) -> Dict[str, Any]:
+        """Configure a web-search provider (default: free DuckDuckGo)."""
+        return self._request_json(
+            "POST",
+            "/api/v1/configurationManager/web-search/providers",
+            extra_headers={"X-Is-Admin": "true"},
+            json={
+                "provider": provider,
+                "configuration": configuration or {},
+                "isDefault": is_default,
+            },
+        )
 
     # --------------------------------------------------------------------- #
     # Public API - Stream Content
