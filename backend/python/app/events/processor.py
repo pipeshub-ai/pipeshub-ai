@@ -1819,8 +1819,6 @@ class Processor:
                 name=recordName,
             )
 
-            self.logger.info(f"📦 Block containers for record {recordId}: {block_containers}")
-
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             record = await self.graph_provider.get_document(

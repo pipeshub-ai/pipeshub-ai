@@ -1324,6 +1324,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             if raw_html:
                 latest_reply_html = quotations.extract_from_html(raw_html)
+                if not latest_reply_html:
+                    latest_reply_html = raw_html
 
 
             async def message_stream() -> AsyncGenerator[bytes, None]:

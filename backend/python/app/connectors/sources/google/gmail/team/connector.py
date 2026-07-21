@@ -4,6 +4,7 @@ import io
 import logging
 import os
 import re
+import sys
 import tempfile
 import uuid
 from logging import Logger
@@ -12,11 +13,17 @@ from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
+import chardet
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
-from mailparser_reply import EmailReplyParser
-from markdownify import markdownify
+
+# Talon imports cchardet, which does not support Python 3.12; chardet provides
+# the compatible API Talon needs.
+sys.modules["cchardet"] = chardet
+from talon import quotations  # noqa: E402
+
+quotations.register_xpath_extensions()
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -2554,30 +2561,21 @@ class GoogleGmailTeamConnector(BaseConnector):
             ).decode("utf-8", errors="replace")
 
 
-            latest_reply_text = ""
+            latest_reply_html = ""
 
             if raw_html:
-                # --- STEP 1: Smart Conversion (HTML -> Text) ---
-                clean_text = markdownify(raw_html, heading_style="ATX").strip()
-
-
-                # --- STEP 2: Extract Reply ---
-                email_parser = EmailReplyParser(languages=['en'])
-                parsed_mail = email_parser.read(clean_text)
-
-                latest_reply_text = parsed_mail.latest_reply
-
-                if not latest_reply_text:
-                    latest_reply_text = clean_text
+                latest_reply_html = quotations.extract_from_html(raw_html)
+                if not latest_reply_html:
+                    latest_reply_html = raw_html
 
 
             async def message_stream() -> AsyncGenerator[bytes, None]:
-                yield latest_reply_text.encode("utf-8")
+                yield latest_reply_html.encode("utf-8")
 
             return create_stream_record_response(
                 message_stream(),
                 filename=f"{record.record_name}",
-                mime_type="text/plain",
+                mime_type="text/html",
                 fallback_filename=f"record_{record.id}"
             )
 

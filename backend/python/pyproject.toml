@@ -295,6 +295,12 @@ dependencies = [
 [tool.setuptools.packages.find]
 exclude = ["modules", "build*", "dist*", "*.egg-info*", "venv*", ".venv*"]
 
+# cchardet has no wheels for Python 3.12+ and fails to build from source.
+# talon declares it as a dependency; chardet (direct dep above) plus the
+# sys.modules shim in gmail cover runtime needs.
+[tool.uv]
+exclude-dependencies = ["cchardet"]
+
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
