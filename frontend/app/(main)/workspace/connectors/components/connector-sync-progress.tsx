@@ -17,6 +17,57 @@ interface ConnectorSyncProgressProps {
   variant?: 'card' | 'detail';
 }
 
+/**
+ * Settled/terminal states rendered as a label/value row. In `card` variant the
+ * label sits in the same 164px column the instance card uses for SYNC STRATEGY,
+ * ENABLED BY and LAST SYNCED so "Status" aligns with the rows around it.
+ */
+function StatusRow({
+  variant,
+  label,
+  children,
+}: {
+  variant: 'card' | 'detail';
+  label: string;
+  children: React.ReactNode;
+}) {
+  if (variant === 'detail') {
+    return (
+      <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+        <Text
+          size="1"
+          weight="medium"
+          style={{ color: 'var(--gray-10)', textTransform: 'uppercase', letterSpacing: '0.04px' }}
+        >
+          {label}
+        </Text>
+        {children}
+      </Flex>
+    );
+  }
+  return (
+    <Flex align="center" gap="4">
+      <Text
+        size="1"
+        weight="medium"
+        style={{
+          color: 'var(--slate-10)',
+          width: 164,
+          flexShrink: 0,
+          textTransform: 'uppercase',
+          letterSpacing: '0.04px',
+          lineHeight: '16px',
+        }}
+      >
+        {label}
+      </Text>
+      <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+        {children}
+      </Flex>
+    </Flex>
+  );
+}
+
 function IndeterminateBar() {
   return (
     <Box
@@ -87,23 +138,20 @@ export function ConnectorSyncProgress({
 
   if (view.mode === 'deleting') {
     return (
-      <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+      <StatusRow variant={variant} label="Status">
         <Spinner size={14} color="var(--red-11)" ariaLabel={view.label} />
         <Text size="2" weight="medium" style={{ color: 'var(--red-11)', whiteSpace: 'nowrap' }}>
           {view.label}
         </Text>
-      </Flex>
+      </StatusRow>
     );
   }
 
   if (view.mode === 'settled') {
     return (
-      <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-        <Text size="1" weight="medium" style={{ color: 'var(--gray-10)', textTransform: 'uppercase', letterSpacing: '0.04px' }}>
-          Status
-        </Text>
+      <StatusRow variant={variant} label="Status">
         <MaterialIcon name="check_circle" size={16} color="var(--emerald-11)" />
-        <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
           {view.label}
         </Text>
         {view.hasErrors && (
@@ -119,7 +167,7 @@ export function ConnectorSyncProgress({
             </Flex>
           </>
         )}
-      </Flex>
+      </StatusRow>
     );
   }
 

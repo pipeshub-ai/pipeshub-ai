@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  countByType,
   describeSyncProgress,
   isActiveConnectorSyncStatus,
-  reconcileSyncActivity,
 } from '../sync-progress-view';
 import type { ConnectorSyncProgress, SyncProgressPhase } from '../../types';
 
@@ -155,62 +153,5 @@ describe('describeSyncProgress', () => {
   it('renders nothing when idle with no coverage', () => {
     expect(describeSyncProgress(null, 'IDLE').mode).toBe('none');
     expect(describeSyncProgress(makeProgress({ coverage: { total: 0 } })).mode).toBe('none');
-  });
-});
-
-describe('reconcileSyncActivity', () => {
-  const instances = [
-    { id: 'a', type: 'Google Drive', status: 'SYNCING' },
-    { id: 'b', type: 'Google Drive', status: 'IDLE' },
-    { id: 'c', type: 'Confluence', status: 'IDLE' },
-  ];
-
-  it('tracks status-syncing instances even if not previously tracked', () => {
-    const { activeIdToType, trackedIds } = reconcileSyncActivity(instances, {}, []);
-    expect(activeIdToType).toEqual({ a: 'Google Drive' });
-    expect(trackedIds).toEqual(['a']);
-  });
-
-  it('keeps a tracked instance active through the indexing phase (status idle, run active)', () => {
-    // 'b' finished discovery (status IDLE) but its run is still active.
-    const { activeIdToType, trackedIds } = reconcileSyncActivity(
-      instances,
-      { b: true },
-      ['b']
-    );
-    expect(activeIdToType).toEqual({ a: 'Google Drive', b: 'Google Drive' });
-    expect(new Set(trackedIds)).toEqual(new Set(['a', 'b']));
-  });
-
-  it('drops settled instances (run inactive, status idle)', () => {
-    const { activeIdToType, trackedIds } = reconcileSyncActivity(
-      instances,
-      { b: false },
-      ['b']
-    );
-    expect(activeIdToType).toEqual({ a: 'Google Drive' });
-    expect(trackedIds).toEqual(['a']);
-  });
-
-  it('drops tracked ids that no longer exist', () => {
-    const { activeIdToType, trackedIds } = reconcileSyncActivity(
-      instances,
-      { gone: true },
-      ['gone']
-    );
-    expect(activeIdToType).toEqual({ a: 'Google Drive' });
-    expect(trackedIds).toEqual(['a']);
-  });
-});
-
-describe('countByType', () => {
-  it('aggregates active instances per connector type', () => {
-    expect(
-      countByType({ a: 'Google Drive', b: 'Google Drive', c: 'Confluence' })
-    ).toEqual({ 'Google Drive': 2, Confluence: 1 });
-  });
-
-  it('returns an empty map when nothing is active', () => {
-    expect(countByType({})).toEqual({});
   });
 });

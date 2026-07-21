@@ -7,7 +7,6 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import type { Connector } from '../types';
 import { ConnectorCard } from './connector-card';
-import { useConnectorSyncActivity } from '../utils/use-connector-sync-activity';
 
 // ========================================
 // Types
@@ -87,11 +86,6 @@ export function ConnectorCatalogLayout({
     }
     return { activeCountByType: active, inactiveCountByType: inactive };
   }, [activeConnectors]);
-
-  // Aggregate "N of M syncing" cue. Counts instances actively syncing OR still
-  // indexing (post-discovery), so the cue does not drop the moment enumeration
-  // ends. No percentage — instances of the same type run independently.
-  const syncingCountByType = useConnectorSyncActivity(activeConnectors);
 
   // Merge registry + active connectors for display, deduplicating by type.
   // Active connectors take priority (isConfigured=true); registry fills in types with no instances.
@@ -261,7 +255,6 @@ export function ConnectorCatalogLayout({
               variant={connector.isConfigured ? 'active' : 'registry'}
               activeInstanceCount={activeCountByType[connector.type] ?? 0}
               inactiveInstanceCount={inactiveCountByType[connector.type] ?? 0}
-              syncingInstanceCount={syncingCountByType[connector.type] ?? 0}
               onSetup={onSetup}
               onAddInstance={onAddInstance}
               onCardClick={onCardClick}
