@@ -69,7 +69,7 @@ jobs:
   integration-tests:
     if: ${{ github.event_name != 'pull_request_target' || !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     # Schedule uses a separate environment so daily runs are not blocked by
     # deployment protection on `integration-test-dev`. Create
