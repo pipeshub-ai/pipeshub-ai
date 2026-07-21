@@ -47,6 +47,12 @@ class OdooClient:
         self._uid: int | None = None
         self._models: xmlrpc.client.ServerProxy | None = None
         self._connect_lock = asyncio.Lock()  # serialize concurrent connect() calls
+        # xmlrpc.client.ServerProxy reuses one HTTP connection across calls;
+        # that connection is stateful (request/response must alternate), so
+        # concurrent execute_kw() calls from different threads (asyncio.to_thread)
+        # race on it and raise CannotSendRequest/"Idle". Serialize all calls
+        # through this lock instead.
+        self._call_lock = asyncio.Lock()
 
         logger.info(f"🔧 [OdooClient] Initialized for {username}@{self.url} (db={db})")
 
@@ -112,13 +118,14 @@ class OdooClient:
             raise RuntimeError("Odoo client not authenticated")
 
         try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(
-                    self._models.execute_kw,
-                    self.db, self._uid, self.api_key, model, method, args or [], kwargs or {},
-                ),
-                timeout=self.timeout,
-            )
+            async with self._call_lock:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._models.execute_kw,
+                        self.db, self._uid, self.api_key, model, method, args or [], kwargs or {},
+                    ),
+                    timeout=self.timeout,
+                )
         except (xmlrpc.client.Fault, xmlrpc.client.ProtocolError, OSError, asyncio.TimeoutError) as e:
             logger.error(f"🔧 [OdooClient] execute_kw({model}.{method}) failed: {e}")
             raise RuntimeError(f"Odoo call failed ({model}.{method}): {e}") from e
