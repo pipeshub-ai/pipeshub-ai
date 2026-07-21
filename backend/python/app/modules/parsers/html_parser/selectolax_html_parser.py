@@ -11,6 +11,7 @@ parsing), use :class:`DoclingHtmlParser` (or the ``HTMLParser`` alias in
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Tuple
 
@@ -59,12 +60,14 @@ class SelectolaxHtmlParser:
 
         html_content = html_content.strip()
 
-        html_content = self.clean_html(html_content)
-        html_content = self.replace_relative_image_urls(html_content)
+        # BeautifulSoup cleaning + image-tag extraction is synchronous CPU
+        # work; run it off the event loop.
+        modified_html, images = await asyncio.to_thread(
+            self._prepare_html, html_content
+        )
 
         # Extract image URLs and convert to base64 (mirrors the Markdown flow)
         caption_map: Dict[str, str] = {}
-        modified_html, images = self.extract_and_replace_images(html_content)
 
         if images:
             
@@ -83,7 +86,15 @@ class SelectolaxHtmlParser:
             block_container=block_containers,
             metadata={"record_name": record_name},
         )
-        
+
+    def _prepare_html(self, html_content: str) -> Tuple[str, List[Dict[str, str]]]:
+        """Sync CPU-bound HTML pre-processing (clean + absolutize + extract
+        image tags). Called via ``asyncio.to_thread`` from :meth:`parse`.
+        """
+        cleaned = self.clean_html(html_content)
+        cleaned = self.replace_relative_image_urls(cleaned)
+        return self.extract_and_replace_images(cleaned)
+
     async def parse_to_blocks(
         self,
         html_content: str,
@@ -105,7 +116,8 @@ class SelectolaxHtmlParser:
         Returns:
             Populated ``BlocksContainer``.
         """
-        return self._converter.convert(
+        return await asyncio.to_thread(
+            self._converter.convert,
             html_content,
             base_url=base_url,
             caption_map=caption_map,

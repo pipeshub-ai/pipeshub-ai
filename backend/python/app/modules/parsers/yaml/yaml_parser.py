@@ -7,6 +7,7 @@ natural-language chunking walker used for JSON, tagged with
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 import yaml
@@ -35,9 +36,9 @@ class YAMLParser:
             raise ParseError(ParseErrorCode.EMPTY_CONTENT, "YAML content is empty")
 
         try:
-            # safe_load_all handles both single-document and multi-document
-            # (`---`-separated) YAML; single-document files yield one item.
-            documents = [doc for doc in yaml.safe_load_all(content.decode("utf-8")) if doc is not None]
+            # yaml.safe_load_all + the tree walk below are synchronous CPU
+            # work; keep large documents off the event loop.
+            documents = await asyncio.to_thread(self._load_documents, content)
         except Exception as e:
             raise ParseError(
                 ParseErrorCode.PARSE_FAILED,
@@ -49,7 +50,7 @@ class YAMLParser:
             raise ParseError(ParseErrorCode.EMPTY_CONTENT, "YAML content has no documents")
 
         data: Any = documents[0] if len(documents) == 1 else documents
-        block_container = self.parse_data(data, record_name)
+        block_container = await asyncio.to_thread(self.parse_data, data, record_name)
         return ParseResult(
             block_container=block_container,
             metadata={"record_name": record_name, "document_count": len(documents)},
@@ -57,6 +58,15 @@ class YAMLParser:
 
     def supported_formats(self) -> List[str]:
         return ["yaml", "yml"]
+
+    @staticmethod
+    def _load_documents(content: bytes) -> List[Any]:
+        """Sync YAML decode. Called via ``asyncio.to_thread`` from :meth:`parse`.
+
+        ``safe_load_all`` handles both single-document and multi-document
+        (``---``-separated) YAML; single-document files yield one item.
+        """
+        return [doc for doc in yaml.safe_load_all(content.decode("utf-8")) if doc is not None]
 
     def parse_data(self, data: Any, record_name: str) -> BlocksContainer:
         return self._json_parser.parse_data(data, record_name, data_format=DataFormat.YAML)

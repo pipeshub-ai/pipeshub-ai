@@ -688,7 +688,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
     async def _process_message_wrapper(
         self, stream_name: str, message_id: str, fields: dict[str, str]
     ) -> bool:
-        """Process message with dual semaphore control.
+        """Process message with decoupled semaphore control.
+
+        Semaphore lifecycle:
+        - parsing_semaphore: acquired at start, released on PARSING_COMPLETE
+        - indexing_semaphore: acquired on PARSING_COMPLETE, released on INDEXING_COMPLETE
+
+        The two phases are independent: a record that has finished parsing and
+        moved into the indexing phase no longer blocks a parsing slot.
 
         Error classification is based purely on exception type:
         - TERMINAL: ACK immediately (parsing errors, validation errors)
@@ -706,13 +713,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             await self.parsing_semaphore.acquire()
             parsing_held = True
 
-            await self.indexing_semaphore.acquire()
-            indexing_held = True
-
             parsed_message = self._parse_message(message_id, fields)
             if parsed_message is None:
-                # Poison message: it can never become valid on retry, so ACK it
-                # to remove it from the PEL instead of recovering it forever.
                 self.logger.warning(
                     "Dropping unparseable message %s from stream %s "
                     "(acknowledged, not retried)",
@@ -729,19 +731,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
             # Check current retry count to predict if this will be the final attempt on failure
             current_retry_count = await self._get_retry_count(stable_message_id)
-            
-            # This will be final if: count is already at max-1 (next increment reaches max)
-            # OR if we don't have retry manager (always final)
+
             will_be_final_on_failure = (
-                not self.retry_manager or 
+                not self.retry_manager or
                 current_retry_count >= messaging_env.max_delivery_attempts - 1
             )
-            
-            # Set flag on message so handler knows whether to update DB status on failure
+
             parsed_message.is_final_failure = will_be_final_on_failure
 
             if self.message_handler:
-                # Carry the producer's trace id into indexing logs.
                 ctx = context_from_envelope({"requestId": parsed_message.requestId})
                 token = set_context(ctx.root_id)
                 try:
@@ -754,6 +752,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                             ):
                                 self.parsing_semaphore.release()
                                 parsing_held = False
+                                await self.indexing_semaphore.acquire()
+                                indexing_held = True
                             elif (
                                 event.event == IndexingEvent.INDEXING_COMPLETE
                                 and indexing_held

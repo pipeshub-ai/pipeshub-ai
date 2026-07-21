@@ -98,8 +98,9 @@ class CSVParser:
                     # Create string stream from decoded text
                     csv_stream = io.StringIO(csv_text)
 
-                    # Read raw rows for table detection
-                    all_rows = self.read_raw_rows(csv_stream)
+                    # Read raw rows for table detection (sync CSV scan; keep
+                    # large files off the event loop).
+                    all_rows = await asyncio.to_thread(self.read_raw_rows, csv_stream)
                     break
                 except UnicodeDecodeError:
                     continue
@@ -115,7 +116,7 @@ class CSVParser:
                 )
 
             # Detect multiple tables
-            tables = self.find_tables_in_csv(all_rows)
+            tables = await asyncio.to_thread(self.find_tables_in_csv, all_rows)
 
             block_containers = await self.get_blocks_from_csv_with_multiple_tables(tables, llm)
 
