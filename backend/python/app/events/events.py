@@ -1062,7 +1062,7 @@ class EventProcessor:
                 ):
                     yield event
 
-            elif extension in {ExtensionTypes.JSON.value} or mime_type == MimeTypes.JSON.value:
+            elif extension == ExtensionTypes.JSON.value or mime_type == MimeTypes.JSON.value:
                 async for event in self.processor.process_structured_document(
                     recordName=record_name,
                     recordId=record_id,

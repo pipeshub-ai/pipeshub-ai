@@ -2090,10 +2090,10 @@ class Processor:
         self,
         recordName: str,
         recordId: str,
-        file_content: bytes,
+        file_content: bytes | str | dict | list,
         virtual_record_id: str,
         extension: str,
-        event_type: str = None,
+        event_type: Optional[str] = None,
         prev_virtual_record_id: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process a JSON or YAML file using its registered parser."""
@@ -2108,7 +2108,7 @@ class Processor:
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
 
-            if isinstance(file_content, dict):
+            if isinstance(file_content, (dict, list)):
                 file_content = json.dumps(file_content, default=str, ensure_ascii=False).encode("utf-8")
             elif isinstance(file_content, str):
                 file_content = file_content.encode("utf-8")
