@@ -155,8 +155,8 @@ class TestInitialize:
         mock_producer.initialize.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_initialize_no_orgs_raises(self):
-        """Initialize raises when no organizations found."""
+    async def test_initialize_no_orgs_warns_and_returns(self):
+        """Initialize logs a warning and returns when no organizations found."""
         logger = MagicMock()
         data_store = MagicMock()
         config_svc = AsyncMock()
@@ -183,8 +183,11 @@ class TestInitialize:
             mock_producer = AsyncMock()
             MockFactory.create_producer.return_value = mock_producer
 
-            with pytest.raises(Exception, match="No organizations found"):
-                await proc.initialize()
+            await proc.initialize()
+
+        assert proc.org_id == ""
+        logger.warning.assert_called_once()
+        assert "No organizations found" in logger.warning.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_initialize_bootstrap_servers_as_list(self):
@@ -1479,8 +1482,7 @@ class TestLinkRecordToGroup:
         tx_store = _make_tx_store()
         record = _make_record()
         record.id = "rec-1"
-        record.is_shared_with_me = True
-        record.shared_with_me_record_group_id = "shared-ext-group"
+        record.shared_with_me_record_group_ids = ["shared-ext-group"]
         record.inherit_permissions = True
 
         shared_group = MagicMock()

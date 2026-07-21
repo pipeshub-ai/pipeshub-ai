@@ -1,7 +1,7 @@
 """Unit tests for the Redis vector DB provider."""
 
 import struct
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -763,3 +763,189 @@ class TestHashDocDecoding:
         )
         fields = vector_point_to_hash_fields(point, dtype="FLOAT32")
         assert len(fields["dense_embedding"]) == 8  # 2 dims × 4 bytes
+
+
+# ---------------------------------------------------------------------------
+# Connection Lifecycle Tests
+# ---------------------------------------------------------------------------
+
+
+class TestConnectionLifecycle:
+    @pytest.mark.asyncio
+    async def test_connect_success(self, redis_config, mock_redis_client):
+        """connect() establishes connection and verifies with ping."""
+        svc = RedisVectorService(redis_config)
+        with patch("app.services.vector_db.redis.redis_vector.aioredis.Redis", return_value=mock_redis_client):
+            await svc.connect()
+        
+        assert svc.client is not None
+        mock_redis_client.ping.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_connect_failure_raises(self, redis_config):
+        """connect() raises exception on connection failure."""
+        svc = RedisVectorService(redis_config)
+        mock_client = AsyncMock()
+        mock_client.ping = AsyncMock(side_effect=ConnectionError("Cannot reach Redis"))
+        
+        with patch("app.services.vector_db.redis.redis_vector.aioredis.Redis", return_value=mock_client):
+            with pytest.raises(ConnectionError):
+                await svc.connect()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_with_client(self, service):
+        """disconnect() closes client when connected."""
+        mock_aclose = AsyncMock()
+        service.client.aclose = mock_aclose
+        
+        await service.disconnect()
+        
+        mock_aclose.assert_called_once()
+        assert service.client is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_without_client(self, redis_config):
+        """disconnect() handles None client gracefully."""
+        svc = RedisVectorService(redis_config)
+        svc.client = None
+        
+        await svc.disconnect()  # Should not raise
+
+    @pytest.mark.asyncio
+    async def test_disconnect_error_logged(self, service):
+        """disconnect() logs error but doesn't raise."""
+        service.client.aclose = AsyncMock(side_effect=Exception("Close failed"))
+        
+        await service.disconnect()  # Should not raise
+        assert service.client is None
+
+
+# ---------------------------------------------------------------------------
+# Scroll Pagination Tests
+# ---------------------------------------------------------------------------
+
+
+class TestScrollPagination:
+    @pytest.mark.asyncio
+    async def test_scroll_pagination_multiple_pages(self, service, mock_redis_client):
+        """_keys_matching_filter handles pagination across multiple pages."""
+        # Mock paginated responses
+        mock_redis_client.execute_command = AsyncMock(side_effect=[
+            [2000] + [f"key_{i}".encode() for i in range(1000)],  # Page 1: 1000 results
+            [2000] + [f"key_{i}".encode() for i in range(1000, 2000)],  # Page 2: 1000 results
+            [2000] + [],  # Page 3: no more results
+        ])
+        
+        from app.services.vector_db.models import FilterExpression, FieldCondition
+        filter_expr = FilterExpression(must=[FieldCondition(key="orgId", value="org1")])
+        
+        keys = await service._keys_matching_filter("test_collection", filter_expr)
+        
+        assert len(keys) == 2000
+        assert mock_redis_client.execute_command.call_count == 2  # Stops when all results fetched
+
+    @pytest.mark.asyncio
+    async def test_scroll_empty_results(self, service, mock_redis_client):
+        """_keys_matching_filter handles empty results."""
+        mock_redis_client.execute_command = AsyncMock(return_value=[0])  # No results
+        
+        from app.services.vector_db.models import FilterExpression, FieldCondition
+        filter_expr = FilterExpression(must=[FieldCondition(key="orgId", value="org1")])
+        
+        keys = await service._keys_matching_filter("test_collection", filter_expr)
+        
+        assert len(keys) == 0
+
+    @pytest.mark.asyncio
+    async def test_scroll_search_error_breaks_loop(self, service, mock_redis_client):
+        """_keys_matching_filter breaks on FT.SEARCH error."""
+        mock_redis_client.execute_command = AsyncMock(side_effect=Exception("Search failed"))
+        
+        from app.services.vector_db.models import FilterExpression, FieldCondition
+        filter_expr = FilterExpression(must=[FieldCondition(key="orgId", value="org1")])
+        
+        keys = await service._keys_matching_filter("test_collection", filter_expr)
+        
+        assert len(keys) == 0  # Returns empty list on error
+
+    @pytest.mark.asyncio
+    async def test_scroll_invalid_response_format_breaks(self, service, mock_redis_client):
+        """_keys_matching_filter handles invalid response format."""
+        mock_redis_client.execute_command = AsyncMock(return_value="invalid")  # Not a list
+        
+        from app.services.vector_db.models import FilterExpression, FieldCondition
+        filter_expr = FilterExpression(must=[FieldCondition(key="orgId", value="org1")])
+        
+        keys = await service._keys_matching_filter("test_collection", filter_expr)
+        
+        assert len(keys) == 0
+
+    @pytest.mark.asyncio
+    async def test_scroll_handles_string_keys(self, service, mock_redis_client):
+        """_keys_matching_filter converts string keys to bytes."""
+        # Mock response with string keys instead of bytes - first page has results, second is empty
+        mock_redis_client.execute_command = AsyncMock(side_effect=[
+            [2, "key_1", "key_2"],  # First page: total=2, 2 keys
+            [2],  # Second page: no more keys
+        ])
+        
+        from app.services.vector_db.models import FilterExpression, FieldCondition
+        filter_expr = FilterExpression(must=[FieldCondition(key="orgId", value="org1")])
+        
+        keys = await service._keys_matching_filter("test_collection", filter_expr)
+        
+        assert len(keys) == 2
+        assert all(isinstance(k, bytes) for k in keys)
+
+
+# ---------------------------------------------------------------------------
+# Additional Error Path Tests
+# ---------------------------------------------------------------------------
+
+
+class TestErrorPaths:
+    @pytest.mark.asyncio
+    async def test_create_collection_dimension_mismatch_warning(self, service, mock_redis_client):
+        """create_collection logs when dimension mismatch detected."""
+        from app.services.vector_db.models import CollectionConfig, VectorCollectionInfo
+        
+        config = CollectionConfig(embedding_size=512)
+        
+        # Mock collection info showing different dimension
+        existing_info = VectorCollectionInfo(
+            name="test", exists=True, dense_dimension=384, points_count=10
+        )
+        service.get_collection_info = AsyncMock(return_value=existing_info)
+        
+        # Should raise ValueError for dimension mismatch
+        with pytest.raises(ValueError, match="dimension mismatch"):
+            await service.create_collection("test", config)
+
+    @pytest.mark.asyncio
+    async def test_scroll_with_offset_str(self, service, mock_redis_client):
+        """scroll() handles string offset correctly."""
+        mock_redis_client.execute_command = AsyncMock(return_value=[
+            100,  # Total count
+            b"doc1", {"field": "value"},
+        ])
+        
+        from app.services.vector_db.models import FilterExpression
+        result = await service.scroll("test", FilterExpression(), limit=10, offset="50")
+        
+        # Should convert string offset to int
+        assert mock_redis_client.execute_command.called
+        call_args = mock_redis_client.execute_command.call_args[0]
+        # Check that LIMIT clause uses offset
+        assert "50" in str(call_args) or 50 in call_args
+
+    @pytest.mark.asyncio
+    async def test_scroll_with_invalid_offset(self, service, mock_redis_client):
+        """scroll() handles invalid offset string."""
+        mock_redis_client.execute_command = AsyncMock(return_value=[0])
+        
+        from app.services.vector_db.models import FilterExpression
+        result = await service.scroll("test", FilterExpression(), limit=10, offset="invalid")
+        
+        # Should default to 0 on parse error
+        assert result.points == []
+

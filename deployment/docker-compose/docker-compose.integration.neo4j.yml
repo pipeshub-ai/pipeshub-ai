@@ -4,7 +4,7 @@ services:
     restart: always
     build:
       context: ../../
-      dockerfile: Dockerfile.integration
+      dockerfile: Dockerfile
       args:
         BUILDKIT_INLINE_CACHE: "1"
         PYTHON_DEPS_IMAGE: ${PYTHON_DEPS_IMAGE:-pipeshubai/pipeshub-ai-base:python-deps}
@@ -56,7 +56,7 @@ services:
       # Standalone parsing / extraction services (opt-in)
       - PARSING_SERVICE_URL=http://localhost:8092
       - EXTRACTION_SERVICE_URL=http://localhost:8093
-      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-false}
+      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
       - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
       # Key-Value Store Configuration

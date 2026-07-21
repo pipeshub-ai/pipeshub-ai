@@ -502,7 +502,7 @@ setup-python: ## Setup Python backend (create venv and install dependencies)
 	@echo "$(BLUE)Installing Python dependencies...$(NC)"
 	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install "setuptools<75" && uv pip install -e . --no-build-isolation-package grpcio-tools
 	@echo "$(BLUE)Installing additional language models...$(NC)"
-	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install pip && python -m spacy download en_core_web_sm && python -c "import nltk; nltk.download('punkt')"
+	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install pip && python -c "import nltk; nltk.download('punkt')"
 	@echo "$(GREEN)Python backend setup complete!$(NC)"
 	@echo "$(YELLOW)To activate venv: cd backend/python && source venv/bin/activate$(NC)"
 	@echo "$(YELLOW)To run services (in separate terminals):$(NC)"

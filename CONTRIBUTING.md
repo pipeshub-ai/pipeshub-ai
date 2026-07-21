@@ -202,7 +202,6 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -e .
 
 # Install additional language models
-python -m spacy download en_core_web_sm
 python -c "import nltk; nltk.download('punkt')"
 
 # Run each service in a separate terminal: First, cd backend/python and activate the existing virtual environment

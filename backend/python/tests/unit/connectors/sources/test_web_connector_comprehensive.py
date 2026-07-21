@@ -18,6 +18,7 @@ from app.connectors.core.registry.filters import (
     MultiselectOperator,
 )
 from app.connectors.sources.web.connector import (
+    CrawlFetchResult,
     DOCUMENT_MIME_TYPES,
     IMAGE_MIME_TYPES,
     MAX_RETRIES,
@@ -1036,11 +1037,22 @@ class TestRecursiveCrawlOrchestration:
         ]
 
         async def gen(*_a, **_k):
-            for u in updates:
-                yield u
+            for _ in updates:
+                yield CrawlFetchResult(
+                    url="https://example.com/page",
+                    depth=0,
+                    referer=None,
+                    fetch_response=FetchResponse(
+                        status_code=200, content_bytes=b"<html></html>",
+                        headers={"Content-Type": "text/html"},
+                        final_url="https://example.com/page", strategy="aiohttp",
+                    ),
+                )
 
         c._create_ancestor_placeholder_records = AsyncMock()
         c._crawl_recursive_generator = gen
+        c._fetch_and_process_url = AsyncMock(side_effect=updates)
+        c._check_index_filter = MagicMock(return_value=False)
         c.processed_urls = 0
         await c._crawl_recursive("https://example.com", 0)
         assert c.data_entities_processor.on_new_records.await_count >= 1
@@ -1052,6 +1064,7 @@ class TestRecursiveCrawlOrchestration:
         c.base_domain = "https://example.com"
         c.max_depth = 2
         c.max_pages = 10
+        c.max_size_mb = 10
         c.session = MagicMock()
         c.visited_urls = {c._normalize_url("https://example.com/start")}
         c.retry_urls = {
@@ -1064,24 +1077,18 @@ class TestRecursiveCrawlOrchestration:
                 depth=1,
             ),
         }
-        c.indexing_filters = MagicMock()
-        c.indexing_filters.is_enabled = MagicMock(return_value=True)
+        c.processed_urls = 0
 
-        async def _fetch(url, depth, referer=None):
-            norm = c._normalize_url(url)
-            c.visited_urls.add(norm)
-            if norm in c.retry_urls:
-                c.retry_urls[norm].retries = MAX_RETRIES
-            return None
-
-        c._fetch_and_process_url = _fetch
-
-        with patch("app.connectors.sources.web.connector.asyncio.sleep", new_callable=AsyncMock):
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock,
+            return_value=None,
+        ), patch("app.connectors.sources.web.connector.asyncio.sleep", new_callable=AsyncMock):
             results = []
             async for _ in c._crawl_recursive_generator("https://example.com/start", 0):
                 results.append(_)
         assert results == []
-        assert any("Re-enqueued" in str(call) for call in c.logger.debug.call_args_list)
+        assert any("Backing off" in str(call) for call in c.logger.info.call_args_list)
 
     @pytest.mark.asyncio
     async def test_enqueues_discovered_links(self):
@@ -1090,31 +1097,28 @@ class TestRecursiveCrawlOrchestration:
         c.base_domain = "https://example.com"
         c.max_depth = 2
         c.max_pages = 10
+        c.max_size_mb = 10
+        c.follow_external = False
+        c.url_should_contain = []
         c.session = MagicMock()
         c.visited_urls = set()
         c.retry_urls = {}
-        c._normalize_url = MagicMock(side_effect=lambda u: u.rstrip("/"))
-        c.indexing_filters = MagicMock()
-        c.indexing_filters.is_enabled = MagicMock(return_value=True)
+        c.processed_urls = 0
         html = b'<html><body><a href="/child">child</a></body></html>'
-        mock_record = MagicMock()
-        mock_record.mime_type = MimeTypes.HTML.value
-        update = RecordUpdate(
-            record=mock_record,
-            is_new=True,
-            is_updated=False,
-            is_deleted=False,
-            metadata_changed=False,
-            content_changed=False,
-            permissions_changed=False,
-            new_permissions=[],
-            html_bytes=html,
-        )
-        c._fetch_and_process_url = AsyncMock(return_value=update)
-        c._extract_links_from_content = AsyncMock(return_value=["https://example.com/child"])
-        c._check_index_filter = MagicMock(return_value=False)
 
-        with patch("app.connectors.sources.web.connector.asyncio.sleep", new_callable=AsyncMock):
+        fetch_resp = FetchResponse(
+            status_code=200,
+            content_bytes=html,
+            headers={"Content-Type": "text/html"},
+            final_url="https://example.com",
+            strategy="aiohttp",
+        )
+
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock,
+            return_value=fetch_resp,
+        ), patch("app.connectors.sources.web.connector.asyncio.sleep", new_callable=AsyncMock):
             results = []
             async for ru in c._crawl_recursive_generator("https://example.com", 0):
                 results.append(ru)
@@ -1135,11 +1139,23 @@ class TestRecursiveCrawlOrchestration:
         )
 
         async def gen(*_a, **_k):
-            yield updated
+            yield CrawlFetchResult(
+                url="https://example.com/page",
+                depth=0,
+                referer=None,
+                fetch_response=FetchResponse(
+                    status_code=200, content_bytes=b"<html></html>",
+                    headers={"Content-Type": "text/html"},
+                    final_url="https://example.com/page", strategy="aiohttp",
+                ),
+            )
 
         c._create_ancestor_placeholder_records = AsyncMock()
         c._crawl_recursive_generator = gen
+        c._fetch_and_process_url = AsyncMock(return_value=updated)
+        c._check_index_filter = MagicMock(return_value=False)
         c._handle_record_updates = AsyncMock()
+        c.processed_urls = 0
         await c._crawl_recursive("https://example.com", 0)
         c._handle_record_updates.assert_awaited_once()
 
@@ -2107,11 +2123,22 @@ class TestWebConnectorRemainingCoverageGaps:
         ]
 
         async def gen(*_a, **_k):
-            for u in updates:
-                yield u
+            for _ in updates:
+                yield CrawlFetchResult(
+                    url="https://example.com/page",
+                    depth=0,
+                    referer=None,
+                    fetch_response=FetchResponse(
+                        status_code=200, content_bytes=b"<html></html>",
+                        headers={"Content-Type": "text/html"},
+                        final_url="https://example.com/page", strategy="aiohttp",
+                    ),
+                )
 
         c._create_ancestor_placeholder_records = AsyncMock()
         c._crawl_recursive_generator = gen
+        c._fetch_and_process_url = AsyncMock(side_effect=updates)
+        c._check_index_filter = MagicMock(return_value=False)
         c.processed_urls = 0
         await c._crawl_recursive("https://example.com", 0)
         assert c.data_entities_processor.on_new_records.await_count == 2
@@ -2150,41 +2177,38 @@ class TestWebConnectorRemainingCoverageGaps:
         c.base_domain = "https://example.com"
         c.max_depth = 0
         c.max_pages = 10
+        c.max_size_mb = 10
+        c.follow_external = False
+        c.url_should_contain = []
         c.session = MagicMock()
         c.visited_urls = set()
         c.retry_urls = {}
+        c.processed_urls = 0
         html = b'<html><body><a href="/child">child</a></body></html>'
-        mock_record = MagicMock()
-        mock_record.mime_type = MimeTypes.HTML.value
-        update = RecordUpdate(
-            record=mock_record,
-            is_new=True,
-            is_updated=False,
-            is_deleted=False,
-            metadata_changed=False,
-            content_changed=False,
-            permissions_changed=False,
-            new_permissions=[MagicMock()],
-            html_bytes=html,
-        )
-        c._fetch_and_process_url = AsyncMock(return_value=update)
-        c._check_index_filter = MagicMock(return_value=False)
 
-        with patch("app.connectors.sources.web.connector.asyncio.sleep", new_callable=AsyncMock):
+        fetch_resp = FetchResponse(
+            status_code=200,
+            content_bytes=html,
+            headers={"Content-Type": "text/html"},
+            final_url="https://example.com",
+            strategy="aiohttp",
+        )
+
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock,
+            return_value=fetch_resp,
+        ), patch("app.connectors.sources.web.connector.asyncio.sleep", new_callable=AsyncMock):
             results = []
             async for ru in c._crawl_recursive_generator("https://example.com", 0):
                 results.append(ru)
         assert len(results) == 1
 
     @pytest.mark.asyncio
-    async def test_generator_sets_auto_index_off(self):
+    async def test_consumer_sets_auto_index_off(self):
         c = _make_connector()
         c.url = "https://example.com"
-        c.max_depth = 0
-        c.max_pages = 10
-        c.session = MagicMock()
-        c.visited_urls = set()
-        c.retry_urls = {}
+        c.batch_size = 10
         mock_record = MagicMock()
         mock_record.mime_type = MimeTypes.HTML.value
         update = RecordUpdate(
@@ -2198,25 +2222,47 @@ class TestWebConnectorRemainingCoverageGaps:
             new_permissions=[MagicMock()],
             html_bytes=b"<html></html>",
         )
+
+        async def gen(*_a, **_k):
+            yield CrawlFetchResult(
+                url="https://example.com/page",
+                depth=0,
+                referer=None,
+                fetch_response=FetchResponse(
+                    status_code=200, content_bytes=b"<html></html>",
+                    headers={"Content-Type": "text/html"},
+                    final_url="https://example.com/page", strategy="aiohttp",
+                ),
+            )
+
+        c._create_ancestor_placeholder_records = AsyncMock()
+        c._crawl_recursive_generator = gen
         c._fetch_and_process_url = AsyncMock(return_value=update)
         c._check_index_filter = MagicMock(return_value=True)
-
-        with patch("app.connectors.sources.web.connector.asyncio.sleep", new_callable=AsyncMock):
-            async for _ in c._crawl_recursive_generator("https://example.com", 0):
-                pass
+        c.processed_urls = 0
+        await c._crawl_recursive("https://example.com", 0)
         assert mock_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
     @pytest.mark.asyncio
     async def test_generator_logs_process_exception(self):
         c = _make_connector()
         c.url = "https://example.com"
+        c.base_domain = "https://example.com"
         c.max_depth = 1
         c.max_pages = 10
+        c.max_size_mb = 10
+        c.follow_external = False
+        c.url_should_contain = []
+        c.session = MagicMock()
         c.visited_urls = set()
         c.retry_urls = {}
-        c._fetch_and_process_url = AsyncMock(side_effect=RuntimeError("fetch boom"))
+        c.processed_urls = 0
 
-        with patch("app.connectors.sources.web.connector.asyncio.sleep", new_callable=AsyncMock):
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("fetch boom"),
+        ), patch("app.connectors.sources.web.connector.asyncio.sleep", new_callable=AsyncMock):
             results = []
             async for ru in c._crawl_recursive_generator("https://example.com", 0):
                 results.append(ru)
@@ -2330,6 +2376,8 @@ class TestWebConnectorRemainingCoverageGaps:
         c._normalize_url = MagicMock(return_value="https://example.com/page/")
         c._ensure_parent_records_exist = AsyncMock()
         c._pass_extension_filter = MagicMock(return_value=True)
+        c._process_html_content = AsyncMock(return_value="<html>processed</html>")
+        c._store_crawled_content = AsyncMock(return_value=None)
         existing = MagicMock()
         existing.id = "rec-1"
         existing.record_name = "Same"
@@ -2337,6 +2385,7 @@ class TestWebConnectorRemainingCoverageGaps:
         existing.parent_external_record_id = "https://example.com/wrong-parent/"
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = "COMPLETED"
+        existing.storage_document_id = "existing-storage-doc-id"
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         with patch(
             "app.connectors.sources.web.connector.fetch_url_with_fallback",

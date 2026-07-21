@@ -3679,17 +3679,14 @@ components:
             - recordType
             - origin
             - version
-            - isLatestVersion
             - createdAtTimestamp
             - updatedAtTimestamp
             - sourceCreatedAtTimestamp
             - sourceLastModifiedTimestamp
-            - lastSyncTimestamp
             - indexingStatus
             - extractionStatus
             - isDeleted
             - isArchived
-            - isDirty
             - isVLMOcrProcessed
             - mimeType
             - sizeInBytes
@@ -3715,6 +3712,12 @@ components:
             externalParentId:
               type: string
               nullable: true
+            externalRevisionId:
+              type: string
+              nullable: true
+            recordGroupId:
+              type: string
+              nullable: true
             connectorId:
               type: string
             connectorName:
@@ -3727,6 +3730,7 @@ components:
               type: integer
             isLatestVersion:
               type: boolean
+              nullable: true
             createdAtTimestamp:
               type: integer
               format: int64
@@ -3742,6 +3746,7 @@ components:
             lastSyncTimestamp:
               type: integer
               format: int64
+              nullable: true
             lastIndexTimestamp:
               type: integer
               format: int64
@@ -3752,28 +3757,59 @@ components:
               type: string
             extractionStatus:
               type: string
+            reason:
+              type: string
+              nullable: true
             isDeleted:
               type: boolean
             isArchived:
               type: boolean
+            deletedByUserId:
+              type: string
+              nullable: true
             isDirty:
               type: boolean
+              nullable: true
             isVLMOcrProcessed:
               type: boolean
+              nullable: true
             mimeType:
               type: string
+              nullable: true
             sizeInBytes:
               type: integer
               format: int64
+              nullable: true
             md5Checksum:
               type: string
+              nullable: true
             virtualRecordId:
               type: string
+              nullable: true
             summaryDocumentId:
               type: string
               nullable: true
             webUrl:
               type: string
+              nullable: true
+            previewRenderable:
+              type: boolean
+              nullable: true
+            isShared:
+              type: boolean
+              nullable: true
+            isDependentNode:
+              type: boolean
+              nullable: true
+            parentNodeId:
+              type: string
+              nullable: true
+            hideWeburl:
+              type: boolean
+              nullable: true
+            isInternal:
+              type: boolean
+              nullable: true
             fileRecord:
               type: object
               nullable: true
@@ -3783,10 +3819,7 @@ components:
                 - orgId
                 - name
                 - extension
-                - mimeType
-                - sizeInBytes
                 - isFile
-                - webUrl
               properties:
                 id:
                   type: string
@@ -3796,15 +3829,39 @@ components:
                   type: string
                 extension:
                   type: string
+                etag:
+                  type: string
+                  nullable: true
+                ctag:
+                  type: string
+                  nullable: true
+                md5Checksum:
+                  type: string
+                  nullable: true
+                quickXorHash:
+                  type: string
+                  nullable: true
+                crc32Hash:
+                  type: string
+                  nullable: true
+                sha1Hash:
+                  type: string
+                  nullable: true
+                sha256Hash:
+                  type: string
+                  nullable: true
                 mimeType:
                   type: string
+                  nullable: true
                 sizeInBytes:
                   type: integer
                   format: int64
+                  nullable: true
                 isFile:
                   type: boolean
                 webUrl:
                   type: string
+                  nullable: true
                 path:
                   type: string
                   nullable: true

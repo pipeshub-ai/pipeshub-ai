@@ -476,7 +476,7 @@ class TestProcessBoxEntry:
         entry = _make_box_entry(owned_by={"id": "other-user"})
         result = await connector._process_box_entry(entry, "user1", "user@test.com", "rg-1")
         assert result is not None
-        assert result.record.is_shared_with_me is True
+        assert result.record.shared_with_me_record_group_ids == ["0S:user@test.com"]
 
 
 # ---------------------------------------------------------------------------

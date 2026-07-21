@@ -299,6 +299,9 @@ class ExtensionTypes(Enum):
     BASH = "bash"
     HTM = "htm"
     BLOCKS = "blocks"
+    JSON = "json"
+    YAML = "yaml"
+    YML = "yml"
 
 class MimeTypes(Enum):
     PDF = "application/pdf"
@@ -416,6 +419,8 @@ FILE_MIME_TYPES = {
     '.csv': MimeTypes.CSV,
     '.tsv': MimeTypes.TSV,
     '.json': MimeTypes.JSON,
+    '.yaml': MimeTypes.YAML,
+    '.yml': MimeTypes.YAML,
     '.xml': MimeTypes.XML,
     '.zip': MimeTypes.ZIP,
     '.jpg': MimeTypes.JPEG,

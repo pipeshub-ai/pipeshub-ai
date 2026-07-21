@@ -641,9 +641,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
     async def __process_message_wrapper(self, message: ConsumerRecord) -> bool:
         """Wrapper to handle async task cleanup and semaphore release based on yielded events.
 
-        Iterates over events yielded by the message handler:
-        - 'parsing_complete': releases parsing semaphore
-        - 'indexing_complete': releases indexing semaphore
+        Semaphore lifecycle (decoupled phases):
+        - parsing_semaphore: acquired at start, released on PARSING_COMPLETE
+        - indexing_semaphore: acquired on PARSING_COMPLETE, released on INDEXING_COMPLETE
+
+        The two phases are independent: a record that has finished parsing and
+        moved into the indexing phase no longer blocks a parsing slot, so the
+        next record can start parsing immediately.
 
         Error classification is based purely on exception type:
         - TERMINAL: Commit immediately (parsing errors, validation errors)
@@ -667,9 +671,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         try:
             await self.parsing_semaphore.acquire()
             parsing_held = True
-
-            await self.indexing_semaphore.acquire()
-            indexing_held = True
 
             parsed_message = self.__parse_message(message)
             if parsed_message is None:
@@ -701,16 +702,26 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 ctx = context_from_envelope({"requestId": parsed_message.requestId})
                 token = set_context(ctx.root_id)
                 try:
-                    async for event in self.message_handler(parsed_message):
-                        if event.event == IndexingEvent.PARSING_COMPLETE and parsing_held and self.parsing_semaphore:
-                            self.parsing_semaphore.release()
-                            parsing_held = False
-                            self.logger.debug(f"Released parsing semaphore for {message_id}")
-                        elif event.event == IndexingEvent.INDEXING_COMPLETE and indexing_held and self.indexing_semaphore:
-                            self.indexing_semaphore.release()
-                            indexing_held = False
-                            self.logger.debug(f"Released indexing semaphore for {message_id}")
-                            success = True  # Both events completed successfully
+                    async with asyncio.timeout(messaging_env.record_processing_timeout):
+                        async for event in self.message_handler(parsed_message):
+                            if event.event == IndexingEvent.PARSING_COMPLETE and parsing_held and self.parsing_semaphore:
+                                self.parsing_semaphore.release()
+                                parsing_held = False
+                                self.logger.debug(f"Released parsing semaphore for {message_id}")
+                                await self.indexing_semaphore.acquire()
+                                indexing_held = True
+                                self.logger.debug(f"Acquired indexing semaphore for {message_id}")
+                            elif event.event == IndexingEvent.INDEXING_COMPLETE and indexing_held and self.indexing_semaphore:
+                                self.indexing_semaphore.release()
+                                indexing_held = False
+                                self.logger.debug(f"Released indexing semaphore for {message_id}")
+                                success = True
+                except TimeoutError:
+                    self.logger.error(
+                        f"Record processing timed out after {messaging_env.record_processing_timeout}s "
+                        f"for {message_id}"
+                    )
+                    raise
                 finally:
                     reset_context(token)
             else:

@@ -1293,8 +1293,11 @@ class TestFetchUrlWithFallback:
                         )
                         assert result is not None
                         assert result.status_code == 200
-                        # The second attempt (attempt=1) sleeps with 1 + random(0, 0.5) = 1.25
-                        mock_sleep.assert_called_once_with(1.25)
+                        # 403 is bot detection so each curl attempt also sleeps 2.0,
+                        # and the second attempt (attempt=1) sleeps 1 + random(0, 0.5) = 1.25
+                        assert mock_sleep.call_count == 3
+                        mock_sleep.assert_any_call(2.0)
+                        mock_sleep.assert_any_call(1.25)
 
     @pytest.mark.asyncio
     async def test_referer_and_extra_headers_passed(self, log):
@@ -1349,10 +1352,10 @@ class TestFetchUrlWithFallback:
 
     @pytest.mark.asyncio
     async def test_5xx_not_in_bot_detection_stops(self, log):
-        """Server error (e.g. 503) that is NOT in _BOT_DETECTION_CODES stops immediately."""
+        """Server error (e.g. 500) that is NOT in _BOT_DETECTION_CODES stops immediately."""
         mock_session = AsyncMock()
         error_resp = FetchResponse(
-            503, b"", {}, "https://example.com", "curl_cffi"
+            500, b"", {}, "https://example.com", "curl_cffi"
         )
 
         curl_call_count = 0
@@ -1373,7 +1376,7 @@ class TestFetchUrlWithFallback:
                 max_retries_per_strategy=3,
             )
             assert result is not None
-            assert result.status_code == 503
+            assert result.status_code == 500
             # Should stop on first attempt
             assert curl_call_count == 1
 

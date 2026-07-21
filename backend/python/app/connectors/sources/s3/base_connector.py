@@ -29,7 +29,6 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
-    NotificationRecipientRole,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -1136,7 +1135,6 @@ class S3CompatibleBaseConnector(BaseConnector):
                     severity=NotificationSeverity.ERROR,
                     title=f"Connection test failed",
                     message=f"{self.connector_name.value}: {response.error}",
-                    recipient_roles=[NotificationRecipientRole.EVERYONE],
                 )
                 return False
         except Exception as e:
@@ -1146,7 +1144,6 @@ class S3CompatibleBaseConnector(BaseConnector):
                 severity=NotificationSeverity.ERROR,
                 title=f"Connection test failed",
                 message=f"{self.connector_name.value}: {e}",
-                recipient_roles=[NotificationRecipientRole.ADMIN],
             )
             return False
 
