@@ -747,6 +747,140 @@ class TestOnNewRecordGroupsAdvanced:
 
 
 # ===========================================================================
+# on_new_record_groups - blob relocation for sync-driven group renames.
+#
+# Most connectors have no dedicated rename webhook (Dropbox's
+# team_folder_rename -> update_record_group_name is the only one); every
+# other connector's periodic/incremental sync re-pushes the group's current
+# name through on_new_record_groups on every run, and a name change (a
+# Confluence space renamed, a Jira project renamed, a shared drive renamed,
+# etc.) surfaces here, in the existing_record_group-found branch -- not
+# through update_record_group_name at all.
+# ===========================================================================
+
+
+class TestOnNewRecordGroupsMovesBlobsOnRename:
+    @pytest.mark.asyncio
+    async def test_existing_group_with_new_name_calls_move_record_tree(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        existing_rg = MagicMock()
+        existing_rg.id = "rg-1"
+        existing_rg.name = "Old Project"
+        tx_store.get_record_group_by_external_id.return_value = existing_rg
+
+        mock_cleanup = AsyncMock()
+        mock_cleanup.build_record_group_path = MagicMock(
+            side_effect=lambda cid, name: f"records/{cid}/{name}"
+        )
+        proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
+        rg = RecordGroup(
+            external_group_id="ext-g1",
+            name="New Project",
+            group_type="DRIVE",
+            connector_name=ConnectorsEnum.GOOGLE_MAIL,
+            connector_id="conn-1",
+        )
+
+        await proc.on_new_record_groups([(rg, [])])
+
+        mock_cleanup.move_record_tree.assert_awaited_once_with(
+            "org-1", "records/conn-1/Old Project", "records/conn-1/New Project"
+        )
+
+    @pytest.mark.asyncio
+    async def test_existing_group_same_name_does_not_call_move_record_tree(self):
+        """The common case (no rename, just a routine re-sync) must not fire
+        a network call on every sync cycle."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        existing_rg = MagicMock()
+        existing_rg.id = "rg-1"
+        existing_rg.name = "Same Project"
+        tx_store.get_record_group_by_external_id.return_value = existing_rg
+
+        mock_cleanup = AsyncMock()
+        mock_cleanup.build_record_group_path = MagicMock(
+            side_effect=lambda cid, name: f"records/{cid}/{name}"
+        )
+        proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
+        rg = RecordGroup(
+            external_group_id="ext-g1",
+            name="Same Project",
+            group_type="DRIVE",
+            connector_name=ConnectorsEnum.GOOGLE_MAIL,
+            connector_id="conn-1",
+        )
+
+        await proc.on_new_record_groups([(rg, [])])
+
+        mock_cleanup.move_record_tree.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_new_group_no_existing_record_never_attempts_a_move(self):
+        """Creation (existing_record_group is None) must not touch storage
+        at all -- there's no old name to move from."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_record_group_by_external_id.return_value = None
+
+        mock_cleanup = AsyncMock()
+        proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
+        rg = RecordGroup(
+            external_group_id="ext-g1",
+            name="Brand New Project",
+            group_type="DRIVE",
+            connector_name=ConnectorsEnum.GOOGLE_MAIL,
+            connector_id="conn-1",
+        )
+
+        await proc.on_new_record_groups([(rg, [])])
+
+        mock_cleanup.build_record_group_path.assert_not_called()
+        mock_cleanup.move_record_tree.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_move_failure_is_logged_and_swallowed_not_raised(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        existing_rg = MagicMock()
+        existing_rg.id = "rg-1"
+        existing_rg.name = "Old Project"
+        tx_store.get_record_group_by_external_id.return_value = existing_rg
+
+        mock_cleanup = AsyncMock()
+        mock_cleanup.build_record_group_path = MagicMock(
+            side_effect=lambda cid, name: f"records/{cid}/{name}"
+        )
+        mock_cleanup.move_record_tree.side_effect = Exception("node unreachable")
+        proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
+        rg = RecordGroup(
+            external_group_id="ext-g1",
+            name="New Project",
+            group_type="DRIVE",
+            connector_name=ConnectorsEnum.GOOGLE_MAIL,
+            connector_id="conn-1",
+        )
+
+        # Must not raise -- best-effort, same posture as every other
+        # move-tree call site.
+        await proc.on_new_record_groups([(rg, [])])
+
+        proc.logger.warning.assert_called()
+
+
+# ===========================================================================
 # on_new_user_groups - user not found (lines 1245-1275)
 # ===========================================================================
 
@@ -1838,6 +1972,149 @@ class TestUpdateRecordGroupName:
 
 
 # ===========================================================================
+# update_record_group_name - blob relocation wiring: renaming a record group
+# (space/project/drive/team-folder) moves every blob stored under its
+# records/<connector_id>/<group_name>/... prefix, since group renames
+# previously only updated the graph and never touched storage at all.
+# ===========================================================================
+
+
+class TestUpdateRecordGroupNameMovesBlobs:
+    @pytest.mark.asyncio
+    async def test_renaming_group_calls_move_record_tree_with_old_and_new_prefix(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        existing = MagicMock()
+        existing.id = "rg-1"
+        existing.name = "Old Space"
+        tx_store.get_record_group_by_external_id.return_value = existing
+
+        mock_cleanup = AsyncMock()
+        # build_record_group_path is a SYNC method on StorageCleanupHelper --
+        # AsyncMock() auto-vivifies every attribute as an AsyncMock, so
+        # without this override calling it here would silently return an
+        # unawaited coroutine instead of a path string.
+        mock_cleanup.build_record_group_path = MagicMock(
+            side_effect=lambda cid, name: f"records/{cid}/{name}"
+        )
+        proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
+        await proc.update_record_group_name(
+            "ext-folder", "New Space", old_name="Old Space", connector_id="conn-1"
+        )
+
+        mock_cleanup.move_record_tree.assert_awaited_once_with(
+            "org-1", "records/conn-1/Old Space", "records/conn-1/New Space"
+        )
+
+    @pytest.mark.asyncio
+    async def test_old_prefix_captured_before_name_is_overwritten(self):
+        """Regression guard: existing_group.name is mutated in place a few
+        lines below the old-prefix capture. If a future edit moved the
+        capture after that mutation, old_prefix would equal new_prefix and
+        move_record_tree's own old_path==new_path short-circuit would turn
+        this into a silent no-op, stranding every blob under the group.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        existing = MagicMock()
+        existing.id = "rg-1"
+        existing.name = "Old Space"
+        tx_store.get_record_group_by_external_id.return_value = existing
+
+        mock_cleanup = AsyncMock()
+        mock_cleanup.build_record_group_path = MagicMock(
+            side_effect=lambda cid, name: f"records/{cid}/{name}"
+        )
+        proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
+        await proc.update_record_group_name(
+            "ext-folder", "New Space", connector_id="conn-1"
+        )
+
+        args = mock_cleanup.move_record_tree.call_args.args
+        _, old_prefix, new_prefix = args[0], args[1], args[2]
+        assert old_prefix == "records/conn-1/Old Space"
+        assert new_prefix == "records/conn-1/New Space"
+        assert old_prefix != new_prefix
+
+    @pytest.mark.asyncio
+    async def test_same_name_rename_is_a_noop_no_move_call(self):
+        """A rename event that doesn't actually change the name (or a name
+        that sanitizes identically) must not fire a network call."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        existing = MagicMock()
+        existing.id = "rg-1"
+        existing.name = "Same Space"
+        tx_store.get_record_group_by_external_id.return_value = existing
+
+        mock_cleanup = AsyncMock()
+        mock_cleanup.build_record_group_path = MagicMock(
+            side_effect=lambda cid, name: f"records/{cid}/{name}"
+        )
+        proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
+        await proc.update_record_group_name(
+            "ext-folder", "Same Space", connector_id="conn-1"
+        )
+
+        mock_cleanup.move_record_tree.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_move_failure_is_logged_and_swallowed_not_raised(self):
+        """Best-effort posture, matching every other move-tree call site:
+        the graph rename must already be committed by the time this runs,
+        so a Node-side failure is a warning, never a raised exception."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        existing = MagicMock()
+        existing.id = "rg-1"
+        existing.name = "Old Space"
+        tx_store.get_record_group_by_external_id.return_value = existing
+
+        mock_cleanup = AsyncMock()
+        mock_cleanup.build_record_group_path = MagicMock(
+            side_effect=lambda cid, name: f"records/{cid}/{name}"
+        )
+        mock_cleanup.move_record_tree.side_effect = Exception("node unreachable")
+        proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
+        await proc.update_record_group_name(
+            "ext-folder", "New Space", connector_id="conn-1"
+        )
+
+        proc.logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_no_storage_cleanup_available_skips_move_silently(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        existing = MagicMock()
+        existing.id = "rg-1"
+        existing.name = "Old Space"
+        tx_store.get_record_group_by_external_id.return_value = existing
+
+        proc._get_storage_cleanup = MagicMock(return_value=None)
+
+        # Should not raise even though storage cleanup is unavailable.
+        await proc.update_record_group_name(
+            "ext-folder", "New Space", connector_id="conn-1"
+        )
+        assert existing.name == "New Space"
+
+
+# ===========================================================================
 # on_updated_record_permissions - additional branches (lines 730-752)
 # ===========================================================================
 
@@ -1976,6 +2253,276 @@ class TestHandleParentRecordParentChild:
 
 
 # ===========================================================================
+# _process_record - parent edge must be repointed before path computation
+# ===========================================================================
+
+
+class TestProcessRecordReparentOrdering:
+    @pytest.mark.asyncio
+    async def test_parent_edge_repointed_before_path_computed_on_reparent(self):
+        """Regression test: when a record's parent changes, the PARENT_CHILD
+        edge must be repointed (_handle_parent_record) BEFORE the new storage
+        path is computed (build_record_path, called from
+        _handle_updated_record). build_record_path walks the graph via the
+        PARENT_CHILD edge (StorageCleanupHelper.graph_provider.get_record_path)
+        to derive the ancestor chain -- if it runs before the edge is
+        repointed, it computes the path from the STALE, pre-move ancestor
+        chain instead of the new one.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+
+        call_order: list[str] = []
+
+        existing = _make_record(id="rec-1", record_name="file.txt")
+        existing.parent_external_record_id = "old-parent"
+        existing.external_revision_id = "rev-old"
+        existing.virtual_record_id = "vr-1"
+        existing.record_group_id = None
+
+        async def _get_by_external_id(connector_id, external_id):
+            if external_id == existing.external_record_id:
+                return existing
+            # Parent-record lookup inside _handle_parent_record -- not found,
+            # irrelevant to proving ordering here.
+            return None
+
+        tx_store.get_record_by_external_id = AsyncMock(side_effect=_get_by_external_id)
+
+        async def _delete_edge(*args, **kwargs) -> None:
+            call_order.append("delete_parent_child_edge_to_record")
+
+        tx_store.delete_parent_child_edge_to_record = AsyncMock(side_effect=_delete_edge)
+
+        mock_cleanup = AsyncMock()
+
+        record = _make_record(id="rec-1", record_name="file.txt")
+        record.parent_external_record_id = "new-parent"
+        record.external_revision_id = "rev-new"
+
+        async def _build_record_path(rec, transaction=None) -> str:
+            # _process_record captures old_path from `existing` before any
+            # mutation, then _handle_updated_record captures new_path from
+            # `record` afterwards -- distinguish the two call sites by
+            # object identity rather than by call count, since both go
+            # through the same build_record_path method now.
+            if rec is existing:
+                call_order.append("build_record_path(old)")
+            else:
+                call_order.append("build_record_path(new)")
+            return "records/conn-1/new-parent/file.txt"
+
+        mock_cleanup.build_record_path = AsyncMock(side_effect=_build_record_path)
+        proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
+        await proc._process_record(record, [], tx_store)
+
+        assert call_order == [
+            "build_record_path(old)",
+            "delete_parent_child_edge_to_record",
+            "build_record_path(new)",
+        ], (
+            f"old_path must be captured before the parent edge is repointed, "
+            f"and the new path must be computed after -- but call order was: "
+            f"{call_order}"
+        )
+
+
+# ===========================================================================
+# name_changed alone must trigger a move (Task 6 bug fix): previously only
+# parent_changed triggered a move, so renaming a record with no reparent
+# left its blob stranded under the old name.
+# ===========================================================================
+
+
+class TestNameChangedTriggersMove:
+    @pytest.mark.asyncio
+    async def test_bare_rename_with_no_reparent_still_computes_a_move(self):
+        """Regression test: previously only parent_changed triggered a move;
+        renaming a record with no reparent left its blob stranded under the
+        old path. name_changed OR parent_changed must trigger the move."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+
+        existing_record = _make_record(id="rec1", record_name="OldName.txt")
+        existing_record.parent_external_record_id = "p1"
+
+        record = _make_record(id="rec1", record_name="NewName.txt")
+        record.parent_external_record_id = "p1"
+
+        mock_cleanup = AsyncMock()
+        mock_cleanup.build_record_path = AsyncMock(
+            return_value="records/conn-1/p1/NewName.txt"
+        )
+        proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
+        moves = await proc._handle_updated_record(
+            record, existing_record, tx_store, old_path="records/conn-1/p1/OldName.txt"
+        )
+
+        assert moves == [
+            (
+                "org-1",
+                "records/conn-1/p1/OldName.txt",
+                "records/conn-1/p1/NewName.txt",
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_name_or_parent_change_computes_no_move(self):
+        """Sanity counterpart: with neither name nor parent changed, no move
+        is computed and build_record_path is never even attempted -- proves
+        the regression test above is actually exercising the name_changed
+        branch of the `or`, not some other path."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+
+        existing_record = _make_record(id="rec1", record_name="Same.txt")
+        existing_record.parent_external_record_id = "p1"
+
+        record = _make_record(id="rec1", record_name="Same.txt")
+        record.parent_external_record_id = "p1"
+
+        mock_cleanup = AsyncMock()
+        proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
+        moves = await proc._handle_updated_record(
+            record, existing_record, tx_store, old_path="records/conn-1/p1/Same.txt"
+        )
+
+        assert moves == []
+        mock_cleanup.build_record_path.assert_not_awaited()
+
+
+# ===========================================================================
+# record_group_id changing alone must trigger a move: a record reassigned to
+# a different space/project/drive gets a new records/<connector>/<group>/...
+# prefix even when its name and parent folder are unchanged.
+# ===========================================================================
+
+
+class TestGroupChangedTriggersMove:
+    @pytest.mark.asyncio
+    async def test_reassigned_group_with_no_rename_or_reparent_still_computes_a_move(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+
+        existing_record = _make_record(id="rec1", record_name="File.txt")
+        existing_record.parent_external_record_id = "p1"
+        existing_record.record_group_id = "group-old"
+
+        # _handle_record_group already ran by the time _handle_updated_record
+        # is called -- record.record_group_id reflects the NEW group.
+        record = _make_record(id="rec1", record_name="File.txt")
+        record.parent_external_record_id = "p1"
+        record.record_group_id = "group-new"
+
+        mock_cleanup = AsyncMock()
+        mock_cleanup.build_record_path = AsyncMock(
+            return_value="records/conn-1/GroupNew/File.txt"
+        )
+        proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
+        moves = await proc._handle_updated_record(
+            record, existing_record, tx_store, old_path="records/conn-1/GroupOld/File.txt"
+        )
+
+        assert moves == [
+            (
+                "org-1",
+                "records/conn-1/GroupOld/File.txt",
+                "records/conn-1/GroupNew/File.txt",
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_same_group_name_and_parent_unchanged_computes_no_move(self):
+        """Sanity counterpart proving the group_changed branch, specifically,
+        is what gates the move -- not some other condition."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+
+        existing_record = _make_record(id="rec1", record_name="File.txt")
+        existing_record.parent_external_record_id = "p1"
+        existing_record.record_group_id = "group-1"
+
+        record = _make_record(id="rec1", record_name="File.txt")
+        record.parent_external_record_id = "p1"
+        record.record_group_id = "group-1"
+
+        mock_cleanup = AsyncMock()
+        proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
+        moves = await proc._handle_updated_record(
+            record, existing_record, tx_store, old_path="records/conn-1/Group/File.txt"
+        )
+
+        assert moves == []
+        mock_cleanup.build_record_path.assert_not_awaited()
+
+
+# ===========================================================================
+# _process_record: old_path must be captured BEFORE _handle_parent_record
+# repoints the PARENT_CHILD edge, or old_path == new_path and move_record_tree
+# silently no-ops (see StorageCleanupHelper.move_record_tree's
+# `old_path == new_path` short-circuit).
+# ===========================================================================
+
+
+class TestOldPathCaptureTiming:
+    @pytest.mark.asyncio
+    async def test_old_path_differs_from_new_path_when_parent_changes(self):
+        """Guards _process_record: old_path must be captured before
+        _handle_parent_record mutates the graph edge. The fake
+        build_record_path below returns a path that depends on whether the
+        PARENT_CHILD edge has been deleted yet (not on which python object
+        was passed in) -- so if a regression captured old_path AFTER the
+        edge mutation, both calls would observe the same post-mutation state
+        and old_path would wrongly equal new_path.
+        """
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+
+        existing_record = _make_record(id="rec-1", record_name="file.txt")
+        existing_record.parent_external_record_id = "p1"
+
+        async def _get_by_external_id(connector_id, external_id):
+            if external_id == existing_record.external_record_id:
+                return existing_record
+            return None
+
+        tx_store.get_record_by_external_id = AsyncMock(side_effect=_get_by_external_id)
+
+        edge_state = {"deleted": False}
+
+        async def _delete_edge(*args, **kwargs) -> None:
+            edge_state["deleted"] = True
+
+        tx_store.delete_parent_child_edge_to_record = AsyncMock(side_effect=_delete_edge)
+
+        async def _build_record_path(rec, transaction=None) -> str:
+            if edge_state["deleted"]:
+                return "records/conn-1/p2/file.txt"
+            return "records/conn-1/p1/file.txt"
+
+        mock_cleanup = AsyncMock()
+        mock_cleanup.build_record_path = AsyncMock(side_effect=_build_record_path)
+        proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
+        record = _make_record(id="rec-1", record_name="file.txt")
+        record.parent_external_record_id = "p2"
+
+        _, moves = await proc._process_record(record, [], tx_store)
+
+        assert len(moves) == 1
+        _, old_path, new_path = moves[0]
+        assert old_path == "records/conn-1/p1/file.txt"
+        assert new_path == "records/conn-1/p2/file.txt"
+        assert old_path != new_path
+        assert mock_cleanup.build_record_path.await_count == 2
+
+
+# ===========================================================================
 # delete_user_group_by_id
 # ===========================================================================
 
@@ -2076,7 +2623,7 @@ class TestProcessRecordTicket:
             source_updated_at=2000,
         )
 
-        result = await proc._process_record(ticket, [], tx_store)
+        result, _ = await proc._process_record(ticket, [], tx_store)
 
         assert result is not None
         # Should have called delete_edges_by_relationship_types (from _handle_related_external_records)
@@ -2511,7 +3058,7 @@ class TestProcessRecordSQLTypes:
             source_updated_at=2000,
         )
 
-        result = await proc._process_record(sql_table, [], tx_store)
+        result, _ = await proc._process_record(sql_table, [], tx_store)
 
         assert result is not None
         tx_store.delete_edges_by_relationship_types.assert_awaited()
@@ -2536,7 +3083,7 @@ class TestProcessRecordSQLTypes:
             source_updated_at=2000,
         )
 
-        result = await proc._process_record(sql_view, [], tx_store)
+        result, _ = await proc._process_record(sql_view, [], tx_store)
 
         assert result is not None
         tx_store.delete_edges_by_relationship_types.assert_awaited()
@@ -2558,7 +3105,7 @@ class TestProcessRecordSQLTypes:
         record.weburl = ""
         record.external_revision_id = "rev-new"
 
-        result = await proc._process_record(record, [], tx_store)
+        result, _ = await proc._process_record(record, [], tx_store)
 
         assert result is not None
         assert result.weburl == "https://existing-url.com/page"
@@ -2580,7 +3127,7 @@ class TestProcessRecordSQLTypes:
         record.external_revision_id = "rev-new"
         # Incoming record has a new weburl: it should replace the stored value.
 
-        result = await proc._process_record(record, [], tx_store)
+        result, _ = await proc._process_record(record, [], tx_store)
 
         assert result is not None
         assert result.weburl == "https://example.com"
@@ -2610,9 +3157,10 @@ class TestInitialize:
         assert proc.org_id == "my-org"
 
     @pytest.mark.asyncio
-    async def test_initialize_no_orgs_raises(self):
-        """initialize() raises when no organizations found."""
+    async def test_initialize_no_orgs_warns_and_returns(self):
+        """initialize() logs a warning and returns when no organizations found."""
         proc = _make_processor()
+        proc.org_id = ""
         tx_store = _make_tx_store()
         tx_store.get_all_orgs.return_value = []
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -2622,8 +3170,11 @@ class TestInitialize:
             mock_producer = AsyncMock()
             mock_mf.create_producer.return_value = mock_producer
 
-            with pytest.raises(Exception, match="No organizations found"):
-                await proc.initialize()
+            await proc.initialize()
+
+        assert proc.org_id == ""
+        proc.logger.warning.assert_called_once()
+        assert "No organizations found" in proc.logger.warning.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_initialize_fallback_to_key(self):
@@ -3518,6 +4069,34 @@ class TestOnNewRecords:
             await proc.on_new_records([(_make_record(), [])])
 
 
+class TestOnNewRecordsFlushBeforePublish:
+    @pytest.mark.asyncio
+    async def test_flush_happens_before_kafka_publish(self):
+        """_flush_pending_blob_moves must run before messaging_producer.send_message
+        -- a downstream reindex triggered by the event must never race an
+        in-flight storage move (see the newRecord/updateRecord Kafka event ->
+        BlobStorage.apply() consistency requirement)."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        call_order = []
+
+        async def track_flush(*args, **kwargs):
+            call_order.append("flush")
+
+        async def track_publish(*args, **kwargs):
+            call_order.append("publish")
+
+        record = _make_record()
+
+        with patch.object(proc, "_flush_pending_blob_moves", side_effect=track_flush):
+            proc.messaging_producer.send_message = AsyncMock(side_effect=track_publish)
+            await proc.on_new_records([(record, [])])
+
+        assert call_order == ["flush", "publish"]
+
+
 # ===========================================================================
 # on_record_content_update (lines 904-919)
 # ===========================================================================
@@ -3567,6 +4146,30 @@ class TestOnRecordContentUpdate:
             await proc.on_record_content_update(record)
 
             mock_reset.assert_awaited_once()
+
+
+class TestOnRecordContentUpdateFlushBeforePublish:
+    @pytest.mark.asyncio
+    async def test_flush_happens_before_kafka_publish(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        call_order = []
+
+        async def track_flush(*args, **kwargs):
+            call_order.append("flush")
+
+        async def track_publish(*args, **kwargs):
+            call_order.append("publish")
+
+        record = _make_record()
+
+        with patch.object(proc, "_flush_pending_blob_moves", side_effect=track_flush):
+            proc.messaging_producer.send_message = AsyncMock(side_effect=track_publish)
+            await proc.on_record_content_update(record)
+
+        assert call_order == ["flush", "publish"]
 
 
 # ===========================================================================
@@ -3799,26 +4402,38 @@ class TestOnUpdatedRecordPermissions:
 
 class TestProcessRecordRevisionMatch:
     @pytest.mark.asyncio
-    async def test_same_revision_skips_update(self):
-        """Skips _handle_updated_record when revision IDs match."""
+    async def test_same_revision_and_no_name_or_parent_change_produces_no_move(self):
+        """The revision-id gate that used to skip _handle_updated_record
+        entirely was removed (Task 6): _handle_updated_record now always
+        upserts the record, and computes a move purely from name_changed or
+        parent_changed -- never from revision. Same revision with an
+        unchanged name/parent still upserts the record but computes no
+        pending move."""
         proc = _make_processor()
         tx_store = _make_tx_store()
 
-        existing = MagicMock()
-        existing.id = "existing-id"
+        existing = _make_record(id="existing-id", record_name="test_file.txt")
         existing.external_revision_id = "same-rev"
         existing.record_group_id = None
         existing.weburl = "https://example.com"
         tx_store.get_record_by_external_id.return_value = existing
 
-        record = _make_record()
+        mock_cleanup = AsyncMock()
+        mock_cleanup.build_record_path = AsyncMock(
+            return_value="records/conn-1/test_file.txt"
+        )
+        proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
+        record = _make_record(record_name="test_file.txt")
         record.external_revision_id = "same-rev"
 
-        result = await proc._process_record(record, [], tx_store)
+        result, pending_moves = await proc._process_record(record, [], tx_store)
 
         assert result is not None
-        # batch_upsert_records should NOT be called (no update needed)
-        tx_store.batch_upsert_records.assert_not_awaited()
+        assert pending_moves == []
+        # The upsert now always happens for an updated record -- only move
+        # computation is gated on name/parent change.
+        tx_store.batch_upsert_records.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_project_record_triggers_lead_edge(self):
@@ -3833,7 +4448,7 @@ class TestProcessRecordRevisionMatch:
             mime_type="text/plain", source_created_at=1000, source_updated_at=2000,
         )
 
-        result = await proc._process_record(project, [], tx_store)
+        result, _ = await proc._process_record(project, [], tx_store)
 
         assert result is not None
         # delete_edges_from is called by _handle_project_lead_edge
@@ -3855,7 +4470,7 @@ class TestProcessRecordRevisionMatch:
         record.record_group_type = "DRIVE"
         record.external_record_group_id = "ext-grp"
 
-        result = await proc._process_record(record, [], tx_store)
+        result, _ = await proc._process_record(record, [], tx_store)
 
         assert result is not None
         tx_store.create_record_group_relation.assert_awaited()
@@ -4136,6 +4751,15 @@ def _setup_proc_for_moved(tx_store, *, old_record, new_record_id: str = "old-rec
     proc._handle_parent_record = AsyncMock()
     proc._handle_record_permissions = AsyncMock()
 
+    # These tests only assert on Kafka events, not blob-move side effects
+    # (covered separately) -- stub storage_cleanup so on_records_moved's
+    # build_record_path calls never fall through to the real
+    # StorageCleanupHelper, which would otherwise try real JWT/HTTP calls
+    # against plain Mock return values.
+    mock_cleanup = AsyncMock()
+    mock_cleanup.build_record_path = AsyncMock(return_value=None)
+    proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
     return proc
 
 
@@ -4223,8 +4847,8 @@ class TestOnRecordsMovedReindex:
         proc._link_record_to_group = AsyncMock()
         proc._handle_parent_record = AsyncMock()
         proc._handle_record_permissions = AsyncMock()
-        # _process_record returns the record to publish
-        proc._process_record = AsyncMock(return_value=processed_record)
+        # _process_record returns (record, pending_blob_moves) to publish
+        proc._process_record = AsyncMock(return_value=(processed_record, []))
 
         await proc.on_records_moved([("/ns/-/blob/HEAD/old.py", new_record, [])])
 
@@ -4324,6 +4948,10 @@ class TestOnRecordsMovedReindex:
         proc._handle_parent_record = AsyncMock()
         proc._handle_record_permissions = AsyncMock()
 
+        mock_cleanup = AsyncMock()
+        mock_cleanup.build_record_path = AsyncMock(return_value=None)
+        proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
+
         moves = [
             ("/ns/-/blob/HEAD/old_a.py", new_a, []),
             ("/ns/-/blob/HEAD/old_b.py", new_b, []),
@@ -4406,3 +5034,470 @@ class TestOnRecordsMovedReindex:
 
         # Status should remain whatever the new_record was initialised with
         assert new_record.indexing_status == ProgressStatus.NOT_STARTED.value
+
+
+# ===========================================================================
+# Knowledge base upload paths
+# ===========================================================================
+
+
+def _make_kb_upload_record(**overrides):
+    is_file = overrides.pop("is_file", True)
+    defaults = {
+        "org_id": "org-request",
+        "external_record_id": "ext-file-1",
+        "record_name": "upload.pdf",
+        "origin": OriginTypes.UPLOAD.value,
+        "connector_name": "KB",
+        "connector_id": "kb-123",
+        "record_type": RecordType.FILE,
+        "version": 1,
+        "mime_type": "application/pdf",
+        "source_created_at": 1000,
+        "source_updated_at": 2000,
+        "inherit_permissions": True,
+        "parent_external_record_id": None,
+    }
+    defaults.update(overrides)
+    return FileRecord(
+        is_file=is_file,
+        extension="pdf" if is_file else None,
+        size_in_bytes=10 if is_file else 0,
+        weburl="",
+        id="rec-new-1",
+        **defaults,
+    )
+
+
+class TestKbProcessorInitialize:
+    @pytest.mark.asyncio
+    async def test_explicit_org_id_skips_db_lookup(self):
+        proc = _make_processor()
+        proc.org_id = ""
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        with patch(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.MessagingFactory"
+        ) as mock_mf, patch(
+            "app.services.messaging.utils.MessagingUtils.create_producer_config_from_service",
+            new_callable=AsyncMock,
+            return_value={},
+        ):
+            mock_mf.create_producer.return_value = AsyncMock()
+            await proc.initialize(org_id="org-from-caller")
+
+        assert proc.org_id == "org-from-caller"
+        tx_store.get_all_orgs.assert_not_awaited()
+
+
+class TestLinkKbRecordToApp:
+    @pytest.mark.asyncio
+    async def test_belongs_to_edge(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        record = _make_kb_upload_record(inherit_permissions=False)
+
+        await proc._link_kb_record_to_app(record, tx_store)
+
+        edge = tx_store.batch_create_edges.await_args[0][0][0]
+        assert edge["to_id"] == "kb-123"
+        assert edge["entityType"] == "KB"
+
+    @pytest.mark.asyncio
+    async def test_inherit_permissions_edge(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        record = _make_kb_upload_record(inherit_permissions=True)
+
+        await proc._link_kb_record_to_app(record, tx_store)
+
+        assert tx_store.batch_create_edges.await_count == 2
+        assert tx_store.batch_create_edges.await_args_list[1][1]["collection"] == (
+            CollectionNames.INHERIT_PERMISSIONS.value
+        )
+
+
+class TestKbUploadProcessRecord:
+    @pytest.mark.asyncio
+    async def test_nested_upload_parent_child_edge(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        record = _make_kb_upload_record(parent_external_record_id="parent-folder-id")
+
+        with patch.object(proc, "_handle_new_record", new_callable=AsyncMock), patch.object(
+            proc, "_handle_record_permissions", new_callable=AsyncMock
+        ):
+            await proc._process_record(record, [], tx_store)
+
+        tx_store.create_record_relation.assert_awaited_once_with(
+            "parent-folder-id", record.id, RecordRelations.PARENT_CHILD.value
+        )
+
+    @pytest.mark.asyncio
+    async def test_root_upload_no_parent_child_edge(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        record = _make_kb_upload_record(parent_external_record_id=None)
+
+        with patch.object(proc, "_handle_new_record", new_callable=AsyncMock), patch.object(
+            proc, "_handle_record_permissions", new_callable=AsyncMock
+        ):
+            await proc._process_record(record, [], tx_store)
+
+        tx_store.create_record_relation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_preserves_explicit_org_id(self):
+        proc = _make_processor()
+        proc.org_id = "org-default"
+        tx_store = _make_tx_store()
+        record = _make_kb_upload_record(org_id="org-explicit")
+
+        with patch.object(proc, "_handle_new_record", new_callable=AsyncMock), patch.object(
+            proc, "_handle_record_permissions", new_callable=AsyncMock
+        ):
+            await proc._process_record(record, [], tx_store)
+
+        assert record.org_id == "org-explicit"
+
+    @pytest.mark.asyncio
+    async def test_existing_upload_does_not_requeue_completed(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        existing = MagicMock(
+            id="r1",
+            external_revision_id="rev1",
+            indexing_status=ProgressStatus.COMPLETED.value,
+            weburl="/kb/folder",
+        )
+        tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        record = _make_kb_upload_record()
+        record.external_revision_id = "rev1"
+
+        with patch.object(proc, "_handle_record_permissions", new_callable=AsyncMock):
+            result, _ = await proc._process_record(record, [], tx_store)
+
+        assert result.indexing_status != ProgressStatus.NOT_STARTED.value
+
+
+class TestOnRecordsDeletedCascade:
+    @pytest.mark.asyncio
+    async def test_empty_list(self):
+        proc = _make_processor()
+        result = await proc.on_records_deleted_cascade([], "kb-123")
+        assert result["success"] is True
+        assert result["total_requested"] == 0
+        proc.data_store_provider.transaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_publishes_delete_events(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.delete_records_recursive = AsyncMock(
+            return_value={
+                "success": True,
+                "eventData": {"payloads": [{"recordId": "r1", "virtualRecordId": "v1"}]},
+            }
+        )
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_deleted_cascade(["r1"], "kb-123")
+
+        proc.messaging_producer.send_message.assert_awaited_once()
+        assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"
+
+    @pytest.mark.asyncio
+    async def test_no_event_data(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.delete_records_recursive = AsyncMock(return_value={"success": True})
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_deleted_cascade(["r1"], "kb-123")
+        proc.messaging_producer.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_propagates_recursive_delete_failure(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.delete_records_recursive = AsyncMock(return_value={
+            "success": False,
+            "reason": "txn failed",
+        })
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        result = await proc.on_records_deleted_cascade(["r1"], "kb-123")
+        assert result["success"] is False
+        proc.messaging_producer.send_message.assert_not_awaited()
+
+
+class TestOnNewRecordsKbUpload:
+    @pytest.mark.asyncio
+    async def test_skips_folder_records(self):
+        proc = _make_processor()
+        folder = _make_kb_upload_record(is_file=False, record_name="Docs")
+        with patch.object(proc, "_process_record", new_callable=AsyncMock, return_value=(folder, [])):
+            proc.data_store_provider.transaction.return_value = _make_ctx(_make_tx_store())
+            await proc.on_new_records([(folder, [])])
+        proc.messaging_producer.send_message.assert_not_awaited()
+
+
+class TestOnRecordMetadataUpdateKb:
+    @pytest.mark.asyncio
+    async def test_calls_process_record(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        existing = MagicMock(id="r1")
+        tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        record = _make_kb_upload_record()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        with patch.object(proc, "_process_record", new_callable=AsyncMock, return_value=(record, [])) as mock_process:
+            await proc.on_record_metadata_update(record)
+
+        mock_process.assert_awaited_once()
+
+
+class TestOnRecordsMovedKbUpload:
+    @pytest.mark.asyncio
+    async def test_upload_with_parent_creates_edge(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        old = MagicMock(id="r1", external_revision_id="rev1", indexing_status=ProgressStatus.COMPLETED.value)
+        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        new_record = _make_kb_upload_record(parent_external_record_id="parent-folder")
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+
+        tx_store.create_record_relation.assert_awaited_once_with(
+            "parent-folder", "r1", RecordRelations.PARENT_CHILD.value
+        )
+
+    @pytest.mark.asyncio
+    async def test_upload_to_root_no_parent_edge(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        old = MagicMock(id="r1", external_revision_id="rev1", indexing_status=ProgressStatus.COMPLETED.value)
+        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        new_record = _make_kb_upload_record(parent_external_record_id=None)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+        tx_store.create_record_relation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missing_old_record_treated_as_add(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        new_record = _make_kb_upload_record()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        with patch.object(proc, "_process_record", new_callable=AsyncMock, return_value=(new_record, [])):
+            await proc.on_records_moved([("missing-ext", new_record, [])])
+
+        assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "newRecord"
+
+    @pytest.mark.asyncio
+    async def test_content_change_emits_update(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        old = MagicMock(id="r1", external_revision_id="old-rev", indexing_status=ProgressStatus.COMPLETED.value)
+        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        new_record = _make_kb_upload_record()
+        new_record.external_revision_id = "new-rev"
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+        assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "updateRecord"
+
+    @pytest.mark.asyncio
+    async def test_rename_only_no_reindex_event(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        old = MagicMock(id="r1", external_revision_id="same", indexing_status=ProgressStatus.COMPLETED.value)
+        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        new_record = _make_kb_upload_record()
+        new_record.external_revision_id = "same"
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+        proc.messaging_producer.send_message.assert_not_awaited()
+
+
+class TestPublishDeleteEvents:
+    @pytest.mark.asyncio
+    async def test_multiple_payloads(self):
+        proc = _make_processor()
+        await proc._publish_delete_events({"payloads": [{"recordId": "r1"}, {"recordId": "r2"}]})
+        assert proc.messaging_producer.send_message.await_count == 2
+
+
+class TestProcessRecordOrgId:
+    @pytest.mark.asyncio
+    async def test_sets_org_id_when_missing(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        record = _make_kb_upload_record()
+        record.org_id = None
+        proc.org_id = "default-org"
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        with patch.object(proc, "_handle_new_record", new_callable=AsyncMock), patch.object(
+            proc, "_link_kb_record_to_app", new_callable=AsyncMock
+        ):
+            await proc._process_record(record, [], tx_store)
+
+        assert record.org_id == "default-org"
+
+
+class TestOnNewRecordGroupsEmpty:
+    @pytest.mark.asyncio
+    async def test_empty_list_logs_warning(self):
+        proc = _make_processor()
+        await proc.on_new_record_groups([])
+        proc.logger.warning.assert_called()
+
+
+class TestOnRecordsMovedOrgId:
+    @pytest.mark.asyncio
+    async def test_sets_org_id_on_move(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        old = MagicMock(id="r1", external_revision_id="same", indexing_status=ProgressStatus.COMPLETED.value)
+        tx_store.get_record_by_external_id = AsyncMock(return_value=old)
+        tx_store.delete_parent_child_edge_to_record = AsyncMock()
+        tx_store.batch_upsert_records = AsyncMock()
+        new_record = _make_kb_upload_record()
+        new_record.org_id = None
+        proc.org_id = "org-from-proc"
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+        assert new_record.org_id == "org-from-proc"
+
+
+class TestProcessRecordCompletedReindex:
+    @pytest.mark.asyncio
+    async def test_non_upload_completed_record_requeued(self):
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        existing = MagicMock(
+            id="r1",
+            indexing_status=ProgressStatus.COMPLETED.value,
+            weburl="http://old",
+            external_revision_id="rev-1",
+        )
+        tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
+        record = MagicMock()
+        record.org_id = "org1"
+        record.connector_id = "conn-1"
+        record.external_record_id = "ext-1"
+        record.origin = "CONNECTOR"
+        record.external_revision_id = "rev-1"
+        record.weburl = ""
+        record.id = None
+        record.is_shared_with_me = False
+        record.record_name = "doc"
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        with patch.object(proc, "_handle_record_group", new_callable=AsyncMock, return_value="rg1"), patch.object(
+            proc, "_link_record_to_group", new_callable=AsyncMock
+        ), patch.object(proc, "_handle_parent_record", new_callable=AsyncMock):
+            await proc._process_record(record, [], tx_store)
+
+        assert record.indexing_status == ProgressStatus.NOT_STARTED.value
+# on_records_moved's post-transaction pending-move computation must also
+# trigger on record_group_id changing alone (a record reassigned to a
+# different space/project/drive), mirroring _handle_updated_record's
+# group_changed branch -- this was the one trigger site not covered by
+# TestGroupChangedTriggersMove, which only exercises _handle_updated_record.
+# ===========================================================================
+
+
+class TestOnRecordsMovedGroupChanged:
+    pytestmark = pytest.mark.anyio
+
+    async def test_group_change_alone_triggers_a_move(self) -> None:
+        old_record = _make_old_record(record_id="rec-1", external_revision_id="sha-1")
+        old_record.record_name = "same.txt"
+        old_record.parent_external_record_id = "p1"
+        old_record.record_group_id = "group-old"
+
+        new_record = _make_code_record(record_id="fresh-uuid", external_revision_id="sha-1")
+        new_record.record_name = "same.txt"
+        new_record.parent_external_record_id = "p1"
+        new_record.record_group_id = "group-new"
+
+        tx_store = _make_tx_store()
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        mock_cleanup = proc._get_storage_cleanup()
+        mock_cleanup.build_record_path = AsyncMock(side_effect=[
+            "records/conn-1/GroupOld/same.txt",  # old_path, captured pre-mutation
+            "records/conn-1/GroupNew/same.txt",  # new_path, computed post-transaction
+        ])
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/same.txt", new_record, [])])
+
+        mock_cleanup.move_record_tree.assert_awaited_once_with(
+            "org-1", "records/conn-1/GroupOld/same.txt", "records/conn-1/GroupNew/same.txt"
+        )
+
+    async def test_same_group_name_and_parent_unchanged_computes_no_move(self) -> None:
+        """Sanity counterpart: name, parent, and group all unchanged -> no
+        move-tree call at all."""
+        old_record = _make_old_record(record_id="rec-1", external_revision_id="sha-1")
+        old_record.record_name = "same.txt"
+        old_record.parent_external_record_id = "p1"
+        old_record.record_group_id = "group-1"
+
+        new_record = _make_code_record(record_id="fresh-uuid", external_revision_id="sha-1")
+        new_record.record_name = "same.txt"
+        new_record.parent_external_record_id = "p1"
+        new_record.record_group_id = "group-1"
+
+        tx_store = _make_tx_store()
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/same.txt", new_record, [])])
+
+        proc._get_storage_cleanup().move_record_tree.assert_not_awaited()
+
+
+class TestOnRecordsMovedFlushBeforePublish:
+    """_flush_pending_blob_moves must run before either Kafka publish loop in
+    on_records_moved -- a downstream consumer reindexing off an updateRecord
+    event must never see graph=new location while storage/Mongo still says
+    old location."""
+
+    pytestmark = pytest.mark.anyio
+
+    async def test_flush_happens_before_kafka_publish(self) -> None:
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-abc", external_revision_id="sha-before")
+        new_record = _make_code_record(
+            record_id="fresh-uuid",
+            external_revision_id="sha-after",  # different -> content changed -> fires updateRecord
+        )
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+
+        call_order = []
+
+        async def track_flush(*args, **kwargs):
+            call_order.append("flush")
+
+        async def track_publish(*args, **kwargs):
+            call_order.append("publish")
+
+        with patch.object(proc, "_flush_pending_blob_moves", side_effect=track_flush):
+            proc.messaging_producer.send_message = AsyncMock(side_effect=track_publish)
+            await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        assert call_order[0] == "flush"
+        assert "publish" in call_order

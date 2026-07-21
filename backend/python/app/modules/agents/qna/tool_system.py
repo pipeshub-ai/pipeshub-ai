@@ -656,28 +656,6 @@ def get_agent_tools(state: ChatState) -> list[RegistryToolWrapper]:
     """
     tools = ToolLoader.load_tools(state)
 
-    # Add dynamic agent fetch_full_record tool
-    virtual_record_map = state.get("virtual_record_id_to_result", {})
-    if virtual_record_map:
-        try:
-            from app.utils.fetch_full_record import (
-                create_fetch_full_record_tool,
-            )
-            fetch_tool = create_fetch_full_record_tool(
-                virtual_record_map,
-                org_id=state.get("org_id", ""),
-                graph_provider=state.get("graph_provider"),
-            )
-            tools.append(fetch_tool)
-
-            state_logger = state.get("logger")
-            if state_logger:
-                state_logger.debug(f"Added agent fetch_full_record tool ({len(virtual_record_map)} records)")
-        except Exception as e:
-            state_logger = state.get("logger")
-            if state_logger:
-                state_logger.warning(f"Failed to add agent fetch_full_record tool: {e}")
-
     return tools
 
 
@@ -866,7 +844,9 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
             tool_names = [getattr(t, 'name', str(t)) for t in structured_tools]
             state_logger.debug(f"Structured tool names: {tool_names[:12]}")
 
-        # Add dynamic agent fetch_full_record tool
+        # Add dynamic agent fetch_full_record tool only when records are already
+        # available (same guard as main). The respond_node handles fetch_full_record
+        # via stream_llm_response_with_tools where RecordsHandler formats the output.
         virtual_record_map = state.get("virtual_record_id_to_result", {})
         if virtual_record_map:
             try:
@@ -877,12 +857,13 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
                     virtual_record_map,
                     org_id=state.get("org_id", ""),
                     graph_provider=state.get("graph_provider"),
+                    user_id=state.get("user_id", ""),
                 )
                 structured_tools.append(fetch_tool)
 
                 state_logger = state.get("logger")
                 if state_logger:
-                    state_logger.debug(f"Added agent fetch_full_record tool ({len(virtual_record_map)} records)")
+                    state_logger.debug(f"Added agent fetch_full_record tool ({len(virtual_record_map)} records in map)")
             except Exception as e:
                 state_logger = state.get("logger")
                 if state_logger:

@@ -144,6 +144,7 @@ async def test_full_pipeline_happy_path() -> None:
     sink_orchestrator = MagicMock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
+    sink_orchestrator.blob_storage.apply = AsyncMock()
 
     transform_pipeline = MagicMock()
     transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
@@ -181,6 +182,7 @@ async def test_enrichment_failure_does_not_block_indexing() -> None:
     sink_orchestrator = MagicMock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
+    sink_orchestrator.blob_storage.apply = AsyncMock()
 
     transform_pipeline = MagicMock()
     transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
@@ -216,6 +218,7 @@ async def test_deferred_extraction_skips_extraction_client() -> None:
     sink_orchestrator = MagicMock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
+    sink_orchestrator.blob_storage.apply = AsyncMock()
 
     transform_pipeline = MagicMock()
     transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
@@ -284,3 +287,83 @@ async def test_duplicate_record_skips_service_pipeline() -> None:
     parsing_client.parse.assert_not_awaited()
     # Events still yielded for status reporting
     assert len(events) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Blob storage status update (post-enrichment)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_blob_storage_failure_does_not_block_indexing() -> None:
+    """When blob_storage.apply raises, INDEXING_COMPLETE is still yielded and the
+    error is logged rather than propagated."""
+    parsing_client = MagicMock()
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+
+    extraction_client = MagicMock()
+    extraction_client.classify = AsyncMock(return_value=None)
+
+    sink_orchestrator = MagicMock()
+    sink_orchestrator.index = AsyncMock()
+    sink_orchestrator.enrich = AsyncMock()
+    sink_orchestrator.blob_storage.apply = AsyncMock(side_effect=RuntimeError("blob write failed"))
+
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        extraction_client=extraction_client,
+        sink_orchestrator=sink_orchestrator,
+    )
+
+    events = []
+    async for event in ep.on_event(_make_event_data()):
+        events.append(event)
+
+    # Blob storage failure must not crash the generator.
+    sink_orchestrator.blob_storage.apply.assert_awaited_once()
+    # Pipeline still completes and reports success despite the blob failure.
+    event_types = [e.event for e in events]
+    assert IndexingEvent.PARSING_COMPLETE in event_types
+    assert IndexingEvent.INDEXING_COMPLETE in event_types
+    # Document was still indexed and enriched before the blob failure.
+    sink_orchestrator.index.assert_awaited_once()
+    sink_orchestrator.enrich.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_blob_storage_called_after_enrichment() -> None:
+    """blob_storage.apply must run after the enrichment try/except block, so that
+    a blob status update reflects the outcome of enrichment."""
+    parsing_client = MagicMock()
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+
+    extraction_client = MagicMock()
+    extraction_client.classify = AsyncMock(return_value=None)
+
+    call_order: list[str] = []
+
+    async def _enrich_side_effect(_ctx: Any) -> None:
+        call_order.append("enrich")
+
+    async def _blob_apply_side_effect(_ctx: Any) -> None:
+        call_order.append("blob_storage.apply")
+
+    sink_orchestrator = MagicMock()
+    sink_orchestrator.index = AsyncMock()
+    sink_orchestrator.enrich = AsyncMock(side_effect=_enrich_side_effect)
+    sink_orchestrator.blob_storage.apply = AsyncMock(side_effect=_blob_apply_side_effect)
+
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        extraction_client=extraction_client,
+        sink_orchestrator=sink_orchestrator,
+    )
+
+    async for _ in ep.on_event(_make_event_data()):
+        pass
+
+    sink_orchestrator.enrich.assert_awaited_once()
+    sink_orchestrator.blob_storage.apply.assert_awaited_once()
+    assert call_order == ["enrich", "blob_storage.apply"]

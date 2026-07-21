@@ -25,10 +25,9 @@ class FetchFullRecordArgs(BaseModel):
     record_ids: list[str] = Field(
         ...,
         description=(
-            "List of Record IDs to fetch. Each Record ID is shown in the 'Record ID :' line "
-            "of the record's context metadata in the conversation. "
-            "Use ONLY the exact Record IDs from the context — do NOT invent, guess, or reuse example IDs. "
-            "Pass ALL record IDs in a single call."
+            "List of Record IDs to fetch (max 5). These come from "
+            "the 'Record ID :' line in retrieval context metadata. "
+            "Use ONLY exact IDs from the context — do NOT invent or guess IDs."
         )
     )
     reason: str = Field(
@@ -145,12 +144,45 @@ async def _enrich_sql_table_with_fk_relations(
     return enriched_record
 
 
+async def _is_vrid_accessible(
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+    virtual_record_id: str | None,
+) -> bool:
+    """Permission-gate a virtual_record_id before its content is returned.
+
+    Mirrors the targeted check used for grep/pattern-match results in
+    retrieval.py's _merge_pattern_match_blocks — records reached via a
+    record_id/virtual_record_id fallback (i.e. not already present in the
+    caller's permission-scoped virtual_record_id_to_result map) must pass
+    the same ACL check, not just an indexingStatus check.
+    """
+    if not virtual_record_id:
+        return False
+    try:
+        accessible = await graph_provider.check_vrids_accessible(
+            user_id=user_id,
+            org_id=org_id,
+            virtual_record_ids=[virtual_record_id],
+        )
+    except Exception as e:
+        logger.warning(
+            "Permission check failed for virtual_record_id %s: %s",
+            virtual_record_id,
+            str(e),
+        )
+        return False
+    return virtual_record_id in accessible
+
+
 async def _fetch_multiple_records_impl(
     record_ids: list[str],
     virtual_record_id_to_result: dict[str, Any],
     graph_provider: IGraphDBProvider | None = None,
     blob_store: BlobStorage | None = None,
     org_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Fetch multiple complete records at once.
@@ -158,8 +190,12 @@ async def _fetch_multiple_records_impl(
 
     If a record_id is not found in the map, attempts to:
     1. Fetch the Record from graph_provider to get virtual_record_id
-    2. Fetch the record content from blob_store
-    3. Enrich with FK relations if SQL_TABLE
+    2. Verify the requesting user has access to that virtual_record_id
+       (check_vrids_accessible) — the map lookup above is already
+       permission-scoped, but this fallback path is not, so it must be
+       gated explicitly.
+    3. Fetch the record content from blob_store
+    4. Enrich with FK relations if SQL_TABLE
 
     Returns:
     {
@@ -207,7 +243,7 @@ async def _fetch_multiple_records_impl(
             found_records.append(found_record)
             continue
 
-        if org_id and graph_provider:
+        if org_id and graph_provider and user_id:
             try:
                 graphDb_record = await graph_provider.get_document(
                                 document_key=record_id,
@@ -216,8 +252,10 @@ async def _fetch_multiple_records_impl(
 
                 if graphDb_record:
                     indexing_status = graphDb_record.get("indexingStatus")
-                    if indexing_status == ProgressStatus.COMPLETED.value:
-                        vrid = graphDb_record.get("virtualRecordId")
+                    vrid = graphDb_record.get("virtualRecordId")
+                    if indexing_status == ProgressStatus.COMPLETED.value and await _is_vrid_accessible(
+                        graph_provider, user_id, org_id, vrid
+                    ):
                         blob_store = BlobStorage(logger=logger, config_service=graph_provider.config_service, graph_provider=graph_provider)
                         frontend_url = None
                         try:
@@ -246,6 +284,50 @@ async def _fetch_multiple_records_impl(
                                 blob_record = await _enrich_sql_table_with_fk_relations(blob_record, graph_provider)
                             found_records.append(blob_record)
                             continue
+                else:
+                    # record_id might be a virtual_record_id (UUID from find_records).
+                    # Try resolving: virtualRecordId → record _key → fetch.
+                    if hasattr(graph_provider, "get_records_by_virtual_record_id"):
+                        record_keys = await graph_provider.get_records_by_virtual_record_id(record_id)
+                        if record_keys:
+                            actual_record_id = record_keys[0]
+                            graphDb_record = await graph_provider.get_document(
+                                document_key=actual_record_id,
+                                collection=CollectionNames.RECORDS.value,
+                            )
+                            if graphDb_record:
+                                indexing_status = graphDb_record.get("indexingStatus")
+                                vrid = graphDb_record.get("virtualRecordId") or record_id
+                                if indexing_status == ProgressStatus.COMPLETED.value and await _is_vrid_accessible(
+                                    graph_provider, user_id, org_id, vrid
+                                ):
+                                    blob_store = BlobStorage(logger=logger, config_service=graph_provider.config_service, graph_provider=graph_provider)
+                                    frontend_url = None
+                                    try:
+                                        endpoints_config = await blob_store.config_service.get_config(
+                                            config_node_constants.ENDPOINTS.value,
+                                            default={}
+                                        )
+                                        if isinstance(endpoints_config, dict):
+                                            frontend_url = endpoints_config.get("frontend", {}).get("publicEndpoint")
+                                    except Exception:
+                                        pass
+                                    virtual_to_record_map = {vrid: graphDb_record}
+                                    await get_record(vrid, virtual_record_id_to_result, blob_store, org_id, virtual_to_record_map, graph_provider, frontend_url)
+                                    blob_record = virtual_record_id_to_result.get(vrid)
+                                    if blob_record:
+                                        blob_record["virtual_record_id"] = vrid
+                                        await _apply_live_ticket_context_metadata(
+                                            blob_record,
+                                            config_service=config_service,
+                                            graph_provider=graph_provider,
+                                            frontend_url=frontend_url,
+                                        )
+                                        record_type = blob_record.get("record_type") or blob_record.get("recordType")
+                                        if record_type == "SQL_TABLE" and graph_provider:
+                                            blob_record = await _enrich_sql_table_with_fk_relations(blob_record, graph_provider)
+                                        found_records.append(blob_record)
+                                        continue
             except Exception:
                 pass
 
@@ -272,28 +354,34 @@ def create_fetch_full_record_tool(
     org_id: str | None = None,
     graph_provider: IGraphDBProvider | None = None,
     blob_store: BlobStorage | None = None,
+    user_id: str | None = None,
 ) -> Callable:
     """
     Factory function to create the tool with runtime dependencies injected.
-    
+
     Args:
         virtual_record_id_to_result: Mapping of virtual record IDs to record data
         graph_provider: Optional GraphDB service for enriching SQL_TABLE records
                         with FK parent/child relations and resolving record IDs
         blob_store: Optional blob storage for fetching records not in the map
         org_id: Optional organization ID for blob storage lookups
+        user_id: Requesting user's ID, required to permission-check any record
+                 resolved via the graph_provider fallback (records already in
+                 virtual_record_id_to_result are pre-scoped by the caller)
     """
     @tool("fetch_full_record", args_schema=FetchFullRecordArgs)
     async def fetch_full_record_tool(record_ids: list[str], reason: str = "Fetching full record content for comprehensive answer") -> dict[str, Any]:
-        """Fetch the complete content of one or more records when the provided blocks are insufficient to answer the query. Pass ALL record IDs in a SINGLE call using the record_ids parameter.
+        """Fetch the complete content of one or more records. Pass relevant record IDs in a SINGLE call.
 
-        IMPORTANT: record_ids must be taken directly from the 'Record ID :' field shown in the context metadata for each record. Do NOT use invented IDs, example IDs that are not present in the current context.
+        Accepts record IDs from retrieval context 'Record ID :' field.
+        Maximum 5 record IDs per call.
 
         For SQL_TABLE records, also returns fk_parent_record_ids and fk_child_record_ids
         which can be used to fetch related tables for nested FK relationships.
 
         Args:
-            record_ids: List of Record IDs to fetch — use the exact 'Record ID :' values from the context
+            record_ids: List of Record IDs to fetch (max 5).
+                        Source: 'Record ID :' in retrieval context.
             reason: Brief explanation of why the full records are needed
 
         Returns: Complete content of the records or {"ok": false, "error": "..."}.
@@ -303,6 +391,7 @@ def create_fetch_full_record_tool(
             record_ids,
             reason,
         )
+
         try:
             return await _fetch_multiple_records_impl(
                 record_ids,
@@ -310,6 +399,7 @@ def create_fetch_full_record_tool(
                 org_id=org_id,
                 graph_provider=graph_provider,
                 blob_store=blob_store,
+                user_id=user_id,
             )
         except Exception as e:
             # Return error as dict

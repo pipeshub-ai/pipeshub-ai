@@ -746,20 +746,29 @@ class TestCheckBetaConnectorAccess:
 
 
 # ============================================================================
-# _stream_google_api_request
+# _stream_google_api_request (GoogleDriveTeamConnector)
 # ============================================================================
+
+_TEAM_CONNECTOR = "app.connectors.sources.google.drive.team.connector"
+
+
+def _make_stream_connector():
+    from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
+
+    conn = object.__new__(GoogleDriveTeamConnector)
+    conn.logger = MagicMock()
+    return conn
 
 
 class TestStreamGoogleApiRequest:
-    """Tests for _stream_google_api_request."""
+    """Tests for GoogleDriveTeamConnector._stream_google_api_request."""
 
     async def test_single_chunk_download(self):
-        from app.connectors.api.router import _stream_google_api_request
-
+        conn = _make_stream_connector()
         mock_request = MagicMock()
         chunks = []
 
-        with patch("app.connectors.api.router.MediaIoBaseDownload") as MockDownload:
+        with patch(f"{_TEAM_CONNECTOR}.MediaIoBaseDownload") as MockDownload:
             instance = MockDownload.return_value
             instance.next_chunk = MagicMock(side_effect=[
                 (MagicMock(progress=MagicMock(return_value=1.0)), True)
@@ -779,7 +788,7 @@ class TestStreamGoogleApiRequest:
 
             MockDownload.side_effect = fake_init
 
-            async for chunk in _stream_google_api_request(mock_request, "test"):
+            async for chunk in conn._stream_google_api_request(mock_request, "test"):
                 chunks.append(chunk)
 
         assert len(chunks) >= 0  # May be empty if buffer write/read ordering doesn't match
@@ -787,11 +796,10 @@ class TestStreamGoogleApiRequest:
     async def test_http_error_raises_http_exception(self):
         from googleapiclient.errors import HttpError
 
-        from app.connectors.api.router import _stream_google_api_request
-
+        conn = _make_stream_connector()
         mock_request = MagicMock()
 
-        with patch("app.connectors.api.router.MediaIoBaseDownload") as MockDownload:
+        with patch(f"{_TEAM_CONNECTOR}.MediaIoBaseDownload") as MockDownload:
             instance = MockDownload.return_value
             resp = MagicMock()
             resp.status = 403
@@ -799,21 +807,20 @@ class TestStreamGoogleApiRequest:
             instance.next_chunk = MagicMock(side_effect=http_err)
 
             with pytest.raises(HTTPException) as exc_info:
-                async for _ in _stream_google_api_request(mock_request, "download"):
+                async for _ in conn._stream_google_api_request(mock_request, "download"):
                     pass
             assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
     async def test_generic_error_raises_http_exception(self):
-        from app.connectors.api.router import _stream_google_api_request
-
+        conn = _make_stream_connector()
         mock_request = MagicMock()
 
-        with patch("app.connectors.api.router.MediaIoBaseDownload") as MockDownload:
+        with patch(f"{_TEAM_CONNECTOR}.MediaIoBaseDownload") as MockDownload:
             instance = MockDownload.return_value
             instance.next_chunk = MagicMock(side_effect=RuntimeError("oops"))
 
             with pytest.raises(HTTPException) as exc_info:
-                async for _ in _stream_google_api_request(mock_request, "export"):
+                async for _ in conn._stream_google_api_request(mock_request, "export"):
                     pass
             assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 

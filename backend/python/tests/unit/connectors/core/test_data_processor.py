@@ -155,8 +155,8 @@ class TestInitialize:
         mock_producer.initialize.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_initialize_no_orgs_raises(self):
-        """Initialize raises when no organizations found."""
+    async def test_initialize_no_orgs_warns_and_returns(self):
+        """Initialize logs a warning and returns when no organizations found."""
         logger = MagicMock()
         data_store = MagicMock()
         config_svc = AsyncMock()
@@ -183,8 +183,11 @@ class TestInitialize:
             mock_producer = AsyncMock()
             MockFactory.create_producer.return_value = mock_producer
 
-            with pytest.raises(Exception, match="No organizations found"):
-                await proc.initialize()
+            await proc.initialize()
+
+        assert proc.org_id == ""
+        logger.warning.assert_called_once()
+        assert "No organizations found" in logger.warning.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_initialize_bootstrap_servers_as_list(self):
@@ -264,7 +267,7 @@ class TestHandleUpdatedRecord:
         record = _make_record(version=2)
         existing = _make_record(version=1)
 
-        await proc._handle_updated_record(record, existing, tx_store)
+        await proc._handle_updated_record(record, existing, tx_store, old_path=None)
 
         tx_store.batch_upsert_records.assert_awaited_once_with([record])
 
@@ -357,10 +360,11 @@ class TestProcessRecord:
         tx_store = _make_tx_store()
         record = _make_record()
 
-        result = await proc._process_record(record, [], tx_store)
+        result, pending_moves = await proc._process_record(record, [], tx_store)
 
         assert result is not None
         assert result.org_id == "org-1"
+        assert pending_moves == []
         tx_store.batch_upsert_records.assert_awaited()
 
     @pytest.mark.asyncio
@@ -377,7 +381,7 @@ class TestProcessRecord:
         record = _make_record(version=2)
         record.external_revision_id = "rev-2"
 
-        result = await proc._process_record(record, [], tx_store)
+        result, pending_moves = await proc._process_record(record, [], tx_store)
 
         assert result.id == "existing-id"
         # Should have been called at least once for initial upsert
@@ -397,7 +401,7 @@ class TestProcessRecord:
         record = _make_record(version=1)
         record.external_revision_id = "rev-1"
 
-        result = await proc._process_record(record, [], tx_store)
+        result, _ = await proc._process_record(record, [], tx_store)
 
         assert result.id == "existing-id"
 

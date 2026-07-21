@@ -1617,7 +1617,7 @@ class TestBuildSubAgentToolGuidanceCoverage:
         """Retrieval domain produces knowledge base search strategy."""
         task = {
             "domains": ["retrieval"],
-            "tools": ["retrieval.search_knowledge"],
+            "tools": ["retrieval.search_internal_knowledge"],
         }
         state = _mock_state()
         result = _build_sub_agent_tool_guidance(task, state)

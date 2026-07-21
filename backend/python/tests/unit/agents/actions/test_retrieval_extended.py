@@ -557,3 +557,113 @@ class TestEmptyAgentFilters:
         call_kwargs = retrieval_service.search_with_filters.call_args[1]
         # No match, agent apps is empty too
         assert call_kwargs["filter_groups"]["apps"] == []
+
+
+# ============================================================================
+# _execute_parallel_search — storage-type gate
+# ============================================================================
+
+class TestExecuteParallelSearchStorageGate:
+
+    @pytest.mark.asyncio
+    async def test_skips_pattern_match_when_storage_is_s3(self):
+        state = _make_state()
+        state["config_service"].get_config = AsyncMock(return_value={"storageType": "s3"})
+        state["retrieval_service"].search_with_filters = AsyncMock(
+            return_value={"status_code": 200, "searchResults": []}
+        )
+        retrieval = Retrieval(state=state)
+
+        with patch(
+            "app.agents.actions.retrieval.retrieval.run_pattern_match",
+            new_callable=AsyncMock,
+        ) as mock_run_pm:
+            semantic_response, raw_pattern_records = await retrieval._execute_parallel_search(
+                search_query="revenue",
+                filter_groups={"apps": ["conn-1"], "kb": []},
+                adjusted_limit=10,
+                command='grep -ri "revenue" .',
+                connector_ids_in_scope=["conn-1"],
+                retrieval_service=state["retrieval_service"],
+                logger_instance=state["logger"],
+            )
+
+            mock_run_pm.assert_not_awaited()
+
+        assert raw_pattern_records == []
+        assert semantic_response == {"status_code": 200, "searchResults": []}
+
+    @pytest.mark.asyncio
+    async def test_runs_pattern_match_when_storage_is_local(self):
+        state = _make_state()
+        state["config_service"].get_config = AsyncMock(return_value={"storageType": "local"})
+        state["retrieval_service"].search_with_filters = AsyncMock(
+            return_value={"status_code": 200, "searchResults": []}
+        )
+        retrieval = Retrieval(state=state)
+
+        with patch(
+            "app.agents.actions.retrieval.retrieval.run_pattern_match",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_run_pm:
+            await retrieval._execute_parallel_search(
+                search_query="revenue",
+                filter_groups={"apps": ["conn-1"], "kb": []},
+                adjusted_limit=10,
+                command='grep -ri "revenue" .',
+                connector_ids_in_scope=["conn-1"],
+                retrieval_service=state["retrieval_service"],
+                logger_instance=state["logger"],
+            )
+
+            mock_run_pm.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_fails_closed_when_config_read_raises(self):
+        state = _make_state()
+        state["config_service"].get_config = AsyncMock(side_effect=Exception("etcd unreachable"))
+        state["retrieval_service"].search_with_filters = AsyncMock(
+            return_value={"status_code": 200, "searchResults": []}
+        )
+        retrieval = Retrieval(state=state)
+
+        with patch(
+            "app.agents.actions.retrieval.retrieval.run_pattern_match",
+            new_callable=AsyncMock,
+        ) as mock_run_pm:
+            semantic_response, raw_pattern_records = await retrieval._execute_parallel_search(
+                search_query="revenue",
+                filter_groups={"apps": ["conn-1"], "kb": []},
+                adjusted_limit=10,
+                command='grep -ri "revenue" .',
+                connector_ids_in_scope=["conn-1"],
+                retrieval_service=state["retrieval_service"],
+                logger_instance=state["logger"],
+            )
+
+            mock_run_pm.assert_not_awaited()
+
+        assert raw_pattern_records == []
+        assert semantic_response == {"status_code": 200, "searchResults": []}
+
+    @pytest.mark.asyncio
+    async def test_no_config_read_when_command_missing(self):
+        """No command supplied -> no storage-config read at all (nothing to gate)."""
+        state = _make_state()
+        state["retrieval_service"].search_with_filters = AsyncMock(
+            return_value={"status_code": 200, "searchResults": []}
+        )
+        retrieval = Retrieval(state=state)
+
+        await retrieval._execute_parallel_search(
+            search_query="revenue",
+            filter_groups={"apps": ["conn-1"], "kb": []},
+            adjusted_limit=10,
+            command=None,
+            connector_ids_in_scope=["conn-1"],
+            retrieval_service=state["retrieval_service"],
+            logger_instance=state["logger"],
+        )
+
+        state["config_service"].get_config.assert_not_awaited()

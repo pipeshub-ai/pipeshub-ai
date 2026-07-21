@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 import base64
 import logging
+import os
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -63,6 +64,12 @@ from app.utils.fetch_slack_thread import (
 )
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.fetch_url_tool import create_fetch_url_tool
+from app.utils.pattern_match import (
+    DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
+    cap_pattern_match_blocks,
+    execute_pattern_match_pipeline,
+    merge_pattern_match_results,
+)
 from app.utils.streaming import (
     create_sse_event,
     stream_llm_response_with_tools,
@@ -127,8 +134,10 @@ def create_internal_search_tool(
     graph_provider: IGraphDBProvider,
     ref_mapper: CitationRefMapper,
     final_results: list[dict[str, Any]],
+    config_service: ConfigurationService | None = None,
 ):
     """Factory that creates a LangChain tool wrapping retrieval search."""
+    tool_logger = logging.getLogger(__name__ + ".search_tool")
 
     @tool("search_internal_knowledge", args_schema=InternalSearchToolArgs)
     async def search_internal_knowledge_tool(
@@ -147,13 +156,73 @@ def create_internal_search_tool(
         Returns: Retrieved record blocks with metadata for citation, or {"ok": false, "error": "..."}.
         """
         try:
-            result = await retrieval_service.search_with_filters(
-                queries=[query],
-                org_id=org_id,
-                user_id=user_id,
-                limit=limit,
-                filter_groups=filter_groups,
+            disable_semantic = os.getenv("DISABLE_SEMANTIC_SEARCH", "false").strip().lower() == "true"
+            disable_pattern = os.getenv("DISABLE_STORAGE_PATTERN", "false").strip().lower() == "true"
+            # Always logged (not just when disabled) so the active search paths for
+            # this request are verifiable from logs alone, e.g.:
+            #   grep "search_internal_knowledge flags" | grep "semantic_search=off"
+            tool_logger.info(
+                "search_internal_knowledge flags: semantic_search=%s pattern_match=%s",
+                "off" if disable_semantic else "on",
+                "off" if disable_pattern else "on",
             )
+
+            parallel_tasks = []
+            semantic_task_idx = None
+            pm_task_idx = None
+
+            if not disable_semantic:
+                semantic_task_idx = len(parallel_tasks)
+                parallel_tasks.append(
+                    retrieval_service.search_with_filters(
+                        queries=[query],
+                        org_id=org_id,
+                        user_id=user_id,
+                        limit=limit,
+                        filter_groups=filter_groups,
+                    ),
+                )
+
+            if config_service and not disable_pattern:
+                pm_task_idx = len(parallel_tasks)
+                parallel_tasks.append(
+                    execute_pattern_match_pipeline(
+                        query=query,
+                        config_service=config_service,
+                        org_id=org_id,
+                        user_id=user_id,
+                        graph_provider=graph_provider,
+                        filters=filter_groups,
+                        logger_instance=tool_logger,
+                    )
+                )
+
+            if parallel_tasks:
+                parallel_results = await asyncio.gather(
+                    *parallel_tasks, return_exceptions=True,
+                )
+            else:
+                parallel_results = []
+
+            result: dict[str, Any]
+            if semantic_task_idx is not None:
+                res = parallel_results[semantic_task_idx]
+                if isinstance(res, Exception):
+                    raise res
+                result = res
+            else:
+                tool_logger.info("Semantic search disabled via DISABLE_SEMANTIC_SEARCH")
+                result = {"status_code": 200, "searchResults": []}
+
+            raw_pm_records: list[dict] = []
+            if pm_task_idx is not None:
+                pm_result = parallel_results[pm_task_idx]
+                if isinstance(pm_result, Exception):
+                    tool_logger.warning("Pattern match failed: %s", pm_result)
+                else:
+                    raw_pm_records = pm_result
+            elif disable_pattern:
+                tool_logger.info("Pattern match disabled via DISABLE_STORAGE_PATTERN")
 
             search_results = result.get("searchResults", [])
             virtual_to_record_map = result.get("virtual_to_record_map", {})
@@ -171,11 +240,32 @@ def create_internal_search_tool(
                 virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
             )
 
+            if raw_pm_records:
+                pm_blocks = await merge_pattern_match_results(
+                    raw_records=raw_pm_records,
+                    virtual_record_id_to_result=virtual_record_id_to_result,
+                    user_id=user_id,
+                    org_id=org_id,
+                    blob_store=blob_store,
+                    graph_provider=graph_provider,
+                    is_multimodal_llm=is_multimodal_llm,
+                    logger_instance=tool_logger,
+                )
+                if pm_blocks:
+                    pm_blocks = cap_pattern_match_blocks(
+                        pm_blocks,
+                        budget=limit or DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
+                        virtual_record_id_to_result=virtual_record_id_to_result,
+                        logger_instance=tool_logger,
+                    )
+                    flattened_results.extend(pm_blocks)
+                    tool_logger.info("Tool path: pattern match added %d blocks", len(pm_blocks))
+
             existing_keys = {
                 (r["virtual_record_id"], r["block_index"]) for r in final_results
             }
             temp_final_results = sorted(flattened_results, key=flattened_result_sort_key)
-            
+
             for r in flattened_results:
                 key = (r["virtual_record_id"], r["block_index"])
                 if key not in existing_keys:
@@ -868,13 +958,14 @@ async def _generate_internal_search_stream(
                     graph_provider=graph_provider,
                     ref_mapper=ref_mapper,
                     final_results=final_results,
+                    config_service=config_service,
                 )
 
                 tools = [search_tool]
 
                 has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
                 has_slack_connector = await has_slack_connector_configured(graph_provider, user_id, org_id)
-                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
+                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider, user_id=user_id)
                 deferred_tools = [fetch_tool]
                 if has_sql_connector:
                     deferred_tools.append(create_execute_query_tool(
@@ -909,13 +1000,69 @@ async def _generate_internal_search_stream(
                 # --- Standard path: upfront retrieval (first query, no attachments) ---
                 yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
 
-                result = await retrieval_service.search_with_filters(
-                    queries=all_queries,
-                    org_id=org_id,
-                    user_id=user_id,
-                    limit=query_info.limit,
-                    filter_groups=query_info.filters,
+                disable_semantic = os.getenv("DISABLE_SEMANTIC_SEARCH", "false").strip().lower() == "true"
+                disable_pattern = os.getenv("DISABLE_STORAGE_PATTERN", "false").strip().lower() == "true"
+                # Always logged (not just when disabled) so the active search paths for
+                # this request are verifiable from logs alone.
+                logger.info(
+                    "internal_search_stream flags: semantic_search=%s pattern_match=%s",
+                    "off" if disable_semantic else "on",
+                    "off" if disable_pattern else "on",
                 )
+
+                parallel_tasks = []
+                semantic_task_idx = None
+                pm_task_idx = None
+
+                if not disable_semantic:
+                    semantic_task_idx = len(parallel_tasks)
+                    parallel_tasks.append(
+                        retrieval_service.search_with_filters(
+                            queries=all_queries,
+                            org_id=org_id,
+                            user_id=user_id,
+                            limit=query_info.limit,
+                            filter_groups=query_info.filters,
+                        ),
+                    )
+
+                if not disable_pattern:
+                    pm_task_idx = len(parallel_tasks)
+                    parallel_tasks.append(
+                        execute_pattern_match_pipeline(
+                            query=query_info.query,
+                            config_service=config_service,
+                            org_id=org_id,
+                            user_id=user_id,
+                            graph_provider=graph_provider,
+                            filters=query_info.filters,
+                            logger_instance=logger,
+                        ),
+                    )
+
+                if parallel_tasks:
+                    parallel_results = await asyncio.gather(
+                        *parallel_tasks, return_exceptions=True,
+                    )
+                else:
+                    parallel_results = []
+
+                if semantic_task_idx is not None:
+                    result = parallel_results[semantic_task_idx]
+                    if isinstance(result, Exception):
+                        raise result
+                else:
+                    logger.info("Semantic search disabled via DISABLE_SEMANTIC_SEARCH")
+                    result = {"status_code": 200, "searchResults": []}
+
+                raw_pm_records: list[dict] = []
+                if pm_task_idx is not None:
+                    if isinstance(parallel_results[pm_task_idx], Exception):
+                        logger.warning("Pattern match failed: %s", parallel_results[pm_task_idx])
+                    else:
+                        raw_pm_records = parallel_results[pm_task_idx]
+                elif disable_pattern:
+                    logger.info("Pattern match disabled via DISABLE_STORAGE_PATTERN")
 
                 search_results = result.get("searchResults", [])
                 virtual_to_record_map = result.get("virtual_to_record_map", {})
@@ -936,6 +1083,27 @@ async def _generate_internal_search_stream(
                 )
 
                 final_results = sorted(flattened_results, key=flattened_result_sort_key)
+
+                if raw_pm_records:
+                    pm_blocks = await merge_pattern_match_results(
+                        raw_records=raw_pm_records,
+                        virtual_record_id_to_result=virtual_record_id_to_result,
+                        user_id=user_id,
+                        org_id=org_id,
+                        blob_store=blob_store,
+                        graph_provider=graph_provider,
+                        is_multimodal_llm=is_multimodal_llm,
+                        logger_instance=logger,
+                    )
+                    if pm_blocks:
+                        pm_blocks = cap_pattern_match_blocks(
+                            pm_blocks,
+                            budget=query_info.limit or DEFAULT_PATTERN_MATCH_BLOCK_BUDGET,
+                            virtual_record_id_to_result=virtual_record_id_to_result,
+                            logger_instance=logger,
+                        )
+                        final_results.extend(pm_blocks)
+                        logger.info("Standard path: pattern match added %d blocks", len(pm_blocks))
 
                 has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
                 has_slack_connector = await has_slack_connector_configured(graph_provider, user_id, org_id)
@@ -973,7 +1141,7 @@ async def _generate_internal_search_stream(
                     has_slack_connector=has_slack_connector,
                 )
 
-                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
+                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider, user_id=user_id)
                 tools.append(fetch_tool)
                 tool_runtime_kwargs = {
                     "blob_store": blob_store,

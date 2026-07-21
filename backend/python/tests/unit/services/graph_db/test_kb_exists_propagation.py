@@ -258,10 +258,7 @@ class TestArangoValidateFolderCreation:
 
     @pytest.mark.asyncio
     async def test_no_role_returns_403_no_access_message(self, arango_provider):
-        """
-        User with NO role on the KB (role=None) must get the 'no access' message,
-        not 'Insufficient permissions. Role: None' which leaked the Python None literal.
-        """
+        """User with NO role on the KB gets 404 to hide existence from unauthorized callers."""
         arango_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk-1"})
         arango_provider.http_client.execute_aql.return_value = [1]  # kb_exists → True
         arango_provider.get_user_kb_permission = AsyncMock(return_value=None)
@@ -269,10 +266,8 @@ class TestArangoValidateFolderCreation:
         result = await arango_provider._validate_folder_creation("kb-1", "uid-1")
 
         assert result["valid"] is False
-        assert result["code"] == 403
-        # Must NOT leak the Python None literal
-        assert "None" not in result["reason"]
-        assert "no permission" in result["reason"].lower() or "do not have" in result["reason"].lower()
+        assert result["code"] == 404
+        assert "kb-1" in result["reason"]
 
     @pytest.mark.asyncio
     async def test_insufficient_role_returns_403_with_role_in_message(self, arango_provider):
@@ -327,7 +322,7 @@ class TestNeo4jValidateFolderCreation:
 
     @pytest.mark.asyncio
     async def test_no_role_returns_403_no_access_message(self, neo4j_provider):
-        """No role on KB must not produce 'Role: None' — should say 'no permission'."""
+        """No role on KB returns 404 to hide existence."""
         neo4j_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk-1"})
         neo4j_provider.client.execute_query.return_value = [{"exists": 1}]  # kb_exists True
         neo4j_provider.get_user_kb_permission = AsyncMock(return_value=None)
@@ -335,9 +330,8 @@ class TestNeo4jValidateFolderCreation:
         result = await neo4j_provider._validate_folder_creation("kb-1", "uid-1")
 
         assert result["valid"] is False
-        assert result["code"] == 403
-        assert "None" not in result["reason"]
-        assert "no permission" in result["reason"].lower() or "do not have" in result["reason"].lower()
+        assert result["code"] == 404
+        assert "kb-1" in result["reason"]
 
     @pytest.mark.asyncio
     async def test_insufficient_role_message_names_role(self, neo4j_provider):

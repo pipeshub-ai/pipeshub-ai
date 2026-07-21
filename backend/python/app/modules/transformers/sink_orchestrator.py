@@ -200,6 +200,8 @@ class SinkOrchestrator(Transformer):
             ],
             CollectionNames.RECORDS.value,
         )
+        record.record_status = ProgressStatus.COMPLETED
+        record.indexing_status = ProgressStatus.COMPLETED.value
         self.logger.info(
             "✅ indexingStatus=COMPLETED recorded for %s", record.id
         )
@@ -229,4 +231,5 @@ class SinkOrchestrator(Transformer):
                 record.id,
                 record.virtual_record_id,
                 ctx.reconciliation_context.new_metadata,
+                document_path=ctx.settings.get("storage_path"),
             )

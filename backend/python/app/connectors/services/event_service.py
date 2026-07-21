@@ -16,6 +16,9 @@ from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
+from app.connectors.core.base.data_processor.storage_cleanup import (
+    StorageCleanupHelper,
+)
 from app.connectors.core.sync.task_manager import sync_task_manager
 from app.containers.connector import ConnectorAppContainer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -115,9 +118,10 @@ class EventService:
             config_service = self.app_container.config_service()
             data_store_provider = GraphDataStore(self.logger, self.graph_provider)
 
-            # Extract scope and createdBy from connector document
+            # Extract scope, createdBy and org from connector document
             scope = connector_doc.get("scope", "personal")
             created_by = connector_doc.get("createdBy", "")
+            org_id = connector_doc.get("orgId")
 
             connector = await ConnectorFactory.initialize_connector(
                 name=connector_name,
@@ -127,6 +131,7 @@ class EventService:
                 connector_id=connector_id,
                 scope=scope,
                 created_by=created_by,
+                org_id=org_id,
                 notification_service=self.app_container.connector_notification_service(),
             )
 
@@ -213,6 +218,7 @@ class EventService:
                 connector_id=connector_id,
                 scope=scope,
                 created_by=created_by,
+                org_id=org_id,
                 notification_service=self.app_container.connector_notification_service(),
             )
 
@@ -577,6 +583,24 @@ class EventService:
                 self.logger.error(
                     f"❌ Failed to delete etcd config for connector {connector_id}: {config_err}. "
                     f"Orphaned configuration may remain."
+                )
+
+            # Delete blob storage and MongoDB storage documents
+            try:
+                config_service = self.app_container.config_service()
+                cleanup_helper = StorageCleanupHelper(
+                    self.logger, self.graph_provider, config_service
+                )
+                deleted = await cleanup_helper.delete_connector_storage(
+                    org_id, connector_id
+                )
+                self.logger.info(
+                    f"✅ Deleted {deleted} storage documents for connector {connector_id}"
+                )
+            except Exception as storage_err:
+                self.logger.error(
+                    f"❌ Failed to delete blob storage for connector {connector_id}: {storage_err}. "
+                    f"Orphaned blobs may remain in storage."
                 )
 
             self.logger.info(f"✅ Async deletion complete for connector {connector_id}")

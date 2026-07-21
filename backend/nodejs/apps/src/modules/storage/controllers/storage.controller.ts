@@ -24,6 +24,7 @@ import {
 } from '../../../libs/errors/http.errors';
 import {
   Document,
+  DocumentVersion,
   FilePayload,
   StorageServiceResponse,
   StorageVendor,
@@ -52,6 +53,19 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { getMimeType } from '../mimetypes/mimetypes';
 import path from 'path';
 import { ErrorMetadata } from '../../../libs/errors/base.error';
+import { StorageError } from '../../../libs/errors/storage.errors';
+
+// Shape of a document row selected for a moveTree operation. documentPath is
+// non-optional here (unlike the base Document type) because every row comes
+// from a query filtered on documentPath.
+interface MatchedTreeDocument {
+  _id: unknown;
+  documentPath: string;
+  documentName: string;
+  extension?: string;
+  isVersionedFile?: boolean;
+  versionHistory?: DocumentVersion[];
+}
 
 // TODO: Remove these globals
 let storageConfig:
@@ -182,6 +196,20 @@ export class StorageController {
       throw new InternalServerError('Storage service adapter not found');
     }
     return adapter;
+  }
+
+  /**
+   * getStorageConfig's cached return shape (AzureBlobStorageConfig |
+   * LocalStorageConfig | S3StorageConfig) doesn't carry `storageType` --
+   * mirror uploadDocument's pattern of reading it straight from etcd instead.
+   */
+  private async getConfiguredStorageType(
+    _req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+  ): Promise<string> {
+    const storageConfig =
+      (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
+    const { storageType } = JSON.parse(storageConfig);
+    return storageType ?? 'local';
   }
 
   async uploadDocument(
@@ -327,6 +355,377 @@ export class StorageController {
       next(error);
     }
   }
+
+  async deleteByConnector(
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const { connectorId } = req.params;
+
+      const prefix = getFullDocumentPath(String(orgId), `records/${connectorId}`);
+      const adapter = await this.initializeStorageAdapter(req);
+
+      await adapter.deleteObject(prefix);
+
+      const descendantLower = `${prefix}/`;
+      const descendantUpper = `${prefix}0`;
+
+      const deleteResult = await DocumentModel.deleteMany({
+        $or: [
+          { documentPath: prefix },
+          { documentPath: { $gte: descendantLower, $lt: descendantUpper } },
+        ],
+      });
+
+      this.logger.info(
+        `Deleted ${deleteResult.deletedCount} storage documents for connector ${connectorId}`,
+      );
+
+      res.status(HTTP_STATUS.OK).json({
+        deleted: deleteResult.deletedCount,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async moveTree(
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const { oldPath, newPath } = req.body as {
+        oldPath: string;
+        newPath: string;
+      };
+
+      if (!oldPath) {
+        throw new BadRequestError('oldPath is required');
+      }
+      if (!newPath) {
+        throw new BadRequestError('newPath is required');
+      }
+
+      if (oldPath.includes('..') || newPath.includes('..')) {
+        throw new BadRequestError('oldPath/newPath must not contain ".." segments');
+      }
+
+      const oldFullPath = getFullDocumentPath(String(orgId), oldPath);
+      const newFullPath = getFullDocumentPath(String(orgId), newPath);
+
+      // Moving a tree under itself (e.g. a/b -> a/b/c) would make the
+      // post-move delete of the old root also wipe the freshly-written new
+      // objects nested beneath it. Reject rather than corrupt.
+      if (newFullPath.startsWith(`${oldFullPath}/`)) {
+        throw new BadRequestError('newPath must not be a descendant of oldPath');
+      }
+
+      // '/' (0x2F) is immediately followed by '0' (0x30) in ASCII -- this
+      // range covers every documentPath that starts with "oldFullPath/"
+      // without also matching an unrelated sibling like "oldFullPath2/...".
+      const descendantLower = `${oldFullPath}/`;
+      const descendantUpper = `${oldFullPath}0`;
+
+      // The query matches only on documentPath, so every result is guaranteed
+      // to have one -- .lean<T>() reflects that, unlike the base Document
+      // type where documentPath is optional. Org isolation comes from the
+      // "${orgId}/PipesHub/" prefix baked into oldFullPath (orgId is not a
+      // declared schema field, so it can't be filtered on reliably); the
+      // isDeleted guard keeps soft-deleted rows from being relocated.
+      const matched = await DocumentModel.find({
+        isDeleted: { $ne: true },
+        $or: [
+          { documentPath: oldFullPath },
+          { documentPath: { $gte: descendantLower, $lt: descendantUpper } },
+        ],
+      })
+        .select('_id documentPath documentName extension isVersionedFile versionHistory')
+        .lean<MatchedTreeDocument[]>();
+
+      if (matched.length === 0) {
+        res.status(HTTP_STATUS.OK).json({ moved: 0 });
+        return;
+      }
+
+      const storageType = await this.getConfiguredStorageType(req);
+      const adapter = await this.initializeStorageAdapter(req);
+
+      let failedIds: string[] = [];
+      if (storageType === 'local') {
+        await this.moveTreeLocal(adapter, oldFullPath, newFullPath, matched, orgId);
+      } else {
+        ({ failedIds } = await this.moveTreeRemote(
+          adapter,
+          storageType,
+          oldFullPath,
+          newFullPath,
+          matched,
+          orgId,
+        ));
+      }
+
+      // `failed` is only present when at least one document's blob could not
+      // be relocated -- those documents were left fully unmoved (see
+      // moveTreeRemote) and the caller should surface/retry them explicitly
+      // rather than assume the whole tree moved cleanly.
+      const response: { moved: number; failed?: string[] } = {
+        moved: matched.length - failedIds.length,
+      };
+      if (failedIds.length > 0) {
+        response.failed = failedIds;
+      }
+      res.status(HTTP_STATUS.OK).json(response);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // The server-side aggregation expression that rewrites a document's
+  // `documentPath` by swapping the oldFullPath prefix for newFullPath while
+  // preserving each row's own descendant suffix. Shared by the local and
+  // remote bulk updates.
+  private documentPathRewriteExpr(
+    oldFullPath: string,
+    newFullPath: string,
+  ): Record<string, unknown> {
+    return {
+      $concat: [
+        newFullPath,
+        {
+          $substrCP: [
+            '$documentPath',
+            oldFullPath.length,
+            { $subtract: [{ $strLenCP: '$documentPath' }, oldFullPath.length] },
+          ],
+        },
+      ],
+    };
+  }
+
+  private async moveTreeLocal(
+    adapter: StorageServiceAdapter,
+    oldFullPath: string,
+    newFullPath: string,
+    matched: MatchedTreeDocument[],
+    orgId: string | undefined,
+  ): Promise<void> {
+    await adapter.renameTree(oldFullPath, newFullPath);
+
+    await DocumentModel.updateMany(
+      { _id: { $in: matched.map((m) => m._id) } },
+      [{ $set: { documentPath: this.documentPathRewriteExpr(oldFullPath, newFullPath) } }],
+    );
+
+    // documentPath is not consulted at read time -- downloads resolve blobs
+    // from local.localPath (and versionHistory[*].local.localPath). Rewrite
+    // those so the relocated files are actually reachable.
+    await this.rewriteStoredUrls(adapter, StorageVendor.Local, matched, oldFullPath, newFullPath, orgId);
+  }
+
+  // For S3/Azure, renameObject is copy-then-delete-the-source: the old blob
+  // is gone the instant it resolves. Each document's Mongo state (documentPath
+  // + URL fields) is therefore committed IMMEDIATELY after that document's own
+  // blob move succeeds -- never batched until after the loop -- so a failure
+  // on document N can never leave an EARLIER document's blob moved while its
+  // Mongo row still points at the (now-deleted) old location. A document that
+  // fails is left fully unmoved (blob untouched, Mongo untouched) and its id
+  // is collected so the caller can see which ones need a retry/manual look.
+  private async moveTreeRemote(
+    adapter: StorageServiceAdapter,
+    storageType: string,
+    oldFullPath: string,
+    newFullPath: string,
+    matched: MatchedTreeDocument[],
+    orgId: string | undefined,
+    batchSize = 200,
+  ): Promise<{ failedIds: string[] }> {
+    const failedIds: string[] = [];
+
+    for (let i = 0; i < matched.length; i += batchSize) {
+      const batch = matched.slice(i, i + batchSize);
+      for (const doc of batch) {
+        const docId = String(doc._id);
+        const relativeSuffix = doc.documentPath.slice(oldFullPath.length);
+        const docNewFullPath = `${newFullPath}${relativeSuffix}`;
+
+        const oldRoot = getDocumentRootPath(
+          String(orgId),
+          docId,
+          undefined,
+          doc.documentPath,
+        );
+        const newRoot = getDocumentRootPath(
+          String(orgId),
+          docId,
+          undefined,
+          docNewFullPath,
+        );
+
+        // Same-path move: nothing to relocate (doc root and leaf filename
+        // are both unchanged without a rename).
+        if (oldRoot === newRoot) {
+          continue;
+        }
+
+        const ext = normalizeExtension(doc.extension ?? '');
+        const oldFilePath = getCurrentFilePath(
+          oldRoot,
+          doc.documentName,
+          ext,
+          !!doc.isVersionedFile,
+        );
+        const newFilePath = getCurrentFilePath(
+          newRoot,
+          doc.documentName,
+          ext,
+          !!doc.isVersionedFile,
+        );
+
+        try {
+          if (doc.isVersionedFile) {
+            await adapter.copyTree(`${oldRoot}/versions`, `${newRoot}/versions`);
+          }
+          await adapter.renameObject(oldFilePath, newFilePath);
+        } catch (error) {
+          // StorageError wraps the real provider error (e.g. the actual AWS
+          // AccessDenied/NoSuchKey reason) in `metadata.originalError` --
+          // `.message` alone is just the generic "Failed to rename object in
+          // S3" wrapper text and hides the reason the operation failed.
+          const detail =
+            error instanceof StorageError
+              ? (error.metadata?.['originalError'] ?? error.message)
+              : ((error as Error)?.message ?? error);
+          this.logger.warn(
+            `moveTree: failed to relocate blob for document ${docId}; leaving it at its old path`,
+            { documentId: docId, oldFilePath, newFilePath, error: detail },
+          );
+          failedIds.push(docId);
+          continue;
+        }
+
+        // Commit this document's documentPath + URL fields in the same
+        // write the moment its blob move succeeds -- this is the fix for the
+        // data-loss window described above.
+        const set: Record<string, unknown> = {
+          documentPath: docNewFullPath,
+          ...this.buildStorageUrlSet(adapter, storageType, doc, docNewFullPath, doc.documentName, orgId),
+        };
+        try {
+          await DocumentModel.updateOne({ _id: doc._id }, { $set: set });
+        } catch (error) {
+          // The blob already moved but Mongo didn't take the update -- this
+          // document is now genuinely inconsistent and needs manual repair.
+          // Reporting it (instead of silently continuing) is the best we can
+          // do without a cross-system transaction.
+          this.logger.warn(
+            `moveTree: blob relocated for document ${docId} but the Mongo update failed; document needs manual repair`,
+            { documentId: docId, error: (error as Error)?.message ?? error },
+          );
+          failedIds.push(docId);
+          continue;
+        }
+
+        // Only delete the old blob once Mongo already points at the new path
+        // -- deleting before the update risked orphaning a row that still
+        // referenced the (now-gone) old object if the process crashed in between.
+        try {
+          await adapter.deleteObject(oldRoot);
+        } catch {
+          // best-effort cleanup; a stale blob at the old path is not fatal
+        }
+      }
+    }
+
+    return { failedIds };
+  }
+
+  // Rewrites each document's stored blob-location field(s) to the new root.
+  // Downloads resolve from s3.url / azureBlob.url / local.localPath (and the
+  // per-version equivalents), never from documentPath, so these must be
+  // rewritten alongside the physical relocation or moved docs 404.
+  //
+  // Only used by moveTreeLocal, where a single renameTree call relocates the
+  // whole prefix atomically on disk -- there is no per-document blob move to
+  // interleave with, so a batched rewrite afterward is safe. moveTreeRemote
+  // moves one blob at a time and calls buildStorageUrlSet directly per
+  // document instead, so each document's Mongo state can commit immediately
+  // after its own blob move succeeds.
+  private async rewriteStoredUrls(
+    adapter: StorageServiceAdapter,
+    storageType: string,
+    docs: MatchedTreeDocument[],
+    oldFullPath: string,
+    newFullPath: string,
+    orgId: string | undefined,
+  ): Promise<void> {
+    for (const doc of docs) {
+      const docNewFullPath = `${newFullPath}${doc.documentPath.slice(oldFullPath.length)}`;
+      const set = this.buildStorageUrlSet(
+        adapter,
+        storageType,
+        doc,
+        docNewFullPath,
+        doc.documentName,
+        orgId,
+      );
+      if (Object.keys(set).length > 0) {
+        await DocumentModel.updateOne({ _id: doc._id }, { $set: set });
+      }
+    }
+  }
+
+  private buildStorageUrlSet(
+    adapter: StorageServiceAdapter,
+    storageType: string,
+    doc: MatchedTreeDocument,
+    docNewFullPath: string,
+    nameForThisDoc: string,
+    orgId: string | undefined,
+  ): Record<string, unknown> {
+    const ext = normalizeExtension(doc.extension ?? '');
+    const newRoot = getDocumentRootPath(
+      String(orgId),
+      String(doc._id),
+      undefined,
+      docNewFullPath,
+    );
+    const liveKey = getCurrentFilePath(newRoot, nameForThisDoc, ext, !!doc.isVersionedFile);
+    const liveUrl = adapter.getObjectUrl(liveKey);
+
+    const set: Record<string, unknown> = {};
+    // local.url is an _id-based download endpoint that never changes on move;
+    // only local.localPath (the concrete file:// path) must be rewritten.
+    if (storageType === StorageVendor.Local) {
+      set['local.localPath'] = liveUrl;
+    } else if (storageType === StorageVendor.AzureBlob) {
+      set['azureBlob.url'] = liveUrl;
+    } else {
+      set['s3.url'] = liveUrl;
+    }
+
+    if (doc.isVersionedFile && doc.versionHistory?.length) {
+      set.versionHistory = doc.versionHistory.map((v) => {
+        const vExt = normalizeExtension(v.extension ?? doc.extension ?? '');
+        const versionUrl = adapter.getObjectUrl(
+          getVersionFilePath(newRoot, v.version ?? 0, vExt),
+        );
+        if (storageType === StorageVendor.Local) {
+          return { ...v, local: { url: v.local?.url ?? '', localPath: versionUrl } };
+        }
+        if (storageType === StorageVendor.AzureBlob) {
+          return { ...v, azureBlob: { ...(v.azureBlob ?? {}), url: versionUrl } };
+        }
+        return { ...v, s3: { ...(v.s3 ?? {}), url: versionUrl } };
+      });
+    }
+    return set;
+  }
+
   async downloadDocument(
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,

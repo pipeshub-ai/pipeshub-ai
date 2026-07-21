@@ -15,6 +15,26 @@ export const DocumentIdParams = z.object({
   }),
 });
 
+const treePath = z
+  .string()
+  .min(1)
+  .refine(
+    (p) => !p.split('/').includes('..') && !p.startsWith('/'),
+    'path must be relative and must not contain ".." segments',
+  );
+
+export const MoveTreeSchema = z.object({
+  headers: Headers,
+  body: z
+    .object({
+      oldPath: treePath,
+      newPath: treePath,
+    })
+    .refine(({ oldPath, newPath }) => !newPath.startsWith(`${oldPath}/`), {
+      message: 'newPath must not be a descendant of oldPath',
+    }),
+});
+
 export const DocumentIdParamsWithVersion = z.object({
   params: z.object({
     documentId: z.string(),
@@ -105,6 +125,13 @@ export const RollBackToPreviousVersionSchema = GetBufferSchema.extend({
       .min(0, { message: 'version must be >= 0' })
       .optional(),
   }),
+});
+
+export const ConnectorIdParams = z.object({
+  params: z.object({
+    connectorId: z.string().min(1),
+  }),
+  headers: Headers,
 });
 
 export const CreateDocumentSchema = z.object({

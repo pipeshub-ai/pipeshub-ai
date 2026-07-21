@@ -572,7 +572,7 @@ class TestBuildSubAgentToolGuidance:
         assert "Link Extraction" not in result
 
     def test_knowledge_domain_guidance(self):
-        task = {"domains": ["knowledge"], "tools": ["knowledge.search"]}
+        task = {"domains": ["knowledge"], "tools": ["retrieval.search_internal_knowledge"]}
         state = _mock_state()
         result = _build_sub_agent_tool_guidance(task, state)
         assert "Knowledge Base Search Strategy" in result
@@ -3079,7 +3079,7 @@ class TestBuildSubAgentToolGuidanceCoverage:
         """Retrieval domain produces knowledge base search strategy."""
         task = {
             "domains": ["retrieval"],
-            "tools": ["retrieval.search_knowledge"],
+            "tools": ["retrieval.search_internal_knowledge"],
         }
         state = _mock_state_cov()
         result = _build_sub_agent_tool_guidance(task, state)

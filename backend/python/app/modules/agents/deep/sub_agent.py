@@ -1372,9 +1372,14 @@ def _wrap_tools_with_budget(
 
     wrapped = []
     for tool in tools:
+        tool_name = getattr(tool, "name", "unknown")
+
+        if tool_name == "fetch_full_record":
+            wrapped.append(tool)
+            continue
+
         orig_coro = getattr(tool, "coroutine", None)
         orig_func = getattr(tool, "func", None)
-        tool_name = getattr(tool, "name", "unknown")
 
         budgeted = _make_budgeted_coro(
             orig_coro, orig_func, budget, tool_name, log,
@@ -1677,9 +1682,12 @@ def _build_sub_agent_tool_guidance(
         "only if the task requires comprehensive data (reports, summaries)."
     )
 
-    # Retrieval-specific guidance — connector scoping + diverse query coverage
-    is_retrieval = any(d in ("retrieval", "knowledge") for d in domains)
-    if is_retrieval:
+    # Retrieval-specific guidance — only when search_internal_knowledge is
+    # actually available (not just because the domain is 'retrieval').
+    # Storage tools use a completely different workflow and must NOT see the
+    # "diverse query formulations" guidance that causes firehose find_records.
+    has_semantic_search = any("search_internal_knowledge" in t for t in tool_names)
+    if has_semantic_search:
         parts.append(
             "\n## Knowledge Base Search Strategy\n\n"
             "### Step 1 — Identify the source(s) and correct parameter from your task description\n"
@@ -1722,6 +1730,15 @@ def _build_sub_agent_tool_guidance(
             "Your job is to surface relevant content; do not try to parse or filter results yourself."
         )
 
+        parts.append(
+            "\n**Pattern Match**: For exact-text search, also provide a `command` parameter "
+            "to `search_internal_knowledge`. Example:\n"
+            "```\n"
+            "search_internal_knowledge(query=\"Asana Q3\", command='grep -rilZ \"asana\" . | xargs -0 grep -il \"Q3\"')\n"
+            "```\n"
+            "This runs grep alongside semantic search and returns combined results."
+        )
+
     has_web_tools = any("web_search" in t or "fetch_url" in t for t in tool_names)
     if has_web_tools:
         parts.append(
@@ -1738,6 +1755,7 @@ def _build_sub_agent_tool_guidance(
         )
 
     # Generic link extraction guidance (for non-retrieval tasks)
+    is_retrieval = any(d in ("retrieval", "knowledge") for d in domains)
     if not is_retrieval:
         parts.append(
             "\n## Link Extraction (MANDATORY)\n"
