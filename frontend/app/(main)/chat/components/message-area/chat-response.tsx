@@ -453,8 +453,7 @@ export const ChatResponse = React.memo(function ChatResponse({
       : persistedArtifacts;
   const currentStatusMessage = currentStatusMessageProp;
   const streamingStatusToShow =
-    currentStatusMessage ??
-    (isStreaming && !displayContent.trim() ? streamingFallbackStatus : null);
+    currentStatusMessage ?? (isStreaming ? streamingFallbackStatus : null);
 
   // Live transcript while streaming, persisted transcript after reload —
   // same components render either (see AgentActivityTimeline's docstring).

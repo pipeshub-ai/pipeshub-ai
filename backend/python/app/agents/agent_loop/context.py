@@ -76,6 +76,28 @@ class AgentContext(BaseModel):
     # Conversation history (for multi-turn seeding)
     previous_conversations: list[dict[str, Any]] = Field(default_factory=list)
 
+    # Populated by `PipesHubToolLoader.load()`: toolset registry name ->
+    # `"not_authenticated"` (configured, `ToolsetAuthError`/auth-flavored
+    # `ValueError` from `ToolInstanceCreator`) | `"error"` (any other load
+    # failure). Read by `PipesHubGlobalCatalogFallback` (auth-aware
+    # `search_tools` reasons) and `capability_summary.py` (proactive
+    # "needs authentication" flagging) — see `tool_loader.py`'s per-toolset
+    # try/except for how this gets populated. Also mirrored onto
+    # `tool_state["toolset_load_failures"]` (same dict object — see
+    # `_seed_tool_state`) so `build_capability_summary(state)` can read it
+    # without a hard dependency on `AgentContext`.
+    toolset_load_failures: dict[str, str] = Field(default_factory=dict)
+
+    # Group names (as registered on the per-request `ToolRegistry`, i.e.
+    # `PipesHubToolLoader`'s `group_name`, not the registry's raw toolset
+    # key) that loaded with `essential=True` metadata (see `@Toolset`/
+    # `ToolsetBuilder.as_essential()`) THIS request — e.g. "retrieval"/
+    # "knowledgehub" only when knowledge is attached. `factory.py` derives
+    # `AgentSpec.pinned_toolsets` from this list instead of a hardcoded
+    # pin list, so these toolsets stay visible from turn 0 under lazy tool
+    # disclosure regardless of whatever else got grouped this request.
+    essential_toolset_names: list[str] = Field(default_factory=list)
+
     # `EventSink` (`app.modules.agents.event_sink`) for hooks that must push
     # SSE events mid-run (e.g. Phase 5's `ask_user_question_sse` hook) — the
     # `SSEEventEmitter` implementation is wired in by Phase 7; `None` here
@@ -318,6 +340,7 @@ class AgentContext(BaseModel):
             "citation_ref_mapper": None,
             "all_tool_results": [],
             "web_search_results": [],
+            "toolset_load_failures": self.toolset_load_failures,
         }
 
 

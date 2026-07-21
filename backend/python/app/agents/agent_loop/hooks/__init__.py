@@ -23,7 +23,7 @@ from app.agents.agent_loop.hooks.knowledge_first_gate import (
     internal_search_attempted_tracking,
     knowledge_first_gate,
 )
-from app.agents.agent_loop.hooks.memory import conversation_enrichment
+from app.agents.agent_loop.hooks.memory import conversation_enrichment, seed_visible_tools_from_history
 from app.agents.agent_loop.hooks.result_accumulation import (
     result_accumulation,
     stash_tool_call_metadata,
@@ -39,6 +39,7 @@ __all__ = [
     "citation_tracking",
     "completion_gate",
     "conversation_enrichment",
+    "seed_visible_tools_from_history",
     "internal_search_attempted_tracking",
     "knowledge_first_gate",
     "looks_like_file_generation_request",

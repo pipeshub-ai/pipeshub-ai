@@ -397,7 +397,12 @@ export const ChatApi = {
         chatMode: agentChatMode,
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
-        tools: [...(request.agentStreamTools ?? [])],
+        // `undefined` (runtime.ts omits the field entirely when every tool
+        // is selected) must NOT become `[]` here — an empty array means
+        // "no tools" to the backend (agent.py treats `None`/missing as
+        // "use every configured toolset", `[]` as an explicit empty
+        // filter), the opposite of what an unfiltered selection means.
+        ...(request.agentStreamTools !== undefined ? { tools: request.agentStreamTools } : {}),
         ...buildAgentFiltersPayload(f.apps, f.kb),
         ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
         ...(request.attachments?.length ? { attachments: request.attachments } : {}),

@@ -1118,11 +1118,11 @@ class TestFilterKnowledgeByEnabledSources:
         result = _filter_knowledge_by_enabled_sources(knowledge, {})
         assert result == knowledge
 
-    def test_empty_apps_and_kbs_returns_all(self) -> None:
+    def test_empty_apps_and_kbs_returns_nothing(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [{"connectorId": "google"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [], "kb": []})
-        assert result == knowledge
+        assert result == []
 
     def test_app_filter(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
@@ -2032,11 +2032,11 @@ class TestFilterKnowledgeFull:
         result = _filter_knowledge_by_enabled_sources(knowledge, {})
         assert len(result) == 2
 
-    def test_empty_apps_and_kb_returns_all(self) -> None:
+    def test_empty_apps_and_kb_returns_nothing(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         knowledge = [{"connectorId": "c1"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [], "kb": []})
-        assert len(result) == 1
+        assert len(result) == 0
 
     def test_app_filter_only(self) -> None:
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources

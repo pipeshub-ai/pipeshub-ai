@@ -813,15 +813,22 @@ def _filter_knowledge_by_enabled_sources(
     against the bucket matching ITS OWN type, not filters["apps"] alone —
     checking only "apps" silently dropped every KB entry whenever at
     least one app connector was also configured.
+
+    When the caller explicitly supplies filter keys (even as empty lists),
+    empty means "nothing enabled" — return []. Pass-through (return the
+    full list unfiltered) only happens when NEITHER key is present at all.
     """
+    apps_present = "apps" in filters
+    kb_present = "kb" in filters
+
+    if not apps_present and not kb_present:
+        return agent_knowledge
+
     enabled_apps = set(filters.get("apps") or [])
     enabled_kb = {
         cid for cid in (filters.get("kb") or [])
         if cid and cid != NO_KB_SELECTED_FILTER
     }
-
-    if not enabled_apps and not enabled_kb:
-        return agent_knowledge
 
     result: list[dict[str, Any]] = []
     for k in agent_knowledge:
@@ -3170,7 +3177,17 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "streaming": True,
         })
 
-        _MAX_TOOLS = 128
+        # `chat_query.tools` is a FILTER over the agent's configured toolsets
+        # (see the `None` "use every configured toolset" branch further
+        # below), not a per-turn LLM-context budget — lazy tool disclosure
+        # (`lazy_tools_wiring.py`, default ON) means the number of schemas
+        # actually bound to the model no longer scales with this list's
+        # size. This is now purely a request-size sanity bound, raised well
+        # above any real explicit selection so it stops rejecting legitimate
+        # "everything selected" requests exploded client-side into one
+        # fullName per action (previously 128, which a handful of
+        # multi-action toolsets already exceeded — see chat-input.tsx).
+        _MAX_TOOLS = 1024
         if chat_query.tools is not None and len(chat_query.tools) > _MAX_TOOLS:
             raise HTTPException(
                 status_code=400,
@@ -3428,9 +3445,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 filters["kb"] = _extract_kb_app_ids(agent_knowledge)
             logger.info(f"Filters: {filters}")
 
-        # Apply NO_KB sentinel BEFORE filtering agent_knowledge. If we filter first while
-        # kb is still [], _filter_knowledge_by_enabled_sources early-returns the full list
-        # (both enabled sets empty); injecting kb afterward left knowledge out of sync with filters.
+        # Apply NO_KB sentinel BEFORE filtering agent_knowledge. When kb is
+        # explicitly [] (user deselected all KB sources at runtime), the sentinel
+        # ensures filters["kb"] is non-empty so downstream code can distinguish
+        # "nothing selected" from "key absent" without needing this function's
+        # "keys present but empty → return []" semantics to propagate further.
         if not filters.get("kb") and agent_id != "agentIdPlaceholder":
             filters["kb"] = [NO_KB_SELECTED_FILTER]
 

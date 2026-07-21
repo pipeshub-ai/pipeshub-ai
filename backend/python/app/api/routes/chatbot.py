@@ -560,6 +560,7 @@ async def _build_attachment_llm_messages(
     org_id: str = "",
     has_attachments: bool = True,
     virtual_record_id_to_result: dict[str, Any] = {},
+    has_sql_connector: bool = False,
 ) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """Build messages for the tool-based retrieval path.
 
@@ -596,6 +597,7 @@ async def _build_attachment_llm_messages(
         query=query_info.query,
         has_attachments=has_attachments,
         has_previous_attachments=has_previous_attachments,
+        has_sql_connector=has_sql_connector,
     )
     content.append({"type": "text", "text": rendered_prompt})
 
@@ -842,7 +844,15 @@ async def _generate_internal_search_stream(
                 # Used for attachment queries AND follow-up queries so the LLM
                 # decides whether it needs to search the knowledge base.
                 logger.info("Tool retrieval path: exposing retrieval as search_internal_knowledge tool (attachments=%s, followup=%s)", has_attachments, is_followup)
-                
+
+                # Computed before the prompt is built (not after, as before)
+                # so `has_sql_connector` can gate the "execute_sql_query"
+                # tool mention in the rendered prompt itself — previously
+                # the prompt unconditionally told the model this tool
+                # exists even when no SQL connector was configured.
+                has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
+                has_slack_connector = await has_slack_connector_configured(graph_provider, user_id, org_id)
+
                 messages, ref_mapper = await _build_attachment_llm_messages(
                     query_info,
                     ai_models_config,
@@ -854,6 +864,7 @@ async def _generate_internal_search_stream(
                     org_id=org_id,
                     has_attachments=has_attachments,
                     virtual_record_id_to_result=virtual_record_id_to_result,
+                    has_sql_connector=has_sql_connector,
                 )
 
                 search_tool = create_internal_search_tool(
@@ -871,9 +882,6 @@ async def _generate_internal_search_stream(
                 )
 
                 tools = [search_tool]
-
-                has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
-                has_slack_connector = await has_slack_connector_configured(graph_provider, user_id, org_id)
                 fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
                 deferred_tools = [fetch_tool]
                 if has_sql_connector:

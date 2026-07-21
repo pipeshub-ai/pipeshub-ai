@@ -25,6 +25,7 @@ def Toolset(
     config: dict[str, Any] | None = None,
     tools: list[ToolDefinition] | None = None,
     internal: bool = False,  # If True, toolset is internal and not sent to frontend
+    essential: bool = False,  # If True, stays visible under lazy tool disclosure (see ToolsetBuilder.as_essential)
 ) -> Callable[[type], type]:
     """
     Decorator to register a toolset with metadata and configuration schema.
@@ -37,6 +38,11 @@ def Toolset(
         category: Category of the toolset
         config: Complete configuration schema for the toolset
         tools: List of tool definitions
+        essential: If True, `PipesHubAgentFactory` pins this toolset's tools
+            back into `AgentSpec.pinned_toolsets` under lazy tool disclosure
+            (see `factory.py`) — declarative single source of truth for
+            "essential" vs "searchable" classification, replacing a
+            hardcoded pin list.
 
     Returns:
         Decorator function that marks a class as a toolset
@@ -94,7 +100,8 @@ def Toolset(
             "config": config or {},
             "tools": tools_dict,
             "toolsetClass": cls,
-            "isInternal": internal
+            "isInternal": internal,
+            "essential": essential,
         }
 
         cls._is_toolset = True
@@ -163,6 +170,7 @@ class ToolsetRegistry:
                 'tools': discovered_tools,
                 'icon_path': self._extract_icon_path(metadata),
                 'isInternal': metadata.get('isInternal', False),
+                'essential': metadata.get('essential', False),
             }
 
             logger.info(f"Registered toolset: {toolset_name} ({normalized_name}) with {len(discovered_tools)} tools")
@@ -437,6 +445,7 @@ class ToolsetRegistry:
                 'tools': metadata.get('tools', []),
                 'icon_path': metadata.get('icon_path'),
                 'isInternal': metadata.get('isInternal', False),
+                'essential': metadata.get('essential', False),
             }
 
         config = metadata.get('config', {})
@@ -458,6 +467,7 @@ class ToolsetRegistry:
             'tools': sanitized_tools,
             'icon_path': metadata.get('icon_path'),
             'isInternal': metadata.get('isInternal', False),
+            'essential': metadata.get('essential', False),
         }
 
     def _sanitize_config(self, config: dict[str, Any] | object) -> dict[str, Any]:

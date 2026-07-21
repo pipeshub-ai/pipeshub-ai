@@ -80,6 +80,7 @@ from app.agents.agent_loop.hooks import (
     looks_like_file_generation_request,
     result_accumulation,
     retry_with_status,
+    seed_visible_tools_from_history,
     stash_tool_call_metadata,
 )
 from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import CodingSandboxTool
@@ -87,9 +88,11 @@ from app.agents.agent_loop.domain_agents import plan_domain_agents, register_dom
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.lazy_tools_wiring import (
     CONNECTORS_PARENT,
+    META_TOOL_NAMES,
     lazy_tools_enabled,
     lazy_tools_scope,
     make_lazy_tools_decider,
+    register_lazy_tool_meta_tools,
     register_tool_preloading,
 )
 from app.agents.agent_loop.loops.orchestrator import (
@@ -215,6 +218,13 @@ class PipesHubAgentFactory:
         tool_registry = await PipesHubToolLoader().load(
             context, skip_apps={"coding_sandbox"} if code_exec_enabled else set(),
         )
+        # Registered unconditionally (not just when lazy disclosure ends up
+        # active — see `register_lazy_tool_meta_tools`'s docstring):
+        # `search_tools` provides auth-aware global discovery in eager mode
+        # too, and `list_toolsets`/`fetch_tools` are harmless no-ops when
+        # nothing is grouped. Every tool-name list assembled below has
+        # `META_TOOL_NAMES` appended so they're always in the grant.
+        register_lazy_tool_meta_tools(tool_registry, context)
 
         # Resolved ONCE per request and threaded into every surface the
         # model sees or that shapes `run_code`'s actual behavior — the
@@ -353,6 +363,22 @@ class PipesHubAgentFactory:
         else:
             tool_names = tool_registry.names()
 
+        # `tool_registry.names()` already includes them (registered above),
+        # but the curated lists (composed/planning tools) do not — append
+        # unconditionally so `search_tools`/`list_toolsets`/`fetch_tools`
+        # are callable regardless of `tool_disclosure` (see
+        # `register_lazy_tool_meta_tools`'s docstring for why eager mode
+        # needs this too: `tool_schemas_for_turn` binds exactly
+        # `spec.tool_names` when disclosure is eager). EXCEPT deep mode's
+        # orchestrator: its own grant must stay exactly the four
+        # coordination tools (see `lazy_tools_wiring.py`'s module
+        # docstring — deep mode is out of scope for this pass; its spawn
+        # pool, not its own grant, is where a large tool catalog lives).
+        if mode.loop_kind != "orchestrator":
+            for meta_name in META_TOOL_NAMES:
+                if meta_name not in tool_names:
+                    tool_names.append(meta_name)
+
         logger.info(
             "PipesHubAgentFactory.create: mode=%s | loop=%s | %d tool(s) granted to agent spec "
             "(run_code available=%s)",
@@ -400,11 +426,26 @@ class PipesHubAgentFactory:
         # False here covers quick mode (`compose_domain_agents=False`), the
         # `PIPESHUB_USE_COMPOSED_AGENTS` kill-switch, and a request where
         # `coding_agent` claimed nothing (code execution disabled).
+        # Declarative essential set (see `@Toolset(essential=...)`/
+        # `ToolsetBuilder.as_essential()`): whichever loaded toolset group
+        # names `PipesHubToolLoader` marked essential this request (e.g.
+        # "retrieval"/"knowledgehub" only when knowledge is attached,
+        # "artifacts") plus `"skills"` when wired — the single source of
+        # truth for `pinned_toolsets` below AND for what `group_connector_
+        # toolsets` must never nest under `CONNECTORS_PARENT`. Computed
+        # once, before any lazy-tools decision, so both the domain and
+        # top-level deciders exclude the same set.
+        essential_toolset_names = list(context.essential_toolset_names)
+        if skill_manager is not None:
+            essential_toolset_names = ["skills", *essential_toolset_names]
+
         run_code_delegated_to_coding_agent = False
         if composition_plan is not None and mode.compose_domain_agents:
             flat_count = len(tool_registry.names())
             domain_lazy_tools = make_lazy_tools_decider(
                 apply=lazy_tools_enabled() and lazy_tools_scope() in ("domain", "both"),
+                essential_names=frozenset(essential_toolset_names),
+                context=context,
             )
             composed_names = register_domain_agents(
                 composition_plan, tool_registry, runtime, context,
@@ -475,20 +516,23 @@ class PipesHubAgentFactory:
                 and mode.loop_kind != "orchestrator"
                 and lazy_tools_scope() in ("top_level", "both")
             ),
+            essential_names=frozenset(essential_toolset_names),
+            context=context,
         )
         tool_names, tool_disclosure = top_level_lazy_tools(tool_registry, tool_names)
-        # Skill tools (`load_skill`/`skill_search`/...) are registered into
-        # their own `"skills"` toolset by `register_skill_tools` above, so
-        # under lazy disclosure `initial_visible_tools()` hides them behind
-        # a `fetch_tools`/`search_tools` round-trip like any other grouped
-        # toolset (see `ToolRegistry.grouped_tool_names()` — grouped is
-        # grouped, regardless of which call registered the group). A skill
-        # needs to be checked BEFORE the model commits to an approach, not
-        # discovered after — same reasoning `ControlPlane.start()` already
-        # applies (see `control_plane.py`'s "skills" auto-pin) — so pin it
-        # here too whenever skills are wired AND disclosure actually went
-        # lazy this request.
-        pinned_toolsets = ["skills"] if skill_manager is not None and tool_disclosure == "lazy" else []
+        # Every toolset group `group_connector_toolsets` was told to leave
+        # alone (skills, plus whichever internal toolsets loaded with
+        # `essential=True` metadata this request — see
+        # `essential_toolset_names` above) stays pinned back to essential
+        # via `AgentSpec.pinned_toolsets`, so `initial_visible_tools()`
+        # (`all_names - grouped + pinned`) includes them regardless of
+        # whatever else got grouped under lazy disclosure this request. A
+        # skill/knowledge-search/artifact need needs to be visible BEFORE
+        # the model commits to an approach, not discovered after a
+        # `fetch_tools` round trip — same reasoning `ControlPlane.start()`
+        # already applies for skills (see `control_plane.py`'s "skills"
+        # auto-pin), generalized here to every declared-essential toolset.
+        pinned_toolsets = essential_toolset_names if tool_disclosure == "lazy" else []
         if tool_disclosure == "lazy":
             grouped = sorted(g.name for g in tool_registry.children_of(CONNECTORS_PARENT))
             logger.info(
@@ -603,6 +647,7 @@ class PipesHubAgentFactory:
 
         hooks.on(HookEvent.PRE_TURN).use(conversation_enrichment(context))
         hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))
+        hooks.on(HookEvent.PRE_TURN).use(seed_visible_tools_from_history(context))
 
         # Refuses a text-only, no-tool-call turn as "done" when the request
         # needed a generated file and no artifact has been produced yet —

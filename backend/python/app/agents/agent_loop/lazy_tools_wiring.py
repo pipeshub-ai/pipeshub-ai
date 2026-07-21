@@ -1,19 +1,28 @@
 """Wires agent_loop_lib's lazy-toolset progressive disclosure (`list_toolsets`/
 `fetch_tools`/`search_tools` meta-tools + `tool_preloading` middleware) into
-`PipesHubAgentFactory.create()`, grouping PipesHub's connector tools by their
-adapter's `app_name` (see `tool_adapter.py`) into toolsets instead of
-shipping every attached connector's full tool schema on every turn.
+`PipesHubAgentFactory.create()`.
 
-Entirely gated by `PIPESHUB_ENABLE_LAZY_TOOLS` (default OFF) — same rollout
-convention as `PIPESHUB_ENABLE_SKILLS`/`PIPESHUB_USE_COMPOSED_AGENTS`
-elsewhere in this adapter layer — AND an automatic size threshold
+Grouping reuses the per-toolset `ToolsetGroup`s `PipesHubToolLoader.load()`
+already registers for every connector it loads (`tool_loader.py`) — it does
+NOT try to re-derive grouping from an `app_name` attribute on individual
+`Tool` objects, because the connector tools loaded via `AgentLoopToolsetBuilder`
+(`BoundMethodTool` instances) never had one; only the small number of
+per-request dynamic tools (`PipesHubStructuredToolAdapter` — web_search,
+execute_sql_query, ...) do. `group_connector_toolsets` below just re-parents
+those EXISTING groups under one `"connectors"` category (see
+`CONNECTORS_PARENT`), excluding whichever toolset names the caller has
+already decided should stay essential (retrieval/knowledgehub/artifacts when
+attached, skills — see `factory.py`'s `essential_toolset_names`).
+
+Lazy disclosure itself is gated by `PIPESHUB_ENABLE_LAZY_TOOLS` (default ON —
+this is the "search instead of ship every schema" progressive-disclosure
+pattern, not an experimental feature) AND an automatic size threshold
 (`PIPESHUB_LAZY_TOOLS_THRESHOLD`, default 20): a request with few enough
-attached tools keeps today's flat, eager path even with the flag on, since
-there is no token-budget problem to solve for it and eager disclosure is
-strictly simpler to reason about. Below the threshold or with the flag off,
-this module's `make_lazy_tools_decider` always hands back its input
-unchanged — zero behavior change (see the plan's "no behavior change by
-default" design principle).
+attached tools keeps the flat, eager path regardless, since there is no
+token-budget problem to solve for it and eager disclosure is strictly
+simpler to reason about. Below the threshold, or with the env kill-switch
+off, this module's `make_lazy_tools_decider` always hands back its input
+unchanged.
 
 `PIPESHUB_LAZY_TOOLS_SCOPE` (`top_level` | `domain` | `both`, default
 `top_level`) controls WHICH `AgentSpec`(s) actually flip to lazy disclosure:
@@ -59,6 +68,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.registry import HookRegistry
     from app.agent_loop_lib.tools.global_fallback import GlobalToolHit
     from app.agent_loop_lib.tools.registry import ToolRegistry
+    from app.agents.agent_loop.context import AgentContext
 
 __all__ = [
     "lazy_tools_enabled",
@@ -81,18 +91,15 @@ logger = logging.getLogger(__name__)
 # without duplicating the literal.
 CONNECTORS_PARENT = "connectors"
 
-# `app_name` values that are internal implementation details, not a
-# user-facing connector — never worth grouping behind a fetch_tools()
-# round trip (they're almost always one or two tools, so hiding them would
-# only cost a turn for no meaningful token savings).
-_NEVER_GROUP_APP_NAMES = frozenset({"internal", "dynamic"})
-
 META_TOOL_NAMES: tuple[str, ...] = ("list_toolsets", "fetch_tools", "search_tools")
 
 
 def lazy_tools_enabled() -> bool:
-    """Kill-switch for the whole subsystem."""
-    return os.getenv("PIPESHUB_ENABLE_LAZY_TOOLS", "false").strip().lower() == "true"
+    """Kill-switch for the whole subsystem — defaults ON. Progressive tool
+    disclosure only actually changes anything once `should_apply_lazy_tools`
+    ALSO clears the size threshold below, so this default doesn't affect any
+    agent with a modest number of attached toolsets."""
+    return os.getenv("PIPESHUB_ENABLE_LAZY_TOOLS", "true").strip().lower() == "true"
 
 
 def lazy_tools_threshold() -> int:
@@ -120,48 +127,49 @@ def should_apply_lazy_tools(tool_count: int) -> bool:
     return lazy_tools_enabled() and tool_count > lazy_tools_threshold()
 
 
-def group_connector_toolsets(tool_registry: "ToolRegistry", tool_names: list[str]) -> bool:
-    """Groups every name in `tool_names` that resolves to an adapter with an
-    `app_name` (a connector action — see `tool_adapter.py::PipesHubToolAdapter
-    .app_name`)     into a per-connector toolset, nested under one
+def group_connector_toolsets(
+    tool_registry: "ToolRegistry",
+    tool_names: list[str],
+    *,
+    exclude: frozenset[str] = frozenset(),
+) -> bool:
+    """Re-parents every top-level `ToolsetGroup` already registered on
+    `tool_registry` (by `PipesHubToolLoader.load()` for every connector it
+    loads, or `register_skill_tools` for `"skills"`) under one
     `"connectors"` category group (see `ToolRegistry.register_toolset`'s
-    `parent`). Names with no `app_name` (domain-agent `AgentTool`s,
-    coordination tools, ...) are left alone by THIS function — they stay
-    "essential" (always visible) as far as grouping goes, which is exactly
-    right: they're either already a deliberately-curated handful, or
-    (domain agents) the whole point of the entity is to always be a
-    visible, callable delegate.
+    `parent`) — EXCEPT groups named in `exclude` (the caller's essential
+    set: retrieval/knowledgehub/artifacts when attached, skills — see
+    `factory.py`'s `essential_toolset_names`) and `CONNECTORS_PARENT`
+    itself (idempotency guard, see below).
 
-    Skill tools are the one exception worth calling out: they have no
-    `app_name` either, so this function never touches them, but
-    `register_skill_tools` (`skills_wiring.py`) registers its own
-    `"skills"` toolset directly — which makes them grouped (hence hidden
-    under lazy disclosure) all the same, since `grouped_tool_names()`
-    unions every registered group regardless of who registered it. See
-    `factory.py`'s `pinned_toolsets=["skills"]` for why that toolset is
-    pinned back to essential instead of left to a `fetch_tools` round trip.
+    Only a group with at least one member in `tool_names` (the current
+    grant) is considered — a group entirely outside this turn's grant
+    (e.g. a domain child's own narrower claim) has nothing to hide behind
+    `fetch_tools` for THIS spec. A group already nested under some other
+    parent (i.e. this function already ran once against the same shared
+    registry) is left alone rather than re-parented again.
 
-    Idempotent in effect: re-registering the same connector name twice
-    just replaces its group with the same membership (`ToolRegistry.
-    register_toolset` always replaces by name), so calling this more than
-    once per request (e.g. once for the top-level grant, once for a domain
-    child's own claim) is safe and cheap.
+    Idempotent in effect: re-registering the same name twice just replaces
+    its group with the same membership (`ToolRegistry.register_toolset`
+    always replaces by name), so calling this more than once per request
+    (e.g. once for the top-level grant, once for a domain child's own
+    claim, both against the SAME shared `tool_registry`) is safe and cheap.
 
-    Returns whether anything was actually grouped — `False` means every
-    name was ungroupable (no connector `app_name` among them), so the
+    Returns whether anything was actually grouped — `False` means nothing
+    in `tool_names` belonged to a groupable, non-excluded toolset, so the
     caller has nothing to gain from flipping `tool_disclosure` to `"lazy"`.
     """
-    by_app: dict[str, list[str]] = {}
-    for name in tool_names:
-        if not tool_registry.has(name):
-            continue
-        tool = tool_registry.resolve_by_name(name)
-        app_name = getattr(tool, "app_name", None)
-        if not app_name or app_name in _NEVER_GROUP_APP_NAMES:
-            continue
-        by_app.setdefault(app_name, []).append(name)
+    tool_name_set = set(tool_names)
+    candidates = [
+        group
+        for group in tool_registry.toolsets()
+        if group.parent is None
+        and group.name != CONNECTORS_PARENT
+        and group.name not in exclude
+        and any(name in tool_name_set for name in group.tool_names)
+    ]
 
-    if not by_app:
+    if not candidates:
         return False
 
     tool_registry.register_toolset(
@@ -172,80 +180,113 @@ def group_connector_toolsets(tool_registry: "ToolRegistry", tool_names: list[str
         "the real schemas directly.",
         [],
     )
-    for app_name, names in by_app.items():
+    for group in candidates:
         tool_registry.register_toolset(
-            app_name, _connector_description(app_name), names, parent=CONNECTORS_PARENT,
+            group.name, group.description, group.tool_names, parent=CONNECTORS_PARENT,
         )
     logger.info(
-        "group_connector_toolsets: grouped %d connector(s) covering %d/%d tool(s): %s",
-        len(by_app), sum(len(v) for v in by_app.values()), len(tool_names), sorted(by_app),
+        "group_connector_toolsets: grouped %d toolset(s) covering %d/%d tool(s): %s",
+        len(candidates), sum(len(g.tool_names) for g in candidates), len(tool_names),
+        sorted(g.name for g in candidates),
     )
     return True
 
 
-def _connector_description(app_name: str) -> str:
-    """Best-effort one-line description sourced from the connector/toolset
-    registry's own metadata (`app/connectors/core/registry/tool_builder.py`,
-    surfaced via `app/agents/registry/toolset_registry.py`) — falls back to
-    a generic label for an `app_name` with no matching registry entry (a
-    synthetic bucket, or a connector that predates that registry)."""
-    try:
-        from app.agents.registry.toolset_registry import get_toolset_registry
-
-        metadata = get_toolset_registry().get_toolset_metadata(app_name)
-    except Exception:
-        logger.debug("No toolset registry metadata for app_name=%r", app_name, exc_info=True)
-        metadata = None
-    description = (metadata or {}).get("description")
-    return description or f"{app_name.replace('_', ' ').title()} tools."
-
-
 class PipesHubGlobalCatalogFallback:
-    """Adapts PipesHub's process-wide `_global_tools_registry` (every
-    connector action ever registered via the `@tool` decorator, across
-    every org — see `app.agents.tools.decorator`) as agent_loop_lib's
+    """Adapts PipesHub's process-wide toolset catalog (`ToolsetRegistry` —
+    every toolset the app knows how to build, across every org, whether or
+    not it's attached to THIS agent) as agent_loop_lib's
     `GlobalCatalogFallback`. `SearchToolsTool` only consults this when the
     CURRENT agent's own (per-request, attachment-filtered) registry has
-    zero hits, so a hit here always means "exists somewhere, not attached
-    to this agent/org" — never a duplicate of an already-visible tool.
+    zero hits, so a hit here always means "exists somewhere, not usable by
+    this agent right now" — never a duplicate of an already-visible tool.
 
-    Reuses `_global_tools_registry.search_tools(query=...)` (substring
-    match over name/description) rather than reimplementing scoring here —
-    good enough for a rare fallback path; the primary ranked search stays
-    in `ToolIndex`/`KeywordToolIndex`.
+    Auth-aware: a hit whose toolset is in `context.toolset_load_failures`
+    with reason `"not_authenticated"` (configured on this agent, but
+    `ToolInstanceCreator` failed OAuth/API-key auth when `PipesHubToolLoader`
+    tried to load it — see `tool_loader.py`) is reported with that same
+    reason instead of the generic `"not_attached"` default, so the model
+    (and, via `EventType.TOOL_UNAVAILABLE`, the user) gets "this exists and
+    is configured, you just need to authenticate it" instead of a flat
+    "this doesn't exist" when a query names an unauthenticated toolset.
+
+    Simple keyword/substring match over each toolset's discovered tool
+    name + description — good enough for a rare fallback path; the primary
+    ranked search stays in `ToolIndex`/`KeywordToolIndex`.
     """
+
+    def __init__(self, context: "AgentContext | None" = None) -> None:
+        self._context = context
 
     async def search(self, query: str, limit: int) -> list["GlobalToolHit"]:
         from app.agent_loop_lib.tools.global_fallback import GlobalToolHit
-        from app.agents.tools.registry import _global_tools_registry
+        from app.agents.agent_loop.tool_loader import _has_tool_decorated_methods, _infer_path_prefix
+        from app.agents.registry.toolset_registry import get_toolset_registry
 
-        hits = _global_tools_registry.search_tools(query=query)[:limit]
-        return [
-            GlobalToolHit(
-                # `__`, not `_` — matches the `{app}__{tool}` convention every
-                # OTHER globally-addressable tool name uses in this adapter
-                # layer (`PipesHubStructuredToolAdapter.name`, and the split
-                # side in `tool_summarizer.py`'s `rsplit("__", 1)`). A `hit.
-                # name` that doesn't match the name the tool would actually
-                # register under once attached is useless to a caller trying
-                # to reference it (e.g. an attach-flow follow-up call).
-                name=f"{tool.app_name}__{tool.tool_name}",
-                toolset=tool.app_name,
-                description=tool.description or f"{tool.app_name} {tool.tool_name}",
+        query_terms = [t for t in query.lower().split() if t]
+        failures = self._context.toolset_load_failures if self._context is not None else {}
+
+        hits: list[GlobalToolHit] = []
+        for ts_name, ts_meta in get_toolset_registry().get_all_toolsets().items():
+            if ts_meta.get("isInternal", False):
+                # Never a user-facing "go attach/authenticate this" suggestion —
+                # there's nothing for the user to configure.
+                continue
+
+            ts_class = ts_meta.get("class")
+            group_name = (
+                _infer_path_prefix(ts_class, fallback_name=ts_name).rsplit("/", 1)[-1]
+                if ts_class is not None and _has_tool_decorated_methods(ts_class)
+                else ts_name
             )
-            for tool in hits
-        ]
+            reason = "not_authenticated" if failures.get(ts_name) == "not_authenticated" else "not_attached"
+
+            for tool in ts_meta.get("tools", []):
+                tool_name = tool.get("name", "")
+                if not tool_name:
+                    continue
+                description = tool.get("description") or f"{group_name} {tool_name}"
+                haystack = f"{tool_name} {description}".lower()
+                if query_terms and not any(term in haystack for term in query_terms):
+                    continue
+                hits.append(GlobalToolHit(
+                    # `__`, not `_` — matches the `{app}__{tool}` convention
+                    # every OTHER globally-addressable tool name uses in this
+                    # adapter layer (`BoundMethodTool.name`,
+                    # `PipesHubStructuredToolAdapter.name`). A `hit.name` that
+                    # doesn't match the name the tool would actually register
+                    # under once attached is useless to a caller trying to
+                    # reference it (e.g. an attach-flow follow-up call).
+                    name=f"{group_name}__{tool_name}",
+                    toolset=group_name,
+                    description=(
+                        f"{description} — configured but not authenticated; "
+                        "tell the user to authenticate this toolset in "
+                        "Settings > Toolsets."
+                        if reason == "not_authenticated" else description
+                    ),
+                    reason=reason,
+                ))
+                if len(hits) >= limit:
+                    return hits
+        return hits
 
 
-def register_lazy_tool_meta_tools(tool_registry: "ToolRegistry") -> None:
+def register_lazy_tool_meta_tools(
+    tool_registry: "ToolRegistry", context: "AgentContext | None" = None,
+) -> None:
     """Registers `list_toolsets`/`fetch_tools`/`search_tools` if not
     already present on `tool_registry` — a no-op for a name that's already
     registered (e.g. a second call within the same request, once for the
     top-level grant and once for a domain child sharing the same registry).
 
-    `search_tools` gets `PipesHubGlobalCatalogFallback` so a zero-hit query
-    against THIS agent's tools still tells the model (and, via SSE, the
-    user) when a matching tool exists but isn't attached — see
+    Called unconditionally by `factory.py` regardless of `tool_disclosure`
+    — `fetch_tools`'/`list_toolsets`' visibility side effects are no-ops
+    under eager disclosure (nothing is hidden to reveal), but `search_tools`
+    still provides global discovery + auth-aware flagging (via
+    `PipesHubGlobalCatalogFallback(context)`) either way: a zero-hit query
+    against THIS agent's tools tells the model (and, via SSE, the user)
+    when a matching tool exists but isn't attached/authenticated — see
     `SearchToolsTool`'s docstring and `EventType.TOOL_UNAVAILABLE`.
     """
     for tool_cls in (ListToolsetsTool, FetchToolsTool):
@@ -255,7 +296,7 @@ def register_lazy_tool_meta_tools(tool_registry: "ToolRegistry") -> None:
             continue
     try:
         tool_registry.register_tool(
-            SearchToolsTool(tool_registry, global_fallback=PipesHubGlobalCatalogFallback())
+            SearchToolsTool(tool_registry, global_fallback=PipesHubGlobalCatalogFallback(context))
         )
     except (DuplicateToolNameError, DuplicateToolPathError):
         pass
@@ -275,7 +316,10 @@ def register_tool_preloading(hooks: "HookRegistry") -> None:
 
 
 def make_lazy_tools_decider(
-    *, apply: bool,
+    *,
+    apply: bool,
+    essential_names: frozenset[str] = frozenset(),
+    context: "AgentContext | None" = None,
 ) -> "Callable[[ToolRegistry, list[str]], tuple[list[str], str]]":
     """Builds the `(tool_names, tool_disclosure)` decision function used at
     BOTH the top-level `AgentSpec` construction site (`factory.py`, called
@@ -285,6 +329,13 @@ def make_lazy_tools_decider(
     "which call site(s) pass `apply=True`", never a difference in the
     grouping/threshold logic itself.
 
+    `essential_names` — toolset group names to exclude from grouping (see
+    `group_connector_toolsets`'s `exclude` param) — is the caller's
+    "essential" set, e.g. `factory.py`'s `essential_toolset_names`
+    (retrieval/knowledgehub/artifacts when attached, plus `"skills"`).
+    `context` is threaded into `PipesHubGlobalCatalogFallback` for
+    auth-aware `search_tools` reasons.
+
     `apply=False` (this scope wasn't selected, or the env flag is off)
     always returns `(tool_names, "eager")` unchanged — zero behavior
     change.
@@ -293,9 +344,9 @@ def make_lazy_tools_decider(
     def _decide(tool_registry: "ToolRegistry", tool_names: list[str]) -> tuple[list[str], str]:
         if not apply or not should_apply_lazy_tools(len(tool_names)):
             return tool_names, "eager"
-        if not group_connector_toolsets(tool_registry, tool_names):
+        if not group_connector_toolsets(tool_registry, tool_names, exclude=essential_names):
             return tool_names, "eager"
-        register_lazy_tool_meta_tools(tool_registry)
+        register_lazy_tool_meta_tools(tool_registry, context)
         augmented = list(tool_names)
         for meta_name in META_TOOL_NAMES:
             if meta_name not in augmented:

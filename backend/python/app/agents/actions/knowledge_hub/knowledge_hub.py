@@ -208,6 +208,7 @@ def _list_files_result_summary(args: dict[str, Any], result: "ToolResult") -> st
         AuthBuilder.type("NONE").fields([])
     ])\
     .as_internal()\
+    .as_essential()\
     .configure(lambda builder: builder.with_icon("/assets/icons/toolsets/knowledge_hub.svg"))\
     .build_decorator()
 class KnowledgeHub:

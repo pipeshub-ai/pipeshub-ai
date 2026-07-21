@@ -29,9 +29,10 @@ _SKILL_TOOL_NAMES = {"skills_list", "load_skill", "load_skill_resource", "skill_
 
 class _FakeConnectorTool(Tool):
     """Stands in for an attached connector action. `group_connector_
-    toolsets` — the thing that actually flips top-level disclosure to
-    `"lazy"` — only groups tools carrying an `app_name`; `make_context()`'s
-    minimal registry has none of its own, so one is added here."""
+    toolsets` re-parents pre-registered `ToolsetGroup`s (the ones
+    `PipesHubToolLoader.load()` normally registers per connector) —
+    `make_context()`'s minimal registry has none of its own, so `_fake_load`
+    below registers one alongside this tool."""
 
     @property
     def app_name(self) -> str:
@@ -66,6 +67,7 @@ async def _fake_load(
 ) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register_tool(_FakeConnectorTool())
+    registry.register_toolset("jira", "Jira issue tracker", ["jira_search_issues"])
     return registry
 
 

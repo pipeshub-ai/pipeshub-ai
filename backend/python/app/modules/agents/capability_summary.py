@@ -619,6 +619,7 @@ def build_capability_summary(state: dict[str, Any]) -> str:
 
     _build_knowledge_section(state=state, has_knowledge=has_knowledge, parts=parts)
     _build_actions_section(state=state, has_knowledge=has_knowledge, parts=parts)
+    _build_auth_status_section(state=state, parts=parts)
 
     parts.append(
         "When users ask about capabilities, available tools, knowledge "
@@ -714,6 +715,39 @@ def _build_knowledge_section(
                 "  This gives the most complete picture."
             )
 
+    parts.append("")
+
+
+def _build_auth_status_section(state: dict[str, Any], *, parts: list[str]) -> None:
+    """Append a "Needs Authentication" subsection listing toolsets this
+    request found CONFIGURED but couldn't load because `ToolInstanceCreator`
+    raised an auth error (`toolset_load_failures[name] == "not_authenticated"`
+    — see `AgentContext.toolset_load_failures`'s docstring and
+    `tool_loader.py`'s per-toolset try/except). Without this, a toolset that
+    fails auth silently vanishes from the agent's tool list with no signal
+    at all, so a query naming it gets a generic "I don't have that tool"
+    instead of "authenticate it in Settings".
+
+    Deliberately omitted when empty — most requests have zero auth
+    failures, and an empty header would just be noise on every prompt.
+    """
+    failures: dict[str, Any] = state.get("toolset_load_failures") or {}
+    unauthenticated = sorted(
+        name for name, reason in failures.items() if reason == "not_authenticated"
+    )
+    if not unauthenticated:
+        return
+
+    parts.append("### Needs Authentication")
+    parts.append(
+        "The following toolsets are configured for this agent but are NOT "
+        "authenticated yet — their tools are unavailable until the user "
+        "authenticates. If the user's query targets one of these, tell them "
+        "plainly that it needs authentication and to go to Settings > "
+        "Toolsets to connect it, instead of saying the toolset doesn't exist:"
+    )
+    for name in unauthenticated:
+        parts.append(f"- {name}")
     parts.append("")
 
 

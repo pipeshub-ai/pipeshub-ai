@@ -222,8 +222,13 @@ export async function streamMessageForSlot(
     streamingParts: [],
     abortController,
     threadAgentId: request.agentId ?? slot.threadAgentId ?? null,
+    // `request.agentStreamTools` is `undefined` when every tool is
+    // selected (see `buildStreamChatRequestForSlot` in runtime.ts) — must
+    // map to `null` here, NOT `[]`: on `ChatSlot.agentStreamTools`, `null`
+    // means "all tools" and `[]` means "no tools" (see that field's
+    // docstring), the opposite of what an unfiltered selection means.
     ...(request.agentId
-      ? { agentStreamTools: [...(request.agentStreamTools ?? [])] }
+      ? { agentStreamTools: request.agentStreamTools ?? null }
       : {}),
     messages: [
       ...slot.messages,
@@ -927,10 +932,14 @@ export async function streamRegenerateForSlot(
       // Read agent tools from the store at regen time so the correct tool set
       // is used even when the user changed the selection between turns.
       const agentToolsSel = useChatStore.getState().agentStreamTools;
-      const agentToolCatalog = useChatStore.getState().agentToolCatalogFullNames;
-      const regenTools = [...new Set(
-        (agentToolsSel === null ? [...agentToolCatalog] : [...agentToolsSel]).map(stripInstancePrefix)
-      )];
+      // `null` → everything selected: omit `tools` entirely (`undefined`)
+      // rather than exploding the full catalog — an exploded list both
+      // defeats the backend's "no filter = every configured toolset"
+      // handling (agent.py) and needlessly re-approaches the request-size
+      // cap on agents with many multi-action toolsets.
+      const regenTools = agentToolsSel === null
+        ? undefined
+        : [...new Set(agentToolsSel.map(stripInstancePrefix))];
       await ChatApi.streamAgentRegenerate(
         threadAgentId,
         slot.convId,

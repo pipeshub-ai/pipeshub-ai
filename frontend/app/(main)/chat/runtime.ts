@@ -247,7 +247,15 @@ export function buildStreamChatRequestForSlot(
     ...(effectiveAgentId
       ? {
           agentId: effectiveAgentId,
-          agentStreamTools: streamTools,
+          // `toolsSel === null` means "everything selected" (no explicit
+          // filter) — omit `agentStreamTools` entirely rather than sending
+          // every toolCatalog fullName exploded out. The backend already
+          // treats a missing/`None` `tools` field as "use every configured
+          // toolset" (see agent.py), so this is both smaller on the wire
+          // and semantically correct — an exploded full list would defeat
+          // that "no filter" meaning and needlessly re-approach the
+          // request-size cap on agents with many multi-action toolsets.
+          ...(toolsSel !== null ? { agentStreamTools: streamTools } : {}),
         }
       : isUniversalAgentMode && toolsSel !== null
         ? {

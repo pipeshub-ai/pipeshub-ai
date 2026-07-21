@@ -9,7 +9,13 @@ Dynamic tools (web_search, fetch_url, SQL, Slack context, fetch_full_record)
 are built per-request and wrapped with `PipesHubStructuredToolAdapter`.
 
 The loader's only responsibility is loading and registration. Filtering,
-gating, and policy enforcement are separate concerns.
+gating, and policy enforcement are separate concerns. It does, however,
+record WHY a toolset failed to load into `context.toolset_load_failures`
+(`"not_authenticated"` vs `"error"`) and WHICH loaded toolsets are
+`essential=True` metadata into `context.essential_toolset_names` — both are
+facts only this loop can observe, and downstream consumers (the global
+search fallback, the capability summary, `factory.py`'s pinned-toolsets
+derivation) need them without re-deriving.
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.tools.toolset import ToolsetBuilder as AgentLoopToolsetBuilder
 from app.agents.agent_loop.instance_creator import ToolInstanceCreator
 from app.agents.agent_loop.tool_adapter import PipesHubStructuredToolAdapter, split_original_tool_name
+from app.agents.tools.factories.base import ToolsetAuthError
 from app.agents.tools.factories.registry import ClientFactoryRegistry
 
 if TYPE_CHECKING:
@@ -35,6 +42,34 @@ if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
 
 logger = logging.getLogger(__name__)
+
+# Normalized (`ToolsetRegistry._normalize_toolset_name`) names of the two
+# internal toolsets ("Retrieval", "KnowledgeHub") whose tools are useless —
+# and actively misleading, since every call fails with "No knowledge sources
+# configured" — when the agent has no knowledge attached. `.as_internal()`
+# exempts them from the external-toolset "configured on this agent" check
+# below, so they need their own gate on `context.has_knowledge` instead.
+_KNOWLEDGE_TOOLSETS = frozenset({"retrieval", "knowledgehub"})
+
+# Same substring heuristic `ToolInstanceCreator._create_with_factory` uses to
+# decide whether to re-raise a `ValueError` as an auth-flavored message
+# (`instance_creator.py`) — duplicated here (not imported) because that
+# heuristic lives on the RAISING side; this is the CATCHING side deciding
+# how to classify what it just caught, a distinct concern.
+_AUTH_ERROR_MARKERS = ("not authenticated", "oauth", "authentication")
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    """Whether *exc* represents a configured-but-unauthenticated toolset —
+    either the library's own `ToolsetAuthError` or the auth-flavored
+    `ValueError` `ToolInstanceCreator` raises for the same condition (see
+    `instance_creator.py::_create_with_factory`)."""
+    if isinstance(exc, ToolsetAuthError):
+        return True
+    if isinstance(exc, ValueError):
+        message = str(exc).lower()
+        return any(marker in message for marker in _AUTH_ERROR_MARKERS)
+    return False
 
 
 def _has_tool_decorated_methods(cls: type) -> bool:
@@ -223,6 +258,11 @@ class PipesHubToolLoader:
                     state_logger.debug("Skipping unconfigured external toolset: %s", ts_name)
                 continue
 
+            if ts_name in _KNOWLEDGE_TOOLSETS and not context.has_knowledge:
+                if state_logger:
+                    state_logger.debug("Skipping knowledge toolset with no knowledge configured: %s", ts_name)
+                continue
+
             try:
                 instance = await instance_creator.create_instance_async(ts_class, ts_name)
 
@@ -247,13 +287,28 @@ class PipesHubToolLoader:
                 if registered_names:
                     try:
                         registry.register_toolset(group_name, ts_description, registered_names)
+                        if ts_meta.get("essential", False) and group_name not in context.essential_toolset_names:
+                            context.essential_toolset_names.append(group_name)
                     except Exception:
                         pass
 
                 loaded_apps.add(ts_name)
             except Exception as e:
+                # Distinguish "configured but not authenticated" (the
+                # toolset exists — the user just needs to complete OAuth/API
+                # key setup) from a genuine load failure, so callers
+                # downstream (search_tools' global fallback, the capability
+                # summary) can proactively tell the user to authenticate
+                # instead of the toolset silently vanishing with no signal
+                # (see AgentContext.toolset_load_failures's docstring).
+                reason = "not_authenticated" if _is_auth_error(e) else "error"
+                context.toolset_load_failures[ts_name] = reason
                 if state_logger:
-                    state_logger.error("Failed to load toolset %s: %s", ts_name, e, exc_info=True)
+                    log_fn = state_logger.warning if reason == "not_authenticated" else state_logger.error
+                    log_fn(
+                        "Failed to load toolset %s (reason=%s): %s", ts_name, reason, e,
+                        exc_info=reason != "not_authenticated",
+                    )
                 continue
 
         # ── Dynamic tools ─────────────────────────────────────────────────

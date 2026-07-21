@@ -48,6 +48,7 @@ def _result(success: bool, payload: dict[str, Any]) -> tuple[bool, str]:
         AuthBuilder.type("NONE").fields([])
     ])\
     .as_internal()\
+    .as_essential()\
     .configure(lambda builder: builder.with_icon("/assets/icons/toolsets/artifact.svg"))\
     .build_decorator()
 class ArtifactManager:

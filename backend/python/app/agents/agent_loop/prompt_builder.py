@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 from app.agent_loop_lib.agent.prompt import render_skills_overview
 from app.agent_loop_lib.tools.errors import ToolNotFoundError
 from app.agents.agent_loop.sandbox_bridge import sandbox_network_enabled
+from app.agents.agent_loop.tool_guidance import ToolGuidanceProvider
 from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.context.connector_detection import (
     _has_clickup_tools,
@@ -68,8 +69,7 @@ _BEHAVIOR_RULES = """
 - When multiple tools could plausibly have the answer, call them IN PARALLEL.
 - If a tool call returns an error, read the error message, adjust your approach, and retry once. If it fails again, tell the user what happened.
 - For follow-up queries, check conversation history for entity references (issue keys, page IDs, channel names) before asking the user to repeat them.
-- When users ask what you can do, describe your available tools and connected services based on the Available Tools section.
-
+{capability_question_rule}
 ## Response Format
 - Answer directly — never narrate your process ("I searched for…", "The tool returned…").
 - Never dump raw JSON. Transform tool output into clean, professional markdown.
@@ -80,6 +80,23 @@ _BEHAVIOR_RULES = """
 - **Single item**: present key fields as a clean summary with the item's title as a heading.
 - **Empty results**: say so plainly and suggest broadening the search.
 """
+
+_CAPABILITY_QUESTION_RULE_EAGER = (
+    "- When users ask what you can do, describe your available tools and "
+    "connected services based on the Available Tools section.\n"
+)
+# Under lazy disclosure, the Available Tools section only lists essentials
+# + meta-tools — connector toolsets (Jira, Confluence, ...) are grouped
+# behind fetch_tools/search_tools and NOT individually named there (see
+# `group_connector_toolsets` in lazy_tools_wiring.py), so answering from
+# that section alone would under-report what this agent can actually do.
+_CAPABILITY_QUESTION_RULE_LAZY = (
+    "- When users ask what you can do, call `list_toolsets` FIRST to enumerate "
+    "every connected toolset (not just what's already visible in the Available "
+    "Tools section below), then answer from its output plus the Capability "
+    "Summary section. Never tell a user a service isn't connected without "
+    "checking `list_toolsets` first.\n"
+)
 
 _TOOL_REFERENCE_HEADER = (
     "\n## Available Tools\n\n"
@@ -109,6 +126,28 @@ def _web_reference(tool_names: list[str]) -> str:
     assumption that the caller already gated on `has_web_search` before
     rendering any text that mentions this reference."""
     return "`web_agent`" if "web_agent" in tool_names else "`web_search`/`fetch_url`"
+
+
+def _active_connector_guidance(context: AgentContext, tool_names: list[str]) -> list[str]:
+    """`ToolGuidanceProvider.get_active_guidance()` returns guidance for
+    every connector CONFIGURED on this agent (`context.agent_toolsets`) —
+    broader than what THIS spec was actually granted (e.g. a domain child
+    with a narrower claim, or a toolset that failed to load — see
+    `AgentContext.toolset_load_failures`). Re-filtered here to only the
+    connectors with at least one tool name actually in `tool_names` (the
+    resolved grant/ceiling — see `AgentSpec.tool_names`), using the same
+    `{group_name}__{tool_name}` convention every adapter in this layer
+    registers under (`tool_loader.py`, `PipesHubStructuredToolAdapter`),
+    so e.g. MariaDB/Redshift SQL guidance never appears for a spec that
+    was never actually given those tools."""
+    guidance_map = ToolGuidanceProvider().get_active_guidance(context)
+    if not guidance_map:
+        return []
+    granted_prefixes = {name.split("__", 1)[0] for name in tool_names if "__" in name}
+    return [
+        guidance for connector_name, guidance in guidance_map.items()
+        if connector_name in granted_prefixes
+    ]
 
 
 def _internal_knowledge_reference(tool_names: list[str]) -> str:
@@ -468,7 +507,11 @@ class PipesHubPromptBuilder:
         if self._context.instructions and self._context.instructions.strip():
             parts.append(f"## Agent Instructions\n{self._context.instructions.strip()}")
 
-        parts.append(_BEHAVIOR_RULES.strip())
+        capability_rule = (
+            _CAPABILITY_QUESTION_RULE_LAZY if spec.tool_disclosure == "lazy"
+            else _CAPABILITY_QUESTION_RULE_EAGER
+        )
+        parts.append(_BEHAVIOR_RULES.format(capability_question_rule=capability_rule).strip())
 
         base_system_prompt = spec.system_prompt if isinstance(spec.system_prompt, str) else ""
         if base_system_prompt:
@@ -500,6 +543,9 @@ class PipesHubPromptBuilder:
             parts.append(self._build_internal_knowledge_first_section(tool_names))
 
         parts.append(self._build_hybrid_strategy_section(state, tool_names, has_web_search=has_web_search))
+
+        for guidance in _active_connector_guidance(self._context, tool_names):
+            parts.append(guidance)
 
         code_tool = _composed_code_tool(tool_names)
         sandbox_networked = code_tool is not None and sandbox_network_enabled()

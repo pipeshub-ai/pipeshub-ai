@@ -282,8 +282,8 @@ qna_prompt_with_retrieval_tool = """
   <tool>
   **After retrieving internal knowledge**, you will also have access to:
   - **"fetch_full_record"** — Fetch the complete content of records when retrieved blocks are insufficient
-  - **"execute_sql_query"** — Execute SQL queries against connected databases (only when SQL connectors are available)
-
+  {% if has_sql_connector %}- **"execute_sql_query"** — Execute SQL queries against connected databases
+  {% endif %}
   These tools become available only after you call search_internal_knowledge and retrieve records.
   </tool>
 </tools>

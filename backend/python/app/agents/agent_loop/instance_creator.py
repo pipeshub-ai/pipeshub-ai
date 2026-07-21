@@ -13,6 +13,8 @@ import inspect
 import logging
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
 from app.agents.tools.factories.base import ToolsetAuthError
 from app.agents.tools.factories.registry import ClientFactoryRegistry
 
@@ -22,6 +24,18 @@ if TYPE_CHECKING:
 __all__ = ["ToolInstanceCreator"]
 
 logger = logging.getLogger(__name__)
+
+_TRANSIENT_EXCEPTIONS: tuple[type[Exception], ...] = (
+    httpx.RemoteProtocolError,
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.ConnectError,
+    httpx.TimeoutException,
+    ConnectionError,
+    OSError,
+)
+
+_MAX_CLIENT_CREATION_ATTEMPTS = 3
 
 
 class ToolInstanceCreator:
@@ -115,12 +129,7 @@ class ToolInstanceCreator:
                 self._log.warning("No toolset config for %s, using empty config", app_name)
 
             try:
-                client = await factory.create_client(
-                    self._config_service,
-                    self._log,
-                    config,
-                    self._tool_state,
-                )
+                client = await self._create_client_with_retry(factory, app_name, config)
                 self._client_cache[cache_key] = client
                 self._log.debug("Cached client for %s (toolset: %s)", app_name, toolset_id)
             except ToolsetAuthError:
@@ -134,9 +143,65 @@ class ToolInstanceCreator:
                         "Please complete the OAuth flow first. "
                         f"Go to Settings > Toolsets to authenticate your {app_name.capitalize()} account."
                     ) from e
-                return self._fallback_creation(action_class)
+                raise RuntimeError(
+                    f"Failed to create {app_name} client: {e}"
+                ) from e
 
         return self._instantiate(action_class, client)
+
+    async def _create_client_with_retry(
+        self, factory: object, app_name: str, config: dict,
+    ) -> object:
+        """Call ``factory.create_client`` with retry on transient network errors.
+
+        Connector factories often make network calls during client creation
+        (e.g. OAuth token exchange, accessible-resource resolution for
+        Atlassian). These are susceptible to transient failures (dropped
+        connections, timeouts) that succeed on retry.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_CLIENT_CREATION_ATTEMPTS):
+            try:
+                return await factory.create_client(
+                    self._config_service,
+                    self._log,
+                    config,
+                    self._tool_state,
+                )
+            except ToolsetAuthError:
+                raise
+            except _TRANSIENT_EXCEPTIONS as e:
+                last_exc = e
+                if attempt == _MAX_CLIENT_CREATION_ATTEMPTS - 1:
+                    break
+                backoff = 0.5 * (2 ** attempt)
+                self._log.warning(
+                    "Transient error creating %s client (attempt %d/%d): %s — retrying in %.1fs",
+                    app_name, attempt + 1, _MAX_CLIENT_CREATION_ATTEMPTS,
+                    type(e).__name__, backoff,
+                )
+                await asyncio.sleep(backoff)
+            except Exception as e:
+                error_msg = str(e).lower()
+                is_transient = any(
+                    marker in error_msg
+                    for marker in ("disconnected", "timed out", "timeout", "connection reset")
+                )
+                if is_transient:
+                    last_exc = e
+                    if attempt == _MAX_CLIENT_CREATION_ATTEMPTS - 1:
+                        break
+                    backoff = 0.5 * (2 ** attempt)
+                    self._log.warning(
+                        "Transient error creating %s client (attempt %d/%d): %s — retrying in %.1fs",
+                        app_name, attempt + 1, _MAX_CLIENT_CREATION_ATTEMPTS,
+                        e, backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                else:
+                    raise
+
+        raise last_exc  # type: ignore[misc]
 
     def _instantiate(self, action_class: type, client: object) -> object:
         """Instantiate the action class, passing tool_state if accepted."""

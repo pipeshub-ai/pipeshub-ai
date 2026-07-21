@@ -724,8 +724,11 @@ export interface StreamChatRequest {
   /** When set, the stream uses /api/v1/agents/:id/conversations/.../stream */
   agentId?: string;
   /**
-   * Agent streams only → JSON `tools`: every enabled tool `fullName` (resolved from the
-   * catalog when the UI means “all tools”; `[]` = none).
+   * Agent streams only → JSON `tools`: explicit tool `fullName` subset.
+   * `undefined` (field omitted) means "every configured toolset, no
+   * filter" — NEVER resolved into an exploded full-catalog array on this
+   * type, since that would defeat the backend's own "no filter" handling
+   * and needlessly approach its request-size cap. `[]` means "none".
    */
   agentStreamTools?: string[];
   /** Uploaded file refs to include with this message (PDF / JPEG / PNG). */
