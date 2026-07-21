@@ -8,8 +8,21 @@ via `AgentContext.formatter` instead of hand-building `{event, data}` dicts.
 
 from __future__ import annotations
 
-from app.agents.agent_loop.protocol.formatter import AGUIFormatter, LegacyFormatter
+from app.agents.agent_loop.protocol.formatter import (
+    AGUIFormatter,
+    ArtifactSSEPayload,
+    LegacyFormatter,
+)
 from tests.unit.agents.adapter.conftest import make_context
+
+_ARTIFACT_PAYLOAD = ArtifactSSEPayload(
+    artifactId="art-1",
+    fileName="report.pdf",
+    mimeType="application/pdf",
+    sizeBytes=1024,
+    downloadUrl="https://example.com/report.pdf",
+    artifactType="OTHER",
+)
 
 
 class TestLegacyFormatter:
@@ -48,9 +61,9 @@ class TestLegacyFormatter:
         ]
 
     def test_artifact(self) -> None:
-        frames = self.formatter.artifact(self.context, artifact_data={"name": "report.pdf"})
+        frames = self.formatter.artifact(self.context, artifact_data=_ARTIFACT_PAYLOAD)
 
-        assert frames == [{"event": "artifact", "data": {"name": "report.pdf"}}]
+        assert frames == [{"event": "artifact", "data": _ARTIFACT_PAYLOAD.to_wire_dict()}]
 
     def test_tool_unavailable(self) -> None:
         frames = self.formatter.tool_unavailable(
@@ -114,12 +127,20 @@ class TestAGUIFormatter:
         assert frames[0]["data"]["value"] == {"status": "pending", "toolData": {"question": "Which?"}}
         assert frames[0]["data"]["runId"] == "run-1"
 
-    def test_artifact_wraps_in_custom_event(self) -> None:
-        frames = self.formatter.artifact(self.context, artifact_data={"name": "report.pdf"})
+    def test_artifact_emits_state_delta_add_op(self) -> None:
+        """`artifact()` rides `STATE_DELTA` with an `add /artifacts/-` op
+        (not `CUSTOM`) so stock AG-UI clients can accumulate artifact state
+        off a well-known JSON Patch path — see `QueueEventSink._coalesce_key`
+        for why this must be an `add`, never a `replace`."""
+        frames = self.formatter.artifact(self.context, artifact_data=_ARTIFACT_PAYLOAD)
 
-        assert frames[0]["event"] == "CUSTOM"
-        assert frames[0]["data"]["name"] == "artifact"
-        assert frames[0]["data"]["value"] == {"name": "report.pdf"}
+        assert len(frames) == 1
+        frame = frames[0]
+        assert frame["event"] == "STATE_DELTA"
+        assert frame["data"]["runId"] == "run-1"
+        assert frame["data"]["delta"] == [
+            {"op": "add", "path": "/artifacts/-", "value": _ARTIFACT_PAYLOAD.to_wire_dict()}
+        ]
 
     def test_tool_unavailable_wraps_in_custom_event(self) -> None:
         frames = self.formatter.tool_unavailable(
@@ -151,3 +172,16 @@ class TestAgentContextFormatterSelection:
         context = make_context(protocol="agui")
 
         assert isinstance(context.formatter, AGUIFormatter)
+
+    def test_formatter_is_a_shared_singleton_not_reallocated_per_access(self) -> None:
+        """Both formatters are stateless — `AgentContext.formatter` must
+        return the SAME instance across accesses (even across different
+        `AgentContext`s), not allocate a new one every time it's read
+        (this property is read multiple times per streamed chunk)."""
+        legacy_context = make_context()
+        agui_context = make_context(protocol="agui")
+
+        assert legacy_context.formatter is legacy_context.formatter
+        assert agui_context.formatter is agui_context.formatter
+        assert legacy_context.formatter is make_context().formatter
+        assert agui_context.formatter is make_context(protocol="agui").formatter

@@ -1740,7 +1740,10 @@ export const getRecordBuffer =
     try {
       const { recordId } = req.params as { recordId: string };
       const { userId, orgId } = req.user || {};
-      const { convertTo } = req.query as { convertTo: string };
+      const { convertTo, version } = req.query as {
+        convertTo: string;
+        version?: string;
+      };
       if (!userId || !orgId) {
         throw new BadRequestError('User authentication is required');
       }
@@ -1749,6 +1752,10 @@ export const getRecordBuffer =
       if (convertTo) {
         logger.info('Converting file to ', { convertTo });
         queryParams.append('convertTo', convertTo);
+      }
+      if (version !== undefined) {
+        // Already validated as `^\d+$` by getRecordByIdSchema.
+        queryParams.append('version', version);
       }
       const headers: Record<string, string> = {
         Authorization: req.headers.authorization as string,

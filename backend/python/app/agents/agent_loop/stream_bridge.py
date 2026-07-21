@@ -129,12 +129,23 @@ def _coalesce_key(event: dict[str, Any]) -> tuple[str, str] | None:
     match an adjacent pending event's key for the two to merge — for the
     per-message delta events this includes `messageId`, so a reasoning
     stream and the main answer stream (or two different messages) never
-    get merged into each other even though both use the same event name."""
+    get merged into each other even though both use the same event name.
+
+    `STATE_DELTA` carries two different kinds of JSON Patch ops that both
+    use this event name: `answer_delta`'s `replace` ops (a supersedable
+    snapshot — the newer accumulated text/citations always wins, so
+    merging is correct) and `artifact()`'s `add` op on `/artifacts/-` (an
+    APPEND to a list — merging or dropping one would lose an artifact the
+    client never sees again). So any `STATE_DELTA` carrying an `add` op
+    must never coalesce with anything, including another `add`."""
     name = event.get("event")
     if name in _COALESCABLE_DELTA_FIELD:
         data = event.get("data") or {}
         return (name, data.get("messageId", ""))
     if name in _COALESCABLE_SNAPSHOT_EVENTS:
+        delta = (event.get("data") or {}).get("delta") or []
+        if any(op.get("op") == "add" for op in delta):
+            return None
         return (name, "")
     return None
 

@@ -16,13 +16,19 @@ import os
 from typing import Any
 
 from app.config.constants.arangodb import CollectionNames, Connectors
-from app.models.entities import ArtifactType
+from app.models.entities import ArtifactType, deserialize_artifact_versions
 
 from .access import AccessPolicy
 from .lineage import LineageTracker
 from .models import Actor, ArtifactMetadata, ArtifactVersion, UploadGrant
 from .signed_urls import GrantVerificationError, SignedUrlBroker
-from .versioning import VersionManager, to_metadata_from_docs
+from .versioning import (
+    VersionConflictError,
+    VersionManager,
+    VersionMappingNotFoundError,
+    resolve_storage_version,
+    to_metadata_from_docs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +48,14 @@ _FUZZY_RESOLVE_EXTENSIONS: tuple[str, ...] = (
     ".png", ".jpg", ".jpeg", ".svg", ".pdf", ".pptx", ".docx",
     ".xlsx", ".csv", ".md", ".txt", ".json",
 )
+
+# Bounded retry for the "bump-bump" version race in `_bump_with_retry`: a
+# concurrent writer's version bump between our `resolve` and our
+# `add_version` call fails once with `VersionConflictError`; we re-resolve
+# and retry exactly once before surfacing the error to the caller. Content-
+# hash dedup in `add_version` makes the retry cheap when the racer wrote
+# byte-identical content.
+_MAX_VERSION_CONFLICT_RETRIES = 1
 
 
 class ArtifactRegistryService:
@@ -97,16 +111,103 @@ class ArtifactRegistryService:
         self._check_size(content)
         existing = await self.resolve_by_logical_name(actor, name, conversation_id=conversation_id)
         if existing is None:
-            metadata = await self._versions.create(
+            created = await self._versions.create(
                 actor=actor, name=name, artifact_type=artifact_type, mime_type=mime_type,
                 content=content, conversation_id=conversation_id, description=description,
                 source_tool=source_tool, connector_name=connector_name,
             )
-            return metadata, None
+            return await self._reconcile_create_race(
+                actor=actor, name=name, conversation_id=conversation_id,
+                created=created, content=content, mime_type=mime_type,
+            )
 
-        version, metadata = await self._versions.add_version(
+        return await self._bump_with_retry(
             actor=actor, artifact_id=existing.artifact_id, content=content, mime_type=mime_type,
+            expected_version=existing.version,
         )
+
+    async def _bump_with_retry(
+        self, *, actor: Actor, artifact_id: str, content: bytes, mime_type: str | None,
+        expected_version: int,
+    ) -> tuple[ArtifactMetadata, ArtifactVersion | None]:
+        """Bump `artifact_id`, pinning `expected_version` so a concurrent
+        writer that already moved the version out from under us raises
+        `VersionConflictError` instead of silently double-bumping (the
+        "bump-bump" race — see plan's "Version races"). Re-resolves and
+        retries once, bounded by `_MAX_VERSION_CONFLICT_RETRIES`, before
+        surfacing the conflict to the caller."""
+        for attempt in range(_MAX_VERSION_CONFLICT_RETRIES + 1):
+            try:
+                version, metadata = await self._versions.add_version(
+                    actor=actor, artifact_id=artifact_id, content=content, mime_type=mime_type,
+                    expected_version=expected_version,
+                )
+                return metadata, version
+            except VersionConflictError:
+                if attempt >= _MAX_VERSION_CONFLICT_RETRIES:
+                    raise
+                logger.warning(
+                    "register_output: version conflict on artifact %s (expected=%d) — "
+                    "re-resolving and retrying once.",
+                    artifact_id, expected_version,
+                )
+                refreshed = await self.resolve(actor=actor, ref=artifact_id)
+                expected_version = refreshed.version
+        raise AssertionError("unreachable: loop above always returns or raises")
+
+    async def _reconcile_create_race(
+        self, *, actor: Actor, name: str, conversation_id: str, created: ArtifactMetadata,
+        content: bytes, mime_type: str,
+    ) -> tuple[ArtifactMetadata, ArtifactVersion | None]:
+        """Guards the "create-create" race: two concurrent `register_output`
+        calls for a NEW logical name can both see `existing is None` and
+        both `create()`, leaving two artifacts with the same `logicalName`
+        in one conversation. `resolve_by_logical_name`'s `limit=1` lookup
+        then arbitrarily and permanently shadows one of them.
+
+        Re-resolving right after our own `create()` detects this: if a
+        DIFFERENT artifact_id now wins the name lookup, we lost the race —
+        fold our content into the winner as a new version instead of
+        leaving our own `create()` as a silently orphaned duplicate, and
+        mark our record deleted so it stops showing up via direct
+        artifact_id access too. No portable unique constraint exists across
+        ArangoDB/Neo4j, so this is a best-effort post-hoc fix-up, not a
+        prevention — the window between `create()` and this re-resolve is
+        real, if narrow."""
+        winner = await self.resolve_by_logical_name(actor, name, conversation_id=conversation_id)
+        if winner is None or winner.artifact_id == created.artifact_id:
+            return created, None
+
+        logger.warning(
+            "register_output: create-create race on logicalName=%r conversation=%s — "
+            "artifact %s lost to %s; folding content into the winner and marking "
+            "the loser deleted.",
+            name, conversation_id, created.artifact_id, winner.artifact_id,
+        )
+        try:
+            metadata, version = await self._bump_with_retry(
+                actor=actor, artifact_id=winner.artifact_id, content=content, mime_type=mime_type,
+                expected_version=winner.version,
+            )
+        except Exception:
+            logger.critical(
+                "register_output: failed to fold artifact %s into race winner %s — "
+                "both now exist under logicalName=%r; manual cleanup may be needed.",
+                created.artifact_id, winner.artifact_id, name, exc_info=True,
+            )
+            return created, None
+
+        try:
+            await self._graph_provider.update_node(
+                created.artifact_id, CollectionNames.RECORDS.value,
+                {"isDeleted": True, "reason": "ARTIFACT_CREATE_RACE_LOSER"},
+            )
+        except Exception:
+            logger.critical(
+                "register_output: folded artifact %s into %s but failed to mark the "
+                "loser record deleted — it remains visible via direct artifact_id lookup.",
+                created.artifact_id, winner.artifact_id, exc_info=True,
+            )
         return metadata, version
 
     async def register_existing(
@@ -208,20 +309,31 @@ class ArtifactRegistryService:
         self, actor: Actor, name: str, *, conversation_id: str,
     ) -> ArtifactMetadata | None:
         """Backend-agnostic equality lookup via `get_documents_paginated`
-        (no raw AQL/Cypher — works unchanged on ArangoDB and Neo4j)."""
+        (no raw AQL/Cypher — works unchanged on ArangoDB and Neo4j).
+
+        Fetches a small window (not just 1) and skips any candidate whose
+        `records` doc is `isDeleted` — the `ARTIFACTS` collection itself
+        carries no `isDeleted`/soft-delete flag (see
+        `ArtifactRecord.to_arango_artifact_record`), so a `logicalName`
+        that briefly had two documents from the "create-create" race (see
+        `_reconcile_create_race`) would otherwise nondeterministically
+        resolve to the deleted loser instead of the live winner. This is a
+        bounded mitigation, not a uniqueness guarantee: an unbounded number
+        of racers could still exceed the window."""
         candidates = await self._graph_provider.get_documents_paginated(
-            CollectionNames.ARTIFACTS.value, skip=0, limit=1,
+            CollectionNames.ARTIFACTS.value, skip=0, limit=5,
             filters={"orgId": actor.org_id, "conversationId": conversation_id, "logicalName": name},
         )
-        if not candidates:
-            return None
-        artifact_doc = candidates[0]
-        artifact_id = artifact_doc.get("_key") or artifact_doc.get("id")
-        try:
-            record = await self._access.authorize_read(actor, artifact_id)
-        except Exception:
-            return None
-        return await self._with_lineage(to_metadata_from_docs(record, artifact_doc))
+        for artifact_doc in candidates:
+            artifact_id = artifact_doc.get("_key") or artifact_doc.get("id")
+            try:
+                record = await self._access.authorize_read(actor, artifact_id)
+            except Exception:
+                continue
+            if record.get("isDeleted"):
+                continue
+            return await self._with_lineage(to_metadata_from_docs(record, artifact_doc))
+        return None
 
     async def _resolve_by_logical_name_fuzzy(
         self, actor: Actor, ref: str, *, conversation_id: str,
@@ -262,21 +374,41 @@ class ArtifactRegistryService:
 
     async def get_content(self, *, actor: Actor, artifact_id: str, version: int | None = None) -> bytes:
         record = await self._access.authorize_read(actor, artifact_id)
-        if version is not None and version != record.get("version"):
-            raise NotImplementedError(
-                "Fetching a specific historical version's content is not yet supported — "
-                "only the current version can be retrieved."
-            )
+        storage_version = await self._resolve_storage_version(artifact_id, record, version)
         from app.agents.actions.util.blob_staging import fetch_blob_bytes
 
         return await fetch_blob_bytes(
             org_id=actor.org_id, config_service=self._blob_store.config_service,
-            storage_document_id=record["externalRecordId"],
+            storage_document_id=record["externalRecordId"], version=storage_version,
         )
 
-    async def get_download_url(self, *, actor: Actor, artifact_id: str, ttl_s: int = 600) -> str:
+    async def get_download_url(
+        self, *, actor: Actor, artifact_id: str, version: int | None = None, ttl_s: int = 600,
+    ) -> str:
         record = await self._access.authorize_read(actor, artifact_id)
-        return await self._urls.get_download_url(org_id=actor.org_id, document_id=record["externalRecordId"], ttl_s=ttl_s)
+        storage_version = await self._resolve_storage_version(artifact_id, record, version)
+        return await self._urls.get_download_url(
+            org_id=actor.org_id, document_id=record["externalRecordId"], version=storage_version, ttl_s=ttl_s,
+        )
+
+    async def _resolve_storage_version(
+        self, artifact_id: str, record: dict, version: int | None,
+    ) -> int | None:
+        """Fetch this artifact's `versions` bookkeeping and delegate the
+        actual mapping decision to `versioning.resolve_storage_version` —
+        the one place that logic lives (also used directly by the
+        connectors' stream route, which already has `versions` in hand and
+        skips this graph fetch)."""
+        current_version = record.get("version", 1)
+        if version is None or version == current_version:
+            return None
+        artifact_doc = await self._graph_provider.get_document(artifact_id, CollectionNames.ARTIFACTS.value)
+        versions = deserialize_artifact_versions((artifact_doc or {}).get("versions"))
+        try:
+            return resolve_storage_version(current_version, versions, version)
+        except VersionMappingNotFoundError as e:
+            from .access import ArtifactNotFoundError
+            raise ArtifactNotFoundError(str(e)) from e
 
     async def list_for_conversation(
         self, *, actor: Actor, conversation_id: str, include_lineage: bool = True, limit: int = 100,

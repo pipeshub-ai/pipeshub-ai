@@ -23,15 +23,22 @@ def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
 
         if task_type == "artifacts":
             for art in t.get("artifacts", []):
-                url = art.get("signedUrl") or art.get("downloadUrl", "")
-                if not url:
-                    continue
                 fname = art.get("fileName", "Download")
                 mime = art.get("mimeType", "application/octet-stream")
                 doc_id = art.get("documentId", "")
                 record_id = art.get("recordId", "")
                 artifact_type = art.get("artifactType", "")
                 version = art.get("version", "")
+
+                # Never persist a signed URL (expires ~10 min) once there's a
+                # recordId to stream through instead.
+                if record_id:
+                    url = f"record:{record_id}"
+                else:
+                    url = art.get("signedUrl") or art.get("downloadUrl", "")
+                    if not url:
+                        continue
+
                 dedupe_key = f"{record_id or doc_id or url}:{version}"
                 if dedupe_key in seen_artifacts:
                     continue
@@ -90,7 +97,12 @@ class TestAppendTaskMarkersLegacy:
 class TestAppendTaskMarkersArtifacts:
     """Tests for the new artifact marker logic."""
 
-    def test_single_artifact(self):
+    def test_single_artifact_with_record_id_uses_placeholder_not_signed_url(self):
+        """A recordId means the signed URL must NOT be embedded — it expires
+        in ~10 min and would be dead weight forever in the saved message.
+        A stable `record:{recordId}` placeholder fills the `(url)` slot
+        instead (the frontend's `parseArtifactMarkers` regex requires a
+        non-empty segment there; `record:...` is not a fetchable URL)."""
         tasks = [{
             "type": "artifacts",
             "artifacts": [{
@@ -102,7 +114,8 @@ class TestAppendTaskMarkersArtifacts:
             }],
         }]
         result = _append_task_markers("answer", tasks)
-        assert "::artifact[chart.png](https://s3/chart.png){image/png|doc123|rec456||}" in result
+        assert "::artifact[chart.png](record:rec456){image/png|doc123|rec456||}" in result
+        assert "https://s3/chart.png" not in result
 
     def test_multiple_artifacts(self):
         tasks = [{
@@ -113,12 +126,14 @@ class TestAppendTaskMarkersArtifacts:
                     "signedUrl": "https://s3/chart.png",
                     "mimeType": "image/png",
                     "documentId": "doc1",
+                    "recordId": "rec1",
                 },
                 {
                     "fileName": "data.csv",
                     "downloadUrl": "https://local/data.csv",
                     "mimeType": "text/csv",
                     "documentId": "doc2",
+                    "recordId": "rec2",
                 },
             ],
         }]
@@ -126,7 +141,10 @@ class TestAppendTaskMarkersArtifacts:
         assert "::artifact[chart.png]" in result
         assert "::artifact[data.csv]" in result
 
-    def test_artifact_uses_downloadUrl_fallback(self):
+    def test_artifact_without_record_id_falls_back_to_downloadUrl(self):
+        """No `recordId` means there's no stream-through path at all — the
+        real URL is the only way this artifact is ever downloadable, so it
+        must still be embedded (accepting the ~10 min TTL trade-off)."""
         tasks = [{
             "type": "artifacts",
             "artifacts": [{
@@ -139,7 +157,7 @@ class TestAppendTaskMarkersArtifacts:
         result = _append_task_markers("answer", tasks)
         assert "https://local/report.pdf" in result
 
-    def test_artifact_without_url_skipped(self):
+    def test_artifact_without_url_or_record_id_skipped(self):
         tasks = [{
             "type": "artifacts",
             "artifacts": [{"fileName": "test.txt", "mimeType": "text/plain"}],
@@ -175,6 +193,8 @@ class TestAppendTaskMarkersMixed:
         assert "::artifact[chart.png]" in result
 
     def test_default_values(self):
+        """No `recordId` at all — falls back to the raw URL (see
+        `test_artifact_without_record_id_falls_back_to_downloadUrl`)."""
         tasks = [{
             "type": "artifacts",
             "artifacts": [{

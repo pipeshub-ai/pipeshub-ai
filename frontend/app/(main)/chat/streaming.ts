@@ -18,6 +18,7 @@ import { ChatApi, type StreamMessageCallbacks } from './api';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel } from './store';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
+import { buildChatArtifact } from './utils/build-chat-artifact';
 import { debugLog } from './debug-logger';
 import { loadHistoricalMessages, getThreadMessagePlainText } from './runtime';
 import { i18n } from '@/lib/i18n';
@@ -425,17 +426,17 @@ export async function streamMessageForSlot(
       },
 
       onArtifact: (data: SSEArtifactEvent) => {
-        const artifact: ChatArtifact = {
-          id: data.artifactId || `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        const artifact: ChatArtifact = buildChatArtifact({
+          id: data.artifactId,
           fileName: data.fileName,
           mimeType: data.mimeType,
-          sizeBytes: data.sizeBytes ?? 0,
+          sizeBytes: data.sizeBytes,
           downloadUrl: data.downloadUrl,
-          artifactType: data.artifactType ?? 'OTHER',
+          artifactType: data.artifactType,
           recordId: data.recordId,
           version: data.version,
           derivedFromCodeArtifactId: data.derivedFromCodeArtifactId,
-        };
+        });
         const currentSlot = useChatStore.getState().slots[slotId];
         if (currentSlot) {
           // Replace-in-place when the same artifact arrives again (a new

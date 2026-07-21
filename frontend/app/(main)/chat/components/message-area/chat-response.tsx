@@ -101,6 +101,8 @@ interface ChatResponseProps {
   streamingCitationMaps?: CitationMaps | null;
   /** Artifacts generated during streaming (coding sandbox, etc.) */
   streamingArtifacts?: ChatArtifact[];
+  /** recordId -> highest version seen anywhere in this conversation (see `MessageList`) — powers the "newer version available" hint on older cards. */
+  latestArtifactVersions?: Map<string, number>;
   /** Live agent-activity transcript — only passed for the currently-streaming message. */
   streamingParts?: MessagePart[];
   /** Persisted agent-activity transcript from `ConversationMessage.parts` (absent for older messages). */
@@ -137,6 +139,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   currentStatusMessage: currentStatusMessageProp = null,
   streamingCitationMaps = null,
   streamingArtifacts,
+  latestArtifactVersions,
   streamingParts,
   persistedParts,
   citationMessageRowKey,
@@ -413,6 +416,7 @@ export const ChatResponse = React.memo(function ChatResponse({
             {effectiveArtifacts.length > 0 && !askQuestionMatchesRow && !persistedAskUserQuestion && (
               <ArtifactsPanel
                 artifacts={effectiveArtifacts}
+                latestArtifactVersions={latestArtifactVersions}
                 onPreview={async (artifact) => {
                   if (artifact.recordId) {
                     try {
@@ -420,18 +424,19 @@ export const ChatResponse = React.memo(function ChatResponse({
                       const streamAsPdf =
                         isPresentationFile(artifact.mimeType, artifact.fileName) ||
                         isLegacyWordDocFile(artifact.mimeType, artifact.fileName);
-                      const streamOptions = streamAsPdf
-                        ? { convertTo: 'application/pdf' }
-                        : undefined;
+                      const streamOptions = {
+                        ...(streamAsPdf ? { convertTo: 'application/pdf' } : {}),
+                        ...(artifact.version !== undefined ? { version: artifact.version } : {}),
+                      };
                       const blob = await KnowledgeBaseApi.streamRecord(
                         artifact.recordId,
-                        streamOptions,
+                        Object.keys(streamOptions).length > 0 ? streamOptions : undefined,
                       );
                       const resolvedType = resolvePreviewMimeAfterStream(
                         artifact.mimeType,
                         artifact.fileName,
                         blob,
-                        !!streamOptions,
+                        streamAsPdf,
                       );
                       const isDocx = isDocxFile(artifact.mimeType, artifact.fileName);
                       const objectUrl = isDocx ? '' : URL.createObjectURL(blob);

@@ -4,6 +4,7 @@ seeding, sub-agent propagation) goes through."""
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -87,6 +88,145 @@ class TestRegisterOutput:
                 actor=Actor(org_id=ORG, user_id=USER), name="big.bin", artifact_type=ArtifactType.OTHER,
                 mime_type="application/octet-stream", content=b"x" * 11, conversation_id="conv-1",
             )
+
+
+class TestVersionRaces:
+    """Covers the plan's "Version races" hardening item: `register_output`
+    must not double-bump (or duplicate) an artifact when two callers race
+    each other."""
+
+    async def test_bump_bump_race_retries_once_then_succeeds(self) -> None:
+        """A concurrent writer bumps the artifact between our
+        `resolve_by_logical_name` and our `add_version` call — our first
+        `add_version` attempt sees a stale `expected_version` and must
+        transparently re-resolve (picking up the racer's bump) and retry
+        rather than raising or silently overwriting."""
+        service, _, _ = _make_service()
+        actor = Actor(org_id=ORG, user_id=USER)
+        created = await service.register(
+            actor=actor, name="chart.png", artifact_type=ArtifactType.IMAGE,
+            mime_type="image/png", content=b"v1", conversation_id="conv-1",
+        )
+        # Simulate a racer's bump landing first, while we're still holding
+        # a stale `existing` snapshot from before it happened.
+        await service.add_version(actor=actor, artifact_id=created.artifact_id, content=b"racer-v2")
+
+        real_resolve_by_logical_name = service.resolve_by_logical_name
+
+        async def _stale_resolve_by_logical_name(actor, name, *, conversation_id):
+            result = await real_resolve_by_logical_name(actor, name, conversation_id=conversation_id)
+            return result.model_copy(update={"version": 1}) if result is not None else None
+
+        with patch.object(service, "resolve_by_logical_name", side_effect=_stale_resolve_by_logical_name):
+            metadata, version = await service.register_output(
+                actor=actor, name="chart.png", artifact_type=ArtifactType.IMAGE,
+                mime_type="image/png", content=b"v3-bytes", conversation_id="conv-1",
+            )
+
+        assert metadata.artifact_id == created.artifact_id
+        assert metadata.version == 3  # racer's bump (v2) + our retried bump (v3)
+        assert version is not None and version.version == 3
+
+    async def test_bump_bump_race_exhausts_retry_and_raises(self) -> None:
+        """If `expected_version` keeps being stale past the bounded retry
+        budget, the conflict must surface rather than looping forever or
+        silently overwriting."""
+        from app.services.artifact_registry.versioning import VersionConflictError
+
+        service, _, _ = _make_service()
+        actor = Actor(org_id=ORG, user_id=USER)
+        await service.register(
+            actor=actor, name="chart.png", artifact_type=ArtifactType.IMAGE,
+            mime_type="image/png", content=b"v1", conversation_id="conv-1",
+        )
+
+        real_resolve_by_logical_name = service.resolve_by_logical_name
+
+        async def _always_stale_resolve_by_logical_name(actor, name, *, conversation_id):
+            result = await real_resolve_by_logical_name(actor, name, conversation_id=conversation_id)
+            return result.model_copy(update={"version": 999}) if result is not None else None
+
+        async def _always_stale_resolve(*, actor, ref, conversation_id=None):
+            metadata = await ArtifactRegistryService.resolve(
+                service, actor=actor, ref=ref, conversation_id=conversation_id,
+            )
+            return metadata.model_copy(update={"version": 999})
+
+        with patch.object(service, "resolve_by_logical_name", side_effect=_always_stale_resolve_by_logical_name), \
+             patch.object(service, "resolve", side_effect=_always_stale_resolve), \
+             pytest.raises(VersionConflictError):
+            await service.register_output(
+                actor=actor, name="chart.png", artifact_type=ArtifactType.IMAGE,
+                mime_type="image/png", content=b"v2-bytes", conversation_id="conv-1",
+            )
+
+    async def test_create_create_race_folds_loser_into_winner(self) -> None:
+        """Two concurrent `register_output` calls for a brand-new logical
+        name both see `existing is None` and both `create()`. Simulate the
+        race by making a second "winner" artifact appear (via a real
+        `register()` call) strictly between our own pre-create lookup
+        (which must see nothing, like the real race) and our post-create
+        reconcile lookup — then assert our content is folded into the
+        winner as a new version and our own record is marked deleted."""
+        service, graph, _ = _make_service()
+        actor = Actor(org_id=ORG, user_id=USER)
+
+        real_resolve_by_logical_name = service.resolve_by_logical_name
+        winner_holder: dict[str, Any] = {}
+
+        async def _resolve_with_delayed_winner(actor, name, *, conversation_id):
+            if "winner" not in winner_holder:
+                # First call is register_output's pre-create check — both
+                # racers must see `existing is None` here.
+                winner_holder["winner"] = await service.register(
+                    actor=actor, name=name, artifact_type=ArtifactType.OTHER,
+                    mime_type="application/pdf", content=b"winner-v1", conversation_id=conversation_id,
+                )
+                return None
+            return await real_resolve_by_logical_name(actor, name, conversation_id=conversation_id)
+
+        with patch.object(service, "resolve_by_logical_name", side_effect=_resolve_with_delayed_winner):
+            metadata, version = await service.register_output(
+                actor=actor, name="report.pdf", artifact_type=ArtifactType.OTHER,
+                mime_type="application/pdf", content=b"loser-bytes", conversation_id="conv-1",
+            )
+
+        winner = winner_holder["winner"]
+        assert metadata.artifact_id == winner.artifact_id
+        assert metadata.version == 2
+        assert version is not None and version.version == 2
+
+        loser_records = [
+            doc for doc in graph.nodes["records"].values()
+            if doc.get("_key") != winner.artifact_id and doc.get("recordName") == "report.pdf"
+        ]
+        assert len(loser_records) == 1
+        assert loser_records[0]["isDeleted"] is True
+
+    async def test_resolve_by_logical_name_skips_deleted_race_losers(self) -> None:
+        """Direct unit test of the mitigation in `resolve_by_logical_name`:
+        even if a soft-deleted duplicate is returned by the underlying
+        paginated query, the live artifact must still be resolved."""
+        service, graph, _ = _make_service()
+        actor = Actor(org_id=ORG, user_id=USER)
+        winner = await service.register(
+            actor=actor, name="report.pdf", artifact_type=ArtifactType.OTHER,
+            mime_type="application/pdf", content=b"winner", conversation_id="conv-1",
+        )
+        loser = await service.register(
+            actor=actor, name="report-loser.pdf", artifact_type=ArtifactType.OTHER,
+            mime_type="application/pdf", content=b"loser", conversation_id="conv-1",
+        )
+        # Force the loser to share the winner's logicalName (as a real
+        # create-create race would) and mark it deleted, as
+        # `_reconcile_create_race` does.
+        graph.nodes["artifacts"][loser.artifact_id]["logicalName"] = "report.pdf"
+        graph.nodes["records"][loser.artifact_id]["isDeleted"] = True
+
+        resolved = await service.resolve_by_logical_name(actor, "report.pdf", conversation_id="conv-1")
+
+        assert resolved is not None
+        assert resolved.artifact_id == winner.artifact_id
 
 
 class TestResolveAndPermissions:
@@ -245,6 +385,62 @@ class TestListForConversation:
         chart = next(r for r in results if r.name == "chart.png")
         assert chart.derived_from_code_artifact_id == code.artifact_id
         assert chart.derived_from_code_version == 1
+
+
+class TestVersionPinnedRetrieval:
+    """Covers the plan's suggested test #1: register v1, bump to v2,
+    `get_content(version=1)` must return v1's bytes and `version=2`/latest
+    must return v2's — the lazy-v0 storage mapping backfilled by
+    `VersionManager.add_version` must resolve correctly for BOTH."""
+
+    async def test_version_1_and_2_resolve_to_their_own_bytes(self) -> None:
+        service, _, blob = _make_service()
+        actor = Actor(org_id=ORG, user_id=USER)
+        created = await service.register(
+            actor=actor, name="report.pdf", artifact_type=ArtifactType.OTHER,
+            mime_type="application/pdf", content=b"v1-bytes", conversation_id="conv-1",
+        )
+        await service.add_version(actor=actor, artifact_id=created.artifact_id, content=b"v2-bytes-longer")
+
+        async def _fake_fetch(*, org_id, config_service, storage_document_id, version=None, **_kw):
+            return await blob.get_buffer(org_id, storage_document_id, version)
+
+        with patch("app.agents.actions.util.blob_staging.fetch_blob_bytes", new=_fake_fetch):
+            v1_content = await service.get_content(actor=actor, artifact_id=created.artifact_id, version=1)
+            v2_content = await service.get_content(actor=actor, artifact_id=created.artifact_id, version=2)
+            latest_content = await service.get_content(actor=actor, artifact_id=created.artifact_id)
+
+        assert v1_content == b"v1-bytes"
+        assert v2_content == b"v2-bytes-longer"
+        assert latest_content == b"v2-bytes-longer"
+
+    async def test_unmapped_non_current_version_raises_not_found(self) -> None:
+        """No silent wrong-bytes fallback: a version with no bookkeeping
+        entry (e.g. pre-migration data) must 404, not quietly serve the
+        wrong content."""
+        service, _, _ = _make_service()
+        actor = Actor(org_id=ORG, user_id=USER)
+        created = await service.register(
+            actor=actor, name="report.pdf", artifact_type=ArtifactType.OTHER,
+            mime_type="application/pdf", content=b"v1-bytes", conversation_id="conv-1",
+        )
+        with pytest.raises(ArtifactNotFoundError):
+            await service.get_content(actor=actor, artifact_id=created.artifact_id, version=5)
+
+    async def test_get_download_url_pins_storage_version(self) -> None:
+        service, _, _ = _make_service()
+        actor = Actor(org_id=ORG, user_id=USER)
+        created = await service.register(
+            actor=actor, name="report.pdf", artifact_type=ArtifactType.OTHER,
+            mime_type="application/pdf", content=b"v1-bytes", conversation_id="conv-1",
+        )
+        await service.add_version(actor=actor, artifact_id=created.artifact_id, content=b"v2-bytes-longer")
+
+        v1_url = await service.get_download_url(actor=actor, artifact_id=created.artifact_id, version=1)
+        latest_url = await service.get_download_url(actor=actor, artifact_id=created.artifact_id)
+
+        assert "version=0" in v1_url
+        assert "version=" not in latest_url
 
 
 class TestTwoPhaseUpload:

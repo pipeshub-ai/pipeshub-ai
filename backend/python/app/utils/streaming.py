@@ -1214,9 +1214,6 @@ def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
 
         if task_type == "artifacts":
             for art in t.get("artifacts", []):
-                url = art.get("signedUrl") or art.get("downloadUrl", "")
-                if not url:
-                    continue
                 fname = art.get("fileName", "Download")
                 mime = art.get("mimeType", "application/octet-stream")
                 doc_id = art.get("documentId", "")
@@ -1225,6 +1222,26 @@ def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
                 # their absence for markers persisted before they existed).
                 artifact_type = art.get("artifactType", "")
                 version = art.get("version", "")
+
+                # PERSISTED markers must never carry a signed URL: it expires
+                # in ~10 min, so it would be permanent dead weight (and a
+                # URL-trust surface the frontend already has to defend
+                # against) in every saved message forever. `recordId` is
+                # the durable identity the frontend already prefers for
+                # streaming/download (`parseArtifactMarkers` in
+                # `parse-download-markers.ts`) — a stable placeholder in the
+                # `(url)` slot keeps that parser's regex (which requires a
+                # non-empty segment there) satisfied without a real URL.
+                # Only fall back to embedding a real URL for the rare
+                # artifact that has none (no recordId to stream through) —
+                # otherwise it would be permanently undownloadable.
+                if record_id:
+                    url = f"record:{record_id}"
+                else:
+                    url = art.get("signedUrl") or art.get("downloadUrl", "")
+                    if not url:
+                        continue
+
                 # One download card per artifact version, even when two
                 # producers (or a re-run) queued the same artifact twice.
                 dedupe_key = f"{record_id or doc_id or url}:{version}"

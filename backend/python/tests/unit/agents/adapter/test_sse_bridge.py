@@ -194,6 +194,59 @@ class TestQueueEventSinkCoalescing:
 
         assert queue.qsize() == 2
 
+    async def test_state_delta_add_op_never_coalesces_with_pending_replace_snapshot(self) -> None:
+        """Regression for the artifact-events fix: `AGUIFormatter.artifact()`
+        emits `STATE_DELTA` with an `add /artifacts/-` op, on the SAME event
+        name `AGUIFormatter.answer_delta()`'s `replace` snapshot uses. Naive
+        snapshot coalescing (treat every `STATE_DELTA` as supersedable) would
+        let the artifact `add` silently overwrite -- or be overwritten by --
+        an adjacent answer-delta snapshot. Both must reach the queue."""
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+        sink = QueueEventSink(queue)
+        await self._fill_queue(queue)
+
+        answer_delta = {
+            "event": "STATE_DELTA",
+            "data": {"delta": [{"op": "replace", "path": "/normalizedAnswer", "value": "Hel"}]},
+        }
+        artifact_add = {
+            "event": "STATE_DELTA",
+            "data": {"delta": [{"op": "add", "path": "/artifacts/-", "value": {"fileName": "out.csv"}}]},
+        }
+        await sink.write(answer_delta)
+        # Pending now holds the answer-delta snapshot (queue full).
+
+        write_task = asyncio.ensure_future(sink.write(artifact_add))
+        await asyncio.sleep(0)
+        assert not write_task.done()  # blocked: flushing the pending snapshot needs a freed slot
+
+        # `maxsize=1` means the flushed snapshot and the `add` op each need
+        # their own freed slot -- two drains before `write_task` (flush-
+        # pending-then-put-new) can finish, same shape as the existing
+        # non-coalescable-event test above.
+        await queue.get()  # drain filler -> pending answer-delta snapshot flushes
+        flushed_snapshot = await queue.get()  # drain it -> artifact_add itself flushes
+        await asyncio.wait_for(write_task, timeout=1)
+
+        assert flushed_snapshot == answer_delta
+        assert await queue.get() == artifact_add
+
+    async def test_state_delta_two_adjacent_add_ops_never_merge(self) -> None:
+        """Two artifacts registered back-to-back must both survive even
+        though they share the same `(STATE_DELTA, "")` coalesce key an
+        `add`-unaware implementation would use."""
+        queue: asyncio.Queue = asyncio.Queue()
+        sink = QueueEventSink(queue)
+
+        first = {"event": "STATE_DELTA", "data": {"delta": [{"op": "add", "path": "/artifacts/-", "value": {"fileName": "a.csv"}}]}}
+        second = {"event": "STATE_DELTA", "data": {"delta": [{"op": "add", "path": "/artifacts/-", "value": {"fileName": "b.csv"}}]}}
+        await sink.write(first)
+        await sink.write(second)
+
+        assert queue.qsize() == 2
+        assert await queue.get() == first
+        assert await queue.get() == second
+
 
 class TestSSEEventEmitterTranslation:
     async def test_run_started_maps_to_planning_status(self) -> None:

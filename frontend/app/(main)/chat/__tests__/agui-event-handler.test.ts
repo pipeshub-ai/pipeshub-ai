@@ -120,6 +120,36 @@ describe('createAGUIEventHandler', () => {
     expect(spies.onChunk).toHaveBeenLastCalledWith({ chunk: '', accumulated: '', citations: [] });
   });
 
+  it('routes STATE_DELTA add /artifacts/- ops to onArtifact, not onChunk', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const artifact = { fileName: 'report.pdf', mimeType: 'application/pdf', downloadUrl: '/x' };
+
+    handle(frame('STATE_DELTA', { delta: [{ op: 'add', path: '/artifacts/-', value: artifact }] }));
+
+    expect(spies.onArtifact).toHaveBeenCalledWith(artifact);
+    // No text/citation ops in this frame -- must not fire a spurious onChunk.
+    expect(spies.onChunk).not.toHaveBeenCalled();
+  });
+
+  it('splits a mixed STATE_DELTA into onArtifact for the add op and onChunk for the replace ops', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const artifact = { fileName: 'report.pdf', mimeType: 'application/pdf', downloadUrl: '/x' };
+
+    handle(
+      frame('STATE_DELTA', {
+        delta: [
+          { op: 'add', path: '/artifacts/-', value: artifact },
+          { op: 'replace', path: '/normalizedAnswer', value: 'done' },
+        ],
+      }),
+    );
+
+    expect(spies.onArtifact).toHaveBeenCalledWith(artifact);
+    expect(spies.onChunk).toHaveBeenLastCalledWith({ chunk: '', accumulated: 'done', citations: [] });
+  });
+
   it('forwards REASONING_MESSAGE_CONTENT deltas as onReasoning with done:false', () => {
     const { callbacks, spies } = makeCallbacks();
     const handle = createAGUIEventHandler(callbacks);

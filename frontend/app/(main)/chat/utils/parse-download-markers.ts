@@ -1,4 +1,5 @@
 import type { ChatArtifact } from '../types';
+import { buildChatArtifact } from './build-chat-artifact';
 
 /**
  * Parse `::download_conversation_task[label](url)` markers out of streamed
@@ -19,25 +20,14 @@ export function parseDownloadMarkers(content: string): {
   return { text: text.trimEnd(), tasks };
 }
 
-/** Fallback mime→artifact-type mapping for markers persisted before the
- * marker format carried an explicit artifactType segment. Mirrors the
- * backend's `MIME_TO_ARTIFACT_TYPE` (app/sandbox/artifact_upload.py). */
-function artifactTypeFromMime(mime: string): string {
-  if (mime.startsWith('image/')) return 'IMAGE';
-  if (mime === 'text/csv' || mime.includes('spreadsheetml') || mime === 'application/vnd.ms-excel')
-    return 'SPREADSHEET';
-  if (mime.includes('presentationml') || mime === 'application/vnd.ms-powerpoint')
-    return 'PRESENTATION';
-  if (
-    mime === 'application/pdf' ||
-    mime.includes('wordprocessingml') ||
-    mime === 'text/html' ||
-    mime === 'text/markdown'
-  )
-    return 'DOCUMENT';
-  if (mime === 'application/json') return 'DATA_FILE';
-  return 'OTHER';
-}
+/** `(url)` placeholder the backend emits instead of a real (short-lived,
+ * signed) URL once a marker carries a `recordId` — see `_append_task_markers`
+ * (`app/utils/streaming.py`). Exists only to satisfy `parseArtifactMarkers`'s
+ * regex, which requires a non-empty `(...)` segment; never a fetchable URL.
+ * Older persisted markers embed a real signed/relative URL instead — those
+ * keep parsing as before (`isSignedUrl`/`isTrustedApiUrl` still classify them
+ * correctly), so this is purely additive back-compat. */
+const RECORD_PLACEHOLDER_PREFIX = 'record:';
 
 /**
  * Parse `::artifact[fileName](downloadUrl){mime|documentId|recordId|artifactType|version}`
@@ -68,7 +58,12 @@ export function parseArtifactMarkers(content: string): {
     const [mime = '', docId = '', recordId = '', rawType = '', rawVersion = ''] =
       String(meta).split('|');
     const cleanName = String(fileName).trim() || 'artifact';
-    const cleanUrl = String(url).trim();
+    const rawUrl = String(url).trim();
+    // A `record:` placeholder is not a real URL at all — normalize it to ''
+    // ("no direct URL") so every downstream consumer keeps using its
+    // existing "falsy downloadUrl" handling instead of needing to special-
+    // case this prefix itself.
+    const cleanUrl = rawUrl.startsWith(RECORD_PLACEHOLDER_PREFIX) ? '' : rawUrl;
     const cleanMime = mime.trim() || 'application/octet-stream';
     const cleanRecordId = recordId.trim();
     const cleanDocId = docId.trim();
@@ -80,16 +75,17 @@ export function parseArtifactMarkers(content: string): {
     if (seen.has(dedupeKey)) return '';
     seen.add(dedupeKey);
 
-    artifacts.push({
-      id: cleanRecordId || cleanDocId || `artifact-${artifacts.length}-${cleanName}`,
-      fileName: cleanName,
-      mimeType: cleanMime,
-      sizeBytes: 0,
-      downloadUrl: cleanUrl,
-      artifactType: cleanType || artifactTypeFromMime(cleanMime),
-      recordId: cleanRecordId || undefined,
-      version,
-    });
+    artifacts.push(
+      buildChatArtifact({
+        id: cleanRecordId || cleanDocId || `artifact-${artifacts.length}-${cleanName}`,
+        fileName: cleanName,
+        mimeType: cleanMime,
+        downloadUrl: cleanUrl,
+        artifactType: cleanType || undefined,
+        recordId: cleanRecordId || undefined,
+        version,
+      }),
+    );
     return '';
   });
   return { text: text.trimEnd(), artifacts };

@@ -374,7 +374,21 @@ export function createAGUIEventHandler(
 
       case 'STATE_DELTA': {
         const ops = Array.isArray(data?.delta) ? (data.delta as AGUIJsonPatchOp[]) : [];
-        state = applyStatePatch(state, ops);
+        // `AGUIFormatter.artifact()` appends via `add /artifacts/-` on this
+        // same event name (see `QueueEventSink._coalesce_key`'s coalescing
+        // carve-out server-side) — route those to `onArtifact` and keep them
+        // out of `applyStatePatch`/the text-buffer logic below, which only
+        // understands the answer-delta `replace` ops.
+        const textOps: AGUIJsonPatchOp[] = [];
+        for (const op of ops) {
+          if (op.op === 'add' && op.path === '/artifacts/-') {
+            callbacks.onArtifact?.(op.value as SSEArtifactEvent);
+          } else {
+            textOps.push(op);
+          }
+        }
+        if (textOps.length === 0) break;
+        state = applyStatePatch(state, textOps);
         // Only adopt the corrected buffer once it has caught up with what's
         // already on screen — otherwise a lagging normalizedAnswer would
         // make the visible text momentarily shrink (see plan 1e caveat).

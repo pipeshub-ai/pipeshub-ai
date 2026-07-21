@@ -21,7 +21,14 @@ from typing import Any
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames, Connectors, OriginTypes
-from app.models.entities import ArtifactRecord, ArtifactType, LifecycleStatus, RecordType
+from app.models.entities import (
+    ArtifactRecord,
+    ArtifactType,
+    LifecycleStatus,
+    RecordType,
+    deserialize_artifact_versions,
+    serialize_artifact_versions,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 from .access import AccessPolicy
@@ -33,8 +40,10 @@ __all__ = [
     "VersionManager",
     "VersionConflictError",
     "VersionSyncError",
+    "VersionMappingNotFoundError",
     "PENDING_RECONCILE_REASON",
     "compute_content_hash",
+    "resolve_storage_version",
     "to_metadata",
     "to_metadata_from_docs",
 ]
@@ -61,8 +70,38 @@ class VersionSyncError(Exception):
     as success."""
 
 
+class VersionMappingNotFoundError(Exception):
+    """Raised by `resolve_storage_version` when the requested registry
+    `version` is neither the artifact's current version nor present in its
+    `versions` bookkeeping (pre-migration artifact, or an unknown/future
+    version). Callers must treat this as "not found", never fall back to
+    serving the wrong bytes."""
+
+
 def compute_content_hash(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def resolve_storage_version(current_version: int, versions: list[dict], version: int | None) -> int | None:
+    """Map a registry `version` number to the storage layer's
+    `versionHistory` index, or `None` to mean "current" (skip `?version=`
+    entirely — the fast path storage already optimizes).
+
+    Pure/no-I/O so both `ArtifactRegistryService._resolve_storage_version`
+    (which fetches `versions` from the graph) and the connectors' stream
+    route (which already has an `ArtifactRecord` with `.version`/`.versions`
+    in hand from `get_record_by_id`) share ONE mapping decision — see the
+    plan's explicit "reuse Phase 2's lookup; do NOT re-implement the
+    mapping" note.
+    """
+    if version is None or version == current_version:
+        return None
+    for entry in versions:
+        if entry.get("registryVersion") == version:
+            return entry.get("storageVersion")
+    raise VersionMappingNotFoundError(
+        f"Version {version} has no recorded storage mapping (current version is {current_version})"
+    )
 
 
 class VersionManager:
@@ -259,7 +298,7 @@ class VersionManager:
 
         document_id = record.get("externalRecordId")
         file_name = record.get("recordName") or artifact_doc.get("name") or artifact_id
-        await self._blob_store.upload_artifact_version(
+        upload_result = await self._blob_store.upload_artifact_version(
             org_id=actor.org_id,
             document_id=document_id,
             file_name=file_name,
@@ -268,6 +307,19 @@ class VersionManager:
         )
 
         new_version = current_version + 1
+        existing_versions: list[dict] = deserialize_artifact_versions(artifact_doc.get("versions"))
+        new_versions = self._append_version_bookkeeping(
+            existing_versions,
+            current_version=current_version,
+            new_version=new_version,
+            upload_result=upload_result,
+            prior_content_hash=artifact_doc.get("contentHash"),
+            prior_size_bytes=artifact_doc.get("sizeInBytes"),
+            prior_created_at=record.get("createdAtTimestamp") or now,
+            new_content_hash=content_hash,
+            new_size_bytes=len(content),
+            now=now,
+        )
         try:
             await self._graph_provider.update_node(
                 artifact_id, CollectionNames.RECORDS.value,
@@ -276,7 +328,8 @@ class VersionManager:
             )
             await self._graph_provider.update_node(
                 artifact_id, CollectionNames.ARTIFACTS.value,
-                {"contentHash": content_hash, "sizeInBytes": len(content), "mimeType": effective_mime},
+                {"contentHash": content_hash, "sizeInBytes": len(content), "mimeType": effective_mime,
+                 "versions": serialize_artifact_versions(new_versions)},
             )
         except Exception:
             logger.critical(
@@ -298,13 +351,68 @@ class VersionManager:
             ) from None
 
         record = {**record, "version": new_version, "sizeInBytes": len(content), "mimeType": effective_mime}
-        artifact_doc = {**artifact_doc, "contentHash": content_hash, "sizeInBytes": len(content), "mimeType": effective_mime}
+        artifact_doc = {**artifact_doc, "contentHash": content_hash, "sizeInBytes": len(content),
+                         "mimeType": effective_mime, "versions": serialize_artifact_versions(new_versions)}
         version = ArtifactVersion(
             version=new_version, size_bytes=len(content), content_hash=content_hash,
             mime_type=effective_mime, created_at=now, created_by_user_id=actor.user_id,
         )
         logger.info("Artifact %s bumped to version %d by user=%s", artifact_id, new_version, actor.user_id)
         return version, to_metadata_from_docs(record, artifact_doc)
+
+    @staticmethod
+    def _append_version_bookkeeping(
+        existing_versions: list[dict],
+        *,
+        current_version: int,
+        new_version: int,
+        upload_result: dict[str, Any],
+        prior_content_hash: str | None,
+        prior_size_bytes: int | None,
+        prior_created_at: int,
+        new_content_hash: str,
+        new_size_bytes: int,
+        now: int,
+    ) -> list[dict]:
+        """Build the updated `versions` bookkeeping list for one `add_version`
+        call. Storage indices come ONLY from `upload_result` (what Node's
+        `uploadNextVersionDocument` response actually reported) — never
+        computed from `new_version`/`len(existing_versions)`, since Node's
+        `versionHistory` numbering is not guaranteed to track the registry's
+        1-based version 1:1 (see module docstring)."""
+        versions = list(existing_versions)
+        storage_version = upload_result.get("storageVersion")
+        prior_storage_version = upload_result.get("priorStorageVersion")
+
+        # First-ever bump for this artifact: Node lazily snapshots the
+        # pre-existing "current" content as an extra versionHistory entry
+        # before writing the new bytes. Backfill version 1's mapping now —
+        # it never got one at create() time because no blob version existed
+        # yet to point at.
+        if not versions and prior_storage_version is not None:
+            versions.append({
+                "registryVersion": current_version,
+                "storageVersion": prior_storage_version,
+                "contentHash": prior_content_hash,
+                "sizeBytes": prior_size_bytes,
+                "createdAt": prior_created_at,
+            })
+
+        if storage_version is not None:
+            versions.append({
+                "registryVersion": new_version,
+                "storageVersion": storage_version,
+                "contentHash": new_content_hash,
+                "sizeBytes": new_size_bytes,
+                "createdAt": now,
+            })
+        else:
+            logger.warning(
+                "add_version: no storageVersion reported for registryVersion=%d — "
+                "version-pinned retrieval for this version will fall back to latest.",
+                new_version,
+            )
+        return versions
 
 
 def to_metadata(record: ArtifactRecord, *, document_id: str) -> ArtifactMetadata:

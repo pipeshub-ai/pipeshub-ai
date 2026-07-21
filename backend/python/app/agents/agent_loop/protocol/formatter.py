@@ -24,10 +24,45 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, ConfigDict
+
 from app.agents.agent_loop.protocol.agui import AGUIEventType, frame
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
+
+
+class ArtifactSSEPayload(BaseModel):
+    """Wire payload for a live "artifact produced" event — shared by every
+    producer (today: `sandbox_bridge._emit_artifact_event`; future
+    producers should build one of these instead of hand-rolling a dict)
+    and by both `ProtocolFormatter.artifact()` implementations, replacing
+    the previously untyped `dict[str, Any]`.
+
+    Field names are camelCase to match the existing wire contract exactly
+    (`frontend/.../agui-event-handler.ts`'s `SSEArtifactEvent`,
+    `streaming.ts`'s `onArtifact`) — this is a one-way producer-side
+    payload with no incoming parse step that would need snake_case +
+    alias support."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifactId: str
+    fileName: str
+    mimeType: str
+    sizeBytes: int
+    downloadUrl: str
+    artifactType: str
+    isTemporary: bool = False
+    recordId: str | None = None
+    version: int | None = None
+    derivedFromCodeArtifactId: str | None = None
+
+    def to_wire_dict(self) -> dict[str, Any]:
+        """`exclude_none` mirrors the previous hand-built dict's behavior
+        of omitting optional keys (e.g. `derivedFromCodeArtifactId`)
+        entirely when unset, rather than sending them as JSON `null`."""
+        return self.model_dump(exclude_none=True)
 
 
 class ProtocolFormatter(ABC):
@@ -44,7 +79,7 @@ class ProtocolFormatter(ABC):
     def ask_user_question(self, context: "AgentContext", *, status: str, tool_data: Any) -> list[dict[str, Any]]: ...
 
     @abstractmethod
-    def artifact(self, context: "AgentContext", *, artifact_data: dict[str, Any]) -> list[dict[str, Any]]: ...
+    def artifact(self, context: "AgentContext", *, artifact_data: ArtifactSSEPayload) -> list[dict[str, Any]]: ...
 
     @abstractmethod
     def tool_unavailable(
@@ -73,7 +108,7 @@ class LegacyFormatter(ProtocolFormatter):
         return [{"event": "ask_user_question", "data": {"status": status, "toolData": tool_data}}]
 
     def artifact(self, context, *, artifact_data):
-        return [{"event": "artifact", "data": artifact_data}]
+        return [{"event": "artifact", "data": artifact_data.to_wire_dict()}]
 
     def tool_unavailable(self, context, *, tool, toolset, reason, message):
         return [{
@@ -125,7 +160,17 @@ class AGUIFormatter(ProtocolFormatter):
         )]
 
     def artifact(self, context, *, artifact_data):
-        return [frame(AGUIEventType.CUSTOM, name="artifact", value=artifact_data, runId=context.run_id)]
+        """`STATE_DELTA` with an `add` op on `/artifacts/-` rather than
+        `CUSTOM`: a well-known JSON Patch path lets stock AG-UI clients
+        accumulate artifact state without knowing about a PipesHub-specific
+        `CUSTOM` event name. `QueueEventSink._coalesce_key` special-cases
+        `add` ops so this is never merged into/dropped by an adjacent
+        answer-delta `STATE_DELTA` snapshot — see that module."""
+        return [frame(
+            AGUIEventType.STATE_DELTA,
+            runId=context.run_id,
+            delta=[{"op": "add", "path": "/artifacts/-", "value": artifact_data.to_wire_dict()}],
+        )]
 
     def tool_unavailable(self, context, *, tool, toolset, reason, message):
         return [frame(
@@ -138,4 +183,18 @@ class AGUIFormatter(ProtocolFormatter):
         return [frame(AGUIEventType.RUN_ERROR, runId=context.run_id, message=message, code=code)]
 
 
-__all__ = ["ProtocolFormatter", "LegacyFormatter", "AGUIFormatter"]
+# Both formatters are stateless (no per-instance state, no `__init__`
+# args) — one instance each, shared across every request, instead of
+# `AgentContext.formatter` allocating a new one on every single access
+# (it's read multiple times per streamed chunk).
+LEGACY_FORMATTER = LegacyFormatter()
+AGUI_FORMATTER = AGUIFormatter()
+
+__all__ = [
+    "ArtifactSSEPayload",
+    "ProtocolFormatter",
+    "LegacyFormatter",
+    "AGUIFormatter",
+    "LEGACY_FORMATTER",
+    "AGUI_FORMATTER",
+]

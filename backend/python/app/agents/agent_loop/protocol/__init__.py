@@ -28,6 +28,7 @@ from app.agents.agent_loop.protocol.agui import AGUIEventType, frame, new_id
 from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
 from app.agents.agent_loop.protocol.formatter import (
     AGUIFormatter,
+    ArtifactSSEPayload,
     LegacyFormatter,
     ProtocolFormatter,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "new_id",
     "AGUIEventEmitter",
     "ProtocolFormatter",
+    "ArtifactSSEPayload",
     "LegacyFormatter",
     "AGUIFormatter",
     "MessagePart",

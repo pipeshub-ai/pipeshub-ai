@@ -183,12 +183,15 @@ class AgentContext(BaseModel):
     @property
     def formatter(self) -> Any:
         """`ProtocolFormatter` for this request's negotiated `protocol` —
-        see `protocol/formatter.py`. Imported lazily to avoid a hard
-        import-time dependency from this narrow adapter-context module
-        onto the protocol package."""
-        from app.agents.agent_loop.protocol.formatter import AGUIFormatter, LegacyFormatter
+        see `protocol/formatter.py`. Both formatters are stateless, so this
+        returns the shared module-level singleton rather than allocating a
+        new instance on every access (this property is read multiple times
+        per streamed chunk). Imported lazily to avoid a hard import-time
+        dependency from this narrow adapter-context module onto the
+        protocol package."""
+        from app.agents.agent_loop.protocol.formatter import AGUI_FORMATTER, LEGACY_FORMATTER
 
-        return AGUIFormatter() if self.protocol == "agui" else LegacyFormatter()
+        return AGUI_FORMATTER if self.protocol == "agui" else LEGACY_FORMATTER
 
     @property
     def artifact_registry(self) -> Any:

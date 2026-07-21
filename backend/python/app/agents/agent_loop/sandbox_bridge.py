@@ -78,6 +78,7 @@ from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import (
 from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
     set_staged_input_files_for_task,
 )
+from app.agents.agent_loop.protocol.formatter import ArtifactSSEPayload
 from app.config.constants.arangodb import Connectors
 from app.models.entities import ArtifactType
 from app.sandbox.artifact_upload import MIME_TO_ARTIFACT_TYPE
@@ -817,19 +818,18 @@ async def _emit_artifact_event(
     if context.event_sink is None or not download_url:
         return
     try:
-        artifact_data = {
-            "artifactId": metadata.artifact_id,
-            "fileName": metadata.name,
-            "mimeType": metadata.mime_type,
-            "sizeBytes": metadata.size_bytes,
-            "downloadUrl": download_url,
-            "artifactType": metadata.artifact_type.value,
-            "isTemporary": metadata.is_temporary,
-            "recordId": metadata.artifact_id,
-            "version": metadata.version,
-        }
-        if metadata.derived_from_code_artifact_id:
-            artifact_data["derivedFromCodeArtifactId"] = metadata.derived_from_code_artifact_id
+        artifact_data = ArtifactSSEPayload(
+            artifactId=metadata.artifact_id,
+            fileName=metadata.name,
+            mimeType=metadata.mime_type,
+            sizeBytes=metadata.size_bytes,
+            downloadUrl=download_url,
+            artifactType=metadata.artifact_type.value,
+            isTemporary=metadata.is_temporary,
+            recordId=metadata.artifact_id,
+            version=metadata.version,
+            derivedFromCodeArtifactId=metadata.derived_from_code_artifact_id,
+        )
         for evt in context.formatter.artifact(context, artifact_data=artifact_data):
             await context.event_sink.write(evt)
     except Exception:

@@ -177,6 +177,7 @@ async def fetch_blob_bytes(
     org_id: str,
     config_service: ConfigurationService,
     storage_document_id: str,
+    version: int | None = None,
     session: aiohttp.ClientSession | None = None,
 ) -> bytes:
     """Download bytes for a previously staged document.
@@ -184,6 +185,11 @@ async def fetch_blob_bytes(
     The Node.js download route (``getDocumentInfo``) enforces
     ``{_id, orgId}`` matching, so a request scoped to ``org_id`` cannot read a
     document owned by a different org.
+
+    Pass ``version`` (a storage-layer ``versionHistory`` index, NOT a
+    registry version number — callers must map that first, see
+    ``ArtifactRegistryService._resolve_storage_version``) to pin the fetch
+    to a specific historical version; omit it for the current content.
 
     Pass ``session`` to reuse an open ``aiohttp.ClientSession`` across many
     fetches in a batch (HTTP keep-alive + pooled connections to the cm
@@ -198,6 +204,8 @@ async def fetch_blob_bytes(
         f"{nodejs_endpoint}"
         f"{Routes.STORAGE_DOWNLOAD.value.format(documentId=storage_document_id)}"
     )
+    if version is not None:
+        download_url = f"{download_url}?version={version}"
 
     async with _session_or_default(session) as http:
         async with http.get(

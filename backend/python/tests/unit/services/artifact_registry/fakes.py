@@ -75,7 +75,16 @@ class FakeGraphProvider:
 class FakeBlobStore:
     """Stand-in for `app.modules.transformers.blob_storage.BlobStorage` —
     tracks uploaded bytes per `documentId` so `VersionManager`/registry
-    tests can assert on stored content without touching Mongo/S3."""
+    tests can assert on stored content without touching Mongo/S3.
+
+    `documents[id]["versions"]` is a legacy simple "content history" list
+    kept for older tests that just assert a count. `documents[id]["version_history"]`
+    mimics Node's REAL `versionHistory` semantics (lazy v0 on first bump,
+    0-indexed) so `upload_artifact_version`'s `storageVersion`/
+    `priorStorageVersion` return values — and therefore
+    `get_document_version_history`/version-pinned `get_buffer` below — are
+    representative of production behaviour (see `storage.controller.ts`'s
+    `uploadNextVersionDocument`)."""
 
     def __init__(self) -> None:
         self.config_service = object()
@@ -92,7 +101,7 @@ class FakeBlobStore:
         document_id = self._new_document_id()
         self.documents[document_id] = {
             "org_id": org_id, "file_name": file_name, "content": file_bytes,
-            "content_type": content_type, "versions": [file_bytes],
+            "content_type": content_type, "versions": [file_bytes], "version_history": [],
         }
         return {"documentId": document_id}
 
@@ -100,13 +109,42 @@ class FakeBlobStore:
         self, *, org_id: str, document_id: str, file_name: str, file_bytes: bytes, content_type: str,
     ) -> dict[str, Any]:
         doc = self.documents[document_id]
+        version_history: list[bytes] = doc.setdefault("version_history", [])
+        prior_storage_version = None
+        if not version_history:
+            # Lazy v0: Node snapshots the pre-existing "current" content
+            # the first time a document is ever bumped.
+            version_history.append(doc["content"])
+            prior_storage_version = 0
+        version_history.append(file_bytes)
+        storage_version = len(version_history) - 1
+
         doc["content"] = file_bytes
         doc["content_type"] = content_type
         doc["versions"].append(file_bytes)
-        return {"documentId": document_id}
+        return {
+            "documentId": document_id,
+            "sizeBytes": len(file_bytes),
+            "storageVersion": storage_version,
+            "priorStorageVersion": prior_storage_version,
+        }
+
+    async def get_document_version_history(self, org_id: str, document_id: str) -> list[dict]:
+        version_history = self.documents[document_id].get("version_history") or []
+        return [{"version": i} for i in range(len(version_history))]
+
+    async def get_buffer(self, org_id: str, document_id: str, version: int | None = None) -> bytes:
+        """Test-only helper mirroring the real `/buffer` route: `version`
+        indexes into the storage layer's `version_history`, not the
+        registry's version numbering."""
+        doc = self.documents[document_id]
+        if version is None:
+            return doc["content"]
+        return doc["version_history"][version]
 
     async def get_direct_upload_url(self, org_id: str, document_id: str) -> str:
         return f"https://blob.example/upload/{document_id}"
 
-    async def get_download_url(self, org_id: str, document_id: str) -> str:
-        return f"https://blob.example/download/{document_id}"
+    async def get_download_url(self, org_id: str, document_id: str, version: int | None = None) -> str:
+        suffix = f"?version={version}" if version is not None else ""
+        return f"https://blob.example/download/{document_id}{suffix}"

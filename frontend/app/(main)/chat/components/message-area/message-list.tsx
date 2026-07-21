@@ -17,6 +17,7 @@ import { useInlineCitationPopoverStore } from './response-tabs/citations/citatio
 import { InlineCitationPopoverHost } from './response-tabs/citations/inline-citation-popover-host';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { loadOlderMessagesForSlot } from '../../streaming';
+import { parseArtifactMarkers } from '../../utils/parse-download-markers';
 
 // Stable empty references to avoid re-renders from selector fallbacks.
 // `?? []` or `?? null` in a selector body creates a new ref every call,
@@ -328,6 +329,34 @@ export function MessageList() {
 
     return pairs;
   }, [thread.messages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]);
+
+  // The highest version any message in this conversation has shown for a
+  // given artifact `recordId`. Every version bump re-registers the SAME
+  // recordId, so an older message's card can compare its own `version`
+  // against this map to know a later turn has since produced a newer copy —
+  // derived entirely from markers already persisted on each message
+  // (`parseArtifactMarkers`), no extra API call. The currently-streaming
+  // turn's markers aren't persisted yet, so its live SSE `artifacts` are
+  // folded in too.
+  const latestArtifactVersions = useMemo(() => {
+    const versions = new Map<string, number>();
+    const record = (recordId: string | undefined, version: number | undefined) => {
+      if (!recordId || version === undefined) return;
+      const current = versions.get(recordId);
+      if (current === undefined || version > current) versions.set(recordId, version);
+    };
+    for (const msg of thread.messages) {
+      if (msg.role !== 'assistant') continue;
+      const content = extractTextContent(msg.content as { type: string; text?: string }[]);
+      if (!content.includes('::artifact[')) continue;
+      const { artifacts } = parseArtifactMarkers(content);
+      for (const artifact of artifacts) record(artifact.recordId, artifact.version);
+    }
+    if (isStreaming) {
+      for (const artifact of streamingArtifacts) record(artifact.recordId, artifact.version);
+    }
+    return versions;
+  }, [thread.messages, isStreaming, streamingArtifacts]);
 
   // Ref-mirror of messagePairs — lets scroll effects read the latest pairs
   // without having the full array in their dependency list (which would cause
@@ -1118,6 +1147,7 @@ export function MessageList() {
                   streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
                   streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
                   streamingParts={pair.isStreaming ? streamingParts : undefined}
+                  latestArtifactVersions={latestArtifactVersions}
                   persistedParts={pair.persistedParts}
                   persistedAskUserQuestion={pair.persistedAskUserQuestion}
                   feedbackInfo={pair.feedbackInfo}
