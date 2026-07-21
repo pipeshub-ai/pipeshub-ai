@@ -212,14 +212,18 @@ async def render_all_pages_from_path(
     pdf_path: str,
     resolution: float = 72,
 ) -> Dict[int, Tuple[np.ndarray, float]]:
-    return await _pdf_raster_pool.run(_worker_render_all_from_path, pdf_path, resolution)
+    return await _pdf_raster_pool.run(
+        _worker_render_all_from_path, pdf_path, resolution
+    )
 
 
 async def render_all_pages_from_bytes(
     pdf_bytes: bytes,
     resolution: float = 72,
 ) -> Dict[int, Tuple[np.ndarray, float]]:
-    return await _pdf_raster_pool.run(_worker_render_all_from_bytes, pdf_bytes, resolution)
+    return await _pdf_raster_pool.run(
+        _worker_render_all_from_bytes, pdf_bytes, resolution
+    )
 
 
 async def render_all_pages_as_pil_from_bytes(

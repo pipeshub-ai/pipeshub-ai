@@ -24,7 +24,9 @@ logger = logging.getLogger(__name__)
 
 
 class RecoverableProcessPool:
-    def __init__(self, max_workers: int, name: str, mp_start_method: str = "spawn") -> None:
+    def __init__(
+        self, max_workers: int, name: str, mp_start_method: str = "spawn"
+    ) -> None:
         self._max_workers = max_workers
         self._name = name
         self._mp_start_method = mp_start_method
@@ -52,7 +54,8 @@ class RecoverableProcessPool:
                 self._pool = None
         if replaced:
             logger.warning(
-                f"Process pool '{self._name}' broke (worker process died); replacing it with a fresh pool"
+                f"Process pool '{self._name}' broke (worker process died); "
+                "replacing it with a fresh pool"
             )
         atexit.unregister(broken.shutdown)
         broken.shutdown(wait=False, cancel_futures=True)
