@@ -2216,7 +2216,7 @@ class TestNumericEpochToMs:
 class TestSlackIndividualAdditionalCoverage:
     """Target remaining uncovered branches in individual.connector."""
 
-    def test_compute_sync_window_relative_operator(self):
+    def test_compute_sync_window_relative_operator(self) -> None:
         import time as time_mod
         from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
 
@@ -2236,7 +2236,7 @@ class TestSlackIndividualAdditionalCoverage:
         assert out == pytest.approx(1_000_000.0 - 7 * 86400, rel=1e-3)
 
     @pytest.mark.asyncio
-    async def test_warm_user_caches_success_with_pagination(self):
+    async def test_warm_user_caches_success_with_pagination(self) -> None:
         c = _make_connector()
         page1 = MagicMock(
             success=True,
@@ -2275,7 +2275,7 @@ class TestSlackIndividualAdditionalCoverage:
         assert c.user_id_to_name_cache["U2"] == "Bob"
 
     @pytest.mark.asyncio
-    async def test_sync_channels_include_exclude_and_pagination(self):
+    async def test_sync_channels_include_exclude_and_pagination(self) -> None:
         c = _make_connector()
         c.authenticated_user_email = "me@e.com"
         c.sync_filters = FilterCollection(
@@ -2321,7 +2321,7 @@ class TestSlackIndividualAdditionalCoverage:
         mock_ds = MagicMock()
         mock_ds.conversations_list = AsyncMock(side_effect=[page1, page2])
 
-        def _to_rg(cd):
+        def _to_rg(cd: Any) -> MagicMock:
             if cd.get("id") != "C1":
                 raise RuntimeError("bad channel")
             rg = MagicMock()
@@ -2341,7 +2341,7 @@ class TestSlackIndividualAdditionalCoverage:
         assert c.channel_id_to_name_cache["C1"] == "general"
 
     @pytest.mark.asyncio
-    async def test_sync_channels_list_failure(self):
+    async def test_sync_channels_list_failure(self) -> None:
         c = _make_connector()
         mock_ds = MagicMock()
         mock_ds.conversations_list = AsyncMock(return_value=MagicMock(success=False, error="fail"))
@@ -2349,7 +2349,7 @@ class TestSlackIndividualAdditionalCoverage:
             assert await c._sync_channels() == []
 
     @pytest.mark.asyncio
-    async def test_fetch_channel_members_pagination_and_errors(self):
+    async def test_fetch_channel_members_pagination_and_errors(self) -> None:
         c = _make_connector()
         mock_ds = MagicMock()
         mock_ds.conversations_members = AsyncMock(
@@ -2379,7 +2379,7 @@ class TestSlackIndividualAdditionalCoverage:
         with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await c._fetch_channel_members("C1")
 
-    def test_resolve_mpim_name_from_handle_match(self):
+    def test_resolve_mpim_name_from_handle_match(self) -> None:
         c = _make_connector()
         c.authenticated_user_id = "U0"
         c.user_id_to_name_cache = {"U1": "Alice Smith", "U2": "Bob Jones"}
@@ -2389,13 +2389,13 @@ class TestSlackIndividualAdditionalCoverage:
         assert "Alice Smith" in name
         assert "Bob Jones" in name
 
-    def test_format_reactions_line(self):
+    def test_format_reactions_line(self) -> None:
         c = _make_connector()
         line = c._format_reactions_line([{"name": "thumbsup", "count": 3}])
         assert line and "thumbsup" in line
         assert c._format_reactions_line([]) is None
 
-    def test_build_message_block_reactions_links_author_only(self):
+    def test_build_message_block_reactions_links_author_only(self) -> None:
         c = _make_connector()
         ctx = _ctx(c)
         ctx.user_id_to_name["U1"] = "Author"
@@ -2413,7 +2413,7 @@ class TestSlackIndividualAdditionalCoverage:
         block2 = c._build_message_block(msg2, 0, 0, ctx)
         assert block2.data.startswith("**Author**:")
 
-    def test_classify_url_github_and_gdrive(self):
+    def test_classify_url_github_and_gdrive(self) -> None:
         from app.connectors.sources.slack.individual.connector import SlackIndividualConnector as S
 
         t, meta = S._classify_url("https://github.com/o/r/issues/42")
@@ -2422,7 +2422,7 @@ class TestSlackIndividualAdditionalCoverage:
         assert t2 == "gdrive" and meta2["file_id"] == "abc123"
 
     @pytest.mark.asyncio
-    async def test_process_message_batch(self):
+    async def test_process_message_batch(self) -> None:
         c = _make_connector()
         ctx = _ctx(c)
         msgs = [
@@ -2434,7 +2434,7 @@ class TestSlackIndividualAdditionalCoverage:
         assert isinstance(deferred, list)
 
     @pytest.mark.asyncio
-    async def test_process_single_with_files_and_links(self):
+    async def test_process_single_with_files_and_links(self) -> None:
         c = _make_connector()
         ctx = _ctx(c)
         msg = {
@@ -2448,7 +2448,7 @@ class TestSlackIndividualAdditionalCoverage:
         assert deferred == []
 
     @pytest.mark.asyncio
-    async def test_process_burst_with_files(self):
+    async def test_process_burst_with_files(self) -> None:
         from app.connectors.sources.slack.individual.connector import ConversationalBurst
 
         c = _make_connector()
@@ -2471,7 +2471,7 @@ class TestSlackIndividualAdditionalCoverage:
         assert deferred == []
 
     @pytest.mark.asyncio
-    async def test_process_thread_with_files_links_and_indexing_off(self):
+    async def test_process_thread_with_files_links_and_indexing_off(self) -> None:
         from app.config.constants.arangodb import ProgressStatus
 
         c = _make_connector()
@@ -2520,7 +2520,7 @@ class TestSlackIndividualAdditionalCoverage:
                 assert rec.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
     @pytest.mark.asyncio
-    async def test_scan_thread_growth_skips_non_actionable(self):
+    async def test_scan_thread_growth_skips_non_actionable(self) -> None:
         from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
 
         c = _make_connector()
@@ -2546,7 +2546,7 @@ class TestSlackIndividualAdditionalCoverage:
         h.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_sync_message_changes_per_channel_checkpoint(self):
+    async def test_sync_message_changes_per_channel_checkpoint(self) -> None:
         from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
 
         c = _make_connector()
@@ -2578,7 +2578,7 @@ class TestSlackIndividualAdditionalCoverage:
         c2.logger.error.assert_called()
 
     @pytest.mark.asyncio
-    async def test_refresh_user_caches_populates_all_fields(self):
+    async def test_refresh_user_caches_populates_all_fields(self) -> None:
         c = _make_connector()
         u = MagicMock()
         u.source_user_id = "U9"
@@ -2592,7 +2592,7 @@ class TestSlackIndividualAdditionalCoverage:
         assert c.user_id_to_name_cache["U9"] == "Nine"
 
     @pytest.mark.asyncio
-    async def test_build_message_blocks_burst_with_file_children(self):
+    async def test_build_message_blocks_burst_with_file_children(self) -> None:
         c = _make_connector()
         mr = MagicMock(spec=MessageRecord)
         mr.id = "id"
@@ -2634,7 +2634,7 @@ class TestSlackIndividualAdditionalCoverage:
         assert isinstance(out, bytes)
 
     @pytest.mark.asyncio
-    async def test_check_updated_file_success(self):
+    async def test_check_updated_file_success(self) -> None:
         c = _make_connector()
         fr = MagicMock()
         fr.record_type = RecordType.FILE
@@ -2671,7 +2671,7 @@ class TestSlackIndividualAdditionalCoverage:
         assert result is not None
 
     @pytest.mark.asyncio
-    async def test_init_without_team_info(self):
+    async def test_init_without_team_info(self) -> None:
         from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
 
         logger = MagicMock()
@@ -2699,7 +2699,7 @@ class TestSlackIndividualAdditionalCoverage:
             assert await c.init() is True
 
     @pytest.mark.asyncio
-    async def test_fresh_datasource_auth_access_token(self):
+    async def test_fresh_datasource_auth_access_token(self) -> None:
         c = _make_connector()
         c.config_service.get_config = AsyncMock(
             return_value={
@@ -2713,7 +2713,7 @@ class TestSlackIndividualAdditionalCoverage:
         await c._fresh_datasource()
 
     @pytest.mark.asyncio
-    async def test_sync_channel_messages_checkpoint_and_deferred_incremental(self):
+    async def test_sync_channel_messages_checkpoint_and_deferred_incremental(self) -> None:
         from app.connectors.sources.slack.individual.connector import DeferredThread
 
         c = _make_connector()
@@ -2751,7 +2751,7 @@ class TestSlackIndividualAdditionalCoverage:
         c.messages_sync_point.update_sync_point.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_sync_channel_deferred_thread_failure_logged(self):
+    async def test_sync_channel_deferred_thread_failure_logged(self) -> None:
         from app.connectors.sources.slack.individual.connector import DeferredThread
 
         c = _make_connector()
@@ -2779,7 +2779,7 @@ class TestSlackIndividualAdditionalCoverage:
         c.logger.error.assert_called()
 
     @pytest.mark.asyncio
-    async def test_build_message_blocks_thread_burst_path(self):
+    async def test_build_message_blocks_thread_burst_path(self) -> None:
         c = _make_connector()
         mr = MagicMock(spec=MessageRecord)
         mr.id = "id"
@@ -2801,7 +2801,7 @@ class TestSlackIndividualAdditionalCoverage:
         assert isinstance(out, bytes)
 
     @pytest.mark.asyncio
-    async def test_get_filter_options_dm_label_and_warm_fallback(self):
+    async def test_get_filter_options_dm_label_and_warm_fallback(self) -> None:
         c = _make_connector()
         c.user_id_to_name_cache.clear()
         c.user_id_to_email_cache["Udm"] = "dm@e.com"

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
-from selectolax.lexbor import LexborHTMLParser
+from selectolax.lexbor import LexborHTMLParser, LexborNode
 
 from app.models.blocks import BlockSubType, BlockType, DataFormat, GroupType
 from app.modules.parsers.html_parser.html_to_blocks import (
@@ -26,13 +24,12 @@ from app.modules.parsers.html_parser.html_to_blocks import (
     _render_table_markdown,
     _resolve_relative_links_on_tree,
     _span_int,
-    _stringify_nested_table_rows,
     normalize_html_table,
     normalized_table_to_markdown,
 )
 
 
-def _parse(html: str):
+def _parse(html: str) -> LexborNode:
     return LexborHTMLParser(html).root
 
 
@@ -140,17 +137,6 @@ class TestTableGridHelpers:
         table = NormalizedTable([], [], 0, 0, False)
         assert _render_table_markdown(table) == ""
 
-    def test_stringify_nested_table_rows(self) -> None:
-        table = NormalizedTable(
-            column_headers=["H1"],
-            body_rows=[["v1", ""]],
-            num_cols=2,
-            num_body_rows=1,
-            has_header=True,
-        )
-        payload = _stringify_nested_table_rows(table)
-        assert json.loads(payload) == [["H1"], ["v1"]]
-
     def test_normalized_table_to_markdown_with_caption(self) -> None:
         table = NormalizedTable(
             column_headers=["Q"],
@@ -181,7 +167,9 @@ class TestHtmlTableNormalizer:
         node = _parse(html).css_first("table")
         normalized = normalize_html_table(node)
         assert normalized.body_rows
-        assert "[" in normalized.body_rows[0][0]
+        cell = normalized.body_rows[0][0]
+        assert "outer" in cell
+        assert "| Inner |" in cell and "| val |" in cell
 
     def test_rowspan_colspan_expansion(self) -> None:
         html = """
@@ -297,7 +285,7 @@ class TestHtmlToBlocksConverterEdgeCases:
     def test_paragraph_with_br_plain_text(self, converter: HtmlToBlocksConverter) -> None:
         container = converter.convert("<p>line1<br>line2</p>")
         block = container.blocks[0]
-        assert block.format == DataFormat.TXT
+        assert block.format == DataFormat.MARKDOWN
         assert "line1" in block.data and "line2" in block.data
 
     def test_heading_merge_skips_script_sibling(self, converter: HtmlToBlocksConverter) -> None:
@@ -325,9 +313,10 @@ class TestHtmlToBlocksConverterEdgeCases:
         assert code_blocks
 
     def test_is_hidden_class_as_list(self) -> None:
-        node = _parse('<span class="sr-only">x</span>').css_first("span")
-        node.attributes["class"] = ["sr-only", "other"]
-        assert _is_hidden(node) is True
+        class MockNode:
+            attributes = {"class": ["sr-only", "other"]}
+
+        assert _is_hidden(MockNode()) is True
 
     def test_table_bare_rows_without_thead(self) -> None:
         html = """

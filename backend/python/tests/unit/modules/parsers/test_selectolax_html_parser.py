@@ -1249,3 +1249,80 @@ class TestSelectolaxHtmlParserCleanHtml:
         assert "<noscript>" not in result
         assert "<iframe>" not in result
         assert "<p>Content</p>" in result
+
+    def test_returns_original_on_parse_error(self, parser: SelectolaxHtmlParser) -> None:
+        with patch.object(parser, "_logger") as mock_logger:
+            with patch(
+                "app.modules.parsers.html_parser.selectolax_html_parser.BeautifulSoup",
+                side_effect=Exception("parse error"),
+            ):
+                result = parser.clean_html("<p>Content</p>")
+        assert result == "<p>Content</p>"
+        mock_logger.warning.assert_called_once()
+
+
+class TestSelectolaxExtractAndReplaceImages:
+    def test_srcset_used_when_src_empty(self, parser: SelectolaxHtmlParser) -> None:
+        html = '<img srcset="https://cdn.example.com/p.png 1x" alt="a">'
+        _, images = parser.extract_and_replace_images(html)
+        assert len(images) == 1
+        assert images[0]["new_alt_text"] == "Image_1"
+
+    def test_skips_data_uri(self, parser: SelectolaxHtmlParser) -> None:
+        _, images = parser.extract_and_replace_images(
+            '<img src="data:image/png;base64,xx" alt="inline">'
+        )
+        assert images == []
+
+    def test_skips_img_without_usable_src(self, parser: SelectolaxHtmlParser) -> None:
+        _, images = parser.extract_and_replace_images('<img srcset="   " alt="x">')
+        assert images == []
+
+    def test_multiple_images_numbered(self, parser: SelectolaxHtmlParser) -> None:
+        html = (
+            '<img src="https://a.com/1.png" alt="one">'
+            '<img src="https://a.com/2.png" alt="two">'
+        )
+        _, images = parser.extract_and_replace_images(html)
+        assert [img["new_alt_text"] for img in images] == ["Image_1", "Image_2"]
+
+
+class TestSelectolaxHtmlParserParseFlow:
+    @pytest.mark.asyncio
+    async def test_parse_with_images_builds_caption_map(
+        self, parser: SelectolaxHtmlParser
+    ) -> None:
+        images = [
+            {
+                "url": "https://example.com/i.png",
+                "alt_text": "",
+                "new_alt_text": "Image_1",
+            }
+        ]
+        expected = BlocksContainer(blocks=[], block_groups=[])
+        with patch.object(parser, "_prepare_html", return_value=("<p>x</p>", images)), \
+             patch(
+                 "app.modules.parsers.html_parser.selectolax_html_parser.ImageParser.urls_to_base64",
+                 new_callable=AsyncMock,
+                 return_value=["data:image/png;base64,ZZ"],
+             ), \
+             patch.object(
+                 parser, "parse_to_blocks", new_callable=AsyncMock, return_value=expected
+             ) as mock_blocks:
+            result = await parser.parse(b"<img>", "file.html")
+
+        mock_blocks.assert_awaited_once_with(
+            "<p>x</p>",
+            caption_map={"Image_1": "data:image/png;base64,ZZ"},
+        )
+        assert result.block_container is expected
+
+    @pytest.mark.asyncio
+    async def test_parse_accepts_str_content(self, parser: SelectolaxHtmlParser) -> None:
+        expected = BlocksContainer(blocks=[], block_groups=[])
+        with patch.object(parser, "_prepare_html", return_value=("<p>ok</p>", [])), \
+             patch.object(
+                 parser, "parse_to_blocks", new_callable=AsyncMock, return_value=expected
+             ):
+            result = await parser.parse("<p>ok</p>", "s.html")
+        assert result.metadata == {"record_name": "s.html"}
