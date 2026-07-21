@@ -1,137 +1,158 @@
-"""Unit tests for app.modules.parsers.docx.docx_parser.DocxParser."""
+"""Unit tests for app.modules.parsers.docx.docparser.DocParser."""
 
+import subprocess
 from io import BytesIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.modules.parsers.docx.docx_parser import DocxParser
+from app.modules.parsers.docx.docparser import DocParser
+from app.services.parsing.interface import ParseError, ParseErrorCode
 
 
 # ---------------------------------------------------------------------------
-# Constructor
+# __init__
 # ---------------------------------------------------------------------------
-class TestDocxParserInit:
-    def test_initial_state(self):
-        with patch("app.modules.parsers.docx.docx_parser.DocumentConverter"):
-            parser = DocxParser()
-            assert parser.text_content is None
-            assert parser.metadata is None
+class TestDocParserInit:
+    def test_default_docx_parser_is_none(self):
+        parser = DocParser()
+        assert parser.docx_parser is None
+
+    def test_stores_provided_docx_parser(self):
+        mock_inner = MagicMock()
+        parser = DocParser(docx_parser=mock_inner)
+        assert parser.docx_parser is mock_inner
 
 
 # ---------------------------------------------------------------------------
 # parse
 # ---------------------------------------------------------------------------
 class TestParse:
-    def test_parse_returns_document(self):
-        mock_converter_cls = MagicMock()
-        mock_converter = MagicMock()
+    @pytest.mark.asyncio
+    async def test_raises_when_no_docx_parser_configured(self):
+        parser = DocParser()
+        with pytest.raises(ParseError) as exc_info:
+            await parser.parse(b"data", "file.doc")
+        assert exc_info.value.code == ParseErrorCode.PROVIDER_UNAVAILABLE
+
+    @pytest.mark.asyncio
+    async def test_delegates_to_inner_parser(self):
+        mock_inner = AsyncMock()
         mock_result = MagicMock()
-        mock_document = MagicMock()
-        mock_result.document = mock_document
-        mock_converter.convert.return_value = mock_result
-        mock_converter_cls.return_value = mock_converter
+        mock_inner.parse.return_value = mock_result
 
-        with patch("app.modules.parsers.docx.docx_parser.DocumentConverter", mock_converter_cls):
-            with patch("app.modules.parsers.docx.docx_parser.DocumentStream") as mock_stream_cls:
-                mock_stream = MagicMock()
-                mock_stream_cls.return_value = mock_stream
+        mock_docx_bytes = BytesIO(b"converted")
+        parser = DocParser(docx_parser=mock_inner)
 
-                parser = DocxParser()
-                file_binary = BytesIO(b"fake docx content")
-                result = parser.parse(file_binary)
+        with patch.object(
+            parser, "convert_doc_to_docx_async", AsyncMock(return_value=mock_docx_bytes)
+        ) as mock_convert:
+            result = await parser.parse(b"doc bytes", "doc.doc", {"key": "val"})
 
-                assert result is mock_document
-                mock_stream_cls.assert_called_once_with(name="content.docx", stream=file_binary)
-                mock_converter.convert.assert_called_once_with(mock_stream)
+        mock_convert.assert_called_once_with(b"doc bytes")
+        mock_inner.parse.assert_called_once_with(mock_docx_bytes, "doc.doc", {"key": "val"})
+        assert result is mock_result
 
-    def test_parse_creates_document_stream_with_correct_name(self):
-        mock_converter_cls = MagicMock()
-        mock_converter = MagicMock()
-        mock_result = MagicMock()
-        mock_converter.convert.return_value = mock_result
-        mock_converter_cls.return_value = mock_converter
+    @pytest.mark.asyncio
+    async def test_delegates_without_config(self):
+        mock_inner = AsyncMock()
+        mock_inner.parse.return_value = MagicMock()
+        parser = DocParser(docx_parser=mock_inner)
 
-        with patch("app.modules.parsers.docx.docx_parser.DocumentConverter", mock_converter_cls):
-            with patch("app.modules.parsers.docx.docx_parser.DocumentStream") as mock_stream_cls:
-                mock_stream_cls.return_value = MagicMock()
+        mock_converted = BytesIO(b"")
+        with patch.object(
+            parser, "convert_doc_to_docx_async", AsyncMock(return_value=mock_converted)
+        ):
+            await parser.parse(b"data", "name.doc")
 
-                parser = DocxParser()
-                parser.parse(BytesIO(b"data"))
-
-                call_kwargs = mock_stream_cls.call_args
-                assert call_kwargs[1]["name"] == "content.docx" or call_kwargs[0][0] == "content.docx"
-
-    def test_parse_with_empty_binary(self):
-        mock_converter_cls = MagicMock()
-        mock_converter = MagicMock()
-        mock_result = MagicMock()
-        mock_result.document = MagicMock()
-        mock_converter.convert.return_value = mock_result
-        mock_converter_cls.return_value = mock_converter
-
-        with patch("app.modules.parsers.docx.docx_parser.DocumentConverter", mock_converter_cls):
-            with patch("app.modules.parsers.docx.docx_parser.DocumentStream") as mock_stream_cls:
-                mock_stream_cls.return_value = MagicMock()
-
-                parser = DocxParser()
-                result = parser.parse(BytesIO(b""))
-                assert result is mock_result.document
-
-    def test_parse_converter_error_propagates(self):
-        mock_converter_cls = MagicMock()
-        mock_converter = MagicMock()
-        mock_converter.convert.side_effect = RuntimeError("Corrupt docx")
-        mock_converter_cls.return_value = mock_converter
-
-        with patch("app.modules.parsers.docx.docx_parser.DocumentConverter", mock_converter_cls):
-            with patch("app.modules.parsers.docx.docx_parser.DocumentStream"):
-                parser = DocxParser()
-                with pytest.raises(RuntimeError, match="Corrupt docx"):
-                    parser.parse(BytesIO(b"bad data"))
-
-    def test_parse_uses_new_converter_each_call(self):
-        """DocxParser creates a new DocumentConverter inside parse(), not in __init__."""
-        call_count = 0
-
-        def counting_converter(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            mock = MagicMock()
-            mock.convert.return_value = MagicMock()
-            return mock
-
-        with patch("app.modules.parsers.docx.docx_parser.DocumentConverter", side_effect=counting_converter):
-            with patch("app.modules.parsers.docx.docx_parser.DocumentStream", return_value=MagicMock()):
-                parser = DocxParser()
-                parser.parse(BytesIO(b"data1"))
-                parser.parse(BytesIO(b"data2"))
-                # __init__ does not create a converter, but each parse() does
-                # Actually looking at the code: __init__ has no converter,
-                # parse() creates DocumentConverter() each time
-                assert call_count == 2
+        args, kwargs = mock_inner.parse.call_args
+        assert args[0] is mock_converted
+        assert args[1] == "name.doc"
+        assert args[2] is None
 
 
 # ---------------------------------------------------------------------------
-# main() function and __name__ == "__main__" block
+# convert_doc_to_docx
 # ---------------------------------------------------------------------------
-class TestMain:
-    def test_main_raises_because_init_takes_no_file_path(self):
-        """main() passes file_path to DocxParser() but __init__ only takes self.
-        This covers line 23 (file_path assignment) and line 26 (DocxParser(file_path) call)."""
-        from app.modules.parsers.docx.docx_parser import main
-        with pytest.raises(TypeError):
-            main()
+class TestConvertDocToDocx:
+    def test_raises_when_libreoffice_not_installed(self, tmp_path):
+        parser = DocParser()
 
-    def test_main_full_path_with_mocked_parser(self):
-        """Mock DocxParser so main() reaches parser.parse() on line 29."""
-        mock_parser_instance = MagicMock()
-        mock_parser_cls = MagicMock(return_value=mock_parser_instance)
+        with patch("subprocess.run") as mock_run, \
+             patch("tempfile.TemporaryDirectory") as mock_tmpdir:
+            mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
+            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
+            mock_run.side_effect = subprocess.CalledProcessError(
+                1, ["which", "libreoffice"], stderr=b""
+            )
 
-        with patch("app.modules.parsers.docx.docx_parser.DocxParser", mock_parser_cls):
-            from app.modules.parsers.docx.docx_parser import main
-            main()
-            # DocxParser was called with the file_path
-            mock_parser_cls.assert_called_once()
-            # parser.parse() was called
-            mock_parser_instance.parse.assert_called_once()
+            with pytest.raises(subprocess.CalledProcessError):
+                parser.convert_doc_to_docx(b"doc data")
+
+    def test_raises_when_output_file_not_found(self, tmp_path):
+        parser = DocParser()
+
+        def _run(cmd, **kwargs):
+            return MagicMock(returncode=0)
+
+        with patch("subprocess.run", side_effect=_run), \
+             patch("tempfile.TemporaryDirectory") as mock_tmpdir, \
+             patch("os.path.exists", return_value=False), \
+             patch("builtins.open", MagicMock(
+                 return_value=MagicMock(
+                     __enter__=MagicMock(return_value=MagicMock(write=MagicMock())),
+                     __exit__=MagicMock(return_value=False),
+                 )
+             )):
+            mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
+            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
+
+            with pytest.raises(Exception):
+                parser.convert_doc_to_docx(b"doc data")
+
+    def test_raises_on_timeout(self, tmp_path):
+        parser = DocParser()
+
+        def _run(cmd, **kwargs):
+            if "which" in cmd:
+                return MagicMock(returncode=0)
+            raise subprocess.TimeoutExpired(cmd, 60)
+
+        with patch("subprocess.run", side_effect=_run), \
+             patch("tempfile.TemporaryDirectory") as mock_tmpdir, \
+             patch("builtins.open", MagicMock(
+                 return_value=MagicMock(
+                     __enter__=MagicMock(return_value=MagicMock(write=MagicMock())),
+                     __exit__=MagicMock(return_value=False),
+                 )
+             )):
+            mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
+            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
+
+            with pytest.raises(Exception, match="timed out"):
+                parser.convert_doc_to_docx(b"doc data")
+
+    def test_returns_bytesio_on_success(self, tmp_path):
+        parser = DocParser()
+        fake_docx = b"fake docx bytes"
+        docx_path = str(tmp_path / "input.docx")
+
+        def _run(cmd, **kwargs):
+            if "which" in cmd:
+                return MagicMock(returncode=0)
+            # Simulate LibreOffice creating the output file
+            with open(docx_path, "wb") as f:
+                f.write(fake_docx)
+            return MagicMock(returncode=0)
+
+        input_path = str(tmp_path / "input.doc")
+
+        with patch("subprocess.run", side_effect=_run), \
+             patch("tempfile.TemporaryDirectory") as mock_tmpdir:
+            mock_tmpdir.return_value.__enter__ = MagicMock(return_value=str(tmp_path))
+            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = parser.convert_doc_to_docx(b"doc data")
+
+        assert isinstance(result, BytesIO)
+        assert result.read() == fake_docx

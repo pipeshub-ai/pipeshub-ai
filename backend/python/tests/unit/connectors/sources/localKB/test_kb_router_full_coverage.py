@@ -243,7 +243,7 @@ class TestUpdateKnowledgeBase:
         app, kb_svc, _ = _make_app()
         kb_svc.update_knowledge_base = AsyncMock(return_value={"success": True})
         client = TestClient(app)
-        resp = client.put("/api/v1/kb/kb1", json={"groupName": "New"})
+        resp = client.put("/api/v1/kb/kb1", json={"name": "New"})
         assert resp.status_code == 200
 
     def test_invalid_body(self):
@@ -258,14 +258,14 @@ class TestUpdateKnowledgeBase:
             "success": False, "code": 403, "reason": "No permission"
         })
         client = TestClient(app)
-        resp = client.put("/api/v1/kb/kb1", json={})
+        resp = client.put("/api/v1/kb/kb1", json={"name": "Updated Name"})
         assert resp.status_code == 403
 
     def test_unexpected_exception(self):
         app, kb_svc, _ = _make_app()
         kb_svc.update_knowledge_base = AsyncMock(side_effect=RuntimeError("err"))
         client = TestClient(app)
-        resp = client.put("/api/v1/kb/kb1", json={})
+        resp = client.put("/api/v1/kb/kb1", json={"description": "Updated description"})
         assert resp.status_code == 500
 
 
@@ -616,6 +616,146 @@ class TestUploadRecordsToFolder:
         assert resp.status_code == 500
 
 
+class TestKbRouterDependencyWiring:
+    @pytest.mark.asyncio
+    async def test_get_kb_service_wires_dependencies(self):
+        """get_kb_service injects graph provider, processor, and config from app state."""
+        from app.connectors.sources.localKB.api.kb_router import get_kb_service
+
+        request = MagicMock()
+        request.app.container = MagicMock()
+        request.app.container.logger.return_value = MagicMock()
+        request.app.container.kafka_service.return_value = AsyncMock()
+        request.app.container.config_service.return_value = MagicMock()
+        request.app.state.graph_provider = AsyncMock()
+        request.app.state.kb_entities_processor = AsyncMock()
+
+        svc = await get_kb_service(request)
+        assert svc.graph_provider is request.app.state.graph_provider
+        assert svc.processor is request.app.state.kb_entities_processor
+
+    @pytest.mark.asyncio
+    async def test_get_kafka_service_from_container(self):
+        """get_kafka_service returns the connector container kafka service."""
+        from app.connectors.sources.localKB.api.kb_router import get_kafka_service
+
+        request = MagicMock()
+        request.app.container = MagicMock()
+        request.app.container.kafka_service.return_value = AsyncMock()
+        kafka = await get_kafka_service(request)
+        assert kafka is request.app.container.kafka_service()
+
+
+class TestUpdateKnowledgeBaseRouteGaps:
+    @pytest.mark.asyncio
+    async def test_update_kb_route_invalid_json_400(self):
+        from app.connectors.sources.localKB.api.kb_router import update_knowledge_base
+        from starlette import status
+
+        request = MagicMock()
+        request.state.user = {"userId": "user1"}
+        request.json = AsyncMock(side_effect=ValueError("bad json"))
+        with pytest.raises(HTTPException) as exc:
+            await update_knowledge_base("kb1", request, kb_service=AsyncMock())
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+
+    @pytest.mark.asyncio
+    async def test_update_kb_route_validation_error_422(self):
+        from app.connectors.sources.localKB.api.kb_router import update_knowledge_base
+        from starlette import status
+
+        request = MagicMock()
+        request.state.user = {"userId": "user1"}
+        request.json = AsyncMock(return_value={"name": 12345})
+        with pytest.raises(HTTPException) as exc:
+            await update_knowledge_base("kb1", request, kb_service=AsyncMock())
+        assert exc.value.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    @pytest.mark.asyncio
+    async def test_update_kb_route_empty_updates_400(self):
+        from app.connectors.sources.localKB.api.kb_router import update_knowledge_base
+        from starlette import status
+
+        request = MagicMock()
+        request.state.user = {"userId": "user1"}
+        request.json = AsyncMock(return_value={"name": None})
+        with pytest.raises(HTTPException) as exc:
+            await update_knowledge_base("kb1", request, kb_service=AsyncMock())
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+
+
+class TestFolderUploadRouteGaps:
+    @pytest.mark.asyncio
+    async def test_folder_upload_missing_user_org_400(self):
+        from app.connectors.sources.localKB.api.kb_router import upload_records_to_folder
+        from starlette import status
+
+        request = MagicMock()
+        request.state.user = {"userId": None, "orgId": None}
+        request.json = AsyncMock(return_value={"files": [{"filePath": "a.pdf"}]})
+        request.app.container = MagicMock()
+        request.app.container.logger.return_value = MagicMock()
+        with pytest.raises(HTTPException) as exc:
+            await upload_records_to_folder(
+                "kb1", "folder1", request, kb_service=AsyncMock(), kafka_service=AsyncMock()
+            )
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+
+    @pytest.mark.asyncio
+    async def test_folder_upload_publishes_kafka_events(self):
+        from app.connectors.sources.localKB.api.kb_router import upload_records_to_folder
+
+        kb_svc = AsyncMock()
+        kb_svc.upload_records_to_folder = AsyncMock(return_value={
+            "success": True,
+            "eventData": {
+                "eventType": "newRecord",
+                "topic": "record-events",
+                "payloads": [{"recordId": "r1"}, {"recordId": "r2"}],
+            },
+        })
+        kafka_svc = AsyncMock()
+        request = MagicMock()
+        request.state.user = {"userId": "user1", "orgId": "org1"}
+        request.json = AsyncMock(return_value={"files": [{"filePath": "a.pdf", "record": {}, "fileRecord": {}}]})
+        request.app.container = MagicMock()
+        request.app.container.logger.return_value = MagicMock()
+
+        result = await upload_records_to_folder(
+            "kb1", "folder1", request, kb_service=kb_svc, kafka_service=kafka_svc
+        )
+        assert result["success"] is True
+        assert kafka_svc.publish_event.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_folder_upload_kafka_partial_failure_logged(self):
+        from app.connectors.sources.localKB.api.kb_router import upload_records_to_folder
+
+        kb_svc = AsyncMock()
+        kb_svc.upload_records_to_folder = AsyncMock(return_value={
+            "success": True,
+            "eventData": {
+                "eventType": "newRecord",
+                "topic": "record-events",
+                "payloads": [{"recordId": "r1"}, {"recordId": "r2"}],
+            },
+        })
+        kafka_svc = AsyncMock()
+        kafka_svc.publish_event = AsyncMock(side_effect=[RuntimeError("kafka down"), None])
+        request = MagicMock()
+        request.state.user = {"userId": "user1", "orgId": "org1"}
+        request.json = AsyncMock(return_value={"files": [{"filePath": "a.pdf", "record": {}, "fileRecord": {}}]})
+        request.app.container = MagicMock()
+        logger = MagicMock()
+        request.app.container.logger.return_value = logger
+
+        result = await upload_records_to_folder(
+            "kb1", "folder1", request, kb_service=kb_svc, kafka_service=kafka_svc
+        )
+        assert result["success"] is True
+        logger.error.assert_called()
+
+
 class TestCreateRecordsInKb:
     def test_success(self):
         app, kb_svc, _ = _make_app()
@@ -952,6 +1092,46 @@ class TestUpdateRecord:
         client = TestClient(app)
         resp = client.put("/api/v1/kb/record/r1", json={"updates": {}})
         assert resp.status_code == 500
+
+    def test_returns_unenriched_response_when_kb_context_missing(self):
+        app, kb_svc, kafka = _make_app()
+        kb_svc.update_record = AsyncMock(return_value={
+            "success": True,
+            "recordId": "r1",
+            "updatedRecord": {"id": "r1"},
+        })
+        gp = app.state.graph_provider
+        gp._get_kb_context_for_record = AsyncMock(return_value=None)
+
+        client = TestClient(app)
+        resp = client.put("/api/v1/kb/record/r1", json={"updates": {"recordName": "new"}})
+        assert resp.status_code == 200
+        assert resp.json()["location"] == "kb_root"
+        assert resp.json()["userPermission"] == "NONE"
+
+    def test_publishes_event_data_from_service_result(self):
+        app, kb_svc, kafka = _make_app()
+        kb_svc.update_record = AsyncMock(return_value={
+            "success": True,
+            "recordId": "r1",
+            "updatedRecord": {"id": "r1"},
+            "eventData": {
+                "topic": "record-events",
+                "eventType": "updateRecord",
+                "payload": {"recordId": "r1"},
+            },
+        })
+        gp = app.state.graph_provider
+        gp._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1", "kb_name": "KB"})
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+        gp.get_user_kb_permission = AsyncMock(return_value="OWNER")
+        gp.get_knowledge_base = AsyncMock(return_value={"id": "kb1", "name": "KB"})
+        gp.get_knowledge_hub_parent_node = AsyncMock(return_value=None)
+
+        client = TestClient(app)
+        resp = client.put("/api/v1/kb/record/r1", json={"updates": {"recordName": "new"}})
+        assert resp.status_code == 200
+        kafka.publish_event.assert_awaited_once()
 
 
 class TestDeleteRecordsInKb:

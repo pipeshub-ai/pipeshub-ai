@@ -1,9 +1,9 @@
 """
 Knowledge Base Connector
 
-Connector for managing local knowledge bases. This connector treats KB as a unified
-connector type that manages all KBs collectively, with no-op sync methods since KBs
-are local storage.
+Per-KB connector instance. Each knowledge base is an independent `apps` document in
+the graph, and gets its own `KnowledgeBaseConnector` runtime instance keyed by its
+unique KB app ID. Sync methods are no-ops since KBs are local storage.
 """
 
 from logging import Logger
@@ -60,9 +60,9 @@ class KBApp(App):
 
 class KnowledgeBaseConnector(BaseConnector):
     """
-    Knowledge Base connector for managing local knowledge bases.
+    Knowledge Base connector for a single KB app instance.
 
-    This connector manages all KBs collectively (not per-KB instances).
+    One instance is created per KB (identified by connector_id = KB app _key).
     Since KBs are local storage, sync methods are no-ops.
     """
 

@@ -31,7 +31,10 @@ from app.utils.fetch_slack_thread import has_slack_connector_configured
 from app.modules.agents.deep.graph import deep_agent_graph
 from app.modules.agents.deep.state import build_deep_agent_state
 from app.modules.agents.qna.cache_manager import get_cache_manager
-from app.modules.agents.qna.chat_state import build_initial_state
+from app.modules.agents.qna.chat_state import (
+    _extract_kb_app_ids,
+    build_initial_state,
+)
 from app.modules.agents.qna.graph import agent_graph, modern_agent_graph
 from app.modules.agents.qna.memory_optimizer import (
     auto_optimize_state,
@@ -1100,49 +1103,19 @@ def _filter_knowledge_by_enabled_sources(
     filters: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """
-    Filter agent_knowledge to only include entries matching enabled filters.
-
-    Keeps:
-    - App connectors whose connectorId is in filters["apps"]
-    - KB connectors whose recordGroups overlap with filters["kb"],
-      or KB connectors with no recordGroups (unrestricted KB)
+    Filter agent_knowledge to only include entries whose connectorId is in
+    filters["apps"]. KB apps are now UUID-identified app connectors, so they
+    are handled by the same branch as all other connectors.
     """
     enabled_apps = set(filters.get("apps", []))
-    enabled_kbs = set(filters.get("kb", []))
 
-    if not enabled_apps and not enabled_kbs:
+    if not enabled_apps:
         return agent_knowledge
 
-    filtered: list[dict[str, Any]] = []
-    for k in agent_knowledge:
-        if not isinstance(k, dict):
-            continue
-
-        connector_id = k.get("connectorId", "")
-
-        # App connector — keep if in enabled apps
-        if connector_id in enabled_apps:
-            filtered.append(k)
-            continue
-
-        # KB connector — keep if its record groups overlap or it has none
-        if connector_id.startswith("knowledgeBase_") and enabled_kbs:
-            filters_data = k.get("filters", k.get("filtersParsed", {}))
-            if isinstance(filters_data, str):
-                try:
-                    filters_data = json.loads(filters_data)
-                except (json.JSONDecodeError, ValueError):
-                    filters_data = {}
-
-            record_groups = (
-                filters_data.get("recordGroups", [])
-                if isinstance(filters_data, dict) else []
-            )
-
-            if any(rg in enabled_kbs for rg in record_groups):
-                filtered.append(k)
-
-    return filtered
+    return [
+        k for k in agent_knowledge
+        if isinstance(k, dict) and k.get("connectorId", "") in enabled_apps
+    ]
 
 
 async def _create_toolset_edges(
@@ -3337,32 +3310,15 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
 
         if not chat_query.filters:
             # Extract knowledge sources from agent's knowledge array
-            knowledge_connector_ids = []
-            kb_record_groups = []
-
-            for k in agent_knowledge:
-                if isinstance(k, dict):
-                    connector_id = k.get("connectorId")
-                    if connector_id:
-                        knowledge_connector_ids.append(connector_id)
-
-                    # Extract KB record groups from filters
-                    filters_data = k.get("filters", {})
-                    if isinstance(filters_data, str):
-                        try:
-                            filters_data = json.loads(filters_data)
-                        except json.JSONDecodeError:
-                            filters_data = {}
-
-                    record_groups = filters_data.get("recordGroups", [])
-                    if record_groups:
-                        # Check if this is a KB connector (connectorName == "KB")
-                        # For KBs, the recordGroups contain the KB IDs
-                        kb_record_groups.extend(record_groups)
+            knowledge_connector_ids = [
+                k.get("connectorId") for k in agent_knowledge
+                if isinstance(k, dict) and k.get("connectorId")
+            ]
+            kb_ids = _extract_kb_app_ids(agent_knowledge)
 
             filters = {
                 "apps": knowledge_connector_ids,
-                "kb": kb_record_groups,
+                "kb": kb_ids,
                 "vectorDBs": agent.get("vectorDBs", []),
                 "connectors": agent.get("connectors", [])
             }
@@ -3379,7 +3335,6 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         _chat_conn_ids = [
             k["connectorId"] for k in agent_knowledge
             if isinstance(k, dict) and k.get("connectorId")
-            and not str(k["connectorId"]).startswith("knowledgeBase_")
         ]
         connector_configs = await fetch_connector_configs(config_service, _chat_conn_ids)
         web_search_provider = _parse_web_search(agent.get("webSearch"))
@@ -3738,60 +3693,36 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         filters = chat_query.filters.copy() if chat_query.filters else {}
 
         if not chat_query.filters:
-            # No explicit filters supplied — derive everything from the agent's knowledge config
-            knowledge_connector_ids = []
-            kb_record_groups = []
-
-            for k in agent_knowledge:
-                if isinstance(k, dict):
-                    connector_id = k.get("connectorId")
-                    # knowledgeBase_* connectors represent KB sources — they should NOT
-                    # go into apps; their record groups are collected into kb instead.
-                    if connector_id and not connector_id.startswith("knowledgeBase_"):
-                        knowledge_connector_ids.append(connector_id)
-
-                    # Parse nested filters (stored as JSON string or dict)
-                    filters_data = k.get("filters", {})
-                    if isinstance(filters_data, str):
-                        try:
-                            filters_data = json.loads(filters_data)
-                        except json.JSONDecodeError:
-                            filters_data = {}
-
-                    record_groups = filters_data.get("recordGroups", [])
-                    if record_groups:
-                        kb_record_groups.extend(record_groups)
+            # No explicit filters supplied — derive everything from the agent's knowledge config.
+            # Exclude KB-typed entries from apps: they go into filters["kb"] exclusively.
+            knowledge_connector_ids = [
+                k.get("connectorId") for k in agent_knowledge
+                if isinstance(k, dict)
+                and k.get("connectorId")
+                and (k.get("type") or "").strip().upper() != "KB"
+            ]
+            kb_ids = _extract_kb_app_ids(agent_knowledge)
 
             filters = {
                 "apps": knowledge_connector_ids,
-                "kb": kb_record_groups,
+                "kb": kb_ids,
             }
             logger.info(f"Filters: {filters}")
         else:
             # Explicit filters supplied — override individual keys where provided,
             # but fall back to agent's knowledge for keys that are absent.
             if "apps" not in chat_query.filters or chat_query.filters["apps"] is None:
+                # Exclude KB-typed entries from apps — they belong in filters["kb"] only.
                 knowledge_connector_ids = [
                     k.get("connectorId") for k in agent_knowledge
-                    if isinstance(k, dict) and k.get("connectorId")
-                    and not k.get("connectorId", "").startswith("knowledgeBase_")
+                    if isinstance(k, dict)
+                    and k.get("connectorId")
+                    and (k.get("type") or "").strip().upper() != "KB"
                 ]
                 filters["apps"] = knowledge_connector_ids
 
             if "kb" not in chat_query.filters or chat_query.filters["kb"] is None:
-                kb_record_groups = []
-                for k in agent_knowledge:
-                    if isinstance(k, dict):
-                        filters_data = k.get("filters", {})
-                        if isinstance(filters_data, str):
-                            try:
-                                filters_data = json.loads(filters_data)
-                            except json.JSONDecodeError:
-                                filters_data = {}
-                        record_groups = filters_data.get("recordGroups", [])
-                        if record_groups:
-                            kb_record_groups.extend(record_groups)
-                filters["kb"] = kb_record_groups
+                filters["kb"] = _extract_kb_app_ids(agent_knowledge)
             logger.info(f"Filters: {filters}")
 
         # Apply NO_KB sentinel BEFORE filtering agent_knowledge. If we filter first while
@@ -3807,7 +3738,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         _stream_conn_ids = [
             k["connectorId"] for k in agent_knowledge
             if isinstance(k, dict) and k.get("connectorId")
-            and not str(k["connectorId"]).startswith("knowledgeBase_")
         ]
         connector_configs = await fetch_connector_configs(config_service, _stream_conn_ids)
         web_search_provider = _parse_web_search(agent.get("webSearch"))
@@ -3950,18 +3880,13 @@ async def get_assistant_agent(
                     if not kb_id:
                         continue
                     title = (kb.get("name") or "").strip() or "Untitled"
-                    one_group = {
-                        "recordGroups": [kb_id],
-                        "records": [],
-                    }
                     kn: dict[str, Any] = {
-                        "connectorId": f"knowledgeBase_{org_id}",
+                        "connectorId": kb_id,
                         "name": title,
                         "displayName": title,
                         "type": Connectors.KNOWLEDGE_BASE.value,
-                        "filters": one_group,
+                        "filters": {},
                         "filtersParsed": {
-                            "recordGroups": [kb_id],
                             "records": [],
                         },
                     }
@@ -3991,7 +3916,6 @@ async def get_assistant_agent(
                 "displayName": connector_name,
                 "type": connector_type,
                 "filtersParsed": {
-                    "recordGroups": [],
                     "records": []
                 }
             }

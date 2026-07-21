@@ -899,6 +899,13 @@ def _user_search_response(status: int, payload=None):
     return resp
 
 
+def _mock_user_list_unavailable(mock_ds: MagicMock) -> None:
+    """Force /user/list 404 so tests exercise the /user/search fallback path."""
+    mock_ds.get_user_list_v2 = AsyncMock(
+        return_value=_user_search_response(HttpStatusCode.NOT_FOUND.value)
+    )
+
+
 class TestJiraDataCenterUserBulkForbidden:
     """Regression: ``GET /rest/api/2/user/search`` requires the *Browse users
     and groups* global permission. Non-admin sync users get 401/403 there, and
@@ -916,6 +923,7 @@ class TestJiraDataCenterUserBulkForbidden:
         conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
 
         mock_ds = MagicMock()
+        _mock_user_list_unavailable(mock_ds)
         mock_ds.get_user_search_v2 = AsyncMock(
             return_value=_user_search_response(HttpStatusCode.FORBIDDEN.value)
         )
@@ -937,6 +945,7 @@ class TestJiraDataCenterUserBulkForbidden:
         conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
 
         mock_ds = MagicMock()
+        _mock_user_list_unavailable(mock_ds)
         mock_ds.get_user_search_v2 = AsyncMock(
             return_value=_user_search_response(HttpStatusCode.UNAUTHORIZED.value)
         )
@@ -958,6 +967,7 @@ class TestJiraDataCenterUserBulkForbidden:
         conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
 
         mock_ds = MagicMock()
+        _mock_user_list_unavailable(mock_ds)
         mock_ds.get_user_search_v2 = AsyncMock(
             return_value=_user_search_response(HttpStatusCode.INTERNAL_SERVER_ERROR.value)
         )
@@ -1004,6 +1014,7 @@ class TestJiraDataCenterUserBulkForbidden:
             return per_email_responses.get(username, _user_search_response(404))
 
         mock_ds = MagicMock()
+        _mock_user_list_unavailable(mock_ds)
         mock_ds.get_user_search_v2 = AsyncMock(side_effect=get_user_search_v2)
         conn._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
@@ -1027,6 +1038,7 @@ class TestJiraDataCenterUserBulkForbidden:
         conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
 
         mock_ds = MagicMock()
+        _mock_user_list_unavailable(mock_ds)
         mock_ds.get_user_search_v2 = AsyncMock(
             return_value=_user_search_response(HttpStatusCode.FORBIDDEN.value)
         )
@@ -1037,3 +1049,179 @@ class TestJiraDataCenterUserBulkForbidden:
         assert conn._user_bulk_forbidden is True
         # Only the bulk attempt; no per-email follow-ups.
         assert mock_ds.get_user_search_v2.await_count == 1
+
+
+class TestJiraDataCenterUserListBulk:
+    """Prefer /user/list for enumeration; fall back to search when unavailable."""
+
+    @pytest.mark.asyncio
+    async def test_user_list_paginates_with_cursor(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+
+        page1 = _user_search_response(
+            HttpStatusCode.OK.value,
+            {
+                "values": [
+                    {"key": "k1", "emailAddress": "a@example.com", "active": True},
+                    {"key": "k2", "emailAddress": "b@example.com", "active": True},
+                ],
+                "nextCursor": "cursor-2",
+            },
+        )
+        page2 = _user_search_response(
+            HttpStatusCode.OK.value,
+            {
+                "values": [
+                    {"key": "k3", "emailAddress": "c@example.com", "active": True},
+                ],
+            },
+        )
+
+        mock_ds = MagicMock()
+        mock_ds.get_user_list_v2 = AsyncMock(side_effect=[page1, page2])
+        mock_ds.get_user_search_v2 = AsyncMock()
+        conn._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await conn._fetch_users()
+
+        assert {u.source_user_id for u in result} == {"k1", "k2", "k3"}
+        assert conn._user_bulk_incomplete is False
+        assert mock_ds.get_user_list_v2.await_count == 2
+        mock_ds.get_user_search_v2.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_user_list_403_sets_forbidden_without_search(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+
+        mock_ds = MagicMock()
+        mock_ds.get_user_list_v2 = AsyncMock(
+            return_value=_user_search_response(HttpStatusCode.FORBIDDEN.value)
+        )
+        mock_ds.get_user_search_v2 = AsyncMock()
+        conn._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await conn._fetch_users()
+
+        assert result == []
+        assert conn._user_bulk_forbidden is True
+        mock_ds.get_user_search_v2.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_search_fallback_marks_incomplete_and_sweeps_candidates(self) -> None:
+        """When /list is missing, /user/search is incomplete — reverse lookup
+        must not early-exit on bulk unresolved_count alone.
+        """
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        conn.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[
+                MagicMock(email="in-bulk@example.com"),
+                MagicMock(email="missed@example.com"),
+            ]
+        )
+
+        bulk_resp = _user_search_response(
+            HttpStatusCode.OK.value,
+            [{"key": "k1", "emailAddress": "in-bulk@example.com", "active": True}],
+        )
+        missed_resp = _user_search_response(
+            HttpStatusCode.OK.value,
+            [{"key": "k2", "name": "missed", "displayName": "Missed", "emailAddress": "missed@example.com"}],
+        )
+
+        async def get_user_search_v2(**kwargs):
+            username = kwargs.get("username")
+            if username == ".":
+                return bulk_resp
+            if username == "missed@example.com":
+                return missed_resp
+            return _user_search_response(HttpStatusCode.OK.value, [])
+
+        mock_ds = MagicMock()
+        _mock_user_list_unavailable(mock_ds)
+        mock_ds.get_user_search_v2 = AsyncMock(side_effect=get_user_search_v2)
+        conn._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await conn._fetch_users()
+
+        assert conn._user_bulk_incomplete is True
+        emails = {u.email for u in result}
+        assert emails == {"in-bulk@example.com", "missed@example.com"}
+
+    @pytest.mark.asyncio
+    async def test_jira10_pre_list_search_stops_empty_after_100_reverse_sweeps(
+        self,
+    ) -> None:
+        """Jira 10.x before /user/list (e.g. 10.3.12): search returns ~100 then
+        empty pages; reverse lookup still sweeps PipesHub candidates past bulk.
+        """
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        conn.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[
+                MagicMock(email="in-bulk@example.com"),
+                MagicMock(email="beyond-cap@example.com"),
+            ]
+        )
+
+        page1 = [
+            {
+                "key": f"k{i}",
+                "emailAddress": f"u{i}@example.com",
+                "active": True,
+            }
+            for i in range(50)
+        ]
+        page1[0]["emailAddress"] = "in-bulk@example.com"
+        page2 = [
+            {
+                "key": f"k{i}",
+                "emailAddress": f"u{i}@example.com",
+                "active": True,
+            }
+            for i in range(50, 100)
+        ]
+        beyond_resp = _user_search_response(
+            HttpStatusCode.OK.value,
+            [{
+                "key": "k-beyond",
+                "name": "beyond",
+                "displayName": "Beyond Cap",
+                "emailAddress": "beyond-cap@example.com",
+            }],
+        )
+
+        async def get_user_search_v2(**kwargs):
+            username = kwargs.get("username")
+            start_at = kwargs.get("startAt", 0)
+            if username == ".":
+                if start_at == 0:
+                    return _user_search_response(HttpStatusCode.OK.value, page1)
+                if start_at == 50:
+                    return _user_search_response(HttpStatusCode.OK.value, page2)
+                # Jira 10: nothing past the ~100 hard cap
+                return _user_search_response(HttpStatusCode.OK.value, [])
+            if username == "beyond-cap@example.com":
+                return beyond_resp
+            return _user_search_response(HttpStatusCode.OK.value, [])
+
+        mock_ds = MagicMock()
+        _mock_user_list_unavailable(mock_ds)
+        mock_ds.get_user_search_v2 = AsyncMock(side_effect=get_user_search_v2)
+        conn._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        result = await conn._fetch_users()
+
+        assert conn._user_bulk_incomplete is True
+        emails = {u.email for u in result}
+        assert "in-bulk@example.com" in emails
+        assert "beyond-cap@example.com" in emails
+        assert len(result) == 101  # 100 from bulk + 1 from reverse

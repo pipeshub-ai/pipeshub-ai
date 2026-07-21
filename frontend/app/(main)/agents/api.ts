@@ -142,40 +142,14 @@ function isKnowledgeGraphEntry(value: unknown): value is KnowledgeGraphEntry {
   return Boolean(value) && typeof value === 'object';
 }
 
-/** Parse `filters` / `filtersParsed` on a knowledge graph row (string JSON or object). */
-function parseKnowledgeFiltersRecord(entry: KnowledgeGraphEntry): Record<string, unknown> {
-  const fp = entry.filtersParsed ?? entry.filters;
-  if (typeof fp === 'string') {
-    try {
-      const parsed = JSON.parse(fp) as unknown;
-      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
-    } catch {
-      return {};
-    }
-  }
-  if (fp && typeof fp === 'object') {
-    return fp as Record<string, unknown>;
-  }
-  return {};
-}
-
 /**
- * `recordGroups` from parsed filters: trimmed non-empty ids, order preserved,
- * duplicates within the same filters object collapsed.
+ * A knowledge graph entry is a Collection (KB) iff the backend resolved it to
+ * `type === 'KB'` — each KB is its own app, identified by its own
+ * `connectorId`. Do not use `filters.recordGroups` for this: that field is a
+ * legacy holdover, always empty for KBs created after the KB-apps migration.
  */
-function normalizedRecordGroupIds(filters: Record<string, unknown>): string[] {
-  const rg = filters.recordGroups;
-  if (!Array.isArray(rg)) return [];
-  const out: string[] = [];
-  const seenLocal = new Set<string>();
-  for (const x of rg) {
-    if (typeof x !== 'string') continue;
-    const id = x.trim();
-    if (!id || seenLocal.has(id)) continue;
-    seenLocal.add(id);
-    out.push(id);
-  }
-  return out;
+function isKbKnowledgeEntry(entry: KnowledgeGraphEntry): boolean {
+  return typeof entry.type === 'string' && entry.type.trim().toUpperCase() === 'KB';
 }
 
 /** Toolset groups for agent chat Actions tab (labels, icons, search metadata). */
@@ -251,11 +225,9 @@ export function extractAgentKnowledgeDefaults(
     const connectorId = typeof entry.connectorId === 'string' ? entry.connectorId.trim() : '';
     if (!connectorId) continue;
 
-    const recordGroups = normalizedRecordGroupIds(parseKnowledgeFiltersRecord(entry));
-
-    if (recordGroups.length > 0) {
-      kb.push(...recordGroups);
-    } else if (!connectorId.startsWith('knowledgeBase_')) {
+    if (isKbKnowledgeEntry(entry)) {
+      kb.push(connectorId);
+    } else {
       apps.push(connectorId);
     }
   }
@@ -278,10 +250,9 @@ export function extractAgentKnowledgeConnectors(
   for (const entry of raw) {
     if (!isKnowledgeGraphEntry(entry)) continue;
     const connectorId = typeof entry.connectorId === 'string' ? entry.connectorId.trim() : '';
-    if (!connectorId || connectorId.startsWith('knowledgeBase_')) continue;
+    if (!connectorId) continue;
 
-    const recordGroups = normalizedRecordGroupIds(parseKnowledgeFiltersRecord(entry));
-    if (recordGroups.length > 0) continue;
+    if (isKbKnowledgeEntry(entry)) continue;
 
     if (seen.has(connectorId)) continue;
     seen.add(connectorId);
@@ -301,7 +272,7 @@ export function extractAgentKnowledgeConnectors(
   return rows;
 }
 
-/** Row for agent-scoped Collections UI — ids come from `filters.recordGroups`, not hub KB node ids. */
+/** Row for agent-scoped Collections UI — id is the KB entry's own `connectorId`. */
 export interface AgentKnowledgeCollectionRow {
   id: string;
   name: string;
@@ -310,8 +281,9 @@ export interface AgentKnowledgeCollectionRow {
 }
 
 /**
- * Build collection rows from the agent knowledge graph (`recordGroups`).
- * Labels use `displayName` / `name` on the knowledge entry so the list stays populated
+ * Build collection rows from the agent knowledge graph — one row per KB
+ * entry (`type === 'KB'`), keyed by its own `connectorId`. Labels use
+ * `displayName` / `name` on the knowledge entry so the list stays populated
  * even when ids do not match `/knowledge-hub/nodes` collection roots.
  */
 export function extractAgentKnowledgeCollectionRows(
@@ -324,32 +296,23 @@ export function extractAgentKnowledgeCollectionRows(
 
   for (const entry of raw) {
     if (!isKnowledgeGraphEntry(entry)) continue;
+    if (!isKbKnowledgeEntry(entry)) continue;
 
-    const recordGroups = normalizedRecordGroupIds(parseKnowledgeFiltersRecord(entry));
-    if (recordGroups.length === 0) continue;
+    const connectorId = typeof entry.connectorId === 'string' ? entry.connectorId.trim() : '';
+    if (!connectorId || seen.has(connectorId)) continue;
+    seen.add(connectorId);
 
-    const base =
+    const name =
       (typeof entry.displayName === 'string' && entry.displayName.trim()) ||
       (typeof entry.name === 'string' && entry.name.trim()) ||
       'Collection';
 
-    const connectorId = typeof entry.connectorId === 'string' ? entry.connectorId.trim() : '';
-
     const sourceType =
       typeof entry.type === 'string' && entry.type.trim()
         ? entry.type.trim()
-        : connectorId.startsWith('knowledgeBase_')
-          ? 'KB'
-          : undefined;
+        : undefined;
 
-    let ordinal = 0;
-    for (const rgId of recordGroups) {
-      if (seen.has(rgId)) continue;
-      seen.add(rgId);
-      ordinal += 1;
-      const name = recordGroups.length === 1 ? base : `${base} (${ordinal})`;
-      rows.push({ id: rgId, name, sourceType });
-    }
+    rows.push({ id: connectorId, name, sourceType });
   }
   return rows;
 }
@@ -652,12 +615,18 @@ export const AgentsApi = {
     q?: string;
     sortBy?: string;
     sortOrder?: 'asc' | 'desc';
+    flattened?: boolean;
   }): Promise<{ nodes: KnowledgeHubAppNode[]; hasNext: boolean }> {
-    const query: Record<string, string | number> = {};
+    const query: Record<string, string | number | boolean> = {};
     query.page = params?.page ?? 1;
     query.limit = params?.limit ?? 100;
     query.sortBy = params?.sortBy ?? 'updatedAt';
     query.sortOrder = params?.sortOrder ?? 'desc';
+    query.origins = 'CONNECTOR';
+    // Pass flattened=false to get only root connector apps, not nested pages/documents
+    if (params?.flattened !== undefined) {
+      query.flattened = params.flattened;
+    }
     if (params?.q) query.q = params.q;
 
     const { data } = await apiClient.get<KnowledgeHubNodesApiResponse>(
@@ -665,9 +634,7 @@ export const AgentsApi = {
       { params: query }
     );
 
-    const items = (data?.items ?? []).filter(
-      (node) => node?.id && !node.id.startsWith('knowledgeBase_')
-    );
+    const items = (data?.items ?? []).filter((node) => node?.id);
 
     return {
       nodes: items,
@@ -676,14 +643,19 @@ export const AgentsApi = {
   },
 
   /**
-   * Paginate through all knowledge-hub root nodes (excluding knowledgeBase_ items).
+   * Paginate through all knowledge-hub root nodes.
    * Used by the agent builder to populate the apps palette.
    */
   async getAllKnowledgeHubAppNodes(): Promise<KnowledgeHubAppNode[]> {
     const all: KnowledgeHubAppNode[] = [];
     let page = 1;
     for (;;) {
-      const { nodes, hasNext } = await this.getKnowledgeHubAppNodes({ page, limit: 100 });
+      // Pass flattened=false to get only root connector apps, not all nested documents
+      const { nodes, hasNext } = await this.getKnowledgeHubAppNodes({ 
+        page, 
+        limit: 100,
+        flattened: false 
+      });
       all.push(...nodes);
       if (!hasNext) break;
       page += 1;

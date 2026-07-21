@@ -91,13 +91,19 @@ export function createHealthRouter(
 
       const brokerName = deployment.messageBrokerType === 'redis' ? 'Redis Streams' : 'Kafka';
       const graphDbName = deployment.dataStoreType === 'arangodb' ? 'ArangoDB' : 'Neo4j';
+      const vectorDbNames: Record<string, string> = {
+        qdrant: 'Qdrant',
+        opensearch: 'OpenSearch',
+        redis: 'Redis',
+      };
+      const vectorDbName = vectorDbNames[deployment.vectorDbType || ''] || 'VectorDB';
 
       const serviceNames: Record<string, string> = {
         redis: 'Redis',
         messageBroker: brokerName,
         mongodb: 'MongoDB',
         graphDb: graphDbName,
-        vectorDb: 'Qdrant',
+        vectorDb: vectorDbName,
       };
 
       // When KV store uses etcd, add it as a separate service
@@ -203,28 +209,44 @@ export function createHealthRouter(
         }
       }
 
-      const qdrantUrl = `http://${appConfig.qdrant.host}:${appConfig.qdrant.port}`;
-      const qdrantEndpoint = `${qdrantUrl}/healthz`;
-      const qdrantStartedAt = Date.now();
-      try {
-        const qdrantResp = await axios.get(qdrantEndpoint, { timeout: 3000 });
-        services.vectorDb = qdrantResp.status === 200 ? 'healthy' : 'unhealthy';
+      // Vector DB — delegate to the Python connector service which knows the
+      // configured provider (Qdrant, OpenSearch, or Redis) via VECTOR_DB_TYPE.
+      if (!deployment.vectorDbType) {
+        services.vectorDb = 'pending';
         details.vectorDb = {
-          status: qdrantResp.status === 200 ? 'healthy' : 'unhealthy',
-          message: qdrantResp.status === 200 ? 'Qdrant is reachable' : `Qdrant responded with HTTP ${qdrantResp.status}`,
-          endpoint: qdrantEndpoint,
-          latencyMs: Date.now() - qdrantStartedAt,
+          status: 'pending',
+          message: 'Waiting for vector DB configuration',
         };
-        if (qdrantResp.status !== 200) overallHealthy = false;
-      } catch (error) {
-        services.vectorDb = 'unhealthy';
-        details.vectorDb = {
-          status: 'starting',
-          message: 'Waiting for Qdrant',
-          endpoint: qdrantEndpoint,
-          latencyMs: Date.now() - qdrantStartedAt,
-        };
-        overallHealthy = false;
+        logger.info('vectorDbType not yet available in deployment config — Python backend may not have started');
+      } else {
+        const vectorDbEndpoint = `${appConfig.connectorBackend}/health/vector-db`;
+        const vectorDbStartedAt = Date.now();
+        try {
+          const vectorDbResp = await axios.get(vectorDbEndpoint, {
+            timeout: 5000,
+            validateStatus: () => true,
+          });
+          const ok = vectorDbResp.status === 200;
+          services.vectorDb = ok ? 'healthy' : 'unhealthy';
+          details.vectorDb = {
+            status: ok ? 'healthy' : 'unhealthy',
+            message: ok
+              ? `${vectorDbName} is reachable`
+              : `${vectorDbName} responded with HTTP ${vectorDbResp.status}`,
+            endpoint: vectorDbEndpoint,
+            latencyMs: Date.now() - vectorDbStartedAt,
+          };
+          if (!ok) overallHealthy = false;
+        } catch (error) {
+          services.vectorDb = 'unhealthy';
+          details.vectorDb = {
+            status: 'starting',
+            message: `Waiting for ${vectorDbName}`,
+            endpoint: vectorDbEndpoint,
+            latencyMs: Date.now() - vectorDbStartedAt,
+          };
+          overallHealthy = false;
+        }
       }
 
       const health: HealthStatus = {

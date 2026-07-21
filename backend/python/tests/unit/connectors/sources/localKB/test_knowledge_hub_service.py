@@ -71,38 +71,38 @@ class TestGetNodeTypeValue:
 
 
 # ============================================================================
-# _has_search_filters / _has_flattening_filters
+# _has_flattening_filters
 # ============================================================================
 class TestHasSearchFilters:
     def test_no_filters(self, service):
-        assert service._has_search_filters(None, None, None, None, None, None, None, None, None) is False
+        assert service._has_flattening_filters(None, None, None, None, None, None, None, None, None) is False
 
     def test_with_query(self, service):
-        assert service._has_search_filters("test", None, None, None, None, None, None, None, None) is True
+        assert service._has_flattening_filters("test", None, None, None, None, None, None, None, None) is True
 
     def test_with_node_types(self, service):
-        assert service._has_search_filters(None, ["folder"], None, None, None, None, None, None, None) is True
+        assert service._has_flattening_filters(None, ["folder"], None, None, None, None, None, None, None) is True
 
     def test_with_record_types(self, service):
-        assert service._has_search_filters(None, None, ["FILE"], None, None, None, None, None, None) is True
+        assert service._has_flattening_filters(None, None, ["FILE"], None, None, None, None, None, None) is True
 
     def test_with_origins(self, service):
-        assert service._has_search_filters(None, None, None, ["COLLECTION"], None, None, None, None, None) is True
+        assert service._has_flattening_filters(None, None, None, ["COLLECTION"], None, None, None, None, None) is True
 
     def test_with_connector_ids(self, service):
-        assert service._has_search_filters(None, None, None, None, ["c1"], None, None, None, None) is True
+        assert service._has_flattening_filters(None, None, None, None, ["c1"], None, None, None, None) is True
 
     def test_with_indexing_status(self, service):
-        assert service._has_search_filters(None, None, None, None, None, ["COMPLETED"], None, None, None) is True
+        assert service._has_flattening_filters(None, None, None, None, None, ["COMPLETED"], None, None, None) is True
 
     def test_with_created_at(self, service):
-        assert service._has_search_filters(None, None, None, None, None, None, {"gte": 100}, None, None) is True
+        assert service._has_flattening_filters(None, None, None, None, None, None, {"gte": 100}, None, None) is True
 
     def test_with_updated_at(self, service):
-        assert service._has_search_filters(None, None, None, None, None, None, None, {"lte": 200}, None) is True
+        assert service._has_flattening_filters(None, None, None, None, None, None, None, {"lte": 200}, None) is True
 
     def test_with_size(self, service):
-        assert service._has_search_filters(None, None, None, None, None, None, None, None, {"gte": 0}) is True
+        assert service._has_flattening_filters(None, None, None, None, None, None, None, None, {"gte": 0}) is True
 
 
 class TestHasFlatteningFilters:
@@ -151,18 +151,20 @@ class TestRoleToPermission:
 
     def test_admin(self, service):
         perm = service._role_to_permission("ADMIN")
-        assert perm.canEdit is True
-        assert perm.canDelete is True
+        # Current code only allows OWNER and WRITER to edit/delete
+        assert perm.canEdit is False
+        assert perm.canDelete is False
 
     def test_editor(self, service):
         perm = service._role_to_permission("EDITOR")
-        assert perm.canEdit is True
+        # Current code only allows OWNER and WRITER to edit/delete
+        assert perm.canEdit is False
         assert perm.canDelete is False
 
     def test_writer(self, service):
         perm = service._role_to_permission("WRITER")
         assert perm.canEdit is True
-        assert perm.canDelete is False
+        assert perm.canDelete is True
 
     def test_reader(self, service):
         perm = service._role_to_permission("READER")

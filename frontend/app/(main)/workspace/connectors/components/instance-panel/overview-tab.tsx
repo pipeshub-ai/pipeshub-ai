@@ -289,7 +289,7 @@ export function OverviewTab({
     if (!connectorId || !instance.isActive || isReindexFailedBusy) return;
     try {
       setIsReindexFailedBusy(true);
-      await ConnectorsApi.reindexFailedConnector(connectorId, instance.type, ['FAILED']);
+      await ConnectorsApi.reindexConnector(connectorId, ['FAILED']);
       addToast({ variant: 'success', title: 'Reindexing failed records…' });
       await fetchInstanceStats(connectorId, { force: true });
     } catch (error) {
@@ -298,16 +298,14 @@ export function OverviewTab({
     } finally {
       setIsReindexFailedBusy(false);
     }
-  }, [instance._key, instance.type, instance.isActive, isReindexFailedBusy, addToast, fetchInstanceStats]);
+  }, [instance._key, instance.isActive, isReindexFailedBusy, addToast, fetchInstanceStats]);
 
   const handleManualIndex = useCallback(async () => {
     const connectorId = instance._key;
     if (!connectorId || !instance.isActive || isManualIndexBusy) return;
     try {
       setIsManualIndexBusy(true);
-      await ConnectorsApi.reindexFailedConnector(connectorId, instance.type, [
-        'AUTO_INDEX_OFF',
-      ]);
+      await ConnectorsApi.reindexConnector(connectorId, ['AUTO_INDEX_OFF']);
       addToast({ variant: 'success', title: 'Indexing manual-indexing records…' });
       await fetchInstanceStats(connectorId, { force: true });
     } catch (error) {
@@ -316,7 +314,7 @@ export function OverviewTab({
     } finally {
       setIsManualIndexBusy(false);
     }
-  }, [instance._key, instance.type, instance.isActive, isManualIndexBusy, addToast, fetchInstanceStats]);
+  }, [instance._key, instance.isActive, isManualIndexBusy, addToast, fetchInstanceStats]);
 
   // Run-scoped progress is shown while a sync/indexing run is active; when idle
   // it collapses to nothing and the Records Status grid below is the coverage view.

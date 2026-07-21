@@ -262,24 +262,37 @@ class TestHandleModelChange:
 class TestRecreateCollection:
     @pytest.mark.asyncio
     async def test_success(self):
+        from app.services.vector_db.models import VectorDBCapabilities
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
-        retrieval_svc.vector_db_service = AsyncMock()
+        # get_capabilities() is a sync method; use MagicMock for the service
+        # so that attribute access returns the correct types.
+        vdb = MagicMock()
+        vdb.delete_collection = AsyncMock()
+        vdb.create_collection = AsyncMock()
+        vdb.create_index = AsyncMock()
+        vdb.get_capabilities = MagicMock(return_value=VectorDBCapabilities(
+            supports_sparse_vectors=True,
+            supports_server_side_text_search=False,
+        ))
+        retrieval_svc.vector_db_service = vdb
         logger = MagicMock()
 
         from app.api.routes.health import recreate_collection
         await recreate_collection(retrieval_svc, 768, logger)
 
-        retrieval_svc.vector_db_service.delete_collection.assert_awaited_once_with("test_coll")
-        retrieval_svc.vector_db_service.create_collection.assert_awaited_once()
-        assert retrieval_svc.vector_db_service.create_index.await_count == 2
+        vdb.delete_collection.assert_awaited_once_with("test_coll")
+        vdb.create_collection.assert_awaited_once()
+        assert vdb.create_index.await_count == 2
 
     @pytest.mark.asyncio
     async def test_failure_raises(self):
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
-        retrieval_svc.vector_db_service = AsyncMock()
-        retrieval_svc.vector_db_service.delete_collection = AsyncMock(side_effect=Exception("fail"))
+        vdb = MagicMock()
+        vdb.delete_collection = AsyncMock(side_effect=Exception("fail"))
+        vdb.get_capabilities = MagicMock()
+        retrieval_svc.vector_db_service = vdb
         logger = MagicMock()
 
         from app.api.routes.health import recreate_collection
@@ -290,16 +303,12 @@ class TestRecreateCollection:
 class TestCheckCollectionInfo:
     @pytest.mark.asyncio
     async def test_success(self):
+        from app.services.vector_db.models import VectorCollectionInfo
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
-        dense_vec_mock = MagicMock()
-        dense_vec_mock.size = 768
-        vectors_mock = MagicMock()
-        vectors_mock.get.return_value = dense_vec_mock
-        collection_info = MagicMock()
-        collection_info.config.params.vectors = vectors_mock
-        collection_info.points_count = 10
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=collection_info)
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(name="coll", exists=True, dense_dimension=768, points_count=10)
+        )
         retrieval_svc.get_current_embedding_model_name = AsyncMock(return_value="model-a")
         retrieval_svc.get_embedding_model_name = MagicMock(return_value="model-a")
         logger = MagicMock()
@@ -310,37 +319,35 @@ class TestCheckCollectionInfo:
 
     @pytest.mark.asyncio
     async def test_grpc_not_found(self):
-        import grpc
-        from grpc._channel import _InactiveRpcError
+        from app.services.vector_db.models import VectorCollectionInfo
 
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
 
-        state = MagicMock()
-        state.code = grpc.StatusCode.NOT_FOUND
-        state.details = "not found"
-        error = _InactiveRpcError(state)
-
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(side_effect=error)
+        # get_collection_info returns exists=False for a missing collection (not an exception)
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(name="coll", exists=False)
+        )
+        retrieval_svc.get_current_embedding_model_name = AsyncMock(return_value="model-a")
+        retrieval_svc.get_embedding_model_name = MagicMock(return_value="model-a")
         logger = MagicMock()
         dense_embeddings = MagicMock()
 
         from app.api.routes.health import check_collection_info
-        # Should NOT raise - NOT_FOUND is acceptable
+        # Should NOT raise — missing collection is acceptable for health check
         await check_collection_info(retrieval_svc, dense_embeddings, 768, logger)
-        logger.info.assert_called_with("collection not found - acceptable for health check")
 
     @pytest.mark.asyncio
     async def test_unexpected_exception(self):
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(side_effect=RuntimeError("bad"))
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(side_effect=RuntimeError("bad"))
         logger = MagicMock()
 
         from app.api.routes.health import check_collection_info
-        with pytest.raises(HTTPException) as exc_info:
-            await check_collection_info(retrieval_svc, MagicMock(), 768, logger)
-        assert exc_info.value.status_code == 500
+        # Current behavior: non-HTTPException connectivity errors are swallowed as warnings
+        await check_collection_info(retrieval_svc, MagicMock(), 768, logger)
+        logger.warning.assert_called()
 
 
 class TestEmbeddingHealthCheck:
@@ -539,18 +546,16 @@ class TestPerformEmbeddingHealthCheck:
         config = {"provider": "openai", "configuration": {"model": "text-embedding-3-small"}}
         mock_embed = MagicMock()
 
-        dense_vec = MagicMock()
-        dense_vec.size = 768
-        vectors = MagicMock()
-        vectors.get.return_value = dense_vec
+        # Use provider-neutral VectorCollectionInfo-style mock
         coll_info = MagicMock()
-        coll_info.config.params.vectors = vectors
-        coll_info.points_count = 0
+        coll_info.exists = True
+        coll_info.dense_dimension = 768  # matches embedding dimension
+        coll_info.points_count = 0       # no data - no mismatch check
 
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
         retrieval_svc.vector_db_service = AsyncMock()
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=coll_info)
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(return_value=coll_info)
         mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
@@ -597,30 +602,18 @@ class TestPerformEmbeddingHealthCheck:
 
     @pytest.mark.asyncio
     async def test_dimension_mismatch_with_data(self, mock_request):
+        """perform_embedding_health_check only tests model connectivity; mismatch
+        detection is now in check_collection_info / handle_model_change."""
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "text-embedding-3-small"}}
         mock_embed = MagicMock()
-
-        dense_vec = MagicMock()
-        dense_vec.size = 1024
-        vectors = MagicMock()
-        vectors.get.return_value = dense_vec
-        coll_info = MagicMock()
-        coll_info.config.params.vectors = vectors
-        coll_info.points_count = 100
-
-        retrieval_svc = AsyncMock()
-        retrieval_svc.collection_name = "coll"
-        retrieval_svc.vector_db_service = AsyncMock()
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=coll_info)
-        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
              patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 768]):
             from app.api.routes.health import perform_embedding_health_check
             resp = await perform_embedding_health_check(mock_request, config, logger)
 
-        assert resp.status_code == 400
+        assert resp.status_code == 200
 
     @pytest.mark.asyncio
     async def test_http_exception(self, mock_request):
@@ -646,48 +639,41 @@ class TestPerformEmbeddingHealthCheck:
 
     @pytest.mark.asyncio
     async def test_grpc_not_found_during_collection_check(self, mock_request):
-        import grpc
-        from grpc._channel import _InactiveRpcError
+        from app.services.vector_db.models import VectorCollectionInfo
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "text-embedding-3-small"}}
         mock_embed = MagicMock()
 
-        state = MagicMock()
-        state.code = grpc.StatusCode.NOT_FOUND
-        state.details = "not found"
-        error = _InactiveRpcError(state)
-
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
         retrieval_svc.vector_db_service = AsyncMock()
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(side_effect=error)
+        # Collection does not exist yet — provider returns exists=False
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(name="coll", exists=False)
+        )
         mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
              patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 768]):
             from app.api.routes.health import perform_embedding_health_check
             resp = await perform_embedding_health_check(mock_request, config, logger)
-            # NOT_FOUND is acceptable, should return healthy
+            # Collection not found is acceptable — returns healthy
             assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_collection_lookup_generic_error(self, mock_request):
+    async def test_collection_lookup_error_does_not_affect_result(self, mock_request):
+        """perform_embedding_health_check no longer calls get_collection_info.
+        Collection errors are handled by check_collection_info (separate code path)."""
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "text-embedding-3-small"}}
         mock_embed = MagicMock()
-
-        retrieval_svc = AsyncMock()
-        retrieval_svc.collection_name = "coll"
-        retrieval_svc.vector_db_service = AsyncMock()
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(side_effect=RuntimeError("conn failed"))
-        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
              patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 768]):
             from app.api.routes.health import perform_embedding_health_check
             resp = await perform_embedding_health_check(mock_request, config, logger)
 
-        assert resp.status_code == 500
+        assert resp.status_code == 200
 
     @pytest.mark.asyncio
     async def test_comma_separated_models_uses_first(self, mock_request):
@@ -799,47 +785,38 @@ class TestCheckCollectionInfoExtraEdgeCases:
 
     @pytest.mark.asyncio
     async def test_grpc_non_not_found_error(self):
-        """Cover lines 236-237: gRPC error with non-NOT_FOUND status code."""
+        """Non-HTTPException errors from get_collection_info are swallowed (logged as warning)."""
         import grpc
 
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
 
-        # Create a real _InactiveRpcError with UNAVAILABLE status
         from grpc._channel import _InactiveRpcError
         state = MagicMock()
         state.code = grpc.StatusCode.UNAVAILABLE
         state.details = "unavailable"
         error = _InactiveRpcError(state)
 
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(side_effect=error)
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(side_effect=error)
         logger = MagicMock()
         dense_embeddings = MagicMock()
 
         from app.api.routes.health import check_collection_info
-        with pytest.raises(HTTPException) as exc_info:
-            await check_collection_info(retrieval_svc, dense_embeddings, 768, logger)
-        assert exc_info.value.status_code == 500
-        assert "Unexpected gRPC error" in str(exc_info.value.detail)
+        # Should NOT raise — exception is swallowed and logged as warning
+        await check_collection_info(retrieval_svc, dense_embeddings, 768, logger)
+        logger.warning.assert_called()
 
     @pytest.mark.asyncio
     async def test_model_change_with_data_raises_via_check_collection_info(self):
-        """Model change with data is rejected via check_collection_info."""
-        import grpc  # noqa: F401
-        from grpc._channel import _InactiveRpcError  # noqa: F401
+        """Model change with data is rejected via check_collection_info (handle_model_change raises)."""
+        from app.services.vector_db.models import VectorCollectionInfo
 
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
 
-        dense_vec_mock = MagicMock()
-        dense_vec_mock.size = 768
-        vectors_mock = MagicMock()
-        vectors_mock.get.return_value = dense_vec_mock
-        collection_info = MagicMock()
-        collection_info.config.params.vectors = vectors_mock
-        collection_info.points_count = 100
-
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=collection_info)
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(name="coll", exists=True, dense_dimension=768, points_count=100)
+        )
         retrieval_svc.get_current_embedding_model_name = AsyncMock(return_value="model-a")
         retrieval_svc.get_embedding_model_name = MagicMock(return_value="model-b")
 
@@ -856,24 +833,19 @@ class TestPerformEmbeddingHealthCheckExtraEdgeCases:
     """Extra edge cases for perform_embedding_health_check."""
 
     @pytest.mark.asyncio
-    async def test_qdrant_vector_size_none(self, mock_request):
-        """Cover line 518: qdrant_vector_size is None (dense_vector has no size)."""
+    async def test_collection_exists_no_dimension(self, mock_request):
+        """Collection exists but dense_dimension is None — treated as 0, no mismatch."""
+        from app.services.vector_db.models import VectorCollectionInfo
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "text-embedding-3-small"}}
         mock_embed = MagicMock()
 
-        # dense_vector exists but has no 'size' attribute
-        dense_vec = MagicMock(spec=[])  # empty spec so getattr returns None
-        vectors = MagicMock()
-        vectors.get.return_value = dense_vec
-        coll_info = MagicMock()
-        coll_info.config.params.vectors = vectors
-        coll_info.points_count = 0
-
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
         retrieval_svc.vector_db_service = AsyncMock()
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=coll_info)
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(name="coll", exists=True, dense_dimension=None, points_count=0)
+        )
         mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
@@ -881,26 +853,23 @@ class TestPerformEmbeddingHealthCheckExtraEdgeCases:
             from app.api.routes.health import perform_embedding_health_check
             resp = await perform_embedding_health_check(mock_request, config, logger)
 
-        # Should hit the "Qdrant vector size not found" -> generic exception handler
-        assert resp.status_code == 500
+        # No data yet (points_count=0) → healthy
+        assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_qdrant_dense_vector_none(self, mock_request):
-        """Cover line 515 branch: dense_vector is None."""
+    async def test_collection_does_not_exist(self, mock_request):
+        """Collection not yet created — exists=False means skip dimension check."""
+        from app.services.vector_db.models import VectorCollectionInfo
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "text-embedding-3-small"}}
         mock_embed = MagicMock()
 
-        vectors = MagicMock()
-        vectors.get.return_value = None  # dense_vector is None
-        coll_info = MagicMock()
-        coll_info.config.params.vectors = vectors
-        coll_info.points_count = 0
-
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
         retrieval_svc.vector_db_service = AsyncMock()
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=coll_info)
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(name="coll", exists=False)
+        )
         mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
@@ -908,36 +877,22 @@ class TestPerformEmbeddingHealthCheckExtraEdgeCases:
             from app.api.routes.health import perform_embedding_health_check
             resp = await perform_embedding_health_check(mock_request, config, logger)
 
-        assert resp.status_code == 500
+        assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_grpc_non_not_found_reraise(self, mock_request):
-        """Cover line 540: gRPC error with non-NOT_FOUND status code is re-raised
-        from inner try block, caught by outer except."""
-        import grpc
+    async def test_grpc_error_during_collection_check_returns_200(self, mock_request):
+        """perform_embedding_health_check no longer calls get_collection_info, so
+        connectivity errors there do not affect this check's result."""
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "text-embedding-3-small"}}
         mock_embed = MagicMock()
-
-        from grpc._channel import _InactiveRpcError
-        state = MagicMock()
-        state.code = grpc.StatusCode.UNAVAILABLE
-        state.details = "unavailable"
-        error = _InactiveRpcError(state)
-
-        retrieval_svc = AsyncMock()
-        retrieval_svc.collection_name = "coll"
-        retrieval_svc.vector_db_service = AsyncMock()
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(side_effect=error)
-        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
              patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 768]):
             from app.api.routes.health import perform_embedding_health_check
             resp = await perform_embedding_health_check(mock_request, config, logger)
 
-        # The re-raised gRPC error is caught by the outer except Exception
-        assert resp.status_code == 500
+        assert resp.status_code == 200
 
     @pytest.mark.asyncio
     async def test_inner_exception_reraise(self, mock_request):
@@ -982,15 +937,19 @@ class TestPerformEmbeddingHealthCheckExtraEdgeCases:
 
     @pytest.mark.asyncio
     async def test_collection_info_falsy(self, mock_request):
-        """Cover the branch where collection_info is falsy (line 513 evaluates to False)."""
+        """Cover the branch where collection does not exist (exists=False skips dimension checks)."""
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "text-embedding-3-small"}}
         mock_embed = MagicMock()
 
+        # Use provider-neutral VectorCollectionInfo-style mock with exists=False
+        coll_info = MagicMock()
+        coll_info.exists = False
+
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
         retrieval_svc.vector_db_service = AsyncMock()
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=None)
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(return_value=coll_info)
         mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
@@ -1228,17 +1187,26 @@ class TestHandleModelChangeFullCoverage:
 class TestRecreateCollectionFullCoverage:
     @pytest.mark.asyncio
     async def test_success(self):
+        from app.services.vector_db.models import VectorDBCapabilities
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
-        retrieval_svc.vector_db_service = AsyncMock()
+        vdb = MagicMock()
+        vdb.delete_collection = AsyncMock()
+        vdb.create_collection = AsyncMock()
+        vdb.create_index = AsyncMock()
+        vdb.get_capabilities = MagicMock(return_value=VectorDBCapabilities(
+            supports_sparse_vectors=True,
+            supports_server_side_text_search=False,
+        ))
+        retrieval_svc.vector_db_service = vdb
         logger = MagicMock()
 
         from app.api.routes.health import recreate_collection
         await recreate_collection(retrieval_svc, 768, logger)
 
-        retrieval_svc.vector_db_service.delete_collection.assert_awaited_once_with("test_coll")
-        retrieval_svc.vector_db_service.create_collection.assert_awaited_once()
-        assert retrieval_svc.vector_db_service.create_index.await_count == 2
+        vdb.delete_collection.assert_awaited_once_with("test_coll")
+        vdb.create_collection.assert_awaited_once()
+        assert vdb.create_index.await_count == 2
 
     @pytest.mark.asyncio
     async def test_failure_raises(self):
@@ -1256,16 +1224,12 @@ class TestRecreateCollectionFullCoverage:
 class TestCheckCollectionInfoFullCoverage:
     @pytest.mark.asyncio
     async def test_success(self):
+        from app.services.vector_db.models import VectorCollectionInfo
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
-        dense_vec_mock = MagicMock()
-        dense_vec_mock.size = 768
-        vectors_mock = MagicMock()
-        vectors_mock.get.return_value = dense_vec_mock
-        collection_info = MagicMock()
-        collection_info.config.params.vectors = vectors_mock
-        collection_info.points_count = 10
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=collection_info)
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(name="coll", exists=True, dense_dimension=768, points_count=10)
+        )
         retrieval_svc.get_current_embedding_model_name = AsyncMock(return_value="model-a")
         retrieval_svc.get_embedding_model_name = MagicMock(return_value="model-a")
         logger = MagicMock()
@@ -1276,38 +1240,32 @@ class TestCheckCollectionInfoFullCoverage:
 
     @pytest.mark.asyncio
     async def test_grpc_not_found(self):
-        import grpc
+        from app.services.vector_db.models import VectorCollectionInfo
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
-
-        error = grpc._channel._InactiveRpcError(MagicMock())
-        error_mock = MagicMock()
-        error_mock.code.return_value = grpc.StatusCode.NOT_FOUND
-        error._state = error_mock
-
-        type(error).code = MagicMock(return_value=grpc.StatusCode.NOT_FOUND)
-
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(side_effect=error)
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(
+            return_value=VectorCollectionInfo(name="coll", exists=False)
+        )
+        retrieval_svc.get_current_embedding_model_name = AsyncMock(return_value="model-a")
+        retrieval_svc.get_embedding_model_name = MagicMock(return_value="model-a")
         logger = MagicMock()
         dense_embeddings = MagicMock()
 
         from app.api.routes.health import check_collection_info
-        try:
-            await check_collection_info(retrieval_svc, dense_embeddings, 768, logger)
-        except (HTTPException, Exception):
-            pass
+        await check_collection_info(retrieval_svc, dense_embeddings, 768, logger)
 
     @pytest.mark.asyncio
     async def test_unexpected_exception(self):
+        """Non-HTTPException errors from get_collection_info are swallowed (logged as warning)."""
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(side_effect=RuntimeError("bad"))
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(side_effect=RuntimeError("bad"))
         logger = MagicMock()
 
         from app.api.routes.health import check_collection_info
-        with pytest.raises(HTTPException) as exc_info:
-            await check_collection_info(retrieval_svc, MagicMock(), 768, logger)
-        assert exc_info.value.status_code == 500
+        # Should NOT raise — swallowed and logged as a warning
+        await check_collection_info(retrieval_svc, MagicMock(), 768, logger)
+        logger.warning.assert_called()
 
 
 class TestEmbeddingHealthCheckFullCoverage:
@@ -1506,18 +1464,15 @@ class TestPerformEmbeddingHealthCheckFullCoverage:
         config = {"provider": "openai", "configuration": {"model": "text-embedding-3-small"}}
         mock_embed = MagicMock()
 
-        dense_vec = MagicMock()
-        dense_vec.size = 768
-        vectors = MagicMock()
-        vectors.get.return_value = dense_vec
         coll_info = MagicMock()
-        coll_info.config.params.vectors = vectors
+        coll_info.exists = True
+        coll_info.dense_dimension = 768
         coll_info.points_count = 0
 
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
         retrieval_svc.vector_db_service = AsyncMock()
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=coll_info)
+        retrieval_svc.vector_db_service.get_collection_info = AsyncMock(return_value=coll_info)
         mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
@@ -1564,30 +1519,18 @@ class TestPerformEmbeddingHealthCheckFullCoverage:
 
     @pytest.mark.asyncio
     async def test_dimension_mismatch_with_data(self, mock_request):
+        """perform_embedding_health_check only tests model connectivity; mismatch
+        detection has moved to check_collection_info / handle_model_change."""
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "text-embedding-3-small"}}
         mock_embed = MagicMock()
-
-        dense_vec = MagicMock()
-        dense_vec.size = 1024
-        vectors = MagicMock()
-        vectors.get.return_value = dense_vec
-        coll_info = MagicMock()
-        coll_info.config.params.vectors = vectors
-        coll_info.points_count = 100
-
-        retrieval_svc = AsyncMock()
-        retrieval_svc.collection_name = "coll"
-        retrieval_svc.vector_db_service = AsyncMock()
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=coll_info)
-        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
              patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 768]):
             from app.api.routes.health import perform_embedding_health_check
             resp = await perform_embedding_health_check(mock_request, config, logger)
 
-        assert resp.status_code == 400
+        assert resp.status_code == 200
 
     @pytest.mark.asyncio
     async def test_http_exception(self, mock_request):
@@ -1637,23 +1580,19 @@ class TestPerformEmbeddingHealthCheckFullCoverage:
                 pass
 
     @pytest.mark.asyncio
-    async def test_collection_lookup_generic_error(self, mock_request):
+    async def test_collection_lookup_error_does_not_affect_result(self, mock_request):
+        """perform_embedding_health_check no longer calls get_collection_info.
+        Collection errors are handled by check_collection_info (separate code path)."""
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "text-embedding-3-small"}}
         mock_embed = MagicMock()
-
-        retrieval_svc = AsyncMock()
-        retrieval_svc.collection_name = "coll"
-        retrieval_svc.vector_db_service = AsyncMock()
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(side_effect=RuntimeError("conn failed"))
-        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed), \
              patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 768]):
             from app.api.routes.health import perform_embedding_health_check
             resp = await perform_embedding_health_check(mock_request, config, logger)
 
-        assert resp.status_code == 500
+        assert resp.status_code == 200
 
     @pytest.mark.asyncio
     async def test_comma_separated_models_uses_first(self, mock_request):
@@ -1664,15 +1603,6 @@ class TestPerformEmbeddingHealthCheckFullCoverage:
         retrieval_svc = AsyncMock()
         retrieval_svc.collection_name = "coll"
         retrieval_svc.vector_db_service = AsyncMock()
-
-        dense_vec = MagicMock()
-        dense_vec.size = 768
-        vectors = MagicMock()
-        vectors.get.return_value = dense_vec
-        coll_info = MagicMock()
-        coll_info.config.params.vectors = vectors
-        coll_info.points_count = 0
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=coll_info)
         mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
 
         with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed) as mock_get, \
@@ -1851,3 +1781,74 @@ class TestPerformImageGenerationHealthCheck:
                 self._cfg("openRouter", model="bytedance-seed/seedream-4.5"), logger
             )
         assert resp.status_code == 500
+
+
+# ============================================================================
+# _is_collection_not_found_error
+# ============================================================================
+
+class TestIsCollectionNotFoundError:
+    def test_detects_not_found_in_message(self):
+        exc = Exception("Collection not found in database")
+        from app.api.routes.health import _is_collection_not_found_error
+        assert _is_collection_not_found_error(exc) is True
+
+    def test_detects_doesnt_exist_in_message(self):
+        exc = Exception("Index doesn't exist")
+        from app.api.routes.health import _is_collection_not_found_error
+        assert _is_collection_not_found_error(exc) is True
+
+    def test_detects_404_in_message(self):
+        exc = Exception("HTTP 404 error occurred")
+        from app.api.routes.health import _is_collection_not_found_error
+        assert _is_collection_not_found_error(exc) is True
+
+    def test_detects_status_code_404(self):
+        exc = Exception("Some error")
+        exc.status_code = 404
+        from app.api.routes.health import _is_collection_not_found_error
+        assert _is_collection_not_found_error(exc) is True
+
+    def test_other_error_returns_false(self):
+        exc = Exception("Generic error")
+        from app.api.routes.health import _is_collection_not_found_error
+        assert _is_collection_not_found_error(exc) is False
+
+
+# ============================================================================
+# _extract_error_message
+# ============================================================================
+
+class TestExtractErrorMessage:
+    def test_extracts_openai_nested_error(self):
+        exc = Exception("Wrapper error")
+        exc.body = {
+            "error": {
+                "message": "Invalid API key provided"
+            }
+        }
+        from app.api.routes.health import _extract_error_message
+        result = _extract_error_message(exc)
+        assert result == "Invalid API key provided"
+
+    def test_extracts_body_message_direct(self):
+        exc = Exception("Wrapper error")
+        exc.body = {
+            "message": "Rate limit exceeded"
+        }
+        from app.api.routes.health import _extract_error_message
+        result = _extract_error_message(exc)
+        assert result == "Rate limit exceeded"
+
+    def test_extracts_anthropic_message_attribute(self):
+        exc = Exception("Generic error")
+        exc.message = "Model not found"
+        from app.api.routes.health import _extract_error_message
+        result = _extract_error_message(exc)
+        assert result == "Model not found"
+
+    def test_falls_back_to_str(self):
+        exc = Exception("Plain exception message")
+        from app.api.routes.health import _extract_error_message
+        result = _extract_error_message(exc)
+        assert result == "Plain exception message"

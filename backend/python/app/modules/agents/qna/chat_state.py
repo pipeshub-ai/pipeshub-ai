@@ -81,7 +81,7 @@ class ChatState(TypedDict):
     timezone: str | None  # User's timezone (e.g., "America/New_York")
     current_time: str | None  # Current time in user's timezone (ISO 8601)
     apps: list[str] | None  # List of app IDs to search in (extracted from knowledge array)
-    kb: list[str] | None  # List of KB record group IDs to search in (extracted from knowledge array filters)
+    kb: list[str] | None  # List of KB app IDs to search in (extracted from knowledge array)
     agent_knowledge: list[dict[str, Any]] | None
     connector_configs: dict[str, Any] | None  # Per-connector sync/indexing filter values from etcd (route pre-fetch)
     has_knowledge: bool  # Whether the agent has real knowledge sources configured (excludes NO_KB_SELECTED sentinel)
@@ -269,12 +269,14 @@ def _extract_tools_from_toolsets(toolsets: list[dict[str, Any]]) -> list[str]:
 def _extract_knowledge_connector_ids(knowledge: list[dict[str, Any]]) -> list[str]:
     """
     Extract connector IDs from knowledge array for retrieval filtering.
+    
+    Excludes KB apps (type="KB") since they are handled separately by _extract_kb_app_ids.
 
     Args:
         knowledge: List of knowledge objects with connectorId and filters
 
     Returns:
-        List of connector IDs to use for knowledge retrieval
+        List of connector IDs to use for knowledge retrieval (excludes KB apps)
     """
     if not knowledge:
         return []
@@ -283,11 +285,14 @@ def _extract_knowledge_connector_ids(knowledge: list[dict[str, Any]]) -> list[st
     seen: set[str] = set()
     for k in knowledge:
         if isinstance(k, dict):
+            # Skip KB apps - they are handled by _extract_kb_app_ids
+            if (k.get("type") or "").strip().upper() == "KB":
+                continue
+                
             connector_id = k.get("connectorId")
             if (
                 connector_id
                 and isinstance(connector_id, str)
-                and not connector_id.startswith("knowledgeBase_")
                 and connector_id not in seen
             ):
                 seen.add(connector_id)
@@ -296,39 +301,27 @@ def _extract_knowledge_connector_ids(knowledge: list[dict[str, Any]]) -> list[st
     return connector_ids
 
 
-def _extract_kb_record_groups(knowledge: list[dict[str, Any]]) -> list[str]:
+def _extract_kb_app_ids(knowledge: list[dict[str, Any]]) -> list[str]:
     """
-    Extract KB record group IDs from knowledge array filters.
-
-    KBs are stored in knowledge array with filters containing recordGroups.
-    This function extracts all record group IDs that represent KBs.
+    Extract KB app IDs from the knowledge array.
 
     Args:
-        knowledge: List of knowledge objects with connectorId and filters
+        knowledge: List of knowledge objects with connectorId and type
 
     Returns:
-        List of KB record group IDs to use for retrieval filtering
+        List of KB app ids to use for retrieval filtering
     """
     if not knowledge:
         return []
 
-    kb_record_groups = []
+    kb_ids = []
     for k in knowledge:
-        if isinstance(k, dict):
-            filters = k.get("filters", {})
-            if isinstance(filters, str):
-                try:
-                    import json
-                    filters = json.loads(filters)
-                except (json.JSONDecodeError, ValueError):
-                    filters = {}
+        if isinstance(k, dict) and (k.get("type") or "").strip().upper() == "KB":
+            connector_id = k.get("connectorId")
+            if connector_id:
+                kb_ids.append(connector_id)
 
-            if isinstance(filters, dict):
-                record_groups = filters.get("recordGroups", [])
-                if record_groups and isinstance(record_groups, list):
-                    kb_record_groups.extend(record_groups)
-
-    return kb_record_groups
+    return kb_ids
 
 
 def _build_web_search_tool_config(chat_query: dict[str, Any]) -> dict[str, Any] | None:
@@ -436,8 +429,8 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
 
     # Extract apps (connector IDs) from knowledge for retrieval
     apps = _extract_knowledge_connector_ids(knowledge) if knowledge else filters.get("apps", None)
-    # Extract KB record groups from knowledge array filters (new format)
-    kb = _extract_kb_record_groups(knowledge) if knowledge else filters.get("kb", None)
+    # Extract KB app IDs from knowledge array
+    kb = _extract_kb_app_ids(knowledge) if knowledge else filters.get("kb", None)
     # Store the original knowledge array in state so tool_system and nodes can check it
     agent_knowledge = knowledge if knowledge else []
 

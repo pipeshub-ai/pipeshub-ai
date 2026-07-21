@@ -14,6 +14,13 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
+# KB app documents store type == Connectors.KNOWLEDGE_BASE.value ("KB"), but the
+# connector class is registered under its display name (see
+# app/connectors/sources/localKB/connector.py, KB_CONNECTOR_NAME) — so registry
+# lookups keyed directly on doc "type" miss KB instances entirely.
+_KB_REGISTRY_KEY = "Collections"
+
+
 class Origin(str, Enum):
     """Data origin types."""
     UPLOAD = "UPLOAD"
@@ -678,11 +685,14 @@ class ConnectorRegistry:
 
             for document in documents:
                 doc_type = document.get('type')
-                if doc_type in self._connectors:
+                registry_key = (
+                    _KB_REGISTRY_KEY if doc_type == Connectors.KNOWLEDGE_BASE.value else doc_type
+                )
+                if registry_key in self._connectors:
                     connectors.append(
                         self._build_connector_info(
                             doc_type,
-                            self._connectors[doc_type],
+                            self._connectors[registry_key],
                             document,
                             include_config=False,
                         )
@@ -1153,14 +1163,17 @@ class ConnectorRegistry:
                 return None
 
             connector_type = document['type']
+            registry_key = (
+                _KB_REGISTRY_KEY if connector_type == Connectors.KNOWLEDGE_BASE.value else connector_type
+            )
 
-            if connector_type not in self._connectors:
+            if registry_key not in self._connectors:
                 self.logger.error(
                     f"Connector type {connector_type} not found in registry"
                 )
                 return None
 
-            metadata = self._connectors[connector_type]
+            metadata = self._connectors[registry_key]
             return self._build_connector_info(connector_type, metadata, document)
 
         except Exception as e:

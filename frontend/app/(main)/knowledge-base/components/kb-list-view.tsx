@@ -183,6 +183,18 @@ function TableRow({
     ? item.nodeType === 'record' && !isWebPathPlaceholder(item)
     : item.type === 'file';
 
+  // Per-item permission (Knowledge Hub nodes only) — a shared item can have a
+  // lower role than the folder it's listed in, so gate actions on the item's
+  // own permission rather than just whether the parent passed a callback.
+  const canEditItem = isKnowledgeHubNode(item)
+    ? (item.permission?.canEdit ?? false)
+    : true;
+  const canDeleteItem = isKnowledgeHubNode(item)
+    ? (item.permission?.canDelete ?? false)
+    : true;
+  // Root-level collection/app node — has no parent collection to move within.
+  const isCollectionNode = isKnowledgeHubNode(item) && item.nodeType === 'app';
+
   // Split name into base and extension for files
   const getNameParts = (name: string) => {
     if (!isFile) return { baseName: name, extension: '' };
@@ -492,7 +504,7 @@ function TableRow({
         ) : (
           <Text
             size="2"
-            onClick={onRename ? (e: React.MouseEvent) => {
+            onClick={onRename && canEditItem ? (e: React.MouseEvent) => {
               e.stopPropagation();
               startEditing();
             } : undefined}
@@ -501,7 +513,7 @@ function TableRow({
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
-              cursor: onRename ? 'text' : 'default',
+              cursor: onRename && canEditItem ? 'text' : 'default',
             }}
           >
             {item.name}
@@ -626,15 +638,17 @@ function TableRow({
           actions={[
             { icon: 'folder_open', label: 'Open', onClick: onOpen },
             !isFolder && onDownload && shouldShowDownloadForTableItem(item) && { icon: 'file_download', label: 'Download', onClick: () => onDownload(item) },
-            onRename && { icon: 'edit', label: 'Rename', onClick: () => startEditing() },
+            onRename && canEditItem && { icon: 'edit', label: 'Rename', onClick: () => startEditing() },
             ...(showReindexMenu
               ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) =>
                   onReindex!(item, statusFilters),
                 )
               : []),
-            !isFolder && onReplace && { icon: 'drive_folder_upload', label: 'Replace', onClick: () => onReplace(item) },
-            onMove && { icon: 'drive_file_move', label: 'Move', onClick: () => onMove(item) },
-            onDelete && !(isKnowledgeHubNode(item) && item.nodeType === 'app') && { icon: 'delete', label: 'Delete', onClick: () => onDelete(item), color: 'red' as const },
+            !isFolder && onReplace && canEditItem && { icon: 'drive_folder_upload', label: 'Replace', onClick: () => onReplace(item) },
+            // Move relocates an item within its collection — a collection itself has nothing to move into.
+            onMove && canEditItem && !isCollectionNode && { icon: 'drive_file_move', label: 'Move', onClick: () => onMove(item) },
+            // Collections can only be deleted by OWNER
+            onDelete && canDeleteItem && !(isCollectionNode && item.permission?.role !== 'OWNER') && { icon: 'delete', label: 'Delete', onClick: () => onDelete(item), color: 'red' as const },
           ]}
         />
       </Flex>

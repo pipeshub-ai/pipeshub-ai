@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import * as etcd3 from 'etcd3'
 import {
   KVStoreMigrationService,
   MigrationConfig,
@@ -135,6 +136,14 @@ describe('libs/keyValueStore/migration/kvStoreMigration.service', () => {
 
     describe('isEtcdAvailable', () => {
       it('should return false when etcd is not available', async () => {
+        sinon.stub(etcd3, 'Etcd3').callsFake(
+          () =>
+            ({
+              maintenance: { status: sinon.stub().rejects(new Error('unavailable')) },
+              close: sinon.stub().resolves(),
+            }) as any,
+        )
+
         const service = new KVStoreMigrationService({
           etcd: { host: 'non-existent', port: 1, dialTimeout: 100 },
           redis: { host: 'localhost', port: 6379 },
@@ -159,6 +168,14 @@ describe('libs/keyValueStore/migration/kvStoreMigration.service', () => {
 
     describe('migrate', () => {
       it('should return failure when etcd is not available', async () => {
+        sinon.stub(etcd3, 'Etcd3').callsFake(
+          () =>
+            ({
+              maintenance: { status: sinon.stub().rejects(new Error('unavailable')) },
+              close: sinon.stub().resolves(),
+            }) as any,
+        )
+
         const service = new KVStoreMigrationService({
           etcd: { host: 'non-existent', port: 1, dialTimeout: 100 },
           redis: { host: 'localhost', port: 6379 },

@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
+from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.services.parsing.interface import ParseResult
 from bs4 import BeautifulSoup
 from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlockType, BlocksContainer
 from app.modules.parsers.html_parser import url_utils
 
@@ -79,7 +82,10 @@ class DoclingHtmlParser:
         result = self.converter.convert(file_path)
 
         if result.status.value != "success":
-            raise ValueError(f"Failed to parse HTML: {result.status}")
+            raise DocumentProcessingError(
+                f"Failed to parse HTML: {result.status}",
+                details={"status": str(result.status)},
+            )
 
         return result.document
 
@@ -175,8 +181,45 @@ class DoclingHtmlParser:
         except Exception as e:
             self._logger.warning("Failed to clean HTML: %s", e)
             return html_content
-
+    
     async def parse(
+        self,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None = None,
+    ) -> ParseResult:
+        if isinstance(content, bytes):
+            html_content = content.decode("utf-8")
+        else:
+            html_content = content
+
+        html_content = html_content.strip()
+
+        html_content = self.clean_html(html_content)
+        html_content = self.replace_relative_image_urls(html_content)
+
+        # Extract image URLs and convert to base64 (mirrors the Markdown flow)
+        caption_map: Dict[str, str] = {}
+        modified_html, images = self.extract_and_replace_images(html_content)
+
+        if images:
+            urls_to_convert = [image["url"] for image in images]
+            base64_urls = await ImageParser.urls_to_base64(urls_to_convert)
+
+            for i, image in enumerate(images):
+                if base64_urls[i]:
+                    caption_map[image["new_alt_text"]] = base64_urls[i]
+
+        block_containers = await self.parse_to_blocks(
+            modified_html,
+            caption_map=caption_map if caption_map else None,
+        )
+        return ParseResult(
+            block_container=block_containers,
+            metadata={"record_name": record_name},
+        )
+    
+    async def parse_to_blocks(
         self,
         html_content: str,
         caption_map: Dict[str, str] | None = None,
@@ -197,7 +240,6 @@ class DoclingHtmlParser:
             Populated ``BlocksContainer``.
         """
         from html_to_markdown import convert
-
         from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 
         markdown = convert(html_content)

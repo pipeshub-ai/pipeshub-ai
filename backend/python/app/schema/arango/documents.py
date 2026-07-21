@@ -161,6 +161,10 @@ app_schema = {
             "updatedAtTimestamp": {"type": "number"},
             "status": {"type": ["string", "null"]},
             "isLocked": {"type": ["boolean", "null"]},
+            # KB-specific optional fields
+            "orgId": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]},
+            "hideConnector": {"type": ["boolean", "null"]},
         },
         "required": [
             "name",
@@ -274,6 +278,7 @@ record_schema = {
             "isInternal": {"type": "boolean", "default": False},
             "md5Checksum": {"type": ["string", "null"]},
             "sizeInBytes": {"type": ["number", "null"]},
+            "storageDocumentId": {"type": ["string", "null"]},
             # SQL record fields (tables/views)
             "definition": {"type": ["string", "null"]},
             "sourceTables": {"type": ["array", "null"], "items": {"type": "string"}},

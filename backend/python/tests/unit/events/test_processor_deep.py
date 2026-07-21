@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 
 log = logging.getLogger("test")
@@ -83,7 +84,7 @@ class TestProcessHtmlDocument:
         html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
         html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
-        html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
+        html_parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers = {"html": html_parser}
 
         html = b"<html><body><p>Hello</p></body></html>"
@@ -93,7 +94,7 @@ class TestProcessHtmlDocument:
                 proc.process_html_document("test.html", "r1", "1", "web", "org1", html, "vr1")
             )
 
-        html_parser.parse.assert_awaited_once()
+        html_parser.parse_to_blocks.assert_awaited_once()
         MockPipeline.return_value.apply.assert_awaited_once()
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
@@ -108,7 +109,7 @@ class TestProcessHtmlDocument:
         html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
         html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
-        html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
+        html_parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers = {"html": html_parser}
 
         with patch("app.events.processor.IndexingPipeline") as MockPipeline:
@@ -117,24 +118,24 @@ class TestProcessHtmlDocument:
                 proc.process_html_document("test.html", "r1", "1", "web", "org1", "<p>Hello</p>", "vr1")
             )
 
-        html_parser.parse.assert_awaited_once_with(
+        html_parser.parse_to_blocks.assert_awaited_once_with(
             "<p>Hello</p>", caption_map=None, name="test.html"
         )
         assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_exception_raised(self):
-        """Processor should propagate exceptions from html_parser.parse."""
+        """Processor should propagate exceptions from html_parser.parse wrapped in DocumentProcessingError."""
         proc = _make_processor()
 
         html_parser = MagicMock()
         html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
         html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
-        html_parser.parse = AsyncMock(side_effect=RuntimeError("parse failure"))
+        html_parser.parse_to_blocks = AsyncMock(side_effect=RuntimeError("parse failure"))
         proc.parsers = {"html": html_parser}
 
-        with pytest.raises(RuntimeError, match="parse failure"):
+        with pytest.raises(DocumentProcessingError, match="parse failure"):
             await _collect_events(
                 proc.process_html_document("t.html", "r1", "1", "w", "o1", b"<p>Hi</p>", "vr1")
             )
@@ -152,7 +153,7 @@ class TestProcessMdDocument:
 
         md_parser = MagicMock()
         md_parser.extract_and_replace_images.return_value = ("# Hello", [])
-        md_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
+        md_parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers = {"md": md_parser}
 
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="test.md"))
@@ -188,7 +189,7 @@ class TestProcessMdDocument:
 
         md_parser = MagicMock()
         md_parser.extract_and_replace_images.return_value = ("text", [])
-        md_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
+        md_parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers = {"md": md_parser}
 
         proc.graph_provider.get_document = AsyncMock(return_value=None)
@@ -228,14 +229,14 @@ class TestProcessTxtDocument:
 
     @pytest.mark.asyncio
     async def test_undecipherable_encoding_raises(self):
-        """Binary that can't be decoded with any encoding raises ValueError."""
+        """Binary that can't be decoded with any encoding raises ValueError wrapped in DocumentProcessingError."""
         proc = _make_processor()
 
         # Create bytes that fail all encodings by mocking decode
         bad_binary = MagicMock()
         bad_binary.decode = MagicMock(side_effect=UnicodeDecodeError("codec", b"", 0, 1, "bad"))
 
-        with pytest.raises(ValueError, match="Unable to decode"):
+        with pytest.raises(DocumentProcessingError, match="Unable to decode"):
             await _collect_events(
                 proc.process_txt_document(
                     "test.txt", "r1", "1", "src", "o1",
@@ -363,14 +364,14 @@ class TestProcessPptxDocument:
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
-        """Parsing errors bubble up."""
+        """Parsing errors bubble up wrapped in DocumentProcessingError."""
         proc = _make_processor()
 
         mock_processor = AsyncMock()
         mock_processor.parse_document = AsyncMock(side_effect=RuntimeError("corrupt pptx"))
 
         with patch("app.events.processor.DoclingProcessor", return_value=mock_processor):
-            with pytest.raises(RuntimeError, match="corrupt pptx"):
+            with pytest.raises(DocumentProcessingError, match="corrupt pptx"):
                 await _collect_events(
                     proc.process_pptx_document("test.pptx", "r1", "1", "s", "o1", b"bad", "vr1")
                 )
@@ -428,14 +429,14 @@ class TestProcessDocxDocument:
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
-        """Errors during parsing bubble up."""
+        """Errors during parsing bubble up wrapped in DocumentProcessingError."""
         proc = _make_processor()
 
         mock_processor = AsyncMock()
         mock_processor.parse_document = AsyncMock(side_effect=RuntimeError("corrupt"))
 
         with patch("app.events.processor.DoclingProcessor", return_value=mock_processor):
-            with pytest.raises(RuntimeError, match="corrupt"):
+            with pytest.raises(DocumentProcessingError, match="corrupt"):
                 await _collect_events(
                     proc.process_docx_document("t.docx", "r1", "1", "s", "o1", b"bad", "vr1")
                 )
@@ -667,14 +668,14 @@ class TestProcessPdfWithPymupdf:
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
-        """Errors during PDF processing propagate."""
+        """Errors during PDF processing propagate wrapped in DocumentProcessingError."""
         proc = _make_processor()
 
         mock_processor = AsyncMock()
         mock_processor.parse_document = AsyncMock(side_effect=RuntimeError("bad pdf"))
 
         with patch("app.events.processor.PDFPlumberOpenCVProcessor", return_value=mock_processor):
-            with pytest.raises(RuntimeError, match="bad pdf"):
+            with pytest.raises(DocumentProcessingError, match="bad pdf"):
                 await _collect_events(
                     proc.process_pdf_with_pdf_plumber("test.pdf", "r1", b"bad", "vr1")
                 )
@@ -823,12 +824,12 @@ class TestProcessXlsDocument:
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
-        """XLS conversion failure propagates."""
+        """XLS conversion failure propagates wrapped in DocumentProcessingError."""
         xls_parser = MagicMock()
         xls_parser.convert_xls_to_xlsx.side_effect = RuntimeError("bad xls")
         proc = _make_processor(parsers={"xls": xls_parser})
 
-        with pytest.raises(RuntimeError, match="bad xls"):
+        with pytest.raises(DocumentProcessingError, match="bad xls"):
             await _collect_events(
                 proc.process_xls_document("t.xls", "r1", "1", "s", "o1", b"bad", "vr1")
             )
@@ -859,7 +860,7 @@ class TestProcessGmailMessage:
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
-        """Gmail processing errors propagate."""
+        """Gmail processing errors propagate as-is (no additional wrapping)."""
         proc = _make_processor()
 
         async def _fail_html(*args, **kwargs):
@@ -1293,75 +1294,37 @@ class TestProcessPdfDocumentWithOcr:
 
     @pytest.mark.asyncio
     async def test_azure_ocr_failure_propagates(self):
-        """When Azure OCR fails, exception propagates (no fallback)."""
+        """AzureDI provider is not yet supported; raises IndexingError."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
         proc = _make_processor()
-
-        azure_handler = AsyncMock()
-        azure_handler.process_document = AsyncMock(
-            side_effect=RuntimeError("Azure failed")
-        )
-
-        proc.graph_provider.get_document = AsyncMock(
-            return_value=_mock_record_dict(recordName="test.pdf")
-        )
-
-        with patch("app.events.processor.OCRHandler") as MockOCRHandler, \
-             patch("app.events.processor.TransformContext"):
-            MockOCRHandler.return_value = azure_handler
-            proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [
-                    {"provider": "azureDI", "configuration": {"endpoint": "https://e", "apiKey": "k"}},
-                ],
-                "llm": [],
-            })
-
-            with pytest.raises(RuntimeError, match="Azure failed"):
-                await _collect_events(
-                    proc.process_pdf_document_with_ocr(
-                        "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
-                    )
-                )
-
-    @pytest.mark.asyncio
-    async def test_non_vlm_ocr_with_blocks(self):
-        """Non-VLM OCR path with blocks creates BlocksContainer."""
-        from app.models.blocks import Block, BlockType, DataFormat
-
-        proc = _make_processor()
-
-        mock_handler = AsyncMock()
-        mock_block = Block(
-            index=0,
-            type=BlockType.TEXT,
-            format=DataFormat.TXT,
-            data="Hello",
-            comments=[],
-        )
-        mock_handler.process_document = AsyncMock(return_value={
-            "blocks": [mock_block],
-            "tables": [],
+        proc.config_service.get_config = AsyncMock(return_value={
+            "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://e", "apiKey": "k"}}],
+            "llm": [],
         })
-
-        proc.graph_provider.get_document = AsyncMock(
-            return_value=_mock_record_dict(recordName="test.pdf")
-        )
-
-        with patch("app.events.processor.OCRHandler", return_value=mock_handler), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
-             patch("app.events.processor.TransformContext"):
-            MockPipeline.return_value.apply = AsyncMock()
-            proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
-                "llm": [],
-            })
-
-            events = await _collect_events(
+        with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+            await _collect_events(
                 proc.process_pdf_document_with_ocr(
                     "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
                 )
             )
 
-        assert any(e.event == "indexing_complete" for e in events)
+    @pytest.mark.asyncio
+    async def test_non_vlm_ocr_with_blocks(self):
+        """AzureDI provider is not yet supported; raises IndexingError."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
+        proc = _make_processor()
+        proc.config_service.get_config = AsyncMock(return_value={
+            "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
+            "llm": [],
+        })
+        with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+            await _collect_events(
+                proc.process_pdf_document_with_ocr(
+                    "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
+                )
+            )
 
     @pytest.mark.asyncio
     async def test_no_handler_multimodal_llm_detected(self):
@@ -1411,12 +1374,12 @@ class TestProcessPdfDocumentWithOcr:
 class TestRunIndexingPipeline:
     @pytest.mark.asyncio
     async def test_pipeline_error_propagates(self):
-        """Errors from IndexingPipeline.apply propagate upward."""
+        """Errors from IndexingPipeline.apply propagate upward wrapped in DocumentProcessingError."""
         proc = _make_processor()
 
         md_parser = MagicMock()
         md_parser.extract_and_replace_images.return_value = ("# Hello", [])
-        md_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
+        md_parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers = {"md": md_parser}
 
         proc.graph_provider.get_document = AsyncMock(
@@ -1429,7 +1392,7 @@ class TestRunIndexingPipeline:
                 side_effect=RuntimeError("pipeline error")
             )
 
-            with pytest.raises(RuntimeError, match="pipeline error"):
+            with pytest.raises(DocumentProcessingError, match="pipeline error"):
                 await _collect_events(
                     proc.process_md_document("test.md", "r1", b"# Hello", "vr1")
                 )
@@ -1632,7 +1595,7 @@ class TestProcessPdfDocumentWithOcrAdditional:
 
     @pytest.mark.asyncio
     async def test_vlm_ocr_failure_propagates(self):
-        """When VLM OCR fails, exception propagates (no fallback)."""
+        """When VLM OCR fails, exception propagates wrapped in DocumentProcessingError (no fallback)."""
         proc = _make_processor()
 
         vlm_handler = AsyncMock()
@@ -1652,7 +1615,7 @@ class TestProcessPdfDocumentWithOcrAdditional:
                 "llm": [],
             })
 
-            with pytest.raises(RuntimeError, match="VLM failed"):
+            with pytest.raises(DocumentProcessingError, match="VLM failed"):
                 await _collect_events(
                     proc.process_pdf_document_with_ocr(
                         "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
@@ -1661,172 +1624,88 @@ class TestProcessPdfDocumentWithOcrAdditional:
 
     @pytest.mark.asyncio
     async def test_ocr_exception_propagates(self):
-        """When OCR handler fails, exception propagates (no fallback)."""
+        """AzureDI provider is not yet supported; raises IndexingError."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
         proc = _make_processor()
-
-        mock_handler = AsyncMock()
-        mock_handler.process_document = AsyncMock(
-            side_effect=RuntimeError("OCR failed")
-        )
-
-        proc.graph_provider.get_document = AsyncMock(
-            return_value=_mock_record_dict(recordName="test.pdf")
-        )
-
-        with patch("app.events.processor.OCRHandler", return_value=mock_handler), \
-             patch("app.events.processor.TransformContext"):
-            proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
-                "llm": [],
-            })
-
-            with pytest.raises(RuntimeError, match="OCR failed"):
-                await _collect_events(
-                    proc.process_pdf_document_with_ocr(
-                        "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
-                    )
+        proc.config_service.get_config = AsyncMock(return_value={
+            "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
+            "llm": [],
+        })
+        with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+            await _collect_events(
+                proc.process_pdf_document_with_ocr(
+                    "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
                 )
+            )
 
     @pytest.mark.asyncio
     async def test_non_vlm_ocr_with_paragraph_blocks(self):
-        """Non-VLM OCR path with dict paragraph blocks (not Block instances)."""
+        """AzureDI provider is not yet supported; raises IndexingError."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
         proc = _make_processor()
-
-        mock_handler = AsyncMock()
-        mock_handler.process_document = AsyncMock(return_value={
-            "blocks": [
-                {
-                    "content": "Paragraph text",
-                    "page_number": 1,
-                    "bounding_box": [{"x": 0, "y": 0}, {"x": 100, "y": 0}, {"x": 100, "y": 100}, {"x": 0, "y": 100}],
-                },
-            ],
-            "tables": [],
+        proc.config_service.get_config = AsyncMock(return_value={
+            "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
+            "llm": [],
         })
-
-        proc.graph_provider.get_document = AsyncMock(
-            return_value=_mock_record_dict(recordName="test.pdf")
-        )
-
-        with patch("app.events.processor.OCRHandler", return_value=mock_handler), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
-             patch("app.events.processor.TransformContext"):
-            MockPipeline.return_value.apply = AsyncMock()
-            proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
-                "llm": [],
-            })
-
-            events = await _collect_events(
+        with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+            await _collect_events(
                 proc.process_pdf_document_with_ocr(
                     "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
                 )
             )
-
-        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_non_vlm_ocr_paragraph_with_bounding_box(self):
-        """Non-VLM OCR paragraph block with bounding_box info (4 points required)."""
+        """AzureDI provider is not yet supported; raises IndexingError."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
         proc = _make_processor()
-
-        mock_handler = AsyncMock()
-        mock_handler.process_document = AsyncMock(return_value={
-            "blocks": [
-                {
-                    "content": "Text",
-                    "page_number": 1,
-                    "bounding_box": [
-                        {"x": 0, "y": 0}, {"x": 100, "y": 0},
-                        {"x": 100, "y": 100}, {"x": 0, "y": 100},
-                    ],
-                },
-            ],
-            "tables": [],
+        proc.config_service.get_config = AsyncMock(return_value={
+            "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
+            "llm": [],
         })
-
-        proc.graph_provider.get_document = AsyncMock(
-            return_value=_mock_record_dict(recordName="test.pdf")
-        )
-
-        with patch("app.events.processor.OCRHandler", return_value=mock_handler), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
-             patch("app.events.processor.TransformContext"):
-            MockPipeline.return_value.apply = AsyncMock()
-            proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
-                "llm": [],
-            })
-
-            events = await _collect_events(
+        with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+            await _collect_events(
                 proc.process_pdf_document_with_ocr(
                     "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
                 )
             )
-
-        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_non_vlm_ocr_empty_paragraph_skipped(self):
-        """Non-VLM OCR paragraphs with empty content are skipped."""
+        """AzureDI provider is not yet supported; raises IndexingError."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
         proc = _make_processor()
-
-        mock_handler = AsyncMock()
-        mock_handler.process_document = AsyncMock(return_value={
-            "blocks": [
-                {"content": ""},  # empty content
-                None,  # null paragraph
-            ],
-            "tables": [],
+        proc.config_service.get_config = AsyncMock(return_value={
+            "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
+            "llm": [],
         })
-
-        proc.graph_provider.get_document = AsyncMock(
-            return_value=_mock_record_dict(recordName="test.pdf")
-        )
-
-        with patch("app.events.processor.OCRHandler", return_value=mock_handler), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
-             patch("app.events.processor.TransformContext"):
-            MockPipeline.return_value.apply = AsyncMock()
-            proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
-                "llm": [],
-            })
-
-            events = await _collect_events(
+        with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+            await _collect_events(
                 proc.process_pdf_document_with_ocr(
                     "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
                 )
             )
-
-        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_non_vlm_ocr_record_not_found(self):
-        """Non-VLM OCR path: missing record yields indexing_complete."""
+        """AzureDI provider is not yet supported; raises IndexingError."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
         proc = _make_processor()
-
-        mock_handler = AsyncMock()
-        mock_handler.process_document = AsyncMock(return_value={
-            "blocks": [],
-            "tables": [],
+        proc.config_service.get_config = AsyncMock(return_value={
+            "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
+            "llm": [],
         })
-
-        proc.graph_provider.get_document = AsyncMock(return_value=None)
-
-        with patch("app.events.processor.OCRHandler", return_value=mock_handler):
-            proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
-                "llm": [],
-            })
-
-            events = await _collect_events(
+        with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+            await _collect_events(
                 proc.process_pdf_document_with_ocr(
                     "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
                 )
             )
-
-        assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
     async def test_no_handler_multimodal_llm_check_exception(self):
@@ -1854,49 +1733,20 @@ class TestProcessPdfDocumentWithOcrAdditional:
 
     @pytest.mark.asyncio
     async def test_non_vlm_ocr_with_table_row_blocks(self):
-        """Non-VLM OCR path with TABLE_ROW Block instances."""
-        from app.models.blocks import Block, BlockGroup, BlockType, DataFormat, GroupType
-
+        """AzureDI provider is not yet supported; raises IndexingError."""
+        from app.exceptions.indexing_exceptions import IndexingError
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
         proc = _make_processor()
-
-        table_row_block = Block(
-            index=0,
-            type=BlockType.TABLE_ROW,
-            format=DataFormat.TXT,
-            data="row data",
-            comments=[],
-            parent_index=0,
-        )
-        mock_handler = AsyncMock()
-        mock_handler.process_document = AsyncMock(return_value={
-            "blocks": [table_row_block],
-            "tables": [BlockGroup(
-                index=0,
-                type=GroupType.TABLE,
-                name="table1",
-            )],
+        proc.config_service.get_config = AsyncMock(return_value={
+            "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
+            "llm": [],
         })
-
-        proc.graph_provider.get_document = AsyncMock(
-            return_value=_mock_record_dict(recordName="test.pdf")
-        )
-
-        with patch("app.events.processor.OCRHandler", return_value=mock_handler), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
-             patch("app.events.processor.TransformContext"):
-            MockPipeline.return_value.apply = AsyncMock()
-            proc.config_service.get_config = AsyncMock(return_value={
-                "ocr": [{"provider": "azureDI", "configuration": {"endpoint": "https://test.com", "apiKey": "k"}}],
-                "llm": [],
-            })
-
-            events = await _collect_events(
+        with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+            await _collect_events(
                 proc.process_pdf_document_with_ocr(
                     "test.pdf", "r1", "1", "src", "o1", b"pdfdata", "vr1"
                 )
             )
-
-        assert any(e.event == "indexing_complete" for e in events)
 
 
 # ============================================================================
@@ -1906,7 +1756,7 @@ class TestProcessPdfDocumentWithOcrAdditional:
 class TestRunIndexingPipelineAdditional:
     @pytest.mark.asyncio
     async def test_pipeline_error_in_docx(self):
-        """Pipeline error from process_docx_document propagates."""
+        """Pipeline error from process_docx_document propagates wrapped in DocumentProcessingError."""
         proc = _make_processor()
 
         mock_processor = AsyncMock()
@@ -1926,7 +1776,7 @@ class TestRunIndexingPipelineAdditional:
                 side_effect=RuntimeError("docx pipeline error")
             )
 
-            with pytest.raises(RuntimeError, match="docx pipeline error"):
+            with pytest.raises(DocumentProcessingError, match="docx pipeline error"):
                 await _collect_events(
                     proc.process_docx_document(
                         "test.docx", "r1", "1", "src", "o1", b"docx", "vr1"
@@ -1935,7 +1785,7 @@ class TestRunIndexingPipelineAdditional:
 
     @pytest.mark.asyncio
     async def test_pipeline_error_in_pptx(self):
-        """Pipeline error from process_pptx_document propagates."""
+        """Pipeline error from process_pptx_document propagates wrapped in DocumentProcessingError."""
         proc = _make_processor()
 
         mock_processor = AsyncMock()
@@ -1955,7 +1805,7 @@ class TestRunIndexingPipelineAdditional:
                 side_effect=RuntimeError("pptx pipeline error")
             )
 
-            with pytest.raises(RuntimeError, match="pptx pipeline error"):
+            with pytest.raises(DocumentProcessingError, match="pptx pipeline error"):
                 await _collect_events(
                     proc.process_pptx_document(
                         "test.pptx", "r1", "1", "src", "o1", b"pptx", "vr1"
@@ -2135,7 +1985,7 @@ class TestProcessHtmlDocumentAdditional:
         html_parser.extract_and_replace_images = MagicMock(
             side_effect=lambda x: (x.replace("relative", "absolute"), [])
         )
-        html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
+        html_parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers = {"html": html_parser}
 
         html = b"<html><body><img src='relative/img.png'/></body></html>"
@@ -2146,7 +1996,7 @@ class TestProcessHtmlDocumentAdditional:
             )
 
         html_parser.replace_relative_image_urls.assert_called_once()
-        html_parser.parse.assert_awaited_once()
+        html_parser.parse_to_blocks.assert_awaited_once()
         assert any(e.event == "indexing_complete" for e in events)
 
 
@@ -2197,7 +2047,7 @@ class TestProcessTxtDocumentAdditional:
 class TestProcessExcelDocumentAdditional:
     @pytest.mark.asyncio
     async def test_parser_exception(self):
-        """Exception during workbook load propagates."""
+        """Exception during workbook load propagates wrapped in DocumentProcessingError."""
         excel_parser = MagicMock()
         excel_parser.load_workbook_from_binary = MagicMock(side_effect=RuntimeError("corrupt excel"))
         proc = _make_processor(parsers={"xlsx": excel_parser})
@@ -2206,7 +2056,7 @@ class TestProcessExcelDocumentAdditional:
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {})
-            with pytest.raises(RuntimeError, match="corrupt excel"):
+            with pytest.raises(DocumentProcessingError, match="corrupt excel"):
                 await _collect_events(
                     proc.process_excel_document("bad.xlsx", "r1", "1", "src", "o1", b"data", "vr1")
                 )
@@ -2338,7 +2188,7 @@ class TestEventTypeForwarding:
         html_parser.clean_html = MagicMock(side_effect=lambda x: x)
         html_parser.replace_relative_image_urls = MagicMock(side_effect=lambda x: x)
         html_parser.extract_and_replace_images = MagicMock(side_effect=lambda x: (x, []))
-        html_parser.parse = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
+        html_parser.parse_to_blocks = AsyncMock(return_value=MagicMock(blocks=[], block_groups=[]))
         proc.parsers = {"html": html_parser}
 
         with patch("app.events.processor.IndexingPipeline") as MockPipeline, \

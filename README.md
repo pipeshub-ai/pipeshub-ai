@@ -27,9 +27,6 @@
   <a href="https://github.com/pipeshub-ai/pipeshub-ai/pulls">
     <img src="https://img.shields.io/github/issues-pr/pipeshub-ai/pipeshub-ai" alt="GitHub pull requests">
   </a>
-  <a href="https://github.com/pipeshub-ai/pipeshub-ai/stargazers">
-    <img src="https://img.shields.io/github/stars/pipeshub-ai/pipeshub-ai" alt="GitHub Repo stars">
-  </a>
   <br/>
   <a href="https://x.com/PipesHub"><img src="https://img.shields.io/twitter/follow/PipesHub?style=social" alt="Twitter"></a>
   <a href="https://www.linkedin.com/company/pipeshub"><img src="https://img.shields.io/badge/LinkedIn-PipesHub-blue?logo=linkedin&amp;logoColor=white" alt="LinkedIn"></a>

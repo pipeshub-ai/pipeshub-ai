@@ -27,7 +27,7 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
 from app.models.entities import RecordType
 from app.modules.agents.qna.chat_state import (
     ChatState,
-    _extract_kb_record_groups,
+    _extract_kb_app_ids,
     _extract_knowledge_connector_ids,
 )
 
@@ -249,7 +249,7 @@ class KnowledgeHub:
             # Extract knowledge scoping from agent configuration.
             agent_knowledge = self.state.get("agent_knowledge") or []
             agent_connector_ids = _extract_knowledge_connector_ids(agent_knowledge)
-            kb_ids = set(_extract_kb_record_groups(agent_knowledge))
+            kb_ids = set(_extract_kb_app_ids(agent_knowledge))
 
             if not agent_connector_ids:
                 return False, json.dumps({
@@ -327,22 +327,15 @@ class KnowledgeHub:
             # navigation. Passing connector_ids would trigger scoped search,
             # so we only pass them when searching or when LLM explicitly provides them.
 
-            # connector_ids: agent's real connectors (knowledgeBase_* stripped).
-            # May be empty for KB-only agents (only knowledgeBase_* connectors).
-            agent_real_connector_ids = [
-                cid for cid in agent_connector_ids
-                if not cid.startswith("knowledgeBase_")
-            ]
+            # All connector IDs in the agent config — KB apps are now UUID-identified.
+            agent_real_connector_ids = list(agent_connector_ids)
 
             if connector_ids:
                 # LLM provided explicit connector_ids — intersect with agent config.
                 # If intersection is empty (LLM passed invalid IDs), fall back to
                 # full agent config so the search space isn't unnecessarily empty.
                 allowed = set(agent_real_connector_ids)
-                intersected = [
-                    cid for cid in connector_ids
-                    if not cid.startswith("knowledgeBase_") and cid in allowed
-                ]
+                intersected = [cid for cid in connector_ids if cid in allowed]
                 use_connector_ids = intersected if intersected else (agent_real_connector_ids or None)
             elif query:
                 # Searching — always scope to agent's configured connectors
@@ -350,9 +343,6 @@ class KnowledgeHub:
             elif not parent_id:
                 # No parent, no query — root browse. Pass connector_ids to
                 # scope root-level apps to only configured ones.
-                # Include ALL agent connector IDs (even knowledgeBase_*) for
-                # root filtering — the root shows apps, and knowledgeBase_*
-                # IS a valid app ID in the DB for the KB connector.
                 use_connector_ids = list(agent_connector_ids) if agent_connector_ids else None
             else:
                 # Browsing with parent_id, no query — tree navigation.

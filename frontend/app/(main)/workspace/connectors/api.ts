@@ -365,16 +365,15 @@ export const ConnectorsApi = {
     return data;
   },
 
-  /** Reindex failed (and optionally filtered) records for a connector */
-  async reindexFailedConnector(
-    connectorId: string,
-    app: string,
-    statusFilters?: string[]
-  ) {
+  /**
+   * Reindex all records for a connector instance, optionally filtered by
+   * indexing status. Omitting statusFilters reindexes everything for a KB
+   * connector; other connector types default server-side to FAILED-only.
+   */
+  async reindexConnector(connectorId: string, statusFilters?: string[]) {
     const { data } = await apiClient.post(
-      `${BASE_URL}/${connectorId}/reindex-failed`,
+      `${BASE_URL}/${connectorId}/reindex`,
       {
-        app,
         ...(statusFilters?.length ? { statusFilters } : {}),
       }
     );

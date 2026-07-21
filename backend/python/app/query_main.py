@@ -24,7 +24,7 @@ from app.api.routes.speech import router as speech_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.containers.query import QueryAppContainer
 from app.health.health import Health
-from app.services.messaging.config import get_message_broker_type
+from app.services.messaging.config import MessageBrokerType, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
@@ -82,12 +82,19 @@ async def start_kafka_consumers(app_container: QueryAppContainer) -> list:
     broker_type = get_message_broker_type()
 
     try:
+        # Create RetryManager for persistent failure retry tracking
+        redis_config = await MessagingUtils._get_redis_config(app_container)
+        retry_manager = MessagingFactory.create_retry_manager(logger, redis_config)
+        await retry_manager.initialize()
+        logger.info("✅ RetryManager initialized for %s consumer", broker_type.value)
+
         logger.info(f"🚀 Starting AI Config Consumer (broker: {broker_type})...")
         aiconfig_config = await MessagingUtils.create_aiconfig_consumer_config(app_container)
         aiconfig_consumer = MessagingFactory.create_consumer(
             broker_type=broker_type,
             logger=logger,
-            config=aiconfig_config
+            config=aiconfig_config,
+            retry_manager=retry_manager
         )
         aiconfig_message_handler = await KafkaUtils.create_aiconfig_message_handler(app_container)
         await aiconfig_consumer.start(aiconfig_message_handler)
@@ -188,6 +195,35 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         app.state.embedding_warmup_task = asyncio.create_task(_warmup_embedding_model())
 
+        # For OpenSearch: pre-load the k-NN HNSW graphs into the OS page cache
+        # so that the first search after a restart or force-merge is not blocked
+        # by mmap I/O. This is a best-effort operation — a non-OpenSearch provider
+        # or a missing collection (first run, no data yet) simply skips silently.
+        async def _warmup_knn_index() -> None:
+            try:
+                from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
+                vector_db_svc = await container.vector_db_service()
+                if not hasattr(vector_db_svc, "warmup"):
+                    return
+                collection_exists = await vector_db_svc.collection_exists(VECTOR_DB_COLLECTION_NAME)
+                if not collection_exists:
+                    logger.info(
+                        f"k-NN warmup skipped — collection '{VECTOR_DB_COLLECTION_NAME}' "
+                        "does not exist yet"
+                    )
+                    return
+                logger.info(
+                    f"🔥 Warming up k-NN index for collection '{VECTOR_DB_COLLECTION_NAME}'"
+                )
+                await vector_db_svc.warmup(VECTOR_DB_COLLECTION_NAME)
+                logger.info("✅ k-NN index warmup complete")
+            except Exception as warmup_error:
+                logger.warning(
+                    f"k-NN index warmup failed (non-fatal, search will still work): {warmup_error}"
+                )
+
+        app.state.knn_warmup_task = asyncio.create_task(_warmup_knn_index())
+
     # Initialize toolset registry for agent tool execution.
     # auto_discover_toolsets() imports ~20 heavy SDK modules (Google, Microsoft,
     # Slack, …) synchronously. Offload to a worker thread so the event loop
@@ -212,14 +248,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
 
-    # Cancel embedding warmup task if it is still running.
-    warmup_task: asyncio.Task | None = getattr(app.state, "embedding_warmup_task", None)
-    if warmup_task is not None and not warmup_task.done():
-        warmup_task.cancel()
-        try:
-            await warmup_task
-        except (asyncio.CancelledError, Exception):
-            pass
+    # Cancel background warmup tasks if still running.
+    for _warmup_attr in ("embedding_warmup_task", "knn_warmup_task"):
+        warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
+        if warmup_task is not None and not warmup_task.done():
+            warmup_task.cancel()
+            try:
+                await warmup_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     # Stop all message consumers
     try:

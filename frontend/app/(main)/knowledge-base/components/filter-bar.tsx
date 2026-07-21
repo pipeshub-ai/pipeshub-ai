@@ -163,7 +163,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
   const handleConnectorChange = (values: string[]) =>
     updateFilter({ connectorIds: values });
 
-  const handleSizeChange = (values: string[]) => updateFilter({ sizeRanges: values as SizeRange[] });
+  const handleSizeChange = (values: string[]) => updateFilter({ sizeRange: values[0] as SizeRange | undefined });
 
   const handleCreatedDateApply = (
     startDate: string,
@@ -206,7 +206,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
     (activeFilter.indexingStatus?.length ?? 0) > 0 ||
     (activeFilter.origins?.length ?? 0) > 0 ||
     (activeFilter.connectorIds?.length ?? 0) > 0 ||
-    (activeFilter.sizeRanges?.length ?? 0) > 0 ||
+    activeFilter.sizeRange ||
     activeFilter.createdAfter || activeFilter.createdBefore ||
     activeFilter.updatedAfter || activeFilter.updatedBefore
   );
@@ -291,9 +291,10 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
         label={t('filter.size')}
         icon="layers"
         options={SIZE_OPTIONS}
-        selectedValues={activeFilter.sizeRanges || []}
+        selectedValues={activeFilter.sizeRange ? [activeFilter.sizeRange] : []}
         onSelectionChange={handleSizeChange}
         pluralLabel={t('filter.sizes')}
+        selectionMode="single"
       />
 
       {/* Date Created Filter */}

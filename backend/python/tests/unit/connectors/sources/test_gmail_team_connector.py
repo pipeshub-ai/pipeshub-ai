@@ -1901,7 +1901,7 @@ class TestConvertToPdf:
             mock_subprocess.return_value = mock_process
 
             result = await connector._convert_to_pdf("/tmp/file.docx", "/tmp")
-            assert result == "/tmp/file.pdf"
+            assert result == os.path.join("/tmp", "file.pdf")
 
     @pytest.mark.asyncio
     async def test_conversion_fails_nonzero_return(self, connector):

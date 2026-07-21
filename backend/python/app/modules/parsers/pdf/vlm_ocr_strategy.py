@@ -11,7 +11,8 @@ from langchain_core.messages import HumanMessage
 from PIL import Image
 
 from app.config.constants.service import config_node_constants
-from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_from_path_sync
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.modules.parsers.pdf.pdf_rasterizer import render_batch_from_path_sync
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.utils.aimodels import coerce_message_content_to_text, get_generator_model, is_multimodal_llm
 from app.utils.llm import get_llm_for_role
@@ -28,6 +29,10 @@ class VLMOCRStrategy(OCRStrategy):
 
     # Default DPI for rendering pages (configurable via RENDER_DPI env var)
     RENDER_DPI = int(os.getenv('RENDER_DPI', '200'))
+
+    # Pages rendered per process-pool submission to cap worker memory usage.
+    # At 200 DPI each page is ~11 MB as a numpy array; 20 pages ≈ 220 MB peak.
+    PAGE_RENDER_BATCH_SIZE = int(os.getenv('PAGE_RENDER_BATCH_SIZE', '20'))
     # Default prompt template
     DEFAULT_PROMPT = """# Role
 You are a precise document OCR specialist. Convert the provided document image to clean, accurate markdown.
@@ -146,7 +151,10 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             llm_configs = ai_models.get("llm", [])
 
             if not llm_configs:
-                raise ValueError("No LLM configurations found")
+                raise DocumentProcessingError(
+                    "No LLM configurations found",
+                    details={"required": "multimodal LLM"},
+                )
 
             default_config = None
             first_multimodal_config = None
@@ -182,20 +190,34 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 "VLM OCR requires a multimodal LLM. Please configure at least one multimodal LLM."
             )
             self.logger.error(error_msg)
-            raise ValueError(error_msg)
+            raise DocumentProcessingError(
+                error_msg,
+                details={"required": "multimodal LLM"},
+            )
 
+        except DocumentProcessingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error getting multimodal LLM: {str(e)}")
-            raise ValueError(f"Failed to get multimodal LLM: {str(e)}")
+            raise DocumentProcessingError(
+                f"Failed to get multimodal LLM: {str(e)}",
+                details={"error": str(e)},
+            ) from e
 
-    def _render_all_pages_to_base64(self) -> Dict[int, str]:
-        """Render every page via pdfplumber in an isolated worker process."""
+    def _render_page_batch_to_base64(self, page_numbers: list[int]) -> Dict[int, str]:
+        """Render a batch of pages via pdfplumber in an isolated worker process.
+
+        Only the requested *page_numbers* are rasterised in one pool submission,
+        keeping per-worker memory proportional to the batch size rather than the
+        full document.
+        """
         if not self._pdf_path:
             raise RuntimeError(
                 "PDF source path not initialized; load_document must run first"
             )
-        rendered_pages = render_all_pages_from_path_sync(
+        rendered_pages = render_batch_from_path_sync(
             self._pdf_path,
+            page_numbers,
             self.RENDER_DPI,
         )
         page_images: Dict[int, str] = {}
@@ -207,8 +229,20 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         return page_images
 
     async def _preload_page_images(self) -> None:
-        """Dispatch blocking pdfium rasterization off the event loop."""
-        self._page_images = await asyncio.to_thread(self._render_all_pages_to_base64)
+        """Rasterise pages in batches to avoid OOM in the process-pool worker."""
+        total = len(self.doc.pages)
+        all_page_numbers = list(range(1, total + 1))
+        batch_size = self.PAGE_RENDER_BATCH_SIZE
+
+        for start in range(0, len(all_page_numbers), batch_size):
+            batch = all_page_numbers[start : start + batch_size]
+            self.logger.debug(
+                "Rendering page batch %d–%d of %d", batch[0], batch[-1], total
+            )
+            batch_images = await asyncio.to_thread(
+                self._render_page_batch_to_base64, batch
+            )
+            self._page_images.update(batch_images)
 
     _coerce_content_to_text = staticmethod(coerce_message_content_to_text)
 

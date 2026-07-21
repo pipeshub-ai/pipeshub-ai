@@ -16,6 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -163,7 +165,7 @@ class TestParseDocumentInWorker:
              patch("app.modules.parsers.pdf.docling_processor.DocumentStream") as MockStream:
             MockStream.return_value = MagicMock()
             from app.modules.parsers.pdf.docling_processor import _parse_document_in_worker
-            with pytest.raises(ValueError, match="Failed to parse document"):
+            with pytest.raises(DocumentProcessingError, match="Failed to parse document"):
                 _parse_document_in_worker("bad.pdf", b"bad content")
 
     def test_creates_document_stream_correctly(self):

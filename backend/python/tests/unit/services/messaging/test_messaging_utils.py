@@ -145,7 +145,7 @@ class TestCreateKafkaConsumerConfig:
         assert config.topics == ["topic-1"]
         assert config.bootstrap_servers == ["broker1:9092", "broker2:9092"]
         assert config.auto_offset_reset == "earliest"
-        assert config.enable_auto_commit is True
+        assert config.enable_auto_commit is False
         assert config.ssl is False
         assert config.sasl is None
 

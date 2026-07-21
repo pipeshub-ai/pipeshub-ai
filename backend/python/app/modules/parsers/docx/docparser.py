@@ -3,12 +3,35 @@ import subprocess
 import tempfile
 from io import BytesIO
 
+from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.utils.libreoffice_convert import convert_with_libreoffice
+
 
 class DocParser:
     """Parser for Microsoft Word .doc and .docx files"""
 
-    def __init__(self) -> None:
-        pass
+    def __init__(self, docx_parser=None) -> None:
+        self.docx_parser = docx_parser
+
+    async def parse(self, content: bytes, record_name: str, config: dict[str, any] | None = None) -> ParseResult:
+        if self.docx_parser is None:
+            raise ParseError(
+                ParseErrorCode.PROVIDER_UNAVAILABLE,
+                "DOC parsing requires a docx_parser; none was configured",
+            )
+        doc_result = await self.convert_doc_to_docx_async(content)
+        return await self.docx_parser.parse(doc_result, record_name, config)
+
+    async def convert_doc_to_docx_async(self, binary: bytes) -> BytesIO:
+        """Async .doc -> .docx conversion for use on an event loop (e.g. the
+        parsing service). Prefer this over the synchronous
+        ``convert_doc_to_docx`` from any async caller: it runs LibreOffice via
+        ``asyncio.create_subprocess_exec`` instead of blocking a thread for the
+        whole conversion.
+        """
+        docx_bytes = await convert_with_libreoffice(binary, "doc", "docx")
+        return BytesIO(docx_bytes)
 
     def convert_doc_to_docx(self, binary: bytes) -> BytesIO:
         """Convert .doc file to .docx using LibreOffice
@@ -78,8 +101,12 @@ class DocParser:
                     e.returncode, e.cmd, output=e.output, stderr=error_msg.encode()
                 )
             except subprocess.TimeoutExpired as e:
-                raise Exception(
-                    "LibreOffice conversion timed out after 30 seconds"
+                raise DocumentProcessingError(
+                    "LibreOffice conversion timed out after 60 seconds",
+                    details={"timeout": "60s"},
                 ) from e
             except Exception as e:
-                raise Exception(f"Error converting .doc to .docx: {str(e)}") from e
+                raise DocumentProcessingError(
+                    f"Error converting .doc to .docx: {str(e)}",
+                    details={"error": str(e)},
+                ) from e

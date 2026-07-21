@@ -98,8 +98,8 @@ export function FolderTreeItem({
 
   const showMeatballMenu = (isHovered || isMenuOpen) && !isEditing;
 
-  const canEdit = enhancedNode.permission?.canEdit !== false;
-  const canDelete = enhancedNode.permission?.canDelete !== false;
+  const canEdit = enhancedNode.permission?.canEdit ?? false;
+  const canDelete = enhancedNode.permission?.canDelete ?? false;
 
   useEffect(() => {
     if (isEditing && editInputRef.current) {
@@ -186,6 +186,8 @@ export function FolderTreeItem({
       nodeType: enhancedNode.nodeType,
       hasChildren: hasDescendants,
       indexingStatus: enhancedNode.indexingStatus,
+      connector: enhancedNode.connector,
+      subType: enhancedNode.subType,
     }),
     !!onReindex && !!enhancedNode.nodeType && !hideLeafRecordReindex,
   );
@@ -204,7 +206,8 @@ export function FolderTreeItem({
         )
       : []),
     canEdit && !!onRename && { icon: 'edit', label: t('menu.rename'), onClick: handleRenameStart },
-    canDelete && !!onDelete && {
+    // Collections can only be deleted by OWNER
+    canDelete && !!onDelete && !(enhancedNode.nodeType === 'app' && enhancedNode.permission?.role !== 'OWNER') && {
       icon: 'delete',
       label: t('menu.delete'),
       onClick: () => onDelete!(node.id),

@@ -411,7 +411,7 @@ etcd:
 # Message broker: "kafka" (default) or "redis" (uses Redis Streams)
 messageBroker:
   type: kafka
-  redisStreamsMaxLen: "10000"
+  redisStreamsMaxLen: "500000"
 
 zookeeper:
   replicaCount: 3  # Minimum odd number for ZK quorum — 2 nodes cannot elect a leader

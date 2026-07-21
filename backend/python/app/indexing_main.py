@@ -19,7 +19,7 @@ from app.config.constants.arangodb import (
 )
 from app.containers.indexing import IndexingAppContainer, initialize_container
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.messaging.config import ConsumerType, IndexingEvent, StreamMessage, get_message_broker_type
+from app.services.messaging.config import ConsumerType, IndexingEvent, MessageBrokerType, StreamMessage, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
@@ -55,11 +55,10 @@ async def get_initialized_container() -> IndexingAppContainer:
 async def recover_in_progress_records(app_container: IndexingAppContainer, graph_provider: IGraphDBProvider) -> None:
     """
     Recover only IN_PROGRESS records (re-run indexing for those left mid-way).
-    QUEUED records are set to AUTO_INDEX_OFF so they are not auto-processed on startup.
     Records to recover are processed in parallel (5 at a time).
     """
     logger = app_container.logger()
-    logger.info("🔄 Checking for in-progress records to recover and queued records to set to AUTO_INDEX_OFF...")
+    logger.info("🔄 Checking for in-progress records to recover...")
 
     # Semaphore to limit concurrent processing to 5 records
     semaphore = asyncio.Semaphore(5)
@@ -72,27 +71,6 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
             CollectionNames.RECORDS.value,
             {"indexingStatus": ProgressStatus.IN_PROGRESS.value}
         )
-        queued_records = await graph_provider.get_nodes_by_filters(
-            CollectionNames.RECORDS.value,
-            {"indexingStatus": ProgressStatus.QUEUED.value}
-        )
-
-        # Set queued records to AUTO_INDEX_OFF so they are not auto-processed
-        if queued_records:
-            logger.info(f"📋 Found {len(queued_records)} queued record(s), setting status to AUTO_INDEX_OFF")
-            try:
-                update_docs = [
-                    {"_key": record.get("_key"), "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value}
-                    for record in queued_records
-                ]
-                success = await graph_provider.batch_update_nodes(
-                    update_docs,
-                    CollectionNames.RECORDS.value,
-                )
-                if not success:
-                    logger.warning(f"⚠️ Failed to set some queued records to AUTO_INDEX_OFF - some records may not exist")
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to bulk set records to AUTO_INDEX_OFF: {e}")
 
         # Recover only in-progress records
         all_records_to_recover = in_progress_records
@@ -247,11 +225,32 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> list[Any
         logger.info(f"🚀 Starting Record Consumer (broker: {broker_type})...")
         record_consumer_config = await MessagingUtils.create_record_consumer_config(app_container)
 
+        # Create RetryManager for persistent failure retry tracking
+        redis_config = await MessagingUtils._get_redis_config(app_container)
+        retry_manager = MessagingFactory.create_retry_manager(logger, redis_config)
+        await retry_manager.initialize()
+        logger.info("✅ RetryManager initialized for %s consumer", broker_type.value)
+
+        # Create producer for re-queueing failed messages
+        producer_config = await MessagingUtils.create_producer_config_from_service(
+            app_container.config_service(),
+            client_id="indexing_retry_producer",
+        )
+        retry_producer = MessagingFactory.create_producer(
+            logger=logger,
+            config=producer_config,
+            broker_type=broker_type,
+        )
+        await retry_producer.initialize()
+        logger.info("✅ Retry producer initialized for %s", broker_type.value)
+
         record_kafka_consumer = MessagingFactory.create_consumer(
             broker_type=broker_type,
             logger=logger,
             config=record_consumer_config,
-            consumer_type=ConsumerType.INDEXING
+            consumer_type=ConsumerType.INDEXING,
+            retry_manager=retry_manager,
+            producer=retry_producer,
         )
 
         # TODO: Remove this once the graph provider is fixed
@@ -284,32 +283,52 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> list[Any
 
         record_message_handler = await KafkaUtils.create_record_message_handler(app_container)
         await record_kafka_consumer.start(record_message_handler)  # type: ignore[arg-type]
-        consumers.append(("record", record_kafka_consumer))
+        consumers.append(("record", record_kafka_consumer, retry_producer))
         logger.info("✅ Record message consumer started")
 
         return consumers
     except Exception as e:
         logger.error(f"❌ Error starting message consumers: {str(e)}")
-        # Cleanup any started consumers
-        for name, consumer in consumers:
+        # Cleanup any started consumers and producers
+        for item in consumers:
+            name = item[0]
+            consumer = item[1]
+            producer = item[2] if len(item) > 2 else None
             try:
                 await consumer.stop()
                 logger.info(f"Stopped {name} consumer during cleanup")
             except Exception as cleanup_error:
                 logger.error(f"Error stopping {name} consumer during cleanup: {cleanup_error}")
+            if producer:
+                try:
+                    await producer.cleanup()
+                    logger.info(f"Stopped {name} retry producer during cleanup")
+                except Exception as cleanup_error:
+                    logger.error(f"Error stopping {name} retry producer during cleanup: {cleanup_error}")
         raise
 
 async def stop_kafka_consumers(container: IndexingAppContainer) -> None:
-    """Stop all Kafka consumers"""
+    """Stop all Kafka consumers and their associated producers"""
 
     logger = container.logger()
     consumers = getattr(container, 'kafka_consumers', [])
-    for name, consumer in consumers:
+    for item in consumers:
+        name = item[0]
+        consumer = item[1]
+        producer = item[2] if len(item) > 2 else None
+        
         try:
             await consumer.stop()
             logger.info(f"✅ {name.title()} message consumer stopped")
         except Exception as e:
             logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
+        
+        if producer:
+            try:
+                await producer.cleanup()
+                logger.info(f"✅ {name.title()} retry producer stopped")
+            except Exception as e:
+                logger.error(f"❌ Error stopping {name} retry producer: {str(e)}")
 
     # Clear the consumers list
     if hasattr(container, 'kafka_consumers'):
@@ -335,13 +354,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
-    # Recover in-progress records before starting message consumers
-    try:
-        await recover_in_progress_records(app_container, graph_provider)
-    except Exception as e:
-        logger.error(f"❌ Error during record recovery: {str(e)}")
-        # Continue even if recovery fails
-
     # Start all message consumers centrally
     try:
         consumers = await start_kafka_consumers(app_container)
@@ -351,11 +363,49 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Failed to start message consumers: {str(e)}")
         raise
 
+    # Schedule recovery of in-progress records in the background so the
+    # service starts accepting messages immediately.
+    # Must happen AFTER consumers start: for Neo4j, start_kafka_consumers
+    # reconnects the graph driver to the consumer's worker loop, so recovery
+    # must run in that same loop to avoid cross-loop Future errors.
+    data_store = os.getenv("DATA_STORE", "arangodb").lower()
+    worker_loop = None
+    if data_store == "neo4j" and consumers:
+        record_consumer = consumers[0][1]
+        worker_loop = getattr(record_consumer, "worker_loop", None)
+
+    if worker_loop and worker_loop.is_running():
+        app.state.recovery_future = asyncio.run_coroutine_threadsafe(
+            recover_in_progress_records(app_container, graph_provider),
+            worker_loop,
+        )
+    else:
+        app.state.recovery_task = asyncio.create_task(
+            recover_in_progress_records(app_container, graph_provider)
+        )
+
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
+
+    # Cancel background recovery if it's still running.
+    recovery_task = getattr(app.state, "recovery_task", None)
+    if recovery_task:
+        if not recovery_task.done():
+            recovery_task.cancel()
+        try:
+            await recovery_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during recovery task shutdown: {str(e)}")
+
+    recovery_future = getattr(app.state, "recovery_future", None)
+    if recovery_future and not recovery_future.done():
+        recovery_future.cancel()
+
     # Stop message consumers
     try:
         await stop_kafka_consumers(app_container)

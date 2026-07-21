@@ -178,10 +178,12 @@ dependencies = [
     "Brotli==1.2.0",
     "CairoSVG==2.9.0",
     "celery==5.4.0",
+    "chardet==7.4.3",
     "confluent-kafka==2.8.0",
     "cachetools==6.2.4",
     "cloudscraper==1.2.71",
     "cryptography==46.0.7",
+    "crawl4ai==0.9.0",
     "curl-cffi==0.14.0",
     # "databricks-sdk>=0.85.0",
     "dependency-injector==4.44.0",
@@ -269,6 +271,8 @@ dependencies = [
     "fpdf2>=2.7.0,<3.0.0",
     "python-jose==3.4.0",
     "python-multipart==0.0.31",
+    "pysbd==0.3.4",
+    "lingua-language-detector==2.2.0",
     "qdrant-client==1.13.1",
     "redis==5.2.1",
     "requests-toolbelt==1.0.0",
@@ -276,7 +280,7 @@ dependencies = [
     "selectolax>=0.3.21",
     "sentence-transformers==3.4.1",
     "slack-sdk==3.27.0",
-    "spacy==3.8.2",
+    "talon==1.4.4",
     "tenacity==8.5.0",
     "thrift>=0.16.0",
     "trafilatura>=1.6.0",
@@ -285,10 +289,17 @@ dependencies = [
     "zstandard==0.25.0",
     "mariadb[binary,pool]>=2.0.0rc2,<3",
     "asyncpg>=0.31.0",
+    "opensearch-py[async]==3.2.0"
 ]
 
 [tool.setuptools.packages.find]
 exclude = ["modules", "build*", "dist*", "*.egg-info*", "venv*", ".venv*"]
+
+# cchardet has no wheels for Python 3.12+ and fails to build from source.
+# talon declares it as a dependency; chardet (direct dep above) plus the
+# sys.modules shim in gmail cover runtime needs.
+[tool.uv]
+exclude-dependencies = ["cchardet"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
@@ -296,6 +307,8 @@ build-backend = "setuptools.build_meta"
 
 [project.scripts]
 module = "app.indexing_main:run"
+parsing-service = "app.parsing_main:app"
+extraction-service = "app.extraction_main:app"
 
 [project.optional-dependencies]
 dev = ["ruff==0.11.9", "pyright", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio"]

@@ -53,17 +53,20 @@ class TestFilterKnowledgeByEnabledSourcesExtended:
         assert len(result) == 1
 
     def test_kb_with_invalid_json_string_filters(self):
+        """KB apps with invalid filters are still included if their connectorId matches enabled_apps"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
 
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440100"
         knowledge = [
             {
-                "connectorId": "knowledgeBase_1",
-                "filters": "not-valid-json",
+                "connectorId": kb_uuid,
+                "type": "KB",
+                "filters": "not-valid-json",  # Invalid filters don't matter now
             }
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg-1"]})
-        # Invalid JSON => filters_data becomes {}, no record groups => not included
-        assert len(result) == 0
+        # With new architecture, KB apps are filtered by connectorId in enabled_apps
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        assert len(result) == 1
 
     def test_non_dict_entries_skipped(self):
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
@@ -73,29 +76,36 @@ class TestFilterKnowledgeByEnabledSourcesExtended:
         assert len(result) == 0
 
     def test_kb_with_filtersParsed_key(self):
+        """KB apps with filtersParsed are included if connectorId matches enabled_apps"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
 
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440100"
         knowledge = [
             {
-                "connectorId": "knowledgeBase_1",
-                "filtersParsed": {"recordGroups": ["rg-1"]},
+                "connectorId": kb_uuid,
+                "type": "KB",
+                "filtersParsed": {"recordGroups": ["rg-1"]},  # Ignored in new architecture
             }
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg-1"]})
+        # KB apps are filtered by connectorId in enabled_apps
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
         assert len(result) == 1
 
     def test_kb_with_non_dict_filters_data(self):
-        """When filters_data is not a dict (e.g. a list), record_groups defaults to []."""
+        """KB apps with non-dict filters are still included if connectorId matches enabled_apps"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
 
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440100"
         knowledge = [
             {
-                "connectorId": "knowledgeBase_1",
-                "filters": ["not", "a", "dict"],
+                "connectorId": kb_uuid,
+                "type": "KB",
+                "filters": ["not", "a", "dict"],  # Invalid filters don't matter now
             }
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg-1"]})
-        assert len(result) == 0
+        # KB apps are filtered by connectorId in enabled_apps
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        assert len(result) == 1
 
     def test_app_connector_not_in_enabled_apps_skipped(self):
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
@@ -105,18 +115,20 @@ class TestFilterKnowledgeByEnabledSourcesExtended:
         assert len(result) == 0
 
     def test_kb_connector_no_record_groups_not_included_without_match(self):
-        """KB with empty record groups not included when enabled_kbs has items."""
+        """KB apps are included if connectorId matches enabled_apps, regardless of recordGroups"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
 
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440100"
         knowledge = [
             {
-                "connectorId": "knowledgeBase_1",
-                "filters": {"recordGroups": []},
+                "connectorId": kb_uuid,
+                "type": "KB",
+                "filters": {"recordGroups": []},  # Ignored in new architecture
             }
         ]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["rg-1"]})
-        # Empty record groups with no match => not included
-        assert len(result) == 0
+        # KB apps are filtered by connectorId in enabled_apps
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        assert len(result) == 1
 
 
 # ============================================================================

@@ -27,10 +27,11 @@ def _clear_user_cache():
 
 @pytest.fixture
 def _patch_sparse():
-    """Patch FastEmbedSparse so no model is loaded."""
-    with patch("app.modules.retrieval.retrieval_service.FastEmbedSparse") as mock_sparse:
-        sparse_instance = MagicMock()
-        mock_sparse.return_value = sparse_instance
+    """Patch SparseEmbedder so no model is loaded."""
+    with patch("app.modules.retrieval.retrieval_service.SparseEmbedder") as mock_cls:
+        sparse_instance = AsyncMock()
+        sparse_instance.embed_query = AsyncMock(return_value=MagicMock(indices=[0], values=[1.0]))
+        mock_cls.return_value = sparse_instance
         yield sparse_instance
 
 
@@ -450,11 +451,15 @@ class TestExecuteParallelSearches:
             await retrieval_service._execute_parallel_searches(["q"], MagicMock(), 10)
 
     @pytest.mark.asyncio
-    async def test_raises_without_sparse_embeddings(self, retrieval_service):
-        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=MagicMock())
-        retrieval_service._ensure_sparse_embeddings = AsyncMock(return_value=None)
-        with pytest.raises(ValueError, match="No sparse embeddings"):
-            await retrieval_service._execute_parallel_searches(["q"], MagicMock(), 10)
+    async def test_skips_sparse_when_provider_does_not_support_it(self, retrieval_service):
+        """With supports_sparse_vectors=False (mock default), sparse leg is skipped gracefully."""
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1, 0.2])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        retrieval_service.vector_db_service.query_nearest_points = AsyncMock(return_value=[[]])
+        # No sparse_embeddings, capabilities say no sparse: should NOT raise
+        results = await retrieval_service._execute_parallel_searches(["q"], MagicMock(), 10)
+        assert results == []
 
     @pytest.mark.asyncio
     async def test_returns_formatted_results(self, retrieval_service, mock_vector_db_service):
@@ -462,20 +467,12 @@ class TestExecuteParallelSearches:
         dense.aembed_query = AsyncMock(return_value=[0.1, 0.2, 0.3])
         retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
 
-        sparse_result = MagicMock()
-        sparse_result.indices = [1, 2]
-        sparse_result.values = [0.5, 0.6]
-        sparse_mock = MagicMock()
-        sparse_mock.embed_query = MagicMock(return_value=sparse_result)
-        retrieval_service._ensure_sparse_embeddings = AsyncMock(return_value=sparse_mock)
-
         point = MagicMock()
         point.id = "p1"
         point.payload = {"page_content": "hello", "metadata": {"orgId": "o1"}}
         point.score = 0.95
-        batch_result = MagicMock()
-        batch_result.points = [point]
-        mock_vector_db_service.query_nearest_points.return_value = [batch_result]
+        # New API: query_nearest_points returns list-of-lists (each inner list is one batch)
+        mock_vector_db_service.query_nearest_points.return_value = [[point]]
 
         qdrant_filter = models.Filter(must=[])
         results = await retrieval_service._execute_parallel_searches(
@@ -491,22 +488,12 @@ class TestExecuteParallelSearches:
         dense.aembed_query = AsyncMock(return_value=[0.1])
         retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
 
-        sparse_result = MagicMock()
-        sparse_result.indices = [1]
-        sparse_result.values = [0.5]
-        sparse_mock = MagicMock()
-        sparse_mock.embed_query = MagicMock(return_value=sparse_result)
-        retrieval_service._ensure_sparse_embeddings = AsyncMock(return_value=sparse_mock)
-
         point = MagicMock()
         point.id = "same_id"
         point.payload = {"page_content": "text", "metadata": {}}
         point.score = 0.9
-        batch1 = MagicMock()
-        batch1.points = [point]
-        batch2 = MagicMock()
-        batch2.points = [point]  # duplicate
-        mock_vector_db_service.query_nearest_points.return_value = [batch1, batch2]
+        # Two batches returning the same point — deduplication should collapse to 1
+        mock_vector_db_service.query_nearest_points.return_value = [[point], [point]]
 
         qdrant_filter = models.Filter(must=[])
         results = await retrieval_service._execute_parallel_searches(

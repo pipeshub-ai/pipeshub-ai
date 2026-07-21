@@ -11,9 +11,12 @@ parsing), use :class:`DoclingHtmlParser` (or the ``HTMLParser`` alias in
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
+from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.services.parsing.interface import ParseResult
 from bs4 import BeautifulSoup
 
 from app.models.blocks import BlocksContainer
@@ -42,28 +45,79 @@ class SelectolaxHtmlParser:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    
 
-    def parse_to_blocks(
+    async def parse(
+        self,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None = None,
+    ) -> ParseResult:
+        if isinstance(content, bytes):
+            html_content = content.decode("utf-8")
+        else:
+            html_content = content
+
+        html_content = html_content.strip()
+
+        # BeautifulSoup cleaning + image-tag extraction is synchronous CPU
+        # work; run it off the event loop.
+        modified_html, images = await asyncio.to_thread(
+            self._prepare_html, html_content
+        )
+
+        # Extract image URLs and convert to base64 (mirrors the Markdown flow)
+        caption_map: Dict[str, str] = {}
+
+        if images:
+            
+            urls_to_convert = [image["url"] for image in images]
+            base64_urls = await ImageParser.urls_to_base64(urls_to_convert)
+
+            for i, image in enumerate(images):
+                if base64_urls[i]:
+                    caption_map[image["new_alt_text"]] = base64_urls[i]
+
+        block_containers = await self.parse_to_blocks(
+            modified_html,
+            caption_map=caption_map if caption_map else None,
+        )
+        return ParseResult(
+            block_container=block_containers,
+            metadata={"record_name": record_name},
+        )
+
+    def _prepare_html(self, html_content: str) -> Tuple[str, List[Dict[str, str]]]:
+        """Sync CPU-bound HTML pre-processing (clean + absolutize + extract
+        image tags). Called via ``asyncio.to_thread`` from :meth:`parse`.
+        """
+        cleaned = self.clean_html(html_content)
+        cleaned = self.replace_relative_image_urls(cleaned)
+        return self.extract_and_replace_images(cleaned)
+
+    async def parse_to_blocks(
         self,
         html_content: str,
-        *,
-        base_url: str | None = None,
         caption_map: Dict[str, str] | None = None,
+        base_url: str | None = None,
+        name: str | None = None,
     ) -> BlocksContainer:
         """Convert HTML directly to a ``BlocksContainer``.
 
         Args:
             html_content: HTML source string.
-            base_url: Optional base URL for resolving relative image ``src``
-                attributes when no ``<base>`` tag is present.
             caption_map: Optional mapping of image alt-text labels to
                 base-64 data URIs (or any string value).  When provided,
                 matching image blocks will have their ``data["uri"]`` set.
+            base_url: Optional base URL for resolving relative image ``src``
+                attributes when no ``<base>`` tag is present.
+            name: Unused; kept for signature compatibility with other HTML backends.
 
         Returns:
             Populated ``BlocksContainer``.
         """
-        return self._converter.convert(
+        return await asyncio.to_thread(
+            self._converter.convert,
             html_content,
             base_url=base_url,
             caption_map=caption_map,
@@ -90,32 +144,6 @@ class SelectolaxHtmlParser:
         except Exception as e:
             self._logger.warning("Failed to clean HTML: %s", e)
             return html_content
-
-    async def parse(
-        self,
-        html_content: str,
-        caption_map: Dict[str, str] | None = None,
-        base_url: str | None = None,
-        name: str | None = None,
-    ) -> BlocksContainer:
-        """Parse preprocessed HTML to ``BlocksContainer``.
-
-        Caller must run ``clean_html`` and ``replace_relative_image_urls`` first.
-
-        Args:
-            html_content: Preprocessed HTML source string.
-            caption_map: Optional mapping of image alt-text to base-64 data URIs.
-            base_url: Optional base URL for resolving relative image URLs.
-            name: Unused; kept for protocol signature compatibility.
-
-        Returns:
-            Populated ``BlocksContainer``.
-        """
-        return self.parse_to_blocks(
-            html_content,
-            base_url=base_url,
-            caption_map=caption_map,
-        )
 
     def extract_and_replace_images(
         self, html_content: str

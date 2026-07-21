@@ -55,12 +55,14 @@ class StreamMessage(BaseModel):
     timestamp: Optional[int] = None
     # Trace id propagated from the producer; optional so legacy messages parse.
     requestId: Optional[str] = None
+    is_final_failure: Optional[bool] = None  # Set by consumer: True = will commit/dead-letter, False = will retry
 
 
 class PipelineEventData(BaseModel):
     """Data yielded alongside a pipeline event."""
 
-    record_id: str
+    record_id: Optional[str] = None
+    record_name: Optional[str] = None
     count: Optional[int] = None
 
 
@@ -68,7 +70,7 @@ class PipelineEvent(BaseModel):
     """Event yielded by the indexing pipeline handler."""
 
     event: IndexingEvent
-    data: PipelineEventData
+    data: Optional[PipelineEventData] = None
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +106,7 @@ class MessagingEnvConfig:
 
     @property
     def redis_streams_maxlen(self) -> int:
-        return int(os.getenv("REDIS_STREAMS_MAXLEN", "10000"))
+        return int(os.getenv("REDIS_STREAMS_MAXLEN", "500000"))
 
     @property
     def max_concurrent_parsing(self) -> int:
@@ -121,7 +123,27 @@ class MessagingEnvConfig:
     @property
     def max_delivery_attempts(self) -> int:
         """Max times a message can be delivered before being dead-lettered (ACK-ed and discarded)."""
-        return int(os.getenv("MAX_DELIVERY_ATTEMPTS", "10"))
+        return int(os.getenv("MAX_DELIVERY_ATTEMPTS", "3"))
+
+    @property
+    def message_batch_size_simple(self) -> int:
+        """Batch size for simple consumers (entity/sync events)."""
+        return int(os.getenv("MESSAGE_BATCH_SIZE_SIMPLE", "10"))
+
+    @property
+    def message_batch_size_indexing(self) -> int:
+        """Batch size for indexing consumers (record events)."""
+        return int(os.getenv("MESSAGE_BATCH_SIZE_INDEXING", "1"))
+
+    @property
+    def message_timeout_ms(self) -> int:
+        """Block timeout for reading messages (milliseconds)."""
+        return int(os.getenv("MESSAGE_TIMEOUT_MS", "2000"))
+
+    @property
+    def record_processing_timeout(self) -> float:
+        """Max seconds a single record is allowed to process before being timed out."""
+        return float(os.getenv("RECORD_PROCESSING_TIMEOUT", "1800"))
 
     @property
     def max_pending_indexing_tasks(self) -> int:
@@ -158,9 +180,12 @@ class RedisConfig(BaseModel):
 class RedisStreamsConfig(RedisConfig):
     """Redis Streams configuration (extends RedisConfig)."""
 
-    max_len: int = Field(default=10000, description="Max stream length for XADD")
+    max_len: int = Field(default=500000, description="Max stream length for XADD")
     block_ms: int = Field(default=2000, description="XREADGROUP block timeout in ms")
-    batch_size: int = Field(default=10, description="Messages per XREADGROUP call")
+    batch_size: int = Field(
+        default=1,
+        description="Messages per XREADGROUP call (default 1 for indexing; overridden to 10 for simple consumers)"
+    )
     claim_min_idle_ms: int = Field(
         default=30000,
         description="Min idle time in ms before XAUTOCLAIM can steal a pending message",

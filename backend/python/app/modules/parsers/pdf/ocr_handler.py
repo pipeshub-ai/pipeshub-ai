@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict
 
 from app.config.constants.ai_models import OCRProvider
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 
 
 class OCRStrategy(ABC):
@@ -58,41 +59,54 @@ class OCRStrategy(ABC):
 
 
 class OCRHandler:
-    """Factory and facade for OCR processing"""
+    """Factory and facade for OCR processing.
+
+    Strategies hold mutable per-document state (page images, temp PDF path),
+    so each ``process_document`` call creates a fresh strategy instance.
+    The handler itself is safe to share across concurrent requests.
+    """
 
     def __init__(self, logger, strategy_type: str, **kwargs) -> None:
         """
         Initialize OCR handler with specified strategy
 
         Args:
-            strategy_type: Type of OCR strategy ("azure" or "vlm_ocr")
+            strategy_type: Type of OCR strategy ("vlm_ocr")
             **kwargs: Strategy-specific configuration parameters
         """
         self.logger = logger
+        self.provider = strategy_type
+        self._strategy_kwargs = kwargs
         self.logger.info("🛠️ Initializing OCR handler with strategy: %s", strategy_type)
-        self.strategy = self._create_strategy(strategy_type, **kwargs)
+        self._ensure_supported(strategy_type)
+
+    def _ensure_supported(self, strategy_type: str) -> None:
+        if strategy_type == OCRProvider.VLM_OCR.value:
+            return
+        self.logger.error(f"❌ Unsupported OCR strategy: {strategy_type}")
+        raise DocumentProcessingError(
+            f"Unsupported OCR strategy: {strategy_type}",
+            details={"strategy": strategy_type},
+        )
 
     def _create_strategy(self, strategy_type: str, **kwargs) -> OCRStrategy:
         """Factory method to create appropriate OCR strategy"""
         self.logger.debug(f"🏭 Creating OCR strategy: {strategy_type}")
+        self._ensure_supported(strategy_type)
 
-        if strategy_type == OCRProvider.VLM_OCR.value:
-            self.logger.debug("🤖 Creating VLM OCR strategy")
-            from app.modules.parsers.pdf.vlm_ocr_strategy import (
-                VLMOCRStrategy,
-            )
+        self.logger.debug("🤖 Creating VLM OCR strategy")
+        from app.modules.parsers.pdf.vlm_ocr_strategy import (
+            VLMOCRStrategy,
+        )
 
-            return VLMOCRStrategy(
-                logger=self.logger,
-                config=kwargs.get("config"),
-            )
-        else:
-            self.logger.error(f"❌ Unsupported OCR strategy: {strategy_type}")
-            raise ValueError(f"Unsupported OCR strategy: {strategy_type}")
+        return VLMOCRStrategy(
+            logger=self.logger,
+            config=kwargs.get("config"),
+        )
 
     async def process_document(self, content: bytes) -> Dict[str, Any]:
         """
-        Process document using the configured OCR strategy
+        Process document using a fresh OCR strategy instance.
 
         Args:
             content: PDF document content as bytes
@@ -101,10 +115,11 @@ class OCRHandler:
             Dict containing extracted text and layout information
         """
         self.logger.info("🚀 Starting document processing")
+        strategy = self._create_strategy(self.provider, **self._strategy_kwargs)
         try:
             self.logger.debug("📥 Loading document")
-            await self.strategy.load_document(content)
-            return self.strategy.document_analysis_result
+            await strategy.load_document(content)
+            return strategy.document_analysis_result
         except Exception as e:
             self.logger.error(f"❌ Error processing document: {str(e)}")
             raise

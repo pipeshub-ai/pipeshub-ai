@@ -4,9 +4,9 @@ import ssl
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from logging import Logger
-from typing import Any, Optional, override
+from typing import TYPE_CHECKING, Any, Optional, override
 
-from aiokafka import AIOKafkaConsumer  # type: ignore
+from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
 from aiokafka.structs import ConsumerRecord  # type: ignore
 
 from app.services.messaging.config import (
@@ -15,6 +15,7 @@ from app.services.messaging.config import (
     StreamMessage,
     messaging_env,
 )
+from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType, format_exception_chain
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.utils.request_context import (
@@ -23,7 +24,12 @@ from app.utils.request_context import (
     set_context,
 )
 
+if TYPE_CHECKING:
+    from app.services.messaging.interface.producer import IMessagingProducer
+    from app.services.messaging.retry_manager import RetryManager
+
 FUTURE_CLEANUP_INTERVAL = 100  # Cleanup completed futures every N messages
+_MAIN_LOOP_OP_TIMEOUT = 5.0
 
 
 class IndexingKafkaConsumer(IMessagingConsumer):
@@ -33,19 +39,28 @@ class IndexingKafkaConsumer(IMessagingConsumer):
     two phases: parsing and indexing. Each phase has its own semaphore to control
     concurrency independently.
 
+    Uses Redis-based RetryManager for persistent retry tracking across restarts.
+    Error classification is based purely on exception type, not database status.
+
     The message handler must be an async generator that yields events:
     - {'event': 'parsing_complete', ...} - when parsing phase is done
     - {'event': 'indexing_complete', ...} - when indexing phase is done
     """
 
-    def __init__(self,
-                logger: Logger,
-                kafka_config: KafkaConsumerConfig) -> None:
+    def __init__(
+        self,
+        logger: Logger,
+        kafka_config: KafkaConsumerConfig,
+        retry_manager: Optional["RetryManager"] = None,
+        producer: Optional["IMessagingProducer"] = None,
+    ) -> None:
         self.logger = logger
         self.consumer: AIOKafkaConsumer | None = None
         self.running = False
         self.kafka_config = kafka_config
         self.consume_task = None
+        self.retry_manager = retry_manager
+        self.producer = producer
         # Worker thread infrastructure
         self.worker_executor: ThreadPoolExecutor | None = None
         self.worker_loop: asyncio.AbstractEventLoop | None = None
@@ -249,6 +264,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         try:
             self.running = True
             self.message_handler = message_handler
+            self.main_loop = asyncio.get_running_loop()
 
             if not self.consumer:
                 await self.initialize()
@@ -341,7 +357,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     self.__apply_backpressure()
 
 
-                    message_batch = await self.consumer.getmany(timeout_ms=1000, max_records=1)  # type: ignore
+                    message_batch = await self.consumer.getmany(
+                        timeout_ms=messaging_env.message_timeout_ms,
+                        max_records=messaging_env.message_batch_size_indexing
+                    )  # type: ignore
 
                     if not message_batch:
                         continue
@@ -459,12 +478,180 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         future.add_done_callback(on_future_done)
 
+    async def _run_on_main_loop(self, coro: Any) -> Any:
+        """Run a coroutine on the main loop (safe when called from the worker loop)."""
+        current_loop = asyncio.get_running_loop()
+        main_loop = self.main_loop
+        needs_bridge = (
+            main_loop is not None
+            and main_loop.is_running()
+            and current_loop is not main_loop
+        )
+        if needs_bridge:
+            future = asyncio.run_coroutine_threadsafe(coro, main_loop)
+            return await asyncio.wait_for(
+                asyncio.wrap_future(future), timeout=_MAIN_LOOP_OP_TIMEOUT
+            )
+        return await coro
+
+    async def _clear_retry_tracking(self, message_id: str) -> None:
+        if not self.retry_manager:
+            return
+        try:
+            await self._run_on_main_loop(self.retry_manager.clear(message_id))
+        except Exception as e:
+            self.logger.error(
+                "Failed to clear retry tracking for %s: %s", message_id, e
+            )
+
+    async def _increment_retry_and_check(
+        self, message_id: str
+    ) -> tuple[int, bool]:
+        if not self.retry_manager:
+            return 0, False
+        result = await self._run_on_main_loop(
+            self.retry_manager.increment_and_check(
+                message_id, messaging_env.max_delivery_attempts
+            )
+        )
+        return result
+
+    async def _commit_offset(self, message: ConsumerRecord) -> None:
+        """Commit offset on the main loop where the Kafka consumer was started."""
+        if not self.consumer:
+            return
+        topic_partition = TopicPartition(message.topic, message.partition)
+        await self._run_on_main_loop(
+            self.consumer.commit({topic_partition: message.offset + 1})  # type: ignore
+        )
+
+    def _get_stable_message_id(self, message: ConsumerRecord, parsed_message: StreamMessage | None = None) -> str:
+        """Get a stable message ID for retry tracking.
+        
+        Uses _retry_tracking_id from payload if present (for re-queued messages),
+        otherwise constructs one from the current offset.
+        
+        Args:
+            message: The Kafka message record
+            parsed_message: The parsed StreamMessage (if available)
+            
+        Returns:
+            Stable message ID for retry tracking
+        """
+        if parsed_message and "_retry_tracking_id" in parsed_message.payload:
+            return str(parsed_message.payload["_retry_tracking_id"])
+        
+        return f"{message.topic}-{message.partition}-{message.offset}"
+
+    async def _requeue_message(
+        self, topic: str, message: StreamMessage, stable_message_id: str
+    ) -> None:
+        """Re-publish a failed message to the same topic for retry.
+        
+        The message goes to the end of the queue, allowing transient errors
+        to resolve before retry. The original offset is committed.
+        
+        Preserves the stable message ID in the payload for retry tracking.
+        
+        Args:
+            topic: Topic to re-queue to
+            message: The message to re-queue
+            stable_message_id: Stable ID for retry tracking (preserved across re-queues)
+        """
+        if not self.producer:
+            self.logger.error("No producer available for re-queue")
+            return
+        
+        try:
+            payload = dict(message.payload)
+            payload["_retry_tracking_id"] = stable_message_id
+            
+            await self._run_on_main_loop(
+                self.producer.send_event(
+                    topic=topic,
+                    event_type=message.eventType,
+                    payload=payload,
+                )
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to re-queue message to {topic}: {e}")
+            raise
+
+    async def __commit_if_appropriate(
+        self,
+        message: ConsumerRecord,
+        parsed_message: StreamMessage | None,
+        success: bool,
+        is_terminal_error: bool = False,
+    ) -> None:
+        """Commit offset and re-queue message on transient failure.
+
+        Uses Redis-based RetryManager for persistent retry tracking.
+        Error classification is based purely on exception type.
+
+        On transient failure, the message is published back to the same topic
+        (goes to end of queue) and the original offset is committed. This
+        eliminates all offset ordering issues.
+
+        Args:
+            message: The Kafka message record
+            parsed_message: The parsed StreamMessage (None if parsing failed)
+            success: Whether processing succeeded
+            is_terminal_error: Whether the error is terminal (don't retry)
+        """
+        message_id = f"{message.topic}-{message.partition}-{message.offset}"
+        stable_message_id = self._get_stable_message_id(message, parsed_message)
+
+        if success:
+            self.logger.info(f"Message {message_id} processed successfully")
+            await self._clear_retry_tracking(stable_message_id)
+        elif is_terminal_error:
+            self.logger.warning(f"Terminal error for {message_id}, committing without retry")
+            await self._clear_retry_tracking(stable_message_id)
+        elif self.retry_manager and parsed_message:
+            count, should_dead_letter = await self._increment_retry_and_check(stable_message_id)
+            if should_dead_letter:
+                self.logger.warning(
+                    f"Dead-lettering {message_id} (tracking ID: {stable_message_id}) after {count} transient failures"
+                )
+                await self._clear_retry_tracking(stable_message_id)
+            else:
+                # RE-QUEUE: Publish back to same topic for retry
+                try:
+                    await self._requeue_message(message.topic, parsed_message, stable_message_id)
+                    self.logger.info(
+                        f"Re-queued {message_id} (tracking ID: {stable_message_id}) for retry (attempt {count}/"
+                        f"{messaging_env.max_delivery_attempts})"
+                    )
+                except Exception as e:
+                    self.logger.error(f"Failed to re-queue {message_id}: {e}")
+        else:
+            self.logger.warning(
+                f"Message {message_id} failed, no retry manager or unparseable, committing"
+            )
+
+        # ALWAYS commit - message is either done, dead-lettered, or re-queued
+        try:
+            await self._commit_offset(message)
+            self.logger.info(f"Committed offset for {message_id}")
+        except Exception as e:
+            self.logger.error(f"Failed to commit offset for {message_id}: {e}")
+            raise
+
     async def __process_message_wrapper(self, message: ConsumerRecord) -> bool:
         """Wrapper to handle async task cleanup and semaphore release based on yielded events.
 
-        Iterates over events yielded by the message handler:
-        - 'parsing_complete': releases parsing semaphore
-        - 'indexing_complete': releases indexing semaphore
+        Semaphore lifecycle (decoupled phases):
+        - parsing_semaphore: acquired at start, released on PARSING_COMPLETE
+        - indexing_semaphore: acquired on PARSING_COMPLETE, released on INDEXING_COMPLETE
+
+        The two phases are independent: a record that has finished parsing and
+        moved into the indexing phase no longer blocks a parsing slot, so the
+        next record can start parsing immediately.
+
+        Error classification is based purely on exception type:
+        - TERMINAL: Commit immediately (parsing errors, validation errors)
+        - TRANSIENT: Check retry count via RetryManager
 
         Ensures semaphores are released even on error via finally block.
         """
@@ -475,6 +662,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         parsing_held = False
         indexing_held = False
+        parsed_message: StreamMessage | None = None
 
         if not self.parsing_semaphore or not self.indexing_semaphore:
             self.logger.error(f"Semaphores not initialized for {message_id}")
@@ -484,38 +672,93 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             await self.parsing_semaphore.acquire()
             parsing_held = True
 
-            await self.indexing_semaphore.acquire()
-            indexing_held = True
-
             parsed_message = self.__parse_message(message)
             if parsed_message is None:
                 self.logger.warning(f"Failed to parse message {message_id}, skipping")
+                await self.__commit_if_appropriate(message, None, success=False, is_terminal_error=True)
                 return False
 
+            # Get stable message ID for retry tracking (preserves across re-queues)
+            stable_message_id = self._get_stable_message_id(message, parsed_message)
+
+            # Check current retry count to predict if this will be the final attempt on failure
+            current_retry_count = 0
+            if self.retry_manager:
+                current_retry_count = await self._run_on_main_loop(
+                    self.retry_manager.get_count(stable_message_id)
+                )
+
+            will_be_final_on_failure = (
+                not self.retry_manager
+                or current_retry_count >= messaging_env.max_delivery_attempts - 1
+            )
+
+            # Set flag on message so handler knows whether to update DB status on failure
+            parsed_message.is_final_failure = will_be_final_on_failure
+
+            success = False
             if self.message_handler:
                 # Carry the producer's trace id into indexing logs.
                 ctx = context_from_envelope({"requestId": parsed_message.requestId})
                 token = set_context(ctx.root_id)
                 try:
-                    async for event in self.message_handler(parsed_message):
-                        if event.event == IndexingEvent.PARSING_COMPLETE and parsing_held and self.parsing_semaphore:
-                            self.parsing_semaphore.release()
-                            parsing_held = False
-                            self.logger.debug(f"Released parsing semaphore for {message_id}")
-                        elif event.event == IndexingEvent.INDEXING_COMPLETE and indexing_held and self.indexing_semaphore:
-                            self.indexing_semaphore.release()
-                            indexing_held = False
-                            self.logger.debug(f"Released indexing semaphore for {message_id}")
+                    async with asyncio.timeout(messaging_env.record_processing_timeout):
+                        async for event in self.message_handler(parsed_message):
+                            if event.event == IndexingEvent.PARSING_COMPLETE and parsing_held and self.parsing_semaphore:
+                                self.parsing_semaphore.release()
+                                parsing_held = False
+                                self.logger.debug(f"Released parsing semaphore for {message_id}")
+                                await self.indexing_semaphore.acquire()
+                                indexing_held = True
+                                self.logger.debug(f"Acquired indexing semaphore for {message_id}")
+                            elif event.event == IndexingEvent.INDEXING_COMPLETE and indexing_held and self.indexing_semaphore:
+                                self.indexing_semaphore.release()
+                                indexing_held = False
+                                self.logger.debug(f"Released indexing semaphore for {message_id}")
+                                success = True
+                except TimeoutError:
+                    self.logger.error(
+                        f"Record processing timed out after {messaging_env.record_processing_timeout}s "
+                        f"for {message_id}"
+                    )
+                    raise
                 finally:
                     reset_context(token)
             else:
                 self.logger.error(f"No message handler available for {message_id}")
+                await self.__commit_if_appropriate(message, parsed_message, success=False, is_terminal_error=True)
                 return False
 
-            return True
+            # Commit based on success
+            await self.__commit_if_appropriate(message, parsed_message, success=success)
+            return success
 
         except Exception as e:
-            self.logger.error(f"Error in process_message_wrapper for {message_id}: {e}")
+            # Log the full exception chain for debugging
+            exception_chain = format_exception_chain(e)
+            self.logger.error(
+                f"Error in process_message_wrapper for {message_id}:\n{exception_chain}"
+            )
+
+            # Classify the exception to determine if we should retry
+            error_type = MessageErrorClassifier.classify_by_exception(e)
+            is_terminal = error_type == MessageErrorType.TERMINAL
+
+            # Update is_final_failure on the message for terminal errors
+            # (it was already set for transient based on retry count prediction)
+            if is_terminal and parsed_message:
+                parsed_message.is_final_failure = True
+
+            if is_terminal:
+                self.logger.warning(
+                    f"Terminal error for {message_id}, committing to skip: {type(e).__name__}"
+                )
+            else:
+                self.logger.warning(
+                    f"Transient error for {message_id}, checking retry count: {type(e).__name__}"
+                )
+
+            await self.__commit_if_appropriate(message, parsed_message, success=False, is_terminal_error=is_terminal)
             return False
         finally:
             # Ensure semaphores are released even on error

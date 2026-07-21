@@ -188,8 +188,8 @@
     "collections": "Collections",
     "allRecords": "All Records",
     "workspace": "Workspace",
-    "shared": "Shared",
-    "private": "Private",
+    "shared": "Shared with me",
+    "private": "My collections",
     "connectors": "Connectors",
     "bots": "Bots",
     "moreConnectors": "More Connectors",
@@ -1388,8 +1388,8 @@
         "authNeededBadge": "Authentication needed",
         "activeOne": "1 active instance",
         "activeMany": "{{count}} active instances",
-        "inactiveOne": "1 in-active instance",
-        "inactiveMany": "{{count}} in-active instances",
+        "inactiveOne": "1 inactive instance",
+        "inactiveMany": "{{count}} inactive instances",
         "authenticatedOne": "1 authenticated",
         "authenticatedMany": "{{count}} authenticated",
         "needsAuthOne": "1 needs sign-in",
@@ -2195,6 +2195,71 @@
       "showMore": "Show More",
       "moreAgents": "More Agents",
       "moreChats": "More Chats"
+    },
+    "services": {
+      "pageTitle": "Services",
+      "pageSubtitle": "Monitor the health status of platform services",
+      "infraSection": "Infrastructure Services",
+      "infraSubtitle": "Core infrastructure components powering the platform",
+      "appSection": "Application Services",
+      "appSubtitle": "Python microservices handling search, indexing, and document processing",
+      "checkNow": "Check Now",
+      "checking": "Checking…",
+      "lastChecked": "Last checked: {{time}}",
+      "loading": "Loading services status…",
+      "policyTitle": "Service Health Policy",
+      "policyDescription": "Query and Connector services are critical — the application will wait for them before loading. Indexing and Docling services are non-blocking and only affect background processing.",
+      "allHealthy": "All services are healthy",
+      "someUnhealthy": "Some services are unhealthy",
+      "fetchFailed": "Failed to check services health",
+      "statusHealthy": "Healthy",
+      "statusUnhealthy": "Unhealthy",
+      "statusUnknown": "Unknown",
+      "infra": {
+        "redis": {
+          "label": "Redis",
+          "descriptionWithKvStore": "Caching, rate limiting, and configuration",
+          "description": "Caching and rate limiting"
+        },
+        "mongodb": {
+          "label": "MongoDB",
+          "description": "Sessions and user metadata"
+        },
+        "messageBroker": {
+          "label": "Message Broker",
+          "description": "Distributed event streaming"
+        },
+        "etcd": {
+          "label": "etcd",
+          "description": "Distributed configuration"
+        },
+        "graphDb": {
+          "label": "Graph Database",
+          "description": "Knowledge graphs"
+        },
+        "vectorDb": {
+          "label": "Vector Database",
+          "description": "Hybrid search — keyword and semantic"
+        }
+      },
+      "app": {
+        "query": {
+          "label": "Query Service",
+          "description": "RAG, semantic search, and LLM integration"
+        },
+        "connector": {
+          "label": "Connector Service",
+          "description": "OAuth, token refresh, and data source integrations"
+        },
+        "indexing": {
+          "label": "Indexing Service",
+          "description": "Document parsing, embedding generation, and chunking"
+        },
+        "docling": {
+          "label": "Docling Service",
+          "description": "Advanced document parsing and OCR"
+        }
+      }
     }
   },
   "filePreview": {
@@ -2309,6 +2374,8 @@
     "dropConnectorMustEnableApp": "Connector for \"{{app}}\" must be configured and enabled for agents.",
     "dropEnableConnectorToolGroup": "Enable this connector for agents before adding its tool group.",
     "dropOnlyOneToolGroup": "Only one {{type}} tool group is allowed. Remove the existing node first.",
+    "dropDuplicateConnector": "{{name}} is already added to this agent",
+    "dropDuplicateKB": "{{name}} is already added to this agent",
     "coreNodeTitle": "Agent",
     "coreNodeBadge": "Core",
     "coreNodeSubtitle": "Orchestrator",

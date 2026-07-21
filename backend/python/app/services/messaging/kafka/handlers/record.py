@@ -25,6 +25,10 @@ from app.services.messaging.config import (
     PipelineEvent,
     PipelineEventData,
 )
+from app.services.messaging.error_classifier import (
+    MessageErrorClassifier,
+    MessageErrorType,
+)
 from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
@@ -69,7 +73,6 @@ SUPPORTED_CODE_FILE_EXTENSIONS = {
     "md"
 }
 
-
 class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
                 config_service: ConfigurationService,
@@ -80,6 +83,47 @@ class RecordEventHandler(BaseEventService):
         self.config_service = config_service
 
         self.event_processor : EventProcessor = event_processor
+
+    async def _propagate_primary_failure_to_queued_duplicates(
+        self,
+        record_id: str,
+        virtual_record_id: str | None,
+        reason: str | None,
+    ) -> None:
+        """Mark same-MD5 QUEUED copies failed when the primary copy fails.
+
+        Does not re-run indexing for queued copies. Re-OCR on identical content
+        would usually repeat the same failure (e.g. rate limits) and waste resources.
+        """
+        try:
+            propagated_reason = (
+                f"Primary duplicate indexing failed: {reason}"
+                if reason
+                else "Primary duplicate indexing failed"
+            )
+            updated = await self.event_processor.graph_provider.update_queued_duplicates_status(
+                record_id,
+                ProgressStatus.FAILED.value,
+                virtual_record_id,
+                reason=propagated_reason,
+            )
+            if updated > 0:
+                self.logger.info(
+                    "Propagated primary failure to %d queued duplicate(s) for record %s",
+                    updated,
+                    record_id,
+                )
+            else:
+                self.logger.info(
+                    "No queued duplicates to update after primary failure for record %s",
+                    record_id,
+                )
+        except Exception as e:
+            self.logger.warning(
+                "Failed to propagate primary failure to queued duplicates for %s: %s",
+                record_id,
+                e,
+            )
 
     async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id) -> None:
         try:
@@ -134,6 +178,7 @@ class RecordEventHandler(BaseEventService):
         message_id = f"{event_type}-unknown"
         error_occurred = False
         error_msg = None
+        last_exception: Exception | None = None
         record = None
         try:
             if not event_type:
@@ -368,6 +413,13 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.PPT.value,
                 MimeTypes.MDX.value,
                 MimeTypes.TSV.value,
+                MimeTypes.JSON.value,
+                MimeTypes.YAML.value,
+                # Node's storage layer (backend/nodejs/.../mimetypes.ts) maps
+                # .yaml/.yml to "application/x-yaml", not MimeTypes.YAML's
+                # "application/yaml" — accept both so records created from
+                # KB uploads aren't gated on this mismatch.
+                "application/x-yaml",
                 MimeTypes.SQL_TABLE.value,
                 MimeTypes.SQL_VIEW.value,
                 MimeTypes.PYTHON.value,
@@ -406,6 +458,9 @@ class RecordEventHandler(BaseEventService):
                 ExtensionTypes.WEBP.value,
                 ExtensionTypes.SVG.value,
                 ExtensionTypes.TSV.value,
+                ExtensionTypes.JSON.value,
+                ExtensionTypes.YAML.value,
+                ExtensionTypes.YML.value,
                 ExtensionTypes.SQL_TABLE.value,
                 ExtensionTypes.SQL_VIEW.value,
                 ExtensionTypes.PY.value,
@@ -557,20 +612,19 @@ class RecordEventHandler(BaseEventService):
                         f"Record: {record_id}, Time: {processing_time:.2f}s"
                     )
                     return
+                except IndexingError:
+                    error_occurred = True
+                    raise  # preserve DocumentProcessingError and other IndexingError subtypes
                 except Exception as e:
                     error_occurred = True
                     error_msg = str(e)
-                    raise Exception(error_msg) from e
-        except IndexingError as e:
-            error_occurred = True
-            error_msg = str(e)
-            self.logger.error(error_msg, exc_info=True)
-            raise Exception(error_msg) from e
+                    raise Exception(error_msg) from e  # unknown errors only
         except Exception as e:
             error_occurred = True
             error_msg = str(e)
+            last_exception = e
             self.logger.error(error_msg, exc_info=True)
-            raise Exception(error_msg) from e
+            raise  # bare re-raise — preserves IndexingError / DocumentProcessingError
         finally:
             processing_time = (datetime.now() - start_time).total_seconds()
             self.logger.info(
@@ -579,18 +633,61 @@ class RecordEventHandler(BaseEventService):
             )
 
             if error_occurred and record_id:
-                record = await self.__update_document_status(
-                    record_id=record_id,
-                    indexing_status=ProgressStatus.FAILED.value,
-                    extraction_status=ProgressStatus.FAILED.value,
-                    reason=error_msg,
-                )
-                if record is None:
-                    return
-                await self._track_indexing_outcome(record, ProgressStatus.FAILED.value)
-                virtual_record_id = record.get("virtualRecordId")
-                self.logger.info(f"🔄 Current record {record_id} has failed, triggering next queued duplicate")
-                await self._trigger_next_queued_duplicate(record_id,virtual_record_id)
+                # Only update DB status to FAILED if this is the final failure
+                # (terminal error or dead-letter after max retries)
+                is_final = payload.get("is_final_failure")
+
+                # Terminal errors are always final, even on the first attempt.
+                # is_final_failure is set before the handler runs (based on retry count),
+                # so it is False on attempt 1 — but the consumer classifies terminal errors
+                # only after the handler raises. Check the exception here instead.
+                if last_exception is not None and (
+                    MessageErrorClassifier.classify_by_exception(last_exception)
+                    == MessageErrorType.TERMINAL
+                ):
+                    is_final = True
+
+                if is_final is None:
+                    self.logger.warning(
+                        f"Missing is_final_failure flag for record {record_id}, "
+                        f"defaulting to True (safe fail-fast). This may indicate a bug in the consumer."
+                    )
+                    is_final = True
+                    
+                if is_final:
+                    record = await self.__update_document_status(
+                        record_id=record_id,
+                        indexing_status=ProgressStatus.FAILED.value,
+                        extraction_status=ProgressStatus.FAILED.value,
+                        reason=error_msg,
+                    )
+                    if record is not None:
+                        await self._track_indexing_outcome(record, ProgressStatus.FAILED.value)
+                        virtual_record_id = record.get("virtualRecordId")
+
+                        # Decide duplicate handling based on error type
+                        if (last_exception and 
+                            MessageErrorClassifier.classify_by_exception(last_exception)
+                            == MessageErrorType.TERMINAL):
+                            # Terminal error → content issue → fail ALL duplicates
+                            self.logger.info(
+                                f"🔄 Terminal failure for record {record_id}, "
+                                f"propagating failure to all queued duplicates"
+                            )
+                            await self._propagate_primary_failure_to_queued_duplicates(
+                                record_id, virtual_record_id, error_msg
+                            )
+                        else:
+                            # Transient error exhausted retries → try next duplicate
+                            self.logger.info(
+                                f"🔄 Record {record_id} failed after max retries, "
+                                f"triggering next queued duplicate"
+                            )
+                            await self._trigger_next_queued_duplicate(record_id, virtual_record_id)
+                    else:
+                        self.logger.warning(f"Record {record_id} not found, skipping duplicate handling")
+                else:
+                    self.logger.info(f"🔄 Record {record_id} failed but will retry, not updating status to FAILED yet")
             elif record is not None and event_type != EventTypes.DELETE_RECORD.value:
                 # Update queued duplicates for ALL record types (not just FILE)
                 record = await self.event_processor.graph_provider.get_document(

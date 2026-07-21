@@ -1,10 +1,15 @@
 import asyncio
 import base64
+import logging
+from pathlib import Path
 import re
 from http import HTTPStatus
+from typing import Any
 from urllib.parse import unquote, urlparse
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.utils.image_utils import get_extension_from_mimetype
+from app.services.parsing.interface import ParseResult
 
 try:
     from cairosvg import svg2png
@@ -16,9 +21,27 @@ from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 
 VALID_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp','.svg']
 VIEWBOX_NUM_COMPONENTS = 4
+_logger = logging.getLogger(__name__)
+
+
 class ImageParser:
     def __init__(self, logger) -> None:
         self.logger = logger
+
+    async def parse(
+        self,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None = None,
+    ) -> ParseResult:
+        extension = config.get("extension")
+        # SVG->PNG conversion (cairosvg) is synchronous and can be slow for
+        # complex vector graphics; keep it off the event loop.
+        block_container = await asyncio.to_thread(self.parse_image, content, extension)
+        return ParseResult(
+            block_container=block_container,
+            metadata={"record_name": record_name},
+        )
 
     def parse_image(self, image_content: bytes, extension: str) -> BlocksContainer:
         base64_encoded_content = base64.b64encode(image_content).decode("utf-8")
@@ -31,7 +54,10 @@ class ImageParser:
                 base64_image = f"data:image/png;base64,{png_base64}"
             except Exception as e:
                 self.logger.warning(f"Failed to convert SVG to PNG: {e}")
-                raise ValueError(f"Failed to convert SVG to PNG: {e}") from e
+                raise DocumentProcessingError(
+                    f"Failed to convert SVG to PNG: {e}",
+                    details={"error": str(e)},
+                ) from e
         else:
             base64_image = f"data:image/{extension};base64,{base64_encoded_content}"
 
@@ -45,7 +71,8 @@ class ImageParser:
         )
         return BlocksContainer(blocks=[image_block], block_groups=[])
 
-    def _is_valid_image_url(self, url: str) -> bool:
+    @staticmethod
+    def _is_valid_image_url(url: str) -> bool:
         """
         Validate if URL appears to be an image URL by checking:
         1. File extension in the URL path
@@ -75,7 +102,8 @@ class ImageParser:
         # If we can't determine from URL, allow it but will check content-type later
         return True
 
-    def _is_valid_image_content_type(self, content_type: str) -> bool:
+    @staticmethod
+    def _is_valid_image_content_type(content_type: str) -> bool:
         """
         Validate content type and return True for valid image types.
         """
@@ -90,22 +118,28 @@ class ImageParser:
 
         return True
 
-    async def _fetch_single_url(self, session: aiohttp.ClientSession, url: str) -> str | None:
+    @staticmethod
+    async def _fetch_single_url(
+        session: aiohttp.ClientSession,
+        url: str,
+        logger: logging.Logger | None = None,
+    ) -> str | None:
+        log = logger or _logger
         try:
 
             # Check if already a base64 data URL
             if url.startswith('data:image/'):
                 # Skip SVG images - check the MIME type in the data URL
                 if url.startswith('data:image/svg+xml'):
-                    self.logger.debug("Data URL is SVG; converting SVG base64 to PNG base64")
-                    return f"data:image/png;base64,{self.svg_base64_to_png_base64(url)}"
+                    log.debug("Data URL is SVG; converting SVG base64 to PNG base64")
+                    return f"data:image/png;base64,{ImageParser.svg_base64_to_png_base64(url)}"
 
-                self.logger.debug("URL is already base64 encoded")
+                log.debug("URL is already base64 encoded")
                 return url
 
             # Validate URL format before attempting to fetch
-            if not self._is_valid_image_url(url):
-                self.logger.warning(f"⚠️ URL does not appear to be an image URL: {url[:100]}...")
+            if not ImageParser._is_valid_image_url(url):
+                log.warning(f"⚠️ URL does not appear to be an image URL: {url[:100]}...")
                 return None
 
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=True) as response:
@@ -113,20 +147,20 @@ class ImageParser:
 
                 get_content_type_header = response.headers.get('content-type', '').lower()
                 get_content_type = get_content_type_header.split(';')[0].strip()
-                is_valid = self._is_valid_image_content_type(get_content_type)
-                self.logger.debug(f"GET content-type for URL {url[:200]}... => {get_content_type}")
+                is_valid = ImageParser._is_valid_image_content_type(get_content_type)
+                log.debug(f"GET content-type for URL {url[:200]}... => {get_content_type}")
 
                 if not is_valid:
-                    self.logger.info(f"⚠️ Content-type invalid during GET: {get_content_type} from URL: {url[:100]}...")
+                    log.info(f"⚠️ Content-type invalid during GET: {get_content_type} from URL: {url[:100]}...")
                     return None
 
                 extension = get_extension_from_mimetype(get_content_type)
                 if not extension:
-                    self.logger.info(f"⚠️ Extension couldn't be determined for URL: {url[:100]}... Skipping image")
+                    log.info(f"⚠️ Extension couldn't be determined for URL: {url[:100]}... Skipping image")
                     return None
 
                 if f".{extension}" not in VALID_IMAGE_EXTENSIONS:
-                    self.logger.info(f"⚠️ Extension {extension} not in valid image extensions, from URL: {url[:100]}... Skipping image")
+                    log.info(f"⚠️ Extension {extension} not in valid image extensions, from URL: {url[:100]}... Skipping image")
                     return None
 
                 # Read content and encode to base64
@@ -134,17 +168,17 @@ class ImageParser:
 
                 # Basic validation - ensure we got some content
                 if not content:
-                    self.logger.info(f"⚠️ Empty content received from URL: {url}")
+                    log.info(f"⚠️ Empty content received from URL: {url}")
                     return None
 
                 base64_encoded = base64.b64encode(content).decode('utf-8')
                 if 'svg' in extension:
-                    self.logger.debug("Detected SVG extension from GET; converting SVG base64 to PNG base64")
-                    base64_image = f"data:image/png;base64,{self.svg_base64_to_png_base64(base64_encoded)}"
+                    log.debug("Detected SVG extension from GET; converting SVG base64 to PNG base64")
+                    base64_image = f"data:image/png;base64,{ImageParser.svg_base64_to_png_base64(base64_encoded)}"
                     return base64_image
 
                 base64_image = f"data:image/{extension};base64,{base64_encoded}"
-                self.logger.debug(f"Converted URL to base64 for {extension}: {url[:100]}")
+                log.debug(f"Converted URL to base64 for {extension}: {url[:100]}")
                 return base64_image
 
         except aiohttp.ClientResponseError as e:
@@ -152,34 +186,38 @@ class ImageParser:
             if e.status == HTTPStatus.FORBIDDEN:
                 # Check if this is a signed URL that might have expired
                 if 'X-Amz-Expires' in str(e):
-                    self.logger.warning(
+                    log.warning(
                         f"⚠️ Access denied (403) for signed URL - likely expired or invalid signature: {url[:150]}... "
                         f"(Original error: {e.status}, {e.message})"
                     )
                 else:
-                    self.logger.warning(
+                    log.warning(
                         f"⚠️ Access denied (403) for URL - insufficient permissions: {url[:150]}... "
                         f"(Original error: {e.status}, {e.message})"
                     )
             elif e.status == HTTPStatus.NOT_FOUND:
-                self.logger.warning(f"⚠️ Image not found (404) at URL: {url[:150]}...")
+                log.warning(f"⚠️ Image not found (404) at URL: {url[:150]}...")
             elif e.status >= HTTPStatus.INTERNAL_SERVER_ERROR:
-                self.logger.warning(f"⚠️ Server error ({e.status}) when fetching URL: {url[:150]}...")
+                log.warning(f"⚠️ Server error ({e.status}) when fetching URL: {url[:150]}...")
             else:
-                self.logger.warning(
+                log.warning(
                     f"⚠️ HTTP error ({e.status}) when fetching URL: {url[:150]}... "
                     f"(Error: {e.message})"
                 )
             return None
         except aiohttp.ClientError as e:
             # Handle other aiohttp client errors (timeouts, connection errors, etc.)
-            self.logger.warning(f"⚠️ Network error when fetching URL: {url[:150]}... (Error: {str(e)})")
+            log.warning(f"⚠️ Network error when fetching URL: {url[:150]}... (Error: {str(e)})")
             return None
         except Exception as e:
-            self.logger.error(f"⚠️ Failed to convert URL to base64: {url[:150]}..., error: {str(e)}")
+            log.error(f"⚠️ Failed to convert URL to base64: {url[:150]}..., error: {str(e)}")
             return None
 
-    async def urls_to_base64(self, urls: list[str]) -> list[str|None]:
+    @staticmethod
+    async def urls_to_base64(
+        urls: list[str],
+        logger: logging.Logger | None = None,
+    ) -> list[str | None]:
         """
         Convert a list of image URLs to base64 encoded strings asynchronously.
         If a URL is already a base64 data URL, it's returned as-is.
@@ -187,13 +225,16 @@ class ImageParser:
 
         Args:
             urls: List of image URLs or base64 data URLs
+            logger: Optional logger; defaults to module logger when omitted
 
         Returns:
             List of base64 encoded image strings (None for SVG images or failed conversions)
         """
         async with aiohttp.ClientSession() as session:
-            # Process all URLs concurrently
-            tasks = [self._fetch_single_url(session, url) for url in urls]
+            tasks = [
+                ImageParser._fetch_single_url(session, url, logger=logger)
+                for url in urls
+            ]
             base64_images = await asyncio.gather(*tasks)
             return list(base64_images)
 
@@ -358,7 +399,10 @@ class ImageParser:
             # Verify it's actually SVG content
             svg_str = svg_data.decode('utf-8')
             if not ('<svg' in svg_str.lower() or '<?xml' in svg_str.lower()):
-                raise ValueError("Decoded content does not appear to be valid SVG")
+                raise DocumentProcessingError(
+                    "Decoded content does not appear to be valid SVG",
+                    details={"content_preview": svg_str[:100]},
+                )
 
             # Extract dimensions from SVG if not provided
             final_width = output_width
@@ -386,7 +430,10 @@ class ImageParser:
             # Convert SVG to PNG using cairosvg
             # cairosvg requires explicit dimensions when SVG doesn't have them
             if svg2png is None:
-                raise Exception("import from cairosvg failed")
+                raise DocumentProcessingError(
+                    "SVG conversion dependency missing: cairosvg is not installed",
+                    details={"dependency": "cairosvg"},
+                )
             png_data = svg2png(
                 bytestring=sanitized_svg_data,
                 output_width=final_width,
@@ -401,10 +448,21 @@ class ImageParser:
             return png_base64
 
         except base64.binascii.Error as e:
-            raise ValueError(f"Invalid base64 input: {e}")
+            raise DocumentProcessingError(
+                f"Invalid base64 input: {e}",
+                details={"error": str(e)},
+            ) from e
         except UnicodeDecodeError as e:
-            raise ValueError(f"Cannot decode SVG content: {e}")
+            raise DocumentProcessingError(
+                f"Cannot decode SVG content: {e}",
+                details={"error": str(e)},
+            ) from e
+        except DocumentProcessingError:
+            raise
         except Exception as e:
-            raise Exception(f"SVG to PNG conversion failed: {e}") from e
+            raise DocumentProcessingError(
+                f"SVG to PNG conversion failed: {e}",
+                details={"error": str(e)},
+            ) from e
 
 

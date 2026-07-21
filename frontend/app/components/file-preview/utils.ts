@@ -164,6 +164,11 @@ export function getRendererType(mimeType: string, fileName: string): string {
     if (mimeType === 'text/csv') return 'spreadsheet';
     if (mimeType === 'application/vnd.ms-excel') return 'spreadsheet';
     if (mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') return 'spreadsheet';
+    // JSON / YAML — not under the `text/` umbrella, so they need explicit
+    // branches; the record name for KB uploads is stored without its
+    // extension, so the extension-based fallback below can't catch these.
+    if (mimeType === 'application/json') return 'text';
+    if (['application/x-yaml', 'application/yaml', 'text/yaml', 'text/x-yaml'].includes(mimeType)) return 'text';
     // Word OOXML (.docx, .docm, .dotx)
     if (isOoxmlWordMime(mimeType)) return 'docx';
     // Citations / records sometimes use a bare extension token instead of a MIME string

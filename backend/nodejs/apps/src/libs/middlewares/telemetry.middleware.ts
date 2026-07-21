@@ -1,15 +1,10 @@
 import { Response, NextFunction } from 'express';
 import { AuthenticatedUserRequest } from './types';
-import { Logger } from '../services/logger.service';
 import { recordHttpRequest } from '../services/telemetry/modules/http-metrics';
 import {
   domainFromEmail,
   normalizeOrgId,
 } from '../services/telemetry/identity';
-
-const logger = Logger.getInstance({
-  service: 'Telemetry Middleware',
-});
 
 const ID_SEGMENT = /^([0-9a-fA-F]{24}|[0-9a-fA-F-]{32,36}|\d+)$/;
 
@@ -86,12 +81,6 @@ export function metricsMiddleware(): (
         durationSeconds,
         domain,
       );
-
-      if (res.statusCode >= 400) {
-        logger.error(
-          `Request error: StatusCode: ${String(res.statusCode)} Method: ${req.method} Route: ${template} (Org: ${orgId})`,
-        );
-      }
     });
 
     next();

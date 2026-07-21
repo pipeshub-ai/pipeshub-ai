@@ -246,7 +246,10 @@ export function useAgentBuilderReconstruction(): {
           if (isKnowledgeBase) {
             const kbName = knowledgeItem.name || knowledgeItem.displayName || t('agentBuilder.nodeCollectionFallbackName');
             const kbDisplayName = knowledgeItem.displayName || knowledgeItem.name || kbName;
-            const kbId = kbIdsInRecordGroups[0] || recordGroups[0] || knowledgeItem._key || '';
+            // connectorId is a KB's own id under the per-KB-app model; recordGroups
+            // is only read here as a backward-compat fallback for agents saved
+            // before that model (never written back out — see filters below).
+            const kbId = connectorId || kbIdsInRecordGroups[0] || recordGroups[0] || knowledgeItem._key || '';
 
             const matchingKB = knowledgeBases.find((kb) => kb.id === kbId);
 
@@ -271,7 +274,6 @@ export function useAgentBuilderReconstruction(): {
                   kbName: finalKbName,
                   connectorInstanceId: kbConnectorId,
                   filters: {
-                    recordGroups: [finalKbId],
                     records,
                   },
                   selectedRecords: records,

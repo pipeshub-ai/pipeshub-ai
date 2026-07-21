@@ -54,7 +54,7 @@ import {
   getActiveAgentInstances,
   getConnectorStats,
   getConnectorSyncProgress,
-  reindexFailedRecords,
+  reindexConnector,
   resyncConnectorRecords,
 } from '../controllers/connector.controllers';
 import { RecordRelationService } from '../../knowledge_base/services/kb.relation.service';
@@ -342,14 +342,14 @@ const resyncConnectorSchema = z.object({
 });
 
 /**
- * Schema for reindexing failed records
+ * Schema for reindexing connector records
  */
-const reindexFailedRecordSchema = z.object({
+export const reindexConnectorSchema = z.object({
   params: z.object({ connectorId: z.string().min(1) }),
   body: z.object({
-    app: z.string().min(1),
-    statusFilters: z.array(z.string()).optional(),
-  }),
+      statusFilters: z.array(z.string()).optional(),
+    })
+    .optional(),
 });
 
 /**
@@ -550,15 +550,17 @@ export function createConnectorRouter(
   );
 
   /**
-   * POST /:connectorId/reindex-failed
-   * Reindex failed (and optionally filtered) records for a connector
+   * POST /:connectorId/reindex
+   * Reindex all records for a connector instance (optionally filtered by status).
+   * Covers both external connectors and KB app instances (a KB is itself a
+   * connector instance).
    */
   router.post(
-    '/:connectorId/reindex-failed',
+    '/:connectorId/reindex',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONNECTOR_WRITE, OAuthScopeNames.KB_WRITE),
-    ValidationMiddleware.validate(reindexFailedRecordSchema),
-    reindexFailedRecords(recordRelationService, config),
+    requireScopes(OAuthScopeNames.CONNECTOR_SYNC, OAuthScopeNames.KB_WRITE),
+    ValidationMiddleware.validate(reindexConnectorSchema),
+    reindexConnector(config),
   );
 
   /**

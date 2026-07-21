@@ -373,11 +373,47 @@ class TestHandleStartSync:
 
     @pytest.mark.asyncio
     async def test_connector_not_found(self, service):
+        # Apps doc is now fetched before init so disabled connectors can be skipped
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=None), \
              patch.object(service, "_get_connector", return_value=None):
             result = await service._handle_start_sync("gmail", {"orgId": "org1", "connectorId": "c1"})
             assert result is False
-            service.graph_provider.get_document.assert_not_awaited()
+            service.graph_provider.get_document.assert_awaited_once_with(
+                document_key="c1",
+                collection=CollectionNames.APPS.value,
+            )
+
+    @pytest.mark.asyncio
+    async def test_start_sync_skips_inactive_connector(self, service):
+        service.graph_provider.get_document = AsyncMock(
+            return_value={"_key": "c1", ConnectorStateKeys.IS_ACTIVE: False, ConnectorStateKeys.IS_AUTHENTICATED: False}
+        )
+        with patch.object(service, "_ensure_connector", new_callable=AsyncMock) as mock_ensure:
+            result = await service._handle_start_sync("gmail", {"orgId": "org1", "connectorId": "c1"})
+            assert result is False
+            mock_ensure.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_start_sync_skips_unauthenticated_connector(self, service):
+        """isAuthenticated=False alone (e.g. dead refresh token) must also skip."""
+        service.graph_provider.get_document = AsyncMock(
+            return_value={"_key": "c1", ConnectorStateKeys.IS_ACTIVE: True, ConnectorStateKeys.IS_AUTHENTICATED: False}
+        )
+        with patch.object(service, "_ensure_connector", new_callable=AsyncMock) as mock_ensure:
+            result = await service._handle_start_sync("gmail", {"orgId": "org1", "connectorId": "c1"})
+            assert result is False
+            mock_ensure.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_start_sync_proceeds_for_active_connector(self, service):
+        service.graph_provider.get_document = AsyncMock(
+            return_value={"_key": "c1", ConnectorStateKeys.IS_ACTIVE: True, ConnectorStateKeys.IS_AUTHENTICATED: True}
+        )
+        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=None) as mock_ensure, \
+             patch.object(service, "_get_connector", return_value=None):
+            result = await service._handle_start_sync("gmail", {"orgId": "org1", "connectorId": "c1"})
+            mock_ensure.assert_awaited_once()
+            assert result is False
 
     @pytest.mark.asyncio
     async def test_pending_full_sync_triggers_full_sync(self, service):

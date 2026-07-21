@@ -44,6 +44,7 @@ export interface FolderTreeNode {
   isExpanded: boolean;
   depth: number;
   parentId: string | null;
+  hasChildren?: boolean;
 }
 
 // Size range options for filtering
@@ -56,7 +57,7 @@ export interface KnowledgeBaseFilter {
   origins?: NodeOrigin[];         // Aligned with API: was 'sources'
   connectorIds?: string[];        // NEW: for filtering by connector
   kbIds?: string[];              // NEW: for filtering by KB
-  sizeRanges?: SizeRange[];      // Keep as-is (converted to size param)
+  sizeRange?: SizeRange;         // Single size range (radio select)
   createdAfter?: string;         // Keep as-is
   createdBefore?: string;        // Keep as-is
   createdDateType?: DateFilterType; // Date filter type for created date
@@ -205,7 +206,11 @@ export interface KnowledgeHubQueryParams {
   
   // Container filter (sidebar use)
   onlyContainers?: boolean;   // Return only folders/groups with children
-  
+
+  // Force flattened/recursive search (true) or direct listing (false).
+  // When omitted, the backend computes it from which filters are present.
+  flattened?: boolean;
+
   // Sorting
   sortBy?: string;            // 'name', 'createdAt', 'updatedAt', 'size', 'type'
   sortOrder?: 'asc' | 'desc'; // Sort direction
@@ -459,7 +464,7 @@ export interface AllRecordsFilter {
   connectorIds?: string[];
 
   // Size filter
-  sizeRanges?: SizeRange[];
+  sizeRange?: SizeRange;
 
   // Date filters
   createdAfter?: string;

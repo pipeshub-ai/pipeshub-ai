@@ -337,6 +337,48 @@ export function AgentBuilderSidebar(props: {
                     connectorTypeEntries.map(([connectorTypeLabel, { instances, icon }]) => {
                       const expandKey = `knowledge-connector-${connectorTypeLabel}`;
                       const groupConnectorType = instances[0]?.type;
+
+                      const renderInstance = (inst: typeof instances[0], instIdx: number) => {
+                        const tmpl = nodeTemplates.find(
+                          (n) => n.type === `app-${(inst.name || '').toLowerCase().replace(/\s+/g, '-')}`
+                        );
+                        if (!tmpl) return null;
+                        const dragData = prepareDragData(tmpl, 'connectors', {
+                          connectorId: inst._key || '',
+                          connectorType: inst.type || '',
+                          scope: inst.scope || 'personal',
+                        });
+                        return (
+                          <DraggableRow
+                            key={`${connectorTypeLabel}-${instIdx}-${inst._key ?? inst.name ?? 'connector'}`}
+                            comfortable
+                            data={dragData}
+                            disabled={paletteStructureLocked}
+                            onBlocked={paletteStructureLocked ? onPaletteDragBlocked : undefined}
+                          >
+                            <Box style={{ flexShrink: 0, lineHeight: 0 }}>
+                              <ConnectorIcon
+                                type={inst.type || 'generic'}
+                                size={PALETTE_ICON_SIZE}
+                              />
+                            </Box>
+                            <span style={paletteRowLabelStyle}>
+                              {inst.name?.trim() || connectorTypeLabel}
+                            </span>
+                          </DraggableRow>
+                        );
+                      };
+
+                      // Single instance: show the draggable row directly — no group wrapper or dropdown.
+                      if (instances.length === 1) {
+                        return (
+                          <React.Fragment key={connectorTypeLabel}>
+                            {renderInstance(instances[0], 0)}
+                          </React.Fragment>
+                        );
+                      }
+
+                      // Multiple instances: wrap in a collapsible group row.
                       return (
                         <SidebarCategoryRow
                           key={connectorTypeLabel}
@@ -347,36 +389,7 @@ export function AgentBuilderSidebar(props: {
                           isExpanded={expanded[expandKey] ?? true}
                           onToggle={() => toggle(expandKey)}
                         >
-                          {instances.map((inst, instIdx) => {
-                            const tmpl = nodeTemplates.find(
-                              (n) => n.type === `app-${inst.name.toLowerCase().replace(/\s+/g, '-')}`
-                            );
-                            if (!tmpl) return null;
-                            const dragData = prepareDragData(tmpl, 'connectors', {
-                              connectorId: inst._key || '',
-                              connectorType: inst.type || '',
-                              scope: inst.scope || 'personal',
-                            });
-                            return (
-                              <DraggableRow
-                                key={`${connectorTypeLabel}-${instIdx}-${inst._key ?? inst.name ?? 'connector'}`}
-                                comfortable
-                                data={dragData}
-                                disabled={paletteStructureLocked}
-                                onBlocked={paletteStructureLocked ? onPaletteDragBlocked : undefined}
-                              >
-                                <Box style={{ flexShrink: 0, lineHeight: 0 }}>
-                                  <ConnectorIcon
-                                    type={inst.type || 'generic'}
-                                    size={PALETTE_ICON_SIZE}
-                                  />
-                                </Box>
-                                <span style={paletteRowLabelStyle}>
-                                  {inst.name?.trim() || connectorTypeLabel}
-                                </span>
-                              </DraggableRow>
-                            );
-                          })}
+                          {instances.map((inst, instIdx) => renderInstance(inst, instIdx))}
                         </SidebarCategoryRow>
                       );
                     })

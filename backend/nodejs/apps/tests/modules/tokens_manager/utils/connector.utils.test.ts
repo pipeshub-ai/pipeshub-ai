@@ -69,6 +69,12 @@ describe('tokens_manager/utils/connector.utils', () => {
       expect(result).to.be.instanceOf(InternalServerError)
     })
 
+    it('should return BadRequestError for status 422', () => {
+      const error = { statusCode: 422, data: { detail: 'validation error' }, message: '' }
+      const result = handleBackendError(error, 'test operation')
+      expect(result).to.be.instanceOf(BadRequestError)
+    })
+
     it('should return InternalServerError for unknown status codes', () => {
       const error = { statusCode: 999, data: { detail: 'unknown' }, message: '' }
       const result = handleBackendError(error, 'test operation')
@@ -84,6 +90,73 @@ describe('tokens_manager/utils/connector.utils', () => {
       const error = { statusCode: 400, data: { reason: 'bad reason' }, message: '' }
       const result = handleBackendError(error, 'test operation')
       expect(result).to.be.instanceOf(BadRequestError)
+    })
+
+    it('should stringify FastAPI validation error array (422)', () => {
+      const error = {
+        statusCode: 422,
+        data: {
+          detail: [
+            { loc: ['body', 'field1'], msg: 'Field is required', type: 'value_error.missing' },
+            { loc: ['body', 'field2'], msg: 'Invalid type', type: 'type_error.integer' },
+          ],
+        },
+        message: '',
+      }
+      const result = handleBackendError(error, 'test operation')
+      expect(result).to.be.instanceOf(BadRequestError)
+      expect(result.message).to.include('Field is required')
+      expect(result.message).to.include('Invalid type')
+    })
+
+    it('should handle detail as array of objects without msg property', () => {
+      const error = {
+        statusCode: 422,
+        data: {
+          detail: [
+            { loc: ['body', 'field1'], type: 'value_error' },
+            { something: 'else' },
+          ],
+        },
+        message: '',
+      }
+      const result = handleBackendError(error, 'test operation')
+      expect(result).to.be.instanceOf(BadRequestError)
+      // Should stringify the objects
+      expect(result.message).to.be.a('string')
+    })
+
+    it('should handle detail as object', () => {
+      const error = {
+        statusCode: 400,
+        data: { detail: { error: 'complex error', code: 123 } },
+        message: '',
+      }
+      const result = handleBackendError(error, 'test operation')
+      expect(result).to.be.instanceOf(BadRequestError)
+      expect(result.message).to.include('error')
+      expect(result.message).to.include('complex error')
+    })
+
+    it('should handle detail as primitive string', () => {
+      const error = { statusCode: 400, data: { detail: 'simple string error' }, message: '' }
+      const result = handleBackendError(error, 'test operation')
+      expect(result).to.be.instanceOf(BadRequestError)
+      expect(result.message).to.equal('simple string error')
+    })
+
+    it('should handle missing detail gracefully', () => {
+      const error = { statusCode: 400, data: {}, message: 'fallback message' }
+      const result = handleBackendError(error, 'test operation')
+      expect(result).to.be.instanceOf(BadRequestError)
+      expect(result.message).to.equal('fallback message')
+    })
+
+    it('should default to "Unknown error" when all detail sources are missing', () => {
+      const error = { statusCode: 400, data: {}, message: '' }
+      const result = handleBackendError(error, 'test operation')
+      expect(result).to.be.instanceOf(BadRequestError)
+      expect(result.message).to.equal('Unknown error')
     })
   })
 

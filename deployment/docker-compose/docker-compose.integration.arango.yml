@@ -4,7 +4,7 @@ services:
     restart: always
     build:
       context: ../../
-      dockerfile: Dockerfile.integration
+      dockerfile: Dockerfile
       args:
         BUILDKIT_INLINE_CACHE: "1"
         PYTHON_DEPS_IMAGE: ${PYTHON_DEPS_IMAGE:-pipeshubai/pipeshub-ai-base:python-deps}
@@ -53,6 +53,11 @@ services:
       - CONNECTOR_BACKEND=http://localhost:8088
       - INDEXING_BACKEND=http://localhost:8091
       - EMBEDDING_SERVER_URL=http://localhost:8002
+      # Standalone parsing / extraction services (opt-in)
+      - PARSING_SERVICE_URL=http://localhost:8092
+      - EXTRACTION_SERVICE_URL=http://localhost:8093
+      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
+      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
       # Key-Value Store Configuration
       - KV_STORE_TYPE=${KV_STORE_TYPE:-etcd}
@@ -71,7 +76,7 @@ services:
 
       # Message broker config
       - MESSAGE_BROKER=${MESSAGE_BROKER:-kafka}
-      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
 
       # Kafka config
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}

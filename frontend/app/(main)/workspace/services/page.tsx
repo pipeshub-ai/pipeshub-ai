@@ -2,6 +2,8 @@
 
 import React, { useEffect, useCallback, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import {
   Box,
   Flex,
@@ -45,50 +47,51 @@ interface Deployment {
 
 const LOGO_SIZE = 22;
 
-function buildInfraServices(deployment: Deployment | null): ServiceMeta[] {
+function buildInfraServices(deployment: Deployment | null, t: TFunction): ServiceMeta[] {
   const services: ServiceMeta[] = [];
 
-  if (deployment?.kvStoreType === 'redis') {
-    services.push({ key: 'redis', logoSlug: 'redis', label: 'Redis', description: 'Caching, rate limiting, and configuration' });
-  } else {
-    services.push({ key: 'redis', logoSlug: 'redis', label: 'Redis', description: 'Caching and rate limiting' });
-  }
+  const redisDesc = deployment?.kvStoreType === 'redis'
+    ? t('workspace.services.infra.redis.descriptionWithKvStore')
+    : t('workspace.services.infra.redis.description');
+  services.push({ key: 'redis', logoSlug: 'redis', label: t('workspace.services.infra.redis.label'), description: redisDesc });
 
-  services.push({ key: 'mongodb', logoSlug: 'mongodb', label: 'MongoDB', description: 'Sessions and user metadata' });
+  services.push({ key: 'mongodb', logoSlug: 'mongodb', label: t('workspace.services.infra.mongodb.label'), description: t('workspace.services.infra.mongodb.description') });
 
   const brokerSlug = deployment?.messageBrokerType === 'redis' ? 'redis' : 'apachekafka';
-  services.push({ key: 'messageBroker', logoSlug: brokerSlug, label: 'Message Broker', description: 'Distributed event streaming' });
+  services.push({ key: 'messageBroker', logoSlug: brokerSlug, label: t('workspace.services.infra.messageBroker.label'), description: t('workspace.services.infra.messageBroker.description') });
 
   if (deployment?.kvStoreType === 'etcd') {
-    services.push({ key: 'KVStoreservice', logoSlug: 'etcd', label: 'etcd', description: 'Distributed configuration' });
+    services.push({ key: 'KVStoreservice', logoSlug: 'etcd', label: t('workspace.services.infra.etcd.label'), description: t('workspace.services.infra.etcd.description') });
   }
 
   const graphSlug = deployment?.graphDbType === 'neo4j' ? 'neo4j' : 'arangodb';
-  services.push({ key: 'graphDb', logoSlug: graphSlug, label: 'Graph Database', description: 'Knowledge graphs' });
+  services.push({ key: 'graphDb', logoSlug: graphSlug, label: t('workspace.services.infra.graphDb.label'), description: t('workspace.services.infra.graphDb.description') });
 
   const vectorSlug = deployment?.vectorDbType || 'qdrant';
-  services.push({ key: 'vectorDb', logoSlug: vectorSlug, label: 'Vector Database', description: 'Semantic search embeddings' });
+  services.push({ key: 'vectorDb', logoSlug: vectorSlug, label: t('workspace.services.infra.vectorDb.label'), description: t('workspace.services.infra.vectorDb.description') });
 
   return services;
 }
 
-const APP_SERVICES: ServiceMeta[] = [
-  { key: 'query', icon: 'search', label: 'Query Service', description: 'RAG, semantic search, and LLM integration' },
-  { key: 'connector', icon: 'hub', label: 'Connector Service', description: 'OAuth, token refresh, and data source integrations' },
-  { key: 'indexing', icon: 'dataset', label: 'Indexing Service', description: 'Document parsing, embedding generation, and chunking' },
-  { key: 'docling', icon: 'description', label: 'Docling Service', description: 'Advanced document parsing and OCR' },
-  { key: 'embedding', icon: 'neurology', label: 'Embedding Service', description: 'Local embedding model server' },
-];
+function buildAppServices(t: TFunction): ServiceMeta[] {
+  return [
+    { key: 'query', icon: 'search', label: t('workspace.services.app.query.label'), description: t('workspace.services.app.query.description') },
+    { key: 'connector', icon: 'hub', label: t('workspace.services.app.connector.label'), description: t('workspace.services.app.connector.description') },
+    { key: 'indexing', icon: 'dataset', label: t('workspace.services.app.indexing.label'), description: t('workspace.services.app.indexing.description') },
+    { key: 'docling', icon: 'description', label: t('workspace.services.app.docling.label'), description: t('workspace.services.app.docling.description') },
+  ];
+}
 
 // ========================================
 // Sub-components
 // ========================================
 
 function ServiceStatusBadge({ status }: { status: ServiceStatus | undefined }) {
+  const { t } = useTranslation();
   if (!status || status === 'unknown') {
     return (
       <Badge color="gray" variant="soft" size="1" style={{ flexShrink: 0 }}>
-        Unknown
+        {t('workspace.services.statusUnknown')}
       </Badge>
     );
   }
@@ -102,13 +105,13 @@ function ServiceStatusBadge({ status }: { status: ServiceStatus | undefined }) {
   if (status === 'healthy') {
     return (
       <Badge color="green" variant="soft" size="1" style={{ flexShrink: 0 }}>
-        Healthy
+        {t('workspace.services.statusHealthy')}
       </Badge>
     );
   }
   return (
     <Badge color="red" variant="soft" size="1" style={{ flexShrink: 0 }}>
-      Unhealthy
+      {t('workspace.services.statusUnhealthy')}
     </Badge>
   );
 }
@@ -229,6 +232,7 @@ function hasPendingServices(
 // ========================================
 
 export default function ServicesPage() {
+  const { t } = useTranslation();
   const router = useRouter();
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
@@ -249,7 +253,8 @@ export default function ServicesPage() {
   const [localDeployment, setLocalDeployment] = useState<Deployment | null>(null);
   const [localLastChecked, setLocalLastChecked] = useState(lastChecked);
 
-  const infraServiceList = useMemo(() => buildInfraServices(localDeployment), [localDeployment]);
+  const infraServiceList = useMemo(() => buildInfraServices(localDeployment, t), [localDeployment, t]);
+  const appServiceList = useMemo(() => buildAppServices(t), [t]);
 
   useEffect(() => {
     if (isProfileInitialized && isAdmin === false) {
@@ -279,18 +284,18 @@ export default function ServicesPage() {
         const allHealthy = infraData?.status === 'healthy' && servicesData?.status === 'healthy';
         addToast({
           variant: allHealthy ? 'success' : 'warning',
-          title: allHealthy ? 'All services are healthy' : 'Some services are unhealthy',
+          title: allHealthy ? t('workspace.services.allHealthy') : t('workspace.services.someUnhealthy'),
         });
       }
     } catch {
       if (showToast) {
-        addToast({ variant: 'error', title: 'Failed to check services health' });
+        addToast({ variant: 'error', title: t('workspace.services.fetchFailed') });
       }
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [addToast]);
+  }, [addToast, t]);
 
   useEffect(() => {
     if (!isProfileInitialized || isAdmin === false) return;
@@ -322,13 +327,13 @@ export default function ServicesPage() {
   if (isLoading) {
     return (
       <Flex align="center" justify="center" style={{ height: '100%', width: '100%' }}>
-        <LottieLoader variant="loader" size={48} showLabel label="Loading services status…" />
+        <LottieLoader variant="loader" size={48} showLabel label={t('workspace.services.loading')} />
       </Flex>
     );
   }
 
   const lastCheckedLabel = localLastChecked
-    ? `Last checked: ${new Date(localLastChecked).toLocaleTimeString()}`
+    ? t('workspace.services.lastChecked', { time: new Date(localLastChecked).toLocaleTimeString() })
     : null;
 
   return (
@@ -338,10 +343,10 @@ export default function ServicesPage() {
         <Flex align="start" justify="between" style={{ marginBottom: 24 }}>
           <Box>
             <Heading size="6" style={{ color: 'var(--slate-12)' }}>
-              Services
+              {t('workspace.services.pageTitle')}
             </Heading>
             <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
-              Monitor the health status of platform services
+              {t('workspace.services.pageSubtitle')}
             </Text>
           </Box>
 
@@ -368,7 +373,7 @@ export default function ServicesPage() {
               >
                 refresh
               </span>
-              {isRefreshing ? 'Checking…' : 'Check Now'}
+              {isRefreshing ? t('workspace.services.checking') : t('workspace.services.checkNow')}
             </Button>
           </Flex>
         </Flex>
@@ -386,13 +391,13 @@ export default function ServicesPage() {
           {/* Section header */}
           <Box style={{ padding: '14px 16px', borderBottom: '1px solid var(--slate-5)' }}>
             <Text size="3" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
-              Infrastructure Services
+              {t('workspace.services.infraSection')}
             </Text>
             <Text
               size="1"
               style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}
             >
-              Core infrastructure components powering the platform
+              {t('workspace.services.infraSubtitle')}
             </Text>
           </Box>
 
@@ -423,19 +428,19 @@ export default function ServicesPage() {
           {/* Section header */}
           <Box style={{ padding: '14px 16px', borderBottom: '1px solid var(--slate-5)' }}>
             <Text size="3" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
-              Application Services
+              {t('workspace.services.appSection')}
             </Text>
             <Text
               size="1"
               style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}
             >
-              Python microservices handling search, indexing, and document processing
+              {t('workspace.services.appSubtitle')}
             </Text>
           </Box>
 
           {/* Service rows */}
           <Flex direction="column" gap="2" style={{ padding: '12px 14px' }}>
-            {APP_SERVICES.map((meta) => (
+            {appServiceList.map((meta) => (
               <ServiceRow
                 key={meta.key}
                 meta={meta}
@@ -462,12 +467,10 @@ export default function ServicesPage() {
           </Box>
           <Flex direction="column" gap="1">
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              Service Health Policy
+              {t('workspace.services.policyTitle')}
             </Text>
             <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', fontWeight: 300 }}>
-              Query and Connector services are critical — the application will wait for them before
-              loading. Indexing and Docling services are non-blocking and only affect background
-              processing.
+              {t('workspace.services.policyDescription')}
             </Text>
           </Flex>
         </Flex>

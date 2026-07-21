@@ -17,7 +17,6 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import { endpoint } from '../../storage/constants/constants';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import {
-  ConnectorSyncEvent,
   SyncEventProducer,
   Event as SyncEvent,
   BaseSyncEvent,
@@ -271,58 +270,6 @@ export class RecordRelationService {
       origin: record.origin,
       extension: record.fileRecord.extension,
       mimeType: mimeType,
-      createdAtTimestamp: Date.now().toString(),
-      updatedAtTimestamp: Date.now().toString(),
-      sourceCreatedAtTimestamp: Date.now().toString(),
-    };
-  }
-
-  async reindexFailedRecords(reindexPayload: any): Promise<any> {
-    try {
-      const connectorNormalized = reindexPayload.app
-        .replace(/\s+/g, '')
-        .toLowerCase();
-      const connectorKey = isLocalFsConnector(connectorNormalized)
-        ? LOCAL_FS_CONNECTOR_KEY
-        : connectorNormalized;
-      
-      const eventType = `${connectorKey}.reindex`;
-      
-      const payload = {
-        orgId: reindexPayload.orgId,
-        connector: connectorKey,
-        connectorId: reindexPayload.connectorId,
-        statusFilters: reindexPayload.statusFilters || ['FAILED'],
-      };
-
-      const event: SyncEvent = {
-        eventType: eventType,
-        timestamp: Date.now(),
-        payload: payload,
-      };
-
-      await this.syncEventProducer.publishEvent(event);
-      logger.info(`Published ${eventType} event for app ${reindexPayload.app}`);
-
-      return { success: true };
-    } catch (eventError: any) {
-      logger.error('Failed to publish reindex failed record event', {
-        error: eventError,
-      });
-      return { success: false, error: eventError.message };
-    }
-  }
-
-  async createReindexFailedRecordEventPayload(
-    reindexPayload: any,
-  ): Promise<ConnectorSyncEvent> {
-    return {
-      orgId: reindexPayload.orgId,
-      origin: reindexPayload.origin,
-      connector: isLocalFsConnector(reindexPayload.app)
-        ? LOCAL_FS_CONNECTOR_KEY
-        : reindexPayload.app,
-      connectorId: reindexPayload.connectorId,
       createdAtTimestamp: Date.now().toString(),
       updatedAtTimestamp: Date.now().toString(),
       sourceCreatedAtTimestamp: Date.now().toString(),

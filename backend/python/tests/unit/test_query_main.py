@@ -166,13 +166,12 @@ class TestStartKafkaConsumers:
 
         with (
             patch("app.query_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.query_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.query_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.query_main.MessagingUtils.create_aiconfig_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.query_main.KafkaUtils") as MockKU,
-            patch("app.query_main.MessagingFactory") as MockMF,
+            patch("app.query_main.KafkaUtils.create_aiconfig_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.query_main.MessagingFactory.create_consumer", return_value=mock_consumer),
         ):
-            MockKU.create_aiconfig_message_handler = AsyncMock(return_value=MagicMock())
-            MockMF.create_consumer.return_value = mock_consumer
-
             consumers = await start_kafka_consumers(container)
 
         assert len(consumers) == 1
@@ -190,13 +189,12 @@ class TestStartKafkaConsumers:
 
         with (
             patch("app.query_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.query_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.query_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.query_main.MessagingUtils.create_aiconfig_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.query_main.KafkaUtils") as MockKU,
-            patch("app.query_main.MessagingFactory") as MockMF,
+            patch("app.query_main.KafkaUtils.create_aiconfig_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.query_main.MessagingFactory.create_consumer", return_value=mock_consumer),
         ):
-            MockKU.create_aiconfig_message_handler = AsyncMock(return_value=MagicMock())
-            MockMF.create_consumer.return_value = mock_consumer
-
             with pytest.raises(Exception, match="kafka error"):
                 await start_kafka_consumers(container)
 
@@ -211,26 +209,20 @@ class TestStartKafkaConsumers:
         mock_consumer.start = AsyncMock()
         mock_consumer.stop = AsyncMock()
 
-        call_count = 0
-
-        def info_side_effect(msg):
-            nonlocal call_count
-            call_count += 1
-            # Raise on the second info call which is the final log after append
-            if call_count == 2:
+        def info_side_effect(msg, *args, **kwargs):
+            if "AI Config consumer started" in str(msg):
                 raise RuntimeError("log explosion")
 
         logger.info = MagicMock(side_effect=info_side_effect)
 
         with (
             patch("app.query_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.query_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.query_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.query_main.MessagingUtils.create_aiconfig_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.query_main.KafkaUtils") as MockKU,
-            patch("app.query_main.MessagingFactory") as MockMF,
+            patch("app.query_main.KafkaUtils.create_aiconfig_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.query_main.MessagingFactory.create_consumer", return_value=mock_consumer),
         ):
-            MockKU.create_aiconfig_message_handler = AsyncMock(return_value=MagicMock())
-            MockMF.create_consumer.return_value = mock_consumer
-
             with pytest.raises(RuntimeError, match="log explosion"):
                 await start_kafka_consumers(container)
 
@@ -248,25 +240,20 @@ class TestStartKafkaConsumers:
         mock_consumer.start = AsyncMock()
         mock_consumer.stop = AsyncMock(side_effect=Exception("stop failed"))
 
-        call_count = 0
-
-        def info_side_effect(msg):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 2:
+        def info_side_effect(msg, *args, **kwargs):
+            if "AI Config consumer started" in str(msg):
                 raise RuntimeError("post-append error")
 
         logger.info = MagicMock(side_effect=info_side_effect)
 
         with (
             patch("app.query_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.query_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.query_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
             patch("app.query_main.MessagingUtils.create_aiconfig_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.query_main.KafkaUtils") as MockKU,
-            patch("app.query_main.MessagingFactory") as MockMF,
+            patch("app.query_main.KafkaUtils.create_aiconfig_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.query_main.MessagingFactory.create_consumer", return_value=mock_consumer),
         ):
-            MockKU.create_aiconfig_message_handler = AsyncMock(return_value=MagicMock())
-            MockMF.create_consumer.return_value = mock_consumer
-
             with pytest.raises(RuntimeError, match="post-append error"):
                 await start_kafka_consumers(container)
 
@@ -276,6 +263,40 @@ class TestStartKafkaConsumers:
         logger.error.assert_any_call(
             "Error stopping aiconfig consumer during cleanup: stop failed"
         )
+
+    async def test_retry_manager_created_for_redis_broker(self):
+        """RetryManager is created and initialized for Redis broker."""
+        from app.query_main import start_kafka_consumers
+
+        container = _make_container()
+        mock_consumer = AsyncMock()
+        mock_consumer.start = AsyncMock()
+        mock_retry_manager = AsyncMock()
+        mock_retry_manager.initialize = AsyncMock()
+
+        with (
+            patch("app.query_main.get_message_broker_type", return_value=MessageBrokerType.REDIS),
+            patch("app.query_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.query_main.MessagingFactory.create_retry_manager", return_value=mock_retry_manager) as mock_create_rm,
+            patch("app.query_main.MessagingUtils.create_aiconfig_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.query_main.KafkaUtils") as MockKU,
+            patch("app.query_main.MessagingFactory.create_consumer", return_value=mock_consumer) as mock_create_consumer,
+        ):
+            MockKU.create_aiconfig_message_handler = AsyncMock(return_value=MagicMock())
+
+            consumers = await start_kafka_consumers(container)
+
+        # Assert RetryManager was created and initialized
+        mock_create_rm.assert_called_once()
+        mock_retry_manager.initialize.assert_awaited_once()
+
+        # Assert consumer was created with retry_manager
+        mock_create_consumer.assert_called_once()
+        call_kwargs = mock_create_consumer.call_args.kwargs
+        assert call_kwargs["retry_manager"] is mock_retry_manager
+
+        assert len(consumers) == 1
+        assert consumers[0][0] == "aiconfig"
 
 
 # ===========================================================================

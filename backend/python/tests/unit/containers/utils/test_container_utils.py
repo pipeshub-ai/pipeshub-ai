@@ -19,7 +19,7 @@ class TestGetVectorDbService:
         cu = ContainerUtils()
         config_service = MagicMock()
         with patch(
-            "app.containers.utils.utils.VectorDBFactory.create_vector_db_service",
+            "app.containers.utils.utils.VectorDBProviderFactory.create_provider",
             new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_factory:
@@ -122,8 +122,7 @@ class TestCreateParsers:
     @pytest.mark.asyncio
     async def test_creates_all_parsers(self):
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.DocxParser"), \
-             patch("app.containers.utils.utils.DocParser"), \
+        with patch("app.containers.utils.utils.DocParser"), \
              patch("app.containers.utils.utils.PPTXParser"), \
              patch("app.containers.utils.utils.PPTParser"), \
              patch("app.containers.utils.utils.HTMLParser"), \

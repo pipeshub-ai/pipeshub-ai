@@ -10,6 +10,10 @@ import type {
 } from './types';
 import { FOLDER_REINDEX_DEPTH } from './constants';
 import { DEFAULT_PAGE_SIZE } from './store';
+import { isKbCollectionsHubApp } from './utils/all-records-transformer';
+import { getReindexNodeFromHubItem, isKbCollectionNode } from './utils/reindex-label';
+import { normalizeKbId } from './utils/resolve-root-kb-id';
+import { ConnectorsApi } from '../workspace/connectors/api';
 
 const BASE_URL = '/api/v1/knowledgeBase';
 
@@ -491,7 +495,11 @@ export const KnowledgeBaseApi = {
 
   // Delete folder (from new API structure)
   async deleteFolder(kbId: string, folderId: string) {
-    await apiClient.delete(`${BASE_URL}/${kbId}/folder/${folderId}`, { suppressErrorToast: true });
+    const normalizedKbId = normalizeKbId(kbId);
+    if (!normalizedKbId) {
+      throw new Error('Knowledge base id is required to delete a folder');
+    }
+    await apiClient.delete(`${BASE_URL}/${normalizedKbId}/folder/${folderId}`, { suppressErrorToast: true });
   },
 
   // Delete record (file)
@@ -546,7 +554,11 @@ export const KnowledgeBaseApi = {
 
   // Rename folder
   async renameFolder(rootKbId: string, folderId: string, newName: string) {
-    const { data } = await apiClient.put(`${BASE_URL}/${rootKbId}/folder/${folderId}`, {
+    const normalizedKbId = normalizeKbId(rootKbId);
+    if (!normalizedKbId) {
+      throw new Error('Knowledge base id is required to rename a folder');
+    }
+    const { data } = await apiClient.put(`${BASE_URL}/${normalizedKbId}/folder/${folderId}`, {
       folderName: newName,
     }, {
       suppressErrorToast: true,
@@ -565,16 +577,23 @@ export const KnowledgeBaseApi = {
     rootKbId?: string;
   }) {
     const { nodeId, newName, nodeType, rootKbId } = args;
-    const isFolderLike = nodeType === 'folder' || nodeType === 'recordGroup';
-    if (isFolderLike && rootKbId && rootKbId !== nodeId) {
-      return this.renameFolder(rootKbId, nodeId, newName);
+    const normalizedRootKbId = normalizeKbId(rootKbId);
+    if (nodeType === 'kb' || nodeType === 'app') {
+      return this.renameKnowledgeBase(nodeId, newName);
+    }
+    if (
+      (nodeType === 'folder' || nodeType === 'recordGroup') &&
+      normalizedRootKbId &&
+      normalizedRootKbId !== nodeId
+    ) {
+      return this.renameFolder(normalizedRootKbId, nodeId, newName);
     }
     return this.renameKnowledgeBase(nodeId, newName);
   },
 
   /**
-   * Unified delete dispatcher — dispatches to deleteKnowledgeBase or deleteFolder
-   * based on nodeType and whether the node is the root KB itself.
+   * Unified delete dispatcher — dispatches to deleteKnowledgeBase, deleteFolder,
+   * or deleteRecord based on nodeType and whether the node is the root KB itself.
    */
   async deleteNode(args: {
     nodeId: string;
@@ -582,8 +601,19 @@ export const KnowledgeBaseApi = {
     rootKbId?: string;
   }) {
     const { nodeId, nodeType, rootKbId } = args;
-    if (nodeType === 'folder' && rootKbId && rootKbId !== nodeId) {
-      return this.deleteFolder(rootKbId, nodeId);
+    const normalizedRootKbId = normalizeKbId(rootKbId);
+    if (nodeType === 'record') {
+      return this.deleteRecord(nodeId);
+    }
+    if (
+      nodeType === 'folder' &&
+      normalizedRootKbId &&
+      normalizedRootKbId !== nodeId
+    ) {
+      return this.deleteFolder(normalizedRootKbId, nodeId);
+    }
+    if (nodeType === 'kb' || nodeType === 'app') {
+      return this.deleteKnowledgeBase(nodeId);
     }
     return this.deleteKnowledgeBase(nodeId);
   },
@@ -649,6 +679,14 @@ export const KnowledgeBaseApi = {
       { suppressErrorToast: true }
     );
     return data;
+  },
+
+  // Reindex an entire KB. A KB is itself a connector instance, so this
+  // delegates to the shared connector-wide reindex endpoint. Omitting
+  // statusFilters means "reindex everything" for a KB connector (unlike
+  // other connectors, which default server-side to FAILED-only).
+  async reindexKnowledgeBase(kbId: string, statusFilters?: string[]) {
+    return ConnectorsApi.reindexConnector(kbId, statusFilters);
   },
 
   // Download a record file via stream endpoint
@@ -721,10 +759,21 @@ export const KnowledgeBaseApi = {
    * @param items - Array of items with id and nodeType to reindex
    * @returns Promise.allSettled results for each reindex operation
    */
-  async bulkReindex(items: Array<{ id: string; nodeType?: string }>) {
+  async bulkReindex(
+    items: Array<{ id: string; nodeType?: string; connector?: string; subType?: string }>
+  ) {
     const results = await Promise.allSettled(
       items.map(item => {
-        if (item.nodeType === 'recordGroup') {
+        const reindexNode = getReindexNodeFromHubItem({
+          nodeType: item.nodeType,
+          connector: item.connector,
+          subType: item.subType,
+        });
+        
+        if (isKbCollectionNode(reindexNode)) {
+          return this.reindexKnowledgeBase(item.id);
+        }
+        if (item.nodeType === 'recordGroup' || item.nodeType === 'app') {
           return this.reindexRecordGroup(item.id);
         }
         return this.reindexItem(item.id, FOLDER_REINDEX_DEPTH);
@@ -739,18 +788,16 @@ export const KnowledgeBaseApi = {
    * @returns Promise.allSettled results for each delete operation
    */
   async bulkDelete(
-    items: Array<{ id: string; nodeType: 'kb' | 'folder' | 'record'; kbId?: string }>
+    items: Array<{ id: string; nodeType: 'kb' | 'app' | 'folder' | 'record'; kbId?: string }>
   ) {
     const results = await Promise.allSettled(
-      items.map(item => {
-        if (item.nodeType === 'kb') {
-          return this.deleteKnowledgeBase(item.id);
-        } else if (item.nodeType === 'folder' && item.kbId) {
-          return this.deleteFolder(item.kbId, item.id);
-        } else {
-          return this.deleteRecord(item.id);
-        }
-      })
+      items.map(item =>
+        this.deleteNode({
+          nodeId: item.id,
+          nodeType: item.nodeType,
+          rootKbId: item.kbId,
+        })
+      )
     );
     return results;
   },

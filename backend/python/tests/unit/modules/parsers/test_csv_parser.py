@@ -10,7 +10,8 @@ from app.modules.parsers.csv.csv_parser import CSVParser
 
 @pytest.fixture
 def parser():
-    return CSVParser()
+    from unittest.mock import MagicMock
+    return CSVParser(config_service=MagicMock())
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +217,7 @@ class TestReadRawRows:
         assert result == [["a", "b", "c"], ["1", "2", "3"], ["4", "5", "6"]]
 
     def test_reads_with_custom_delimiter(self):
-        parser = CSVParser(delimiter=";")
+        parser = CSVParser(config_service=MagicMock(), delimiter=";")
         csv_data = "a;b;c\n1;2;3\n"
         stream = io.StringIO(csv_data)
         result = parser.read_raw_rows(stream)
@@ -240,7 +241,7 @@ class TestReadRawRows:
         assert result == [["a", "b", "c"]]
 
     def test_reads_with_custom_quotechar(self):
-        parser = CSVParser(quotechar="'")
+        parser = CSVParser(config_service=MagicMock(), quotechar="'")
         csv_data = "'hello, world',b,c\n"
         stream = io.StringIO(csv_data)
         result = parser.read_raw_rows(stream)

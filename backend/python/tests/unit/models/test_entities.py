@@ -3375,40 +3375,6 @@ def _slack_ts_iso(ts: str) -> str:
     return dt.isoformat().replace("+00:00", "Z")
 
 
-class TestParseJsonField:
-    """_parse_json_field module-level helper."""
-
-    @pytest.fixture
-    def fn(self):
-        from app.models.entities import _parse_json_field
-        return _parse_json_field
-
-    def test_none_returns_default(self, fn):
-        assert fn(None, []) == []
-        assert fn(None, None) is None
-
-    def test_valid_json_string_parsed(self, fn):
-        assert fn('[{"name":"thumbsup"}]', []) == [{"name": "thumbsup"}]
-
-    def test_already_parsed_list_returned_directly(self, fn):
-        data = [{"name": "wave"}]
-        assert fn(data, []) is data
-
-    def test_invalid_json_string_returns_default(self, fn):
-        assert fn("not valid json", []) == []
-
-    def test_dict_string_parsed(self, fn):
-        result = fn('{"key": "value"}', None)
-        assert result == {"key": "value"}
-
-    def test_already_parsed_dict_returned_directly(self, fn):
-        d = {"a": 1}
-        assert fn(d, None) is d
-
-    def test_empty_string_returns_default(self, fn):
-        assert fn("", []) == []
-
-
 class TestRecordGroupTypeSlackThread:
     def test_slack_thread_enum_value(self):
         assert RecordGroupType.SLACK_THREAD == "SLACK_THREAD"

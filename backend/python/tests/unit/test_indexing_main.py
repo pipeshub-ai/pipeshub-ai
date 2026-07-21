@@ -137,34 +137,6 @@ class TestRecoverInProgressRecords:
 
         await recover_in_progress_records(mock_container, gp)
 
-    async def test_queued_records_set_to_auto_index_off(self):
-        """Queued records are batch-updated to AUTO_INDEX_OFF."""
-        from app.indexing_main import recover_in_progress_records
-
-        mock_container = _make_container()
-        gp = _make_graph_provider()
-
-        queued = [{"_key": "r1"}, {"_key": "r2"}]
-        # First call returns empty (in_progress), second returns queued
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[[], queued])
-
-        await recover_in_progress_records(mock_container, gp)
-        gp.batch_update_nodes.assert_awaited_once()
-
-    async def test_queued_records_bulk_update_failure(self):
-        """Failure to bulk update queued records is logged but does not raise."""
-        from app.indexing_main import recover_in_progress_records
-
-        mock_container = _make_container()
-        gp = _make_graph_provider()
-
-        queued = [{"_key": "r1"}]
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[[], queued])
-        gp.batch_update_nodes = AsyncMock(side_effect=RuntimeError("db error"))
-
-        # Should not raise
-        await recover_in_progress_records(mock_container, gp)
-
     async def test_in_progress_record_recovery_success(self):
         """In-progress record is recovered successfully with indexing_complete event."""
         from app.indexing_main import recover_in_progress_records
@@ -451,9 +423,16 @@ class TestStartKafkaConsumers:
         mock_container = _make_container()
         mock_consumer = MagicMock()
         mock_consumer.start = AsyncMock()
+        
+        mock_producer = MagicMock()
+        mock_producer.initialize = AsyncMock()
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
@@ -462,7 +441,9 @@ class TestStartKafkaConsumers:
             consumers = await start_kafka_consumers(mock_container)
 
         assert len(consumers) == 1
-        assert consumers[0] == ("record", mock_consumer)
+        assert consumers[0][0] == "record"
+        assert consumers[0][1] == mock_consumer
+        assert consumers[0][2] == mock_producer
 
     async def test_success_neo4j_with_reconnect(self):
         """Neo4j data store triggers graph provider reconnection."""
@@ -485,6 +466,9 @@ class TestStartKafkaConsumers:
         mock_consumer.start = AsyncMock()
         mock_consumer.initialize = AsyncMock()
         mock_consumer.worker_loop = mock_worker_loop
+        
+        mock_producer = MagicMock()
+        mock_producer.initialize = AsyncMock()
 
         # We need to mock run_coroutine_threadsafe to actually run the coroutine
         async def fake_reconnect_handler(coro, loop):
@@ -494,6 +478,10 @@ class TestStartKafkaConsumers:
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
@@ -504,6 +492,9 @@ class TestStartKafkaConsumers:
             consumers = await start_kafka_consumers(mock_container)
 
         assert len(consumers) == 1
+        assert consumers[0][0] == "record"
+        assert consumers[0][1] == mock_consumer
+        assert consumers[0][2] == mock_producer
         mock_consumer.initialize.assert_awaited_once()
 
     async def test_neo4j_no_graph_provider_raises(self):
@@ -514,9 +505,15 @@ class TestStartKafkaConsumers:
         mock_container._graph_provider = None
 
         mock_consumer = MagicMock()
+        mock_producer = MagicMock()
+        mock_producer.initialize = AsyncMock()
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
@@ -533,9 +530,15 @@ class TestStartKafkaConsumers:
         mock_container._graph_provider = mock_gp
 
         mock_consumer = MagicMock()
+        mock_producer = MagicMock()
+        mock_producer.initialize = AsyncMock()
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
@@ -556,9 +559,16 @@ class TestStartKafkaConsumers:
         mock_consumer.initialize = AsyncMock()
         mock_consumer.worker_loop = MagicMock()
         mock_consumer.worker_loop.is_running.return_value = False
+        
+        mock_producer = MagicMock()
+        mock_producer.initialize = AsyncMock()
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
@@ -578,9 +588,16 @@ class TestStartKafkaConsumers:
         mock_consumer = MagicMock()
         mock_consumer.initialize = AsyncMock()
         mock_consumer.worker_loop = None  # no worker loop
+        
+        mock_producer = MagicMock()
+        mock_producer.initialize = AsyncMock()
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
             patch.dict("os.environ", {"DATA_STORE": "neo4j"}),
@@ -596,9 +613,17 @@ class TestStartKafkaConsumers:
         mock_consumer = MagicMock()
         mock_consumer.start = AsyncMock()
         mock_consumer.stop = AsyncMock()
+        
+        mock_producer = MagicMock()
+        mock_producer.initialize = AsyncMock()
+        mock_producer.cleanup = AsyncMock()
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, side_effect=RuntimeError("handler fail")),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
@@ -615,6 +640,10 @@ class TestStartKafkaConsumers:
         mock_consumer = MagicMock()
         mock_consumer.start = AsyncMock()
         mock_consumer.stop = AsyncMock(side_effect=RuntimeError("cleanup fail"))
+        
+        mock_producer = MagicMock()
+        mock_producer.initialize = AsyncMock()
+        mock_producer.cleanup = AsyncMock()
 
         call_count = 0
 
@@ -627,6 +656,10 @@ class TestStartKafkaConsumers:
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
@@ -693,6 +726,9 @@ class TestStartKafkaConsumers:
         mock_consumer.start = AsyncMock()
         mock_consumer.initialize = AsyncMock()
         mock_consumer.worker_loop = mock_worker_loop
+        
+        mock_producer = MagicMock()
+        mock_producer.initialize = AsyncMock()
 
         # To test the _reconnect function body, we need run_coroutine_threadsafe to
         # actually execute the coroutine. We'll capture the coroutine and run it.
@@ -707,6 +743,10 @@ class TestStartKafkaConsumers:
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
@@ -744,6 +784,9 @@ class TestStartKafkaConsumers:
         mock_consumer.start = AsyncMock()
         mock_consumer.initialize = AsyncMock()
         mock_consumer.worker_loop = mock_worker_loop
+        
+        mock_producer = MagicMock()
+        mock_producer.initialize = AsyncMock()
 
         captured_coro = None
 
@@ -756,6 +799,10 @@ class TestStartKafkaConsumers:
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
@@ -789,6 +836,9 @@ class TestStartKafkaConsumers:
         mock_consumer.start = AsyncMock()
         mock_consumer.initialize = AsyncMock()
         mock_consumer.worker_loop = mock_worker_loop
+        
+        mock_producer = MagicMock()
+        mock_producer.initialize = AsyncMock()
 
         captured_coro = None
 
@@ -801,6 +851,10 @@ class TestStartKafkaConsumers:
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),
@@ -1144,6 +1198,10 @@ class TestStartKafkaConsumersCleanupPath:
 
         mock_consumer.initialize = AsyncMock()
         mock_consumer.worker_loop = mock_worker_loop
+        
+        mock_producer = MagicMock()
+        mock_producer.initialize = AsyncMock()
+        mock_producer.cleanup = AsyncMock()
 
         # Make start succeed (line 283) so consumer is appended (line 284)
         # Then make the second handler call fail - but there's only one consumer.
@@ -1173,6 +1231,10 @@ class TestStartKafkaConsumersCleanupPath:
 
         with (
             patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=mock_producer),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
             patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_consumer", return_value=mock_consumer),

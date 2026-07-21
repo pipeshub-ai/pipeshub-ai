@@ -26,6 +26,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+
 from app.modules.parsers.image_parser.image_parser import ImageParser
 
 
@@ -133,7 +135,8 @@ class TestFetchSingleUrlHttpErrors:
         session.get = MagicMock(return_value=mock_response)
 
         result = await parser._fetch_single_url(
-            session, "https://s3.amazonaws.com/bucket/key?X-Amz-Expires=3600"
+            session, "https://s3.amazonaws.com/bucket/key?X-Amz-Expires=3600",
+            logger=parser.logger,
         )
         assert result is None
         # Verify the signed-URL warning path was taken
@@ -160,7 +163,7 @@ class TestFetchSingleUrlHttpErrors:
         session.get = MagicMock(return_value=mock_response)
 
         result = await parser._fetch_single_url(
-            session, "https://example.com/protected.png"
+            session, "https://example.com/protected.png", logger=parser.logger
         )
         assert result is None
         call_msg = parser.logger.warning.call_args[0][0]
@@ -185,7 +188,7 @@ class TestFetchSingleUrlHttpErrors:
         session.get = MagicMock(return_value=mock_response)
 
         result = await parser._fetch_single_url(
-            session, "https://example.com/server-error.png"
+            session, "https://example.com/server-error.png", logger=parser.logger
         )
         assert result is None
         call_msg = parser.logger.warning.call_args[0][0]
@@ -233,7 +236,7 @@ class TestFetchSingleUrlHttpErrors:
         session.get = MagicMock(return_value=mock_response)
 
         result = await parser._fetch_single_url(
-            session, "https://example.com/rate-limited.png"
+            session, "https://example.com/rate-limited.png", logger=parser.logger
         )
         assert result is None
         call_msg = parser.logger.warning.call_args[0][0]
@@ -252,7 +255,7 @@ class TestFetchSingleUrlHttpErrors:
         session.get = MagicMock(return_value=mock_response)
 
         result = await parser._fetch_single_url(
-            session, "https://example.com/unreachable.png"
+            session, "https://example.com/unreachable.png", logger=parser.logger
         )
         assert result is None
         call_msg = parser.logger.warning.call_args[0][0]
@@ -591,7 +594,7 @@ class TestSvgBase64ToPngBase64Errors:
         raw_bytes = b"\x80\x81\x82\x83"
         b64_str = base64.b64encode(raw_bytes).decode("ascii")
 
-        with pytest.raises(ValueError, match="Cannot decode SVG content"):
+        with pytest.raises(DocumentProcessingError, match="Cannot decode SVG content"):
             ImageParser.svg_base64_to_png_base64(b64_str)
 
     def test_svg2png_conversion_error(self):
@@ -603,7 +606,7 @@ class TestSvgBase64ToPngBase64Errors:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             side_effect=RuntimeError("cairo error"),
         ):
-            with pytest.raises(Exception, match="SVG to PNG conversion failed"):
+            with pytest.raises(DocumentProcessingError, match="SVG to PNG conversion failed"):
                 ImageParser.svg_base64_to_png_base64(svg_b64)
 
     def test_xml_only_content_recognized(self):
@@ -646,7 +649,7 @@ class TestFetchSingleUrlAdditional:
         svg_data_url = "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="
 
         with patch.object(
-            parser,
+            ImageParser,
             "svg_base64_to_png_base64",
             side_effect=Exception("conversion failed"),
         ):
@@ -674,7 +677,7 @@ class TestFetchSingleUrlAdditional:
         with patch(
             "app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype",
             return_value="svg",
-        ), patch.object(parser, "svg_base64_to_png_base64", return_value=fake_png_b64):
+        ), patch.object(ImageParser, "svg_base64_to_png_base64", return_value=fake_png_b64):
             result = await parser._fetch_single_url(
                 session, "https://example.com/icon"
             )
@@ -715,7 +718,7 @@ class TestUrlsToBase64Edge:
         """Single URL list works correctly."""
         fake = "data:image/png;base64,abc"
         with patch.object(
-            parser, "_fetch_single_url", new_callable=AsyncMock, return_value=fake
+            ImageParser, "_fetch_single_url", new_callable=AsyncMock, return_value=fake
         ):
             result = await parser.urls_to_base64(["https://example.com/img.png"])
         assert result == [fake]
@@ -724,7 +727,7 @@ class TestUrlsToBase64Edge:
     async def test_all_failures(self, parser):
         """All URLs fail returns list of Nones."""
         with patch.object(
-            parser, "_fetch_single_url", new_callable=AsyncMock, return_value=None
+            ImageParser, "_fetch_single_url", new_callable=AsyncMock, return_value=None
         ):
             result = await parser.urls_to_base64(
                 ["https://a.com/1.png", "https://b.com/2.png"]

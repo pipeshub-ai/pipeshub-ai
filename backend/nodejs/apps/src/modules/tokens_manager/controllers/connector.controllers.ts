@@ -2028,32 +2028,6 @@ const LOCK_MESSAGES: Record<string, string> = {
   SYNCING: 'A sync is already in progress. Please wait and try again.',
 };
 
-const validateConnectorNotLocked = async (
-  connectorId: string,
-  appConfig: AppConfig,
-  headers: Record<string, string>,
-): Promise<void> => {
-  const response = await executeConnectorCommand(
-    `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
-    HttpMethod.GET,
-    headers,
-  );
-
-  const data = response.data as ConnectorInstanceLock | undefined;
-  if (response.statusCode !== 200 || !data?.connector) {
-    return;
-  }
-
-  const connector = data.connector;
-  if (connector.isLocked) {
-    const status = connector.status ?? '';
-    const message =
-      LOCK_MESSAGES[status] ??
-      'Another operation is in progress. Please wait and try again.';
-    throw new ConflictError(message);
-  }
-};
-
 const SYNC_IN_PROGRESS_MESSAGES: Record<string, string> = {
   FULL_SYNCING: 'A full sync is already in progress for this connector.',
   SYNCING: 'A sync is already in progress for this connector.',
@@ -2154,56 +2128,39 @@ const validateConnectorSyncAvailable = async (
 const normalizeAppName = (value: string): string =>
   value.replace(' ', '').toLowerCase();
 
-export const reindexFailedRecords =
-  (recordRelationService: RecordRelationService, appConfig: AppConfig) =>
+export const reindexConnector =
+  (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const userId = req.user?.userId;
-      const orgId = req.user?.orgId;
-      const app = req.body.app;
+      const { connectorId } = req.params as { connectorId: string };
+      const { userId, orgId } = req.user || {};
+      const { statusFilters } = req.body || {};
+
       if (!userId || !orgId) {
-        throw new BadRequestError('User not authenticated');
+        throw new UnauthorizedError('User not authenticated or missing organization ID');
       }
 
-      const connectorId = req.params.connectorId;
-      if (!connectorId) {
-        throw new BadRequestError('Connector ID is required');
+      const reindexBody: { statusFilters?: string[] } = {};
+      if (statusFilters?.length) {
+        reindexBody.statusFilters = statusFilters;
       }
 
-      await validateActiveConnector(
-        connectorId,
-        appConfig,
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/reindex`,
+        HttpMethod.POST,
         req.headers as Record<string, string>,
+        reindexBody,
       );
 
-      await validateConnectorNotLocked(
-        connectorId,
-        appConfig,
-        req.headers as Record<string, string>,
-      );
-
-      const reindexPayload = {
-        userId,
-        orgId,
-        app: normalizeAppName(app),
-        connectorId,
-        statusFilters: req.body.statusFilters,
-      };
-
-      const reindexResponse =
-        await recordRelationService.reindexFailedRecords(reindexPayload);
-
-      res.status(200).json({
-        reindexResponse,
-      });
-
-      return; // Added return statement
+      handleConnectorResponse(response, res, 'Connector not found', 'Connector not reindexed');
+      logger.info('Connector reindexed successfully', { connectorId });
     } catch (error: any) {
-      logger.error('Error re indexing failed records', {
+      logger.error('Error reindexing connector', {
+        connectorId: req.params.connectorId,
         error,
       });
-      next(error);
-      return; // Added return statement
+      next(handleBackendError(error, 'reindex connector'));
+      return;
     }
   };
 

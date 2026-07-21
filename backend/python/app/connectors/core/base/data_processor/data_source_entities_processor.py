@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
+    Connectors,
     EntityRelations,
     MimeTypes,
     OriginTypes,
@@ -43,6 +44,7 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.messaging.messaging_factory import MessagingFactory
+from app.services.messaging.utils import MessagingUtils
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -112,9 +114,7 @@ class DataSourceEntitiesProcessor:
         self.config_service: ConfigurationService = config_service
         self.org_id = ""
 
-    async def initialize(self) -> None:
-        from app.services.messaging.utils import MessagingUtils
-
+    async def initialize(self, org_id: Optional[str] = None) -> None:
         config = await MessagingUtils.create_producer_config_from_service(
             self.config_service, "connectors"
         )
@@ -123,14 +123,58 @@ class DataSourceEntitiesProcessor:
             config=config,
         )
         await self.messaging_producer.initialize()
+        if org_id:
+            # Caller-supplied org (per-connector / per-request) is authoritative.
+            self.org_id = org_id
+            return
+
         async with self.data_store_provider.transaction() as tx_store:
             orgs = await tx_store.get_all_orgs()
             if not orgs:
-                raise Exception("No organizations found in the database. Cannot initialize DataSourceEntitiesProcessor.")
+                self.logger.warning(
+                    "No organizations found while initializing DataSourceEntitiesProcessor; "
+                    "org_id must be supplied per-record by the caller."
+                )
+                return
             # Use backward-compatible field access
             self.org_id = orgs[0].get("id", orgs[0].get("_key"))
 
-    
+
+    async def _link_kb_record_to_app(self, record: Record, tx_store: TransactionStore) -> None:
+        """Anchor a KB record/folder to its KB ``apps`` doc.
+
+        Reproduces the edges the KB CRUD path writes directly: a ``belongsTo``
+        edge (record → apps/<kbId>, entityType "KB") plus, when the record
+        inherits permissions, an ``inheritPermissions`` edge to the same app.
+        Both use idempotent UPSERT on (_from, _to), so re-running is a no-op.
+        """
+        kb_id = record.connector_id
+        ts = get_epoch_timestamp_in_ms()
+        await tx_store.batch_create_edges(
+            [{
+                "from_id": record.id,
+                "from_collection": CollectionNames.RECORDS.value,
+                "to_id": kb_id,
+                "to_collection": CollectionNames.APPS.value,
+                "entityType": Connectors.KNOWLEDGE_BASE.value,
+                "createdAtTimestamp": ts,
+                "updatedAtTimestamp": ts,
+            }],
+            collection=CollectionNames.BELONGS_TO.value,
+        )
+        if record.inherit_permissions:
+            await tx_store.batch_create_edges(
+                [{
+                    "from_id": record.id,
+                    "from_collection": CollectionNames.RECORDS.value,
+                    "to_id": kb_id,
+                    "to_collection": CollectionNames.APPS.value,
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                }],
+                collection=CollectionNames.INHERIT_PERMISSIONS.value,
+            )
+
     def _create_placeholder_parent_record(
         self,
         parent_external_id: str,
@@ -417,12 +461,18 @@ class DataSourceEntitiesProcessor:
             else:
                 await tx_store.delete_inherit_permissions_relation_record_group(record.id, record_group_id)
 
-        if record.is_shared_with_me and record.shared_with_me_record_group_id is not None:
-            shared_with_me_record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id, external_id=record.shared_with_me_record_group_id)
-            if shared_with_me_record_group:
-                await tx_store.create_record_group_relation(record.id, shared_with_me_record_group.id)
-            else:
-                self.logger.warning(f"Shared with me record group with external ID {record.shared_with_me_record_group_id} not found in database")
+        if record.shared_with_me_record_group_ids:
+            for external_group_id in record.shared_with_me_record_group_ids:
+                shared_with_me_record_group = await tx_store.get_record_group_by_external_id(
+                    connector_id=record.connector_id,
+                    external_id=external_group_id
+                )
+                if shared_with_me_record_group:
+                    await tx_store.create_record_group_relation(
+                        record.id, shared_with_me_record_group.id
+                    )
+                else:
+                    self.logger.warning(f"Shared with me record group with external ID {external_group_id} not found in database")
 
     async def _prepare_ticket_user_edge(
         self,
@@ -827,6 +877,27 @@ class DataSourceEntitiesProcessor:
                         record.record_name,
                     )
                     await self._process_record(record, [], tx_store)
+                elif record.shared_with_me_record_group_ids:
+                    # The record already has BELONGS_TO edges (e.g. to the owner's "My Drive"), but
+                    # the shared-with-me edge for *this* user may still be missing because
+                    # _process_record is skipped in the belongs_to_edges branch above.
+                    for external_group_id in record.shared_with_me_record_group_ids:
+                        self.logger.debug(
+                            "Creating shared-with-me record group relation for record %s and record group %s",
+                            record.record_name,
+                            external_group_id,
+                        )
+                        shared_with_me_rg = await tx_store.get_record_group_by_external_id(
+                            connector_id=record.connector_id,
+                            external_id=external_group_id,
+                        )
+                        if shared_with_me_rg:
+                            await tx_store.create_record_group_relation(record.id, shared_with_me_rg.id)
+                        else:
+                            self.logger.warning(
+                                "Shared with me record group with external ID %s not found in database",
+                                external_group_id,
+                            )
 
                 # Step 1: Delete all existing permission edges that point TO this record.
                 deleted_count = await tx_store.delete_edges_to(
@@ -874,11 +945,18 @@ class DataSourceEntitiesProcessor:
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
 
-        # Set org_id for the record
-        record.org_id = self.org_id
+        # Set org_id only when the caller didn't supply one. KB and cross-org
+        # callers pass an explicit request org that must win over self.org_id.
+        if not record.org_id:
+            record.org_id = self.org_id
 
+        # KB / Collections records anchor directly to their apps doc, not a recordGroup.
         # Prepare record group BEFORE saving (so record_group_id is included in first save)
-        record_group_id = await self._handle_record_group(record, tx_store)
+        record_group_id = (
+            None
+            if record.origin == OriginTypes.UPLOAD
+            else await self._handle_record_group(record, tx_store)
+        )
 
         if existing_record is None:
             self.logger.debug("New record: %s", record)
@@ -891,8 +969,12 @@ class DataSourceEntitiesProcessor:
             #       the new URL on every sync, and
             #   (b) leave a placeholder's empty `weburl=""` in place when
             #       the real parent record arrives to fill it in.
-            if existing_record.indexing_status == ProgressStatus.COMPLETED.value:
-                # If the existing record is completed, set the indexing status to not started so that it can be reindexed
+            if (
+                record.origin != OriginTypes.UPLOAD
+                and existing_record.indexing_status == ProgressStatus.COMPLETED.value
+            ):
+                # If the existing record is completed, set the indexing status to not started so that it can be reindexed.
+                # KB folders are created COMPLETED and must not be re-queued on metadata updates.
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
             if not record.weburl:
                 record.weburl = existing_record.weburl
@@ -901,11 +983,22 @@ class DataSourceEntitiesProcessor:
                 await self._handle_updated_record(record, existing_record, tx_store)
 
         # Link record to group AFTER saving (when record.id is available for edges)
-        if record_group_id or record.is_shared_with_me:
+        if record_group_id or record.shared_with_me_record_group_ids:
             await self._link_record_to_group(record, record_group_id, tx_store, existing_record)
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
-        await self._handle_parent_record(record, tx_store, existing_record)
+        if record.origin == OriginTypes.UPLOAD:
+            # KB records anchor to apps/<kbId> (belongsTo + inheritPermissions) and
+            # nest under a parent folder by its _key. Root items get no PARENT_CHILD edge.
+            await self._link_kb_record_to_app(record, tx_store)
+            if existing_record is None and record.parent_external_record_id:
+                await tx_store.create_record_relation(
+                    record.parent_external_record_id,
+                    record.id,
+                    RecordRelations.PARENT_CHILD.value,
+                )
+        else:
+            await self._handle_parent_record(record, tx_store, existing_record)
 
         # Handle related external records (issue links, project links, FK relations, etc.)
         # For TicketRecord, ProjectRecord, SQLTableRecord and SQLViewRecord, ALWAYS call this
@@ -993,6 +1086,17 @@ class DataSourceEntitiesProcessor:
 
                     if record.is_internal:
                         self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
+                        continue
+
+                    # KB folders carry no indexable content; they are created COMPLETED
+                    # and must not emit a newRecord event (the indexing consumer would
+                    # skip them anyway, but this avoids leaving them stuck non-COMPLETED).
+                    if (
+                        record.origin == OriginTypes.UPLOAD
+                        and isinstance(record, FileRecord)
+                        and record.is_file is False
+                    ):
+                        self.logger.debug(f"Skipping newRecord event for KB folder {record.id}")
                         continue
 
                     await self.messaging_producer.send_message(
@@ -1099,7 +1203,8 @@ class DataSourceEntitiesProcessor:
         try:
             async with self.data_store_provider.transaction() as tx_store:
                 for old_external_id, new_record, permissions in moves:
-                    new_record.org_id = self.org_id
+                    if not new_record.org_id:
+                        new_record.org_id = self.org_id
 
                     old_record = await tx_store.get_record_by_external_id(
                         connector_id=new_record.connector_id,
@@ -1130,7 +1235,11 @@ class DataSourceEntitiesProcessor:
                             # If the old record is completed and content hasn't changed,
                             # preserve the completed status for the new record
                             new_record.indexing_status = ProgressStatus.COMPLETED.value
-                    record_group_id = await self._handle_record_group(new_record, tx_store)
+                    record_group_id = (
+                        None
+                        if new_record.origin == OriginTypes.UPLOAD
+                        else await self._handle_record_group(new_record, tx_store)
+                    )
 
                     if content_changed:
                         if new_record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value:
@@ -1144,7 +1253,20 @@ class DataSourceEntitiesProcessor:
 
                     # existing_record=None forces _handle_parent_record to build a
                     # fresh parent edge (the stale one was deleted above).
-                    await self._handle_parent_record(new_record, tx_store, existing_record=None)
+                    if new_record.origin == OriginTypes.UPLOAD:
+                        # Re-point the KB PARENT_CHILD edge by _key; a None parent means
+                        # the record moved to KB root (no edge). belongsTo / inheritPermissions
+                        # already exist on the reused vertex, so the idempotent re-link is a
+                        # no-op unless they were missing.
+                        if new_record.parent_external_record_id:
+                            await tx_store.create_record_relation(
+                                new_record.parent_external_record_id,
+                                new_record.id,
+                                RecordRelations.PARENT_CHILD.value,
+                            )
+                        await self._link_kb_record_to_app(new_record, tx_store)
+                    else:
+                        await self._handle_parent_record(new_record, tx_store, existing_record=None)
                     await self._handle_record_permissions(new_record, permissions, tx_store)
 
 
@@ -1190,24 +1312,64 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"on_records_moved failed: {e}", exc_info=True)
             raise
 
+    async def _publish_delete_events(self, event_data: dict | None) -> None:
+        """Publish deleteRecord events (Qdrant vector cleanup) for a delete result.
+
+        Called AFTER the DB transaction commits so the graph vertex is gone before
+        the indexing consumer runs its cleanup — a guard there skips vector deletion
+        while a graph record still references the virtualRecordId.
+        """
+        if not event_data:
+            return
+        for payload in event_data.get("payloads", []):
+            await self.messaging_producer.send_message(
+                "record-events",
+                {
+                    "eventType": "deleteRecord",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                    "payload": payload,
+                },
+                key=payload.get("recordId"),
+            )
+
     @retry_on_deadlock()
     async def on_record_deleted(self, record_id: str) -> None:
-        async with self.data_store_provider.transaction() as tx_store:
-            await tx_store.delete_record_by_key(record_id)
-
-    @retry_on_deadlock()
-    async def on_folder_deleted(self, record_id: str) -> None:
-        """Delete a folder record and its incoming PARENT_CHILD edge atomically.
-
-        Plain ``on_record_deleted`` only removes the vertex; it leaves any
-        ``PARENT_CHILD`` edge from the parent folder pointing at the now-absent
-        node.  For the folder cascade cleanup we need to remove both together so
-        the parent folder's child-list is correct when we evaluate it on the
-        next iteration of the cascade loop.
-        """
+        # Connector per-record delete: remove the record vertex and its incoming
+        # PARENT_CHILD edge (so the parent's child-list keeps no dangling edge; the
+        # call is a no-op for root records with no parent). Still shallow — KB deletes
+        # use on_records_deleted_cascade (recursive cascade + deleteRecord events).
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.delete_parent_child_edge_to_record(record_id)
             await tx_store.delete_record_by_key(record_id)
+
+    @retry_on_deadlock()
+    async def on_records_deleted_cascade(
+        self, record_ids: list[str], connector_id: str
+    ) -> dict:
+        """Recursively delete records — the single delete path for files, folders and
+        multi-record deletes, generic across KB and connectors.
+
+        A folder is just a record with children, so there is no folder/file special-casing:
+        each root id is deleted together with its whole containment subtree (a leaf yields
+        just itself; a folder/container yields all descendants). Scoped by
+        ``connectorId == connector_id`` (kb_id for a KB). Returns the provider result
+        (counts, deleted/failed) for the HTTP response and publishes one deleteRecord event
+        per deleted record that has a virtualRecordId (Qdrant cleanup).
+        """
+        if not record_ids:
+            return {
+                "success": True,
+                "deleted_records": [],
+                "failed_records": [],
+                "total_requested": 0,
+                "successfully_deleted": 0,
+                "failed_count": 0,
+            }
+        async with self.data_store_provider.transaction() as tx_store:
+            result = await tx_store.delete_records_recursive(record_ids, connector_id)
+        await self._publish_delete_events((result or {}).get("eventData"))
+        return result
+
 
     @retry_on_deadlock()
     async def reindex_existing_records(self, records: list[Record]) -> None:

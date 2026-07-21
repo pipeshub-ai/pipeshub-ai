@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import numpy as np
 import pytest
 
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+
 from app.modules.parsers.pdf.opencv_layout_analyzer import (
     LayoutRegion,
     LayoutRegionType,
@@ -676,20 +678,20 @@ class TestVLMOCRStrategy:
             strategy.MAX_RETRY_ATTEMPTS = 2
             return strategy
 
-    def test_render_all_pages_to_base64(self):
+    def test_render_page_batch_to_base64(self):
         strategy = self._make_strategy()
         strategy._pdf_path = "/tmp/test.pdf"
         mock_img = MagicMock()
         mock_img.save.side_effect = lambda buf, format=None: buf.write(b"fake-png-bytes")
 
         with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.render_all_pages_from_path_sync",
+            "app.modules.parsers.pdf.vlm_ocr_strategy.render_batch_from_path_sync",
             return_value={1: (np.zeros((10, 10, 3), dtype=np.uint8), 200 / 72.0)},
         ), patch(
             "app.modules.parsers.pdf.vlm_ocr_strategy.Image.fromarray",
             return_value=mock_img,
         ):
-            result = strategy._render_all_pages_to_base64()
+            result = strategy._render_page_batch_to_base64([1])
 
         assert result[1].startswith("data:image/png;base64,")
 
@@ -788,7 +790,7 @@ class TestVLMOCRStrategy:
     async def test_get_multimodal_llm_no_configs(self):
         strategy = self._make_strategy()
         strategy.config.get_config = AsyncMock(return_value={"llm": []})
-        with pytest.raises(ValueError, match="No LLM configurations"):
+        with pytest.raises(DocumentProcessingError, match="No LLM configurations"):
             await strategy._get_multimodal_llm()
 
     @pytest.mark.asyncio
@@ -798,7 +800,7 @@ class TestVLMOCRStrategy:
             "llm": [{"provider": "openai", "isDefault": True, "configuration": {"model": "gpt-3.5"}}]
         })
         with patch("app.modules.parsers.pdf.vlm_ocr_strategy.is_multimodal_llm", return_value=False):
-            with pytest.raises(ValueError, match="No multimodal LLM found"):
+            with pytest.raises(DocumentProcessingError, match="No multimodal LLM found"):
                 await strategy._get_multimodal_llm()
 
     @pytest.mark.asyncio

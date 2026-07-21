@@ -187,8 +187,8 @@
     "collections": "Colecciones",
     "allRecords": "Todos los registros",
     "workspace": "Espacio de trabajo",
-    "shared": "Compartido",
-    "private": "Privado",
+    "shared": "Compartido conmigo",
+    "private": "Mis colecciones",
     "connectors": "Conectores",
     "bots": "Bots",
     "moreConnectors": "Más conectores",
@@ -2178,6 +2178,71 @@
       "discardMessage": "If you discard, your edits won't be saved",
       "discardConfirm": "Discard",
       "discardCancel": "Continue Editing"
+    },
+    "services": {
+      "pageTitle": "Servicios",
+      "pageSubtitle": "Supervisar el estado de los servicios de la plataforma",
+      "infraSection": "Servicios de infraestructura",
+      "infraSubtitle": "Componentes de infraestructura principales que impulsan la plataforma",
+      "appSection": "Servicios de aplicación",
+      "appSubtitle": "Microservicios Python para búsqueda, indexación y procesamiento de documentos",
+      "checkNow": "Verificar ahora",
+      "checking": "Verificando…",
+      "lastChecked": "Última verificación: {{time}}",
+      "loading": "Cargando estado de servicios…",
+      "policyTitle": "Política de estado de servicios",
+      "policyDescription": "Los servicios de consulta y conector son críticos — la aplicación esperará a que estén disponibles antes de cargar. Los servicios de indexación y Docling no son bloqueantes y solo afectan el procesamiento en segundo plano.",
+      "allHealthy": "Todos los servicios están funcionando",
+      "someUnhealthy": "Algunos servicios no están funcionando",
+      "fetchFailed": "Error al verificar el estado de los servicios",
+      "statusHealthy": "Funcionando",
+      "statusUnhealthy": "No funcionando",
+      "statusUnknown": "Desconocido",
+      "infra": {
+        "redis": {
+          "label": "Redis",
+          "descriptionWithKvStore": "Caché, limitación de velocidad y configuración",
+          "description": "Caché y limitación de velocidad"
+        },
+        "mongodb": {
+          "label": "MongoDB",
+          "description": "Sesiones y metadatos de usuario"
+        },
+        "messageBroker": {
+          "label": "Intermediario de mensajes",
+          "description": "Transmisión de eventos distribuidos"
+        },
+        "etcd": {
+          "label": "etcd",
+          "description": "Configuración distribuida"
+        },
+        "graphDb": {
+          "label": "Base de datos de grafos",
+          "description": "Grafos de conocimiento"
+        },
+        "vectorDb": {
+          "label": "Base de datos vectorial",
+          "description": "Búsqueda híbrida — por palabras clave y semántica"
+        }
+      },
+      "app": {
+        "query": {
+          "label": "Servicio de consultas",
+          "description": "RAG, búsqueda semántica e integración LLM"
+        },
+        "connector": {
+          "label": "Servicio de conectores",
+          "description": "OAuth, actualización de tokens e integraciones de fuentes de datos"
+        },
+        "indexing": {
+          "label": "Servicio de indexación",
+          "description": "Análisis de documentos, generación de embeddings y fragmentación"
+        },
+        "docling": {
+          "label": "Servicio Docling",
+          "description": "Análisis avanzado de documentos y OCR"
+        }
+      }
     }
   },
   "filePreview": {
@@ -2435,6 +2500,8 @@
     "dropConnectorMustEnableApp": "El conector para \"{{app}}\" debe estar configurado y habilitado para agentes.",
     "dropEnableConnectorToolGroup": "Habilite este conector para agentes antes de añadir su grupo de herramientas.",
     "dropOnlyOneToolGroup": "Solo se permite un grupo de herramientas {{type}}. Elimine primero el nodo existente.",
+    "dropDuplicateConnector": "{{name}} ya está agregado a este agente",
+    "dropDuplicateKB": "{{name}} ya está agregado a este agente",
     "toolsetStatusAuthenticated": "Autenticado y listo para usar",
     "toolsetStatusNeedsAuth": "Configurado — inicie sesión para autenticarse",
     "toolsetStatusRegistry": "Entrada del registro — no configurada para su espacio de trabajo",

@@ -14,6 +14,8 @@ services:
           hard: -1
     ports:
       - "8091:8091"
+      - "8092:8092"
+      - "8093:8093"
       - "8081:8081"
       - "8088:8088"
       - "3000:3000"
@@ -52,6 +54,11 @@ services:
       - CONNECTOR_BACKEND=http://localhost:8088
       - INDEXING_BACKEND=http://localhost:8091
       - EMBEDDING_SERVER_URL=http://localhost:8002
+      # Standalone parsing / extraction services (opt-in)
+      - PARSING_SERVICE_URL=http://localhost:8092
+      - EXTRACTION_SERVICE_URL=http://localhost:8093
+      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
+      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
       # Key-Value Store Configuration
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
@@ -68,7 +75,7 @@ services:
       
       # Message broker config
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
-      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-10000}
+      - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
 
       # Kafka config
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
@@ -122,6 +129,7 @@ services:
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-5}
       - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-40}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
+      - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
       - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-4}
       - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-4}
@@ -258,6 +266,9 @@ services:
     environment:
       - ZOOKEEPER_CLIENT_PORT=2181
       - ZOOKEEPER_TICK_TIME=2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
     healthcheck:
       test: ["CMD-SHELL", "echo srvr | nc localhost 2181 || exit 1"]
       interval: 10s
@@ -288,6 +299,8 @@ services:
       - KAFKA_LOG_RETENTION_HOURS=24
       - KAFKA_NUM_NETWORK_THREADS=3
       - KAFKA_NUM_IO_THREADS=8
+    volumes:
+      - kafka_data:/var/lib/kafka/data
     healthcheck:
       test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
       interval: 10s
@@ -351,4 +364,10 @@ volumes:
   pipeshub_root_local:
     driver: local
   pipeshub_hf_cache:
+    driver: local
+  zookeeper_data:
+    driver: local
+  zookeeper_log:
+    driver: local
+  kafka_data:
     driver: local

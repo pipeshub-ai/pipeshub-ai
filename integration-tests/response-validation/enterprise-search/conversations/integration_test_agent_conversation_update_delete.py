@@ -1068,10 +1068,12 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
     def _setup_regenerate(
         self,
         reasoning_multimodal_llm_model: Any,
+        session_kb: dict[str, str],
     ) -> None:
         self.org_id = self.conversations._client.org_id
         self.reasoning_model_key = reasoning_multimodal_llm_model.model_key
         self.reasoning_model_name = reasoning_multimodal_llm_model.model_name
+        self.kb_id = session_kb["kb_id"]  # Add KB ID for filter tests
 
     def _post_regenerate_stream(
         self,
@@ -1265,7 +1267,7 @@ class TestAgentConversationRegenerate(AgentConversationsTestBase):
         )
         request_payload = json.loads(json.dumps(payload).replace(
             "knowledgeBase_placeholder",
-            f"knowledgeBase_{self.org_id}",
+            self.kb_id,  # Use actual KB UUID instead of knowledgeBase_orgId
         ))
         if request_payload.get("modelKey") == "model-key":
             request_payload["modelKey"] = self.reasoning_model_key

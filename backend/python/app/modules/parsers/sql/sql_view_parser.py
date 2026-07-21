@@ -4,6 +4,7 @@ SQL View Parser
 Parses JSON stream of SQL View definition into BlocksContainer.
 This parser is generic and can be used for any SQL database connector.
 """
+import io
 import json
 from typing import Any, Dict, List, Optional, BinaryIO
 
@@ -15,6 +16,7 @@ from app.models.blocks import (
     GroupType,
 )
 from app.utils.logger import create_logger
+from app.services.parsing.interface import ParseResult
 
 logger = create_logger("sql_view_parser")
 
@@ -24,6 +26,19 @@ class SQLViewParser:
 
     def __init__(self) -> None:
         pass
+
+    async def parse(
+        self,
+        content: bytes,
+        record_name: str,
+        config: Dict[str, Any] | None = None,
+    ) -> ParseResult:
+        stream = io.BytesIO(content)
+        block_container = self.parse_stream(stream)
+        return ParseResult(
+            block_container=block_container,
+            metadata={"record_name": record_name},
+        )
 
     def parse_stream(self, file_stream: BinaryIO) -> BlocksContainer:
         """

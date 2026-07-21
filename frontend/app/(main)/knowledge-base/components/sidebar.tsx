@@ -83,8 +83,8 @@ function FolderTreeItem({
   const showMeatballMenu = (isHovered || isMenuOpen) && !isEditing;
 
   // Permission checks
-  const canEdit = enhancedNode.permission?.canEdit !== false;
-  const canDelete = enhancedNode.permission?.canDelete !== false;
+  const canEdit = enhancedNode.permission?.canEdit ?? false;
+  const canDelete = enhancedNode.permission?.canDelete ?? false;
 
   // Focus input when editing starts
   useEffect(() => {
@@ -329,7 +329,8 @@ function FolderTreeItem({
                     </Flex>
                   </DropdownMenu.Item>
                 )}
-                {canDelete && onDelete && (
+                {/* Collections can only be deleted by OWNER */}
+                {canDelete && onDelete && !(enhancedNode.nodeType === 'app' && enhancedNode.permission?.role !== 'OWNER') && (
                   <>
                     <DropdownMenu.Separator />
                     <DropdownMenu.Item

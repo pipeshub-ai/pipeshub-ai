@@ -653,19 +653,31 @@ class TestHealthCheckVectorDb:
 
     @pytest.mark.asyncio
     async def test_success(self):
+        from app.services.vector_db.models import HealthStatus
         container = _make_container()
         mock_vdb = AsyncMock()
-        mock_vdb.get_collections = AsyncMock(return_value=["col1"])
+        mock_vdb.get_service_name = MagicMock(return_value="qdrant")
+        health_result = MagicMock()
+        health_result.status = HealthStatus.HEALTHY
+        health_result.server_version = "1.0"
+        health_result.latency_ms = 5
+        health_result.message = "ok"
+        mock_vdb.health_check = AsyncMock(return_value=health_result)
         container.vector_db_service = AsyncMock(return_value=mock_vdb)
 
         await Health.health_check_vector_db(container)
-        mock_vdb.get_collections.assert_awaited_once()
+        mock_vdb.health_check.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_raises_on_vdb_failure(self):
+        from app.services.vector_db.models import HealthStatus
         container = _make_container()
         mock_vdb = AsyncMock()
-        mock_vdb.get_collections = AsyncMock(side_effect=Exception("vdb down"))
+        mock_vdb.get_service_name = MagicMock(return_value="qdrant")
+        health_result = MagicMock()
+        health_result.status = HealthStatus.UNHEALTHY
+        health_result.message = "vdb down"
+        mock_vdb.health_check = AsyncMock(return_value=health_result)
         container.vector_db_service = AsyncMock(return_value=mock_vdb)
 
         with pytest.raises(Exception, match="vdb down"):

@@ -172,6 +172,8 @@ class BlockContainerValidator:
         DataFormat.MARKDOWN.value,
         DataFormat.CODE.value,
         DataFormat.HTML.value,
+        DataFormat.JSON.value,
+        DataFormat.YAML.value,
     }
 
     def __init__(

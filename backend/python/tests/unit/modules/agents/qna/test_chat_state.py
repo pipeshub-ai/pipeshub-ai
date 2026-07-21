@@ -6,7 +6,7 @@ import pytest
 
 from app.modules.agents.qna.chat_state import (
     _build_tool_to_toolset_map,
-    _extract_kb_record_groups,
+    _extract_kb_app_ids,
     _extract_knowledge_connector_ids,
     _extract_tools_from_toolsets,
     build_initial_state,
@@ -153,16 +153,18 @@ class TestBuildInitialState:
         assert state["tool_to_toolset_map"]["slack.send_message"] == "inst-1"
 
     def test_with_knowledge(self, mock_deps, minimal_user_info):
+        """KB apps now use type=KB and are extracted by _extract_kb_app_ids"""
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440100"
         cq = {
             "query": "q",
             "knowledge": [
                 {
                     "connectorId": "conn-1",
-                    "filters": {"recordGroups": ["kb-group-1"]},
+                    "type": "connector",
                 },
                 {
-                    "connectorId": "conn-2",
-                    "filters": {},
+                    "connectorId": kb_uuid,
+                    "type": "KB",
                 },
             ],
         }
@@ -171,17 +173,17 @@ class TestBuildInitialState:
             user_info=minimal_user_info,
             **mock_deps,
         )
-        assert state["apps"] == ["conn-1", "conn-2"]
-        assert state["kb"] == ["kb-group-1"]
+        assert state["apps"] == ["conn-1"]  # Regular connector
+        assert state["kb"] == [kb_uuid]  # KB app UUID
         assert state["has_knowledge"] is True
 
     def test_has_knowledge_true_when_agent_knowledge_present(self, mock_deps, minimal_user_info):
-        """Even with NO_KB_SELECTED sentinel, has_knowledge is True because
-        agent_knowledge (the raw knowledge array) is non-empty."""
+        """KB apps with NO_KB_SELECTED are filtered by type=KB"""
+        kb_uuid = "NO_KB_SELECTED"
         cq = {
             "query": "q",
             "knowledge": [
-                {"connectorId": None, "filters": {"recordGroups": ["NO_KB_SELECTED"]}},
+                {"connectorId": kb_uuid, "type": "KB"},
             ],
         }
         state = build_initial_state(
@@ -191,8 +193,8 @@ class TestBuildInitialState:
         )
         # agent_knowledge is truthy (list with 1 item), so has_knowledge is True
         assert state["has_knowledge"] is True
-        # But kb should only contain the sentinel, and apps should be empty
-        assert state["kb"] == ["NO_KB_SELECTED"]
+        # KB sentinel should be in kb list
+        assert state["kb"] == [kb_uuid]
         assert state["apps"] == []
 
     def test_has_knowledge_false_when_no_knowledge(self, mock_deps, minimal_user_info):
@@ -587,10 +589,13 @@ class TestExtractKnowledgeConnectorIds:
         assert _extract_knowledge_connector_ids(knowledge) == ["c1"]
 
     def test_skips_knowledge_base_pseudo_connectors(self):
+        """KB apps have type=KB and are not extracted as regular connectors"""
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440101"
         knowledge = [
-            {"connectorId": "knowledgeBase_org-1"},
+            {"connectorId": kb_uuid, "type": "KB"},
             {"connectorId": "c1"},
         ]
+        # Should only extract c1, not the KB app
         assert _extract_knowledge_connector_ids(knowledge) == ["c1"]
 
     def test_deduplicates_connector_ids(self):
@@ -603,49 +608,40 @@ class TestExtractKnowledgeConnectorIds:
 
 
 # ===================================================================
-# _extract_kb_record_groups
+# _extract_kb_app_ids
 # ===================================================================
-class TestExtractKbRecordGroups:
+class TestExtractKbAppIds:
     def test_empty(self):
-        assert _extract_kb_record_groups([]) == []
-        assert _extract_kb_record_groups(None) == []
+        assert _extract_kb_app_ids([]) == []
+        assert _extract_kb_app_ids(None) == []
 
-    def test_extracts_record_groups(self):
+    def test_extracts_kb_app_ids(self):
         knowledge = [
-            {"filters": {"recordGroups": ["kb-1", "kb-2"]}},
-            {"filters": {"recordGroups": ["kb-3"]}},
+            {"type": "KB", "connectorId": "kb-1"},
+            {"type": "KB", "connectorId": "kb-2"},
         ]
-        assert _extract_kb_record_groups(knowledge) == ["kb-1", "kb-2", "kb-3"]
+        assert _extract_kb_app_ids(knowledge) == ["kb-1", "kb-2"]
 
-    def test_handles_string_filters_json(self):
-        import json
+    def test_type_check_is_case_insensitive(self):
+        knowledge = [{"type": "kb", "connectorId": "kb-1"}]
+        assert _extract_kb_app_ids(knowledge) == ["kb-1"]
+
+    def test_ignores_legacy_record_groups_field(self):
+        # filters.recordGroups is legacy-only and no longer the id source.
+        knowledge = [{"type": "KB", "connectorId": "kb-1", "filters": {"recordGroups": ["stale-rg"]}}]
+        assert _extract_kb_app_ids(knowledge) == ["kb-1"]
+
+    def test_non_kb_entries_excluded(self):
         knowledge = [
-            {"filters": json.dumps({"recordGroups": ["kb-j1"]})},
+            {"type": "KB", "connectorId": "kb-1"},
+            {"type": "GOOGLE_DRIVE", "connectorId": "conn-1"},
         ]
-        assert _extract_kb_record_groups(knowledge) == ["kb-j1"]
+        assert _extract_kb_app_ids(knowledge) == ["kb-1"]
 
-    def test_handles_invalid_json_string_filters(self):
-        knowledge = [
-            {"filters": "not-json"},
-        ]
-        assert _extract_kb_record_groups(knowledge) == []
-
-    def test_handles_empty_filters(self):
-        knowledge = [
-            {"filters": {}},
-            {"filters": None},
-            {},
-        ]
-        assert _extract_kb_record_groups(knowledge) == []
-
-    def test_handles_empty_record_groups(self):
-        knowledge = [{"filters": {"recordGroups": []}}]
-        assert _extract_kb_record_groups(knowledge) == []
-
-    def test_non_list_record_groups_skipped(self):
-        knowledge = [{"filters": {"recordGroups": "not-a-list"}}]
-        assert _extract_kb_record_groups(knowledge) == []
+    def test_kb_entry_missing_connector_id_skipped(self):
+        knowledge = [{"type": "KB"}]
+        assert _extract_kb_app_ids(knowledge) == []
 
     def test_non_dict_knowledge_entry_skipped(self):
-        knowledge = [{"filters": {"recordGroups": ["kb-1"]}}, "bad", None]
-        assert _extract_kb_record_groups(knowledge) == ["kb-1"]
+        knowledge = [{"type": "KB", "connectorId": "kb-1"}, "bad", None]
+        assert _extract_kb_app_ids(knowledge) == ["kb-1"]

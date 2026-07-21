@@ -26,6 +26,8 @@ const FILE_TYPE_MIME_MAP: Record<string, string[]> = {
   MD: ['text/markdown', 'text/x-markdown', 'application/x-markdown', 'text/plain'],
   MARKDOWN: ['text/markdown', 'text/x-markdown', 'application/x-markdown', 'text/plain'],
   MDX: ['text/mdx', 'text/markdown', 'text/plain'],
+  YAML: ['application/x-yaml', 'text/yaml', 'application/yaml', 'text/plain'],
+  YML: ['application/x-yaml', 'text/yaml', 'application/yaml', 'text/plain'],
 };
 
 interface ReplaceFileDialogProps {

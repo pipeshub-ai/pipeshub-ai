@@ -122,22 +122,21 @@ class TestClassifyKnowledgeSources:
         assert conn == []
 
     def test_kb_entry(self):
-        knowledge = [{"type": "KB", "displayName": "My Docs", "filters": {"recordGroups": ["rg1"]}}]
+        knowledge = [{"type": "KB", "displayName": "My Docs", "connectorId": "kb1"}]
         kb, conn = classify_knowledge_sources(knowledge)
         assert len(kb) == 1
         assert kb[0]["label"] == "My Docs"
-        assert kb[0]["collection_ids"] == ["rg1"]
+        assert kb[0]["collection_ids"] == ["kb1"]
 
-    def test_kb_entry_string_filters(self):
-        import json
-        knowledge = [{"type": "KB", "name": "KB Store", "filters": json.dumps({"recordGroups": ["rg2"]})}]
-        kb, conn = classify_knowledge_sources(knowledge)
-        assert kb[0]["collection_ids"] == ["rg2"]
-
-    def test_kb_entry_invalid_json_filters(self):
-        knowledge = [{"type": "KB", "name": "KB", "filters": "not json"}]
+    def test_kb_entry_no_connector_id(self):
+        knowledge = [{"type": "KB", "name": "KB Store"}]
         kb, conn = classify_knowledge_sources(knowledge)
         assert kb[0]["collection_ids"] == []
+
+    def test_kb_entry_legacy_filters_ignored(self):
+        knowledge = [{"type": "KB", "name": "KB", "connectorId": "kb2", "filters": "not json"}]
+        kb, conn = classify_knowledge_sources(knowledge)
+        assert kb[0]["collection_ids"] == ["kb2"]
 
     def test_connector_entry(self):
         knowledge = [{"type": "Confluence", "displayName": "Confluence Eng", "connectorId": "c1"}]

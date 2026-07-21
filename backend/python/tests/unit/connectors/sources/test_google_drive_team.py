@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
 import pytest
 from fastapi import HTTPException
 from googleapiclient.errors import HttpError
+from httplib2 import HttpLib2Error
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -491,7 +492,7 @@ class TestFetchPermissions:
                 {"id": "p1", "role": "reader", "type": "user", "emailAddress": "u@t.com"},
             ]
         })
-        perms, is_fallback = await connector._fetch_permissions("file-1")
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1")
         assert len(perms) == 1
         assert perms[0].type == PermissionType.READ
         assert not is_fallback
@@ -503,7 +504,7 @@ class TestFetchPermissions:
                 {"id": "p1", "role": "reader", "type": "user", "emailAddress": "u@t.com", "deleted": True},
             ]
         })
-        perms, _ = await connector._fetch_permissions("file-1")
+        perms, _, _ = await connector._fetch_permissions("file-1")
         assert len(perms) == 0
 
     @pytest.mark.asyncio
@@ -522,7 +523,7 @@ class TestFetchPermissions:
         http_err = HttpError(resp, b"Forbidden")
         http_err.error_details = [{"reason": "insufficientFilePermissions"}]
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
-        perms, is_fallback = await connector._fetch_permissions("file-1", is_drive=False, user_email="u@t.com")
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False, user_email="u@t.com")
         assert is_fallback is True
         assert len(perms) == 1
         assert perms[0].email == "u@t.com"
@@ -534,7 +535,7 @@ class TestFetchPermissions:
         http_err = HttpError(resp, b"Forbidden")
         http_err.error_details = [{"reason": "insufficientFilePermissions"}]
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
-        perms, is_fallback = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert is_fallback is False
         assert perms == []
 
@@ -544,14 +545,14 @@ class TestFetchPermissions:
         resp.status = 500
         http_err = HttpError(resp, b"Server Error")
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
-        perms, is_fallback = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert perms == []
         assert is_fallback is False
 
     @pytest.mark.asyncio
     async def test_fetch_permissions_file_generic_error(self, connector):
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=RuntimeError("oops"))
-        perms, _ = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, _, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert perms == []
 
     @pytest.mark.asyncio
@@ -561,7 +562,7 @@ class TestFetchPermissions:
                 {"id": "p1", "role": "reader", "type": "anyone"},
             ]
         })
-        perms, is_fallback = await connector._fetch_permissions("file-1", user_email="u@t.com")
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", user_email="u@t.com")
         assert is_fallback is True
         assert any(p.email == "u@t.com" for p in perms)
 
@@ -573,7 +574,7 @@ class TestFetchPermissions:
                 {"id": "p2", "role": "writer", "type": "user", "emailAddress": "u@t.com"},
             ]
         })
-        perms, is_fallback = await connector._fetch_permissions("file-1", user_email="u@t.com")
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", user_email="u@t.com")
         assert is_fallback is False
 
     @pytest.mark.asyncio
@@ -582,7 +583,7 @@ class TestFetchPermissions:
             {"permissions": [{"id": "p1", "role": "reader", "type": "user", "emailAddress": "a@t.com"}], "nextPageToken": "tok"},
             {"permissions": [{"id": "p2", "role": "writer", "type": "user", "emailAddress": "b@t.com"}]},
         ])
-        perms, _ = await connector._fetch_permissions("file-1")
+        perms, _, _ = await connector._fetch_permissions("file-1")
         assert len(perms) == 2
 
     @pytest.mark.asyncio
@@ -591,7 +592,7 @@ class TestFetchPermissions:
         custom_ds.permissions_list = AsyncMock(return_value={
             "permissions": [{"id": "p1", "role": "owner", "type": "user", "emailAddress": "x@t.com"}]
         })
-        perms, _ = await connector._fetch_permissions("file-1", drive_data_source=custom_ds)
+        perms, _, _ = await connector._fetch_permissions("file-1", drive_data_source=custom_ds)
         custom_ds.permissions_list.assert_awaited_once()
         assert len(perms) == 1
 
@@ -604,7 +605,7 @@ class TestCreateAndSyncSharedDriveRecordGroup:
 
     @pytest.mark.asyncio
     async def test_creates_record_group(self, connector):
-        connector._fetch_permissions = AsyncMock(return_value=([], False))
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         drive = {"id": "d1", "name": "Team Drive", "createdTime": "2024-06-01T00:00:00Z"}
         await connector._create_and_sync_shared_drive_record_group(drive)
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
@@ -615,7 +616,7 @@ class TestCreateAndSyncSharedDriveRecordGroup:
 
     @pytest.mark.asyncio
     async def test_bad_created_time(self, connector):
-        connector._fetch_permissions = AsyncMock(return_value=([], False))
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         drive = {"id": "d1", "name": "Drive", "createdTime": "invalid-date"}
         await connector._create_and_sync_shared_drive_record_group(drive)
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
@@ -879,7 +880,7 @@ class TestProcessDriveItem:
         meta = _make_file_metadata(parents=["parent-1"])
         connector._fetch_permissions = AsyncMock(return_value=([
             Permission(email="u@t.com", type=PermissionType.READ, entity_type=EntityType.USER)
-        ], False))
+        ], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
         assert result is not None
         assert result.is_new is True
@@ -893,7 +894,7 @@ class TestProcessDriveItem:
         provider = _make_mock_data_store_provider(existing_record=existing)
         connector.data_store_provider = provider
         meta = _make_file_metadata(parents=["parent-1"])
-        connector._fetch_permissions = AsyncMock(return_value=([], False))
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
         assert result is not None
         assert result.is_new is False
@@ -907,7 +908,7 @@ class TestProcessDriveItem:
         provider = _make_mock_data_store_provider(existing_record=existing)
         connector.data_store_provider = provider
         meta = _make_file_metadata(parents=["parent-1"])
-        connector._fetch_permissions = AsyncMock(return_value=([], False))
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
         assert result.is_updated is True
         assert result.content_changed is True
@@ -921,16 +922,16 @@ class TestProcessDriveItem:
         provider = _make_mock_data_store_provider(existing_record=existing)
         connector.data_store_provider = provider
         meta = _make_file_metadata(parents=["parent-1"])
-        connector._fetch_permissions = AsyncMock(return_value=([], False))
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
         assert result.metadata_changed is True
 
     @pytest.mark.asyncio
     async def test_shared_with_me_detection(self, connector):
         meta = _make_file_metadata(shared=True, owners=[{"emailAddress": "other@t.com"}])
-        connector._fetch_permissions = AsyncMock(return_value=([], False))
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
-        assert result.record.is_shared_with_me is True
+        assert result.record.shared_with_me_record_group_ids == ["0S:u@t.com"]
 
     @pytest.mark.asyncio
     async def test_date_filter_skip(self, connector):
@@ -957,7 +958,7 @@ class TestProcessDriveItem:
         meta = _make_file_metadata(parents=["parent-1"])
         connector._fetch_permissions = AsyncMock(return_value=([
             Permission(email="u@t.com", type=PermissionType.READ, entity_type=EntityType.USER)
-        ], True))
+        ], True, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
         connector.data_entities_processor.add_permission_to_record.assert_awaited_once()
 
@@ -974,7 +975,7 @@ class TestProcessDriveItemsGenerator:
     async def test_yields_records(self, connector):
         meta = _make_file_metadata()
         update = RecordUpdate(
-            record=MagicMock(is_shared=False, is_shared_with_me=False),
+            record=MagicMock(is_shared=False, shared_with_me_record_group_ids=[]),
             is_new=True, is_updated=False, is_deleted=False,
             metadata_changed=False, content_changed=False, permissions_changed=False,
             new_permissions=[]
@@ -995,7 +996,7 @@ class TestProcessDriveItemsGenerator:
 
     @pytest.mark.asyncio
     async def test_auto_index_off_shared(self, connector):
-        record = MagicMock(is_shared=True, is_shared_with_me=False)
+        record = MagicMock(is_shared=True, shared_with_me_record_group_ids=[])
         update = RecordUpdate(
             record=record, is_new=True, is_updated=False, is_deleted=False,
             metadata_changed=False, content_changed=False, permissions_changed=False,
@@ -1208,9 +1209,257 @@ class TestHandleWebhookNotification:
 
 class TestGetFilterOptions:
     @pytest.mark.asyncio
-    async def test_raises_not_implemented(self, connector):
-        with pytest.raises(NotImplementedError):
-            await connector.get_filter_options("key")
+    async def test_routes_drive_ids_to_helper(self, connector):
+        connector._get_shared_drive_options = AsyncMock(
+            return_value=MagicMock(success=True)
+        )
+        result = await connector.get_filter_options(SyncFilterKey.DRIVE_IDS, page=1, limit=10)
+        connector._get_shared_drive_options.assert_awaited_once_with(1, 10, None, None)
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_routes_drive_ids_with_search_and_cursor(self, connector):
+        connector._get_shared_drive_options = AsyncMock(
+            return_value=MagicMock(success=True)
+        )
+        await connector.get_filter_options(
+            SyncFilterKey.DRIVE_IDS, page=2, limit=5, search="eng", cursor="tok-abc"
+        )
+        connector._get_shared_drive_options.assert_awaited_once_with(2, 5, "eng", "tok-abc")
+
+    @pytest.mark.asyncio
+    async def test_raises_for_unknown_filter_key(self, connector):
+        with pytest.raises(ValueError, match="Unsupported filter key"):
+            await connector.get_filter_options("unknown_key")
+
+
+class TestPassDriveIdsFilter:
+    def test_no_filter_set_allows_all(self, connector):
+        connector.sync_filters = MagicMock()
+        connector.sync_filters.get = MagicMock(return_value=None)
+        assert connector._pass_drive_ids_filter("drive-1") is True
+
+    def test_empty_filter_allows_all(self, connector):
+        mock_filter = MagicMock()
+        mock_filter.is_empty.return_value = True
+        connector.sync_filters = MagicMock()
+        connector.sync_filters.get = MagicMock(return_value=mock_filter)
+        assert connector._pass_drive_ids_filter("drive-1") is True
+
+    def test_non_list_value_allows_all(self, connector):
+        mock_filter = MagicMock()
+        mock_filter.is_empty.return_value = False
+        mock_filter.value = "not-a-list"
+        connector.sync_filters = MagicMock()
+        connector.sync_filters.get = MagicMock(return_value=mock_filter)
+        assert connector._pass_drive_ids_filter("drive-1") is True
+
+    def test_empty_drive_id_returns_false(self, connector):
+        mock_filter = MagicMock()
+        mock_filter.is_empty.return_value = False
+        mock_filter.value = ["drive-1", "drive-2"]
+        connector.sync_filters = MagicMock()
+        connector.sync_filters.get = MagicMock(return_value=mock_filter)
+        assert connector._pass_drive_ids_filter("") is False
+
+    def test_in_operator_allows_listed_drive(self, connector):
+        mock_filter = MagicMock()
+        mock_filter.is_empty.return_value = False
+        mock_filter.value = ["drive-1", "drive-2"]
+        mock_filter.get_operator.return_value = MagicMock(value=FilterOperator.IN)
+        connector.sync_filters = MagicMock()
+        connector.sync_filters.get = MagicMock(
+            side_effect=lambda k: mock_filter if k == SyncFilterKey.DRIVE_IDS else None
+        )
+        assert connector._pass_drive_ids_filter("drive-1") is True
+
+    def test_in_operator_rejects_unlisted_drive(self, connector):
+        mock_filter = MagicMock()
+        mock_filter.is_empty.return_value = False
+        mock_filter.value = ["drive-1", "drive-2"]
+        mock_filter.get_operator.return_value = MagicMock(value=FilterOperator.IN)
+        connector.sync_filters = MagicMock()
+        connector.sync_filters.get = MagicMock(
+            side_effect=lambda k: mock_filter if k == SyncFilterKey.DRIVE_IDS else None
+        )
+        assert connector._pass_drive_ids_filter("drive-99") is False
+
+    def test_not_in_operator_allows_unlisted_drive(self, connector):
+        mock_filter = MagicMock()
+        mock_filter.is_empty.return_value = False
+        mock_filter.value = ["drive-1", "drive-2"]
+        mock_filter.get_operator.return_value = MagicMock(value=FilterOperator.NOT_IN)
+        connector.sync_filters = MagicMock()
+        connector.sync_filters.get = MagicMock(
+            side_effect=lambda k: mock_filter if k == SyncFilterKey.DRIVE_IDS else None
+        )
+        assert connector._pass_drive_ids_filter("drive-99") is True
+
+    def test_not_in_operator_rejects_listed_drive(self, connector):
+        mock_filter = MagicMock()
+        mock_filter.is_empty.return_value = False
+        mock_filter.value = ["drive-1", "drive-2"]
+        mock_filter.get_operator.return_value = MagicMock(value=FilterOperator.NOT_IN)
+        connector.sync_filters = MagicMock()
+        connector.sync_filters.get = MagicMock(
+            side_effect=lambda k: mock_filter if k == SyncFilterKey.DRIVE_IDS else None
+        )
+        assert connector._pass_drive_ids_filter("drive-1") is False
+
+    def test_unknown_operator_allows_drive(self, connector):
+        mock_filter = MagicMock()
+        mock_filter.is_empty.return_value = False
+        mock_filter.value = ["drive-1"]
+        mock_filter.get_operator.return_value = MagicMock(value="unsupported_op")
+        connector.sync_filters = MagicMock()
+        connector.sync_filters.get = MagicMock(return_value=mock_filter)
+        assert connector._pass_drive_ids_filter("drive-1") is True
+
+
+def _make_http_error(status: int, content: bytes = b"error") -> HttpError:
+    mock_resp = MagicMock()
+    mock_resp.status = status
+    mock_resp.reason = "Error"
+    return HttpError(mock_resp, content)
+
+
+class TestGetSharedDriveOptions:
+    @pytest.mark.asyncio
+    async def test_success_no_pagination(self, connector):
+        connector.drive_data_source.drives_list = AsyncMock(return_value={
+            "drives": [
+                {"id": "drv-1", "name": "Engineering"},
+                {"id": "drv-2", "name": "Marketing"},
+            ]
+        })
+        result = await connector._get_shared_drive_options(page=1, limit=20, search=None)
+        assert result.success is True
+        assert len(result.options) == 2
+        assert result.options[0].id == "drv-1"
+        assert result.options[0].label == "Engineering"
+        assert result.has_more is False
+        assert result.cursor is None
+
+    @pytest.mark.asyncio
+    async def test_success_with_next_page_token(self, connector):
+        connector.drive_data_source.drives_list = AsyncMock(return_value={
+            "drives": [{"id": "drv-1", "name": "Engineering"}],
+            "nextPageToken": "tok-xyz",
+        })
+        result = await connector._get_shared_drive_options(page=1, limit=1, search=None)
+        assert result.success is True
+        assert result.has_more is True
+        assert result.cursor == "tok-xyz"
+
+    @pytest.mark.asyncio
+    async def test_success_with_cursor_forwarded(self, connector):
+        connector.drive_data_source.drives_list = AsyncMock(return_value={"drives": []})
+        await connector._get_shared_drive_options(page=2, limit=5, search=None, cursor="prev-tok")
+        connector.drive_data_source.drives_list.assert_awaited_once_with(
+            pageSize=5, pageToken="prev-tok", q=None, useDomainAdminAccess=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_search_builds_q_param(self, connector):
+        connector.drive_data_source.drives_list = AsyncMock(return_value={"drives": []})
+        await connector._get_shared_drive_options(page=1, limit=20, search="  eng  ")
+        connector.drive_data_source.drives_list.assert_awaited_once_with(
+            pageSize=20, pageToken=None, q="name contains 'eng'", useDomainAdminAccess=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_blank_search_sends_no_q(self, connector):
+        connector.drive_data_source.drives_list = AsyncMock(return_value={"drives": []})
+        await connector._get_shared_drive_options(page=1, limit=20, search="   ")
+        connector.drive_data_source.drives_list.assert_awaited_once_with(
+            pageSize=20, pageToken=None, q=None, useDomainAdminAccess=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_drives_without_id_are_skipped(self, connector):
+        connector.drive_data_source.drives_list = AsyncMock(return_value={
+            "drives": [
+                {"id": "drv-1", "name": "Good"},
+                {"name": "No ID drive"},
+                {"id": "", "name": "Empty ID"},
+            ]
+        })
+        result = await connector._get_shared_drive_options(page=1, limit=20, search=None)
+        assert result.success is True
+        assert len(result.options) == 1
+        assert result.options[0].id == "drv-1"
+
+    @pytest.mark.asyncio
+    async def test_drive_without_name_uses_id_as_label(self, connector):
+        connector.drive_data_source.drives_list = AsyncMock(return_value={
+            "drives": [{"id": "drv-no-name"}]
+        })
+        result = await connector._get_shared_drive_options(page=1, limit=20, search=None)
+        assert result.success is True
+        assert result.options[0].label == "drv-no-name"
+
+    @pytest.mark.asyncio
+    async def test_http_error_is_logged_and_reraised(self, connector, caplog):
+        http_error = _make_http_error(HttpStatusCode.FORBIDDEN.value)
+        connector.drive_data_source.drives_list = AsyncMock(side_effect=http_error)
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(HttpError):
+                await connector._get_shared_drive_options(page=1, limit=20, search=None)
+
+        assert "HTTP error returned status 403" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_httplib2_error_is_logged_and_reraised(self, connector, caplog):
+        transport_error = HttpLib2Error("connection failed")
+        connector.drive_data_source.drives_list = AsyncMock(side_effect=transport_error)
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(HttpLib2Error):
+                await connector._get_shared_drive_options(page=1, limit=20, search=None)
+
+        assert "httplib2 error while fetching shared drive filter options" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_unexpected_error_propagates(self, connector):
+        connector.drive_data_source.drives_list = AsyncMock(
+            side_effect=RuntimeError("API quota exceeded")
+        )
+
+        with pytest.raises(RuntimeError, match="API quota exceeded"):
+            await connector._get_shared_drive_options(page=1, limit=20, search=None)
+
+    @pytest.mark.asyncio
+    async def test_empty_drives_list(self, connector):
+        connector.drive_data_source.drives_list = AsyncMock(return_value={"drives": []})
+        result = await connector._get_shared_drive_options(page=1, limit=20, search=None)
+        assert result.success is True
+        assert result.options == []
+        assert result.has_more is False
+
+    @pytest.mark.asyncio
+    async def test_missing_drives_key_in_response(self, connector):
+        connector.drive_data_source.drives_list = AsyncMock(return_value={})
+        result = await connector._get_shared_drive_options(page=1, limit=20, search=None)
+        assert result.success is True
+        assert result.options == []
+
+    @pytest.mark.asyncio
+    async def test_uninitialized_drive_source_returns_failure(self, connector):
+        connector.drive_data_source = None
+        result = await connector._get_shared_drive_options(page=1, limit=20, search=None)
+        assert result.success is False
+        assert "not initialized" in result.message
+
+    @pytest.mark.asyncio
+    async def test_search_with_single_quote_is_escaped(self, connector):
+        connector.drive_data_source.drives_list = AsyncMock(return_value={"drives": []})
+        await connector._get_shared_drive_options(page=1, limit=20, search="User's Drive")
+        connector.drive_data_source.drives_list.assert_awaited_once_with(
+            pageSize=20, pageToken=None,
+            q="name contains 'User\\'s Drive'",
+            useDomainAdminAccess=True,
+        )
 
 
 class TestReindexRecords:
@@ -2059,7 +2308,7 @@ class TestFetchPermissionsFullCoverage:
                 {"id": "p1", "role": "reader", "type": "user", "emailAddress": "u@t.com"},
             ]
         })
-        perms, is_fallback = await connector._fetch_permissions("file-1")
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1")
         assert len(perms) == 1
         assert perms[0].type == PermissionType.READ
         assert not is_fallback
@@ -2071,7 +2320,7 @@ class TestFetchPermissionsFullCoverage:
                 {"id": "p1", "role": "reader", "type": "user", "emailAddress": "u@t.com", "deleted": True},
             ]
         })
-        perms, _ = await connector._fetch_permissions("file-1")
+        perms, _, _ = await connector._fetch_permissions("file-1")
         assert len(perms) == 0
 
     @pytest.mark.asyncio
@@ -2090,7 +2339,7 @@ class TestFetchPermissionsFullCoverage:
         http_err = HttpError(resp, b"Forbidden")
         http_err.error_details = [{"reason": "insufficientFilePermissions"}]
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
-        perms, is_fallback = await connector._fetch_permissions("file-1", is_drive=False, user_email="u@t.com")
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False, user_email="u@t.com")
         assert is_fallback is True
         assert len(perms) == 1
         assert perms[0].email == "u@t.com"
@@ -2102,7 +2351,7 @@ class TestFetchPermissionsFullCoverage:
         http_err = HttpError(resp, b"Forbidden")
         http_err.error_details = [{"reason": "insufficientFilePermissions"}]
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
-        perms, is_fallback = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert is_fallback is False
         assert perms == []
 
@@ -2112,14 +2361,14 @@ class TestFetchPermissionsFullCoverage:
         resp.status = 500
         http_err = HttpError(resp, b"Server Error")
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
-        perms, is_fallback = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert perms == []
         assert is_fallback is False
 
     @pytest.mark.asyncio
     async def test_fetch_permissions_file_generic_error(self, connector):
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=RuntimeError("oops"))
-        perms, _ = await connector._fetch_permissions("file-1", is_drive=False)
+        perms, _, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert perms == []
 
     @pytest.mark.asyncio
@@ -2129,7 +2378,7 @@ class TestFetchPermissionsFullCoverage:
                 {"id": "p1", "role": "reader", "type": "anyone"},
             ]
         })
-        perms, is_fallback = await connector._fetch_permissions("file-1", user_email="u@t.com")
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", user_email="u@t.com")
         assert is_fallback is True
         assert any(p.email == "u@t.com" for p in perms)
 
@@ -2141,7 +2390,7 @@ class TestFetchPermissionsFullCoverage:
                 {"id": "p2", "role": "writer", "type": "user", "emailAddress": "u@t.com"},
             ]
         })
-        perms, is_fallback = await connector._fetch_permissions("file-1", user_email="u@t.com")
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", user_email="u@t.com")
         assert is_fallback is False
 
     @pytest.mark.asyncio
@@ -2150,7 +2399,7 @@ class TestFetchPermissionsFullCoverage:
             {"permissions": [{"id": "p1", "role": "reader", "type": "user", "emailAddress": "a@t.com"}], "nextPageToken": "tok"},
             {"permissions": [{"id": "p2", "role": "writer", "type": "user", "emailAddress": "b@t.com"}]},
         ])
-        perms, _ = await connector._fetch_permissions("file-1")
+        perms, _, _ = await connector._fetch_permissions("file-1")
         assert len(perms) == 2
 
     @pytest.mark.asyncio
@@ -2159,7 +2408,7 @@ class TestFetchPermissionsFullCoverage:
         custom_ds.permissions_list = AsyncMock(return_value={
             "permissions": [{"id": "p1", "role": "owner", "type": "user", "emailAddress": "x@t.com"}]
         })
-        perms, _ = await connector._fetch_permissions("file-1", drive_data_source=custom_ds)
+        perms, _, _ = await connector._fetch_permissions("file-1", drive_data_source=custom_ds)
         custom_ds.permissions_list.assert_awaited_once()
         assert len(perms) == 1
 
@@ -2172,7 +2421,7 @@ class TestCreateAndSyncSharedDriveRecordGroupFullCoverage:
 
     @pytest.mark.asyncio
     async def test_creates_record_group(self, connector):
-        connector._fetch_permissions = AsyncMock(return_value=([], False))
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         drive = {"id": "d1", "name": "Team Drive", "createdTime": "2024-06-01T00:00:00Z"}
         await connector._create_and_sync_shared_drive_record_group(drive)
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
@@ -2183,7 +2432,7 @@ class TestCreateAndSyncSharedDriveRecordGroupFullCoverage:
 
     @pytest.mark.asyncio
     async def test_bad_created_time(self, connector):
-        connector._fetch_permissions = AsyncMock(return_value=([], False))
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         drive = {"id": "d1", "name": "Drive", "createdTime": "invalid-date"}
         await connector._create_and_sync_shared_drive_record_group(drive)
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
@@ -2447,7 +2696,7 @@ class TestProcessDriveItemFullCoverage:
         meta = _make_file_metadata(parents=["parent-1"])
         connector._fetch_permissions = AsyncMock(return_value=([
             Permission(email="u@t.com", type=PermissionType.READ, entity_type=EntityType.USER)
-        ], False))
+        ], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
         assert result is not None
         assert result.is_new is True
@@ -2461,7 +2710,7 @@ class TestProcessDriveItemFullCoverage:
         provider = _make_mock_data_store_provider(existing_record=existing)
         connector.data_store_provider = provider
         meta = _make_file_metadata(parents=["parent-1"])
-        connector._fetch_permissions = AsyncMock(return_value=([], False))
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
         assert result is not None
         assert result.is_new is False
@@ -2475,7 +2724,7 @@ class TestProcessDriveItemFullCoverage:
         provider = _make_mock_data_store_provider(existing_record=existing)
         connector.data_store_provider = provider
         meta = _make_file_metadata(parents=["parent-1"])
-        connector._fetch_permissions = AsyncMock(return_value=([], False))
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
         assert result.is_updated is True
         assert result.content_changed is True
@@ -2489,16 +2738,16 @@ class TestProcessDriveItemFullCoverage:
         provider = _make_mock_data_store_provider(existing_record=existing)
         connector.data_store_provider = provider
         meta = _make_file_metadata(parents=["parent-1"])
-        connector._fetch_permissions = AsyncMock(return_value=([], False))
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
         assert result.metadata_changed is True
 
     @pytest.mark.asyncio
     async def test_shared_with_me_detection(self, connector):
         meta = _make_file_metadata(shared=True, owners=[{"emailAddress": "other@t.com"}])
-        connector._fetch_permissions = AsyncMock(return_value=([], False))
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
-        assert result.record.is_shared_with_me is True
+        assert result.record.shared_with_me_record_group_ids == ["0S:u@t.com"]
 
     @pytest.mark.asyncio
     async def test_date_filter_skip(self, connector):
@@ -2525,7 +2774,7 @@ class TestProcessDriveItemFullCoverage:
         meta = _make_file_metadata(parents=["parent-1"])
         connector._fetch_permissions = AsyncMock(return_value=([
             Permission(email="u@t.com", type=PermissionType.READ, entity_type=EntityType.USER)
-        ], True))
+        ], True, []))
         result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
         connector.data_entities_processor.add_permission_to_record.assert_awaited_once()
 
@@ -2542,7 +2791,7 @@ class TestProcessDriveItemsGeneratorFullCoverage:
     async def test_yields_records(self, connector):
         meta = _make_file_metadata()
         update = RecordUpdate(
-            record=MagicMock(is_shared=False, is_shared_with_me=False),
+            record=MagicMock(is_shared=False, shared_with_me_record_group_ids=[]),
             is_new=True, is_updated=False, is_deleted=False,
             metadata_changed=False, content_changed=False, permissions_changed=False,
             new_permissions=[]
@@ -2563,7 +2812,7 @@ class TestProcessDriveItemsGeneratorFullCoverage:
 
     @pytest.mark.asyncio
     async def test_auto_index_off_shared(self, connector):
-        record = MagicMock(is_shared=True, is_shared_with_me=False)
+        record = MagicMock(is_shared=True, shared_with_me_record_group_ids=[])
         update = RecordUpdate(
             record=record, is_new=True, is_updated=False, is_deleted=False,
             metadata_changed=False, content_changed=False, permissions_changed=False,
@@ -2776,8 +3025,8 @@ class TestHandleWebhookNotificationFullCoverage:
 
 class TestGetFilterOptionsFullCoverage:
     @pytest.mark.asyncio
-    async def test_raises_not_implemented(self, connector):
-        with pytest.raises(NotImplementedError):
+    async def test_raises_for_unknown_key(self, connector):
+        with pytest.raises(ValueError, match="Unsupported filter key"):
             await connector.get_filter_options("key")
 
 

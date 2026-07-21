@@ -49,7 +49,7 @@ class TestRedisStreamsConfig:
         assert config.port == 6379
         assert config.password is None
         assert config.db == 0
-        assert config.max_len == 10000
+        assert config.max_len == 500000
         assert config.block_ms == 2000
         assert config.client_id == "pipeshub"
         assert config.group_id == "default_group"
@@ -89,3 +89,63 @@ class TestRequiredTopics:
 
     def test_has_at_least_five_topics(self):
         assert len(REQUIRED_TOPICS) >= 5
+
+
+class TestMessagingEnvConfig:
+    """Test new unified messaging configuration properties."""
+
+    def test_max_delivery_attempts_default(self, monkeypatch):
+        """Test max_delivery_attempts defaults to 3."""
+        from app.services.messaging.config import messaging_env
+        
+        monkeypatch.delenv("MAX_DELIVERY_ATTEMPTS", raising=False)
+        assert messaging_env.max_delivery_attempts == 3
+
+    def test_max_delivery_attempts_from_env(self, monkeypatch):
+        """Test max_delivery_attempts can be overridden via env var."""
+        from app.services.messaging.config import messaging_env
+        
+        monkeypatch.setenv("MAX_DELIVERY_ATTEMPTS", "5")
+        assert messaging_env.max_delivery_attempts == 5
+
+    def test_message_batch_size_simple_default(self, monkeypatch):
+        """Test message_batch_size_simple defaults to 10."""
+        from app.services.messaging.config import messaging_env
+        
+        monkeypatch.delenv("MESSAGE_BATCH_SIZE_SIMPLE", raising=False)
+        assert messaging_env.message_batch_size_simple == 10
+
+    def test_message_batch_size_simple_from_env(self, monkeypatch):
+        """Test message_batch_size_simple can be overridden."""
+        from app.services.messaging.config import messaging_env
+        
+        monkeypatch.setenv("MESSAGE_BATCH_SIZE_SIMPLE", "20")
+        assert messaging_env.message_batch_size_simple == 20
+
+    def test_message_batch_size_indexing_default(self, monkeypatch):
+        """Test message_batch_size_indexing defaults to 1."""
+        from app.services.messaging.config import messaging_env
+        
+        monkeypatch.delenv("MESSAGE_BATCH_SIZE_INDEXING", raising=False)
+        assert messaging_env.message_batch_size_indexing == 1
+
+    def test_message_batch_size_indexing_from_env(self, monkeypatch):
+        """Test message_batch_size_indexing can be overridden."""
+        from app.services.messaging.config import messaging_env
+        
+        monkeypatch.setenv("MESSAGE_BATCH_SIZE_INDEXING", "5")
+        assert messaging_env.message_batch_size_indexing == 5
+
+    def test_message_timeout_ms_default(self, monkeypatch):
+        """Test message_timeout_ms defaults to 2000."""
+        from app.services.messaging.config import messaging_env
+        
+        monkeypatch.delenv("MESSAGE_TIMEOUT_MS", raising=False)
+        assert messaging_env.message_timeout_ms == 2000
+
+    def test_message_timeout_ms_from_env(self, monkeypatch):
+        """Test message_timeout_ms can be overridden."""
+        from app.services.messaging.config import messaging_env
+        
+        monkeypatch.setenv("MESSAGE_TIMEOUT_MS", "5000")
+        assert messaging_env.message_timeout_ms == 5000
