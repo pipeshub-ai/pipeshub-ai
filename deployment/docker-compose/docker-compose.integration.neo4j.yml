@@ -4,7 +4,7 @@ services:
     restart: always
     build:
       context: ../../
-      dockerfile: Dockerfile.integration
+      dockerfile: Dockerfile
       args:
         BUILDKIT_INLINE_CACHE: "1"
         PYTHON_DEPS_IMAGE: ${PYTHON_DEPS_IMAGE:-pipeshubai/pipeshub-ai-base:python-deps}
