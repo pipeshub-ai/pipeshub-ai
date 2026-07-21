@@ -669,6 +669,21 @@ class TestTableRowBlocks:
         warnings = _validator().validate(_container(blocks=blocks, block_groups=groups))
         assert "TABLE_ROW_NO_EMBEDDABLE_CONTENT" in _warning_codes(warnings)
 
+    def test_table_row_container_with_fragment_children_skips_no_embeddable_warning(self):
+        groups = [_table_group_with_linked_row(0)]
+        blocks = [
+            _table_row_block(0, data={"row_number": 1}, parent_index=0),
+            Block(
+                index=1,
+                type=BlockType.TEXT,
+                data="**Status**: Done",
+                format=DataFormat.MARKDOWN,
+                parent_block_index=0,
+            ),
+        ]
+        warnings = _validator().validate(_container(blocks=blocks, block_groups=groups))
+        assert "TABLE_ROW_NO_EMBEDDABLE_CONTENT" not in _warning_codes(warnings)
+
     def test_table_row_empty_cells_and_empty_row_text(self):
         groups = [_table_group(0, table_metadata=TableMetadata(num_of_cells=1))]
         blocks = [

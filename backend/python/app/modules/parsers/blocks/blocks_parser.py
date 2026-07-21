@@ -259,9 +259,9 @@ class BlocksParser:
                 base64_urls = await image_parser.urls_to_base64(urls_to_convert)
 
                 # Create caption map with base64 URLs
-                for i, image in enumerate(images):
-                    if base64_urls[i]:
-                        caption_map[image["new_alt_text"]] = base64_urls[i]
+                for image, base64_url in zip(images, base64_urls):
+                    if base64_url:
+                        caption_map[image["new_alt_text"]] = base64_url
 
         return modified_markdown, caption_map
 
@@ -333,9 +333,9 @@ class BlocksParser:
             image_parser = ImageParser(self.logger)
             urls_to_convert = [image["url"] for image in images]
             base64_urls = await image_parser.urls_to_base64(urls_to_convert)
-            for i, image in enumerate(images):
-                if base64_urls[i]:
-                    caption_map[image["new_alt_text"]] = base64_urls[i]
+            for image, base64_url in zip(images, base64_urls):
+                if base64_url:
+                    caption_map[image["new_alt_text"]] = base64_url
 
         processed_blocks_container = await html_parser.parse_to_blocks(
             modified_html,
