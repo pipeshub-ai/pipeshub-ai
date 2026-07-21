@@ -30,12 +30,21 @@ export async function verifyTurnstileToken(
     return false;
   }
 
-  // If no secret key configured, skip verification (for development/testing)
+  // If no secret key configured, fail closed unless explicitly allowed in development
   if (!secretKey) {
+    const allowMissingSecret =
+      process.env.NODE_ENV === 'development' &&
+      process.env.TURNSTILE_ALLOW_MISSING_SECRET === 'true';
+
     if (logger) {
-      logger.warn('Turnstile secret key is not configured. Skipping verification.');
+      logger.warn(
+        allowMissingSecret
+          ? 'Turnstile secret key is not configured. Skipping verification in development mode.'
+          : 'Turnstile secret key is not configured.',
+      );
     }
-    return true; // Allow request to proceed if Turnstile is not configured
+
+    return allowMissingSecret;
   }
 
   try {
