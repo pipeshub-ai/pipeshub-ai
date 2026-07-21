@@ -20,7 +20,6 @@ import asyncio
 import contextlib
 import logging
 import random
-import time
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine, List, Optional, Tuple, cast
 from urllib.parse import urlparse
@@ -33,9 +32,11 @@ from app.config.constants.http_status_code import HttpStatusCode
 # Unified response wrapper
 # ---------------------------------------------------------------------------
 
-MAX_429_RETRIES = 3
 REQUEST_TIMEOUT = 15
-MAX_RETRY_AFTER = 60
+# Maximum time (seconds) to keep retrying a single strategy on 429/503 responses.
+# asyncio.sleep yields to the event loop, so other concurrent domain fetches are
+# never blocked while one URL is backing off.
+MAX_RATE_LIMIT_BACKOFF = 300  # 5 minutes
 
 # ---------------------------------------------------------------------------
 # Shared stealth headers
@@ -298,7 +299,6 @@ async def fetch_url_with_fallback(
     referer: Optional[str] = None,
     extra_headers: Optional[dict] = None,
     timeout: int = REQUEST_TIMEOUT,
-    max_429_retries: int = MAX_429_RETRIES,
     max_retries_per_strategy: int = 2,
     max_size_mb: Optional[int] = None,
     preferred_strategy: Optional[str] = None,
@@ -329,7 +329,6 @@ async def fetch_url_with_fallback(
         referer:                   Referer header (auto-generated if None).
         extra_headers:             Additional headers to merge in.
         timeout:                   Per-request timeout in seconds.
-        max_429_retries:           Max retries on 429 per attempt.
         max_retries_per_strategy:  Max attempts per strategy before moving to next (default 2).
         max_size_mb:               Max size in mb of the response.
         preferred_strategy:        When set, only this strategy is tried (no fallback). Use the
@@ -422,8 +421,10 @@ async def fetch_url_with_fallback(
                 )
                 await asyncio.sleep(retry_delay)
 
-            # -- backoff retry loop within this attempt --
-            for retry_n in range(max_429_retries + 1):
+            # -- exponential backoff loop: 2s, 4s, 8s, … up to MAX_RATE_LIMIT_BACKOFF (5 min) --
+            # asyncio.sleep yields to the event loop, so other domain fetches are never blocked.
+            _rl_attempt = 0
+            while True:
                 result = await strategy_fn()
 
                 # Strategy returned nothing (import missing, all profiles exhausted, connection error)
@@ -431,7 +432,7 @@ async def fetch_url_with_fallback(
                     logger.debug(
                         f"🔄 [{strategy_name}] No result on attempt {attempt + 1}/{max_retries_per_strategy}"
                     )
-                    break  # break 429 loop, go to next attempt
+                    break  # exit backoff loop, go to next strategy attempt
 
                 status = result.status_code
 
@@ -441,31 +442,45 @@ async def fetch_url_with_fallback(
 
                 # ---- 429 / 503: Rate limited or CDN overload -> exponential backoff, same attempt ----
                 if status in _RATE_LIMIT_CODES:
-                    if retry_n >= max_429_retries:
+                    exp_delay = 2 ** (_rl_attempt + 1)  # 2s, 4s, 8s, 16s, …
+
+                    retry_after_hdr = result.headers.get("Retry-After") or result.headers.get("retry-after")
+                    server_delay: float | None = None
+                    if retry_after_hdr:
+                        try:
+                            server_delay = float(retry_after_hdr)
+                        except ValueError:
+                            pass
+
+                    delay = server_delay if server_delay is not None else exp_delay
+
+                    if server_delay is not None and server_delay > MAX_RATE_LIMIT_BACKOFF:
+                        # Server asks for a longer wait than our cap — return immediately
+                        # so the caller can re-queue this URL via its own retry mechanism
+                        # without blocking this coroutine or the crawl of other domains.
                         logger.warning(
-                            f"⚠️ [{strategy_name}] HTTP {status} persists after {max_429_retries} "
-                            + f"retries for {url}, trying next strategy"
+                            "⚠️ [%s] HTTP %s for %s with Retry-After %.0fs exceeds cap (%ds), "
+                            "returning for caller to re-queue",
+                            strategy_name, status, url, delay, MAX_RATE_LIMIT_BACKOFF,
+                        )
+                        result.retry_after = delay
+                        return result
+
+                    logger.warning(
+                        "⚠️ [%s] HTTP %s for %s, backing off %.0fs (attempt %d)",
+                        strategy_name, status, url, delay, _rl_attempt + 1,
+                    )
+                    await asyncio.sleep(delay)
+
+                    if exp_delay >= MAX_RATE_LIMIT_BACKOFF:
+                        logger.warning(
+                            "⚠️ [%s] HTTP %s persists after max backoff (%.0fs) for %s, trying next strategy",
+                            strategy_name, status, exp_delay, url,
                         )
                         last_failed_result = result
                         break
 
-                    retry_after = result.headers.get("Retry-After") or result.headers.get("retry-after")
-                    if retry_after:
-                        try:
-                            delay = int(retry_after)
-                        except ValueError:
-                            delay = 2 ** (retry_n + 1)
-                        if delay > MAX_RETRY_AFTER:
-                            last_failed_result = result
-                            break
-                    else:
-                        delay = 2 ** (retry_n + 1)  # 2s, 4s, 8s
-
-                    logger.warning(
-                        f"⚠️ [{strategy_name}] HTTP {status} for {url}, "
-                        + f"retrying in {delay}s ({retry_n + 1}/{max_429_retries})"
-                    )
-                    await asyncio.sleep(delay)
+                    _rl_attempt += 1
                     continue
 
                 # ---- Bot detection (403, 999, 520-530) -> backoff, then try next strategy attempt ----
@@ -480,7 +495,7 @@ async def fetch_url_with_fallback(
                             delay = float(retry_after)
                         except ValueError:
                             delay = 2.0
-                        if delay > MAX_RETRY_AFTER:
+                        if delay > MAX_RATE_LIMIT_BACKOFF:
                             last_failed_result = result
                             break
                     else:
@@ -537,3 +552,4 @@ class FetchResponse:
     links: dict | None = None
     success: bool = True
     error_message: str | None = None
+    retry_after: float | None = None
