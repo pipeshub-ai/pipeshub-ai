@@ -35,7 +35,9 @@ def _processed_container(
     return container
 
 
-def _text_block(index: int = 0, data: str = "text", parent_index: int | None = 0) -> Block:
+def _text_block(
+    index: int = 0, data: str = "text", parent_index: int | None = 0
+) -> Block:
     return Block(
         index=index,
         type=BlockType.TEXT,
@@ -1091,7 +1093,9 @@ class TestParse:
         # After bytes decode path; pass str by skipping bytes branch via already-decoded
         # parse type-hints bytes but accepts str after the first isinstance check fails
         # when we pass str directly.
-        result = await parser.parse(container.model_dump_json(), "rec")  # type: ignore[arg-type]
+        result = await parser.parse(
+            container.model_dump_json(), "rec"
+        )  # type: ignore[arg-type]
         assert result.block_container is container
 
     @pytest.mark.asyncio

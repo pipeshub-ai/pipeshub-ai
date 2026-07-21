@@ -150,3 +150,21 @@ def test_resolve_maps_image_jpg_and_heic_mime() -> None:
 
     assert registry.resolve("image/jpg", "") is parser
     assert registry.resolve("image/heic", "") is parser
+
+
+def test_resolve_maps_json_and_yaml_mime_and_extension() -> None:
+    registry = ParserRegistry()
+    json_parser = _make_parser(ParserProvider.DEFAULT)
+    yaml_parser = _make_parser(ParserProvider.DEFAULT)
+    registry.register("json", ParserProvider.DEFAULT, json_parser)
+    registry.register("yaml", ParserProvider.DEFAULT, yaml_parser)
+    registry.set_default("json", ParserProvider.DEFAULT)
+    registry.set_default("yaml", ParserProvider.DEFAULT)
+
+    assert registry.resolve("application/json", "") is json_parser
+    assert registry.resolve("", "json") is json_parser
+    assert registry.resolve("application/yaml", "") is yaml_parser
+    assert registry.resolve("text/yaml", "") is yaml_parser
+    assert registry.resolve("application/x-yaml", "") is yaml_parser
+    assert registry.resolve("", "yaml") is yaml_parser
+    assert registry.resolve("", "yml") is yaml_parser
