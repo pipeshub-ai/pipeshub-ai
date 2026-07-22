@@ -1971,7 +1971,7 @@ async def _get_settings_base_path(graph_provider: IGraphDBProvider) -> str:
 @router.get("/api/v1/connectors/registry", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_registry(
     request: Request,
-    scope: str | None = Query(None, description="personal | team"),
+    scope: str | None = Query(None, description="Filter connector types by scope: personal | team"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
     search: str | None = Query(None, description="Search by name/group/description"),
@@ -2294,11 +2294,11 @@ async def get_connector_instances(
             )
 
         # Validate scope
-        if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+        if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value, ConnectorScope.SHARED.value]:
             logger.error(f"Invalid scope: {scope}")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail="Invalid scope. Must be 'personal' or 'team'"
+                detail="Invalid scope. Must be 'personal', 'team', or 'shared'"
             )
 
         result = await connector_registry.get_all_connector_instances(
@@ -2416,7 +2416,7 @@ async def get_inactive_connector_instances(request: Request) -> dict[str, Any]:
 @router.get("/api/v1/connectors/configured", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_configured_connector_instances(
     request: Request,
-    scope: str | None = Query(None, description="personal | team"),
+    scope: str | None = Query(None, description="personal | team | shared"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
     search: str | None = Query(None, description="Search by instance name/type/group"),
@@ -2445,11 +2445,11 @@ async def get_configured_connector_instances(
                 detail="User not authenticated"
             )
 
-        if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value]:
+        if scope and scope not in [ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value, ConnectorScope.SHARED.value]:
             logger.error(f"Invalid scope: {scope}")
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail="Invalid scope. Must be 'personal' or 'team'"
+                detail="Invalid scope. Must be 'personal', 'team', or 'shared'"
             )
         connectors = await connector_registry.get_configured_connector_instances(
             user_id=user_id,

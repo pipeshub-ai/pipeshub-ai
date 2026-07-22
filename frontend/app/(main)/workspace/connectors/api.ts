@@ -9,6 +9,7 @@ import type {
   ConnectorConfig,
   FilterOptionsResponse,
   ConnectorStatsResponse,
+  ConnectorSharesResponse,
 } from './types';
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
@@ -420,5 +421,31 @@ export const ConnectorsApi = {
       `${BASE_URL}/${connectorId}/stats`
     );
     return data;
+  },
+
+  // ── Sharing ──
+
+  /** List all users/teams the connector is shared with. */
+  async listConnectorShares(connectorId: string): Promise<ConnectorSharesResponse> {
+    const { data } = await apiClient.get<ConnectorSharesResponse>(
+      `${BASE_URL}/${connectorId}/shares`
+    );
+    return data;
+  },
+
+  /** Share a connector with users and/or teams (owner only). */
+  async shareConnector(
+    connectorId: string,
+    payload: { userIds?: string[]; teamIds?: string[] }
+  ): Promise<void> {
+    await apiClient.post(`${BASE_URL}/${connectorId}/shares`, payload);
+  },
+
+  /** Revoke a share (owner removes a grantee) or leave (recipient removes self). */
+  async revokeConnectorShare(
+    connectorId: string,
+    payload: { userIds?: string[]; teamIds?: string[] }
+  ): Promise<void> {
+    await apiClient.delete(`${BASE_URL}/${connectorId}/shares`, { data: payload });
   },
 };

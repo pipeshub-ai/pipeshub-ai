@@ -48,6 +48,17 @@ interface ConnectorCatalogLayoutProps {
   onCardClick?: (connector: Connector) => void;
   /** Whether data is loading. */
   isLoading?: boolean;
+  /**
+   * Custom content to render instead of the connector grid when a tab has no
+   * corresponding registry/instance data.  Displayed when `activeTab` equals
+   * the key in this map.  Example: `{ shared: <SharedView /> }`.
+   */
+  tabContent?: Record<string, React.ReactNode>;
+  /**
+   * Extra tab counts that override the auto-computed ones.
+   * Useful for tabs whose counts come from a separate API (e.g. shared connectors).
+   */
+  extraTabCounts?: Record<string, number>;
 }
 
 // ========================================
@@ -68,6 +79,8 @@ export function ConnectorCatalogLayout({
   activeConnectors,
   onSetup,
   onAddInstance,
+  tabContent,
+  extraTabCounts,
   onCardClick,
   isLoading = false,
 }: ConnectorCatalogLayoutProps) {
@@ -163,8 +176,9 @@ export function ConnectorCatalogLayout({
     counts['inactive'] = base.filter(
       (c) => (inactiveCountByType[c.type] ?? 0) > 0
     ).length;
-    return counts;
-  }, [allConnectors, searchQuery, activeCountByType, inactiveCountByType]);
+    // Merge caller-supplied counts (e.g. shared count from a separate API call).
+    return extraTabCounts ? { ...counts, ...extraTabCounts } : counts;
+  }, [allConnectors, searchQuery, activeCountByType, inactiveCountByType, extraTabCounts]);
 
   return (
     <Flex
@@ -220,8 +234,8 @@ export function ConnectorCatalogLayout({
         {trailingAction}
       </Flex>
 
-      {/* ── Connector grid ── */}
-      {isLoading ? (
+      {/* ── Connector grid (or custom tab content) ── */}
+      {tabContent?.[activeTab] ?? (isLoading ? (
         <Flex
           align="center"
           justify="center"
@@ -261,7 +275,7 @@ export function ConnectorCatalogLayout({
             />
           ))}
         </Grid>
-      )}
+      ))}
     </Flex>
   );
 }

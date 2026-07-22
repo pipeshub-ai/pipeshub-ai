@@ -1161,19 +1161,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> tuple[list[dict], int]:
         """Get filtered connector instances with pagination."""
         try:
-            # For non-admin team scope we pre-compute which team apps the user
-            # can actually see.  This is done once here so the same list can be
-            # reused for both the main query and the scope-count sub-query.
+            # For "shared" scope: traverse USER_APP_RELATION edges from the caller
+            # (indexed on _from) instead of scanning the full connector collection.
+            # DOCUMENT(rel._to) is O(1) by _id, and rel stays in scope so sharedBy/
+            # sharedAt can be returned inline — eliminating the decoration round-trip.
             accessible_team_keys: list[str] | None = None
 
-            # Build base query
-            query = """
-            FOR doc IN @@collection
-                FILTER doc._id != null
-            """
-            bind_vars = {
-                "@collection": collection,
-            }
+            if scope == "shared":
+                query = f"""
+                LET caller_key = FIRST(
+                    FOR u IN {CollectionNames.USERS.value}
+                        FILTER u.userId == @user_id
+                        LIMIT 1 RETURN u._key
+                )
+                LET caller_from = CONCAT('{CollectionNames.USERS.value}/', caller_key != null ? caller_key : @user_id)
+                FOR rel IN {CollectionNames.USER_APP_RELATION.value}
+                    FILTER rel._from == caller_from
+                    FILTER rel.isShared == true
+                    LET doc = DOCUMENT(rel._to)
+                    FILTER doc != null AND doc._id != null
+                    FILTER doc.createdBy != @user_id
+                """
+                bind_vars: dict = {"user_id": user_id}
+            else:
+                query = """
+                FOR doc IN @@collection
+                    FILTER doc._id != null
+                """
+                bind_vars = {"@collection": collection}
 
             # Exclude KB if requested
             if exclude_kb and kb_connector_type:
@@ -1185,6 +1200,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # team (admin)     → all team-scoped connectors in the org
             # team (non-admin) → only team connectors reachable via the user's
             #                    userAppRelation / permission edges
+            # shared             → all shared connectors
             if scope == "personal":
                 query += " FILTER doc.scope == @personal_scope\n"
                 query += " FILTER doc.createdBy == @user_id\n"
@@ -1232,10 +1248,27 @@ class ArangoHTTPProvider(IGraphDBProvider):
             count_result = await self.execute_query(count_query, bind_vars=bind_vars, transaction=transaction)
             total_count = count_result[0] if count_result else 0
 
-            # Main query with pagination
-            query += " LIMIT @skip, @limit\n RETURN doc"
+            # Main query with pagination.  For shared scope, inline the owner lookup
+            # so sharedBy/sharedAt are returned in a single round-trip.
+            # NOTE: the pagination/RETURN clause is appended exactly once below,
+            # in the scope-specific branch — do not append it before this point.
             bind_vars["skip"] = skip
             bind_vars["limit"] = limit
+            if scope == "shared":
+                query += f"""
+                LIMIT @skip, @limit
+                LET _owner = FIRST(
+                    FOR u IN {CollectionNames.USERS.value}
+                        FILTER u.userId == rel.sharedBy OR u._key == rel.sharedBy
+                        LIMIT 1 RETURN u
+                )
+                RETURN MERGE(doc, {{
+                    sharedBy: {{userId: rel.sharedBy, name: _owner != null ? (_owner.fullName || _owner.name || _owner.userName) : null}},
+                    sharedAt: rel.createdAtTimestamp
+                }})
+                """
+            else:
+                query += " LIMIT @skip, @limit\n RETURN doc"
 
             documents = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction) or []
 
@@ -4347,6 +4380,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         try:
             user_from = f"{CollectionNames.USERS.value}/{user_id}"
+            # Shared connectors are discovered via USER_APP_RELATION edges tagged
+            # isShared=true that are created when sharing is granted.  They arrive
+            # naturally in the user_apps list, so no separate anchor lookup is needed.
             query = f"""
             LET user_apps = (
                 FOR app IN OUTBOUND @user_from {CollectionNames.USER_APP_RELATION.value}
@@ -12163,6 +12199,430 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to list KB permissions: {str(e)}")
             return []
+
+    # -------------------------------------------------------------------------
+    # Connector sharing
+    # -------------------------------------------------------------------------
+
+    async def get_or_create_connector_user_group(
+        self,
+        connector_id: str,
+        owner_user_key: str,
+        org_id: str,
+    ) -> str | None:
+        """Return the _key of the ConnectorGroup for this connector; creates if absent.
+
+        The ConnectorGroup has externalGroupId='internal-{connector_id}'.  It is
+        normally created by ensure_connector_group_permission() during the first
+        connector sync.  UPSERT semantics make this call idempotent so sharing
+        can be set up before (or after) the first sync completes.
+
+        owner_user_key accepts either the graph _key or the JWT userId (MongoDB _id);
+        it is stored as createdBy on INSERT only and is only used for audit purposes.
+        """
+        try:
+            external_id = f"internal-{connector_id}"
+            new_key = str(uuid.uuid4())
+            timestamp = get_epoch_timestamp_in_ms()
+            # UPSERT on (connectorId, externalGroupId) — the stable composite key.
+            # UPDATE {} leaves the existing document untouched.
+            # RETURN: NEW is always populated (inserted or post-update doc); OLD is
+            # null on insert and the pre-update doc on update.  We prefer NEW._key.
+            query = """
+            UPSERT { connectorId: @connectorId, externalGroupId: @externalGroupId }
+            INSERT {
+                _key: @new_key,
+                connectorId: @connectorId,
+                externalGroupId: @externalGroupId,
+                orgId: @orgId,
+                name: "ConnectorGroup",
+                type: @type,
+                appName: "INTERNAL",
+                connectorName: "INTERNAL",
+                createdBy: @ownerKey,
+                createdAtTimestamp: @ts,
+                updatedAtTimestamp: @ts
+            }
+            UPDATE {}
+            IN @@groups
+            RETURN NEW._key
+            """
+            results = await self.execute_query(
+                query,
+                bind_vars={
+                    "connectorId": connector_id,
+                    "externalGroupId": external_id,
+                    "new_key": new_key,
+                    "orgId": org_id,
+                    "ownerKey": owner_user_key,
+                    "type": "INTERNAL_SHARE",
+                    "ts": timestamp,
+                    "@groups": CollectionNames.GROUPS.value,
+                },
+            )
+            key = (results or [None])[0]
+            if not key:
+                # Fallback: the UPSERT matched but NEW._key was not returned (should
+                # not happen with ArangoDB ≥ 3.7, but guard defensively).
+                fallback_query = """
+                FOR g IN @@groups
+                    FILTER g.connectorId == @connectorId AND g.externalGroupId == @externalGroupId
+                    LIMIT 1 RETURN g._key
+                """
+                fb = await self.execute_query(
+                    fallback_query,
+                    bind_vars={
+                        "connectorId": connector_id,
+                        "externalGroupId": external_id,
+                        "@groups": CollectionNames.GROUPS.value,
+                    },
+                )
+                key = (fb or [None])[0]
+            return key
+        except Exception as e:
+            self.logger.error(f"Failed to get/create connector user group for {connector_id}: {e}")
+            raise
+
+    async def create_connector_share_permissions(
+        self,
+        connector_id: str,
+        requester_user_id: str,
+        user_ids: list[str],
+        team_ids: list[str],  # reserved for v2; not processed in v1
+        org_id: str,
+    ) -> dict:
+        """Grant READER membership in the ConnectorGroup to users.
+
+        Creates per grantee:
+          - PERMISSION edge (isShared=true, role=READER): users/{u} → groups/{ConnectorGroup}
+          - USER_APP_RELATION edge (isShared=true): users/{u} → apps/{connector}
+
+        Skips cross-org users and users already sharing.
+        """
+        try:
+            timestamp = get_epoch_timestamp_in_ms()
+            external_id = f"internal-{connector_id}"
+
+            # Resolve requester (by external userId) and ConnectorGroup in one query.
+            lookup_query = """
+            LET requester = FIRST(
+                FOR u IN @@users
+                    FILTER u.userId == @requester_user_id OR u._key == @requester_user_id
+                    RETURN { _key: u._key }
+            )
+            LET grp = FIRST(
+                FOR g IN @@groups
+                    FILTER g.connectorId == @connectorId AND g.externalGroupId == @externalGroupId
+                    LIMIT 1 RETURN { _key: g._key, _id: g._id }
+            )
+            RETURN { requester: requester, group: grp }
+            """
+            v = (await self.execute_query(
+                lookup_query,
+                bind_vars={
+                    "requester_user_id": requester_user_id,
+                    "connectorId": connector_id,
+                    "externalGroupId": external_id,
+                    "@users": CollectionNames.USERS.value,
+                    "@groups": CollectionNames.GROUPS.value,
+                },
+            ) or [{}])[0]
+
+            requester_doc = v.get("requester")
+            if not requester_doc:
+                return {"success": False, "reason": "Requester not found", "code": 404}
+            grp = v.get("group")
+            if not grp:
+                return {
+                    "success": False,
+                    "reason": "ConnectorGroup not found — sync the connector first",
+                    "code": 404,
+                }
+
+            group_key = grp["_key"]
+            group_id = grp["_id"]  # e.g. "groups/abc123"
+
+            if not user_ids:
+                return {"success": True, "grantedCount": 0, "grantedUsers": [],
+                        "grantedTeams": [], "alreadySharedUsers": [], "alreadySharedTeams": []}
+
+            # Batch-resolve all requested users and their existing share status in one
+            # AQL query, avoiding N separate round trips.
+            batch_query = f"""
+            FOR uid IN @user_ids
+                LET user = FIRST(
+                    FOR u IN @@users
+                        FILTER u._key == uid OR u.userId == uid
+                        LIMIT 1 RETURN u
+                )
+                FILTER user != null
+                FILTER TO_STRING(user.orgId) == @org_id
+                FILTER user.userId != @requester_user_id AND user._key != @requester_user_id
+                LET already = LENGTH(
+                    FOR p IN {CollectionNames.PERMISSION.value}
+                        FILTER p._from == CONCAT('users/', user._key)
+                        FILTER p._to == @group_id
+                        FILTER p.isShared == true
+                        LIMIT 1 RETURN 1
+                ) > 0
+                RETURN {{ _key: user._key, already: already }}
+            """
+            batch_results = await self.execute_query(
+                batch_query,
+                bind_vars={
+                    "user_ids": user_ids,
+                    "org_id": str(org_id),
+                    "requester_user_id": requester_user_id,
+                    "group_id": group_id,
+                    "@users": CollectionNames.USERS.value,
+                },
+            ) or []
+
+            permission_edges: list[dict] = []
+            user_app_edges: list[dict] = []
+            granted_users: list[str] = []
+            already_shared_users: list[str] = []
+
+            for row in batch_results:
+                u_key = row["_key"]
+                if row["already"]:
+                    already_shared_users.append(u_key)
+                    continue
+                permission_edges.append({
+                    "_from": f"{CollectionNames.USERS.value}/{u_key}",
+                    "_to": f"{CollectionNames.GROUPS.value}/{group_key}",
+                    "role": "READER",
+                    "type": "USER",
+                    "isShared": True,
+                    "sharedBy": requester_user_id,
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                })
+                # USER_APP_RELATION schema requires syncState + lastSyncUpdate.
+                # For a direct share (not a sync), use COMPLETED with current ts.
+                user_app_edges.append({
+                    "_from": f"{CollectionNames.USERS.value}/{u_key}",
+                    "_to": f"{CollectionNames.APPS.value}/{connector_id}",
+                    "isShared": True,
+                    "sharedBy": requester_user_id,
+                    "syncState": "COMPLETED",
+                    "lastSyncUpdate": timestamp,
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                })
+                granted_users.append(u_key)
+
+            if permission_edges:
+                await self.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
+            if user_app_edges:
+                await self.batch_create_edges(user_app_edges, CollectionNames.USER_APP_RELATION.value)
+
+            return {
+                "success": True,
+                "grantedCount": len(granted_users),
+                "grantedUsers": granted_users,
+                "grantedTeams": [],
+                "alreadySharedUsers": already_shared_users,
+                "alreadySharedTeams": [],
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to create connector share permissions: {e}")
+            return {"success": False, "reason": str(e), "code": 500}
+
+    async def list_connector_share_permissions(
+        self,
+        connector_id: str,
+        requester_user_id: str,
+    ) -> list[dict]:
+        """List all users with share-based (isShared=true) access to this connector."""
+        try:
+            external_id = f"internal-{connector_id}"
+            query = """
+            LET grp = FIRST(
+                FOR g IN @@groups
+                    FILTER g.connectorId == @connectorId AND g.externalGroupId == @externalGroupId
+                    LIMIT 1 RETURN g
+            )
+            FILTER grp != null
+            FOR p IN @@perm
+                FILTER p._to == grp._id
+                FILTER p.isShared == true
+                LET entity = DOCUMENT(p._from)
+                FILTER entity != null
+                RETURN {
+                    id: entity._key,
+                    userId: entity.userId,
+                    name: entity.fullName || entity.name || entity.userName,
+                    email: entity.email,
+                    role: "READER",
+                    type: p.type,
+                    sharedBy: p.sharedBy,
+                    sharedAt: p.createdAtTimestamp
+                }
+            """
+            results = await self.execute_query(
+                query,
+                bind_vars={
+                    "connectorId": connector_id,
+                    "externalGroupId": external_id,
+                    "@groups": CollectionNames.GROUPS.value,
+                    "@perm": CollectionNames.PERMISSION.value,
+                },
+            )
+            return results or []
+        except Exception as e:
+            self.logger.error(f"Failed to list connector share permissions: {e}")
+            return []
+
+    async def remove_connector_share_permissions(
+        self,
+        connector_id: str,
+        requester_user_id: str,
+        user_ids: list[str],
+        team_ids: list[str],  # reserved for v2; not processed in v1
+        is_owner: bool,
+    ) -> int:
+        """Remove isShared PERMISSION + USER_APP_RELATION edges for the given users.
+
+        user_ids may contain graph _key values or external userId values (MongoDB _id);
+        both are resolved via the users collection before building edge _from addresses.
+        """
+        try:
+            if not user_ids:
+                return 0
+
+            external_id = f"internal-{connector_id}"
+
+            # Resolve user_ids (which may be graph _key OR external userId) to
+            # user_froms ("users/{_key}") in one query, then filter to the
+            # ConnectorGroup PERMISSION edges that are isShared=true.
+            remove_query = f"""
+            LET grp_id = FIRST(
+                FOR g IN @@groups
+                    FILTER g.connectorId == @connectorId AND g.externalGroupId == @externalGroupId
+                    LIMIT 1 RETURN g._id
+            )
+            LET resolved_froms = (
+                FOR uid IN @user_ids
+                    LET u = FIRST(
+                        FOR u2 IN @@users
+                            FILTER u2._key == uid OR u2.userId == uid
+                            LIMIT 1 RETURN u2
+                    )
+                    FILTER u != null
+                    RETURN CONCAT('{CollectionNames.USERS.value}/', u._key)
+            )
+            LET removed_perm = (
+                FOR p IN @@perm
+                    FILTER p._to == grp_id
+                    FILTER p.isShared == true
+                    FILTER p._from IN resolved_froms
+                    REMOVE p IN @@perm
+                    RETURN OLD._from
+            )
+            LET _removed_rel = (
+                FOR rel IN @@user_app
+                    FILTER rel._to == CONCAT('{CollectionNames.APPS.value}/', @connectorId)
+                    FILTER rel.isShared == true
+                    FILTER rel._from IN resolved_froms
+                    REMOVE rel IN @@user_app
+            )
+            RETURN LENGTH(removed_perm)
+            """
+            results = await self.execute_query(
+                remove_query,
+                bind_vars={
+                    "connectorId": connector_id,
+                    "externalGroupId": external_id,
+                    "user_ids": user_ids,
+                    "@groups": CollectionNames.GROUPS.value,
+                    "@users": CollectionNames.USERS.value,
+                    "@perm": CollectionNames.PERMISSION.value,
+                    "@user_app": CollectionNames.USER_APP_RELATION.value,
+                },
+            )
+            count = (results or [0])[0]
+            self.logger.info(f"Removed {count} share permissions from connector {connector_id}")
+            return count
+        except Exception as e:
+            self.logger.error(f"Failed to remove connector share permissions: {e}")
+            return 0
+
+    async def has_connector_share_access(
+        self,
+        connector_id: str,
+        user_id: str,
+    ) -> bool:
+        """Return True if the user has an isShared=true PERMISSION edge to the ConnectorGroup."""
+        try:
+            external_id = f"internal-{connector_id}"
+            query = """
+            LET userDoc = FIRST(
+                FOR u IN @@users FILTER u.userId == @userId LIMIT 1 RETURN u
+            )
+            FILTER userDoc != null
+            LET grp = FIRST(
+                FOR g IN @@groups
+                    FILTER g.connectorId == @connectorId AND g.externalGroupId == @externalGroupId
+                    LIMIT 1 RETURN g
+            )
+            FILTER grp != null
+            RETURN LENGTH(
+                FOR p IN @@perm
+                    FILTER p._from == userDoc._id AND p._to == grp._id AND p.isShared == true
+                    LIMIT 1 RETURN 1
+            ) > 0
+            """
+            results = await self.execute_query(
+                query,
+                bind_vars={
+                    "userId": user_id,
+                    "connectorId": connector_id,
+                    "externalGroupId": external_id,
+                    "@users": CollectionNames.USERS.value,
+                    "@groups": CollectionNames.GROUPS.value,
+                    "@perm": CollectionNames.PERMISSION.value,
+                },
+            )
+            return bool((results or [False])[0])
+        except Exception as e:
+            self.logger.error(f"Failed to check connector share access: {e}")
+            return False
+
+    # ---- delete_non_shared_edges_to (used by on_new_user_groups resync) ----
+
+    async def delete_non_shared_edges_to(
+        self,
+        to_id: str,
+        to_collection: str,
+        collection: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete edges to a node, skipping edges tagged isShared=true.
+
+        Used by on_new_user_groups() so that share-membership edges added via
+        the sharing API survive a connector resync.
+        """
+        to_node = f"{to_collection}/{to_id}"
+        query = f"""
+        FOR edge IN {collection}
+            FILTER edge._to == @to_node
+            FILTER edge.isShared != true
+            REMOVE edge IN {collection}
+            RETURN OLD
+        """
+        
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                {"to_node": to_node},
+                txn_id=transaction,
+            )
+            return len(results)
+        except Exception as e:
+            self.logger.error(f"❌ delete_non_shared_edges_to failed: {str(e)}")
+            raise
+
 
     async def list_all_records(
         self,

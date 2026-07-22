@@ -3,13 +3,13 @@
 // ========================================
 
 /** Scope determines whether we're viewing team or personal connectors. */
-export type ConnectorScope = 'team' | 'personal';
+export type ConnectorScope = 'team' | 'personal' | 'shared';
 
 /** Filter tabs displayed for team connectors. */
 export type TeamFilterTab = 'all' | 'configured' | 'not_configured';
 
 /** Filter tabs displayed for personal connectors. */
-export type PersonalFilterTab = 'all' | 'active' | 'inactive';
+export type PersonalFilterTab = 'all' | 'active' | 'inactive' | 'shared';
 
 /**
  * Core connector object returned by both the active-list
@@ -446,6 +446,10 @@ export interface ConnectorInstance extends Connector {
     percentage?: number;
     label?: string;
   };
+  /** For shared connectors: who shared this connector with the current user. */
+  sharedBy?: { userId?: string | null; name?: string | null } | null;
+  /** For shared connectors: timestamp when access was granted */
+  sharedAt?: number | null;
 }
 
 /** Electron local-folder watcher state per connector instance */
@@ -524,4 +528,23 @@ export interface InstanceOverview {
   recordsStatus: RecordsStatus;
   indexedRecords: IndexedRecord[];
   totalSelected: number;
+}
+
+/** A single share entry returned by GET /connectors/:id/shares */
+export interface ConnectorShareEntry {
+  type: 'user' | 'team';
+  /** Graph _key (ArangoDB) or node id (Neo4j) — used for revoke calls */
+  id: string;
+  /** External userId (MongoDB _id) — used for isCurrentUser comparison */
+  userId?: string;
+  name?: string;
+  email?: string;
+  sharedAt?: number;
+  sharedBy?: string;
+}
+
+/** Response from GET /connectors/:id/shares */
+export interface ConnectorSharesResponse {
+  shares: ConnectorShareEntry[];
+  connectorId?: string;
 }

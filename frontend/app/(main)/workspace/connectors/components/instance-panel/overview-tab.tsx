@@ -49,6 +49,8 @@ interface OverviewTabProps {
   connectorConfig?: ConnectorConfig;
   /** Local sync runtime status from Electron watcher manager */
   localSyncStatus?: LocalSyncStatus;
+  /** When true, hides sync/reindex action buttons (used for shared-with-me connectors). */
+  readOnly?: boolean;
 }
 
 // ========================================
@@ -96,6 +98,7 @@ export function OverviewTab({
   statsLoading = false,
   connectorConfig,
   localSyncStatus,
+  readOnly = false,
 }: OverviewTabProps) {
   const { t } = useTranslation();
   const router = useRouter();
@@ -305,7 +308,7 @@ export function OverviewTab({
           <Text size="3" weight="medium" style={{ color: 'var(--gray-12)', flex: 1, minWidth: 0 }}>
             {t('workspace.connectors.overview.recordsStatus')}
           </Text>
-          {instance.isActive && (
+          {instance.isActive && !readOnly && (
             <Flex
               direction="column"
               align="end"

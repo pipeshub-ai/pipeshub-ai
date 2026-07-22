@@ -1530,6 +1530,36 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Delete edges to failed: {str(e)}")
             raise
 
+    async def delete_non_shared_edges_to(
+        self,
+        to_id: str,
+        to_collection: str,
+        collection: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete edges to a node, skipping edges with isShared=true.
+
+        Used by on_new_user_groups() so share-membership edges survive a resync.
+        """
+        try:
+            relationship_type = edge_collection_to_relationship(collection)
+            to_label = collection_to_label(to_collection)
+            query = f"""
+            MATCH ()-[r:{relationship_type}]->(to:{to_label} {{id: $to_id}})
+            WHERE r.isShared IS NULL OR r.isShared <> true
+            DELETE r
+            RETURN count(r) AS deleted
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"to_id": to_id},
+                txn_id=transaction,
+            )
+            return results[0]["deleted"] if results else 0
+        except Exception as e:
+            self.logger.error(f"❌ delete_non_shared_edges_to failed: {str(e)}")
+            raise
+
     async def delete_edges_to_groups(
         self,
         from_id: str,
@@ -10567,6 +10597,336 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ List KB permissions failed: {str(e)}")
             return []
 
+    # -------------------------------------------------------------------------
+    # Connector sharing
+    # -------------------------------------------------------------------------
+
+    async def get_or_create_connector_user_group(
+        self,
+        connector_id: str,
+        owner_user_key: str,
+        org_id: str,
+    ) -> str | None:
+        """Return the id of the ConnectorGroup for this connector; creates if absent.
+
+        The ConnectorGroup has externalGroupId='internal-{connector_id}'.
+        MERGE semantics make this call idempotent.
+
+        owner_user_key accepts either the graph _key or the JWT userId (MongoDB _id);
+        it is stored as createdBy on INSERT only and is used for audit purposes.
+        """
+        try:
+            external_id = f"internal-{connector_id}"
+            new_key = str(uuid.uuid4())
+            timestamp = get_epoch_timestamp_in_ms()
+            query = """
+            MERGE (grp:Group {connectorId: $connectorId, externalGroupId: $externalGroupId})
+            ON CREATE SET
+                grp.id = $new_key,
+                grp.orgId = $orgId,
+                grp.name = 'ConnectorGroup',
+                grp.type = 'INTERNAL_SHARE',
+                grp.appName = 'INTERNAL',
+                grp.connectorName = 'INTERNAL',
+                grp.createdBy = $ownerKey,
+                grp.createdAtTimestamp = $ts,
+                grp.updatedAtTimestamp = $ts
+            RETURN grp.id AS groupKey
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "connectorId": connector_id,
+                    "externalGroupId": external_id,
+                    "new_key": new_key,
+                    "orgId": org_id,
+                    "ownerKey": owner_user_key,
+                    "ts": timestamp,
+                },
+            )
+            for r in results or []:
+                k = r.get("groupKey")
+                if k:
+                    return k
+            # Fallback: MERGE always returns a row, but guard defensively.
+            return new_key
+        except Exception as e:
+            self.logger.error(f"Failed to get/create connector user group for {connector_id}: {e}")
+            raise
+
+    async def create_connector_share_permissions(
+        self,
+        connector_id: str,
+        requester_user_id: str,
+        user_ids: list[str],
+        team_ids: list[str],  # reserved for v2; not processed in v1
+        org_id: str,
+    ) -> dict:
+        """Grant READER membership in the ConnectorGroup to users.
+
+        Creates per grantee:
+          - PERMISSION relationship (isShared=true, role=READER): User → Group
+          - USER_APP_RELATION relationship (isShared=true): User → App
+
+        Skips cross-org users and users already sharing.
+        """
+        try:
+            timestamp = get_epoch_timestamp_in_ms()
+            external_id = f"internal-{connector_id}"
+
+            # Resolve requester (by any supported id format) + ConnectorGroup.
+            # Neo4j nodes store the graph key in `id` (see _arango_to_neo4j_node,
+            # which drops `_key`), so the key is read/matched via `id`, never `_key`.
+            req_query = """
+            OPTIONAL MATCH (u:User) WHERE u.id = $uid OR u.userId = $uid
+            OPTIONAL MATCH (grp:Group {connectorId: $connectorId, externalGroupId: $externalGroupId})
+            RETURN u.id AS uKey, grp.id AS groupId
+            LIMIT 1
+            """
+            req_results = await self.client.execute_query(
+                req_query,
+                parameters={
+                    "uid": requester_user_id,
+                    "connectorId": connector_id,
+                    "externalGroupId": external_id,
+                },
+            )
+            req = req_results[0] if req_results else {}
+            requester_key = req.get("uKey")
+            if not requester_key:
+                return {"success": False, "reason": "Requester not found", "code": 404}
+            group_id = req.get("groupId")
+            if not group_id:
+                return {
+                    "success": False,
+                    "reason": "ConnectorGroup not found — sync the connector first",
+                    "code": 404,
+                }
+
+            if not user_ids:
+                return {"success": True, "grantedCount": 0, "grantedUsers": [],
+                        "grantedTeams": [], "alreadySharedUsers": [], "alreadySharedTeams": []}
+
+            # Resolve all target users and check existing shares in one query.
+            batch_check_q = """
+            UNWIND $user_ids AS uid
+            MATCH (u:User) WHERE (u.id = uid OR u.userId = uid)
+                AND u.orgId = $orgId
+                AND u.id <> $requesterKey
+            OPTIONAL MATCH (u)-[r:PERMISSION {isShared: true}]->(grp:Group {id: $groupId})
+            RETURN u.id AS uKey, r IS NOT NULL AS already
+            """
+            batch_results = await self.client.execute_query(
+                batch_check_q,
+                parameters={
+                    "user_ids": user_ids,
+                    "orgId": org_id,
+                    "requesterKey": requester_key,
+                    "groupId": group_id,
+                },
+            )
+
+            granted_users: list[str] = []
+            already_shared_users: list[str] = []
+
+            for row in batch_results or []:
+                u_key = row.get("uKey")
+                if not u_key:
+                    continue
+                if row.get("already"):
+                    already_shared_users.append(u_key)
+                    continue
+
+                # PERMISSION edge: User → Group
+                perm_q = """
+                MATCH (u:User {id: $uKey})
+                MATCH (grp:Group {id: $groupId})
+                MERGE (u)-[r:PERMISSION {isShared: true}]->(grp)
+                ON CREATE SET
+                    r.role = 'READER',
+                    r.type = 'USER',
+                    r.isShared = true,
+                    r.sharedBy = $sharedBy,
+                    r.createdAtTimestamp = $ts,
+                    r.updatedAtTimestamp = $ts
+                """
+                await self.client.execute_query(
+                    perm_q,
+                    parameters={
+                        "uKey": u_key,
+                        "groupId": group_id,
+                        "sharedBy": requester_user_id,
+                        "ts": timestamp,
+                    },
+                )
+                # USER_APP_RELATION relationship: User → App
+                rel_q = """
+                MATCH (u:User {id: $uKey})
+                MATCH (app:App) WHERE app.id = $connectorId
+                MERGE (u)-[r:USER_APP_RELATION {isShared: true}]->(app)
+                ON CREATE SET
+                    r.isShared = true,
+                    r.sharedBy = $sharedBy,
+                    r.syncState = 'COMPLETED',
+                    r.lastSyncUpdate = $ts,
+                    r.createdAtTimestamp = $ts,
+                    r.updatedAtTimestamp = $ts
+                """
+                await self.client.execute_query(
+                    rel_q,
+                    parameters={
+                        "uKey": u_key,
+                        "connectorId": connector_id,
+                        "sharedBy": requester_user_id,
+                        "ts": timestamp,
+                    },
+                )
+                granted_users.append(u_key)
+
+            return {
+                "success": True,
+                "grantedCount": len(granted_users),
+                "grantedUsers": granted_users,
+                "grantedTeams": [],
+                "alreadySharedUsers": already_shared_users,
+                "alreadySharedTeams": [],
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to create connector share permissions: {e}")
+            return {"success": False, "reason": str(e), "code": 500}
+
+    async def list_connector_share_permissions(
+        self,
+        connector_id: str,
+        requester_user_id: str,
+    ) -> list[dict]:
+        """List all users with isShared=true access to this connector."""
+        try:
+            external_id = f"internal-{connector_id}"
+            query = """
+            MATCH (grp:Group {connectorId: $connectorId, externalGroupId: $externalGroupId})
+            MATCH (u:User)-[r:PERMISSION {isShared: true}]->(grp)
+            RETURN
+                u.id AS uKey, u.userId AS userId, u.email AS email,
+                u.fullName AS fullName, u.name AS name, u.userName AS userName,
+                r.sharedBy AS sharedBy,
+                r.createdAtTimestamp AS sharedAt
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"connectorId": connector_id, "externalGroupId": external_id},
+            )
+            shares = []
+            for row in results or []:
+                shares.append({
+                    "id": row.get("uKey"),
+                    "userId": row.get("userId"),
+                    "name": row.get("fullName") or row.get("name") or row.get("userName"),
+                    "email": row.get("email"),
+                    "role": "READER",
+                    "type": "USER",
+                    "sharedBy": row.get("sharedBy"),
+                    "sharedAt": row.get("sharedAt"),
+                })
+            return shares
+        except Exception as e:
+            self.logger.error(f"Failed to list connector share permissions: {e}")
+            return []
+
+    async def remove_connector_share_permissions(
+        self,
+        connector_id: str,
+        requester_user_id: str,
+        user_ids: list[str],
+        team_ids: list[str],  # reserved for v2; not processed in v1
+        is_owner: bool,
+    ) -> int:
+        """Remove isShared PERMISSION + USER_APP_RELATION relationships for given users.
+
+        user_ids may contain graph _key, node id, or external userId values;
+        all are resolved before matching relationships.
+        """
+        try:
+            if not user_ids:
+                return 0
+            external_id = f"internal-{connector_id}"
+
+            # Delete PERMISSION edges and count them; USER_APP_RELATION deleted
+            # separately with OPTIONAL MATCH so missing edges don't drop the count.
+            perm_q = """
+            MATCH (grp:Group {connectorId: $connectorId, externalGroupId: $externalGroupId})
+            MATCH (u:User)-[r:PERMISSION {isShared: true}]->(grp)
+            WHERE u.id IN $user_keys OR u.userId IN $user_keys
+            DELETE r
+            RETURN count(*) AS removed
+            """
+            perm_res = await self.client.execute_query(
+                perm_q,
+                parameters={
+                    "connectorId": connector_id,
+                    "externalGroupId": external_id,
+                    "user_keys": user_ids,
+                },
+            )
+            count = (perm_res[0].get("removed", 0) if perm_res else 0)
+
+            # Delete USER_APP_RELATION edges independently (OPTIONAL so missing
+            # edges don't prevent a successful revoke).
+            rel_q = """
+            MATCH (u:User)
+            WHERE u.id IN $user_keys OR u.userId IN $user_keys
+            MATCH (app:App) WHERE app.id = $connectorId
+            OPTIONAL MATCH (u)-[rel:USER_APP_RELATION {isShared: true}]->(app)
+            WHERE rel IS NOT NULL
+            DELETE rel
+            """
+            await self.client.execute_query(
+                rel_q,
+                parameters={"connectorId": connector_id, "user_keys": user_ids},
+            )
+
+            self.logger.info(f"Removed {count} share permissions from connector {connector_id}")
+            return count
+        except Exception as e:
+            self.logger.error(f"Failed to remove connector share permissions: {e}")
+            return 0
+
+    async def has_connector_share_access(
+        self,
+        connector_id: str,
+        user_id: str,
+    ) -> bool:
+        """Return True if user has an isShared=true PERMISSION relationship to the ConnectorGroup.
+
+        user_id is the JWT userId (MongoDB _id); looked up via u.userId.
+        Uses OPTIONAL MATCH for broad Neo4j version compatibility (3.x+).
+        """
+        try:
+            external_id = f"internal-{connector_id}"
+            query = """
+            MATCH (u:User) WHERE u.userId = $userId OR u.id = $userId
+            MATCH (grp:Group {connectorId: $connectorId, externalGroupId: $externalGroupId})
+            OPTIONAL MATCH (u)-[r:PERMISSION {isShared: true}]->(grp)
+            RETURN r IS NOT NULL AS hasAccess
+            LIMIT 1
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "userId": user_id,
+                    "connectorId": connector_id,
+                    "externalGroupId": external_id,
+                },
+            )
+            if results:
+                record = results[0] if isinstance(results, list) else None
+                if record:
+                    return bool(record.get("hasAccess", False))
+            return False
+        except Exception as e:
+            self.logger.error(f"Failed to check connector share access: {e}")
+            return False
+
     async def list_all_records(
         self,
         user_id: str,
@@ -12128,6 +12488,11 @@ class Neo4jProvider(IGraphDBProvider):
                         )
                     conditions.append("doc.id IN $accessible_team_ids")
                     params["accessible_team_ids"] = accessible_team_ids
+                else:
+                    params["user_id"] = user_id
+            elif scope == "shared":
+                params["user_id"] = user_id
+                # Filtering happens via a subquery — we inject it separately below
 
             # Search filter
             if search:
@@ -12152,28 +12517,55 @@ class Neo4jProvider(IGraphDBProvider):
 
             where_clause = " AND ".join(conditions)
 
-            # Count query
-            count_query = f"""
-            MATCH (doc:{label})
-            WHERE {where_clause}
-            RETURN count(doc) as total
-            """
+            if scope == "shared":
+                # $user_id is the JWT MongoDB _id stored in u.userId (primary lookup).
+                # Owner name is resolved inline so no second decoration round-trip is needed.
+                extra_where = f"AND {where_clause}" if conditions else ""
+                count_query = f"""
+                MATCH (u:User {{userId: $user_id}})-[rel:USER_APP_RELATION {{isShared: true}}]->(doc:{label})
+                WHERE doc.createdBy <> $user_id {extra_where}
+                RETURN count(DISTINCT doc) as total
+                """
+                main_query_template = f"""
+                MATCH (u:User {{userId: $user_id}})-[rel:USER_APP_RELATION {{isShared: true}}]->(doc:{label})
+                WHERE doc.createdBy <> $user_id {extra_where}
+                OPTIONAL MATCH (owner:User {{userId: rel.sharedBy}})
+                RETURN DISTINCT doc, rel.sharedBy AS sharedById,
+                       rel.createdAtTimestamp AS sharedAt,
+                       coalesce(owner.fullName, owner.name, owner.userName) AS ownerName
+                SKIP $skip LIMIT $limit
+                """
+            else:
+                count_query = f"""
+                MATCH (doc:{label})
+                WHERE {where_clause}
+                RETURN count(doc) as total
+                """
+                main_query_template = f"""
+                MATCH (doc:{label})
+                WHERE {where_clause}
+                RETURN doc
+                SKIP $skip
+                LIMIT $limit
+                """
+
             count_result = await self.client.execute_query(count_query, parameters=params, txn_id=transaction)
             total_count = count_result[0]["total"] if count_result else 0
 
             # Main query with pagination
-            main_query = f"""
-            MATCH (doc:{label})
-            WHERE {where_clause}
-            RETURN doc
-            SKIP $skip
-            LIMIT $limit
-            """
             params["skip"] = skip
             params["limit"] = limit
 
-            results = await self.client.execute_query(main_query, parameters=params, txn_id=transaction)
-            documents = [self._neo4j_to_arango_node(dict(r["doc"]), collection) for r in results] if results else []
+            results = await self.client.execute_query(main_query_template, parameters=params, txn_id=transaction)
+            if scope == "shared" and results:
+                documents = []
+                for r in results:
+                    doc = self._neo4j_to_arango_node(dict(r["doc"]), collection)
+                    doc["sharedBy"] = {"userId": r.get("sharedById"), "name": r.get("ownerName")}
+                    doc["sharedAt"] = r.get("sharedAt")
+                    documents.append(doc)
+            else:
+                documents = [self._neo4j_to_arango_node(dict(r["doc"]), collection) for r in results] if results else []
 
             self.logger.info(f"✅ Found {len(documents)} connector instances (total: {total_count})")
             return documents, total_count

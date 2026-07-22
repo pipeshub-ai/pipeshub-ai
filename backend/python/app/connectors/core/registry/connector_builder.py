@@ -29,6 +29,7 @@ class ConnectorScope(str, Enum):
     """Connector scope types."""
     PERSONAL = "personal"
     TEAM = "team"
+    SHARED = "shared"
 
 class SyncStrategy(str, Enum):
     """Sync strategy types."""

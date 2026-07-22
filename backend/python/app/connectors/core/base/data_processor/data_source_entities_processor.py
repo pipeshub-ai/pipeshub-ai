@@ -1669,8 +1669,9 @@ class DataSourceEntitiesProcessor:
                         self.logger.debug(f"Updating existing user group with id: {user_group.id}")
                         user_group.updated_at = get_epoch_timestamp_in_ms()
 
-                        # To Delete the previously existing edges to user group and create new permissions
-                        await tx_store.delete_edges_to(
+                        # Delete non-shared permission edges to the group so that
+                        # share-membership edges (isShared=true) survive a resync.
+                        await tx_store.delete_non_shared_edges_to(
                             to_id=user_group.id,
                             to_collection=CollectionNames.GROUPS.value,
                             collection=CollectionNames.PERMISSION.value

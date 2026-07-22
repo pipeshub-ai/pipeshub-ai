@@ -1867,6 +1867,27 @@
         "syncing": "Syncing Records...",
         "synced": "Records Synced",
         "failed": "Sync Failed"
+      },
+      "sharedCard": {
+        "sharedBy": "Compartido por",
+        "leave": "Abandonar conector",
+        "loadingConnectors": "Cargando conectores compartidos…",
+        "emptyState": "Aún no se han compartido conectores contigo.",
+        "tabLabel": "Compartido conmigo",
+        "leaveSuccess": "Has abandonado este conector",
+        "leaveError": "No se pudo abandonar el conector",
+        "leaveDialog": {
+          "title": "Abandonar conector",
+          "description": "Perderás el acceso a {{name}} y sus registros. Puedes pedirle al propietario que lo comparta de nuevo."
+        }
+      },
+      "share": {
+        "fullAccess": "Acceso completo",
+        "noRolesChat": "Los chats no tienen roles",
+        "noRolesConnector": "Los conectores no tienen roles",
+        "noRolesDefault": "Este elemento no tiene roles",
+        "searchPlaceholderWithTeams": "Correos electrónicos, equipos o nombres (separados por comas)",
+        "searchPlaceholder": "Correos electrónicos o nombres (separados por comas)"
       }
     },
     "bots": {

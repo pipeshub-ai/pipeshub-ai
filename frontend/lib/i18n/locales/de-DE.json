@@ -1870,6 +1870,27 @@
         "syncing": "Datensätze werden synchronisiert...",
         "synced": "Datensätze synchronisiert",
         "failed": "Synchronisierung fehlgeschlagen"
+      },
+      "sharedCard": {
+        "sharedBy": "Geteilt von",
+        "leave": "Konnektor verlassen",
+        "loadingConnectors": "Geteilte Konnektoren werden geladen…",
+        "emptyState": "Es wurden noch keine Konnektoren mit Ihnen geteilt.",
+        "tabLabel": "Mit mir geteilt",
+        "leaveSuccess": "Sie haben diesen Konnektor verlassen",
+        "leaveError": "Der Konnektor konnte nicht verlassen werden",
+        "leaveDialog": {
+          "title": "Konnektor verlassen",
+          "description": "Sie verlieren den Zugriff auf {{name}} und dessen Datensätze. Sie können den Eigentümer bitten, ihn erneut zu teilen."
+        }
+      },
+      "share": {
+        "fullAccess": "Vollzugriff",
+        "noRolesChat": "Chats haben keine Rollen",
+        "noRolesConnector": "Konnektoren haben keine Rollen",
+        "noRolesDefault": "Dieses Element hat keine Rollen",
+        "searchPlaceholderWithTeams": "E-Mails, Teams oder Namen (durch Kommas getrennt)",
+        "searchPlaceholder": "E-Mails oder Namen (durch Kommas getrennt)"
       }
     },
     "bots": {

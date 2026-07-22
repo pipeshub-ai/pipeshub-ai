@@ -1834,6 +1834,110 @@ class IGraphDBProvider(ABC):
         """List all permissions for a KB with entity details."""
         pass
 
+    # -------------------------------------------------------------------------
+    # Connector sharing methods
+    # -------------------------------------------------------------------------
+
+    @abstractmethod
+    async def get_or_create_connector_user_group(
+        self,
+        connector_id: str,
+        owner_user_key: str,
+        org_id: str,
+    ) -> str | None:
+        """Return the _key / id of the ConnectorGroup for this connector.
+
+        The ConnectorGroup (externalGroupId='internal-{connector_id}') is normally
+        created by ensure_connector_group_permission() during the first connector
+        sync. If it does not yet exist (pre-sync share), it is created on-the-fly
+        with UPSERT/MERGE semantics so the call is idempotent.
+
+        owner_user_key accepts the graph _key or the JWT userId (MongoDB _id); it is
+        stored as createdBy on INSERT only.
+
+        Adding a user to this group (via a PERMISSION edge with isShared=true) grants
+        READER access to all connector records without per-record edge writes.
+        """
+        pass
+
+    @abstractmethod
+    async def create_connector_share_permissions(
+        self,
+        connector_id: str,
+        requester_user_id: str,
+        user_ids: list[str],
+        team_ids: list[str],  # reserved for v2; callers must pass []
+        org_id: str,
+    ) -> dict:
+        """Grant READER access on a personal connector to users.
+
+        For each user_id creates:
+          - PERMISSION edge (isShared=true, role=READER): user → ConnectorGroup
+          - USER_APP_RELATION edge (isShared=true): user → App
+
+        user_ids may contain graph _key or external userId (MongoDB _id); providers
+        resolve both.  Cross-org grants are silently skipped.  team_ids is reserved
+        for v2 and must be [] in v1.
+        Returns {success, grantedUsers, alreadySharedUsers, ...}.
+        """
+        pass
+
+    @abstractmethod
+    async def list_connector_share_permissions(
+        self,
+        connector_id: str,
+        requester_user_id: str,
+    ) -> list[dict]:
+        """List all active user-share entries for a connector.
+
+        Returns a list of {id, name, email, role, sharedAt, sharedBy} dicts.
+        """
+        pass
+
+    @abstractmethod
+    async def remove_connector_share_permissions(
+        self,
+        connector_id: str,
+        requester_user_id: str,
+        user_ids: list[str],
+        team_ids: list[str],  # reserved for v2; pass []
+        is_owner: bool,
+    ) -> int:
+        """Remove share grants from a personal connector.
+
+        If is_owner=True, any user in user_ids is removed.
+        If is_owner=False (self-leave), user_ids must contain only the
+        requester's own id.
+        Returns the count of removed edges.
+        """
+        pass
+
+    @abstractmethod
+    async def has_connector_share_access(
+        self,
+        connector_id: str,
+        user_id: str,
+    ) -> bool:
+        """Return True if user has share-based (isShared=true) access to the connector.
+
+        Checks for an isShared PERMISSION edge from the user to the ConnectorGroup.
+        """
+        pass
+
+    @abstractmethod
+    async def delete_non_shared_edges_to(
+        self,
+        to_id: str,
+        to_collection: str,
+        collection: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete edges to a node, skipping edges with isShared=true.
+
+        Used by on_new_user_groups() so share-membership edges survive a resync.
+        """
+        pass
+
     @abstractmethod
     async def list_all_records(
         self,

@@ -1,12 +1,14 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, IconButton, Avatar, Switch, Tooltip } from '@radix-ui/themes';
+import { Flex, Text, IconButton, Avatar, Switch, Tooltip, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { formatRelativeTime } from '@/lib/utils/formatters';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
+import { ShareSidebar } from '@/app/components/share';
+import { createConnectorShareAdapter } from '../../share-adapter';
 import {
   InfoRow,
   DotSeparator,
@@ -39,6 +41,8 @@ interface InstanceCardProps {
   onRefresh?: () => void | Promise<void>;
   /** Parent-driven refresh in progress (e.g. per-card or refresh-all) */
   isRefreshing?: boolean;
+  /** Called when the user confirms leaving a shared connector. */
+  onLeave?: (instance: ConnectorInstance) => void | Promise<void>;
 }
 
 // ========================================
@@ -54,13 +58,31 @@ export function InstanceCard({
   onChevronClick,
   onRefresh,
   isRefreshing = false,
+  onLeave,
 }: InstanceCardProps) {
   const { t } = useTranslation();
+
+  // ── Org/User identity state ──
+  const [identityName, setIdentityName] = useState<string>(instance.name);
+  // ── Personal header: optional user avatar from updatedBy (title uses instance name) ──
   const [identityIcon, setIdentityIcon] = useState<string | null>(null);
   const [identityIconError, setIdentityIconError] = useState(false);
   const [enabledByName, setEnabledByName] = useState<string | null>(null);
   const [enabledByAvatar, setEnabledByAvatar] = useState<string | null>(null);
   const [syncToggleBusy, setSyncToggleBusy] = useState(false);
+  const [isShareSidebarOpen, setIsShareSidebarOpen] = useState(false);
+  const [leaveBusy, setLeaveBusy] = useState(false);
+
+  // Share adapter — only created when needed (owner sharing)
+  const shareAdapter = useMemo(() => {
+    if (!instance._key) return null;
+    return createConnectorShareAdapter(instance._key);
+  }, [instance._key]);
+
+  // This card is in "shared-with-me" mode when scope is 'shared'
+  const isSharedWithMe = scope === 'shared';
+  // Personal-scope connectors always belong to the current user — no cross-ID comparison needed.
+  const isOwner = scope === 'personal';
 
   const updatedByEntry = useUserDirectoryEntry(instance.updatedBy);
 
@@ -183,14 +205,26 @@ export function InstanceCard({
             )}
           </Flex>
 
-          <InlineEditableName
-            connectorId={instance._key}
-            name={instance.name?.trim() || instance.type}
-            textSize="2"
-            textWeight="medium"
-            truncate
-            style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}
-          />
+          {/* Instance display name — inline editable (read-only in shared mode) */}
+          {isSharedWithMe ? (
+            <Text
+              size="2"
+              weight="medium"
+              truncate
+              style={{ flex: 1, overflow: 'hidden', color: 'var(--gray-12)' }}
+            >
+              {instance.name?.trim() || instance.type}
+            </Text>
+          ) : (
+            <InlineEditableName
+              connectorId={instance._key}
+              name={instance.name?.trim() || instance.type}
+              textSize="2"
+              textWeight="medium"
+              truncate
+              style={{ flex: 1, overflow: 'hidden' }}
+            />
+          )}
 
           {onRefresh ? (
             <IconButton
@@ -221,15 +255,18 @@ export function InstanceCard({
             </IconButton>
           ) : null}
 
-          <IconButton
-            variant="outline"
-            color="gray"
-            size="1"
-            onClick={() => onChevronClick?.(instance)}
-            style={{ cursor: 'pointer', borderRadius: 'var(--radius-2)', width: 32, height: 32, flexShrink: 0 }}
-          >
-            <MaterialIcon name="chevron_right" size={18} color="var(--gray-11)" />
-          </IconButton>
+          {/* Chevron — hidden when no handler provided (e.g. shared cards without navigation) */}
+          {onChevronClick && (
+            <IconButton
+              variant="outline"
+              color="gray"
+              size="1"
+              onClick={() => onChevronClick(instance)}
+              style={{ cursor: 'pointer', borderRadius: 'var(--radius-2)', width: 32, height: 32, flexShrink: 0 }}
+            >
+              <MaterialIcon name="chevron_right" size={18} color="var(--gray-11)" />
+            </IconButton>
+          )}
         </Flex>
 
         <div style={{ height: 1, backgroundColor: 'var(--gray-a3)' }} />
@@ -263,7 +300,34 @@ export function InstanceCard({
           <InfoRow label={t('workspace.connectors.instanceCard.syncStrategy')} value="-" />
         )}
 
-        {enabledByName ? (
+        {/* ── Enabled By / Shared By ── */}
+        {isSharedWithMe ? (
+          /* For shared connectors show who granted access, not the updatedBy creator */
+          instance.sharedBy?.name ? (
+            <Flex align="center" gap="4">
+              <Text
+                size="1"
+                weight="medium"
+                style={{ color: 'var(--gray-10)', width: 164, flexShrink: 0, textTransform: 'uppercase', letterSpacing: '0.04px', lineHeight: '16px' }}
+              >
+                {t('workspace.connectors.sharedCard.sharedBy')}
+              </Text>
+              <Flex align="center" gap="2">
+                <Avatar
+                  size="1"
+                  radius="small"
+                  fallback={instance.sharedBy.name[0] ?? '?'}
+                  style={{ width: 24, height: 24 }}
+                />
+                <Text size="2" style={{ color: 'var(--gray-12)' }}>
+                  {instance.sharedBy.name}
+                </Text>
+              </Flex>
+            </Flex>
+          ) : (
+            <InfoRow label={t('workspace.connectors.sharedCard.sharedBy')} value="-" />
+          )
+        ) : enabledByName ? (
           <Flex align="center" gap="4">
             <Text
               size="1"
@@ -293,7 +357,8 @@ export function InstanceCard({
 
         <InfoRow label="LAST SYNCED" value={lastSynced} />
 
-        {instance._key && instance.supportsSync && (
+        {/* Enable / pause connector sync (backend toggle) — hidden for shared-with-me. */}
+        {!isSharedWithMe && instance._key && instance.supportsSync && (
           <Flex align="center" gap="4" style={{ marginTop: 2 }}>
             <Text
               size="1"
@@ -328,25 +393,72 @@ export function InstanceCard({
           </Flex>
         )}
 
-        {showIndexingActions && (
+
+        {/* Actions row: sync/indexing buttons (left) + Share/Leave (right). */}
+        {((!isSharedWithMe && showIndexingActions) || isOwner || isSharedWithMe) && (
           <Flex
-            wrap="wrap"
-            gap="2"
             align="center"
+            justify="between"
+            gap="2"
             style={{
               marginTop: 4,
               paddingTop: 12,
               borderTop: '1px solid var(--gray-a3)',
             }}
           >
-            <SyncButton connectorId={instance._key} connectorType={instance.type} />
-            <FullSyncButton connectorId={instance._key} connectorType={instance.type} />
-            <InstanceSyncOperationIndicator instance={instance} />
+            {/* Sync / indexing buttons — left side, hidden for shared-with-me */}
+            {!isSharedWithMe && showIndexingActions ? (
+              <Flex wrap="wrap" gap="2" align="center">
+                <SyncButton connectorId={instance._key} connectorType={instance.type} />
+                <FullSyncButton connectorId={instance._key} connectorType={instance.type} />
+                <InstanceSyncOperationIndicator instance={instance} />
+              </Flex>
+            ) : (
+              <div />
+            )}
+
+            {/* Share (owner) or Leave (shared-with-me) — right side */}
+            <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
+              {isOwner && instance._key && (
+                <Button
+                  variant="soft"
+                  color="gray"
+                  size="1"
+                  onClick={() => setIsShareSidebarOpen(true)}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <MaterialIcon name="share" size={14} color="var(--gray-11)" />
+                  {t('action.share')}
+                </Button>
+              )}
+              {isSharedWithMe && (
+                <Button
+                  variant="soft"
+                  color="red"
+                  size="1"
+                  disabled={leaveBusy}
+                  onClick={async () => {
+                    if (!onLeave || leaveBusy) return;
+                    setLeaveBusy(true);
+                    try {
+                      await onLeave(instance);
+                    } finally {
+                      setLeaveBusy(false);
+                    }
+                  }}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <MaterialIcon name="exit_to_app" size={14} color="var(--red-11)" />
+                  {t('workspace.connectors.sharedCard.leave')}
+                </Button>
+              )}
+            </Flex>
           </Flex>
         )}
       </Flex>
 
-      {effectiveStatus === 'auth_incomplete' && (
+      {/* ── Auth incomplete banner ── */}
+      {!isSharedWithMe && effectiveStatus === 'auth_incomplete' && (
         <Flex
           align="center"
           justify="between"
@@ -362,6 +474,15 @@ export function InstanceCard({
           </Flex>
           <ConnectButton onClick={() => onManage?.(instance)} />
         </Flex>
+      )}
+
+      {/* Share sidebar — only for owners */}
+      {isOwner && shareAdapter && (
+        <ShareSidebar
+          open={isShareSidebarOpen}
+          onOpenChange={setIsShareSidebarOpen}
+          adapter={shareAdapter}
+        />
       )}
     </Flex>
   );
