@@ -144,7 +144,8 @@ class TestInitSession:
     async def test_init_creates_session(self):
         connector = _make_connector()
         connector.config_service.get_config = AsyncMock(return_value=_mock_config())
-        result = await connector.init()
+        with patch.object(connector, "_detect_csr", new_callable=AsyncMock, return_value=False):
+            result = await connector.init()
         assert result is True
         assert connector.session is not None
         await connector.session.close()
