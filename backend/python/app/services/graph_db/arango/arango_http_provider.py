@@ -63,6 +63,9 @@ from app.models.entities import (
 )
 from app.schema.arango.documents import (
     agent_schema,
+    agent_skill_candidates_schema,
+    agent_skill_versions_schema,
+    agent_skills_schema,
     agent_template_schema,
     app_role_schema,
     app_schema,
@@ -95,7 +98,9 @@ from app.schema.arango.documents import (
 )
 from app.schema.arango.edges import (
     agent_has_knowledge_schema,
+    agent_has_skill_schema,
     agent_has_toolset_schema,
+    agent_skill_relation_schema,
     basic_edge_schema,
     belongs_to_schema,
     contact_schema,
@@ -158,6 +163,9 @@ NODE_COLLECTIONS = [
     (CollectionNames.AGENT_KNOWLEDGE.value, knowledge_schema),
     (CollectionNames.AGENT_TOOLSETS.value, toolset_schema),
     (CollectionNames.AGENT_TOOLS.value, tool_schema),
+    (CollectionNames.AGENT_SKILLS.value, agent_skills_schema),
+    (CollectionNames.AGENT_SKILL_VERSIONS.value, agent_skill_versions_schema),
+    (CollectionNames.AGENT_SKILL_CANDIDATES.value, agent_skill_candidates_schema),
     (CollectionNames.TICKETS.value, ticket_record_schema),
     (CollectionNames.MEETINGS.value, meeting_record_schema),
     (CollectionNames.PROJECTS.value, project_record_schema),
@@ -193,6 +201,8 @@ EDGE_COLLECTIONS = [
     (CollectionNames.AGENT_HAS_KNOWLEDGE.value, agent_has_knowledge_schema),
     (CollectionNames.AGENT_HAS_TOOLSET.value, agent_has_toolset_schema),
     (CollectionNames.TOOLSET_HAS_TOOL.value, toolset_has_tool_schema),
+    (CollectionNames.AGENT_SKILL_RELATION.value, agent_skill_relation_schema),
+    (CollectionNames.AGENT_HAS_SKILL.value, agent_has_skill_schema),
     (CollectionNames.PROSPECT.value, prospect_schema),
     (CollectionNames.CUSTOMER.value, customer_schema),
     (CollectionNames.LEAD.value, lead_schema),
@@ -712,6 +722,33 @@ class ArangoHTTPProvider(IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORD_GROUPS.value,
             ["groupType"],
+        )
+
+        # ==================== AGENT SKILLS INDEXES ====================
+
+        # COMPOSITE: orgId + status — GraphSkillStore.list_skills's hot path
+        # (catalog refresh per SkillManager.start()/refresh()).
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.AGENT_SKILLS.value,
+            ["orgId", "status"],
+        )
+
+        # SINGLE: name — get_skill/exists/create's uniqueness-within-org lookup.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.AGENT_SKILLS.value,
+            ["orgId", "name"],
+        )
+
+        # COMPOSITE: skillKey + version — GraphSkillStore.get_version lookup.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.AGENT_SKILL_VERSIONS.value,
+            ["skillKey", "version"],
+        )
+
+        # SINGLE: orgId — GraphSkillStore candidate queue listing.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.AGENT_SKILL_CANDIDATES.value,
+            ["orgId"],
         )
 
     async def _ensure_departments_seed(self) -> None:
@@ -18898,6 +18935,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }}
             )
 
+            // Get linked skills (agentHasSkill -> agentSkills) — mirrors
+            // linked_toolsets/linked_knowledge above; kept deliberately
+            // flat (no nested join) since a skill carries no sub-entities
+            // analogous to a toolset's tools.
+            LET linked_skills = (
+                FOR edge IN {CollectionNames.AGENT_HAS_SKILL.value}
+                    FILTER edge._from == agent_path
+                    LET skill = DOCUMENT(edge._to)
+                    FILTER skill != null
+                    RETURN {{
+                        name: skill.name,
+                        description: skill.description,
+                        category: skill.category,
+                        subcategory: skill.subcategory,
+                        version: skill.version,
+                        status: skill.status
+                    }}
+            )
+
             // shareWithOrg: when org_id is provided match the specific org node;
             // when org_id is absent check whether any Orgs collection node has a
             // permission edge to this agent (source collection check, not type field)
@@ -18922,6 +18978,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             RETURN MERGE(agent, {{
                 toolsets: linked_toolsets,
                 knowledge: linked_knowledge,
+                skills: linked_skills,
                 shareWithOrg: share_with_org
             }})
             """

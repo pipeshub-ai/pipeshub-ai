@@ -4,7 +4,6 @@ Registry for managing client factories.
 
 from typing import Optional
 
-from app.agents.tools.config import ToolDiscoveryConfig
 from app.agents.tools.factories.base import ClientFactory
 from app.agents.tools.factories.clickup import ClickUpClientFactory
 from app.agents.tools.factories.confluence import (
@@ -12,6 +11,7 @@ from app.agents.tools.factories.confluence import (
     ConfluenceDataCenterClientFactory,
 )
 from app.agents.tools.factories.dropbox import DropboxClientFactory
+from app.agents.tools.factories.github import GitHubClientFactory
 from app.agents.tools.factories.google import GoogleClientFactory
 from app.agents.tools.factories.jira import (
     JiraClientFactory,
@@ -19,33 +19,13 @@ from app.agents.tools.factories.jira import (
 )
 from app.agents.tools.factories.linear import LinearClientFactory
 from app.agents.tools.factories.lumos import LumosClientFactory
-from app.agents.tools.factories.microsoft import MSGraphClientFactory
-from app.agents.tools.factories.notion import NotionClientFactory
-from app.agents.tools.factories.slack import SlackClientFactory
-
-# from app.agents.tools.factories.linkedin import LinkedInClientFactory
-# from app.agents.tools.factories.freshdesk import FreshDeskClientFactory
-# from app.agents.tools.factories.zendesk import ZendeskClientFactory
-# from app.agents.tools.factories.posthog import PostHogClientFactory
-# from app.agents.tools.factories.box import BoxClientFactory
-# from app.agents.tools.factories.bookstack import BookStackClientFactory
-# from app.agents.tools.factories.azureblob import AzureBlobClientFactory
-# from app.agents.tools.factories.airtable import AirtableClientFactory
-# from app.agents.tools.factories.evernote import EvernoteClientFactory
-# from app.agents.tools.factories.s3 import S3ClientFactory
-from app.agents.tools.factories.github import GitHubClientFactory
-from app.agents.tools.factories.google import GoogleClientFactory
-from app.agents.tools.factories.jira import JiraClientFactory
-from app.agents.tools.factories.linear import LinearClientFactory
 from app.agents.tools.factories.mariadb import MariaDBClientFactory
 from app.agents.tools.factories.microsoft import MSGraphClientFactory
 from app.agents.tools.factories.notion import NotionClientFactory
 from app.agents.tools.factories.redshift import RedshiftClientFactory
-from app.agents.tools.factories.slack import SlackClientFactory
 from app.agents.tools.factories.salesforce import SalesforceClientFactory
+from app.agents.tools.factories.slack import SlackClientFactory
 from app.agents.tools.factories.zoom import ZoomClientFactory
-
-# from app.agents.tools.factories.gitlab import GitLabClientFactory
 
 
 class ClientFactoryRegistry:
@@ -60,172 +40,89 @@ class ClientFactoryRegistry:
 
     @classmethod
     def register(cls, app_name: str, factory: ClientFactory) -> None:
-        """
-        Register a client factory.
-
-        Args:
-            app_name: Name of the application
-            factory: ClientFactory instance
-        """
         cls._factories[app_name] = factory
 
     @classmethod
     def get_factory(cls, app_name: str) -> Optional[ClientFactory]:
-        """
-        Get a client factory by app name.
-
-        Args:
-            app_name: Name of the application
-
-        Returns:
-            ClientFactory if found, None otherwise
-        """
         if not cls._initialized:
             cls.initialize_default_factories()
-
         return cls._factories.get(app_name)
 
     @classmethod
     def unregister(cls, app_name: str) -> None:
-        """
-        Unregister a client factory.
-
-        Args:
-            app_name: Name of the application
-        """
         if app_name in cls._factories:
             del cls._factories[app_name]
 
     @classmethod
     def list_factories(cls) -> list[str]:
-        """
-        List all registered factory names.
-
-        Returns:
-            List of registered app names
-        """
         if not cls._initialized:
             cls.initialize_default_factories()
-
         return list(cls._factories.keys())
 
     @classmethod
     def initialize_default_factories(cls) -> None:
-        """
-        Initialize default client factories based on configuration.
-        This is called automatically on first access.
-        """
         if cls._initialized:
             return
 
-        for app_name, config in ToolDiscoveryConfig.APP_CONFIGS.items():
-            if not config.client_builder:
-                continue
+        # Jira
+        cls.register("jira", JiraClientFactory())
+        cls.register("jiradatacenter", JiraDataCenterClientFactory())
 
-            if app_name == "google":
-                # Register factories for Google sub-services with TOOLSET names
-                # This ensures tools with app_name="googledrive" find the correct factory
-                for subdir, service_config in config.service_configs.items():
-                    # Create factory for the service
-                    factory = GoogleClientFactory(
-                        service_config["service_name"],
-                        service_config["version"]
-                    )
-                    # Register with toolset name (e.g., "googledrive", "googlecalendar")
-                    toolset_name = f"google{subdir}"
-                    cls.register(toolset_name, factory)
-                    # Also register with original name for backward compatibility
-                    cls.register(subdir, factory)
+        # Confluence
+        cls.register("confluence", ConfluenceClientFactory())
+        cls.register("confluencedatacenter", ConfluenceDataCenterClientFactory())
 
-            elif app_name == "jira":
-                cls.register(app_name, JiraClientFactory())
+        # Slack
+        cls.register("slack", SlackClientFactory())
 
-            elif app_name == "jiradatacenter":
-                cls.register(app_name, JiraDataCenterClientFactory())
+        # Notion
+        cls.register("notion", NotionClientFactory())
 
-            elif app_name == "confluence":
-                cls.register(app_name, ConfluenceClientFactory())
+        # ClickUp
+        cls.register("clickup", ClickUpClientFactory())
 
-            elif app_name == "confluencedatacenter":
-                cls.register(app_name, ConfluenceDataCenterClientFactory())
+        # Google sub-services
+        _google_services = {
+            "gmail": ("gmail", "v1"),
+            "calendar": ("calendar", "v3"),
+            "drive": ("drive", "v3"),
+            "meet": ("meet", "v2"),
+        }
+        for subdir, (service_name, version) in _google_services.items():
+            factory = GoogleClientFactory(service_name, version)
+            cls.register(f"google{subdir}", factory)
+            cls.register(subdir, factory)
 
-            elif app_name == "slack":
-                cls.register(app_name, SlackClientFactory())
+        # Microsoft sub-services
+        for subdir in ("one_drive", "sharepoint"):
+            cls.register(subdir, MSGraphClientFactory(subdir))
+        cls.register("outlook", MSGraphClientFactory("outlook"))
+        cls.register("teams", MSGraphClientFactory("teams"))
+        cls.register("onedrive", MSGraphClientFactory("onedrive"))
 
-            elif app_name == "notion":
-                cls.register(app_name, NotionClientFactory())
+        # Linear
+        cls.register("linear", LinearClientFactory())
 
-            elif app_name == "clickup":
-                cls.register(app_name, ClickUpClientFactory())
+        # MariaDB
+        cls.register("mariadb", MariaDBClientFactory())
 
-            elif app_name == "microsoft":
-                # Register factories for Microsoft sub-services
-                for subdir in config.subdirectories:
-                    cls.register(subdir, MSGraphClientFactory(subdir))
+        # Redshift
+        cls.register("redshift", RedshiftClientFactory())
 
-            elif app_name == "outlook":
-                cls.register(app_name, MSGraphClientFactory(app_name))
+        # Dropbox
+        cls.register("dropbox", DropboxClientFactory())
 
-            elif app_name == "teams":
-                cls.register(app_name, MSGraphClientFactory(app_name))
+        # GitHub
+        cls.register("github", GitHubClientFactory())
 
-            elif app_name == "onedrive":
-                cls.register(app_name, MSGraphClientFactory(app_name))
+        # Lumos
+        cls.register("lumos", LumosClientFactory())
 
-            elif app_name == "linear":
-                cls.register(app_name, LinearClientFactory())
+        # Zoom
+        cls.register("zoom", ZoomClientFactory())
 
-            elif app_name == "mariadb":
-                cls.register(app_name, MariaDBClientFactory())
-            elif app_name == "lumos":
-                cls.register(app_name, LumosClientFactory())
-            elif app_name == "redshift":
-                cls.register(app_name, RedshiftClientFactory())
-
-            # elif app_name == "linkedin":
-            #     cls.register(app_name, LinkedInClientFactory())
-
-            elif app_name == "dropbox":
-                cls.register(app_name, DropboxClientFactory())
-
-            # elif app_name == "freshdesk":
-            #     cls.register(app_name, FreshDeskClientFactory())
-
-            # elif app_name == "zendesk":
-            #     cls.register(app_name, ZendeskClientFactory())
-
-            # elif app_name == "posthog":
-            #     cls.register(app_name, PostHogClientFactory())
-
-            # elif app_name == "box":
-            #     cls.register(app_name, BoxClientFactory())
-
-            # elif app_name == "bookstack":
-            #     cls.register(app_name, BookStackClientFactory())
-
-            # elif app_name == "azureblob":
-            #     cls.register(app_name, AzureBlobClientFactory())
-
-            # elif app_name == "airtable":
-            #     cls.register(app_name, AirtableClientFactory())
-
-            # elif app_name == "evernote":
-            #     cls.register(app_name, EvernoteClientFactory())
-
-            # elif app_name == "s3":
-            #     cls.register(app_name, S3ClientFactory())
-
-            elif app_name == "github":
-                cls.register(app_name, GitHubClientFactory())
-
-            elif app_name == "zoom":
-                cls.register(app_name, ZoomClientFactory())
-
-            elif app_name == "salesforce":
-                cls.register(app_name, SalesforceClientFactory())
-
-            # elif app_name == "gitlab":
-            #     cls.register(app_name, GitLabClientFactory())
+        # Salesforce
+        cls.register("salesforce", SalesforceClientFactory())
 
         cls._initialized = True
 
@@ -236,5 +133,4 @@ class ClientFactoryRegistry:
         cls._initialized = False
 
 
-# Initialize factories on import
 ClientFactoryRegistry.initialize_default_factories()

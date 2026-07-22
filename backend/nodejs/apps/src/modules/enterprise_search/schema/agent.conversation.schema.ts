@@ -125,6 +125,24 @@ const toolCallItemSchema = new Schema(
   { _id: false },
 );
 
+// Chain-of-thought turns (opt-out on the Python side — see reasoning_persistence.py).
+const reasoningTurnSchema = new Schema(
+  {
+    messageId: { type: String },
+    turnIndex: { type: Number },
+    content: { type: String, required: true },
+  },
+  { _id: false },
+);
+
+// Ordered agent-activity transcript entry (text / reasoning / tool_call /
+// sub_agent — see IMessagePart). `Mixed` rather than a strict subdoc schema
+// because the shape varies by `type` and `sub_agent` nests the SAME shape
+// recursively in its own `parts` — Mongoose has no clean way to express a
+// self-referential discriminated array. The Python `TranscriptCollector`
+// (single writer) already bounds every field's size before this reaches
+// Node, so no further validation happens here.
+
 const messageSchema = new Schema<IMessage>(
   {
     messageType: {
@@ -163,6 +181,11 @@ const messageSchema = new Schema<IMessage>(
     referenceData: [referenceDataItemSchema],
     // Tool call data for tool_call messageType
     tools: [toolCallItemSchema],
+    // Persisted chain-of-thought (additive, opt-out — see reasoningTurnSchema).
+    reasoning: [reasoningTurnSchema],
+    // Ordered agent-activity transcript (additive, `agui` protocol only —
+    // see the comment above and IMessagePart).
+    parts: [Schema.Types.Mixed],
   },
   { timestamps: true },
 );

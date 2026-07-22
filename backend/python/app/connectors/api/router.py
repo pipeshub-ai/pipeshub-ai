@@ -170,6 +170,7 @@ async def _stream_artifact_from_storage(
     org_id: str,
     config_service: ConfigurationService,
     convert_to: str | None = None,
+    version: int | None = None,
 ) -> Response | StreamingResponse:
     """Fetch an ARTIFACT record's content from blob storage and return it.
 
@@ -180,12 +181,48 @@ async def _stream_artifact_from_storage(
     (or Google Slides) file, the buffer is converted to PDF via LibreOffice
     before being returned — mirroring the behaviour of the non-artifact
     streaming path so the frontend PDF renderer can preview it.
+
+    ``version`` is a REGISTRY version number (what the frontend/marker
+    knows about), mapped to the storage layer's ``versionHistory`` index via
+    ``resolve_storage_version`` — the SAME mapping decision
+    ``ArtifactRegistryService._resolve_storage_version`` uses, not
+    reimplemented here. ``record`` (an ``ArtifactRecord`` from
+    ``get_record_by_id``) already carries both ``.version`` and
+    ``.versions`` from the merged records+artifacts graph docs, so no extra
+    graph fetch is needed.
     """
     external_id = record.external_record_id
     if not external_id:
         raise HTTPException(
             status_code=HttpStatusCode.NOT_FOUND.value,
             detail="Artifact record has no storage document ID",
+        )
+
+    storage_version: int | None = None
+    if version is not None:
+        from app.services.artifact_registry.versioning import (
+            VersionMappingNotFoundError,
+            resolve_storage_version,
+        )
+
+        record_version = getattr(record, "version", 1)
+        record_versions = getattr(record, "versions", []) or []
+        logger.info(
+            "Version-pinned stream: requested_version=%s record_version=%s "
+            "versions_count=%d versions=%r",
+            version, record_version, len(record_versions), record_versions,
+        )
+        try:
+            storage_version = resolve_storage_version(
+                record_version, record_versions, version,
+            )
+        except VersionMappingNotFoundError as e:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value, detail=str(e),
+            ) from e
+        logger.info(
+            "Version-pinned stream: resolved storage_version=%s for registry version=%s",
+            storage_version, version,
         )
 
     endpoints = await config_service.get_config(
@@ -196,6 +233,9 @@ async def _stream_artifact_from_storage(
     )
 
     buffer_url = f"{storage_url}/api/v1/document/internal/{external_id}/buffer"
+    if storage_version is not None:
+        buffer_url = f"{buffer_url}?version={storage_version}"
+    logger.info("Version-pinned stream: final buffer_url=%s", buffer_url)
 
     jwt_payload = {
         "orgId": org_id,
@@ -787,6 +827,7 @@ async def stream_record(
     request: Request,
     record_id: str,
     convertTo: str = Query(None, description="Convert file to this format"),
+    version: int | None = Query(None, ge=0, description="Registry version to pin the artifact's content to (ARTIFACT records only)"),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> dict | StreamingResponse | None:
@@ -833,7 +874,7 @@ async def stream_record(
             )
         if record.record_type == RecordType.ARTIFACT or record.connector_name == Connectors.ATTACHMENTS:
             return await _stream_artifact_from_storage(
-                record, org_id, config_service, convert_to=convertTo
+                record, org_id, config_service, convert_to=convertTo, version=version,
             )
 
         connector_name = record.connector_name.value.lower().replace(" ", "")

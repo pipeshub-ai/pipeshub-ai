@@ -9,7 +9,7 @@ import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AppliedFilters, AskUserQuestionPayload, AttachmentRef, ChatArtifact } from '../../types';
+import type { AppliedFilters, AskUserQuestionPayload, AttachmentRef, ChatArtifact, MessagePart } from '../../types';
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
@@ -17,12 +17,14 @@ import { useInlineCitationPopoverStore } from './response-tabs/citations/citatio
 import { InlineCitationPopoverHost } from './response-tabs/citations/inline-citation-popover-host';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { loadOlderMessagesForSlot } from '../../streaming';
+import { parseArtifactMarkers } from '../../utils/parse-download-markers';
 
 // Stable empty references to avoid re-renders from selector fallbacks.
 // `?? []` or `?? null` in a selector body creates a new ref every call,
 // defeating Object.is comparison.
 const EMPTY_ARRAY: never[] = [];
 const STABLE_EMPTY_ARTIFACTS: ChatArtifact[] = [];
+const STABLE_EMPTY_PARTS: MessagePart[] = [];
 const CHAT_INPUT_RESERVED = 160; // height reserved for the chat input overlay
 /** Streaming: distance from bottom (px) to count as flush for resuming tail-follow */
 const STREAMING_RESUME_DIST_FLUSH_PX = 4;
@@ -80,6 +82,8 @@ interface MessagePair {
   attachments?: AttachmentRef[];
   /** Persisted ask_user_question payload from a historical tool_call (read-only display) */
   persistedAskUserQuestion?: AskUserQuestionPayload;
+  /** Persisted agent-activity transcript (absent for older / legacy-protocol messages) */
+  persistedParts?: MessagePart[];
 }
 
 export function MessageList() {
@@ -117,6 +121,9 @@ export function MessageList() {
   const streamingArtifacts = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.artifacts ?? STABLE_EMPTY_ARTIFACTS : STABLE_EMPTY_ARTIFACTS
   );
+  const streamingParts = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.streamingParts ?? STABLE_EMPTY_PARTS : STABLE_EMPTY_PARTS
+  );
   const messagePagination = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.messagePagination ?? null : null
   );
@@ -128,7 +135,7 @@ export function MessageList() {
   const currentMsgListVals: Record<string, unknown> = {
     isStreaming, streamingQuestion, streamingCitationMaps,
     pendingCollections, regenerateMessageId, isInitialized, isLoadingConversation,
-    streamingContent, currentStatusMessage,
+    streamingContent, currentStatusMessage, streamingParts,
   };
   const msgListReasons: string[] = [];
   for (const [k, v] of Object.entries(currentMsgListVals)) {
@@ -256,6 +263,7 @@ export function MessageList() {
           modelInfo?: ModelInfo;
           feedbackInfo?: { value?: 'like' | 'dislike' };
           persistedAskUserQuestion?: AskUserQuestionPayload;
+          persistedParts?: MessagePart[];
         } } }).metadata?.custom as {
           messageId?: string;
           citationMaps?: CitationMaps;
@@ -263,6 +271,7 @@ export function MessageList() {
           modelInfo?: ModelInfo;
           feedbackInfo?: { value?: 'like' | 'dislike' };
           persistedAskUserQuestion?: AskUserQuestionPayload;
+          persistedParts?: MessagePart[];
         } | undefined;
 
         // Find preceding user message
@@ -313,12 +322,41 @@ export function MessageList() {
           createdAt: userCreatedAt,
           attachments: userMessageAttachments,
           persistedAskUserQuestion: metadata?.persistedAskUserQuestion,
+          persistedParts: metadata?.persistedParts,
         });
       }
     }
 
     return pairs;
   }, [thread.messages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]);
+
+  // The highest version any message in this conversation has shown for a
+  // given artifact `recordId`. Every version bump re-registers the SAME
+  // recordId, so an older message's card can compare its own `version`
+  // against this map to know a later turn has since produced a newer copy —
+  // derived entirely from markers already persisted on each message
+  // (`parseArtifactMarkers`), no extra API call. The currently-streaming
+  // turn's markers aren't persisted yet, so its live SSE `artifacts` are
+  // folded in too.
+  const latestArtifactVersions = useMemo(() => {
+    const versions = new Map<string, number>();
+    const record = (recordId: string | undefined, version: number | undefined) => {
+      if (!recordId || version === undefined) return;
+      const current = versions.get(recordId);
+      if (current === undefined || version > current) versions.set(recordId, version);
+    };
+    for (const msg of thread.messages) {
+      if (msg.role !== 'assistant') continue;
+      const content = extractTextContent(msg.content as { type: string; text?: string }[]);
+      if (!content.includes('::artifact[')) continue;
+      const { artifacts } = parseArtifactMarkers(content);
+      for (const artifact of artifacts) record(artifact.recordId, artifact.version);
+    }
+    if (isStreaming) {
+      for (const artifact of streamingArtifacts) record(artifact.recordId, artifact.version);
+    }
+    return versions;
+  }, [thread.messages, isStreaming, streamingArtifacts]);
 
   // Ref-mirror of messagePairs — lets scroll effects read the latest pairs
   // without having the full array in their dependency list (which would cause
@@ -1108,6 +1146,9 @@ export function MessageList() {
                   currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
                   streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
                   streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
+                  streamingParts={pair.isStreaming ? streamingParts : undefined}
+                  latestArtifactVersions={latestArtifactVersions}
+                  persistedParts={pair.persistedParts}
                   persistedAskUserQuestion={pair.persistedAskUserQuestion}
                   feedbackInfo={pair.feedbackInfo}
                 />

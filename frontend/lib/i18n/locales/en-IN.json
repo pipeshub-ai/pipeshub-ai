@@ -637,10 +637,10 @@
           "short": "Quick",
           "hint": "Favors fast answers and fewer refinement loops. Best for straightforward tasks."
         },
-        "verify": {
-          "label": "Verify",
-          "short": "Verify",
-          "hint": "Adds extra checks on facts and steps before finalizing the answer."
+        "plan-execute": {
+          "label": "Plan & Execute",
+          "short": "Plan & Execute",
+          "hint": "Plans all steps upfront, then executes them in order."
         },
         "deep": {
           "label": "Deep",

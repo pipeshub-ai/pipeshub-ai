@@ -3,9 +3,8 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -135,8 +134,9 @@ class GoogleDocs:
             return asyncio.run(coro)
 
     @tool(
-        app_name="docs",
-        tool_name="get_document",
+        path="/tools/docs/get_document",
+        short_description="Get a Google Doc",
+        description="Get a Google Docs document's content, metadata, and optionally tabs content.",
         parameters=[
             ToolParameter(
                 name="document_id",
@@ -156,7 +156,8 @@ class GoogleDocs:
                 description="Whether to include tabs content",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="documents"), Tag(key="type", value="read")],
     )
     def get_document(
         self,
@@ -187,8 +188,9 @@ class GoogleDocs:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="docs",
-        tool_name="create_document",
+        path="/tools/docs/create_document",
+        short_description="Create a new Google Doc",
+        description="Create a new Google Docs document with an optional title.",
         parameters=[
             ToolParameter(
                 name="title",
@@ -202,7 +204,8 @@ class GoogleDocs:
                 description="Custom document ID (optional)",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="documents"), Tag(key="type", value="create")],
     )
     def create_document(
         self,
@@ -244,8 +247,9 @@ class GoogleDocs:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="docs",
-        tool_name="batch_update_document",
+        path="/tools/docs/batch_update_document",
+        short_description="Batch update a Google Doc",
+        description="Apply batch updates to a Google Docs document such as inserting or formatting content.",
         parameters=[
             ToolParameter(
                 name="document_id",
@@ -266,7 +270,8 @@ class GoogleDocs:
                 description="Write control settings",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="documents"), Tag(key="type", value="update")],
     )
     def batch_update_document(
         self,
@@ -310,8 +315,9 @@ class GoogleDocs:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="docs",
-        tool_name="insert_text",
+        path="/tools/docs/insert_text",
+        short_description="Insert text into a document",
+        description="Insert text into a Google Docs document at a specified location index.",
         parameters=[
             ToolParameter(
                 name="document_id",
@@ -331,7 +337,8 @@ class GoogleDocs:
                 description="Index where to insert the text",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="documents"), Tag(key="type", value="update")],
     )
     def insert_text(
         self,
@@ -381,8 +388,9 @@ class GoogleDocs:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="docs",
-        tool_name="replace_text",
+        path="/tools/docs/replace_text",
+        short_description="Replace text in a document",
+        description="Find and replace all occurrences of text in a Google Docs document.",
         parameters=[
             ToolParameter(
                 name="document_id",
@@ -402,7 +410,8 @@ class GoogleDocs:
                 description="New text to replace with",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="documents"), Tag(key="type", value="update")],
     )
     def replace_text(
         self,

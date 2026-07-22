@@ -121,8 +121,12 @@ function mapApiSegmentToAgentStrategy(
       return 'auto';
     case 'quick':
       return 'quick';
+    // 'verification' is the pre-rename wire value — old conversations/history
+    // rows may still carry it; the backend's `resolve_mode()` aliases it to
+    // `planExecute` the same way, so both restore to the same UI strategy.
+    case 'planExecute':
     case 'verification':
-      return 'verify';
+      return 'plan-execute';
     case 'deep':
       return 'deep';
     default:
@@ -202,10 +206,11 @@ async function refreshSelectedModelFromCatalog(
  * `fetchModelsForContext` invalidation rules.
  *
  * Agent conversations (`ctxKey` !== {@link ASSISTANT_CTX}) return plain
- * `chatMode` segments from the API (`auto`, `quick`, `verification`, `deep`)
- * on conversation rows and in history — not `agent:<segment>`. Map those to
- * query mode Agent and the corresponding strategy. Main assistant chat keeps
- * using `agent:`-prefixed modes and `quick` for the default panel.
+ * `chatMode` segments from the API (`auto`, `quick`, `planExecute`, `deep`,
+ * or the legacy `verification` alias) on conversation rows and in history —
+ * not `agent:<segment>`. Map those to query mode Agent and the corresponding
+ * strategy. Main assistant chat keeps using `agent:`-prefixed modes and
+ * `quick` for the default panel.
  */
 export function applyConversationModelInfoToStore(
   modelInfo: ModelInfo | null | undefined,

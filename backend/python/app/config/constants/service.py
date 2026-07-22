@@ -54,6 +54,10 @@ class OAuthScopes(str, Enum):
     AGENT_WRITE = "agent:write"
     AGENT_EXECUTE = "agent:execute"
 
+    # Agent Skills
+    SKILL_READ = "skill:read"
+    SKILL_WRITE = "skill:write"
+
     # Knowledge Base
     KB_READ = "kb:read"
     KB_WRITE = "kb:write"
@@ -102,6 +106,7 @@ class Routes(Enum):
     STORAGE_DOWNLOAD = "/api/v1/document/internal/{documentId}/download"
     STORAGE_DOWNLOAD_EXTERNAL = "/api/v1/document/{documentId}/download"
     STORAGE_BUFFER = "/api/v1/document/internal/{documentId}/buffer"
+    STORAGE_DOCUMENT = "/api/v1/document/internal/{documentId}"
 
 
 class WebhookConfig(Enum):

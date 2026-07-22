@@ -6907,7 +6907,7 @@ class TestGetCachedToolDescriptions:
             "llm": None,
             "has_knowledge": False,
         }
-        with patch("app.modules.agents.qna.nodes._tool_description_cache", {}):
+        with patch("app.modules.agents.context.tool_descriptions._tool_description_cache", {}):
             with patch(
                 "app.modules.agents.qna.tool_system.get_agent_tools_with_schemas",
                 return_value=[],
@@ -6933,7 +6933,7 @@ class TestGetCachedToolDescriptions:
             "llm": None,
             "has_knowledge": True,
         }
-        with patch("app.modules.agents.qna.nodes._tool_description_cache", {}):
+        with patch("app.modules.agents.context.tool_descriptions._tool_description_cache", {}):
             with patch(
                 "app.modules.agents.qna.tool_system.get_agent_tools_with_schemas",
                 return_value=[mock_tool],
@@ -6959,7 +6959,7 @@ class TestGetCachedToolDescriptions:
         cache_key = f"cached_org_{hash(tuple(toolset_names))}_other_False"
 
         fake_cache = {cache_key: "cached tool descriptions"}
-        with patch("app.modules.agents.qna.nodes._tool_description_cache", fake_cache):
+        with patch("app.modules.agents.context.tool_descriptions._tool_description_cache", fake_cache):
             result = _get_cached_tool_descriptions(state, log)
             assert result == "cached tool descriptions"
 
@@ -6976,7 +6976,7 @@ class TestGetCachedToolDescriptions:
             "llm": None,
             "has_knowledge": False,
         }
-        with patch("app.modules.agents.qna.nodes._tool_description_cache", {}):
+        with patch("app.modules.agents.context.tool_descriptions._tool_description_cache", {}):
             with patch(
                 "app.modules.agents.qna.tool_system.get_agent_tools_with_schemas",
                 side_effect=RuntimeError("tool load failed"),
@@ -12208,7 +12208,7 @@ class TestFormatToolDescriptionsFull:
         mock_tool.description = "Search Jira issues"
         mock_schema = MagicMock()
         mock_tool.args_schema = mock_schema
-        with patch("app.modules.agents.qna.nodes._extract_parameters_from_schema", return_value={
+        with patch("app.modules.agents.context.tool_descriptions._extract_parameters_from_schema", return_value={
             "query": {"type": "string", "required": True, "description": "The search query"},
         }):
             result = _format_tool_descriptions([mock_tool], _log())
@@ -12319,7 +12319,7 @@ class TestPlannerKnowledgeContextRoutingMatrix:
     _KB2  = {"displayName": "HR Policies",   "type": "KB"}
     _KBI  = {
         "displayName": "Private Docs", "type": "KB",
-        "connectorId": "kb-app-uuid-1",  # KB app UUID becomes collection_id
+        "connectorId": "kb-app-uuid-1",  # KB app UUID IS its connector_id
     }
     _J    = {"displayName": "Jira Project",  "type": "jira",       "connectorId": "jira-cid-1"}
     _C    = {"displayName": "Confluence",    "type": "confluence", "connectorId": "conf-cid-2"}
@@ -12357,20 +12357,22 @@ class TestPlannerKnowledgeContextRoutingMatrix:
         result = self._ctx([self._KB])
         assert "RETRIEVAL CONNECTOR RULE" in result
 
-    def test_kb_with_ids_shows_collection_ids(self):
-        """KB with connectorId: collection_ids appear in the routing block."""
+    def test_kb_with_ids_shows_connector_ids(self):
+        """KB with connectorId: connector_ids appear in the routing block —
+        the SAME parameter app connectors use, since a KB collection's id
+        IS a connector id now."""
         result = self._ctx([self._KBI])
         assert "kb-app-uuid-1" in result
-        assert "collection_ids" in result
+        assert "connector_ids" in result
 
     def test_kb_only_multiple_kbs_all_listed(self):
         result = self._ctx([self._KB, self._KB2])
         assert "Company Wiki" in result
         assert "HR Policies" in result
 
-    def test_kb_only_parameter_rule_shows_collection_ids(self):
+    def test_kb_only_parameter_rule_shows_connector_ids(self):
         result = self._ctx([self._KB])
-        assert "collection_ids" in result
+        assert "connector_ids" in result
 
     # ── Case 2: Single connector, no KB, no live API overlap ─────────────────
 

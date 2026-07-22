@@ -592,21 +592,32 @@ export function ChatInput({
         return colon >= 0 ? key.slice(colon + 1) : key;
       };
 
-      // Count resolved (stripped + deduped) tools — mirrors the wire format
-      // in runtime.ts where prefixed keys are stripped then deduped via Set.
-      const resolvedCount =
-        toolsSel === null
-          ? new Set(groups.flatMap((g) => g.fullNames).map(stripPrefix)).size
-          : new Set(toolsSel.map(stripPrefix)).size;
+      // `toolsSel === null` means "everything selected" (no explicit
+      // filter) — the wire format (runtime.ts) omits `tools` entirely in
+      // that case, so the backend treats it as "use every configured
+      // toolset" rather than an exploded per-action list. Lazy tool
+      // disclosure (backend default ON) means the number of schemas bound
+      // to the model no longer scales with toolset count either, so there
+      // is nothing to guard here — only an actual explicit selection
+      // (`toolsSel !== null`) needs a sanity cap, and even that is now
+      // generous (matches the backend's own bound — see agent.py) rather
+      // than a tight per-action count that a handful of multi-action
+      // toolsets already exceeded with nothing deselected.
+      if (toolsSel !== null) {
+        // Count resolved (stripped + deduped) tools — mirrors the wire
+        // format in runtime.ts where prefixed keys are stripped then deduped
+        // via Set.
+        const resolvedCount = new Set(toolsSel.map(stripPrefix)).size;
 
-      if (resolvedCount > 128) {
-        toast.error(
-          t('chat.toolValidation.tooManyTools', {
-            defaultValue:
-              'Too many tools selected. Maximum 128 tools are allowed per request due to performance limits.',
-          })
-        );
-        return;
+        if (resolvedCount > 1024) {
+          toast.error(
+            t('chat.toolValidation.tooManyTools', {
+              defaultValue:
+                'Too many tools selected. Maximum 1024 tools are allowed per request due to performance limits.',
+            })
+          );
+          return;
+        }
       }
 
       // Detect multiple selected instances of the same toolset type.

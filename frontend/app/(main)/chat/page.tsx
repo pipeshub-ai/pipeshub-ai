@@ -1473,6 +1473,7 @@ function ChatContent() {
                     size: previewFile.size,
                     webUrl: previewFile.webUrl,
                     previewRenderable: previewFile.previewRenderable,
+                    version: previewFile.version,
                   }}
                   isLoading={previewFile.isLoading}
                   error={previewFile.error}
@@ -1483,6 +1484,9 @@ function ChatContent() {
                   initialCitationId={previewFile.initialCitationId}
                   hideFileDetails={previewFile.hideFileDetails}
                   showDownload={previewFile.showDownload}
+                  latestVersion={previewFile.latestVersion}
+                  onVersionChange={previewFile.onVersionChange}
+                  isSwitchingVersion={previewFile.isSwitchingVersion}
                   defaultTab="preview"
                   onToggleFullscreen={() => setPreviewMode('fullscreen')}
                   onClose={() => clearPreview()}
@@ -1510,6 +1514,7 @@ function ChatContent() {
             size: previewFile.size,
             webUrl: previewFile.webUrl,
             previewRenderable: previewFile.previewRenderable,
+            version: previewFile.version,
           }}
           isLoading={previewFile.isLoading}
           error={previewFile.error}
@@ -1520,6 +1525,9 @@ function ChatContent() {
           initialCitationId={previewFile.initialCitationId}
           hideFileDetails={previewFile.hideFileDetails}
           showDownload={previewFile.showDownload}
+          latestVersion={previewFile.latestVersion}
+          onVersionChange={previewFile.onVersionChange}
+          isSwitchingVersion={previewFile.isSwitchingVersion}
           defaultTab="preview"
           onExitFullscreen={isMobile ? undefined : () => setPreviewMode('sidebar')}
           onClose={() => clearPreview()}

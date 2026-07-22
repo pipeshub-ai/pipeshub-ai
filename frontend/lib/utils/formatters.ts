@@ -85,10 +85,10 @@ export function formatChatMode(chatMode?: string): string {
   if (!chatMode) return '';
   if (chatMode.startsWith('agent:')) {
     const strategy = chatMode.slice('agent:'.length);
-    // API uses `verification`; UI label reads as “Verify”
+    // API uses `planExecute` (legacy alias: `verification`); UI label reads as "Plan & Execute"
     const label =
-      strategy === 'verification'
-        ? 'Verify'
+      strategy === 'planExecute' || strategy === 'verification'
+        ? 'Plan & Execute'
         : strategy.length > 0
           ? strategy.charAt(0).toUpperCase() + strategy.slice(1)
           : strategy;

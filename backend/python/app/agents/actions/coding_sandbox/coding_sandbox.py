@@ -14,9 +14,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -229,10 +228,9 @@ class CodingSandbox:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="coding_sandbox",
-        tool_name="execute_python",
-        args_schema=ExecutePythonInput,
-        llm_description=(
+        path="/tools/coding_sandbox/execute_python",
+        short_description="Execute Python code in an isolated sandbox to generate files and artifacts",
+        description=(
             "Execute Python code in an isolated sandbox with NO internet access. "
             "The sandbox cannot make any network requests (no urllib, requests, httpx, API calls, web scraping, etc.). "
             "All data needed for computation must be embedded directly in the code as literals or variables. "
@@ -246,31 +244,35 @@ class CodingSandbox:
             "as artifacts; the UI renders download cards for them. Any file path printed to stdout is an "
             "internal sandbox path and must NEVER appear in your answer to the user."
         ),
-        category=ToolCategory.CODE_EXECUTION,
-        is_essential=False,
-        requires_auth=False,
-        when_to_use=[
-            "User wants to generate a chart, graph, or visualization",
-            "User wants to create a document (DOCX, PPTX, PDF)",
-            "User wants to process data and produce output files",
-            "User wants to generate an image or transform images",
-            "User wants to create a CSV or Excel file from data",
-            "User needs to run a computation that produces file output",
+        parameters=[
+            ToolParameter(
+                name="code",
+                type=ParameterType.STRING,
+                description=(
+                    "Python code to execute. "
+                    "IMPORTANT: The sandbox has NO internet access -- do not use urllib, requests, httpx, or any network calls. "
+                    "All data must be passed inline in the code or generated within the code itself. "
+                    "Write output files to the path in the OUTPUT_DIR environment variable. "
+                    "Example: open(os.path.join(os.environ['OUTPUT_DIR'], 'chart.png'), 'wb')"
+                ),
+                required=True,
+            ),
+            ToolParameter(
+                name="requirements",
+                type=ParameterType.ARRAY,
+                description=(
+                    "pip packages to install before execution (e.g. ['pandas', 'matplotlib']). "
+                    "Only packages on the sandbox allowlist are accepted; any other package will be rejected. "
+                    "Allowlist includes: pandas, numpy, scipy, scikit-learn, matplotlib, seaborn, "
+                    "pillow, openpyxl, python-docx, python-pptx, reportlab, pypdf, pdfplumber, plotly, "
+                    "kaleido, fpdf2, cairosvg, beautifulsoup4, lxml, jinja2, and a curated set more."
+                ),
+                required=False,
+                default=[],
+                items={"type": "string"},
+            ),
         ],
-        when_not_to_use=[
-            "User just wants a text answer or explanation",
-            "User wants to query an existing database (use database tools instead)",
-            "User wants to search knowledge base (use retrieval tools)",
-            "The task requires downloading data from the internet or calling external APIs (the sandbox has no network access)",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Create a bar chart of quarterly revenue",
-            "Generate a DOCX report summarizing the data",
-            "Make a pie chart showing market share",
-            "Create an Excel spreadsheet with the results",
-            "Generate a PDF invoice",
-        ],
+        tags=[Tag(key="category", value="code_execution"), Tag(key="type", value="action")],
     )
     async def execute_python(self, code: str, requirements: list[str] | None = None) -> tuple[bool, str]:
         """Execute Python code in the sandbox and return results + artifacts."""
@@ -333,10 +335,9 @@ class CodingSandbox:
             return self._result(False, {"success": False, "error": redact_sandbox_paths(str(e))})
 
     @tool(
-        app_name="coding_sandbox",
-        tool_name="execute_typescript",
-        args_schema=ExecuteTypeScriptInput,
-        llm_description=(
+        path="/tools/coding_sandbox/execute_typescript",
+        short_description="Execute TypeScript code in an isolated sandbox to generate files and artifacts",
+        description=(
             "Execute TypeScript code in an isolated sandbox with NO internet access. "
             "The sandbox cannot make any network requests (no fetch, axios, http, API calls, web scraping, etc.). "
             "All data needed for computation must be embedded directly in the code as literals or variables. "
@@ -349,24 +350,34 @@ class CodingSandbox:
             "them. Any file path printed to stdout is an internal sandbox path and must NEVER appear "
             "in your answer to the user."
         ),
-        category=ToolCategory.CODE_EXECUTION,
-        is_essential=False,
-        requires_auth=False,
-        when_to_use=[
-            "User needs TypeScript/JavaScript-specific processing",
-            "User wants to generate HTML/SVG visualizations",
-            "User wants to use Node.js libraries for file generation",
+        parameters=[
+            ToolParameter(
+                name="code",
+                type=ParameterType.STRING,
+                description=(
+                    "TypeScript code to execute. "
+                    "IMPORTANT: The sandbox has NO internet access -- do not use fetch, axios, http, or any network calls. "
+                    "All data must be passed inline in the code or generated within the code itself. "
+                    "Write output files to the path in the OUTPUT_DIR environment variable. "
+                    "Example: fs.writeFileSync(path.join(process.env.OUTPUT_DIR!, 'report.html'), html)"
+                ),
+                required=True,
+            ),
+            ToolParameter(
+                name="packages",
+                type=ParameterType.ARRAY,
+                description=(
+                    "npm packages to install before execution (e.g. ['chart.js', 'docx']). "
+                    "Only packages on the sandbox allowlist are accepted; any other package will be rejected. "
+                    "Allowlist: fs-extra, sharp, @types/node, csv-stringify, json2csv, chart.js, "
+                    "docx, pdfkit, jsdom, xlsx, papaparse."
+                ),
+                required=False,
+                default=[],
+                items={"type": "string"},
+            ),
         ],
-        when_not_to_use=[
-            "User just wants a text answer",
-            "Python would be more suitable for the task",
-            "The task requires downloading data from the internet or calling external APIs (the sandbox has no network access)",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Generate an HTML report",
-            "Create an SVG diagram",
-        ],
+        tags=[Tag(key="category", value="code_execution"), Tag(key="type", value="action")],
     )
     async def execute_typescript(self, code: str, packages: list[str] | None = None) -> tuple[bool, str]:
         """Execute TypeScript code in the sandbox and return results + artifacts."""

@@ -1510,7 +1510,264 @@ class BlobStorage(Transformer):
                 conversation_id,
             )
             raise
-                       
+
+    async def save_versioned_artifact_to_storage(
+        self,
+        org_id: str,
+        conversation_id: str,
+        file_name: str,
+        file_bytes: bytes,
+        content_type: str = "application/octet-stream",
+    ) -> dict:
+        """Create a NEW, version-enabled document for an agent/LLM artifact.
+
+        Same wire path as :meth:`save_conversation_file_to_storage` (raw
+        bytes, ``artifacts/{conversation_id}`` path) but with
+        ``isVersionedFile: true`` so a later :meth:`upload_artifact_version`
+        call can append version 1, 2, ... to THIS SAME document instead of
+        creating a parallel, unrelated file per version — the single
+        invariant :class:`~app.services.artifact_registry.versioning.VersionManager`
+        depends on.
+
+        Returns dict with ``documentId``, ``fileName``, and either
+        ``signedUrl`` (S3) or ``downloadUrl`` (local).
+        """
+        import os as _os
+
+        headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
+        document_path = f"artifacts/{conversation_id}"
+        doc_name_no_ext = _os.path.splitext(file_name)[0]
+        extension = _os.path.splitext(file_name)[1].lstrip(".")
+
+        if storage_type == "local":
+            async with aiohttp.ClientSession() as session:
+                form_data = aiohttp.FormData()
+                form_data.add_field(
+                    "file", file_bytes, filename=file_name, content_type=content_type,
+                )
+                form_data.add_field("documentName", doc_name_no_ext)
+                form_data.add_field("documentPath", document_path)
+                form_data.add_field("isVersionedFile", "true")
+
+                upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
+                async with session.post(upload_url, data=form_data, headers=headers) as response:
+                    if response.status != HttpStatusCode.SUCCESS.value:
+                        error_text = (await response.text())[:500]
+                        self.logger.error(
+                            "❌ Versioned artifact upload failed. Status: %d, Response: %s",
+                            response.status, error_text,
+                        )
+                        raise Exception(f"Local upload failed with status {response.status}")
+                    response_data = await response.json()
+                    document_id = response_data.get("_id")
+                    if not document_id:
+                        raise Exception("No document ID in local upload response")
+
+                public_base_url = await self._get_public_download_base_url()
+                download_url = (
+                    f"{public_base_url}"
+                    f"{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
+                )
+                return {"documentId": document_id, "downloadUrl": download_url, "fileName": file_name}
+        else:
+            placeholder_data = {
+                "documentName": doc_name_no_ext,
+                "documentPath": document_path,
+                "extension": extension,
+                "isVersionedFile": True,
+            }
+            async with aiohttp.ClientSession() as session:
+                placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
+                document = await self._create_placeholder(session, placeholder_url, placeholder_data, headers)
+                document_id = document.get("_id") if document else None
+                if not document_id:
+                    raise Exception("No document ID in placeholder response")
+
+                upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
+                upload_result = await self._get_signed_url(session, upload_url, {}, headers)
+                signed_url = (upload_result or {}).get("signedUrl")
+                if not signed_url:
+                    raise Exception("No signed URL for versioned artifact upload")
+
+                await self._upload_raw_to_signed_url(session, signed_url, file_bytes, content_type)
+
+                download_api = f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
+                async with session.get(download_api, headers=headers) as resp:
+                    if (
+                        resp.status == HttpStatusCode.SUCCESS.value
+                        and resp.content_type == "application/json"
+                    ):
+                        data = await resp.json()
+                        if data.get("signedUrl"):
+                            return {
+                                "documentId": document_id,
+                                "signedUrl": data["signedUrl"],
+                                "fileName": file_name,
+                            }
+                public_base_url = await self._get_public_download_base_url()
+                return {
+                    "documentId": document_id,
+                    "downloadUrl": f"{public_base_url}{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}",
+                    "fileName": file_name,
+                }
+
+    async def get_download_url(self, org_id: str, document_id: str, version: int | None = None) -> str:
+        """Resolve a user-facing download URL for `document_id` — an S3/Azure
+        signed URL when available, else the org-scoped external download
+        route (local storage / any fallback where the download route
+        didn't return a `signedUrl`). Used by
+        `app.services.artifact_registry.signed_urls.SignedUrlBroker` so
+        that module never reaches into this class's private helpers.
+
+        `version` is a storage-layer `versionHistory` index (not a registry
+        version number); both the internal and external `/download` routes
+        accept it identically (same `downloadDocument` handler mounted
+        twice — see `storage.routes.ts`)."""
+        headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
+        version_query = f"?version={version}" if version is not None else ""
+        # Local storage's download route STREAMS the file bytes back
+        # (`serveFileFromLocalStorage` in storage.controller.ts) — there is
+        # no `{signedUrl}` JSON to fetch, so calling it here would download
+        # the whole file just to throw it away. Go straight to the
+        # org-scoped external route.
+        if storage_type != "local":
+            download_api = (
+                f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
+                f"{version_query}"
+            )
+            async with aiohttp.ClientSession() as session:
+                async with session.get(download_api, headers=headers) as resp:
+                    # Content-type guard: any storage vendor that streams the
+                    # file on this route (rather than returning JSON) falls
+                    # through to the external-route fallback below.
+                    if (
+                        resp.status == HttpStatusCode.SUCCESS.value
+                        and resp.content_type == "application/json"
+                    ):
+                        data = await resp.json()
+                        signed = data.get("signedUrl")
+                        if signed:
+                            return str(signed)
+        public_base_url = await self._get_public_download_base_url()
+        return (
+            f"{public_base_url}{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
+            f"{version_query}"
+        )
+
+    async def get_direct_upload_url(self, org_id: str, document_id: str) -> str:
+        """Signed PUT URL for an EXISTING document — the first phase of the
+        artifact registry's two-phase upload (`get_upload_grant` in
+        `signed_urls.py`). Cloud storage (S3/Azure) only: local storage has
+        no equivalent unauthenticated PUT target, since `uploadNextVersion`
+        requires the same scoped internal JWT this method itself uses to
+        fetch the URL — callers must fall back to the inline-content path
+        for local deployments (see `SignedUrlBroker.get_upload_grant`).
+        """
+        headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
+        if storage_type == "local":
+            raise Exception("Direct signed upload URLs are not supported for local storage")
+        async with aiohttp.ClientSession() as session:
+            upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
+            upload_result = await self._get_signed_url(session, upload_url, {}, headers)
+            signed_url = (upload_result or {}).get("signedUrl")
+            if not signed_url:
+                raise Exception("No signed URL returned for direct upload")
+            return signed_url
+
+    async def upload_artifact_version(
+        self,
+        org_id: str,
+        document_id: str,
+        file_name: str,
+        file_bytes: bytes,
+        content_type: str = "application/octet-stream",
+    ) -> dict:
+        """Append a new version of RAW bytes to an existing artifact document.
+
+        Distinct from :meth:`upload_next_version` (which JSON-wraps/compresses
+        a KB-record snapshot and, for cloud storage, PUTs straight to the
+        CURRENT object key via a `directUpload` signed URL — bypassing
+        ``versionHistory`` bookkeeping entirely). ``uploadNextVersionDocument``
+        (`storage.controller.ts`) is storage-vendor-agnostic — it reads the
+        uploaded buffer via `FileProcessorService` and writes it through the
+        SAME adapter abstraction (`adapter.getBufferFromStorageService`/
+        `cloneDocument`) regardless of S3/Azure/local — so unlike
+        `upload_next_version`, this method always posts multipart bytes to
+        that one route for EVERY storage vendor, guaranteeing a real
+        ``versionHistory`` entry is appended everywhere.
+
+        Returns dict with ``documentId``, ``sizeBytes``, ``storageVersion``
+        (the ``versionHistory`` index Node just wrote these bytes to — the
+        LAST entry of the response document's ``versionHistory``), and
+        ``priorStorageVersion`` (the entry immediately before it, non-None
+        only when Node had to lazily snapshot the previous "current" content
+        first — i.e. the very first version bump for this document). Callers
+        MUST use these indices rather than deriving them arithmetically —
+        see `VersionManager.add_version`.
+        """
+        headers, nodejs_endpoint, _storage_type = await self._get_auth_and_config(org_id)
+        file_size_bytes = len(file_bytes)
+
+        async with aiohttp.ClientSession() as session:
+            form_data = aiohttp.FormData()
+            form_data.add_field(
+                "file", file_bytes, filename=file_name, content_type=content_type,
+            )
+            upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD_NEXT_VERSION.value.format(documentId=document_id)}"
+            async with session.post(upload_url, data=form_data, headers=headers) as response:
+                if response.status != HttpStatusCode.SUCCESS.value:
+                    error_text = (await response.text())[:500]
+                    self.logger.error(
+                        "❌ Artifact version upload failed. Status: %d, Response: %s",
+                        response.status, error_text,
+                    )
+                    if response.status == HttpStatusCode.BAD_REQUEST.value and "cannot be versioned" in error_text.lower():
+                        raise Exception("This document cannot be versioned")
+                    raise Exception(f"Failed to upload artifact version (status: {response.status})")
+                try:
+                    response_data = await response.json()
+                except aiohttp.ContentTypeError:
+                    response_data = {}
+
+            version_history = response_data.get("versionHistory") or []
+            storage_version = version_history[-1].get("version") if version_history else None
+            prior_storage_version = (
+                version_history[-2].get("version") if len(version_history) >= 2 else None
+            )
+            if storage_version is None:
+                self.logger.warning(
+                    "⚠️ Artifact version upload for document %s returned no versionHistory; "
+                    "version-pinned retrieval for this bump will fall back to latest.",
+                    document_id,
+                )
+            return {
+                "documentId": document_id,
+                "sizeBytes": file_size_bytes,
+                "storageVersion": storage_version,
+                "priorStorageVersion": prior_storage_version,
+            }
+
+    async def get_document_version_history(self, org_id: str, document_id: str) -> list[dict]:
+        """Fetch the authoritative ``versionHistory`` array for `document_id`
+        straight from the storage document (``GET /internal/{documentId}``).
+        Used by `artifact_cleanup.py`'s `PENDING_RECONCILE` repair pass to
+        recover the storage index of a version bump whose graph-side write
+        failed — the blob write itself already succeeded, so this list is
+        the ground truth to reconcile FROM."""
+        headers, nodejs_endpoint, _storage_type = await self._get_auth_and_config(org_id)
+        url = f"{nodejs_endpoint}{Routes.STORAGE_DOCUMENT.value.format(documentId=document_id)}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status != HttpStatusCode.SUCCESS.value:
+                    error_text = (await response.text())[:500]
+                    self.logger.error(
+                        "❌ Failed to fetch document version history for %s. Status: %d, Response: %s",
+                        document_id, response.status, error_text,
+                    )
+                    raise Exception(f"Failed to fetch document {document_id} (status: {response.status})")
+                data = await response.json()
+                return data.get("versionHistory") or []
+
     async def get_reconciliation_metadata(self, virtual_record_id: str, org_id: str) -> dict | None:
         """
         Args:

@@ -110,37 +110,41 @@ class TestFormatConnectorFilterLines:
 # classify_knowledge_sources
 # ---------------------------------------------------------------------------
 
+def _split(sources: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split the unified classify_knowledge_sources() list back into
+    (kb, apps) purely for test readability."""
+    kb = [s for s in sources if s["source_type"] == "kb"]
+    apps = [s for s in sources if s["source_type"] == "app"]
+    return kb, apps
+
+
 class TestClassifyKnowledgeSources:
     def test_empty_list(self):
-        kb, conn = classify_knowledge_sources([])
-        assert kb == []
-        assert conn == []
+        assert classify_knowledge_sources([]) == []
 
     def test_none_list(self):
-        kb, conn = classify_knowledge_sources(None)
-        assert kb == []
-        assert conn == []
+        assert classify_knowledge_sources(None) == []
 
     def test_kb_entry(self):
         knowledge = [{"type": "KB", "displayName": "My Docs", "connectorId": "kb1"}]
-        kb, conn = classify_knowledge_sources(knowledge)
+        kb, conn = _split(classify_knowledge_sources(knowledge))
         assert len(kb) == 1
         assert kb[0]["label"] == "My Docs"
-        assert kb[0]["collection_ids"] == ["kb1"]
+        assert kb[0]["connector_id"] == "kb1"
 
     def test_kb_entry_no_connector_id(self):
         knowledge = [{"type": "KB", "name": "KB Store"}]
-        kb, conn = classify_knowledge_sources(knowledge)
-        assert kb[0]["collection_ids"] == []
+        kb, conn = _split(classify_knowledge_sources(knowledge))
+        assert kb[0]["connector_id"] == ""
 
     def test_kb_entry_legacy_filters_ignored(self):
         knowledge = [{"type": "KB", "name": "KB", "connectorId": "kb2", "filters": "not json"}]
-        kb, conn = classify_knowledge_sources(knowledge)
-        assert kb[0]["collection_ids"] == ["kb2"]
+        kb, conn = _split(classify_knowledge_sources(knowledge))
+        assert kb[0]["connector_id"] == "kb2"
 
     def test_connector_entry(self):
         knowledge = [{"type": "Confluence", "displayName": "Confluence Eng", "connectorId": "c1"}]
-        kb, conn = classify_knowledge_sources(knowledge)
+        kb, conn = _split(classify_knowledge_sources(knowledge))
         assert len(conn) == 1
         assert conn[0]["label"] == "Confluence Eng"
         assert conn[0]["connector_id"] == "c1"
@@ -149,7 +153,7 @@ class TestClassifyKnowledgeSources:
     def test_connector_with_config(self):
         knowledge = [{"type": "Jira", "name": "Jira", "connectorId": "j1"}]
         configs = {"j1": {"sync": {"projects": {"type": "list", "value": [{"label": "PROJ"}]}}}}
-        kb, conn = classify_knowledge_sources(knowledge, connector_configs=configs)
+        kb, conn = _split(classify_knowledge_sources(knowledge, connector_configs=configs))
         assert conn[0].get("filters") == configs["j1"]
 
     def test_mixed_entries(self):
@@ -158,13 +162,13 @@ class TestClassifyKnowledgeSources:
             {"type": "Confluence", "connectorId": "c1"},
             {"type": "Jira", "name": "Jira", "connectorId": "j1"},
         ]
-        kb, conn = classify_knowledge_sources(knowledge)
+        kb, conn = _split(classify_knowledge_sources(knowledge))
         assert len(kb) == 1
         assert len(conn) == 2
 
     def test_non_dict_items_skipped(self):
         knowledge = [None, "invalid", {"type": "KB", "name": "Valid"}]
-        kb, conn = classify_knowledge_sources(knowledge)
+        kb, conn = _split(classify_knowledge_sources(knowledge))
         assert len(kb) == 1
 
 
@@ -217,40 +221,40 @@ class TestSlugHelpers:
 
 class TestBuildConnectorRoutingRules:
     def test_empty_both_returns_fallback(self):
-        result = build_connector_routing_rules([], kb_sources=[], kb_only_note="Nothing here")
+        result = build_connector_routing_rules([], kb_only_note="Nothing here")
         assert result == "Nothing here"
 
     def test_kb_only(self):
-        kb = [{"label": "My KB", "collection_ids": ["rg1"]}]
-        result = build_connector_routing_rules([], kb_sources=kb)
+        kb = [{"label": "My KB", "connector_id": "rg1", "type_key": "", "source_type": "kb"}]
+        result = build_connector_routing_rules(kb)
         assert "KB" in result
         assert "My KB" in result
         assert "rg1" in result
         assert "KB-only" in result
 
-    def test_kb_without_collection_ids(self):
-        kb = [{"label": "General KB", "collection_ids": []}]
-        result = build_connector_routing_rules([], kb_sources=kb)
-        assert "omit collection_ids" in result
+    def test_kb_without_connector_ids(self):
+        kb = [{"label": "General KB", "connector_id": "", "type_key": "", "source_type": "kb"}]
+        result = build_connector_routing_rules(kb)
+        assert "omit connector_ids" in result
 
     def test_connectors_only(self):
-        connectors = [{"label": "Confluence", "type_key": "confluence", "connector_id": "c1"}]
+        connectors = [{"label": "Confluence", "type_key": "confluence", "connector_id": "c1", "source_type": "app"}]
         result = build_connector_routing_rules(connectors)
         assert "Confluence" in result
         assert "c1" in result
         assert "connector_ids" in result
 
     def test_mixed_kb_and_connectors(self):
-        connectors = [{"label": "Jira", "type_key": "jira", "connector_id": "j1"}]
-        kb = [{"label": "KB Docs", "collection_ids": ["rg1"]}]
-        result = build_connector_routing_rules(connectors, kb_sources=kb)
+        connectors = [{"label": "Jira", "type_key": "jira", "connector_id": "j1", "source_type": "app"}]
+        kb = [{"label": "KB Docs", "connector_id": "rg1", "type_key": "", "source_type": "kb"}]
+        result = build_connector_routing_rules(connectors + kb)
         assert "Jira" in result
         assert "KB Docs" in result
 
     def test_same_type_duplicates(self):
         connectors = [
-            {"label": "Confluence Eng", "type_key": "confluence", "connector_id": "c1"},
-            {"label": "Confluence Sales", "type_key": "confluence", "connector_id": "c2"},
+            {"label": "Confluence Eng", "type_key": "confluence", "connector_id": "c1", "source_type": "app"},
+            {"label": "Confluence Sales", "type_key": "confluence", "connector_id": "c2", "source_type": "app"},
         ]
         result = build_connector_routing_rules(connectors)
         assert "c1" in result
@@ -258,12 +262,12 @@ class TestBuildConnectorRoutingRules:
         assert "multiple connectors" in result.lower() or "⚠️" in result
 
     def test_orchestrator_format(self):
-        connectors = [{"label": "Jira", "type_key": "jira", "connector_id": "j1"}]
+        connectors = [{"label": "Jira", "type_key": "jira", "connector_id": "j1", "source_type": "app"}]
         result = build_connector_routing_rules(connectors, call_format="orchestrator")
         assert "task_id" in result or "description" in result
 
     def test_planner_format(self):
-        connectors = [{"label": "Jira", "type_key": "jira", "connector_id": "j1"}]
+        connectors = [{"label": "Jira", "type_key": "jira", "connector_id": "j1", "source_type": "app"}]
         result = build_connector_routing_rules(connectors, call_format="planner")
         assert "search_internal_knowledge" in result
 
@@ -272,6 +276,7 @@ class TestBuildConnectorRoutingRules:
             "label": "Confluence",
             "type_key": "confluence",
             "connector_id": "c1",
+            "source_type": "app",
             "filters": {"sync": {"spaces": {"type": "list", "value": [{"label": "Engineering"}]}}},
         }]
         result = build_connector_routing_rules(connectors)

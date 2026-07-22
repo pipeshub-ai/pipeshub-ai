@@ -79,14 +79,14 @@ function toolsetConnectionChipLabel(n: FlowNodeData): string {
   return normalizeDisplayName(inst || disp || n.label);
 }
 
-type CoreInboundHandle = 'input' | 'llms' | 'knowledge' | 'toolsets';
+type CoreInboundHandle = 'input' | 'llms' | 'knowledge' | 'toolsets' | 'skills';
 
 function inboundHandleForEdge(
   targetHandle: string | null | undefined,
   source: FlowNodeData
 ): CoreInboundHandle | null {
   const h = targetHandle as CoreInboundHandle | undefined;
-  if (h === 'input' || h === 'llms' || h === 'knowledge' || h === 'toolsets') return h;
+  if (h === 'input' || h === 'llms' || h === 'knowledge' || h === 'toolsets' || h === 'skills') return h;
 
   const t = source.type;
   if (t === 'user-input') return 'input';
@@ -101,6 +101,7 @@ function inboundHandleForEdge(
   if (t === 'kb-group' || t.startsWith('kb-') || t === 'app-group' || t.startsWith('app-')) {
     return 'knowledge';
   }
+  if (t.startsWith('skill-')) return 'skills';
   return null;
 }
 
@@ -201,7 +202,7 @@ function ConnectionChip({
   );
 }
 
-const MAX_VISIBLE = { models: 5, knowledge: 5, toolsets: 5, input: 4 } as const;
+const MAX_VISIBLE = { models: 5, knowledge: 5, toolsets: 5, skills: 5, input: 4 } as const;
 
 function ConnectedChips({
   nodes,
@@ -285,6 +286,7 @@ export function AgentCoreNode({
       toolsets: [],
       knowledge: [],
       llms: [],
+      skills: [],
     };
     incoming.forEach((e) => {
       const source = storeNodes.find((n) => n.id === e.source);
@@ -519,6 +521,21 @@ export function AgentCoreNode({
                 max={MAX_VISIBLE.toolsets}
                 labelOf={toolsetConnectionChipLabel}
                 chipIconKind="toolset"
+              />
+            ) : (
+              <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
+                {t('agentBuilder.optional')}
+              </Text>
+            )}
+          </Section>
+
+          <Section title={t('agentBuilder.skillsSection')} icon="psychology">
+            <CoreHandle type="target" position={Position.Left} id="skills" nodeDataId={data.id} offsetStyle={{ left: -8 }} />
+            {connected.skills.length ? (
+              <ConnectedChips
+                nodes={connected.skills}
+                max={MAX_VISIBLE.skills}
+                labelOf={(n) => normalizeDisplayName((n.config?.skillName as string) || n.label)}
               />
             ) : (
               <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>

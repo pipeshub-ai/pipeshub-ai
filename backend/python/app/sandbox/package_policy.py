@@ -35,7 +35,10 @@ Known upstream issues (docstring note, not enforced here):
   fail to load on slim base images; see
   https://github.com/anthropics/anthropic-sdk-python/issues/1340. If that
   bites, pin ``charset-normalizer<3.4`` in the sandbox image.
-- ``pdfkit`` needs ``wkhtmltopdf`` installed at the OS level.
+- Python's ``pdfkit`` needs ``wkhtmltopdf`` installed at the OS level. This is
+  UNRELATED to the npm ``pdfkit`` package (same name, different library, pure
+  JS, no OS dependency) — prefer the npm one for PDF generation; see the
+  ``pdf`` builtin skill pack.
 - ``tabula-py`` needs a JRE (``default-jre-headless``).
 """
 
@@ -123,7 +126,10 @@ NPM_PACKAGE_ALLOWLIST: frozenset[str] = frozenset({
     "json2csv",
     "chart.js",
     "docx",
+    "pptxgenjs",
+    "exceljs",
     "pdfkit",
+    "pdf-lib",
     "jsdom",
     "xlsx",
     "papaparse",
@@ -138,21 +144,28 @@ NPM_PACKAGE_ALLOWLIST: frozenset[str] = frozenset({
 #   "pandas>=1.5", "numpy==1.26.*", "pillow<11"
 _VERSION_SPEC_RE = re.compile(r"[<>=!~].+$")
 
+# Match an npm-style version/tag suffix ("pkg@1.2.3", "@scope/pkg@^2.0").
+# The leading char class excludes a scope's own "@" at position 0.
+_NPM_VERSION_SUFFIX_RE = re.compile(r"(?<=.)@[^@/]+$")
 
-def _strip_version(name: str) -> str:
+
+def _strip_version(name: str, language: SandboxLanguage) -> str:
     """Return *name* with any trailing version specifier removed."""
+    if language == SandboxLanguage.TYPESCRIPT:
+        return _NPM_VERSION_SUFFIX_RE.sub("", name).strip()
     return _VERSION_SPEC_RE.sub("", name).strip()
 
 
 def canonicalize(name: str, language: SandboxLanguage) -> str:
     """Return the canonical allowlist key for *name*.
 
-    - Strips trailing version specifiers (``pandas>=1.5`` -> ``pandas``).
+    - Strips trailing version specifiers (``pandas>=1.5`` -> ``pandas``,
+      ``lodash@4.17.21`` -> ``lodash``, ``@scope/pkg@^2`` -> ``@scope/pkg``).
     - Lower-cases.
     - For Python, replaces ``_`` with ``-`` (PyPI normalization).
     - For npm, preserves ``@scope/package`` scoping.
     """
-    base = _strip_version(name).lower()
+    base = _strip_version(name, language).lower()
     if language == SandboxLanguage.PYTHON:
         return base.replace("_", "-")
     return base

@@ -24,6 +24,7 @@
  */
 
 import { test, expect } from '../fixtures/base.fixture';
+import { buildAguiSseBody } from './agui-sse-builder';
 
 // ---------------------------------------------------------------------------
 // Shared constants
@@ -68,72 +69,20 @@ const TEST_ANSWER =
   'Machine learning is a subset of AI where systems learn from data to improve their performance over time.';
 
 // ---------------------------------------------------------------------------
-// SSE body builder (matches real backend event sequence)
+// SSE body builder (AG-UI wire format — matches real backend event sequence
+// now that `USE_AGUI_PROTOCOL` is the frontend default; see agui-sse-builder.ts)
 // ---------------------------------------------------------------------------
 
 function buildSseBody(question: string, answer: string): string {
-  const evt = (name: string, data: object) =>
-    `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
-
-  return [
-    evt('connected', { message: 'ok', conversationId: CONV_ID, title: question.slice(0, 60) }),
-    evt('status', { status: 'planning', message: 'Searching knowledge base…' }),
-    evt('answer_chunk', { chunk: answer, accumulated: answer, citations: [] }),
-    evt('complete', {
-      conversation: {
-        _id: CONV_ID,
-        userId: 'u-e2e',
-        orgId: 'o-e2e',
-        title: question.slice(0, 60),
-        initiator: 'main',
-        messages: [
-          {
-            _id: MSG_USER_ID,
-            messageType: 'user_query',
-            content: question,
-            contentFormat: 'MARKDOWN',
-            citations: [],
-            followUpQuestions: [],
-            referenceData: [],
-            modelInfo: MOCK_MODEL_INFO,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            feedback: [],
-          },
-          {
-            _id: MSG_BOT_ID,
-            messageType: 'bot_response',
-            content: answer,
-            contentFormat: 'MARKDOWN',
-            citations: [],
-            confidence: 'High',
-            followUpQuestions: [],
-            referenceData: [],
-            modelInfo: MOCK_MODEL_INFO,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            feedback: [],
-          },
-        ],
-        isShared: false,
-        isDeleted: false,
-        isArchived: false,
-        lastActivityAt: Date.now(),
-        status: 'active',
-        modelInfo: MOCK_MODEL_INFO,
-        sharedWith: [],
-        conversationErrors: [],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        __v: 0,
-      },
-      meta: {
-        requestId: 'req-e2e-actions',
-        timestamp: new Date().toISOString(),
-        duration: 430,
-      },
-    }),
-  ].join('');
+  return buildAguiSseBody({
+    conversationId: CONV_ID,
+    userMessageId: MSG_USER_ID,
+    botMessageId: MSG_BOT_ID,
+    question,
+    answer,
+    modelInfo: MOCK_MODEL_INFO,
+    requestId: 'req-e2e-actions',
+  });
 }
 
 // ---------------------------------------------------------------------------

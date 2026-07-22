@@ -18,10 +18,22 @@ from app.utils.chat_helpers import CitationRefMapper
 # Default persona when the UI does not supply systemPrompt (keep in sync with API defaults).
 DEFAULT_AGENT_SYSTEM_PROMPT = "You are an enterprise questions answering expert"
 
+_DEFAULT_PROMPTS = frozenset({
+    DEFAULT_AGENT_SYSTEM_PROMPT,
+    "You are a helpful assistant",
+    "You are a helpful assistant.",
+    "You are a helpful, friendly AI assistant",
+    "You are a helpful, friendly AI assistant.",
+    "You are a helpful, friendly AI assistant. Respond naturally and concisely.",
+    "You are a workplace productivity assistant. Help users with their connected work tools.",
+    "You are a workplace productivity assistant. Help users with their connected work tools",
+})
+
+
 def is_custom_agent_system_prompt(system_prompt: str | None) -> bool:
     """True when the workspace supplied a persona distinct from the default placeholder."""
     s = (system_prompt or "").strip()
-    return bool(s) and s != DEFAULT_AGENT_SYSTEM_PROMPT
+    return bool(s) and s not in _DEFAULT_PROMPTS
 
 
 class Document(TypedDict):
@@ -83,6 +95,7 @@ class ChatState(TypedDict):
     apps: list[str] | None  # List of app IDs to search in (extracted from knowledge array)
     kb: list[str] | None  # List of KB app IDs to search in (extracted from knowledge array)
     agent_knowledge: list[dict[str, Any]] | None
+    agent_skills: list[str] | None  # Names of skills explicitly assigned to this agent (AGENT_HAS_SKILL edges) — see AgentContext.agent_skills
     connector_configs: dict[str, Any] | None  # Per-connector sync/indexing filter values from etcd (route pre-fetch)
     has_knowledge: bool  # Whether the agent has real knowledge sources configured (excludes NO_KB_SELECTED sentinel)
     # connector_instances: Deprecated - use toolsets instead
@@ -499,6 +512,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "apps": apps,  # Extracted from knowledge connector IDs
         "kb": kb,
         "agent_knowledge": agent_knowledge,
+        "agent_skills": chat_query.get("skills"),
         "connector_configs": chat_query.get("connector_configs") or {},
         "has_knowledge": has_knowledge,
         # connector_instances: Deprecated - use toolsets instead

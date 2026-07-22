@@ -1522,20 +1522,30 @@ async def _prewarm_clients(
     state: DeepAgentState,
     log: logging.Logger,
 ) -> None:
-    """
-    Pre-create and cache API clients for all domains before sub-agents start.
+    """Pre-create and cache API clients for all domains before sub-agents start.
 
     Without this, the first tool call in each domain blocks while creating
     the OAuth/MSAL client (ETCD lookup + token refresh + API discovery).
     Pre-warming moves that latency out of the critical path so sub-agents
     start with warm caches and hit zero client-creation delays.
+
+    Operates directly on the state dict and ``ClientFactoryRegistry`` without
+    going through ``ToolInstanceCreator`` (which requires an ``AgentContext``).
+    The created clients land in ``state["_client_cache"]`` — the same dict
+    ``ToolInstanceCreator`` reads — so subsequent tool calls find warm caches.
     """
     from app.agents.tools.factories.registry import ClientFactoryRegistry
-    from app.agents.tools.wrapper import ToolInstanceCreator
 
-    # Collect one representative tool per (domain, toolset_id) pair
     tool_to_toolset_map = state.get("tool_to_toolset_map", {})
-    seen: dict[tuple, str] = {}  # (app_name, toolset_id) -> tool_full_name
+    toolset_configs = state.get("toolset_configs", {})
+    config_service = state.get("config_service")
+    user_id = state.get("user_id", "default")
+
+    if not config_service:
+        log.debug("No config_service in state — skipping client pre-warm")
+        return
+
+    seen: dict[tuple, str] = {}
     for task in tasks:
         for tool_name in task.get("tools", []):
             toolset_id = tool_to_toolset_map.get(tool_name)
@@ -1549,7 +1559,13 @@ async def _prewarm_clients(
     if not seen:
         return
 
-    creator = ToolInstanceCreator(state)
+    if "_client_cache" not in state:
+        state["_client_cache"] = {}
+    client_cache: dict[tuple, object] = state["_client_cache"]
+
+    if "_client_cache_locks" not in state:
+        state["_client_cache_locks"] = {}
+    cache_locks: dict[tuple, asyncio.Lock] = state["_client_cache_locks"]
 
     async def _warm_one(app_name: str, tool_full_name: str) -> None:
         try:
@@ -1557,26 +1573,22 @@ async def _prewarm_clients(
             if not factory:
                 return
 
-            toolset_config = creator._get_toolset_config(tool_full_name)
-            config = toolset_config if toolset_config else {}
-
             toolset_id = tool_to_toolset_map.get(tool_full_name)
-            user_id = state.get("user_id", "default")
+            config = toolset_configs.get(toolset_id, {}) if toolset_id else {}
             cache_key = (app_name, toolset_id or "default", user_id)
 
-            if creator._client_cache.get(cache_key) is not None:
+            if client_cache.get(cache_key) is not None:
                 return
 
-            # Use the same lock as _create_with_factory_async
-            if cache_key not in creator._cache_locks:
-                creator._cache_locks[cache_key] = asyncio.Lock()
-            async with creator._cache_locks[cache_key]:
-                if creator._client_cache.get(cache_key) is not None:
+            if cache_key not in cache_locks:
+                cache_locks[cache_key] = asyncio.Lock()
+            async with cache_locks[cache_key]:
+                if client_cache.get(cache_key) is not None:
                     return
                 client = await factory.create_client(
-                    creator.config_service, log, config, state,
+                    config_service, log, config, state,
                 )
-                creator._client_cache[cache_key] = client
+                client_cache[cache_key] = client
                 log.debug("Pre-warmed client for %s (toolset: %s)", app_name, toolset_id)
         except Exception as e:
             log.debug("Client pre-warm skipped for %s: %s", app_name, e)
@@ -1682,23 +1694,15 @@ def _build_sub_agent_tool_guidance(
     if is_retrieval:
         parts.append(
             "\n## Knowledge Base Search Strategy\n\n"
-            "### Step 1 — Identify the source(s) and correct parameter from your task description\n"
-            "Your task description specifies WHICH source(s) to search and WHICH parameter to use.\n"
-            "Read it carefully — there are two distinct filter parameters:\n\n"
-            "  **App connectors** (identified by `connector_id` in the task description):\n"
-            "  • One connector_id given → every call MUST use `connector_ids: [\"<that id>\"]`.\n"
-            "  • Multiple connector_ids → one parallel call per connector, each with its own\n"
-            "    single `connector_ids`. Never merge connector_ids into one call.\n"
-            "  • Use ONLY `connector_ids` — NEVER pass `collection_ids` for a connector.\n\n"
-            "  **KB collections** (identified by `collection_ids` or `record_group_id` in the task):\n"
-            "  • One collection_id given → every call MUST use `collection_ids: [\"<that id>\"]`.\n"
-            "  • Multiple collection_ids → one parallel call per collection.\n"
-            "  • Use ONLY `collection_ids` — NEVER pass `connector_ids` for a KB collection.\n\n"
-            "  **No ID specified / full KB search**:\n"
-            "  • Omit BOTH `connector_ids` and `collection_ids` — this searches all indexed content.\n\n"
-            "  ⚠️ **CRITICAL**: Using the wrong parameter returns empty results.\n"
-            "  `connector_ids` → for app connectors (Jira, Confluence, Slack, …)\n"
-            "  `collection_ids` → for KB record groups (knowledge base collections)\n\n"
+            "### Step 1 — Identify the source(s) from your task description\n"
+            "Your task description specifies WHICH source(s) to search. A KB collection IS a "
+            "connector now — there is exactly ONE filter parameter, `connector_ids`, used for "
+            "BOTH app connectors (Jira, Confluence, Slack, …) and KB collections alike:\n\n"
+            "  • One id given → every call MUST use `connector_ids: [\"<that id>\"]`.\n"
+            "  • Multiple ids → one parallel call per source, each with its own single-id\n"
+            "    `connector_ids`. Never merge multiple ids into one call.\n"
+            "  • No ID specified / full KB search → omit `connector_ids` entirely — this\n"
+            "    searches all indexed content.\n\n"
             "### Step 2 — Build diverse search queries\n"
             "Your goal is to surface the MOST RELEVANT content across the assigned source(s).\n"
             "1. **Derive queries from the TASK DESCRIPTION** — it contains the resolved topic.\n"
@@ -1711,11 +1715,9 @@ def _build_sub_agent_tool_guidance(
             "matters more than call count — similar queries return the same blocks.\n\n"
             "### Step 3 — Call format reminder\n"
             "```\n"
-            "# For an app connector:\n"
-            "search_internal_knowledge(query=\"<query>\", connector_ids=[\"<connector_id>\"], limit=10)\n\n"
-            "# For a KB collection:\n"
-            "search_internal_knowledge(query=\"<query>\", collection_ids=[\"<record_group_id>\"], limit=10)\n\n"
-            "# For full KB (no specific ID):\n"
+            "# For a specific source (app connector or KB collection — same parameter):\n"
+            "search_internal_knowledge(query=\"<query>\", connector_ids=[\"<id>\"], limit=10)\n\n"
+            "# For full KB / all sources (no specific ID):\n"
             "search_internal_knowledge(query=\"<query>\", limit=10)\n"
             "```\n"
             "The retrieval results are processed downstream for citations. "

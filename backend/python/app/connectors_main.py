@@ -17,7 +17,6 @@ from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
 from app.agents.registry.toolset_registry import get_toolset_registry
-from app.agents.tools.registry import _global_tools_registry
 from app.api.routes.entity import router as entity_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.config.constants.arangodb import AccountType, CollectionNames
@@ -438,14 +437,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Initialize toolset registry (in-memory, fast tool lookup)
     logger.info("🔄 Initializing in-memory toolset registry...")
+    from app.agents.registry.toolset_registry import get_toolset_registry
+
     toolset_registry = get_toolset_registry()
     toolset_registry.auto_discover_toolsets()
     app.state.toolset_registry = toolset_registry
     logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
-
-    # Log tool count from in-memory registry
-    tool_count = len(_global_tools_registry.list_tools())
-    logger.info(f"✅ {tool_count} tools available from in-memory registry")
 
     # Initialize OAuth config registry (completely independent, no connector registry needed)
     # Note: OAuth registry is populated when connectors are registered above

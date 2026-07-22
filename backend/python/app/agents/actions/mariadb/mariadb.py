@@ -6,9 +6,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -139,11 +138,11 @@ class MariaDB:
         return getattr(client, "database", None)
 
     @tool(
-        app_name="mariadb",
-        tool_name="list_tables",
-        description="List tables in the default MariaDB database configured in connector auth",
+        path="/tools/mariadb/list_tables",
+        short_description="List tables in the default MariaDB database",
+        description="List tables in the default MariaDB database configured in connector auth.",
         parameters=[],
-        returns="JSON list of tables",
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
     )
     async def list_tables(
         self,
@@ -176,10 +175,9 @@ class MariaDB:
             return self._result(False, {"error": str(e)})
 
     @tool(
-        app_name="mariadb",
-        tool_name="get_table_ddl",
-        description="Get CREATE TABLE statement for a table in the default auth-configured database",
-        args_schema=GetTableDDLInput,
+        path="/tools/mariadb/get_table_ddl",
+        short_description="Get CREATE TABLE DDL for a table",
+        description="Get CREATE TABLE statement for a table in the default auth-configured database.",
         parameters=[
             ToolParameter(
                 name="table",
@@ -188,7 +186,7 @@ class MariaDB:
                 required=True,
             ),
         ],
-        returns="JSON payload with table DDL",
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
     )
     async def get_table_ddl(
         self,
@@ -226,10 +224,9 @@ class MariaDB:
             return self._result(False, {"error": str(e)})
 
     @tool(
-        app_name="mariadb",
-        tool_name="get_tables_schema",
-        description="Fetch schema (columns, primary keys, foreign keys) for a specific list of tables in the default auth-configured database",
-        args_schema=GetTablesSchemaInput,
+        path="/tools/mariadb/get_tables_schema",
+        short_description="Fetch schema for specific tables",
+        description="Fetch schema (columns, primary keys, foreign keys) for a specific list of tables in the default auth-configured database.",
         parameters=[
             ToolParameter(
                 name="tables",
@@ -238,7 +235,7 @@ class MariaDB:
                 required=True,
             ),
         ],
-        returns="JSON schema payload for the requested tables",
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
     )
     async def get_tables_schema(
         self,
@@ -296,10 +293,9 @@ class MariaDB:
             return self._result(False, {"error": str(e)})
 
     @tool(
-        app_name="mariadb",
-        tool_name="fetch_db_schema",
-        description="Fetch schema for the default auth-configured database: tables, columns, primary/foreign keys and views",
-        args_schema=FetchDBSchemaInput,
+        path="/tools/mariadb/fetch_db_schema",
+        short_description="Fetch full database schema",
+        description="Fetch schema for the default auth-configured database: tables, columns, primary/foreign keys and views.",
         parameters=[
             ToolParameter(
                 name="include_views",
@@ -308,7 +304,7 @@ class MariaDB:
                 required=False,
             ),
         ],
-        returns="JSON schema payload grouped by database",
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
     )
     async def fetch_db_schema(
         self,
@@ -392,10 +388,9 @@ class MariaDB:
             return self._result(False, {"error": str(e)})
 
     @tool(
-        app_name="mariadb",
-        tool_name="execute_query",
-        description="Execute a SQL query against the default auth-configured MariaDB database",
-        args_schema=ExecuteQueryInput,
+        path="/tools/mariadb/execute_query",
+        short_description="Execute a SQL query",
+        description="Execute a SQL query against the default auth-configured MariaDB database.",
         parameters=[
             ToolParameter(
                 name="query",
@@ -404,7 +399,7 @@ class MariaDB:
                 required=True,
             ),
         ],
-        returns="JSON query response including row count and data",
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="write")],
     )
     async def execute_query(
         self,

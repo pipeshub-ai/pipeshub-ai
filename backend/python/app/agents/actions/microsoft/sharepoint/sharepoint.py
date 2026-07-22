@@ -15,9 +15,9 @@ from msgraph.generated.sites.item.pages.pages_request_builder import (
 from pydantic import BaseModel, Field
 
 from app.agents.actions.util.parse_file import FileContentParser
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agents.actions.util.tool_summaries import args_template, list_summary
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
@@ -39,6 +39,10 @@ from app.sources.external.microsoft.sharepoint.sharepoint import SharePointDataS
 logger = logging.getLogger(__name__)
 
 _MAX_FILE_CONTENT_BYTES = 50 * 1024 * 1024  # 50 MB — matches OneDrive
+
+
+def _sharepoint_file_label(entry: dict) -> str:
+    return entry.get("name") or entry.get("id") or "?"
 
 
 # ---------------------------------------------------------------------------
@@ -447,27 +451,16 @@ class SharePoint:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="sharepoint",
-        tool_name="get_sites",
-        description="List SharePoint sites",
-        llm_description="List sites with optional KQL search, top/skip pagination; use get_site for one ID, search_pages for page by name.",
-        args_schema=GetSitesInput,
-        when_to_use=[
-            "User wants to list or search SharePoint sites",
-            "User needs site_id before get_pages (e.g. pages in [site name])",
+        path="/tools/sharepoint/get_sites",
+        short_description="List SharePoint sites",
+        description="List sites with optional KQL search, top/skip pagination; use get_site for one ID, search_pages for page by name.",
+        parameters=[
+            ToolParameter(name="search", type=ParameterType.STRING, description="KQL search query to filter sites (e.g. 'marketing', 'title:HR'). Omit for all sites.", required=False),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Max sites to return (default 10, max 50).", required=False),
+            ToolParameter(name="skip", type=ParameterType.INTEGER, description="Sites to skip for pagination.", required=False),
+            ToolParameter(name="orderby", type=ParameterType.STRING, description="Sort: 'createdDateTime desc', 'lastModifiedDateTime desc', 'name asc'.", required=False),
         ],
-        when_not_to_use=[
-            "User has site_id already (use get_site)",
-            "User wants a page by name (use search_pages)",
-            "No SharePoint mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "List all SharePoint sites",
-            "Find sites about marketing",
-            "Show pages in Engineering site → get_sites then get_pages",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
     async def get_sites(
         self,
@@ -512,24 +505,13 @@ class SharePoint:
             return self._handle_error(e, "get sites")
 
     @tool(
-        app_name="sharepoint",
-        tool_name="get_site",
-        description="Get one site by ID",
-        llm_description="Get one site by site_id; use get_sites to list, get_pages/search_pages for pages.",
-        args_schema=GetSiteInput,
-        when_to_use=[
-            "User has site_id and wants that site's details",
+        path="/tools/sharepoint/get_site",
+        short_description="Get one site by ID",
+        description="Get one site by site_id; use get_sites to list, get_pages/search_pages for pages.",
+        parameters=[
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID (e.g. contoso.sharepoint.com,site-guid,web-guid)", required=True),
         ],
-        when_not_to_use=[
-            "User wants to list sites (use get_sites)",
-            "No SharePoint mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get site details",
-            "Show site information",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
     async def get_site(
         self,
@@ -550,24 +532,14 @@ class SharePoint:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="sharepoint",
-        tool_name="get_pages",
-        description="List all pages in a site",
-        llm_description="List all pages in a site (site_id); for one page by name use search_pages then get_page.",
-        args_schema=GetPagesInput,
-        when_to_use=[
-            "User wants a full page list for one site (has or can get site_id)",
+        path="/tools/sharepoint/get_pages",
+        short_description="List all pages in a site",
+        description="List all pages in a site (site_id); for one page by name use search_pages then get_page.",
+        parameters=[
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID", required=True),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Max pages to return (default 10, max 50)", required=False),
         ],
-        when_not_to_use=[
-            "User names one page only (use search_pages then get_page)",
-            "No SharePoint mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "List all pages in this site",
-            "What pages exist in the Marketing site?",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
     async def get_pages(
         self,
@@ -620,24 +592,14 @@ class SharePoint:
             return self._handle_error(e, "get pages")
 
     @tool(
-        app_name="sharepoint",
-        tool_name="get_page",
-        description="Read one page (HTML)",
-        llm_description="Get page HTML by site_id and page_id; use search_pages first if only name known; use before update_page to merge.",
-        args_schema=GetPageInput,
-        when_to_use=[
-            "User wants to read/summarize a page and you have site_id + page_id",
+        path="/tools/sharepoint/get_page",
+        short_description="Read one page (HTML)",
+        description="Get page HTML by site_id and page_id; use search_pages first if only name known; use before update_page to merge.",
+        parameters=[
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID (from search_pages or get_pages)", required=True),
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID (GUID from search_pages or get_pages)", required=True),
         ],
-        when_not_to_use=[
-            "No page_id yet (use search_pages first)",
-            "No SharePoint mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Summarize this page",
-            "Read the deployment guide page",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
     async def get_page(
         self,
@@ -682,25 +644,15 @@ class SharePoint:
             return self._handle_error(e, f"get page {page_id}")
 
     @tool(
-        app_name="sharepoint",
-        tool_name="search_pages",
-        description="Search pages by keyword",
-        llm_description="Search pages by keyword across sites; returns page_id and site_id then call get_page for full content.",
-        args_schema=SearchPagesInput,
-        when_to_use=[
-            "User names or describes a page but has no page_id",
+        path="/tools/sharepoint/search_pages",
+        short_description="Search pages by keyword",
+        description="Search pages by keyword across sites; returns page_id and site_id then call get_page for full content.",
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="Keyword or phrase from the page name/title (e.g. 'onboarding', 'deployment guide')", required=True),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Max pages to return (default 10, max 50).", required=False),
+            ToolParameter(name="skip", type=ParameterType.INTEGER, description="Results to skip for pagination.", required=False),
         ],
-        when_not_to_use=[
-            "User already has page_id (use get_page)",
-            "User wants every page in a site listed (use get_pages)",
-            "No SharePoint mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Find the KT page",
-            "Search pages for onboarding",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
     async def search_pages(
         self,
@@ -750,24 +702,14 @@ class SharePoint:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="sharepoint",
-        tool_name="list_drives",
-        description="List document libraries in a site",
-        llm_description="List document libraries for a site; use this first to resolve drive_id before calling list_files.",
-        args_schema=ListDrivesInput,
-        when_to_use=[
-            "User asks which document libraries/drives exist in a site",
-            "User wants to browse files in a site but no drive_id is known yet",
+        path="/tools/sharepoint/list_drives",
+        short_description="List document libraries in a site",
+        description="List document libraries for a site; use this first to resolve drive_id before calling list_files.",
+        parameters=[
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID (from get_sites)", required=True),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Max drives to return (default 10, max 50)", required=False),
         ],
-        when_not_to_use=[
-            "No SharePoint mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "What libraries are in this site?",
-            "List drives for this site",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
     async def list_drives(
         self,
@@ -836,25 +778,17 @@ class SharePoint:
             return self._handle_error(e, f"list drives for site {site_id}")
 
     @tool(
-        app_name="sharepoint",
-        tool_name="list_files",
-        description="List files in site or folder",
-        llm_description="List files in a specific document library or folder; requires drive_id from list_drives; use search_files to find by name.",
-        args_schema=ListFilesInput,
-        when_to_use=[
-            "User wants to browse/list files in a known document library or folder",
+        path="/tools/sharepoint/list_files",
+        short_description="List files in site or folder",
+        description="List files in a specific document library or folder; requires drive_id from list_drives; use search_files to find by name.",
+        parameters=[
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID", required=True),
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="Drive ID from list_drives.", required=True),
+            ToolParameter(name="folder_id", type=ParameterType.STRING, description="Folder item ID to list inside. Omit for drive root.", required=False),
+            ToolParameter(name="depth", type=ParameterType.INTEGER, description="Folder traversal depth. 1 lists direct children only; 2 includes one nested level.", required=False),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Max items per drive (default 10, max 50)", required=False),
         ],
-        when_not_to_use=[
-            "User wants a file by name (use search_files)",
-            "No drive_id is known yet (use list_drives first)",
-            "No SharePoint mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "List files in the Documents library",
-            "Show folder contents",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
     async def list_files(
         self,
@@ -931,25 +865,18 @@ class SharePoint:
             return self._handle_error(e, f"list files (site={site_id}, drive={drive_id})")
 
     @tool(
-        app_name="sharepoint",
-        tool_name="search_files",
-        description="Find a file by name or keyword",
-        llm_description="Find files by keyword; then get_file_content or get_file_metadata with id, drive_id, site_id from results.",
-        args_schema=SearchFilesInput,
-        when_to_use=[
-            "User names or describes a file/document to find or read",
+        path="/tools/sharepoint/search_files",
+        short_description="Find a file by name or keyword",
+        description="Find files by keyword; then get_file_content or get_file_metadata with id, drive_id, site_id from results.",
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="File name or keyword (e.g. 'assignment', 'budget')", required=True),
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="Restrict to a specific site. Omit to search all sites.", required=False),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Max results (default 10, max 50)", required=False),
+            ToolParameter(name="skip", type=ParameterType.INTEGER, description="Results to skip for pagination.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to browse whole library with no name (use list_files)",
-            "User wants a page not a file (use search_pages)",
-            "No SharePoint mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Find the budget document",
-            "Get the onboarding file then read it",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        args_summary=args_template('Searching SharePoint: "{query}"', "query"),
+        result_summary=list_summary(("files",), _sharepoint_file_label, "file"),
     )
     async def search_files(
         self,
@@ -1032,25 +959,15 @@ class SharePoint:
             return self._handle_error(e, f"search files '{query}'")
 
     @tool(
-        app_name="sharepoint",
-        tool_name="get_file_metadata",
-        description="File or folder metadata",
-        llm_description="Get file/folder metadata (size, mimeType, dates); needs site_id, drive_id, item_id from search_files or list_files.",
-        args_schema=GetFileMetadataInput,
-        when_to_use=[
-            "User wants file size, type, or dates; has site_id, drive_id, item_id",
+        path="/tools/sharepoint/get_file_metadata",
+        short_description="File or folder metadata",
+        description="Get file/folder metadata (size, mimeType, dates); needs site_id, drive_id, item_id from search_files or list_files.",
+        parameters=[
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID", required=True),
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="Drive ID (from list_drives or search_files parentReference.driveId)", required=True),
+            ToolParameter(name="item_id", type=ParameterType.STRING, description="DriveItem ID (id from list_files or search_files)", required=True),
         ],
-        when_not_to_use=[
-            "User wants file body (use get_file_content)",
-            "No item_id yet (use search_files or list_files)",
-            "No SharePoint mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "How big is this file?",
-            "When was it last modified?",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
     async def get_file_metadata(
         self,
@@ -1109,25 +1026,15 @@ class SharePoint:
             return self._handle_error(e, f"get file metadata {item_id}")
 
     @tool(
-        app_name="sharepoint",
-        tool_name="get_file_content",
-        description="Read file content",
-        llm_description="Read file content as parsed text using the shared file parser; needs ids from search_files or list_files.",
-        args_schema=GetFileContentInput,
-        when_to_use=[
-            "User wants to read or summarize file content; has ids from search_files or list_files",
+        path="/tools/sharepoint/get_file_content",
+        short_description="Read file content",
+        description="Read file content as parsed text using the shared file parser; needs ids from search_files or list_files.",
+        parameters=[
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID", required=True),
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="Drive ID (from list_files or search_files)", required=True),
+            ToolParameter(name="item_id", type=ParameterType.STRING, description="DriveItem ID (id from list_files or search_files)", required=True),
         ],
-        when_not_to_use=[
-            "No item_id yet (use search_files or list_files first)",
-            "User wants a page (use get_page)",
-            "No SharePoint mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Read this document",
-            "Summarize the project plan file",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
     async def get_file_content(
         self,
@@ -1238,24 +1145,16 @@ class SharePoint:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="sharepoint",
-        tool_name="create_page",
-        description="Create a SharePoint page",
-        llm_description="Create page from content_html; publish=False unless user asks to publish.",
-        args_schema=CreatePageInput,
-        when_to_use=[
-            "User wants a new site page; publish=False unless they ask to publish",
+        path="/tools/sharepoint/create_page",
+        short_description="Create a SharePoint page",
+        description="Create page from content_html; publish=False unless user asks to publish.",
+        parameters=[
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID", required=True),
+            ToolParameter(name="title", type=ParameterType.STRING, description="Page title (used for .aspx filename)", required=True),
+            ToolParameter(name="content_html", type=ParameterType.STRING, description="Page body as HTML (e.g. <h1>, <p>, <ul>, <li>, <strong>)", required=True),
+            ToolParameter(name="publish", type=ParameterType.BOOLEAN, description="True to publish; default False (draft).", required=False),
         ],
-        when_not_to_use=[
-            "User wants to edit existing page (use update_page)",
-            "No SharePoint mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Create a page called Project Overview",
-            "Add a page and publish it",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
     )
     async def create_page(
         self,
@@ -1299,25 +1198,17 @@ class SharePoint:
             return self._handle_error(e, f"create page '{title}'")
 
     @tool(
-        app_name="sharepoint",
-        tool_name="update_page",
-        description="Update a SharePoint page",
-        llm_description="Update page by page_id with title and/or content_html; get_page first to merge; publish=False unless asked.",
-        args_schema=UpdatePageInput,
-        when_to_use=[
-            "User wants to edit/rename a page; needs page_id; publish=False unless asked",
+        path="/tools/sharepoint/update_page",
+        short_description="Update a SharePoint page",
+        description="Update page by page_id with title and/or content_html; get_page first to merge; publish=False unless asked.",
+        parameters=[
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID", required=True),
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID (GUID from get_pages or search_pages)", required=True),
+            ToolParameter(name="title", type=ParameterType.STRING, description="New title (omit to keep current)", required=False),
+            ToolParameter(name="content_html", type=ParameterType.STRING, description="New HTML body (omit to keep current; replaces entire body)", required=False),
+            ToolParameter(name="publish", type=ParameterType.BOOLEAN, description="True to publish; default False (draft).", required=False),
         ],
-        when_not_to_use=[
-            "New page (use create_page)",
-            "No page_id (use search_pages or get_pages)",
-            "No SharePoint mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Update this page with new content",
-            "Rename the page and publish",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
     )
     async def update_page(
         self,
@@ -1387,24 +1278,16 @@ class SharePoint:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="sharepoint",
-        tool_name="create_folder",
-        description="Create a folder in a library",
-        llm_description="Create folder in drive root or under parent_folder_id; drive_id from list_drives.",
-        args_schema=CreateFolderInput,
-        when_to_use=[
-            "User wants a new folder in a library (drive_id from list_drives)",
+        path="/tools/sharepoint/create_folder",
+        short_description="Create a folder in a library",
+        description="Create folder in drive root or under parent_folder_id; drive_id from list_drives.",
+        parameters=[
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID", required=True),
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="Drive ID (from list_drives)", required=True),
+            ToolParameter(name="folder_name", type=ParameterType.STRING, description="Name of the new folder (duplicate names get auto-renamed)", required=True),
+            ToolParameter(name="parent_folder_id", type=ParameterType.STRING, description="Parent folder ID (from list_files). Omit for drive root.", required=False),
         ],
-        when_not_to_use=[
-            "User wants a file (use create_word_document)",
-            "No SharePoint mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Create folder Project Docs",
-            "Add subfolder in this library",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
     )
     async def create_folder(
         self,
@@ -1445,24 +1328,17 @@ class SharePoint:
             return self._handle_error(e, f"create folder '{folder_name}'")
 
     @tool(
-        app_name="sharepoint",
-        tool_name="create_word_document",
-        description="Create a Word file (.docx)",
-        llm_description="Create .docx in drive; file_name without extension; optional content_text and parent_folder_id.",
-        args_schema=CreateWordDocumentInput,
-        when_to_use=[
-            "User wants a new .docx in a library",
+        path="/tools/sharepoint/create_word_document",
+        short_description="Create a Word file (.docx)",
+        description="Create .docx in drive; file_name without extension; optional content_text and parent_folder_id.",
+        parameters=[
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID", required=True),
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="Drive ID (from list_drives)", required=True),
+            ToolParameter(name="file_name", type=ParameterType.STRING, description="Document name without .docx (e.g. 'Meeting Notes' → Meeting Notes.docx)", required=True),
+            ToolParameter(name="parent_folder_id", type=ParameterType.STRING, description="Folder ID (from list_files). Omit for drive root.", required=False),
+            ToolParameter(name="content_text", type=ParameterType.STRING, description="Optional plain-text body (newlines = paragraphs). Omit for blank doc.", required=False),
         ],
-        when_not_to_use=[
-            "Folder only (use create_folder); page (use create_page); notebook (use create_onenote_notebook)",
-            "No SharePoint mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Create Word doc Meeting Notes",
-            "Add a .docx with this text",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
     )
     async def create_word_document(
         self,
@@ -1509,27 +1385,20 @@ class SharePoint:
             return self._handle_error(e, f"create Word document '{file_name}'")
 
     @tool(
-        app_name="sharepoint",
-        tool_name="move_item",
-        description="Move a file or folder",
-        llm_description="Move a SharePoint file or folder within the same drive; resolve drive_id via list_drives and item IDs via list_files or search_files first.",
-        args_schema=MoveItemInput,
-        when_to_use=[
-            "User wants to move, relocate, or transfer a SharePoint file or folder",
-            "User wants to move a document into another SharePoint folder",
+        path="/tools/sharepoint/move_item",
+        short_description="Move a file or folder",
+        description=(
+            "Move a SharePoint file or folder within the same drive; resolve drive_id via list_drives "
+            "and item IDs via list_files or search_files first."
+        ),
+        parameters=[
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID", required=True),
+            ToolParameter(name="drive_id", type=ParameterType.STRING, description="Drive ID (from list_drives or search_files)", required=True),
+            ToolParameter(name="item_id", type=ParameterType.STRING, description="DriveItem ID of the file or folder to move", required=True),
+            ToolParameter(name="destination_folder_id", type=ParameterType.STRING, description="Destination folder ID (from list_files or search_files). Use 'root' for drive root.", required=True),
+            ToolParameter(name="new_name", type=ParameterType.STRING, description="Optional new name after moving. Omit to keep the current name.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to copy instead of move",
-            "User wants rename only without moving",
-            "drive_id or item IDs are unknown — resolve them with list_drives, list_files, or search_files first",
-            "No SharePoint mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Move budget.docx to Archive",
-            "Move this folder into 2025",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
     )
     async def move_item(
         self,
@@ -1585,26 +1454,18 @@ class SharePoint:
             return self._handle_error(e, f"move item '{item_id}'")
 
     @tool(
-        app_name="sharepoint",
-        tool_name="find_notebook",
-        description="Resolve a OneNote notebook by name in a given site. Use after sharepoint.search_files to get site_id.",
-        llm_description="Use after sharepoint.search_files to get site_id. Call with site_id (from search_files results) and notebook name. If result is ambiguous, ask user to choose; do not call list_notebook_pages or get_notebook_page_content until resolved.",
-        args_schema=FindNotebookInput,
-        when_to_use=[
-            "User asks for a notebook, OneNote notebook, or notebook pages by name (after search_files gave site_id)",
+        path="/tools/sharepoint/find_notebook",
+        short_description="Resolve a OneNote notebook by name in a given site",
+        description=(
+            "Use after sharepoint.search_files to get site_id. Call with site_id (from search_files results) "
+            "and notebook name. If result is ambiguous, ask user to choose; do not call list_notebook_pages "
+            "or get_notebook_page_content until resolved."
+        ),
+        parameters=[
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID (from sharepoint.search_files results)", required=True),
+            ToolParameter(name="notebook_query", type=ParameterType.STRING, description="Notebook name or keyword (e.g. 'mp_plan')", required=True),
         ],
-        when_not_to_use=[
-            "No site_id yet (call sharepoint.search_files first)",
-            "Already have site_id and notebook_id (use list_notebook_pages)",
-            "User wants to create a notebook (use create_onenote_notebook)",
-            "No OneNote/notebook mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show mp_plan notebook",
-            "List pages in notebook X",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
     async def find_notebook(
         self,
@@ -1665,25 +1526,14 @@ class SharePoint:
             return self._handle_error(e, f"find notebook '{notebook_query}'")
 
     @tool(
-        app_name="sharepoint",
-        tool_name="list_notebook_pages",
-        description="List sections and pages of a OneNote notebook",
-        llm_description="List sections and pages (no content). Use site_id and notebook_id from find_notebook. Then use get_notebook_page_content for selected page_ids.",
-        args_schema=ListNotebookPagesInput,
-        when_to_use=[
-            "User wants to see notebook structure or choose which pages to read",
+        path="/tools/sharepoint/list_notebook_pages",
+        short_description="List sections and pages of a OneNote notebook",
+        description="List sections and pages (no content). Use site_id and notebook_id from find_notebook. Then use get_notebook_page_content for selected page_ids.",
+        parameters=[
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID (from find_notebook)", required=True),
+            ToolParameter(name="notebook_id", type=ParameterType.STRING, description="Notebook ID (from find_notebook)", required=True),
         ],
-        when_not_to_use=[
-            "Notebook not yet resolved (use find_notebook first)",
-            "User wants page content (use get_notebook_page_content)",
-            "No OneNote notebook mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "List pages in this notebook",
-            "What sections are in the notebook?",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
     async def list_notebook_pages(
         self,
@@ -1746,25 +1596,14 @@ class SharePoint:
             return self._handle_error(e, f"list notebook pages {notebook_id}")
 
     @tool(
-        app_name="sharepoint",
-        tool_name="get_notebook_page_content",
-        description="Get content of OneNote pages",
-        llm_description="Get HTML/text content for selected page_ids from list_notebook_pages. Do not use get_file_content for notebook pages.",
-        args_schema=GetNotebookPageContentInput,
-        when_to_use=[
-            "User wants to read or summarize notebook page content",
+        path="/tools/sharepoint/get_notebook_page_content",
+        short_description="Get content of OneNote pages",
+        description="Get HTML/text content for selected page_ids from list_notebook_pages. Do not use get_file_content for notebook pages.",
+        parameters=[
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID", required=True),
+            ToolParameter(name="page_ids", type=ParameterType.ARRAY, description="List of page IDs (from list_notebook_pages)", required=True),
         ],
-        when_not_to_use=[
-            "Page list not yet fetched (use list_notebook_pages first)",
-            "Regular file (use get_file_content)",
-            "No OneNote mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Read the overview page",
-            "Summarize all pages in this notebook",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
     )
     async def get_notebook_page_content(
         self,
@@ -1799,24 +1638,17 @@ class SharePoint:
             return self._handle_error(e, "get notebook page content")
 
     @tool(
-        app_name="sharepoint",
-        tool_name="create_onenote_notebook",
-        description="Create a OneNote notebook",
-        llm_description="Create OneNote notebook on site; optional section then page; page needs section_name.",
-        args_schema=CreateOneNoteNotebookInput,
-        when_to_use=[
-            "User wants a new OneNote notebook on a site; optional section/page",
+        path="/tools/sharepoint/create_onenote_notebook",
+        short_description="Create a OneNote notebook",
+        description="Create OneNote notebook on site; optional section then page; page needs section_name.",
+        parameters=[
+            ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID", required=True),
+            ToolParameter(name="notebook_name", type=ParameterType.STRING, description="Display name of the notebook", required=True),
+            ToolParameter(name="section_name", type=ParameterType.STRING, description="First section name (required if adding a page)", required=False),
+            ToolParameter(name="page_title", type=ParameterType.STRING, description="First page title (requires section_name)", required=False),
+            ToolParameter(name="page_content_html", type=ParameterType.STRING, description="First page HTML body (requires section_name)", required=False),
         ],
-        when_not_to_use=[
-            "Word doc (create_word_document); page (create_page); folder (create_folder)",
-            "No SharePoint mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Create notebook Team Notes",
-            "Create notebook with Project section",
-        ],
-        category=ToolCategory.DOCUMENTATION,
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
     )
     async def create_onenote_notebook(
         self,

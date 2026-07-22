@@ -6,9 +6,13 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import (
+    args_template,
+    entity_summary,
+    list_summary,
+)
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -317,6 +321,31 @@ class SearchUsersInput(BaseModel):
         description="Max users to return (1-50). Default 10.",
     )
 
+
+# ---------------------------------------------------------------------------
+# Agent-activity summary labels — see `jira.py`'s equivalent block. Most
+# success envelopes here are `{"message": ..., "data": ...}` (via
+# `Confluence._handle_response`), but `search_content` and `search_users`
+# build their own top-level `{"results": [...], ...}` body without a
+# `data` wrapper — each `list_summary(...)` call below passes the right
+# `path` for its own tool accordingly.
+# ---------------------------------------------------------------------------
+
+
+def _confluence_page_label(page: dict[str, Any]) -> str:
+    return page.get("title") or page.get("id") or "?"
+
+
+def _confluence_space_label(space: dict[str, Any]) -> str:
+    key = space.get("key") or "?"
+    name = space.get("name")
+    return f"{key}: {name}" if name else key
+
+
+def _confluence_user_label(user: dict[str, Any]) -> str:
+    return user.get("displayName") or user.get("accountId") or "?"
+
+
 # Register Confluence toolset
 @ToolsetBuilder("Confluence")\
     .in_group("Atlassian")\
@@ -599,31 +628,24 @@ class Confluence:
         return space_key, space_name
 
     @tool(
-        app_name="confluence",
-        tool_name="create_page",
-        description="Create a page in Confluence",
-        llm_description="Create a page in Confluence. Requires space_id (numeric ID or key), page_title, and page_content (HTML storage format). Call confluence.get_spaces first if the space is not yet resolved.",
-        args_schema=CreatePageInput,  # NEW: Pydantic schema
-        returns="JSON with success status and page details",
-        when_to_use=[
-            "User wants to create a Confluence page",
-            "User mentions 'Confluence' + wants to create page",
-            "User asks to create documentation/page"
+        path="/tools/confluence/create_page",
+        short_description="Create a page in Confluence",
+        description=(
+            "Create a page in Confluence. Requires space_id (numeric ID or key), page_title, "
+            "and page_content (HTML storage format). Call confluence.get_spaces first if the "
+            "space is not yet resolved.\n"
+            "\n"
+            "Use when the user wants to create a Confluence page, add documentation, or create "
+            "a wiki page. Do not use for searching or reading pages."
+        ),
+        parameters=[
+            ToolParameter(name="space_id", type=ParameterType.STRING, description="Space ID or key (e.g. '~abc123', 'SD', '12345'). IMPORTANT: Resolve via confluence.get_spaces if not already known from Reference Data or conversation history.", required=True),
+            ToolParameter(name="page_title", type=ParameterType.STRING, description="Page title", required=True),
+            ToolParameter(name="page_content", type=ParameterType.STRING, description="Page content in storage format", required=True),
         ],
-        when_not_to_use=[
-            "User wants to search pages (use search_pages)",
-            "User wants to read page (use get_page_content)",
-            "User wants info ABOUT Confluence (use retrieval)",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Create a Confluence page",
-            "Add a new page to Confluence",
-            "Create documentation page",
-            "Create a page in X space",
-            "Create a wiki page about X and add the Jira ticket link"
-        ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
+        args_summary=args_template('Creating Confluence page "{page_title}"', "page_title"),
+        result_summary=entity_summary(lambda e: f"Created page: {_confluence_page_label(e)}"),
     )
     async def create_page(
         self,
@@ -726,28 +748,19 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="get_page_content",
-        description="Get the content of a page in Confluence",
-        args_schema=GetPageContentInput,  # NEW: Pydantic schema
-        returns="JSON with page content and metadata",
-        when_to_use=[
-            "User wants to read/view a Confluence page",
-            "User mentions 'Confluence' + wants page content",
-            "User asks to get/show a specific page"
+        path="/tools/confluence/get_page_content",
+        short_description="Get the content of a Confluence page",
+        description=(
+            "Retrieve the full content and metadata of a Confluence page by its ID. "
+            "Use when the user wants to read, view, or fetch a specific Confluence page. "
+            "Do not use for creating pages (use create_page) or searching (use search_pages)."
+        ),
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID", required=True),
         ],
-        when_not_to_use=[
-            "User wants to create page (use create_page)",
-            "User wants to search pages (use search_pages)",
-            "User wants info ABOUT Confluence (use retrieval)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show me the Confluence page",
-            "Get page content from Confluence",
-            "Read the documentation page"
-        ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching Confluence page {page_id}", "page_id"),
+        result_summary=entity_summary(lambda e: f"Fetched page: {_confluence_page_label(e)}"),
     )
     async def get_page_content(self, page_id: str) -> tuple[bool, str]:
         """Get the content of a page in Confluence.
@@ -809,32 +822,25 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="get_pages_in_space",
-        description="Get all pages in a Confluence space",
-        args_schema=GetPagesInSpaceInput,
-        returns="JSON with the list of pages, each with id, title, url",
-        when_to_use=[
-            "User wants to enumerate pages in a space without an authorship/date/label filter",
-            "User asks for 'recently updated pages in <space>' — set sort_by='-modified-date'",
-            "User asks for 'recently created pages in <space>' — set sort_by='-created-date'",
-            "User asks for an alphabetical listing of pages in a space — set sort_by='title'",
+        path="/tools/confluence/get_pages_in_space",
+        short_description="List pages in a Confluence space",
+        description=(
+            "Enumerate pages in a Confluence space (v2 API). Supports sorting by id, title, "
+            "created-date, or modified-date (prefix with '-' for descending). Use '-modified-date' "
+            "for recently updated, '-created-date' for newest first, 'title' for A-Z.\n"
+            "\n"
+            "Use for simple space page listings without authorship/date/label filters. "
+            "For author-aware queries use search_content with space_id + contributor/creator slots. "
+            "For keyword/topic searches use search_content. For finding a specific page by name use search_pages."
+        ),
+        parameters=[
+            ToolParameter(name="space_id", type=ParameterType.STRING, description="Space ID or key", required=True),
+            ToolParameter(name="sort_by", type=ParameterType.STRING, description="Optional v2-API sort. Allowed: 'id', 'title', 'created-date', 'modified-date'. Prefix with '-' for descending.", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Max pages per page of results (Confluence v2 caps at 250).", required=False),
         ],
-        when_not_to_use=[
-            "User wants pages they / someone else updated / created (use search_content with `space_id` + the corresponding contributor/creator slot — this v2 endpoint has no author filter)",
-            "User wants pages with a specific topic / keyword (use search_content)",
-            "User wants pages with a specific label (use search_content with `labels`)",
-            "User wants a specific page by name (use search_pages)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "List pages in space X",
-            "Show all pages in Confluence space HR",
-            "Recently updated pages in space X",
-            "Newest pages in space ENG",
-            "Pages in space X alphabetically",
-        ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=args_template("Listing pages in Confluence space {space_id}", "space_id"),
+        result_summary=list_summary("results", _confluence_page_label, "page"),
     )
     async def get_pages_in_space(
         self,
@@ -914,28 +920,18 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="update_page_title",
-        description="Update the title of a Confluence page",
-        args_schema=UpdatePageTitleInput,  # NEW: Pydantic schema
-        returns="JSON with success status",
-        when_to_use=[
-            "User wants to rename/update page title",
-            "User mentions 'Confluence' + wants to change title",
-            "User asks to rename page"
+        path="/tools/confluence/update_page_title",
+        short_description="Rename a Confluence page",
+        description=(
+            "Update the title of a Confluence page. Use when the user wants to rename "
+            "or change a page title. Do not use for creating pages (use create_page) "
+            "or updating page content (use update_page)."
+        ),
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID", required=True),
+            ToolParameter(name="new_title", type=ParameterType.STRING, description="New title", required=True),
         ],
-        when_not_to_use=[
-            "User wants to create page (use create_page)",
-            "User wants to read page (use get_page_content)",
-            "User wants info ABOUT Confluence (use retrieval)",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Rename Confluence page",
-            "Update page title",
-            "Change page name"
-        ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
     )
     async def update_page_title(self, page_id: str, new_title: str) -> tuple[bool, str]:
         """Update the title of a page.
@@ -965,30 +961,22 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="get_child_pages",
-        description="Get child pages of a Confluence page",
-        args_schema=GetChildPagesInput,
-        returns="JSON with the list of child pages, each with id, title, url",
-        when_to_use=[
-            "User wants the direct sub-pages of a known page",
-            "User asks 'what pages are under <page>' (without an authorship filter)",
-            "User asks for child pages sorted by recency or alphabetically — set sort_by",
+        path="/tools/confluence/get_child_pages",
+        short_description="Get child pages of a Confluence page",
+        description=(
+            "Get direct child (sub) pages of a Confluence page (v2 API). Supports sorting by "
+            "id, title, created-date, or modified-date (prefix with '-' for descending).\n"
+            "\n"
+            "Use when the user wants sub-pages of a known page without authorship/date/label filters. "
+            "For author-filtered child pages use search_content with CQL. For all pages in a space "
+            "use get_pages_in_space. For reading page content use get_page_content."
+        ),
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="The parent page ID", required=True),
+            ToolParameter(name="sort_by", type=ParameterType.STRING, description="Optional v2-API sort. Allowed: 'id', 'title', 'created-date', 'modified-date'. Prefix with '-' for descending.", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Max child pages per page of results (Confluence v2 caps at 250).", required=False),
         ],
-        when_not_to_use=[
-            "User wants child pages filtered by author/date/label — that needs CQL, which this v2 endpoint can't do (use search_content)",
-            "User wants ALL pages in a space (use get_pages_in_space)",
-            "User wants to read a page's content (use get_page_content)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get child pages of page 12345",
-            "Show sub-pages of <page>",
-            "Recently updated child pages of <page>",
-            "Newest sub-pages of <page>",
-            "Child pages alphabetically",
-        ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
     )
     async def get_child_pages(
         self,
@@ -1078,31 +1066,35 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="search_pages",
-        description="Search pages by title in Confluence",
-        args_schema=SearchPagesInput,
-        returns="JSON with ranked pages (best title match first); a 'note' or 'warning' field flags ambiguity when multiple match",
-        when_to_use=[
-            "User wants to FIND a specific named page (resolve a name to a page_id)",
-            "User asks 'find page X', 'search for page named <name>', 'page called <name>'",
-            "User asks for a named page constrained by author/date/label — slot the constraints in (e.g. 'find the FAQ page I created last quarter')",
+        path="/tools/confluence/search_pages",
+        short_description="Search Confluence pages by title",
+        description=(
+            "Search for Confluence pages by title with optional authorship, date, label, and ordering "
+            "filters. Best for resolving a page name to a page_id (e.g. 'find page named X'). "
+            "Supports fuzzy title matching, space scoping, and constraints like author/date/label.\n"
+            "\n"
+            "Use when the user wants to find a specific named page or a named page constrained by "
+            "author/date/label (e.g. 'find the FAQ page I created last quarter'). "
+            "For topic/keyword searches without a page name use search_content. "
+            "For 'what did I update?' queries use search_content with authorship slots."
+        ),
+        parameters=[
+            ToolParameter(name="title", type=ParameterType.STRING, description="Page title fragment to search (fuzzy)", required=True),
+            ToolParameter(name="space_id", type=ParameterType.STRING, description="Space ID or key to limit search", required=False),
+            ToolParameter(name="contributor", type=ParameterType.STRING, description="Filter by anyone who EVER edited the page. Pass `currentUser()` (no quotes) for self, or `\"<accountId>\"` (with double quotes) for another user — call search_users first.", required=False),
+            ToolParameter(name="creator", type=ParameterType.STRING, description="Filter by original page author. Same value format as contributor.", required=False),
+            ToolParameter(name="mention", type=ParameterType.STRING, description="Filter to pages that @-mention this user. Same value format as contributor.", required=False),
+            ToolParameter(name="last_modifier", type=ParameterType.STRING, description="Filter by who made the most recent edit (latest version only). Same value format. Prefer `contributor` for 'pages I updated'.", required=False),
+            ToolParameter(name="last_modified_after", type=ParameterType.STRING, description="ISO date ('2026-05-01') or CQL function ('now(\"-7d\")', 'startOfMonth()'). Maps to `lastmodified >= ...`.", required=False),
+            ToolParameter(name="last_modified_before", type=ParameterType.STRING, description="Same value format as last_modified_after. Maps to `lastmodified <= ...`.", required=False),
+            ToolParameter(name="created_after", type=ParameterType.STRING, description="Same value format as last_modified_after. Maps to `created >= ...`.", required=False),
+            ToolParameter(name="created_before", type=ParameterType.STRING, description="Same value format as created_after. Maps to `created <= ...`.", required=False),
+            ToolParameter(name="labels", type=ParameterType.ARRAY, description="List of label names. Maps to CQL `label in (...)`.", required=False, items={"type": "string"}),
+            ToolParameter(name="order_by", type=ParameterType.STRING, description="CQL ORDER BY clause, e.g. `'lastmodified desc'`. Set when the user asks for explicit ordering. Direction defaults to asc when omitted.", required=False),
         ],
-        when_not_to_use=[
-            "User has a topic / keyword without a page name — use search_content (it ranks better for free-text body queries)",
-            "User asks for pages with no name in mind ('what did I update?') — use search_content with the authorship slot",
-            "User wants to create page (use create_page)",
-            "User wants ALL pages in a space (use get_pages_in_space)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Find Confluence page named 'Project Plan'",
-            "Search for the deployment runbook page",
-            "Find the FAQ page I created last quarter",
-            "Locate the onboarding page tagged 'hr'",
-            "Page named 'API Design' in the SD space",
-        ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=args_template('Searching Confluence pages: "{title}"', "title"),
+        result_summary=list_summary("results", _confluence_page_label, "page"),
     )
     async def search_pages(
         self,
@@ -1308,43 +1300,43 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="search_content",
-        description="Search Confluence pages and blog posts — full-text, by author, by date, by labels, or any combination",
-        args_schema=SearchContentInput,
-        returns="JSON with ranked search results including titles, excerpts, space, labels, last-modified, and URLs",
-        when_to_use=[
-            "User wants to find content by topic, keyword, or meaning",
-            "User asks for pages they (or someone else) updated / created / contributed to / were mentioned in",
-            "User asks for date-bounded results ('last week', 'since May', 'before Q2', 'today')",
-            "User asks for a specific ordering ('most recent', 'newest first', 'alphabetical')",
-            "User asks for pages with a specific label",
-            "User combines any of the above ('pages I updated about deployment', 'pages tagged onboarding I created last quarter')",
-            "Title-only search (search_pages) is too narrow",
-        ],
-        when_not_to_use=[
-            "User wants to create / update a page (use create_page / update_page)",
-            "User already has a page ID and wants its content (use get_page_content)",
-            "User wants to list ALL pages in a space without any filter (use get_pages_in_space)",
-            "User wants to find a USER by name (use search_users, then feed the accountId back here)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Find Confluence pages about deployment",
-            "Search Confluence for API guidelines",
-            "What pages did I update?",
-            "Pages I created last week",
-            "Pages mentioning me about API design",
-            "What did John Doe update in the last quarter?",
-            "Most recent pages tagged with onboarding",
-            "Pages I edited in the X space this month",
-        ],
-        category=ToolCategory.DOCUMENTATION,
-        llm_description=(
+        path="/tools/confluence/search_content",
+        short_description="Full-text search across Confluence content",
+        description=(
             "Full-text search across Confluence pages and blog posts using the platform search engine. "
             "Unlike search_pages (title-only), this searches the full body content, comments, and labels — "
-            "exactly like the Confluence search bar. Use this whenever you need to find content by topic or keyword."
-        )
+            "exactly like the Confluence search bar.\n"
+            "\n"
+            "Supports filtering by author (contributor/creator/mention/last_modifier), date ranges, "
+            "labels, content types, space, and custom ordering. At least one substantive filter "
+            "(query, authorship, date, or labels) is required.\n"
+            "\n"
+            "Use for topic/keyword searches, authorship queries ('pages I updated'), date-bounded "
+            "results, label filtering, or any combination. Do not use for creating/updating pages, "
+            "reading a known page by ID (use get_page_content), listing all pages without filters "
+            "(use get_pages_in_space), or finding users by name (use search_users first)."
+        ),
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="Free-text search across page/blogpost titles, body, comments, and labels. Leave None for authorship-only / label-only / date-only queries.", required=False),
+            ToolParameter(name="space_id", type=ParameterType.STRING, description="Optional space key or numeric ID to restrict search to one space.", required=False),
+            ToolParameter(name="content_types", type=ParameterType.ARRAY, description="Content types to include: 'page', 'blogpost', or both. Defaults to both.", required=False, items={"type": "string"}),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Max number of results (1-50). Default 25.", required=False, default=25),
+            ToolParameter(name="contributor", type=ParameterType.STRING, description="Filter by anyone who EVER edited the page. Pass `currentUser()` (no quotes) for self, or `\"<accountId>\"` (with double quotes) for another user — call search_users first.", required=False),
+            ToolParameter(name="creator", type=ParameterType.STRING, description="Filter by the original page author. Same value format as contributor.", required=False),
+            ToolParameter(name="mention", type=ParameterType.STRING, description="Filter to pages that @-mention this user. Same value format as contributor.", required=False),
+            ToolParameter(name="last_modifier", type=ParameterType.STRING, description="Filter by the user who made the most recent edit (latest version only). Prefer `contributor` for 'pages I updated'.", required=False),
+            ToolParameter(name="last_modified_after", type=ParameterType.STRING, description="Filter to pages modified on or after this point. Pass ISO date ('2026-05-01') or CQL function ('now(\"-7d\")', 'startOfMonth()').", required=False),
+            ToolParameter(name="last_modified_before", type=ParameterType.STRING, description="Same value format as last_modified_after. Maps to `lastmodified <= ...`.", required=False),
+            ToolParameter(name="created_after", type=ParameterType.STRING, description="Filter to pages created on or after this point. Same value format as last_modified_after.", required=False),
+            ToolParameter(name="created_before", type=ParameterType.STRING, description="Same value format as created_after. Maps to `created <= ...`.", required=False),
+            ToolParameter(name="labels", type=ParameterType.ARRAY, description="List of label names. Matches pages tagged with ANY of the given labels (CQL `label in (...)`).", required=False, items={"type": "string"}),
+            ToolParameter(name="order_by", type=ParameterType.STRING, description="CQL ORDER BY clause. Examples: 'lastmodified desc', 'created desc', 'title asc'. Direction defaults to asc when omitted.", required=False),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Searching Confluence: "{args["query"]}"' if args.get("query") else "Searching Confluence content"
+        ),
+        result_summary=list_summary(("results",), _confluence_page_label, "page"),
     )
     async def search_content(
         self,
@@ -1550,43 +1542,29 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="search_users",
-        description="Search Confluence users by name or email",
-        args_schema=SearchUsersInput,
-        returns="JSON list of matching users (accountId, displayName, email when available, accountStatus, rank); ranked by closeness; with disambiguation flags when multiple users match",
-        when_to_use=[
-            "User names another person and you need their accountId for an authorship-filtered Confluence search",
-            "User asks 'who is X in Confluence' / 'find user X'",
-            "User asks 'what did <Name> update / create / contribute to' — call this FIRST, then search_content with the resolved accountId",
-        ],
-        when_not_to_use=[
-            "User asks about themselves — pass `currentUser()` directly to search_content, no lookup needed",
-            "User wants pages, not users (use search_content)",
-            "No user is named in the query",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Find Confluence user John Doe",
-            "What's the accountId for vishwjeet",
-            "Get user info for someone@company.com",
-            "Look up user Megan in Confluence",
-        ],
-        category=ToolCategory.DOCUMENTATION,
-        llm_description=(
+        path="/tools/confluence/search_users",
+        short_description="Search Confluence users by name or email",
+        description=(
             "Search Confluence users by display name OR email — handles whichever the user gives, "
             "you don't need to detect the format. Returns each match's accountId, which is what you "
             "wrap in double quotes (`'\"<accountId>\"'`) and pass as search_content's `contributor`, "
             "`creator`, `mention`, or `last_modifier` slot when filtering another user's activity.\n"
+            "\n"
             "DO NOT call this for self-queries — pass the literal `currentUser()` to search_content "
             "directly; no lookup needed.\n"
+            "\n"
             "When 2+ users match and none is an exact name/email match, the response sets "
-            "`disambiguation_required: true` and a `warning` field — stop and ask the user which "
-            "person they meant before passing any accountId onward. When exactly one user matches "
-            "or one is an exact match, proceed with the top result.\n"
+            "`disambiguation_required: true` — stop and ask the user which person they meant. "
             "Cloud privacy can suppress email matches; if 0 results come back for an email, ask the "
             "user for the display name instead."
         ),
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="User's display name (full or partial) OR an email address. Both lookups run for every input.", required=True),
+            ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Max users to return (1-50). Default 10.", required=False, default=10),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=args_template('Searching Confluence users: "{query}"', "query"),
+        result_summary=list_summary(("results",), _confluence_user_label, "user"),
     )
     async def search_users(
         self,
@@ -1770,33 +1748,21 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="get_spaces",
-        description="Get all spaces with permissions in Confluence",
-        llm_description="Get all spaces with permissions in Confluence. Also used to resolve space names/types (e.g., personal space) before creating pages.",
-        # No args_schema needed (no parameters)
-        returns="JSON with list of spaces including id, key, name, and type fields",
-        when_to_use=[
-            "User wants to list all Confluence spaces",
-            "User mentions 'Confluence' + wants spaces",
-            "User asks for available spaces",
-            "Need to resolve 'my personal space' or any named space to get its ID before creating/updating a page",
-            "User refers to a space by name and you need the space key or numeric ID"
-        ],
-        when_not_to_use=[
-            "Space ID is already known from conversation history",
-            "User wants pages (use get_pages_in_space)",
-            "User wants info ABOUT Confluence (use retrieval)"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "List all Confluence spaces",
-            "Show me available spaces",
-            "What spaces are in Confluence?",
-            "Create a page in my personal space",
-            "Create a page in the Engineering space"
-        ],
-        category=ToolCategory.DOCUMENTATION
+        path="/tools/confluence/get_spaces",
+        short_description="List all accessible Confluence spaces",
+        description=(
+            "Get all Confluence spaces accessible to the current user, including id, key, name, "
+            "and type. Also used to resolve space names/types (e.g. personal space) to their "
+            "numeric ID or key before creating/updating pages.\n"
+            "\n"
+            "Use when the user wants to list spaces, needs to resolve a space by name, or before "
+            "creating a page when the space ID is unknown. Do not use when the space ID is already "
+            "known from conversation history."
+        ),
+        parameters=[],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=lambda _args: "Fetching Confluence spaces",
+        result_summary=list_summary("results", _confluence_space_label, "space"),
     )
     async def get_spaces(self) -> tuple[bool, str]:
         """Get all spaces accessible to the user.
@@ -1837,28 +1803,17 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="get_space",
-        description="Get details of a Confluence space by ID",
-        args_schema=GetSpaceInput,  # NEW: Pydantic schema
-        returns="JSON with space details",
-        when_to_use=[
-            "User wants details about a specific space",
-            "User mentions 'Confluence' + wants space info",
-            "User asks about a space"
+        path="/tools/confluence/get_space",
+        short_description="Get details of a Confluence space",
+        description=(
+            "Get details of a specific Confluence space by its numeric ID. "
+            "Use when the user wants info about a particular space. "
+            "For listing all spaces use get_spaces. For listing pages in a space use get_pages_in_space."
+        ),
+        parameters=[
+            ToolParameter(name="space_id", type=ParameterType.STRING, description="Space ID", required=True),
         ],
-        when_not_to_use=[
-            "User wants all spaces (use get_spaces)",
-            "User wants pages (use get_pages_in_space)",
-            "User wants info ABOUT Confluence (use retrieval)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get space X details",
-            "Show me Confluence space info",
-            "What is space X?"
-        ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
     )
     async def get_space(self, space_id: str) -> tuple[bool, str]:
         """Get details of a specific space.
@@ -1902,30 +1857,24 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="update_page",
-        description="Update a Confluence page (title and/or content)",
-        args_schema=UpdatePageInput,  # NEW: Pydantic schema
-        returns="JSON with success status and updated page details",
-        when_to_use=[
-            "User wants to update/edit a Confluence page",
-            "User mentions 'Confluence' + wants to modify page",
-            "User asks to edit/update page content or title"
+        path="/tools/confluence/update_page",
+        short_description="Update a Confluence page's title and/or content",
+        description=(
+            "Update a Confluence page (title and/or content). At least one of page_title or "
+            "page_content must be provided. Content must be in Confluence storage format (HTML-like tags).\n"
+            "\n"
+            "Use when the user wants to edit or modify a page. Do not use for creating pages "
+            "(use create_page), reading pages (use get_page_content), or title-only changes "
+            "(use update_page_title)."
+        ),
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID", required=True),
+            ToolParameter(name="page_title", type=ParameterType.STRING, description="New page title (optional)", required=False),
+            ToolParameter(name="page_content", type=ParameterType.STRING, description="New page content in storage format (optional)", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create page (use create_page)",
-            "User wants to read page (use get_page_content)",
-            "User only wants to change title (use update_page_title)",
-            "User wants info ABOUT Confluence (use retrieval)",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Update Confluence page content",
-            "Edit a page in Confluence",
-            "Modify page content",
-            "Update page with new information"
-        ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
+        args_summary=args_template("Updating Confluence page {page_id}", "page_id"),
+        result_summary=entity_summary(lambda e: f"Updated page: {_confluence_page_label(e)}"),
     )
     async def update_page(
         self,
@@ -2077,28 +2026,17 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="get_page_versions",
-        description="Get versions of a Confluence page",
-        args_schema=GetPageVersionsInput,
-        returns="JSON with page versions",
-        when_to_use=[
-            "User wants to see page version history",
-            "User mentions 'Confluence' + wants versions",
-            "User asks for page history"
+        path="/tools/confluence/get_page_versions",
+        short_description="Get version history of a Confluence page",
+        description=(
+            "Get the version history of a Confluence page. Use when the user wants to see "
+            "page revision history or past versions. For reading the current page content "
+            "use get_page_content."
+        ),
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="The page ID", required=True),
         ],
-        when_not_to_use=[
-            "User wants page content (use get_page_content)",
-            "User wants to create page (use create_page)",
-            "User wants info ABOUT Confluence (use retrieval)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get version history of page",
-            "Show page versions",
-            "What versions does this page have?"
-        ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
     )
     async def get_page_versions(self, page_id: str) -> tuple[bool, str]:
         """Get version history of a page.
@@ -2124,29 +2062,22 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="comment_on_page",
-        description="Add a comment to a Confluence page",
-        args_schema=CommentOnPageInput,
-        returns="JSON with success status and comment details",
-        when_to_use=[
-            "User wants to add a comment to a Confluence page",
-            "User mentions 'Confluence' + wants to comment",
-            "User asks to comment on a page"
+        path="/tools/confluence/comment_on_page",
+        short_description="Add a comment to a Confluence page",
+        description=(
+            "Add a comment to a Confluence page. The comment_text parameter accepts plain text — "
+            "it will be automatically formatted with HTML escaping and proper structure for Confluence. "
+            "Optionally reply to an existing comment by providing parent_comment_id.\n"
+            "\n"
+            "Use when the user wants to comment on a page. Do not use for creating pages "
+            "(use create_page) or reading pages (use get_page_content)."
+        ),
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID", required=True),
+            ToolParameter(name="comment_text", type=ParameterType.STRING, description="Comment text/content", required=True),
+            ToolParameter(name="parent_comment_id", type=ParameterType.STRING, description="Parent comment ID if replying to a comment (optional)", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create page (use create_page)",
-            "User wants to read page (use get_page_content)",
-            "User wants info ABOUT Confluence (use retrieval)",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Add a comment to the Confluence page",
-            "Comment on page X",
-            "Leave a comment on this page"
-        ],
-        category=ToolCategory.DOCUMENTATION,
-        llm_description="Add a comment to a Confluence page. The comment_text parameter accepts plain text - it will be automatically formatted with HTML escaping and proper structure for Confluence."
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
     )
     async def comment_on_page(
         self,

@@ -97,8 +97,13 @@ class TestNeo4jLabel:
         assert Neo4jLabel.DEALS.value == "Deals"
         assert Neo4jLabel.PRODUCTS.value == "Products"
 
+    def test_agent_skills_labels(self) -> None:
+        assert Neo4jLabel.AGENT_SKILLS.value == "AgentSkills"
+        assert Neo4jLabel.AGENT_SKILL_VERSIONS.value == "AgentSkillVersions"
+        assert Neo4jLabel.AGENT_SKILL_CANDIDATES.value == "AgentSkillCandidates"
+
     def test_total_member_count(self) -> None:
-        assert len(Neo4jLabel) == 44
+        assert len(Neo4jLabel) == 47
 
 
 # ---------------------------------------------------------------------------
@@ -126,9 +131,13 @@ class TestNeo4jRelationshipType:
         assert Neo4jRelationshipType.AGENT_HAS_KNOWLEDGE.value == "AGENT_HAS_KNOWLEDGE"
         assert Neo4jRelationshipType.AGENT_HAS_TOOLSET.value == "AGENT_HAS_TOOLSET"
         assert Neo4jRelationshipType.TOOLSET_HAS_TOOL.value == "TOOLSET_HAS_TOOL"
+        assert Neo4jRelationshipType.AGENT_HAS_SKILL.value == "AGENT_HAS_SKILL"
+
+    def test_agent_skill_relationship(self) -> None:
+        assert Neo4jRelationshipType.AGENT_SKILL_RELATION.value == "AGENT_SKILL_RELATION"
 
     def test_total_member_count(self) -> None:
-        assert len(Neo4jRelationshipType) == 23
+        assert len(Neo4jRelationshipType) == 25
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +189,9 @@ class TestCollectionToLabelMapping:
             (CollectionNames.AGENT_TOOLSETS.value, Neo4jLabel.AGENT_TOOLSETS.value),
             (CollectionNames.AGENT_TOOLS.value, Neo4jLabel.AGENT_TOOLS.value),
             (CollectionNames.ARTIFACTS.value, Neo4jLabel.ARTIFACTS.value),
+            (CollectionNames.AGENT_SKILLS.value, Neo4jLabel.AGENT_SKILLS.value),
+            (CollectionNames.AGENT_SKILL_VERSIONS.value, Neo4jLabel.AGENT_SKILL_VERSIONS.value),
+            (CollectionNames.AGENT_SKILL_CANDIDATES.value, Neo4jLabel.AGENT_SKILL_CANDIDATES.value),
         ]
         for arango_key, neo4j_label in expected_pairs:
             assert COLLECTION_TO_LABEL[arango_key] == neo4j_label, (
@@ -188,7 +200,7 @@ class TestCollectionToLabelMapping:
             )
 
     def test_mapping_size(self) -> None:
-        assert len(COLLECTION_TO_LABEL) == 42
+        assert len(COLLECTION_TO_LABEL) == 45
 
     def test_all_values_are_strings(self) -> None:
         for k, v in COLLECTION_TO_LABEL.items():
@@ -218,6 +230,8 @@ class TestEdgeCollectionToRelationshipMapping:
             (CollectionNames.AGENT_HAS_KNOWLEDGE.value, Neo4jRelationshipType.AGENT_HAS_KNOWLEDGE.value),
             (CollectionNames.AGENT_HAS_TOOLSET.value, Neo4jRelationshipType.AGENT_HAS_TOOLSET.value),
             (CollectionNames.TOOLSET_HAS_TOOL.value, Neo4jRelationshipType.TOOLSET_HAS_TOOL.value),
+            (CollectionNames.AGENT_HAS_SKILL.value, Neo4jRelationshipType.AGENT_HAS_SKILL.value),
+            (CollectionNames.AGENT_SKILL_RELATION.value, Neo4jRelationshipType.AGENT_SKILL_RELATION.value),
             (CollectionNames.SOLD_IN.value, Neo4jRelationshipType.SOLD_IN.value),
             (CollectionNames.DEAL_OF.value, Neo4jRelationshipType.DEAL_OF.value),
             (CollectionNames.MEMBER_OF.value, Neo4jRelationshipType.MEMBER_OF.value),
@@ -231,7 +245,7 @@ class TestEdgeCollectionToRelationshipMapping:
             assert EDGE_COLLECTION_TO_RELATIONSHIP[arango_key] == neo4j_rel
 
     def test_mapping_size(self) -> None:
-        assert len(EDGE_COLLECTION_TO_RELATIONSHIP) == 23
+        assert len(EDGE_COLLECTION_TO_RELATIONSHIP) == 25
 
     def test_all_values_are_strings(self) -> None:
         for k, v in EDGE_COLLECTION_TO_RELATIONSHIP.items():
@@ -279,6 +293,9 @@ class TestEdgeCollectionToRelationshipFunction:
 
     def test_agent_edge(self) -> None:
         assert edge_collection_to_relationship(CollectionNames.AGENT_HAS_KNOWLEDGE.value) == "AGENT_HAS_KNOWLEDGE"
+
+    def test_agent_has_skill_edge(self) -> None:
+        assert edge_collection_to_relationship(CollectionNames.AGENT_HAS_SKILL.value) == "AGENT_HAS_SKILL"
 
     def test_fallback_uppercases(self) -> None:
         assert edge_collection_to_relationship("unknownEdge") == "UNKNOWNEDGE"

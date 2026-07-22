@@ -455,10 +455,80 @@ class TestAppendTaskMarkers:
             }]},
         ]
         result = _append_task_markers(poisoned, tasks)
-        # Evil marker gone, trusted marker present.
+        # Evil marker gone, trusted marker present. A `recordId` is set, so
+        # the signed URL itself must NOT be embedded — see
+        # `test_artifact_with_record_id_never_embeds_signed_url` below.
         assert "evil.example" not in result
-        assert "https://trusted.example/ok" in result
-        assert "::artifact[good.png](https://trusted.example/ok){image/png|d1|r1}" in result
+        assert "https://trusted.example/ok" not in result
+        assert "::artifact[good.png](record:r1){image/png|d1|r1||}" in result
+
+    def test_deduplicates_same_artifact_version_across_tasks(self):
+        """A re-run that queued the same artifact (same recordId + version)
+        twice must render exactly ONE download card."""
+        entry = {
+            "fileName": "chart.png",
+            "signedUrl": "https://trusted.example/chart",
+            "mimeType": "image/png",
+            "documentId": "d1",
+            "recordId": "r1",
+            "artifactType": "IMAGE",
+            "version": 1,
+        }
+        tasks = [
+            {"type": "artifacts", "artifacts": [entry]},
+            {"type": "artifacts", "artifacts": [dict(entry)]},
+        ]
+        result = _append_task_markers("Answer", tasks)
+        assert result.count("::artifact[chart.png]") == 1
+        assert "{image/png|d1|r1|IMAGE|1}" in result
+
+    def test_new_version_of_same_artifact_gets_its_own_marker(self):
+        v1 = {
+            "fileName": "chart.png", "signedUrl": "https://u/v1", "mimeType": "image/png",
+            "documentId": "d1", "recordId": "r1", "artifactType": "IMAGE", "version": 1,
+        }
+        v2 = {**v1, "signedUrl": "https://u/v2", "version": 2}
+        result = _append_task_markers("Answer", [
+            {"type": "artifacts", "artifacts": [v1, v2]},
+        ])
+        assert result.count("::artifact[chart.png]") == 2
+
+    def test_artifact_with_record_id_never_embeds_signed_url(self):
+        """A persisted marker must never carry a signed URL once there's a
+        recordId to stream through instead — it expires in ~10 min and would
+        be dead weight forever in the saved message. `record:{recordId}`
+        fills the `(url)` slot (frontend's `parseArtifactMarkers` regex
+        requires it non-empty) without being a real, fetchable URL."""
+        tasks = [
+            {"type": "artifacts", "artifacts": [{
+                "fileName": "chart.png",
+                "signedUrl": "https://trusted.example/chart?sig=abc",
+                "mimeType": "image/png",
+                "documentId": "d1",
+                "recordId": "r1",
+                "version": 1,
+            }]},
+        ]
+        result = _append_task_markers("Answer", tasks)
+        assert "https://trusted.example/chart" not in result
+        assert "::artifact[chart.png](record:r1){image/png|d1|r1||1}" in result
+
+    def test_artifact_without_record_id_still_embeds_signed_url(self):
+        """No recordId means no stream-through path exists at all — the real
+        URL is the only way this artifact is ever downloadable, so the
+        ~10 min TTL trade-off is accepted rather than making it permanently
+        unreachable."""
+        tasks = [
+            {"type": "artifacts", "artifacts": [{
+                "fileName": "chart.png",
+                "signedUrl": "https://trusted.example/chart?sig=abc",
+                "mimeType": "image/png",
+                "documentId": "",
+                "recordId": "",
+            }]},
+        ]
+        result = _append_task_markers("Answer", tasks)
+        assert "::artifact[chart.png](https://trusted.example/chart?sig=abc)" in result
 
     def test_multiple_markers_joined_with_double_newline(self):
         tasks = [

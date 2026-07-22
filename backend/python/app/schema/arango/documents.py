@@ -327,6 +327,8 @@ artifact_record_schema = {
             "conversationId": {"type": ["string", "null"]},
             "isTemporary": {"type": ["boolean", "null"]},
             "expiresAt": {"type": ["number", "null"]},
+            "logicalName": {"type": ["string", "null"]},
+            "contentHash": {"type": ["string", "null"]},
         },
         "required": ["name", "orgId"],
         "additionalProperties": False,
@@ -1213,4 +1215,135 @@ tool_schema = {
     },
     "level": "strict",
     "message": "Document does not match the tool schema.",
+}
+
+
+# Agent Skills Node Schema — agent_loop_lib SkillManager's GraphSkillStore.
+# `content`/`resources` carry the full SKILL.md so the store can serve
+# `get_skill`/`get_resource` from one document; every other property is a
+# denormalized frontmatter field kept in sync on every write so
+# `list_skills`/filtering never has to parse `content`.
+agent_skills_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_key": {"type": "string"},
+            "orgId": {"type": "string"},
+            "name": {"type": "string", "minLength": 1},
+            "description": {"type": "string", "minLength": 1},
+            "content": {"type": "string"},  # full SKILL.md (frontmatter + body)
+            # Bundled resources as index-aligned parallel arrays (paths[i]'s
+            # content is contents[i]) — NOT a nested {path: content} map,
+            # because Neo4j node properties only allow primitives/arrays of
+            # primitives and this schema is shared by both graph backends.
+            "resourcePaths": {"type": "array", "items": {"type": "string"}, "default": []},
+            "resourceContents": {"type": "array", "items": {"type": "string"}, "default": []},
+            # Legacy nested {path: content} map from before the parallel-array
+            # encoding — read-tolerated so pre-existing Arango docs still
+            # validate on partial updates; never written anymore.
+            "resources": {"type": "object"},
+            "category": {"type": ["string", "null"]},
+            "subcategory": {"type": ["string", "null"]},
+            "tags": {"type": "array", "items": {"type": "string"}, "default": []},
+            "concepts": {"type": "array", "items": {"type": "string"}, "default": []},
+            "related": {"type": "array", "items": {"type": "string"}, "default": []},
+            "requires": {"type": "array", "items": {"type": "string"}, "default": []},
+            "status": {"type": "string", "enum": ["active", "deprecated"]},
+            "source": {"type": "string"},
+            "version": {"type": "string"},
+            "deprecatedReason": {"type": ["string", "null"]},
+            "replacedBy": {"type": ["string", "null"]},
+            "packName": {"type": ["string", "null"]},
+            "packVersion": {"type": ["string", "null"]},
+            "createdBy": {"type": "string"},
+            "updatedBy": {"type": ["string", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+            # Usage tracking (GraphUsageTracker / MUSE-Autoskill pattern) —
+            # kept on the skill document itself rather than a separate
+            # collection since it's a small, per-skill counter set read
+            # and written together on every activation/outcome.
+            "usageTotalActivations": {"type": "number", "default": 0},
+            "usageSuccessfulOutcomes": {"type": "number", "default": 0},
+            "usageFailedOutcomes": {"type": "number", "default": 0},
+            "usageLastActivated": {"type": ["string", "null"]},
+            "usageFailureModes": {"type": "array", "items": {"type": "string"}, "default": []},
+            "usageImprovementNotes": {"type": "array", "items": {"type": "string"}, "default": []},
+            # Governance audit trail (`AuditGovernor`) — capped, append-only
+            # log of create/deprecate events as index-aligned parallel
+            # arrays (entry i spans all four), primitive-only for Neo4j
+            # compatibility; full content history for a revision lives in
+            # `agentSkillVersions`, this is just the "who did what, when"
+            # trail. `auditReasons` uses "" for "no reason" (Neo4j rejects
+            # nulls inside arrays).
+            "auditActions": {"type": "array", "items": {"type": "string"}, "default": []},
+            "auditActorIds": {"type": "array", "items": {"type": "string"}, "default": []},
+            "auditReasons": {"type": "array", "items": {"type": "string"}, "default": []},
+            "auditTimestamps": {"type": "array", "items": {"type": "number"}, "default": []},
+            # Legacy array-of-objects trail from before the parallel-array
+            # encoding — read-tolerated, never written anymore.
+            "auditLog": {"type": "array"},
+        },
+        "required": ["orgId", "name", "description", "content", "status", "createdBy", "createdAtTimestamp"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the agent skills schema.",
+}
+
+# Agent Skill Versions Node Schema — immutable prior-revision snapshots
+# (append-only; never updated after insert). One document per revision,
+# NOT per skill — a skill with N revisions has N of these.
+agent_skill_versions_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_key": {"type": "string"},
+            "orgId": {"type": "string"},
+            "skillKey": {"type": "string"},  # _key of the agentSkills document this revises
+            "name": {"type": "string", "minLength": 1},
+            "version": {"type": "string"},
+            "content": {"type": "string"},
+            # Same parallel-array encoding as agent_skills_schema (Neo4j
+            # compatibility — no nested maps); legacy `resources` map
+            # read-tolerated for pre-encoding snapshots.
+            "resourcePaths": {"type": "array", "items": {"type": "string"}, "default": []},
+            "resourceContents": {"type": "array", "items": {"type": "string"}, "default": []},
+            "resources": {"type": "object"},
+            "summary": {"type": "string", "default": ""},
+            "updatedBy": {"type": ["string", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+        },
+        "required": ["orgId", "skillKey", "name", "version", "content", "createdAtTimestamp"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the agent skill versions schema.",
+}
+
+# Agent Skill Candidates Node Schema — learning-loop candidates pending
+# governance review (`SkillCandidateStore`, `manager.py`). Rows are deleted
+# once approved/rejected, so this collection only ever holds pending work.
+agent_skill_candidates_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_key": {"type": "string"},
+            "orgId": {"type": "string"},
+            "candidateId": {"type": "string"},
+            "name": {"type": "string", "minLength": 1},
+            "description": {"type": "string"},
+            "body": {"type": "string"},
+            "category": {"type": ["string", "null"]},
+            "subcategory": {"type": ["string", "null"]},
+            "tags": {"type": "array", "items": {"type": "string"}, "default": []},
+            "status": {"type": "string"},
+            "sourceTrajectorySummary": {"type": ["string", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+        },
+        "required": ["orgId", "candidateId", "name", "description", "body", "createdAtTimestamp"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the agent skill candidates schema.",
 }

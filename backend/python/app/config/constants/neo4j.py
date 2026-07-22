@@ -72,6 +72,11 @@ class Neo4jLabel(Enum):
     AGENT_TOOLSETS = "AgentToolset"
     AGENT_TOOLS = "AgentTool"
 
+    # Agent Skills collections
+    AGENT_SKILLS = "AgentSkills"
+    AGENT_SKILL_VERSIONS = "AgentSkillVersions"
+    AGENT_SKILL_CANDIDATES = "AgentSkillCandidates"
+
     # Sales
     DEALS = "Deals"
     PRODUCTS = "Products"
@@ -99,6 +104,10 @@ class Neo4jRelationshipType(Enum):
     AGENT_HAS_KNOWLEDGE = "AGENT_HAS_KNOWLEDGE"
     AGENT_HAS_TOOLSET = "AGENT_HAS_TOOLSET"
     TOOLSET_HAS_TOOL = "TOOLSET_HAS_TOOL"
+    AGENT_HAS_SKILL = "AGENT_HAS_SKILL"
+
+    # Agent Skills relationships
+    AGENT_SKILL_RELATION = "AGENT_SKILL_RELATION"
 
     # Sales relationships
     SOLD_IN = "SOLD_IN"
@@ -159,6 +168,10 @@ COLLECTION_TO_LABEL: dict[str, str] = {
     CollectionNames.AGENT_KNOWLEDGE.value: Neo4jLabel.AGENT_KNOWLEDGE.value,
     CollectionNames.AGENT_TOOLSETS.value: Neo4jLabel.AGENT_TOOLSETS.value,
     CollectionNames.AGENT_TOOLS.value: Neo4jLabel.AGENT_TOOLS.value,
+    # Agent Skills collections
+    CollectionNames.AGENT_SKILLS.value: Neo4jLabel.AGENT_SKILLS.value,
+    CollectionNames.AGENT_SKILL_VERSIONS.value: Neo4jLabel.AGENT_SKILL_VERSIONS.value,
+    CollectionNames.AGENT_SKILL_CANDIDATES.value: Neo4jLabel.AGENT_SKILL_CANDIDATES.value,
 }
 
 # Mapping from ArangoDB edge collections to Neo4j relationship types
@@ -179,6 +192,8 @@ EDGE_COLLECTION_TO_RELATIONSHIP: dict[str, str] = {
     CollectionNames.AGENT_HAS_KNOWLEDGE.value: Neo4jRelationshipType.AGENT_HAS_KNOWLEDGE.value,
     CollectionNames.AGENT_HAS_TOOLSET.value: Neo4jRelationshipType.AGENT_HAS_TOOLSET.value,
     CollectionNames.TOOLSET_HAS_TOOL.value: Neo4jRelationshipType.TOOLSET_HAS_TOOL.value,
+    CollectionNames.AGENT_HAS_SKILL.value: Neo4jRelationshipType.AGENT_HAS_SKILL.value,
+    CollectionNames.AGENT_SKILL_RELATION.value: Neo4jRelationshipType.AGENT_SKILL_RELATION.value,
     CollectionNames.SOLD_IN.value: Neo4jRelationshipType.SOLD_IN.value,
     CollectionNames.DEAL_OF.value: Neo4jRelationshipType.DEAL_OF.value,
     CollectionNames.MEMBER_OF.value: Neo4jRelationshipType.MEMBER_OF.value,

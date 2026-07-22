@@ -2,11 +2,10 @@ import asyncio
 import json
 import logging
 import threading
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple, List
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -178,12 +177,13 @@ class Dropbox:
             logger.warning(f"Dropbox shutdown encountered an issue: {exc}")
 
     @tool(
-        app_name="dropbox",
-        tool_name="get_account_info",
-        description="Get current account information",
-        parameters=[]
+        path="/tools/dropbox/get_account_info",
+        short_description="Get current Dropbox account information",
+        description="Get the current authenticated Dropbox account information.",
+        parameters=[],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
     )
-    def get_account_info(self) -> Tuple[bool, str]:
+    async def get_account_info(self) -> Tuple[bool, str]:
         """Get current account information"""
         """
         Returns:
@@ -202,37 +202,37 @@ class Dropbox:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="dropbox",
-        tool_name="list_folder",
-        description="List contents of a folder",
+        path="/tools/dropbox/list_folder",
+        short_description="List contents of a Dropbox folder",
+        description="List files and folders in a Dropbox folder with optional recursive listing.",
         parameters=[
             ToolParameter(
                 name="path",
                 type=ParameterType.STRING,
                 description="Path of the folder to list",
-                required=True
             ),
             ToolParameter(
                 name="recursive",
                 type=ParameterType.BOOLEAN,
                 description="Whether to list recursively",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="include_media_info",
                 type=ParameterType.BOOLEAN,
                 description="Whether to include media info",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="include_deleted",
                 type=ParameterType.BOOLEAN,
                 description="Whether to include deleted files",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
     )
-    def list_folder(
+    async def list_folder(
         self,
         path: str,
         recursive: Optional[bool] = None,
@@ -267,31 +267,31 @@ class Dropbox:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="dropbox",
-        tool_name="get_metadata",
-        description="Get metadata for a file or folder",
+        path="/tools/dropbox/get_metadata",
+        short_description="Get metadata for a Dropbox file or folder",
+        description="Get metadata for a file or folder in Dropbox.",
         parameters=[
             ToolParameter(
                 name="path",
                 type=ParameterType.STRING,
                 description="Path of the file or folder",
-                required=True
             ),
             ToolParameter(
                 name="include_media_info",
                 type=ParameterType.BOOLEAN,
                 description="Whether to include media info",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="include_deleted",
                 type=ParameterType.BOOLEAN,
                 description="Whether to include deleted files",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
     )
-    def get_metadata(
+    async def get_metadata(
         self,
         path: str,
         include_media_info: Optional[bool] = None,
@@ -323,19 +323,19 @@ class Dropbox:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="dropbox",
-        tool_name="download_file",
-        description="Download a file from Dropbox",
+        path="/tools/dropbox/download_file",
+        short_description="Download a file from Dropbox",
+        description="Download a file from Dropbox by its path.",
         parameters=[
             ToolParameter(
                 name="path",
                 type=ParameterType.STRING,
                 description="Path of the file to download",
-                required=True
-            )
-        ]
+            ),
+        ],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
     )
-    def download_file(self, path: str) -> Tuple[bool, str]:
+    async def download_file(self, path: str) -> Tuple[bool, str]:
         """Download a file from Dropbox"""
         """
         Args:
@@ -356,31 +356,30 @@ class Dropbox:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="dropbox",
-        tool_name="upload_file",
-        description="Upload a file to Dropbox",
+        path="/tools/dropbox/upload_file",
+        short_description="Upload a file to Dropbox",
+        description="Upload a file to Dropbox with configurable write mode.",
         parameters=[
             ToolParameter(
                 name="path",
                 type=ParameterType.STRING,
                 description="Path where to upload the file",
-                required=True
             ),
             ToolParameter(
                 name="content",
                 type=ParameterType.STRING,
                 description="Content of the file to upload",
-                required=True
             ),
             ToolParameter(
                 name="mode",
                 type=ParameterType.STRING,
                 description="Write mode (add, overwrite, update)",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="create")],
     )
-    def upload_file(
+    async def upload_file(
         self,
         path: str,
         content: str,
@@ -415,19 +414,19 @@ class Dropbox:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="dropbox",
-        tool_name="delete_file",
-        description="Delete a file or folder from Dropbox",
+        path="/tools/dropbox/delete_file",
+        short_description="Delete a file or folder from Dropbox",
+        description="Delete a file or folder from Dropbox by its path.",
         parameters=[
             ToolParameter(
                 name="path",
                 type=ParameterType.STRING,
                 description="Path of the file or folder to delete",
-                required=True
-            )
-        ]
+            ),
+        ],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="delete")],
     )
-    def delete_file(self, path: str) -> Tuple[bool, str]:
+    async def delete_file(self, path: str) -> Tuple[bool, str]:
         """Delete a file or folder from Dropbox"""
         """
         Args:
@@ -448,19 +447,19 @@ class Dropbox:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="dropbox",
-        tool_name="create_folder",
-        description="Create a folder in Dropbox",
+        path="/tools/dropbox/create_folder",
+        short_description="Create a folder in Dropbox",
+        description="Create a new folder in Dropbox at the specified path.",
         parameters=[
             ToolParameter(
                 name="path",
                 type=ParameterType.STRING,
                 description="Path where to create the folder",
-                required=True
-            )
-        ]
+            ),
+        ],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="create")],
     )
-    def create_folder(self, path: str) -> Tuple[bool, str]:
+    async def create_folder(self, path: str) -> Tuple[bool, str]:
         """Create a folder in Dropbox"""
         """
         Args:
@@ -481,31 +480,31 @@ class Dropbox:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="dropbox",
-        tool_name="search",
-        description="Search for files and folders",
+        path="/tools/dropbox/search",
+        short_description="Search for files and folders in Dropbox",
+        description="Search for files and folders in Dropbox by query string.",
         parameters=[
             ToolParameter(
                 name="query",
                 type=ParameterType.STRING,
                 description="Search query",
-                required=True
             ),
             ToolParameter(
                 name="path",
                 type=ParameterType.STRING,
                 description="Path to search in",
-                required=False
+                required=False,
             ),
             ToolParameter(
                 name="max_results",
                 type=ParameterType.INTEGER,
                 description="Maximum number of results",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
     )
-    def search(
+    async def search(
         self,
         query: str,
         path: Optional[str] = None,
@@ -537,25 +536,25 @@ class Dropbox:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="dropbox",
-        tool_name="get_shared_link",
-        description="Get a shared link for a file or folder",
+        path="/tools/dropbox/get_shared_link",
+        short_description="Get a shared link for a Dropbox file or folder",
+        description="Get or create a shared link for a file or folder in Dropbox.",
         parameters=[
             ToolParameter(
                 name="path",
                 type=ParameterType.STRING,
                 description="Path of the file or folder",
-                required=True
             ),
             ToolParameter(
                 name="settings",
                 type=ParameterType.STRING,
                 description="Settings for the shared link",
-                required=False
-            )
-        ]
+                required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
     )
-    def get_shared_link(
+    async def get_shared_link(
         self,
         path: str,
         settings: Optional[str] = None

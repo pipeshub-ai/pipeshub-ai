@@ -8,7 +8,7 @@ import os
 import uuid
 from collections.abc import AsyncGenerator
 from logging import Logger
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -16,6 +16,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
+from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import authMiddleware, require_scopes
 from app.api.routes.chatbot import get_llm_for_chat
@@ -24,10 +25,6 @@ from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.capability_summary import fetch_connector_configs
-from app.telemetry.event_buffer import record_event
-from app.telemetry.identity import domain_from_email
-from app.utils.execute_query import has_sql_connector_configured
-from app.utils.fetch_slack_thread import has_slack_connector_configured
 from app.modules.agents.deep.graph import deep_agent_graph
 from app.modules.agents.deep.state import build_deep_agent_state
 from app.modules.agents.qna.cache_manager import get_cache_manager
@@ -40,14 +37,67 @@ from app.modules.agents.qna.memory_optimizer import (
     auto_optimize_state,
     check_memory_health,
 )
+from app.modules.agents.qna.router import (
+    RouteDecision,  # noqa: F401 - re-exported for backward-compat imports (see below)
+    classify_route,
+)
+from app.modules.agents.qna.router import (
+    build_capability_context as _build_agent_capability_context,  # noqa: F401
+)
+from app.modules.agents.qna.router import (
+    build_prior_routing_messages as _build_prior_routing_messages,  # noqa: F401
+)
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.modules.transformers.blob_storage import BlobStorage
+from app.modules.transformers.blob_storage import (
+    BlobStorage,  # noqa: F401 - re-exported, see above
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.utils.attachment_utils import resolve_attachments
+from app.telemetry.event_buffer import record_event
+from app.telemetry.identity import domain_from_email
+from app.utils.attachment_utils import (
+    resolve_attachments,  # noqa: F401 - re-exported, see above
+)
+from app.utils.execute_query import has_sql_connector_configured
+from app.utils.fetch_slack_thread import has_slack_connector_configured
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+# `RouteDecision`/`_build_agent_capability_context`/`_build_prior_routing_messages`/
+# `BlobStorage`/`resolve_attachments` moved to `app.modules.agents.qna.router`
+# (Phase 7 of the agent-loop migration, so the new agent-loop auto-router
+# shares one classification implementation with this route). Re-exported
+# here, unused, purely so existing `from app.api.routes.agent import ...`
+# call sites and test patches keep working — see Phase 9's test-migration
+# plan for retiring these once the affected tests are updated to import
+# from the new module directly.
+
 router = APIRouter()
+
+
+def _use_agent_loop() -> bool:
+    """Phase 8 feature flag: `chat_stream` runs the agent-loop path
+    (`run_agent_loop_stream`) instead of the legacy LangGraph path
+    (`stream_response`) when this is true. An env var rather than an etcd
+    `config_service` key deliberately — this flag exists only for this
+    migration's parallel rollout/rollback, not as a customer-facing setting,
+    so it needs no admin UI or persisted schema; flipping it per-deployment
+    (or per-process, for A/B canary runs) is a restart away either way.
+    """
+    return os.getenv("PIPESHUB_USE_AGENT_LOOP", "true").strip().lower() == "true"
+
+
+def _resolve_protocol(chat_query: "ChatQuery", request: Request) -> str:
+    """Negotiate the SSE wire protocol for `chat_stream` — explicit body
+    field (`ChatQuery.protocol`, how Node.js's hand-built outbound request
+    sets it) takes precedence over a `?protocol=` query param (for direct
+    API callers), defaulting to `"legacy"` for absolutely everything else:
+    the Slack bot, internal/service-account routes, and any existing API
+    client keep working with zero changes. The ONLY recognized non-legacy
+    value is `"agui"` — anything else collapses to legacy rather than
+    erroring, so a typo'd param never breaks a request."""
+    value = chat_query.protocol or request.query_params.get("protocol")
+    return "agui" if value == "agui" else "legacy"
+
 
 # Opik tracer initialization
 _opik_tracer = None
@@ -88,19 +138,14 @@ class ChatQuery(BaseModel):
     callerDisplayName: str | None = None
     callerEmail: str | None = None
     attachments: list[dict[str, Any]] = []
+    # AG-UI protocol negotiation (see the migration plan) — Node.js sets
+    # this explicitly on the outbound request body (it hand-builds the
+    # request, so header passthrough alone never reaches here); absent/
+    # anything other than "agui" keeps today's event names. Also readable
+    # as a `?protocol=` query param for direct API callers — see
+    # `_resolve_protocol` below.
+    protocol: str | None = None
 
-
-class RouteDecision(BaseModel):
-    """
-    Routing decision with structured chain-of-thought reasoning.
-
-    reasoning: structured analysis — sub-tasks identified, dependency chain,
-               parameter availability, and justification for the chosen tier.
-               Written BEFORE committing to a route (CoT reduces misroutes).
-    route: the tier — type-safe, cannot produce an invalid value.
-    """
-    reasoning: str
-    route: Literal["quick", "react", "deep"]
 
 # ============================================================================
 # Custom Exceptions
@@ -298,7 +343,9 @@ async def _select_agent_graph_for_query(
     """
     Graph selection based on chatMode from the chat input:
     - quick: legacy agent graph (fast, no tool loops)
-    - verification: modern ReAct agent graph (tool calling with reflection)
+    - planExecute (alias: verification): modern ReAct agent graph (tool
+      calling with reflection) — `verification` is the pre-rename wire
+      value; both map here so old conversations/clients keep working.
     - deep: deep agent graph (orchestrator + sub-agents)
     - auto: LLM router decides based on query complexity (default: quick)
     """
@@ -308,8 +355,8 @@ async def _select_agent_graph_for_query(
         logger.info("Agent graph route: deep | chatMode=deep")
         return deep_agent_graph
 
-    if chat_mode == "verification":
-        logger.info("Agent graph route: react | chatMode=verification")
+    if chat_mode in ("planexecute", "verification"):
+        logger.info("Agent graph route: react | chatMode=%s", chat_mode)
         return modern_agent_graph
 
     if chat_mode == "auto":
@@ -338,375 +385,28 @@ async def _auto_select_graph(
 ) -> CompiledStateGraph:
     """
     Auto-select graph using an LLM call to classify the query into one of
-    three agent types: quick, react, or deep.
-    Falls back to 'react' if parsing fails.
+    three agent types: quick, react, or deep. The classification itself
+    (`classify_route`) is shared with the agent-loop auto-router
+    (`app/agents/agent_loop/router.py`) — this function's only job is
+    mapping that tier to this route's `CompiledStateGraph`.
     """
-
-    from langchain_core.messages import HumanMessage, SystemMessage
-
-    user_query = query_info.get("query", "").strip()
-    if not user_query:
-        return modern_agent_graph
-
-    capability_block, n_knowledge, indexed_connectors, kb_sources, tools_data = (
-        _build_agent_capability_context(query_info)
-    )
-    toolsets = query_info.get("toolsets") or []
-    has_sql_toolset = any(
-        isinstance(ts, dict)
-        and any(name in ts.get("name", "").lower() for name in ("mariadb", "redshift"))
-        for ts in toolsets
-    )
-    sql_verify_override = ""
-    if has_sql_toolset:
-        sql_verify_override = (
-            "## SQL override (highest priority)\n"
-            "This agent has SQL database tools (MariaDB and/or Redshift) "
-            "configured. SQL queries require schema introspection before "
-            "execution and verification of intermediate results, so any "
-            "request that may touch these tools MUST be routed to **react**. "
-            "This rule overrides the tier definitions below — do NOT choose "
-            "`quick` or `deep` when SQL tools are involved.\n\n"
-        )
-
-    # Create blob_store once; reused for both history attachments and current ones.
-    blob_store = None
-    if config_service and graph_provider:
-        try:
-            blob_store = BlobStorage(
-                logger=logger,
-                config_service=config_service,
-                graph_provider=graph_provider,
-            )
-        except Exception as _bs_exc:
-            logger.warning("Router: failed to create blob_store: %s", _bs_exc)
-
-    prior_messages = await _build_prior_routing_messages(
+    decision = await classify_route(
         query_info,
-        blob_store=blob_store,
-        org_id=org_id,
+        logger,
+        llm,
+        config_service=config_service,
+        graph_provider=graph_provider,
         is_multimodal_llm=is_multimodal_llm,
+        org_id=org_id,
+        opik_tracer=_opik_tracer,
     )
-
-    structured_llm = llm.with_structured_output(RouteDecision)
-
-    system_prompt = (
-        "You are a routing agent. Classify the user request into exactly one "
-        "execution tier: quick, react, or deep.\n\n"
-
-        + capability_block
-        + sql_verify_override
-        + "## quick\n"
-        "Every action and every parameter can be fully determined right now "
-        "from the query and context, before anything runs. The request itself "
-        "is the final action — retrieving, searching, displaying, or acting on "
-        "something where the goal is the retrieval or action itself, not "
-        "further processing of what comes back.\n\n"
-
-        "CRITICAL: For a request to be 'quick', ALL of the following must be true:\n"
-        "1. ALL required parameters for the final action are directly available "
-        "from the query text, conversation context, or system constants — NO "
-        "tool calls needed to obtain any parameter (IDs, keys, identifiers).\n"
-        "2. The query contains exactly ONE distinct action or question. If the "
-        "query asks about two or more separate topics, tasks, or actions "
-        "(e.g., 'How do I do X and also Y?'), it is NOT quick.\n\n"
-
-        "## react\n"
-        "A fixed, predictable sequence of dependent steps where the chain "
-        "length is deterministic before execution starts, but at least one "
-        "step's parameters only become known from a prior step's result. The "
-        "intent implies: get something first, then do something with it — "
-        "where 'it' is one specific thing.\n\n"
-        "Key indicator: If the final action requires a parameter (ID, key, "
-        "identifier, or any structured value) that must be fetched/resolved "
-        "through a tool call, this is react. The dependency chain is: "
-        "resolve parameter → execute final action.\n\n"
-        "Also use react when the query has multiple related sub-tasks that "
-        "build on shared context.\n\n"
-        "**react is the safe default when routing is unclear.**\n\n"
-
-        "## deep\n"
-        "Reserved for tasks react cannot handle. Only two cases qualify:\n"
-        "(a) The intent requires getting a collection and then doing something "
-        "to EVERY item in it — the number of items is unknown before the "
-        "collection is retrieved. Wanting to SEE a collection is not this.\n"
-        "(b) The intent requires gathering information from ≥2 fully "
-        "independent sources and combining it into one unified answer.\n"
-        f"Configuration check: {n_knowledge} source(s) configured — deep "
-        f"is {'viable' if n_knowledge >= 2 else 'NOT viable (need ≥2)'}.\n\n"
-
-        "## What counts as a known vs unknown parameter\n"
-        "Known (does NOT require a prior tool call):\n"
-        "  • Any search term, keyword, or topic that appears in the query text "
-        "itself — the user's words ARE the search input.\n"
-        "  • Any ID, name, key, or value explicitly stated in the query or "
-        "conversation history.\n"
-        "  • Which tool or knowledge source to use — this is an internal agent "
-        "routing decision, NOT a parameter the query must supply.\n\n"
-        "Unknown (DOES require a prior tool call):\n"
-        "  • An ID, key, or identifier that is not present anywhere in the "
-        "query or conversation and must be obtained from a tool's response "
-        "before the final action can execute.\n\n"
-
-        "## Decision\n"
-        "Answer these in order. Stop at the first match.\n\n"
-
-        "Q1: Is this a single question or action, AND are ALL required "
-        "parameters known (per the definitions above) — with NO tool calls "
-        "needed to obtain them? → **quick**\n\n"
-
-        "Q2: Does the request require a fixed sequence where at least one "
-        "parameter for the final action must come from a prior tool's result? "
-        "→ **react**\n\n"
-
-        "Q3: Does the request imply acting on every item in a collection "
-        "whose size is only known at runtime, or combining ≥2 fully "
-        f"independent sources ({n_knowledge} configured)? → **deep**\n\n"
-
-        "Q4: Does the query contain multiple distinct sub-questions, topics, "
-        "or actions? → NOT quick; use react (if topics are related or "
-        "sequential) or deep (if fully independent and targeting different "
-        "sources).\n\n"
-
-        "Default → **react**\n\n"
-
-        "For follow-ups ('yes', 'ok', 'do it', 'give all', 'show more', "
-        "'proceed') — infer the full intent from the conversation history "
-        "above, then apply the decision tree to that inferred intent."
-    )
-
     route_map = {
         "quick": agent_graph,
         "react": modern_agent_graph,
         "deep": deep_agent_graph,
     }
+    return route_map[decision.route]
 
-    # Build the routing HumanMessage: the user query goes here so multimodal
-    # models receive both text and image blocks in the same turn.
-    # Prior-turn attachments are already carried by prior_messages in order.
-    routing_human_content: Any = f"user query : {user_query}"
-    attachments = query_info.get("attachments") or []
-    if blob_store:
-        try:
-            attachment_blocks: list[dict] = []
-            if attachments and is_multimodal_llm:
-                attachment_blocks = await resolve_attachments(
-                    attachments=attachments,
-                    blob_store=blob_store,
-                    org_id=org_id,
-                    is_multimodal_llm=True,
-                    logger=logger,
-                )
-            if attachment_blocks:
-                routing_human_content = [
-                    {"type": "text", "text": f"user query : {user_query}\n\nAttached files from the user:\n"},
-                    *attachment_blocks,
-                ]
-        except Exception as exc:
-            logger.warning("Router: failed to resolve attachments for routing context: %s", exc)
-
-    try:
-        invoke_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
-
-        decision: RouteDecision = await structured_llm.ainvoke(
-            [
-                SystemMessage(content=system_prompt),
-                *prior_messages,
-                HumanMessage(content=routing_human_content),
-            ],
-            config=invoke_config,
-        )
-
-        route = decision.route
-        logger.info(
-            "Agent graph route: %s | (query=%s, reasoning=%s)",
-            route,
-            user_query[:80],
-            decision.reasoning[:120],
-        )
-        return route_map[route]
-
-    except Exception as e:
-        logger.warning(
-            "Agent graph route: react (fallback) | router failed: %s", e
-        )
-        return modern_agent_graph
-
-async def _build_prior_routing_messages(
-    query_info: dict[str, Any],
-    blob_store: Any = None,
-    org_id: str = "",
-    is_multimodal_llm: bool = False,
-) -> list:
-    """
-    Build prior conversation turns as LangChain HumanMessage/AIMessage objects
-    for the routing LLM call.
-
-    Each user turn's content list is assembled in document order:
-    - Turn text comes first.
-    - PDF attachments: text blocks and embedded image blocks are interleaved
-      exactly as they appear in the document (images only when multimodal).
-    - Standalone image attachments: appended after the turn text (multimodal only).
-
-    Bot turns are truncated to their first line to keep the context compact.
-    Attachment fetching errors are silently swallowed so routing is never blocked.
-    """
-    from langchain_core.messages import AIMessage, HumanMessage
-    from app.utils.chat_helpers import is_base64_image
-    from app.utils.attachment_utils import resolve_attachment_blocks_simple
-
-    previous = query_info.get("previous_conversations", [])
-    if not previous:
-        return []
-
-    recent = previous[-6:]
-    messages = []
-
-    for conv in recent:
-        role = conv.get("role", "")
-        content = str(conv.get("content", "")).strip()
-
-        if role == "user_query":
-            parts: list[dict] = [{"type": "text", "text": content[:200]}]
-            attachments = conv.get("attachments") or []
-            if attachments and blob_store and org_id:
-                for att in attachments:
-                    if not isinstance(att, dict):
-                        continue
-                    mime = (att.get("mimeType") or "").lower()
-                    vrid = att.get("virtualRecordId") or ""
-                    if not vrid:
-                        continue
-                    try:
-                        record = await blob_store.get_record_from_storage(vrid, org_id)
-                        if not record:
-                            continue
-                        if mime in ["application/pdf", "text/mdx", "text/markdown", "text/plain"]:
-                            parts.extend(resolve_attachment_blocks_simple(record, is_multimodal_llm))
-                        elif mime.startswith("image/") and is_multimodal_llm:
-                            blocks = (
-                                (record.get("block_containers") or {}).get("blocks") or []
-                            )
-                            for block in blocks:
-                                if not isinstance(block, dict) or block.get("type") != "image":
-                                    continue
-                                data = block.get("data")
-                                uri = (
-                                    data.get("uri", "") if isinstance(data, dict)
-                                    else (data if isinstance(data, str) else "")
-                                )
-                                if uri and is_base64_image(uri):
-                                    parts.append(
-                                        {"type": "image_url", "image_url": {"url": uri}}
-                                    )
-                    except Exception:
-                        pass  # Never let attachment fetching block routing
-            # Avoid wrapping in a list when there are no visual blocks
-            msg_content: Any = content[:200] if len(parts) == 1 else parts
-            messages.append(HumanMessage(content=msg_content))
-
-        elif role == "bot_response":
-            first_line = content.split("\n")[0][:150]
-            messages.append(AIMessage(content=first_line))
-
-    return messages
-
-
-def _build_agent_capability_context(
-    query_info: dict[str, Any],
-) -> tuple[str, int, list[dict], list[dict], list[dict]]:
-    """
-    Build a rich capability summary for the routing prompt.
-
-    Prefers fully-labeled data when available (chat_stream path supplies
-    query_info["knowledge"] and query_info["toolsets"]).  Falls back
-    gracefully to filter counts + bare tool-name strings when only the
-    lighter query_info structure is present (non-streaming chat / askAI).
-
-    Returns:
-        (capability_block, n_knowledge, indexed_connectors, kb_sources, tools_data)
-        where tools_data is a list of {"full_name": str, "desc": str} dicts.
-    """
-    from app.modules.agents.capability_summary import (
-        classify_knowledge_sources,
-        format_connector_filter_lines,
-    )
-
-    lines: list[str] = ["## Agent capabilities\n"]
-    indexed_connectors: list[dict] = []
-    kb_sources: list[dict] = []
-
-    # ── Knowledge sources ─────────────────────────────────────────────────────
-    agent_knowledge: list[dict] = query_info.get("knowledge") or []
-    connector_cfgs = query_info.get("connector_configs") or {}
-
-    if agent_knowledge:
-        kb_sources, indexed_connectors = classify_knowledge_sources(
-            agent_knowledge,
-            connector_configs=connector_cfgs if isinstance(connector_cfgs, dict) else None,
-        )
-        n_knowledge = len(kb_sources) + len(indexed_connectors)
-        lines.append(f"Knowledge sources ({n_knowledge} total):")
-        for c in indexed_connectors:
-            line = f"  • {c['label']} — app connector (type: {c['type_key']})"
-            fls = format_connector_filter_lines(c.get("filters"))
-            if fls:
-                line += "; " + "; ".join(fls)
-            lines.append(line)
-        for k in kb_sources:
-            cids = k.get("collection_ids", [])
-            scope = f", {len(cids)} scoped collection(s)" if cids else ""
-            lines.append(f"  • {k['label']} — knowledge base{scope}")
-    else:
-        # Fallback: derive counts from filters (NO_KB_SELECTED sentinel excluded)
-        filters = query_info.get("filters") or {}
-        n_connectors = len(filters.get("apps") or [])
-        n_kb = len([
-            x for x in (filters.get("kb") or [])
-            if x and x != "NO_KB_SELECTED"
-        ])
-        n_knowledge = n_connectors + n_kb
-        if n_knowledge:
-            lines.append(
-                f"Knowledge sources ({n_knowledge} total): "
-                f"{n_connectors} connector(s), {n_kb} KB collection(s)"
-            )
-        else:
-            lines.append("Knowledge sources: none configured")
-
-    lines.append("")
-
-    # ── Action tools ──────────────────────────────────────────────────────────
-    # Prefer toolsets (rich: fullName + description per tool).
-    # Fall back to the flat "tools" string list when toolsets are absent.
-    tools_data: list[dict] = []  # {"full_name": str, "desc": str}
-
-    toolsets: list[dict] = query_info.get("toolsets") or []
-    if toolsets:
-        for ts in toolsets:
-            for tool in ts.get("tools", []):
-                full_name = tool.get("fullName") or tool.get("name", "")
-                if not full_name:
-                    continue
-                desc = (tool.get("description") or "").strip()
-                tools_data.append({"full_name": full_name, "desc": desc})
-    else:
-        raw_tools: list = query_info.get("tools") or []
-        for t in raw_tools:
-            if isinstance(t, str) and t:
-                tools_data.append({"full_name": t, "desc": ""})
-
-    if tools_data:
-        lines.append(f"Action tools ({len(tools_data)} total):")
-        for td in tools_data:
-            entry = f"  • {td['full_name']}"
-            if td["desc"]:
-                entry += f" — {td['desc'][:100]}"
-            lines.append(entry)
-    else:
-        lines.append("Action tools: none configured")
-
-    return "\n".join(lines) + "\n\n", n_knowledge, indexed_connectors, kb_sources, tools_data
 
 async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
     """Get user document with validation"""
@@ -1103,19 +803,42 @@ def _filter_knowledge_by_enabled_sources(
     filters: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """
-    Filter agent_knowledge to only include entries whose connectorId is in
-    filters["apps"]. KB apps are now UUID-identified app connectors, so they
-    are handled by the same branch as all other connectors.
-    """
-    enabled_apps = set(filters.get("apps", []))
+    Filter agent_knowledge to only include entries enabled via filters.
 
-    if not enabled_apps:
+    KB collections and app connectors are both UUID-identified connectors
+    now, but the two enabled-sets are still tracked in separate filter
+    buckets upstream — a KB entry's connectorId is only ever placed in
+    filters["kb"], NEVER filters["apps"] (see the `!= "KB"` exclusion a
+    few lines above each call site). So each entry must be checked
+    against the bucket matching ITS OWN type, not filters["apps"] alone —
+    checking only "apps" silently dropped every KB entry whenever at
+    least one app connector was also configured.
+
+    When the caller explicitly supplies filter keys (even as empty lists),
+    empty means "nothing enabled" — return []. Pass-through (return the
+    full list unfiltered) only happens when NEITHER key is present at all.
+    """
+    apps_present = "apps" in filters
+    kb_present = "kb" in filters
+
+    if not apps_present and not kb_present:
         return agent_knowledge
 
-    return [
-        k for k in agent_knowledge
-        if isinstance(k, dict) and k.get("connectorId", "") in enabled_apps
-    ]
+    enabled_apps = set(filters.get("apps") or [])
+    enabled_kb = {
+        cid for cid in (filters.get("kb") or [])
+        if cid and cid != NO_KB_SELECTED_FILTER
+    }
+
+    result: list[dict[str, Any]] = []
+    for k in agent_knowledge:
+        if not isinstance(k, dict):
+            continue
+        is_kb = (k.get("type") or "").strip().upper() == "KB"
+        enabled_set = enabled_kb if is_kb else enabled_apps
+        if k.get("connectorId", "") in enabled_set:
+            result.append(k)
+    return result
 
 
 async def _create_toolset_edges(
@@ -1355,6 +1078,85 @@ async def _create_knowledge_edges(
     return created_knowledge
 
 
+def _parse_skills(raw_skills: list[Any]) -> list[str]:
+    """Parse the agent payload's `skills: [{name}] | [name, ...]` field into
+    a de-duplicated, order-preserving list of skill names.
+
+    Unlike `_parse_toolsets`/`_parse_knowledge_sources`, this never creates
+    anything: skill NODES already exist in `agentSkills` (owned by the
+    Skills management API — `api/routes/skills.py`), so agent create/update
+    only ever links to a skill that's already there. `_create_skill_edges`
+    below re-validates existence/ownership at write time regardless of
+    what the client claims here.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+    if not raw_skills or not isinstance(raw_skills, list):
+        return names
+    for entry in raw_skills:
+        name = entry.get("name") if isinstance(entry, dict) else entry if isinstance(entry, str) else None
+        if not isinstance(name, str):
+            continue
+        name = name.strip()
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
+
+
+async def _create_skill_edges(
+    agent_key: str,
+    skill_names: list[str],
+    org_id: str,
+    user_key: str,
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+    transaction: str | None = None,
+) -> list[str]:
+    """Create `agentHasSkill` edges from an agent to each assigned skill —
+    mirrors `_create_toolset_edges`/`_create_knowledge_edges` in shape, but
+    never creates a skill node: skills are owned by the Skills management
+    API, this only links to ones that already exist.
+
+    Defense in depth (mirrors `GraphSkillStore._is_visible`): a name is
+    only linked when it resolves to an existing skill in this org AND
+    (the acting user created it OR it's a `builtin`-sourced skill) — a
+    user can only assign their own skills (or org-wide builtins) to an
+    agent, never a co-worker's. Any name that doesn't resolve is logged
+    and skipped rather than failing the whole create/update — a stale
+    skill reference in the payload should never block agent creation.
+    """
+    if not skill_names:
+        return []
+
+    skills_collection = CollectionNames.AGENT_SKILLS.value
+    time = get_epoch_timestamp_in_ms()
+    edges: list[dict[str, Any]] = []
+    linked_names: list[str] = []
+
+    for name in skill_names:
+        skill_key = f"{org_id}_{name}"
+        skill_doc = await graph_provider.get_document(skill_key, skills_collection, transaction=transaction)
+        if not skill_doc or skill_doc.get("orgId") != org_id:
+            logger.warning(f"Skipping unknown skill '{name}' for agent {agent_key}")
+            continue
+        if skill_doc.get("source") != "builtin" and skill_doc.get("createdBy") != user_key:
+            logger.warning(f"Skipping skill '{name}' not owned by user {user_key} for agent {agent_key}")
+            continue
+        edges.append({
+            "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
+            "_to": f"{skills_collection}/{skill_key}",
+            "skillName": name,
+            "createdAtTimestamp": time,
+            "updatedAtTimestamp": time,
+        })
+        linked_names.append(name)
+
+    if edges:
+        await graph_provider.batch_create_edges(edges, CollectionNames.AGENT_HAS_SKILL.value, transaction=transaction)
+    return linked_names
+
+
 async def _enrich_agent_models(agent: dict[str, Any], config_service: ConfigurationService, logger: Logger) -> None:
     """Enrich agent models with full configurations from etcd"""
     model_entries = agent.get("models", [])
@@ -1438,33 +1240,11 @@ def _mark_deprecated_tools(agent: dict[str, Any], logger: Logger) -> None:
     fullName is no longer present in the in-memory tool registry
     (i.e. its @tool was removed from code since the agent was created/edited).
     Mutates `agent` in place.
+
+    NOTE: The old global tools registry has been removed. This function is
+    currently a no-op until a replacement registry is wired in.
     """
-    from app.agents.tools.registry import _global_tools_registry
-
-    known = {name.lower() for name in _global_tools_registry.list_tools()}
-    if not known:
-        # Registry empty -> startup discovery likely failed; do NOT mark
-        # every tool as deprecated and mislead the UI.
-        logger.warning("Skipping deprecated-tool annotation: tool registry is empty")
-        return
-
-    deprecated_count = 0
-    for toolset in agent.get("toolsets") or []:
-        if not toolset:
-            continue
-        for tool in toolset.get("tools") or []:
-            if not tool:
-                continue
-            full_name = (tool.get("fullName") or "").lower()
-            is_deprecated = bool(full_name) and full_name not in known
-            tool["deprecated"] = is_deprecated
-            if is_deprecated:
-                deprecated_count += 1
-
-    if deprecated_count:
-        logger.info(
-            f"Agent {agent.get('_key')}: marked {deprecated_count} tool(s) as deprecated"
-        )
+    return
 
 
 # ============================================================================
@@ -2025,9 +1805,10 @@ async def create_agent(request: Request) -> JSONResponse:
                 "At least one reasoning model is required. Please add a reasoning model to your configuration."
             )
 
-        # Parse toolsets and knowledge BEFORE starting transaction
+        # Parse toolsets, knowledge, and skills BEFORE starting transaction
         toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
         knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
+        skill_names = _parse_skills(body.get("skills", []))
         web_search_attachment = _parse_web_search(body.get("webSearch"))
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
@@ -2043,7 +1824,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "name": body["name"].strip(),
             "description": body.get("description", "").strip() or "AI agent for task automation",
             "startMessage": body.get("startMessage", "").strip() or "Hello! How can I help you today?",
-            "systemPrompt": body.get("systemPrompt", "").strip() or "You are a helpful assistant.",
+            "systemPrompt": body.get("systemPrompt", "").strip() or "You are a workplace productivity assistant. Help users with their connected work tools.",
             "instructions": body.get("instructions", "").strip() or None,
             "models": model_entries,
             "tags": body.get("tags", []) or [],
@@ -2061,12 +1842,13 @@ async def create_agent(request: Request) -> JSONResponse:
         created_toolsets = []
         failed_toolsets = []
         created_knowledge = []
+        linked_skills: list[str] = []
 
         try:
             # Start transaction for ALL agent creation operations
             graph_provider = services["graph_provider"]
             transaction_id = await graph_provider.begin_transaction(
-                read=[],
+                read=[CollectionNames.AGENT_SKILLS.value],
                 write=[
                     CollectionNames.AGENT_INSTANCES.value,
                     CollectionNames.PERMISSION.value,
@@ -2076,6 +1858,7 @@ async def create_agent(request: Request) -> JSONResponse:
                     CollectionNames.TOOLSET_HAS_TOOL.value,
                     CollectionNames.AGENT_KNOWLEDGE.value,
                     CollectionNames.AGENT_HAS_KNOWLEDGE.value,
+                    CollectionNames.AGENT_HAS_SKILL.value,
                 ]
             )
             logger.debug(f"Started transaction for agent creation: {agent_key}")
@@ -2294,6 +2077,16 @@ async def create_agent(request: Request) -> JSONResponse:
 
                 logger.debug(f"Created {len(created_knowledge)} knowledge source(s) for agent: {agent_key}")
 
+            # Step 5: Link assigned skills (within same transaction) — mirrors
+            # AGENT_HAS_TOOLSET/AGENT_HAS_KNOWLEDGE above but never creates a
+            # skill node, only edges to skills that already exist.
+            if skill_names:
+                linked_skills = await _create_skill_edges(
+                    agent_key, skill_names, org_key, user_key, graph_provider, logger,
+                    transaction=transaction_id,
+                )
+                logger.debug(f"Linked {len(linked_skills)} skill(s) for agent: {agent_key}")
+
             # Commit transaction - ALL or NOTHING
             await graph_provider.commit_transaction(transaction_id)
             transaction_id = None
@@ -2319,6 +2112,7 @@ async def create_agent(request: Request) -> JSONResponse:
             **agent,
             "toolsets": created_toolsets,
             "knowledge": created_knowledge,
+            "skills": [{"name": n} for n in linked_skills],
         }
         response_agent["webSearch"] = _format_web_search_for_response(
             response_agent.get("webSearch"),
@@ -2981,6 +2775,46 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             else:
                 logger.info(f"All knowledge sources removed for agent {agent_id}")
 
+        # Update skill assignments if provided in request (even if empty array - means unassign all).
+        # Unlike toolsets/knowledge, this never deletes NODES — only this agent's
+        # AGENT_HAS_SKILL edges — since skills are owned by the Skills
+        # management API, not by whichever agent happens to reference them.
+        if "skills" in body:
+            skill_names = _parse_skills(body.get("skills", []))
+            graph_provider = services["graph_provider"]
+            agent_full_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
+            transaction_id = None
+            try:
+                transaction_id = await graph_provider.begin_transaction(
+                    read=[CollectionNames.AGENT_SKILLS.value],
+                    write=[CollectionNames.AGENT_HAS_SKILL.value],
+                )
+                deleted_skill_edges = await graph_provider.delete_all_edges_for_node(
+                    agent_full_id, CollectionNames.AGENT_HAS_SKILL.value, transaction=transaction_id,
+                )
+                logger.debug(f"Removed {deleted_skill_edges} existing agent->skill edge(s) for agent {agent_id}")
+
+                linked_skills = (
+                    await _create_skill_edges(
+                        agent_id, skill_names, org_key, user_key, graph_provider, logger,
+                        transaction=transaction_id,
+                    )
+                    if skill_names else []
+                )
+                await graph_provider.commit_transaction(transaction_id)
+                transaction_id = None
+                logger.info(f"Linked {len(linked_skills)} skill(s) for agent {agent_id}")
+            except Exception as e:
+                if transaction_id:
+                    try:
+                        await graph_provider.rollback_transaction(transaction_id)
+                    except Exception as abort_error:
+                        logger.error(f"Failed to abort transaction: {abort_error}")
+                logger.error(f"Failed to update skill assignments for agent {agent_id}: {e}", exc_info=True)
+                raise HTTPException(
+                    status_code=500, detail=f"Failed to update skill assignments: {str(e)}",
+                ) from e
+
         return JSONResponse(
             status_code=200,
             content={"status": "success", "message": "Agent updated successfully"}
@@ -3463,6 +3297,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         body = _parse_request_body(await request.body())
         chat_query = ChatQuery(**body)
+        protocol = _resolve_protocol(chat_query, request)
+        logger.info("chat_stream: resolved protocol=%s (body.protocol=%r, query=%r)",
+                     protocol, chat_query.protocol, request.query_params.get("protocol"))
 
         record_event("agent_run", {
             "orgId": user_context.get("orgId"),
@@ -3473,7 +3310,17 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "streaming": True,
         })
 
-        _MAX_TOOLS = 128
+        # `chat_query.tools` is a FILTER over the agent's configured toolsets
+        # (see the `None` "use every configured toolset" branch further
+        # below), not a per-turn LLM-context budget — lazy tool disclosure
+        # (`lazy_tools_wiring.py`, default ON) means the number of schemas
+        # actually bound to the model no longer scales with this list's
+        # size. This is now purely a request-size sanity bound, raised well
+        # above any real explicit selection so it stops rejecting legitimate
+        # "everything selected" requests exploded client-side into one
+        # fullName per action (previously 128, which a handful of
+        # multi-action toolsets already exceeded — see chat-input.tsx).
+        _MAX_TOOLS = 1024
         if chat_query.tools is not None and len(chat_query.tools) > _MAX_TOOLS:
             raise HTTPException(
                 status_code=400,
@@ -3682,7 +3529,13 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 )
 
                 async def _toolset_config_error_stream() -> AsyncGenerator[str, None]:
-                    yield f"event: error\ndata: {json.dumps({'message': error_message, 'type': 'toolset_config_missing'})}\n\n"
+                    if protocol == "agui":
+                        from app.agents.agent_loop.protocol.agui import AGUIEventType, frame
+
+                        evt = frame(AGUIEventType.RUN_ERROR, message=error_message, code="toolset_config_missing")
+                        yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
+                    else:
+                        yield f"event: error\ndata: {json.dumps({'message': error_message, 'type': 'toolset_config_missing'})}\n\n"
 
                 return StreamingResponse(_toolset_config_error_stream(), media_type="text/event-stream")
 
@@ -3725,9 +3578,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 filters["kb"] = _extract_kb_app_ids(agent_knowledge)
             logger.info(f"Filters: {filters}")
 
-        # Apply NO_KB sentinel BEFORE filtering agent_knowledge. If we filter first while
-        # kb is still [], _filter_knowledge_by_enabled_sources early-returns the full list
-        # (both enabled sets empty); injecting kb afterward left knowledge out of sync with filters.
+        # Apply NO_KB sentinel BEFORE filtering agent_knowledge. When kb is
+        # explicitly [] (user deselected all KB sources at runtime), the sentinel
+        # ensures filters["kb"] is non-empty so downstream code can distinguish
+        # "nothing selected" from "key absent" without needing this function's
+        # "keys present but empty → return []" semantics to propagate further.
         if not filters.get("kb") and agent_id != "agentIdPlaceholder":
             filters["kb"] = [NO_KB_SELECTED_FILTER]
 
@@ -3773,6 +3628,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "currentTime": chat_query.currentTime,
             "toolsets": agent_toolsets,
             "knowledge": agent_knowledge,
+            "skills": [s["name"] for s in agent.get("skills", []) if isinstance(s, dict) and s.get("name")] or None,
             "connector_configs": connector_configs,
             "toolsetConfigs": toolset_configs,
             "conversationId": chat_query.conversationId,
@@ -3787,8 +3643,25 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         client_name = request.headers.get("client-name")
 
-        return StreamingResponse(
-            stream_response(
+        if _use_agent_loop():
+            generator = run_agent_loop_stream(
+                query_info,
+                enriched_user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+                model_name=model_name,
+                model_key=model_key,
+                is_multimodal_llm=is_multimodal_llm,
+                client_name=client_name,
+                protocol=protocol,
+            )
+        else:
+            generator = stream_response(
                 query_info,
                 enriched_user_info,
                 llm,
@@ -3802,7 +3675,10 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 modelKey=model_key,
                 is_multimodal_llm=is_multimodal_llm,
                 client_name=client_name,
-            ),
+            )
+
+        return StreamingResponse(
+            generator,
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

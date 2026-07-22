@@ -8,7 +8,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
-from app.agents.tools.decorator import tool
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -238,12 +239,16 @@ class GoogleMeet:
             return asyncio.run(coro)
 
     @tool(
-        app_name="meet",
-        tool_name="start_instant_meeting",
-        description="Start an instant Google Meet meeting",
-        args_schema=StartInstantMeetingInput,
+        path="/tools/meet/start_instant_meeting",
+        short_description="Start an instant Google Meet meeting",
+        description="Create a new instant Google Meet meeting space and return the join URL.",
+        parameters=[
+            ToolParameter(name="title", type=ParameterType.STRING, description="Meeting title/display name", required=False),
+            ToolParameter(name="description", type=ParameterType.STRING, description="Meeting description", required=False),
+        ],
+        tags=[Tag(key="category", value="meetings"), Tag(key="type", value="create")],
     )
-    def start_instant_meeting(self, title: Optional[str] = None, description: Optional[str] = None) -> tuple[bool, str]:
+    async def start_instant_meeting(self, title: Optional[str] = None, description: Optional[str] = None) -> tuple[bool, str]:
         """Start an instant Google Meet meeting"""
         """
         Args:
@@ -279,10 +284,19 @@ class GoogleMeet:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="meet",
-        tool_name="schedule_meeting_with_calendar",
-        description="Schedule a Google Meet meeting via Calendar",
-        args_schema=ScheduleMeetingWithCalendarInput,
+        path="/tools/meet/schedule_meeting_with_calendar",
+        short_description="Schedule a Google Meet meeting via Calendar",
+        description="Schedule a Google Meet meeting with calendar integration, including attendees and recurrence options.",
+        parameters=[
+            ToolParameter(name="title", type=ParameterType.STRING, description="Meeting title", required=True),
+            ToolParameter(name="start_time", type=ParameterType.STRING, description="Meeting start time (ISO format or timestamp)", required=True),
+            ToolParameter(name="duration_minutes", type=ParameterType.INTEGER, description="Meeting duration in minutes", required=True),
+            ToolParameter(name="attendees", type=ParameterType.ARRAY, description="List of attendee email addresses", required=False, items={"type": "string"}),
+            ToolParameter(name="description", type=ParameterType.STRING, description="Meeting description/agenda", required=False),
+            ToolParameter(name="timezone", type=ParameterType.STRING, description="Timezone for the meeting", required=False),
+            ToolParameter(name="recurrence", type=ParameterType.OBJECT, description="Recurrence pattern for recurring meetings", required=False),
+        ],
+        tags=[Tag(key="category", value="meetings"), Tag(key="type", value="create")],
     )
     def schedule_meeting_with_calendar(
         self,
@@ -372,10 +386,19 @@ class GoogleMeet:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="meet",
-        tool_name="find_available_time",
-        description="Find available time slots for a meeting",
-        args_schema=FindAvailableTimeInput,
+        path="/tools/meet/find_available_time",
+        short_description="Find available time slots for a meeting",
+        description="Find available time slots for a group of attendees by checking their calendar free/busy status.",
+        parameters=[
+            ToolParameter(name="attendees", type=ParameterType.ARRAY, description="List of attendee email addresses", required=True, items={"type": "string"}),
+            ToolParameter(name="duration_minutes", type=ParameterType.INTEGER, description="Meeting duration in minutes", required=True),
+            ToolParameter(name="date_range_start", type=ParameterType.STRING, description="Start of date range to search (ISO format)", required=True),
+            ToolParameter(name="date_range_end", type=ParameterType.STRING, description="End of date range to search (ISO format)", required=True),
+            ToolParameter(name="working_hours_start", type=ParameterType.STRING, description="Working hours start time (HH:MM format)", required=False),
+            ToolParameter(name="working_hours_end", type=ParameterType.STRING, description="Working hours end time (HH:MM format)", required=False),
+            ToolParameter(name="timezone", type=ParameterType.STRING, description="Timezone for the search", required=False),
+        ],
+        tags=[Tag(key="category", value="meetings"), Tag(key="type", value="read")],
     )
     def find_available_time(
         self,
@@ -495,10 +518,18 @@ class GoogleMeet:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="meet",
-        tool_name="update_scheduled_meeting",
-        description="Update a scheduled meeting",
-        args_schema=UpdateScheduledMeetingInput,
+        path="/tools/meet/update_scheduled_meeting",
+        short_description="Update a scheduled meeting",
+        description="Update an existing scheduled meeting's title, time, duration, attendees, or description.",
+        parameters=[
+            ToolParameter(name="event_id", type=ParameterType.STRING, description="Calendar event ID to update", required=True),
+            ToolParameter(name="title", type=ParameterType.STRING, description="New meeting title", required=False),
+            ToolParameter(name="start_time", type=ParameterType.STRING, description="New start time (ISO format)", required=False),
+            ToolParameter(name="duration_minutes", type=ParameterType.INTEGER, description="New duration in minutes", required=False),
+            ToolParameter(name="attendees", type=ParameterType.ARRAY, description="Updated list of attendee email addresses", required=False, items={"type": "string"}),
+            ToolParameter(name="description", type=ParameterType.STRING, description="New meeting description", required=False),
+        ],
+        tags=[Tag(key="category", value="meetings"), Tag(key="type", value="update")],
     )
     def update_scheduled_meeting(
         self,
@@ -584,12 +615,16 @@ class GoogleMeet:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="meet",
-        tool_name="cancel_meeting",
-        description="Cancel a scheduled meeting",
-        args_schema=CancelMeetingInput,
+        path="/tools/meet/cancel_meeting",
+        short_description="Cancel a scheduled meeting",
+        description="Cancel a scheduled meeting by deleting the calendar event, with optional attendee notification.",
+        parameters=[
+            ToolParameter(name="event_id", type=ParameterType.STRING, description="Calendar event ID to cancel", required=True),
+            ToolParameter(name="notify_attendees", type=ParameterType.BOOLEAN, description="Whether to notify attendees about cancellation", required=False),
+        ],
+        tags=[Tag(key="category", value="meetings"), Tag(key="type", value="delete")],
     )
-    def cancel_meeting(self, event_id: str, notify_attendees: Optional[bool] = None) -> tuple[bool, str]:
+    async def cancel_meeting(self, event_id: str, notify_attendees: Optional[bool] = None) -> tuple[bool, str]:
         """Cancel a scheduled meeting"""
         """
         Args:
@@ -626,12 +661,15 @@ class GoogleMeet:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="meet",
-        tool_name="get_meeting_details",
-        description="Get details of a scheduled meeting",
-        args_schema=GetMeetingDetailsInput,
+        path="/tools/meet/get_meeting_details",
+        short_description="Get details of a scheduled meeting",
+        description="Get details of a scheduled meeting including title, time, attendees, and Meet link.",
+        parameters=[
+            ToolParameter(name="event_id", type=ParameterType.STRING, description="Calendar event ID to get details for", required=True),
+        ],
+        tags=[Tag(key="category", value="meetings"), Tag(key="type", value="read")],
     )
-    def get_meeting_details(self, event_id: str) -> tuple[bool, str]:
+    async def get_meeting_details(self, event_id: str) -> tuple[bool, str]:
         """Get details of a scheduled meeting"""
         """
         Args:
@@ -675,10 +713,15 @@ class GoogleMeet:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="meet",
-        tool_name="list_upcoming_meetings",
-        description="List upcoming Google Meet meetings",
-        args_schema=ListUpcomingMeetingsInput,
+        path="/tools/meet/list_upcoming_meetings",
+        short_description="List upcoming Google Meet meetings",
+        description="List upcoming Google Meet meetings from the user's calendar within an optional time range.",
+        parameters=[
+            ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Maximum number of meetings to return", required=False),
+            ToolParameter(name="time_min", type=ParameterType.STRING, description="Lower bound for meeting start time (ISO format)", required=False),
+            ToolParameter(name="time_max", type=ParameterType.STRING, description="Upper bound for meeting start time (ISO format)", required=False),
+        ],
+        tags=[Tag(key="category", value="meetings"), Tag(key="type", value="read")],
     )
     def list_upcoming_meetings(
         self,
@@ -771,7 +814,7 @@ class GoogleMeet:
         normalized = raw_filter.strip()
 
         # Normalize quotes: replace smart quotes and single quotes with double quotes around values
-        normalized = normalized.replace(""", '"').replace(""", '"').replace("'", "'")
+        normalized = normalized.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'")
         normalized = re.sub(r"'([^']*)'", r'"\1"', normalized)
 
         # Field mappings (use word-boundaries where possible)
@@ -788,12 +831,15 @@ class GoogleMeet:
         return normalized
 
     @tool(
-        app_name="meet",
-        tool_name="get_meeting_space",
-        description="Get details about a meeting space",
-        args_schema=GetMeetingSpaceInput,
+        path="/tools/meet/get_meeting_space",
+        short_description="Get details about a meeting space",
+        description="Get details about a Google Meet meeting space by its resource name.",
+        parameters=[
+            ToolParameter(name="space_name", type=ParameterType.STRING, description="Resource name of the space", required=True),
+        ],
+        tags=[Tag(key="category", value="meetings"), Tag(key="type", value="read")],
     )
-    def get_meeting_space(self, space_name: str) -> tuple[bool, str]:
+    async def get_meeting_space(self, space_name: str) -> tuple[bool, str]:
         """Get details about a meeting space"""
         """
         Args:
@@ -812,12 +858,15 @@ class GoogleMeet:
 
 
     @tool(
-        app_name="meet",
-        tool_name="get_conference_record_details",
-        description="Get detailed information about a specific conference record",
-        args_schema=GetConferenceRecordDetailsInput,
+        path="/tools/meet/get_conference_record_details",
+        short_description="Get details about a conference record",
+        description="Get detailed information about a specific conference record including start/end times and space info.",
+        parameters=[
+            ToolParameter(name="conference_record", type=ParameterType.STRING, description="Conference record name", required=True),
+        ],
+        tags=[Tag(key="category", value="meetings"), Tag(key="type", value="read")],
     )
-    def get_conference_record_details(self, conference_record: str) -> tuple[bool, str]:
+    async def get_conference_record_details(self, conference_record: str) -> tuple[bool, str]:
         """Get detailed information about a specific conference record"""
         """
         Args:
@@ -835,10 +884,17 @@ class GoogleMeet:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="meet",
-        tool_name="get_conference_participants",
-        description="Get participants from a conference record",
-        args_schema=GetConferenceParticipantsInput,
+        path="/tools/meet/get_conference_participants",
+        short_description="Get participants from a conference record",
+        description="Get participants in a conference record with optional filtering for active participants.",
+        parameters=[
+            ToolParameter(name="conference_record", type=ParameterType.STRING, description="Conference record name", required=True),
+            ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Maximum number of participants to return", required=False),
+            ToolParameter(name="page_token", type=ParameterType.STRING, description="Page token for pagination", required=False),
+            ToolParameter(name="filter", type=ParameterType.STRING, description="Filter condition for participants", required=False),
+            ToolParameter(name="include_active_only", type=ParameterType.BOOLEAN, description="Include only currently active participants", required=False),
+        ],
+        tags=[Tag(key="category", value="meetings"), Tag(key="type", value="read")],
     )
     def get_conference_participants(
         self,
@@ -890,539 +946,3 @@ class GoogleMeet:
         except Exception as e:
             logger.error(f"Failed to get conference participants: {e}")
             return False, json.dumps({"error": str(e)})
-
-    # @tool(
-    #     app_name="meet",
-    #     tool_name="get_conference_recordings",
-    #     description="Get recordings from a conference record",
-    #     args_schema=GetConferenceRecordingsInput,
-    # )
-    # def get_conference_recordings(
-    #     self,
-    #     conference_record: str,
-    #     page_size: Optional[int] = None,
-    #     page_token: Optional[str] = None
-    # ) -> tuple[bool, str]:
-    #     """Get recordings from a conference record"""
-    #     """
-    #     Args:
-    #         conference_record: Conference record name
-    #         page_size: Maximum number of recordings
-    #         page_token: Page token for pagination
-    #     Returns:
-    #         tuple[bool, str]: True if successful, False otherwise
-    #     """
-    #     try:
-    #         # Use GoogleMeetDataSource method
-    #         recordings = self._run_async(self.client.conference_records_recordings_list(
-    #             parent=conference_record,
-    #             pageSize=page_size,
-    #             pageToken=page_token
-    #         ))
-
-    #         return True, json.dumps(recordings)
-    #     except Exception as e:
-    #         logger.error(f"Failed to get conference recordings: {e}")
-    #         return False, json.dumps({"error": str(e)})
-
-    # @tool(
-    #     app_name="meet",
-    #     tool_name="get_conference_transcripts",
-    #     description="Get transcripts from a conference record with optional entries",
-    #     args_schema=GetConferenceTranscriptsInput,
-    # )
-    # def get_conference_transcripts(
-    #     self,
-    #     conference_record: str,
-    #     page_size: Optional[int] = None,
-    #     page_token: Optional[str] = None,
-    #     include_entries: Optional[bool] = None
-    # ) -> tuple[bool, str]:
-    #     """Get transcripts from a conference record with optional entries"""
-    #     """
-    #     Args:
-    #         conference_record: Conference record name
-    #         page_size: Maximum number of transcripts
-    #         page_token: Page token for pagination
-    #         include_entries: Include transcript entries for each transcript
-    #     Returns:
-    #         tuple[bool, str]: True if successful, False otherwise
-    #     """
-    #     try:
-    #         # Use GoogleMeetDataSource method
-    #         transcripts = self._run_async(self.client.conference_records_transcripts_list(
-    #             parent=conference_record,
-    #             pageSize=page_size,
-    #             pageToken=page_token
-    #         ))
-
-    #         enhanced_response = {
-    #             "transcripts": transcripts.get("transcripts", []),
-    #             "next_page_token": transcripts.get("nextPageToken"),
-    #             "total_count": len(transcripts.get("transcripts", []))
-    #         }
-
-    #         # Optionally include transcript entries
-    #         if include_entries:
-    #             transcript_entries = {}
-    #             for transcript in transcripts.get("transcripts", []):
-    #                 transcript_name = transcript.get("name", "")
-    #                 if transcript_name:
-    #                     try:
-    #                         entries = self._run_async(self.client.conference_records_transcripts_entries_list(
-    #                             parent=transcript_name,
-    #                             pageSize=100  # Get all entries for each transcript
-    #                         ))
-    #                         transcript_entries[transcript_name] = entries.get("transcriptEntries", [])
-    #                     except Exception as e:
-    #                         logger.warning(f"Failed to get entries for transcript {transcript_name}: {e}")
-    #                         transcript_entries[transcript_name] = []
-
-    #             enhanced_response["transcript_entries"] = transcript_entries
-
-    #         return True, json.dumps(enhanced_response)
-    #     except Exception as e:
-    #         logger.error(f"Failed to get conference transcripts: {e}")
-    #         return False, json.dumps({"error": str(e)})
-
-    # @tool(
-    #     app_name="meet",
-    #     tool_name="get_transcript_entries",
-    #     description="Get transcript entries from a specific transcript",
-    #     args_schema=GetTranscriptEntriesInput,
-    # )
-    # def get_transcript_entries(
-    #     self,
-    #     transcript_name: str,
-    #     page_size: Optional[int] = None,
-    #     page_token: Optional[str] = None
-    # ) -> tuple[bool, str]:
-    #     """Get transcript entries from a specific transcript"""
-    #     """
-    #     Args:
-    #         transcript_name: Transcript name
-    #         page_size: Maximum number of entries
-    #         page_token: Page token for pagination
-    #     Returns:
-    #         tuple[bool, str]: True if successful, False otherwise
-    #     """
-    #     try:
-    #         # Use GoogleMeetDataSource method
-    #         entries = self._run_async(self.client.conference_records_transcripts_entries_list(
-    #             parent=transcript_name,
-    #             pageSize=page_size,
-    #             pageToken=page_token
-    #         ))
-
-    #         return True, json.dumps(entries)
-    #     except Exception as e:
-    #         logger.error(f"Failed to get transcript entries: {e}")
-    #         return False, json.dumps({"error": str(e)})
-
-    # @tool(
-    #     app_name="meet",
-    #     tool_name="get_meeting_summary",
-    #     description="Get a comprehensive summary of a meeting including participants, recordings, and transcripts",
-    #     args_schema=GetMeetingSummaryInput,
-    # )
-    # def get_meeting_summary(
-    #     self,
-    #     conference_record: str,
-    #     include_participants: Optional[bool] = None,
-    #     include_recordings: Optional[bool] = None,
-    #     include_transcripts: Optional[bool] = None
-    # ) -> tuple[bool, str]:
-    #     """Get comprehensive meeting summary including participants, recordings, and transcripts"""
-    #     """
-    #     Args:
-    #         conference_record: Conference record name
-    #         include_participants: Include participant information
-    #         include_recordings: Include recording information
-    #         include_transcripts: Include transcript information
-    #     Returns:
-    #         tuple[bool, str]: True if successful, False otherwise
-    #     """
-    #     try:
-    #         # Get conference record details
-    #         record = self._run_async(self.client.conference_records_get(name=conference_record))
-
-    #         summary = {
-    #             "conference_record": record,
-    #             "meeting_info": {
-    #                 "name": record.get("name"),
-    #                 "start_time": record.get("startTime"),
-    #                 "end_time": record.get("endTime"),
-    #                 "space": record.get("space", {}),
-    #                 "duration_minutes": None
-    #             }
-    #         }
-
-    #         # Calculate duration if both start and end times are available
-    #         if record.get("startTime") and record.get("endTime"):
-    #             from datetime import datetime
-    #             start_time = datetime.fromisoformat(record["startTime"].replace('Z', '+00:00'))
-    #             end_time = datetime.fromisoformat(record["endTime"].replace('Z', '+00:00'))
-    #             duration = end_time - start_time
-    #             summary["meeting_info"]["duration_minutes"] = int(duration.total_seconds() / 60)
-
-    #         # Include participants if requested
-    #         if include_participants:
-    #             try:
-    #                 participants = self._run_async(self.client.conference_records_participants_list(
-    #                     parent=conference_record,
-    #                     pageSize=250
-    #                 ))
-    #                 summary["participants"] = participants.get("participants", [])
-    #                 summary["participant_count"] = len(participants.get("participants", []))
-    #             except Exception as e:
-    #                 logger.warning(f"Failed to get participants: {e}")
-    #                 summary["participants_error"] = str(e)
-
-    #         # Include recordings if requested
-    #         if include_recordings:
-    #             try:
-    #                 recordings = self._run_async(self.client.conference_records_recordings_list(
-    #                     parent=conference_record,
-    #                     pageSize=100
-    #                 ))
-    #                 summary["recordings"] = recordings.get("recordings", [])
-    #                 summary["recording_count"] = len(recordings.get("recordings", []))
-    #             except Exception as e:
-    #                 logger.warning(f"Failed to get recordings: {e}")
-    #                 summary["recordings_error"] = str(e)
-
-    #         # Include transcripts if requested
-    #         if include_transcripts:
-    #             try:
-    #                 transcripts = self._run_async(self.client.conference_records_transcripts_list(
-    #                     parent=conference_record,
-    #                     pageSize=100
-    #                 ))
-    #                 summary["transcripts"] = transcripts.get("transcripts", [])
-    #                 summary["transcript_count"] = len(transcripts.get("transcripts", []))
-    #             except Exception as e:
-    #                 logger.warning(f"Failed to get transcripts: {e}")
-    #                 summary["transcripts_error"] = str(e)
-
-    #         return True, json.dumps(summary)
-    #     except Exception as e:
-    #         logger.error(f"Failed to get meeting summary: {e}")
-    #         return False, json.dumps({"error": str(e)})
-
-
-
-    # @tool(
-    #     app_name="meet",
-    #     tool_name="join_meeting_by_code",
-    #     description="Join a Google Meet meeting by code",
-    #     args_schema=JoinMeetingByCodeInput,
-    # )
-    # def join_meeting_by_code(self, meeting_code: str) -> tuple[bool, str]:
-    #     """Join an existing Google Meet by meeting code"""
-    #     """
-    #     Args:
-    #         meeting_code: Meeting code to join
-    #     Returns:
-    #         tuple[bool, str]: True if successful, False otherwise
-    #     """
-    #     try:
-    #         # Clean the meeting code (remove spaces, convert to lowercase)
-    #         clean_code = meeting_code.replace(" ", "").replace("-", "").lower()
-
-    #         # Construct the join URL
-    #         join_url = f"https://meet.google.com/{clean_code}"
-
-    #         # Try to get space info if possible
-    #         try:
-    #             space = self._run_async(self.client.spaces_get(name=f"spaces/{clean_code}"))
-    #             result = {
-    #                 "meeting_code": clean_code,
-    #                 "join_url": join_url,
-    #                 "space_info": space,
-    #                 "message": f"Join link generated for meeting {clean_code}"
-    #             }
-    #         except Exception:
-    #             # If we can't get space info, just return the join URL
-    #             result = {
-    #                 "meeting_code": clean_code,
-    #                 "join_url": join_url,
-    #                 "message": f"Join link generated for meeting {clean_code}"
-    #             }
-
-    #         return True, json.dumps(result)
-
-    #     except Exception as e:
-    #         logger.error(f"Failed to generate join link for meeting {meeting_code}: {e}")
-    #         return False, json.dumps({"error": str(e)})
-
-
-
-    # @tool(
-    #     app_name="meet",
-    #     tool_name="create_meeting_space",
-    #     description="Create a new Google Meet meeting space",
-    #     args_schema=CreateMeetingSpaceInput,
-    # )
-    # def create_meeting_space(
-    #     self,
-    #     title: Optional[str] = None,
-    #     description: Optional[str] = None,
-    #     start_time: Optional[str] = None,
-    #     duration_minutes: Optional[int] = None,
-    #     attendees: Optional[list] = None,
-    #     timezone: str = "UTC",
-    #     create_calendar_event: bool = True,
-    #     space_config: Optional[dict] = None
-    # ) -> tuple[bool, str]:
-    #     """Create a new Google Meet space with optional scheduling and calendar integration"""
-    #     """
-    #     Args:
-    #         title: Meeting title/display name
-    #         description: Meeting description
-    #         start_time: Meeting start time (ISO format or timestamp)
-    #         duration_minutes: Meeting duration in minutes
-    #         attendees: List of attendee email addresses
-    #         timezone: Timezone for the meeting
-    #         create_calendar_event: Whether to create a corresponding calendar event
-    #         space_config: Additional space configuration for Meet API
-    #     Returns:
-    #         tuple[bool, str]: True if successful, False otherwise
-    #     """
-    #     try:
-    #         # Create the Meet space first
-    #         space = self._run_async(self.client.spaces_create(body=space_config))
-    #         space_name = space.get("name", "")
-    #         meeting_code = space.get("meetingCode", "")
-    #         meeting_uri = space.get("meetingUri", "")
-
-    #         result = {
-    #             "space_name": space_name,
-    #             "meeting_code": meeting_code,
-    #             "meeting_uri": meeting_uri,
-    #             "space_config": space.get("spaceConfig", {}),
-    #             "message": "Meeting space created successfully"
-    #         }
-
-    #         # Note: Google Meet Spaces API does not support setting displayName/description
-    #         # Title and description are handled through calendar events when scheduling meetings
-    #         if title or description:
-    #             result["note"] = "Title and description are not supported for meeting spaces. Use schedule_meeting_with_calendar for meetings with custom titles."
-
-    #         # Create calendar event if requested and timing info provided
-    #         if create_calendar_event and start_time and duration_minutes:
-    #             try:
-    #                 # Import calendar client if available
-    #                 from app.sources.external.google.calendar.gcalendar import (
-    #                     GoogleCalendarDataSource,
-    #                 )
-    #                 from app.utils.time_conversion import prepare_iso_timestamps
-
-    #                 # Calculate end time
-    #                 start_time_iso, _ = prepare_iso_timestamps(start_time, "")
-    #                 from datetime import datetime, timedelta
-    #                 start_dt = datetime.fromisoformat(start_time_iso.replace('Z', '+00:00'))
-    #                 end_dt = start_dt + timedelta(minutes=duration_minutes)
-    #                 end_time_iso = end_dt.isoformat().replace('+00:00', 'Z')
-
-    #                 # Create calendar event with Meet integration
-    #                 calendar_client = GoogleCalendarDataSource(self.google_client)
-    #                 event_config = {
-    #                     "summary": title or f"Google Meet - {meeting_code}",
-    #                     "description": description or f"Join the meeting: {meeting_uri}",
-    #                     "start": {
-    #                         "dateTime": start_time_iso,
-    #                         "timeZone": timezone
-    #                     },
-    #                     "end": {
-    #                         "dateTime": end_time_iso,
-    #                         "timeZone": timezone
-    #                     },
-    #                     "attendees": [{"email": email} for email in attendees] if attendees else [],
-    #                     "conferenceData": {
-    #                         "createRequest": {
-    #                             "requestId": f"meet-{meeting_code}",
-    #                             "conferenceSolutionKey": {
-    #                                 "type": "hangoutsMeet"
-    #                             }
-    #                         }
-    #                     }
-    #                 }
-
-    #                 calendar_event = self._run_async(calendar_client.events_insert(
-    #                     calendarId="primary",
-    #                     body=event_config
-    #                 ))
-
-    #                 result["calendar_event"] = {
-    #                     "event_id": calendar_event.get("id"),
-    #                     "event_link": calendar_event.get("htmlLink"),
-    #                     "meet_link": calendar_event.get("hangoutLink")
-    #                 }
-    #                 result["message"] += " and calendar event created"
-
-    #             except Exception as e:
-    #                 logger.warning(f"Failed to create calendar event: {e}")
-    #                 result["warning"] = f"Meet space created but calendar event failed: {str(e)}"
-
-    #         return True, json.dumps(result)
-
-    #     except Exception as e:
-    #         logger.error(f"Failed to create meeting space: {e}")
-    #         return False, json.dumps({"error": str(e)})
-
-    # @tool(
-    #     app_name="meet",
-    #     tool_name="update_meeting_space",
-    #     description="Update an existing Google Meet space",
-    #     args_schema=UpdateMeetingSpaceInput,
-    # )
-    # def update_meeting_space(
-    #     self,
-    #     space_name: str,
-    #     title: Optional[str] = None,
-    #     description: Optional[str] = None,
-    #     space_config: Optional[dict] = None
-    # ) -> tuple[bool, str]:
-    #     """Update an existing Google Meet space"""
-    #     """
-    #     Args:
-    #         space_name: Resource name of the space to update
-    #         title: New meeting title/display name (not supported by API - will be ignored)
-    #         description: New meeting description (not supported by API - will be ignored)
-    #         space_config: Additional space configuration updates
-    #     Returns:
-    #         tuple[bool, str]: True if successful, False otherwise
-    #     """
-    #     try:
-    #         # Note: Google Meet Spaces API does not support displayName/description fields
-    #         if title or description:
-    #             return False, json.dumps({
-    #                 "error": "Google Meet Spaces API does not support updating title/description. Use schedule_meeting_with_calendar to create meetings with custom titles.",
-    #                 "note": "Only spaceConfig updates are supported for Meet spaces"
-    #             })
-
-    #         if not space_config:
-    #             return False, json.dumps({"error": "No updates provided. Only space_config updates are supported."})
-
-    #         # Use GoogleMeetDataSource method - only update spaceConfig
-    #         updated_space = self._run_async(self.client.spaces_patch(
-    #             name=space_name,
-    #             updateMask="spaceConfig",
-    #             body={"spaceConfig": space_config}
-    #         ))
-
-    #         return True, json.dumps({
-    #             "space_name": space_name,
-    #             "updated_space": updated_space,
-    #             "message": "Meeting space configuration updated successfully"
-    #         })
-    #     except Exception as e:
-    #         logger.error(f"Failed to update meeting space: {e}")
-    #         return False, json.dumps({"error": str(e)})
-
-
-
-    # @tool(
-    #     app_name="meet",
-    #     tool_name="end_active_conference",
-    #     description="End an active conference in a meeting space",
-    #     args_schema=EndActiveConferenceInput,
-    # )
-    # def end_active_conference(self, space_name: str) -> tuple[bool, str]:
-    #     """End an active conference in a meeting space"""
-    #     """
-    #     Args:
-    #         space_name: Resource name of the space
-    #     Returns:
-    #         tuple[bool, str]: True if successful, False otherwise
-    #     """
-    #     try:
-    #         # Use GoogleMeetDataSource method
-    #         result = self._run_async(self.client.spaces_end_active_conference(name=space_name))
-
-    #         return True, json.dumps({
-    #             "message": f"Active conference ended for space {space_name}",
-    #             "result": result
-    #         })
-    #     except Exception as e:
-    #         logger.error(f"Failed to end active conference: {e}")
-    #         return False, json.dumps({"error": str(e)})
-
-
-
-
-    # @tool(
-    #     app_name="meet",
-    #     tool_name="get_conference_records",
-    #     description="Get list of conference records with enhanced filtering options",
-    #     args_schema=GetConferenceRecordsInput,
-    # )
-    # def get_conference_records(
-    #     self,
-    #     page_size: Optional[int] = None,
-    #     page_token: Optional[str] = None,
-    #     filter: Optional[str] = None,
-    #     start_time_from: Optional[str] = None,
-    #     start_time_to: Optional[str] = None,
-    #     meeting_code: Optional[str] = None,
-    #     space_name: Optional[str] = None,
-    #     include_active_only: Optional[bool] = None
-    # ) -> tuple[bool, str]:
-    #     """Get list of conference records with enhanced filtering options"""
-    #     """
-    #     Args:
-    #         page_size: Maximum number of records to return
-    #         page_token: Page token for pagination
-    #         filter: Filter condition
-    #         start_time_from: Lower bound for start_time (inclusive)
-    #         start_time_to: Upper bound for start_time (inclusive)
-    #         meeting_code: Filter by specific meeting code
-    #         space_name: Filter by specific space name
-    #         include_active_only: Include only active conferences
-    #     Returns:
-    #         tuple[bool, str]: True if successful, False otherwise
-    #     """
-    #     try:
-    #         # Build or normalize filter to match Google Meet API expectations
-    #         effective_filter = None
-    #         if filter:
-    #             effective_filter = self._normalize_meet_filter(filter)
-    #         else:
-    #             # Construct filter from helper parameters if provided
-    #             conditions = []
-    #             if start_time_from:
-    #                 conditions.append(f'start_time>="{start_time_from}"')
-    #             if start_time_to:
-    #                 conditions.append(f'start_time<="{start_time_to}"')
-    #             if meeting_code:
-    #                 conditions.append(f'space.meeting_code="{meeting_code}"')
-    #             if space_name:
-    #                 conditions.append(f'space.name="{space_name}"')
-    #             if include_active_only:
-    #                 conditions.append('end_time IS NULL')
-    #             if conditions:
-    #                 effective_filter = " AND ".join(conditions)
-
-    #         # Use GoogleMeetDataSource method
-    #         records = self._run_async(self.client.conference_records_list(
-    #             pageSize=page_size,
-    #             pageToken=page_token,
-    #             filter=effective_filter
-    #         ))
-
-    #         # Enhance response with summary information
-    #         enhanced_response = {
-    #             "conference_records": records.get("conferenceRecords", []),
-    #             "next_page_token": records.get("nextPageToken"),
-    #             "total_count": len(records.get("conferenceRecords", [])),
-    #             "filter_applied": effective_filter,
-    #             "summary": {
-    #                 "active_conferences": len([r for r in records.get("conferenceRecords", []) if not r.get("endTime")]),
-    #                 "completed_conferences": len([r for r in records.get("conferenceRecords", []) if r.get("endTime")])
-    #             }
-    #         }
-
-    #         return True, json.dumps(enhanced_response)
-    #     except Exception as e:
-    #         logger.error(f"Failed to get conference records: {e}")
-    #         return False, json.dumps({"error": str(e)})

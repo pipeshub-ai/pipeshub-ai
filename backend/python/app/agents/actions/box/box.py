@@ -9,9 +9,8 @@ from typing import Coroutine, List, Optional, Tuple
 from box_sdk_gen.managers.files import UpdateFileByIdParent
 from box_sdk_gen.managers.uploads import UploadFileAttributes
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -174,9 +173,9 @@ class Box:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="box",
-        tool_name="get_file",
-        description="Get file information by ID from Box",
+        path="/tools/box/get_file",
+        short_description="Get file information from Box",
+        description="Get file information by ID from Box.",
         parameters=[
             ToolParameter(
                 name="file_id",
@@ -184,9 +183,9 @@ class Box:
                 description="The ID of the file to retrieve"
             )
         ],
-        returns="JSON with file data"
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
     )
-    def get_file(self, file_id: str) -> Tuple[bool, str]:
+    async def get_file(self, file_id: str) -> Tuple[bool, str]:
         """Get file information by ID from Box."""
         try:
             response = self._run_async(
@@ -198,9 +197,9 @@ class Box:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="box",
-        tool_name="update_file",
-        description="Update file information in Box",
+        path="/tools/box/update_file",
+        short_description="Update file metadata in Box",
+        description="Update file information in Box, including name and parent folder.",
         parameters=[
             ToolParameter(
                 name="file_id",
@@ -220,9 +219,9 @@ class Box:
                 required=False
             )
         ],
-        returns="JSON with file update result"
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="update")],
     )
-    def update_file(
+    async def update_file(
         self,
         file_id: str,
         name: Optional[str] = None,
@@ -248,9 +247,9 @@ class Box:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="box",
-        tool_name="delete_file",
-        description="Delete a file from Box",
+        path="/tools/box/delete_file",
+        short_description="Delete a file from Box",
+        description="Delete a file from Box by file ID.",
         parameters=[
             ToolParameter(
                 name="file_id",
@@ -258,9 +257,9 @@ class Box:
                 description="The ID of the file to delete"
             )
         ],
-        returns="JSON with deletion result"
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="delete")],
     )
-    def delete_file(self, file_id: str) -> Tuple[bool, str]:
+    async def delete_file(self, file_id: str) -> Tuple[bool, str]:
         """Delete a file from Box."""
         try:
             response = self._run_async(
@@ -272,9 +271,9 @@ class Box:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="box",
-        tool_name="upload_file",
-        description="Upload a file to Box",
+        path="/tools/box/upload_file",
+        short_description="Upload a file to Box",
+        description="Upload a file to Box with base64-encoded content into a specified folder.",
         parameters=[
             ToolParameter(
                 name="file_name",
@@ -298,9 +297,9 @@ class Box:
                 required=False
             )
         ],
-        returns="JSON with upload result"
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="write")],
     )
-    def upload_file(
+    async def upload_file(
         self,
         file_name: str,
         parent_folder_id: str,
@@ -339,9 +338,9 @@ class Box:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="box",
-        tool_name="search_content",
-        description="Search for content in Box",
+        path="/tools/box/search_content",
+        short_description="Search for content in Box",
+        description="Search for files and folders in Box with optional filtering by scope, extensions, content types, and ancestor folders.",
         parameters=[
             ToolParameter(
                 name="query",
@@ -385,9 +384,9 @@ class Box:
                 required=False
             )
         ],
-        returns="JSON with search results"
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
     )
-    def search_content(
+    async def search_content(
         self,
         query: str,
         limit: Optional[int] = None,

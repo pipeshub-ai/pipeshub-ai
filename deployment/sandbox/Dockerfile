@@ -47,19 +47,35 @@ RUN uv pip install --system --no-cache \
     xlsxwriter \
     jinja2
 
+# Directories the sandbox user needs to write into at runtime.
+# /src   — container cwd; programs write output files here
+# /output — $OUTPUT_DIR; alternate artifact output path
+# /install — npm install --prefix target for TypeScript packages
+RUN mkdir -p /src /output /install && chmod 777 /src /output /install
+
 # Non-root user
 RUN useradd --create-home --shell /bin/bash sandbox
 USER sandbox
-
-# Pre-install Node packages in the sandbox user's home
 WORKDIR /home/sandbox
-RUN npm init -y 2>/dev/null && \
+
+# Pre-install Node packages in the sandbox user's home. The office-document
+# creation libraries (pptxgenjs/docx/exceljs/pdfkit/pdf-lib) are deliberately
+# pre-installed: the builtin skill packs steer agents to Node for document
+# CREATION, and if only the Python equivalents are pre-installed the model
+# takes the zero-friction path (python-pptx et al.) despite the guidance.
+RUN npm init -y && \
     npm install --save \
         fs-extra \
         sharp \
         @types/node \
         csv-stringify \
         json2csv \
+        papaparse \
+        pptxgenjs \
+        docx \
+        exceljs \
+        pdfkit \
+        pdf-lib \
     && npm cache clean --force
 
 WORKDIR /src

@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from app.utils.streaming import (
     aiter_llm_stream,
     cleanup_content,
+    finalize_agent_answer,
     stream_content,
 )
 
@@ -1963,3 +1964,94 @@ class TestOpikConfigureImportFailure:
         ):
             sys.modules.pop(key, None)
         importlib.reload(sm)
+
+
+# ---------------------------------------------------------------------------
+# finalize_agent_answer — deterministic, no-LLM finalization used by
+# agent-loop's AnswerFinalizer (app/agents/agent_loop/respond.py)
+# ---------------------------------------------------------------------------
+
+
+class TestFinalizeAgentAnswer:
+    @pytest.mark.asyncio
+    async def test_plain_answer_passes_through_with_no_citations(self):
+        normalized, citations, confidence = await finalize_agent_answer(
+            "The answer is 42.", final_results=[], records=[],
+        )
+
+        assert normalized == "The answer is 42."
+        assert citations == []
+        assert confidence is None
+
+    @pytest.mark.asyncio
+    async def test_strips_trailing_confidence_marker(self):
+        answer = "The answer is 42.\n---\nConfidence: High"
+
+        normalized, citations, confidence = await finalize_agent_answer(
+            answer, final_results=[], records=[],
+        )
+
+        assert normalized == "The answer is 42."
+        assert confidence == "High"
+
+    @pytest.mark.asyncio
+    async def test_web_citation_resolved_against_web_records(self):
+        answer = "Revenue grew 29% [source](https://ref1.xyz)."
+        ref_to_url = {"ref1": "https://example.com/report#:~:text=grew"}
+        web_records = [{
+            "url": "https://example.com/report#:~:text=grew",
+            "content": "Revenue grew 29% year over year.",
+            "org_id": "org-1",
+        }]
+
+        normalized, citations, confidence = await finalize_agent_answer(
+            answer, final_results=[], records=[],
+            ref_to_url=ref_to_url, web_records=web_records,
+        )
+
+        assert "[1](https://example.com/report#:~:text=grew)" in normalized
+        assert len(citations) == 1
+        assert citations[0]["citationType"] == "web|url"
+
+    @pytest.mark.asyncio
+    async def test_no_conversation_id_skips_task_draining(self):
+        with patch(
+            "app.utils.conversation_tasks.await_and_collect_results",
+            new_callable=AsyncMock,
+        ) as mock_await:
+            normalized, _citations, _confidence = await finalize_agent_answer(
+                "Done.", final_results=[], records=[], conversation_id=None,
+            )
+
+        mock_await.assert_not_awaited()
+        assert normalized == "Done."
+
+    @pytest.mark.asyncio
+    async def test_conversation_tasks_appended_as_markers(self):
+        task_results = [{"fileName": "report.csv", "signedUrl": "https://example.com/report.csv"}]
+
+        with patch(
+            "app.utils.conversation_tasks.await_and_collect_results",
+            new_callable=AsyncMock,
+            return_value=task_results,
+        ):
+            normalized, _citations, _confidence = await finalize_agent_answer(
+                "Here is your file.", final_results=[], records=[],
+                conversation_id="conv-1",
+            )
+
+        assert "::download_conversation_task[report.csv](https://example.com/report.csv)" in normalized
+
+    @pytest.mark.asyncio
+    async def test_no_task_results_leaves_answer_unmodified(self):
+        with patch(
+            "app.utils.conversation_tasks.await_and_collect_results",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            normalized, _citations, _confidence = await finalize_agent_answer(
+                "No files here.", final_results=[], records=[],
+                conversation_id="conv-1",
+            )
+
+        assert normalized == "No files here."

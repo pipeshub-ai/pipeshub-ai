@@ -8,16 +8,17 @@ Internal Knowledge Retrieval Tool
 
 import json
 import logging
-from typing import Any
+import re
+from typing import TYPE_CHECKING, Any
 
 from langgraph.types import StreamWriter
 from pydantic import BaseModel, Field
 
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import as_text, bullet_list, parse_json_maybe
 from app.connectors.core.registry.auth_builder import AuthBuilder
-from app.connectors.core.registry.tool_builder import ToolsetBuilder
+from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
@@ -26,11 +27,80 @@ from app.utils.chat_helpers import (
     get_flattened_results,
 )
 
+if TYPE_CHECKING:
+    from app.agent_loop_lib.core.types import ToolResult
+
 logger = logging.getLogger(__name__)
 
 # Cap the divisor to prevent excessively small per-source limits when many
 # knowledge sources are configured simultaneously.
 _MAX_RETRIEVAL_SOURCES_DIVISOR = 5
+
+
+# ---------------------------------------------------------------------------
+# Agent-activity summaries for search_internal_knowledge — declared here
+# (colocated with the tool) rather than in a central registry, per `@tool`'s
+# `args_summary`/`result_summary` params (see `agent_loop_lib/tools/
+# decorators.py`). This tool returns a bare `str` rather than the
+# `(bool, str)` tuple most connector tools use, so `ToolOutput.success` is
+# always True — errors are only visible as `{"status": "error", ...}` JSON
+# in the content, which is why the result formatter parses that instead of
+# trusting `result.is_error`.
+# ---------------------------------------------------------------------------
+
+# `Name`/`Web URL` are fixed-width-padded labels rendered by
+# `Record.to_llm_context()` (`app/models/entities.py`) inside every
+# `<record>...</record>` block this tool returns. A tolerant, line-based
+# parse (vs. a full XML parser) because these blocks are LLM-facing text,
+# not strict markup, and any future field reordering/addition must not
+# break this into raising.
+_RECORD_NAME_RE = re.compile(r"^Name\s*:\s*(.+)$", re.MULTILINE)
+# See the `summary = f"Retrieved {N} knowledge blocks from {M} documents.\n\n"`
+# line below, prefixed to every successful result.
+_RETRIEVED_COUNT_RE = re.compile(r"^Retrieved (\d+) knowledge blocks? from (\d+) documents?", re.IGNORECASE)
+
+
+def _extract_record_names(text: str) -> list[str]:
+    names = []
+    for block in text.split("<record>")[1:]:
+        match = _RECORD_NAME_RE.search(block)
+        if match is not None:
+            names.append(match.group(1).strip())
+    return names
+
+
+def _search_internal_knowledge_args_summary(args: dict[str, Any]) -> str | None:
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return None
+    summary = f'Searched for "{query.strip()}"'
+    connector_ids = args.get("connector_ids")
+    if isinstance(connector_ids, list) and connector_ids:
+        summary += f" in {len(connector_ids)} source{'s' if len(connector_ids) != 1 else ''}"
+    return summary
+
+
+def _search_internal_knowledge_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    text = as_text(result.content)
+    if not text:
+        return None
+    parsed = parse_json_maybe(text)
+    if isinstance(parsed, dict) and parsed.get("status") == "error":
+        return f"Search failed: {parsed.get('message') or 'Unknown error'}"
+    if isinstance(parsed, dict) and (
+        parsed.get("result_count") == 0 or (isinstance(parsed.get("results"), list) and not parsed["results"])
+    ):
+        return str(parsed.get("message") or "No results found")
+
+    match = _RETRIEVED_COUNT_RE.search(text)
+    if not match:
+        return None
+    blocks, docs = match.group(1), match.group(2)
+    header = f"Retrieved {blocks} block{'s' if blocks != '1' else ''} from {docs} document{'s' if docs != '1' else ''}"
+    names = _extract_record_names(text)
+    if not names:
+        return header
+    return header + "\n" + bullet_list(names)
 
 
 def _normalize_list_param(value: str | list[str] | None) -> list[str] | None:
@@ -59,18 +129,26 @@ class RetrievalToolOutput(BaseModel):
 class SearchInternalKnowledgeInput(BaseModel):
     """Input schema for the search_internal_knowledge tool"""
     query: str = Field(description="The search query to find relevant information")
-    connector_ids: list[str] | None = Field(default=None, description="Filter to specific connectors by their IDs. If not provided or IDs don't match agent scope, uses all agent connectors.")
-    collection_ids: list[str] | None = Field(default=None, description="Filter to specific KB collections by their record group IDs. If not provided or IDs don't match agent scope, uses all agent collections.")
+    connector_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "Filter to specific sources by their connector ID — covers BOTH app "
+            "connectors (Jira, Confluence, Slack, ...) and KB collections alike, "
+            "since a KB collection's ID is a connector ID too. If not provided or "
+            "the IDs don't match agent scope, uses all agent-configured sources."
+        ),
+    )
 
 
 @ToolsetBuilder("Retrieval")\
     .in_group("Internal Tools")\
     .with_description("Internal knowledge retrieval tool - always available, no authentication required")\
-    .with_category(ToolCategory.UTILITY)\
+    .with_category(ToolsetCategory.UTILITY)\
     .with_auth([
         AuthBuilder.type("NONE").fields([])
     ])\
     .as_internal()\
+    .as_essential()\
     .configure(lambda builder: builder.with_icon("/assets/icons/toolsets/retrieval.svg"))\
     .build_decorator()
 
@@ -83,13 +161,9 @@ class Retrieval:
         logger.info("🚀 Initializing Internal Knowledge Retrieval tool")
 
     @tool(
-        app_name="retrieval",
-        tool_name="search_internal_knowledge",
+        path="/tools/retrieval/search_internal_knowledge",
+        short_description="Search internal knowledge bases and connected data sources",
         description=(
-            "Search and retrieve information from internal collections and indexed applications"
-        ),
-        args_schema=SearchInternalKnowledgeInput,
-        llm_description=(
             "Search and retrieve information from indexed company documents, knowledge "
             "bases, and connected data sources. Returns content chunks with citations.\n\n"
             "HYBRID-SEARCH RULE: when the agent has BOTH this tool AND a search tool for "
@@ -102,35 +176,19 @@ class Retrieval:
             "lookups (use the service tool), write actions, real-time-only data ('my "
             "unread mail right now'), pure greetings, or arithmetic."
         ),
-        category=ToolCategory.KNOWLEDGE,
-        is_essential=True,
-        requires_auth=False,
-        when_to_use=[
-            "Any topic, keyword, concept, name, or phrase — even a single bare word",
-            "Information / documentation requests ('what is X', 'how does Y work', 'tell me about Z')",
-            "Policy / procedure / general knowledge questions",
-            "ALWAYS in parallel with a service search tool when one is configured for the same topic",
-            "When the query asks about a person, entity, or topic that is NOT present in the attached documents** — do NOT refuse; search the internal knowledge base instead."
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="The search query to find relevant information", required=True),
+            ToolParameter(name="connector_ids", type=ParameterType.ARRAY, description="Filter to specific connectors by their IDs. If not provided or IDs don't match agent scope, uses all agent connectors.", required=False, items={"type": "string"}),
+            ToolParameter(name="collection_ids", type=ParameterType.ARRAY, description="Filter to specific KB collections by their record group IDs. If not provided or IDs don't match agent scope, uses all agent collections.", required=False, items={"type": "string"}),
         ],
-        when_not_to_use=[
-            "Exact ID lookup ('get page 12345') — use the service tool directly",
-            "Write actions (create / update / delete) — use the service tool",
-            "Real-time-only data ('my unread mail right now', 'today's calendar') — use the service tool",
-            "Pure greetings, thanks, or arithmetic",
-            "ONLY when the attachment content fully and directly answers the query for the **exact same** person, entity, or topic being asked about — do not call this tool unnecessarily."
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "What is our vacation policy?",
-            "How do I submit expenses?",
-            "Find information about Q4 results"
-        ]
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=_search_internal_knowledge_args_summary,
+        result_summary=_search_internal_knowledge_result_summary,
     )
     async def search_internal_knowledge(
         self,
         query: str | None = None,
         connector_ids: list[str] | None = None,
-        collection_ids: list[str] | None = None,
     ) -> str:
         """Search internal knowledge bases and return formatted results."""
         search_query = query
@@ -164,9 +222,11 @@ class Retrieval:
             org_id = self.state.get("org_id", "")
             user_id = self.state.get("user_id", "")
 
-            # Normalize list inputs
+            # Normalize list input. A KB collection's id IS a connector id now,
+            # so there is a single unified `connector_ids` parameter covering
+            # both app connectors and KB collections — the LLM never needs to
+            # know which bucket an id belongs to; this tool resolves that.
             connector_ids = _normalize_list_param(connector_ids)
-            collection_ids = _normalize_list_param(collection_ids)
 
             # === BUILD FILTERS — always scoped to agent's configured knowledge ===
             # Get agent's configured filters from state
@@ -182,17 +242,19 @@ class Retrieval:
 
             # === TARGETED vs BROAD FILTER LOGIC ===
             #
-            # Rule: if the caller explicitly provides EITHER connector_ids OR
-            # collection_ids, treat that as a targeted search and do NOT add the
-            # other side from the agent scope. Mixing both would create an
-            # unnecessary union that defeats the purpose of the explicit filter.
+            # Rule: if the caller explicitly provides connector_ids, resolve
+            # each id against the agent's configured apps/KBs and scope
+            # precisely to whichever bucket(s) it actually matched — an id
+            # naming one app connector scopes to that connector only (no KB
+            # broadening), an id naming one KB collection scopes to that KB
+            # only, and a mix of both scopes to exactly that mix. This is
+            # what "one parameter, resolved automatically" means in practice.
             #
-            # Only when NEITHER is provided do we fall back to the full agent
-            # scope (both connectors and KB collections).
+            # Only when connector_ids is entirely omitted do we fall back to
+            # the full agent scope (both connectors and KB collections).
             #
-            explicit_connectors = bool(connector_ids)
-            explicit_collections = bool(collection_ids)
-            broad_search = not explicit_connectors and not explicit_collections
+            explicit_ids = bool(connector_ids)
+            broad_search = not explicit_ids
 
             # Placeholder agent: broaden scope to all configured connectors/KBs
             # since filters are not author-curated for this synthetic agent.
@@ -213,36 +275,29 @@ class Retrieval:
             logger_instance.debug(f"agent_filter_apps: {sorted(agent_filter_apps)}")
             logger_instance.debug(f"agent_filter_kbs: {sorted(agent_filter_kbs)}")
 
-            # --- App connectors ---
-            if explicit_connectors:
-                # Scope to the intersection with the agent's allowed connectors.
+            if explicit_ids:
                 resolved_apps = [cid for cid in connector_ids if cid in agent_filter_apps]
-                # If the LLM hallucinated an ID not in scope, ignore it and use
-                # the full agent connector set as a safe fallback.
-                filter_groups["apps"] = resolved_apps if resolved_apps else list(agent_filter_apps)
-            elif broad_search:
-                # No explicit filter — include all agent connectors.
+                resolved_kbs = [cid for cid in connector_ids if cid in agent_filter_kbs]
+                if resolved_apps or resolved_kbs:
+                    # At least one supplied id matched a known source — scope
+                    # precisely to what matched; an unmatched bucket is
+                    # excluded rather than broadened, since none of its ids
+                    # were requested.
+                    filter_groups["apps"] = resolved_apps
+                    if resolved_kbs:
+                        filter_groups["kb"] = resolved_kbs
+                    else:
+                        filter_groups["kb"] = [] if is_placeholder_agent else ['NO_KB_SELECTED']
+                else:
+                    # None of the supplied ids matched agent scope (the LLM
+                    # hallucinated them) — fall back to the full agent scope
+                    # on both sides as a safe default.
+                    filter_groups["apps"] = list(agent_filter_apps) if agent_filter_apps else []
+                    filter_groups["kb"] = list(agent_filter_kbs) if agent_filter_kbs else []
+            else:
+                # No explicit filter — include everything in agent scope.
                 filter_groups["apps"] = list(agent_filter_apps) if agent_filter_apps else []
-            else:
-                # collection_ids were given but connector_ids were not:
-                # exclude connectors entirely so the search is KB-only.
-                filter_groups["apps"] = []
-
-            # --- KB collections ---
-            if explicit_collections:
-                # Scope to the intersection with the agent's allowed KB groups.
-                resolved_kbs = [cid for cid in collection_ids if cid in agent_filter_kbs]
-                # Fallback to full KB scope if IDs don't match.
-                filter_groups["kb"] = resolved_kbs if resolved_kbs else list(agent_filter_kbs)
-            elif broad_search:
-                # No explicit filter — include all agent KB collections.
                 filter_groups["kb"] = list(agent_filter_kbs) if agent_filter_kbs else []
-            else:
-                # connector_ids were given but collection_ids were not:
-                # exclude KB collections so the search is connector-only.
-                filter_groups["kb"] = ['NO_KB_SELECTED']
-                if is_placeholder_agent:
-                    filter_groups["kb"] = []
 
             # === SEARCH ===
             is_service_account = bool(self.state.get("is_service_account", False))

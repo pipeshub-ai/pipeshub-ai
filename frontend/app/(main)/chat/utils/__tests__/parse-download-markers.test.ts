@@ -12,6 +12,7 @@
  * executable the moment a unit-test runner is added to `frontend`
  * (there is currently only a Playwright e2e runner configured).
  */
+import { describe, it, expect } from 'vitest';
 import {
   parseArtifactMarkers,
   parseDownloadMarkers,
@@ -34,6 +35,23 @@ describe('parseArtifactMarkers', () => {
     });
   });
 
+  it('normalizes the record: placeholder (new persisted markers) to no downloadUrl', () => {
+    // `_append_task_markers` (streaming.py) stops embedding signed URLs once
+    // a marker carries a recordId — it emits `record:{recordId}` in the
+    // `(url)` slot instead (a real URL would expire in ~10 min and become
+    // permanent dead weight in the saved message). The parser must treat
+    // that placeholder as "no direct URL", not as a literal fetchable link.
+    const content = '::artifact[report.csv](record:rec-1){text/csv|doc-1|rec-1|SPREADSHEET|2}';
+    const { artifacts } = parseArtifactMarkers(content);
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0]).toMatchObject({
+      fileName: 'report.csv',
+      downloadUrl: '',
+      recordId: 'rec-1',
+      version: 2,
+    });
+  });
+
   it('extracts even LLM-authored markers (backend strips them; parser does not trust)', () => {
     // Parser is not the trust boundary — it merely parses. The backend's
     // `_strip_llm_authored_markers` (see test_streaming.py) removes LLM
@@ -45,6 +63,29 @@ describe('parseArtifactMarkers', () => {
     expect(artifacts).toHaveLength(1);
     expect(isTrustedApiUrl(artifacts[0].downloadUrl!)).toBe(false);
     expect(isSignedUrl(artifacts[0].downloadUrl!)).toBe(false);
+  });
+
+  it('strips short-form ::artifact[name] markers that LLMs hallucinate', () => {
+    const content = 'Done – I updated the file.\n\n::artifact[football_rivals_poster.png]';
+    const { text, artifacts } = parseArtifactMarkers(content);
+    expect(text).toBe('Done – I updated the file.');
+    expect(artifacts).toHaveLength(0);
+  });
+
+  it('strips short-form ::artifact[name](url) markers without braces', () => {
+    const content = 'Output:\n\n::artifact[data.csv](https://example.com/file)';
+    const { text, artifacts } = parseArtifactMarkers(content);
+    expect(text).toBe('Output:');
+    expect(artifacts).toHaveLength(0);
+  });
+
+  it('strips short-form markers while preserving full-form ones', () => {
+    const content =
+      'Here is output.\n\n::artifact[poster.png]\n\n::artifact[chart.png](record:r1){image/png|d1|r1||2}';
+    const { text, artifacts } = parseArtifactMarkers(content);
+    expect(text).toBe('Here is output.');
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0]).toMatchObject({ fileName: 'chart.png', recordId: 'r1', version: 2 });
   });
 });
 
@@ -76,9 +117,9 @@ describe('isSignedUrl', () => {
 
 describe('isTrustedApiUrl', () => {
   it('accepts same-origin URLs (window.location.origin)', () => {
-    // JSDOM default origin is http://localhost/
+    // Vitest's jsdom environment defaults to http://localhost:3000/.
     expect(isTrustedApiUrl('/api/v1/record/r1')).toBe(true);
-    expect(isTrustedApiUrl('http://localhost/api/v1/record/r1')).toBe(true);
+    expect(isTrustedApiUrl('http://localhost:3000/api/v1/record/r1')).toBe(true);
   });
 
   it('rejects cross-origin attacker URLs', () => {
@@ -86,8 +127,16 @@ describe('isTrustedApiUrl', () => {
     expect(isTrustedApiUrl('https://storage.googleapis.com/bucket/file')).toBe(false);
   });
 
-  it('returns false for malformed URLs', () => {
-    expect(isTrustedApiUrl('not a url')).toBe(false);
-    expect(isTrustedApiUrl('')).toBe(false);
+  it('treats a bare relative path/string as same-origin, not as untrusted', () => {
+    // `new URL(x, trustedOrigin)` resolves any relative reference against
+    // the trusted origin (the same rule that makes `/api/v1/record/r1`
+    // above trusted) — so a plain string with no scheme is NOT a rejection
+    // case; it is indistinguishable from a relative path on our own origin.
+    expect(isTrustedApiUrl('not a url')).toBe(true);
+    expect(isTrustedApiUrl('')).toBe(true);
+  });
+
+  it('returns false for a URL string the WHATWG URL parser cannot resolve at all', () => {
+    expect(isTrustedApiUrl('http://')).toBe(false);
   });
 });

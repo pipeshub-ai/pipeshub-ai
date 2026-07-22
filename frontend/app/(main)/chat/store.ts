@@ -69,6 +69,33 @@ export interface ChatPreviewFile {
    * able to save the file locally.
    */
   showDownload?: boolean;
+  /**
+   * Artifact registry version currently loaded into `url`/`blob`. Undefined
+   * for previews that aren't version-tracked artifacts (citations, plain KB
+   * records) — the version switcher only renders when this is set.
+   */
+  version?: number;
+  /**
+   * Highest version known to exist for this artifact (see `MessageList`'s
+   * `latestArtifactVersions`). Drives the version-switcher dropdown's range;
+   * equal to `version` when this IS the latest (no older versions to jump
+   * back to, so the switcher stays non-interactive).
+   */
+  latestVersion?: number;
+  /**
+   * Re-fetches this artifact at `version` and replaces `url`/`blob`/`version`
+   * in place via `setPreviewFile`. Bound by the caller (`chat-response.tsx`)
+   * to whatever record/stream logic produced this preview in the first
+   * place — the preview shell itself has no knowledge of artifacts.
+   */
+  onVersionChange?: (version: number) => void | Promise<void>;
+  /**
+   * True while `onVersionChange` is in flight. Kept separate from `isLoading`
+   * so the previously-loaded content stays visible (and the switcher shows a
+   * small spinner) instead of the whole panel flashing to a loading skeleton
+   * on every version switch.
+   */
+  isSwitchingVersion?: boolean;
 }
 
 /**
@@ -157,6 +184,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     streamingQuestion: '',
     currentStatusMessage: null,
     streamingCitationMaps: null,
+    streamingParts: [],
     userScrollOverride: false,
     savedScrollTop: null,
     savedScrollWasStreaming: false,

@@ -14,6 +14,7 @@ import { SourcesTab } from './response-tabs/citations/sources-tab';
 import { CitationsTab } from './response-tabs/citations/citations-tab';
 import { ArtifactsPanel } from './artifacts-panel';
 import { AskUserQuestionCard } from './ask-user-question-card';
+import { AgentActivityTimeline } from './agent-activity';
 import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -22,7 +23,7 @@ import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData } from '../../types';
+import type { AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, MessagePart } from '../../types';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
@@ -100,6 +101,12 @@ interface ChatResponseProps {
   streamingCitationMaps?: CitationMaps | null;
   /** Artifacts generated during streaming (coding sandbox, etc.) */
   streamingArtifacts?: ChatArtifact[];
+  /** recordId -> highest version seen anywhere in this conversation (see `MessageList`) — powers the "newer version available" hint on older cards. */
+  latestArtifactVersions?: Map<string, number>;
+  /** Live agent-activity transcript — only passed for the currently-streaming message. */
+  streamingParts?: MessagePart[];
+  /** Persisted agent-activity transcript from `ConversationMessage.parts` (absent for older messages). */
+  persistedParts?: MessagePart[];
   /**
    * Thread row key (`messagePairs[].key`) for list-scoped inline-citation
    * popover store (see `citationMessageRowKey`). Omit in read-only views (e.g. archived) so badges stay uncontrolled.
@@ -132,6 +139,9 @@ export const ChatResponse = React.memo(function ChatResponse({
   currentStatusMessage: currentStatusMessageProp = null,
   streamingCitationMaps = null,
   streamingArtifacts,
+  latestArtifactVersions,
+  streamingParts,
+  persistedParts,
   citationMessageRowKey,
   createdAt,
   persistedAskUserQuestion,
@@ -158,7 +168,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     question, answer, citationMaps, citationCallbacks, confidence,
     isStreaming, modelInfo, collections, appliedFilters, messageId,
     isLastMessage, streamingContent, currentStatusMessage: currentStatusMessageProp,
-    streamingCitationMaps, createdAt, persistedAskUserQuestion,
+    streamingCitationMaps, streamingParts, persistedParts, createdAt, persistedAskUserQuestion,
   };
   const crReasons: string[] = [];
   for (const [k, v] of Object.entries(currentCRVals)) {
@@ -240,6 +250,110 @@ export const ChatResponse = React.memo(function ChatResponse({
     },
     [setPreviewFile, setPreviewMode],
   );
+
+  /**
+   * Streams `artifact.recordId` at `overrideVersion` (defaulting to
+   * `artifact.version`) and replaces the preview panel's content in place.
+   * Used both for the initial "Preview" click (`ArtifactsPanel.onPreview`)
+   * and for every later version switch (bound back to this same function as
+   * `ChatPreviewFile.onVersionChange`) — one code path, so streaming options
+   * (PDF conversion for PPT/DOCX, mime resolution, DOCX blob handling) never
+   * drift between the two entry points.
+   */
+  const loadArtifactPreview = useCallback(
+    async (artifact: ChatArtifact, overrideVersion?: number) => {
+      const version = overrideVersion ?? artifact.version;
+      const recordId = artifact.recordId;
+      const isSwitch = overrideVersion !== undefined;
+      const latestVersion = recordId ? latestArtifactVersions?.get(recordId) : undefined;
+      const effectiveLatest =
+        latestVersion !== undefined && version !== undefined
+          ? Math.max(latestVersion, version)
+          : latestVersion ?? version;
+      const onVersionChange = recordId
+        ? (v: number) => loadArtifactPreview(artifact, v)
+        : undefined;
+
+      if (recordId) {
+        // A version switch (not the initial open) — keep the current
+        // content on screen and only flip the small spinner in the version
+        // pill, so the panel doesn't flash back to the loading skeleton.
+        if (isSwitch) {
+          const current = useChatStore.getState().previewFile;
+          if (current?.id === recordId) setPreviewFile({ ...current, isSwitchingVersion: true });
+        }
+        try {
+          const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+          const streamAsPdf =
+            isPresentationFile(artifact.mimeType, artifact.fileName) ||
+            isLegacyWordDocFile(artifact.mimeType, artifact.fileName);
+          const streamOptions = {
+            ...(streamAsPdf ? { convertTo: 'application/pdf' } : {}),
+            ...(version !== undefined ? { version } : {}),
+          };
+          const blob = await KnowledgeBaseApi.streamRecord(
+            recordId,
+            Object.keys(streamOptions).length > 0 ? streamOptions : undefined,
+          );
+          const resolvedType = resolvePreviewMimeAfterStream(
+            artifact.mimeType,
+            artifact.fileName,
+            blob,
+            streamAsPdf,
+          );
+          const isDocx = isDocxFile(artifact.mimeType, artifact.fileName);
+          const objectUrl = isDocx ? '' : URL.createObjectURL(blob);
+
+          // Release the previous blob URL now that nothing references it —
+          // otherwise every version switch leaks one object URL.
+          const previous = useChatStore.getState().previewFile;
+          if (previous?.url?.startsWith('blob:')) URL.revokeObjectURL(previous.url);
+
+          setPreviewFile({
+            id: recordId,
+            url: objectUrl,
+            blob: isDocx ? blob : undefined,
+            name: artifact.fileName,
+            type: resolvedType,
+            size: artifact.sizeBytes,
+            hideFileDetails: true,
+            showDownload: true,
+            version,
+            latestVersion: effectiveLatest,
+            onVersionChange,
+            isSwitchingVersion: false,
+          });
+          return;
+        } catch {
+          if (isSwitch) {
+            // Keep showing the last successfully loaded version rather than
+            // falling back to a stale/foreign URL below.
+            const current = useChatStore.getState().previewFile;
+            if (current?.id === recordId) setPreviewFile({ ...current, isSwitchingVersion: false });
+            return;
+          }
+          // Initial-open failure — fall through to the URL-classification
+          // fallback below (never trusts an arbitrary marker URL, see
+          // `ArtifactsPanel`'s `handleDownload` docstring for the same rule).
+        }
+      }
+
+      setPreviewFile({
+        id: artifact.id,
+        url: artifact.downloadUrl,
+        name: artifact.fileName,
+        type: artifact.mimeType,
+        size: artifact.sizeBytes,
+        hideFileDetails: true,
+        showDownload: true,
+        version,
+        latestVersion: effectiveLatest,
+        onVersionChange,
+      });
+    },
+    [latestArtifactVersions, setPreviewFile],
+  );
+
   const pendingAskUserQuestion = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.pendingAskUserQuestion ?? null : null
   );
@@ -339,8 +453,12 @@ export const ChatResponse = React.memo(function ChatResponse({
       : persistedArtifacts;
   const currentStatusMessage = currentStatusMessageProp;
   const streamingStatusToShow =
-    currentStatusMessage ??
-    (isStreaming && !displayContent.trim() ? streamingFallbackStatus : null);
+    currentStatusMessage ?? (isStreaming ? streamingFallbackStatus : null);
+
+  // Live transcript while streaming, persisted transcript after reload —
+  // same components render either (see AgentActivityTimeline's docstring).
+  // Falls back to nothing for messages saved before this feature shipped.
+  const effectiveParts = isStreaming ? streamingParts : persistedParts;
 
   // Wrap citation callbacks so that onPreview always receives this message's
   // citationMaps — the panel needs all citations for the previewed record.
@@ -363,13 +481,14 @@ export const ChatResponse = React.memo(function ChatResponse({
       case 'answer':
         return (
           <Box style={{ padding: 'var(--space-4) 0' }}>
-            {/* Status indicator — always above content, same slot as ConfidenceIndicator */}
-            {isStreaming && streamingStatusToShow && (
-              <StatusMessageComponent status={streamingStatusToShow} />
-            )}
-
             {/* Show confidence only when not streaming and has answer */}
             {!isStreaming && confidence && <ConfidenceIndicator confidence={confidence} />}
+
+            {/* Agent activity timeline — thinking / tool calls / sub-agents,
+                streamed live or rendered from the persisted transcript. */}
+            {effectiveParts && effectiveParts.length > 0 && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+              <AgentActivityTimeline parts={effectiveParts} isStreaming={isStreaming} />
+            )}
 
             {/* Show content - either streaming or final.
                 Suppressed when an ask_user_question card (streaming or persisted)
@@ -383,6 +502,14 @@ export const ChatResponse = React.memo(function ChatResponse({
               />
             )}
 
+            {/* "Currently doing X…" status — rendered LAST, after the timeline
+                and any answer text already streamed, so it tracks the bottom
+                of the growing message (where the chat scroller keeps the view
+                pinned) instead of sitting stuck above newer content. */}
+            {isStreaming && streamingStatusToShow && (
+              <StatusMessageComponent status={streamingStatusToShow} />
+            )}
+
             {/* Legacy download buttons */}
             {downloadTasks.length > 0 && !askQuestionMatchesRow && !persistedAskUserQuestion && (
               <DownloadTasks tasks={downloadTasks} />
@@ -392,52 +519,32 @@ export const ChatResponse = React.memo(function ChatResponse({
             {effectiveArtifacts.length > 0 && !askQuestionMatchesRow && !persistedAskUserQuestion && (
               <ArtifactsPanel
                 artifacts={effectiveArtifacts}
-                onPreview={async (artifact) => {
-                  if (artifact.recordId) {
-                    try {
-                      const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
-                      const streamAsPdf =
-                        isPresentationFile(artifact.mimeType, artifact.fileName) ||
-                        isLegacyWordDocFile(artifact.mimeType, artifact.fileName);
-                      const streamOptions = streamAsPdf
-                        ? { convertTo: 'application/pdf' }
-                        : undefined;
-                      const blob = await KnowledgeBaseApi.streamRecord(
-                        artifact.recordId,
-                        streamOptions,
-                      );
-                      const resolvedType = resolvePreviewMimeAfterStream(
-                        artifact.mimeType,
-                        artifact.fileName,
-                        blob,
-                        !!streamOptions,
-                      );
-                      const isDocx = isDocxFile(artifact.mimeType, artifact.fileName);
-                      const objectUrl = isDocx ? '' : URL.createObjectURL(blob);
-                      useChatStore.getState().setPreviewFile({
-                        id: artifact.recordId,
-                        url: objectUrl,
-                        blob: isDocx ? blob : undefined,
-                        name: artifact.fileName,
-                        type: resolvedType,
-                        size: artifact.sizeBytes,
-                        hideFileDetails: true,
-                        showDownload: true,
-                      });
-                      return;
-                    } catch {
-                      // Fall back to raw URL
-                    }
+                latestArtifactVersions={latestArtifactVersions}
+                onPreview={loadArtifactPreview}
+                onViewSource={async (codeArtifactId) => {
+                  // The code artifact is registered through the same pipeline as any
+                  // other record, so it streams/previews via the standard KB record
+                  // APIs exactly like the `recordId` path above — no separate endpoint.
+                  try {
+                    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+                    const [details, blob] = await Promise.all([
+                      KnowledgeBaseApi.getRecordDetails(codeArtifactId),
+                      KnowledgeBaseApi.streamRecord(codeArtifactId),
+                    ]);
+                    const objectUrl = URL.createObjectURL(blob);
+                    useChatStore.getState().setPreviewFile({
+                      id: codeArtifactId,
+                      url: objectUrl,
+                      name: details.record.recordName,
+                      type: details.record.mimeType || 'text/plain',
+                      size: details.record.fileRecord?.sizeInBytes ?? blob.size,
+                      hideFileDetails: true,
+                      showDownload: true,
+                    });
+                  } catch {
+                    // Source artifact may have been deleted/permission-revoked since —
+                    // fail silently, there is nothing actionable for the user here.
                   }
-                  useChatStore.getState().setPreviewFile({
-                    id: artifact.id,
-                    url: artifact.downloadUrl,
-                    name: artifact.fileName,
-                    type: artifact.mimeType,
-                    size: artifact.sizeBytes,
-                    hideFileDetails: true,
-                    showDownload: true,
-                  });
                 }}
               />
             )}

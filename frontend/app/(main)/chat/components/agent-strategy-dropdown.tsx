@@ -10,7 +10,7 @@ import type { AgentStrategy } from '@/chat/types';
 export const AGENT_STRATEGIES: readonly AgentStrategy[] = [
   'auto',
   'quick',
-  'verify',
+  'plan-execute',
   'deep',
 ];
 
@@ -18,7 +18,7 @@ export const AGENT_STRATEGIES: readonly AgentStrategy[] = [
 export const AGENT_STRATEGY_ICONS: Record<AgentStrategy, string> = {
   auto: 'auto_awesome',
   quick: 'bolt',
-  verify: 'fact_check',
+  'plan-execute': 'checklist',
   deep: 'psychology',
 };
 

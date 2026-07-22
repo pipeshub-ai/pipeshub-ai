@@ -12,7 +12,8 @@ import { ChatApi } from '@/chat/api';
 import type { AvailableLlmModel } from '@/chat/types';
 import type { AgentDetail, KnowledgeHubAppNode } from '../../types';
 import { ToolsetsApi, type BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
-import type { AgentToolsListRow, KnowledgeBaseForBuilder } from '../../types';
+import type { AgentToolsListRow, KnowledgeBaseForBuilder, SkillForBuilder } from '../../types';
+import { SkillsApi } from '../../../workspace/skills/personal/api';
 
 const TOOLSETS_PAGE = 20;
 
@@ -46,14 +47,18 @@ function mapNodesToConnectors(nodes: KnowledgeHubAppNode[]): Connector[] {
   });
 }
 
-/** Models, KB, and knowledge-hub nodes — fetched once per hook mount (route remount resets the ref). */
+/** Models, KB, knowledge-hub nodes, and the skills catalog — fetched once per hook mount (route remount resets the ref). */
 async function fetchStaticBuilderResources() {
-  const [models, kbResult, appNodes] = await Promise.all([
+  const [models, kbResult, appNodes, skills] = await Promise.all([
     ChatApi.fetchAvailableLlms(),
     AgentsApi.getAllKnowledgeBasesForBuilder(),
     AgentsApi.getAllKnowledgeHubAppNodes().catch((err) => {
       console.error('Failed to fetch knowledge hub app nodes:', err);
       return [] as KnowledgeHubAppNode[];
+    }),
+    SkillsApi.listAssignableSkills().catch((err) => {
+      console.error('Failed to fetch skills catalog:', err);
+      return [] as Awaited<ReturnType<typeof SkillsApi.listAssignableSkills>>;
     }),
   ]);
 
@@ -63,6 +68,11 @@ async function fetchStaticBuilderResources() {
     models: models ?? [],
     knowledgeBases: kbResult.knowledgeBases ?? [],
     configuredConnectors,
+    skills: skills.map<SkillForBuilder>((s) => ({
+      name: s.name,
+      description: s.description,
+      category: s.category,
+    })),
   };
 }
 
@@ -99,6 +109,7 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
   const [availableKnowledgeBases, setAvailableKnowledgeBases] = useState<KnowledgeBaseForBuilder[]>(
     []
   );
+  const [availableSkills, setAvailableSkills] = useState<SkillForBuilder[]>([]);
   const [configuredConnectors, setConfiguredConnectors] = useState<Connector[]>([]);
   const [toolsets, setToolsets] = useState<BuilderSidebarToolset[]>([]);
   const [loading, setLoading] = useState(true);
@@ -159,6 +170,7 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
 
           setAvailableModels(staticRes.models);
           setAvailableKnowledgeBases(staticRes.knowledgeBases);
+          setAvailableSkills(staticRes.skills);
           setConfiguredConnectors(staticRes.configuredConnectors);
 
           toolsetsSearchRef.current = '';
@@ -207,6 +219,7 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
     availableTools,
     availableModels,
     availableKnowledgeBases,
+    availableSkills,
     activeAgentConnectors: configuredConnectors,
     configuredConnectors,
     toolsets,

@@ -890,8 +890,9 @@ def _size_to_aspect_ratio(size: str) -> str:
 class ImageGenerationAdapter:
     """Thin wrapper around a provider SDK that returns raw PNG bytes.
 
-    Concrete subclasses implement :meth:`generate`. Callers should treat the
-    adapter as an opaque handle obtained from :func:`get_image_generation_model`.
+    Concrete subclasses implement :meth:`generate` and, where the provider
+    supports it, :meth:`edit`. Callers should treat the adapter as an opaque
+    handle obtained from :func:`get_image_generation_model`.
     """
 
     provider: str
@@ -905,6 +906,23 @@ class ImageGenerationAdapter:
         n: int = 1,
     ) -> list[bytes]:
         raise NotImplementedError
+
+    async def edit(
+        self,
+        prompt: str,
+        *,
+        input_image: bytes,
+        size: str = "1024x1024",
+        n: int = 1,
+    ) -> list[bytes]:
+        """Edit/update ``input_image`` per ``prompt``. Providers without a
+        native image-edit API raise ``NotImplementedError`` so callers can
+        surface a clear, provider-specific error instead of silently
+        falling back to text-to-image generation."""
+        raise NotImplementedError(
+            f"The '{self.provider}' image provider does not support editing "
+            "existing images."
+        )
 
 
 class _OpenAIImageAdapter(ImageGenerationAdapter):
@@ -985,6 +1003,73 @@ class _OpenAIImageAdapter(ImageGenerationAdapter):
                     )
         return images
 
+    async def edit(
+        self,
+        prompt: str,
+        *,
+        input_image: bytes,
+        size: str = "1024x1024",
+        n: int = 1,
+    ) -> list[bytes]:
+        """Edit ``input_image`` via ``POST /v1/images/edits``.
+
+        DALL-E 2 is the only legacy model that supports this endpoint;
+        ``gpt-image-*`` (and any LiteLLM-proxied equivalent) supports it
+        natively too. ``response_format`` is DALL-E-only, same restriction
+        as :meth:`generate`.
+        """
+        import base64
+        import io
+
+        from openai import AsyncOpenAI
+
+        client_kwargs: dict[str, Any] = {
+            "api_key": self._api_key,
+            "organization": self._organization,
+        }
+        if self._base_url:
+            client_kwargs["base_url"] = self._base_url
+        client = AsyncOpenAI(**client_kwargs)
+
+        image_file = io.BytesIO(input_image)
+        image_file.name = "input.png"
+
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "image": image_file,
+            "prompt": prompt,
+            "size": _normalize_openai_size(size),
+            "n": n,
+        }
+        if self.model.startswith("dall-e"):
+            request_kwargs["response_format"] = "b64_json"
+
+        try:
+            response = await client.images.edit(**request_kwargs)
+        finally:
+            await client.close()
+
+        images: list[bytes] = []
+        for item in response.data or []:
+            b64 = getattr(item, "b64_json", None)
+            if b64:
+                images.append(base64.b64decode(b64))
+                continue
+            url = getattr(item, "url", None)
+            if url:
+                try:
+                    import httpx
+
+                    async with httpx.AsyncClient(timeout=60.0) as http_client:
+                        resp = await http_client.get(url)
+                        resp.raise_for_status()
+                        images.append(resp.content)
+                except Exception:
+                    logger.exception(
+                        "Failed to download OpenAI image edit URL fallback"
+                    )
+        return images
+
 
 class _GeminiImageAdapter(ImageGenerationAdapter):
     def __init__(self, *, model: str, api_key: str) -> None:
@@ -1030,6 +1115,59 @@ class _GeminiImageAdapter(ImageGenerationAdapter):
             resp = await client.aio.models.generate_content(
                 model=self.model,
                 contents=[prompt],
+                config=genai_types.GenerateContentConfig(
+                    response_modalities=["IMAGE", "TEXT"],
+                ),
+            )
+            out: list[bytes] = []
+            for candidate in getattr(resp, "candidates", None) or []:
+                content = getattr(candidate, "content", None)
+                for part in getattr(content, "parts", None) or []:
+                    inline = getattr(part, "inline_data", None)
+                    data = getattr(inline, "data", None) if inline is not None else None
+                    if data:
+                        out.append(data)
+            return out
+
+        results = await asyncio.gather(*[_one_call() for _ in range(max(1, n))])
+        return [img for batch in results for img in batch]
+
+    async def edit(
+        self,
+        prompt: str,
+        *,
+        input_image: bytes,
+        size: str = "1024x1024",
+        n: int = 1,
+    ) -> list[bytes]:
+        """Edit ``input_image`` by sending it as multimodal input alongside
+        the text prompt. Imagen (``imagen-*``) has no native edit endpoint
+        in this client, so editing is only supported on the
+        ``gemini-*-image`` multimodal models.
+        """
+        if self.model.startswith("imagen-"):
+            raise NotImplementedError(
+                f"Imagen model '{self.model}' does not support image "
+                "editing via this adapter; configure a 'gemini-*-image' "
+                "model for editing."
+            )
+
+        import asyncio
+
+        from google import genai
+        from google.genai import types as genai_types
+
+        client = genai.Client(api_key=self._api_key)
+
+        async def _one_call() -> list[bytes]:
+            resp = await client.aio.models.generate_content(
+                model=self.model,
+                contents=[
+                    genai_types.Part.from_bytes(
+                        data=input_image, mime_type="image/png",
+                    ),
+                    prompt,
+                ],
                 config=genai_types.GenerateContentConfig(
                     response_modalities=["IMAGE", "TEXT"],
                 ),

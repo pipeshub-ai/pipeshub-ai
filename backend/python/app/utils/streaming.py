@@ -1172,6 +1172,10 @@ async def handle_simple_mode(
 _LLM_ARTIFACT_MARKER_RE = re.compile(
     r"::artifact\[[^\]]+\]\([^)]+\)\{[^}]*\}",
 )
+# Short-form variant LLMs sometimes hallucinate (no `(url){meta}` block).
+_LLM_ARTIFACT_SHORT_MARKER_RE = re.compile(
+    r"::artifact\[[^\]]+\](?:\([^)]*\))?(?!\{)",
+)
 _LLM_DOWNLOAD_MARKER_RE = re.compile(
     r"::download_conversation_task\[[^\]]+\]\([^)]+\)",
 )
@@ -1187,6 +1191,7 @@ def _strip_llm_authored_markers(answer: str) -> str:
     if not answer:
         return answer
     stripped = _LLM_ARTIFACT_MARKER_RE.sub("", answer)
+    stripped = _LLM_ARTIFACT_SHORT_MARKER_RE.sub("", stripped)
     stripped = _LLM_DOWNLOAD_MARKER_RE.sub("", stripped)
     return stripped
 
@@ -1208,19 +1213,49 @@ def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
         return answer
 
     parts: list[str] = []
+    seen_artifacts: set[str] = set()
     for t in conversation_tasks:
         task_type = t.get("type", "")
 
         if task_type == "artifacts":
             for art in t.get("artifacts", []):
-                url = art.get("signedUrl") or art.get("downloadUrl", "")
-                if not url:
-                    continue
                 fname = art.get("fileName", "Download")
                 mime = art.get("mimeType", "application/octet-stream")
                 doc_id = art.get("documentId", "")
                 record_id = art.get("recordId", "")
-                parts.append(f"::artifact[{fname}]({url}){{{mime}|{doc_id}|{record_id}}}")
+                # Optional trailing segments (the frontend parser tolerates
+                # their absence for markers persisted before they existed).
+                artifact_type = art.get("artifactType", "")
+                version = art.get("version", "")
+
+                # PERSISTED markers must never carry a signed URL: it expires
+                # in ~10 min, so it would be permanent dead weight (and a
+                # URL-trust surface the frontend already has to defend
+                # against) in every saved message forever. `recordId` is
+                # the durable identity the frontend already prefers for
+                # streaming/download (`parseArtifactMarkers` in
+                # `parse-download-markers.ts`) — a stable placeholder in the
+                # `(url)` slot keeps that parser's regex (which requires a
+                # non-empty segment there) satisfied without a real URL.
+                # Only fall back to embedding a real URL for the rare
+                # artifact that has none (no recordId to stream through) —
+                # otherwise it would be permanently undownloadable.
+                if record_id:
+                    url = f"record:{record_id}"
+                else:
+                    url = art.get("signedUrl") or art.get("downloadUrl", "")
+                    if not url:
+                        continue
+
+                # One download card per artifact version, even when two
+                # producers (or a re-run) queued the same artifact twice.
+                dedupe_key = f"{record_id or doc_id or url}:{version}"
+                if dedupe_key in seen_artifacts:
+                    continue
+                seen_artifacts.add(dedupe_key)
+                parts.append(
+                    f"::artifact[{fname}]({url}){{{mime}|{doc_id}|{record_id}|{artifact_type}|{version}}}"
+                )
         else:
             url = t.get("signedUrl") or t.get("downloadUrl", "")
             if url:
@@ -1231,6 +1266,46 @@ def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
         return answer
 
     return answer + "\n\n" + "\n\n".join(parts)
+
+
+async def finalize_agent_answer(
+    answer_text: str,
+    final_results: list[dict[str, Any]],
+    records: list[dict[str, Any]],
+    *,
+    virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
+    ref_to_url: dict[str, str] | None = None,
+    web_records: list[dict[str, Any]] | None = None,
+    conversation_id: str | None = None,
+) -> tuple[str, list[dict[str, Any]], str | None]:
+    """Deterministic, no-LLM finalization of an answer some caller already
+    produced by its own means (agent-loop's ReAct loop, via
+    `agents/agent_loop/respond.py::AnswerFinalizer`) — strips the trailing
+    `---\\nConfidence: ...` marker, normalizes `[source](refN)`/URL markers
+    into structured `citations`, and appends any background
+    conversation-task download/artifact markers.
+
+    The same three building blocks `handle_simple_mode`'s "already-finished
+    AI answer" fast path below uses inline — pulled out here so a caller
+    that never runs an LLM call at all doesn't have to go through
+    `stream_llm_response_with_tools` just to reach them.
+    """
+    clean_answer, confidence = parse_confidence_from_answer(answer_text)
+    normalized, citations = normalize_citations_and_chunks(
+        clean_answer, final_results, records,
+        ref_to_url=ref_to_url,
+        virtual_record_id_to_result=virtual_record_id_to_result,
+        web_records=web_records,
+    )
+
+    if conversation_id:
+        from app.utils.conversation_tasks import await_and_collect_results
+
+        task_results = await await_and_collect_results(conversation_id)
+        if task_results:
+            normalized = _append_task_markers(normalized, task_results)
+
+    return normalized, citations, confidence
 
 
 async def stream_llm_response_with_tools(
@@ -1258,14 +1333,23 @@ async def stream_llm_response_with_tools(
     initial_web_records: list[dict[str, Any]] | None = None,
     defer_tool_until_called_name: str | None = None,
     deferred_tool: Any | None = None,
+    initial_records: list[dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
     Incrementally stream the answer portion of an LLM JSON response.
     For each chunk we also emit the citations visible so far.
     Now supports tool calls before generating the final answer.
+
+    `initial_records`/`initial_web_records` let a caller that already ran
+    its own tool-calling phase upstream (e.g. agent-loop's ReAct loop, via
+    `RespondPipeline`) seed the record/web-record lists this function
+    otherwise only populates from its OWN `execute_tool_calls()` pass —
+    pass `tools=None` in that case to skip re-running tools here entirely
+    and go straight to citation formatting + streaming of the caller's
+    already-final answer text.
     """
-    records = []
+    records: list[dict[str, Any]] = list(initial_records) if initial_records else []
     web_records: list[dict[str, Any]] = list(initial_web_records) if initial_web_records else []
 
     if tools and tool_runtime_kwargs and mode != "no_tools":

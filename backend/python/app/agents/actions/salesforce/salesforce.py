@@ -114,9 +114,8 @@ from app.agents.actions.util.blob_staging import (
     fetch_staged_document_bytes,
 )
 from app.config.configuration_service import ConfigurationService
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.modules.agents.qna.chat_state import ChatState
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
@@ -459,37 +458,20 @@ class Salesforce:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="salesforce",
-        tool_name="soql_query",
-        description="Execute a SOQL query against Salesforce",
-        llm_description=(
-            "Executes a Salesforce Object Query Language (SOQL) query. Use this for structured queries against "
-            "specific objects and fields. Examples: 'SELECT Id, Name FROM Account WHERE Industry = \\'Technology\\' LIMIT 10', "
-            "'SELECT Id, Subject, Status FROM Case WHERE Status != \\'Closed\\' ORDER BY CreatedDate DESC'. "
-            "Always include LIMIT to avoid returning too many records."
+        path="/tools/salesforce/soql_query",
+        short_description="Execute a SOQL query against Salesforce",
+        description=(
+            "Executes a Salesforce Object Query Language (SOQL) query for structured queries against "
+            "specific objects and fields. Examples: 'SELECT Id, Name FROM Account WHERE Industry = 'Technology' LIMIT 10'. "
+            "Always include LIMIT to avoid returning too many records. Use for queries with specific filters, "
+            "aggregate data (COUNT, SUM, AVG), custom objects, or non-standard fields. "
+            "For simple text search across multiple objects use sosl_search; for simple name-based lookups "
+            "use the dedicated search tools (search_accounts, search_contacts, etc.)."
         ),
-        args_schema=SOQLQueryInput,
-        returns="JSON with query results including records array and totalSize",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to query Salesforce data with specific filters or conditions",
-            "User needs a custom or complex query that specialized search tools cannot handle",
-            "User asks for aggregate data (COUNT, SUM, AVG) from Salesforce",
-            "User wants to query a custom object or non-standard fields",
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="The SOQL query string to execute", required=True),
         ],
-        when_not_to_use=[
-            "User wants a simple text search across multiple objects (use sosl_search)",
-            "User wants to search accounts by name (use search_accounts for simpler queries)",
-        ],
-        typical_queries=[
-            "Run a SOQL query to find all accounts in Technology industry",
-            "Query all open opportunities with amount greater than 50000",
-            "Get all contacts for account X",
-            "Count the number of open cases",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="search")],
     )
     async def soql_query(self, query: str) -> tuple[bool, str]:
         """Execute a SOQL query."""
@@ -504,34 +486,19 @@ class Salesforce:
             return self._error_response(str(e))
 
     @tool(
-        app_name="salesforce",
-        tool_name="sosl_search",
-        description="Execute a SOSL search across Salesforce objects",
-        llm_description=(
-            "Executes a Salesforce Object Search Language (SOSL) search. Use this for full-text search across "
-            "multiple objects. Example: 'FIND {Acme} IN ALL FIELDS RETURNING Account(Id, Name), Contact(Id, Name, Email)'. "
-            "SOSL is best for keyword search; for structured queries use soql_query."
+        path="/tools/salesforce/sosl_search",
+        short_description="Execute a SOSL search across Salesforce objects",
+        description=(
+            "Executes a Salesforce Object Search Language (SOSL) full-text search across multiple objects. "
+            "Example: 'FIND {Acme} IN ALL FIELDS RETURNING Account(Id, Name), Contact(Id, Name, Email)'. "
+            "Best for keyword search across multiple objects or finding all records related to a term. "
+            "For structured queries with specific filters use soql_query; for single-object searches "
+            "use the dedicated search tools."
         ),
-        args_schema=SOSLSearchInput,
-        returns="JSON with search results grouped by object type",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to search across multiple Salesforce objects at once",
-            "User wants a full-text keyword search in Salesforce",
-            "User asks to find all records related to a term or company name",
+        parameters=[
+            ToolParameter(name="search", type=ParameterType.STRING, description="The SOSL search string to execute", required=True),
         ],
-        when_not_to_use=[
-            "User wants a structured query with specific filters (use soql_query)",
-            "User wants to search only one specific object type (use the dedicated search tool for that object)",
-        ],
-        typical_queries=[
-            "Search for 'Acme' across all Salesforce objects",
-            "Find all records mentioning 'server outage'",
-            "Search for contact or account named John",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="search")],
     )
     async def sosl_search(self, search: str) -> tuple[bool, str]:
         """Execute a SOSL search."""
@@ -550,34 +517,21 @@ class Salesforce:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="salesforce",
-        tool_name="get_record",
-        description="Retrieve a Salesforce record by ID",
-        llm_description=(
+        path="/tools/salesforce/get_record",
+        short_description="Retrieve a Salesforce record by ID",
+        description=(
             "Retrieves a single record from any Salesforce object by its record ID. "
             "Provide the object API name (e.g., 'Account', 'Contact', 'Lead', 'Opportunity', 'Case', or any custom object like 'Custom__c') "
-            "and the 15/18-character record ID. Optionally specify fields to return."
+            "and the 15/18-character record ID. Optionally specify fields to return. "
+            "Use when you have a specific record ID. For searching without an ID use search or SOQL tools; "
+            "for browsing recent records use list_recent_records."
         ),
-        args_schema=GetRecordInput,
-        returns="JSON with the record data",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to view a specific Salesforce record by ID",
-            "User asks for details of a record given its ID",
-            "User needs to look up a record from any standard or custom object",
+        parameters=[
+            ToolParameter(name="sobject", type=ParameterType.STRING, description="The Salesforce object API name (e.g., 'Account', 'Contact', 'Lead')", required=True),
+            ToolParameter(name="record_id", type=ParameterType.STRING, description="The 15 or 18-character Salesforce record ID", required=True),
+            ToolParameter(name="fields", type=ParameterType.STRING, description="Comma-separated list of fields to return (e.g., 'Id,Name,Email'). Omit to return all accessible fields.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to search for records without knowing the ID (use search or SOQL tools)",
-            "User wants to list recent records (use list_recent_records)",
-        ],
-        typical_queries=[
-            "Get the account with ID 001XXXXXXXXXXXX",
-            "Show me the details of contact 003XXXXXXXXXXXX",
-            "Fetch opportunity record 006XXXXXXXXXXXX",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="read")],
     )
     async def get_record(
         self, sobject: str, record_id: str, fields: str | None = None
@@ -603,40 +557,20 @@ class Salesforce:
             return self._error_response(str(e))
 
     @tool(
-        app_name="salesforce",
-        tool_name="create_record",
-        description="Create a new Salesforce record",
-        llm_description=(
-            "Creates a new record for any Salesforce object. You MUST supply two arguments: "
-            "`sobject` (API name) and `data` (non-empty object of field API names to values, "
-            "nested under the `data` key — do NOT flatten field names to top-level args). "
-            "If you do not know the createable/required fields for the sObject, call "
-            "describe_object on that sObject first, then call create_record again with "
-            "those fields populated in `data`. Standard fields use their API names "
-            "(e.g. 'Name', 'Email', 'Phone'); custom fields end with '__c'. "
-            "Prefer specialized create tools (create_account, create_contact, etc.) when they apply."
+        path="/tools/salesforce/create_record",
+        short_description="Create a new Salesforce record",
+        description=(
+            "Creates a new record for any Salesforce object. Supply `sobject` (API name) and `data` "
+            "(non-empty object of field API names to values). If you do not know the createable/required "
+            "fields, call describe_object first. Standard fields use their API names (e.g. 'Name', 'Email'); "
+            "custom fields end with '__c'. Prefer specialized create tools (create_account, create_contact, "
+            "create_lead, create_opportunity, create_case) when they apply."
         ),
-        args_schema=CreateRecordInput,
-        returns="JSON with the created record ID",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to create a record for a custom object or non-standard object",
-            "User asks to create a record and the specialized tool is not available",
+        parameters=[
+            ToolParameter(name="sobject", type=ParameterType.STRING, description="The Salesforce object API name (e.g. 'Account', 'Custom_Object__c')", required=True),
+            ToolParameter(name="data", type=ParameterType.OBJECT, description="Non-empty map of field API names to values for the new record", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create an Account (use create_account)",
-            "User wants to create a Contact (use create_contact)",
-            "User wants to create a Lead (use create_lead)",
-            "User wants to create an Opportunity (use create_opportunity)",
-            "User wants to create a Case (use create_case)",
-        ],
-        typical_queries=[
-            "Create a custom object record in Salesforce",
-            "Add a new record to the Custom_Object__c",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="write")],
     )
     async def create_record(
         self, sobject: str, data: SalesforceFieldMap | None = None
@@ -672,33 +606,19 @@ class Salesforce:
             return self._error_response(str(e))
 
     @tool(
-        app_name="salesforce",
-        tool_name="update_record",
-        description="Update an existing Salesforce record",
-        llm_description=(
-            "Updates an existing record by ID. Provide the object API name, record ID, and a dictionary "
-            "of field-value pairs to update under the `data` key (do NOT flatten field names to top-level "
-            "arguments). Only include fields that should change."
+        path="/tools/salesforce/update_record",
+        short_description="Update an existing Salesforce record",
+        description=(
+            "Updates an existing Salesforce record by ID. Provide the object API name, record ID, and a "
+            "dictionary of field-value pairs to update under the `data` key. Only include fields that "
+            "should change. For creating new records use create_record or specialized create tools."
         ),
-        args_schema=UpdateRecordInput,
-        returns="JSON confirming the update",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to update or modify a Salesforce record",
-            "User asks to change fields on an existing record",
+        parameters=[
+            ToolParameter(name="sobject", type=ParameterType.STRING, description="The Salesforce object API name (e.g., 'Account', 'Contact')", required=True),
+            ToolParameter(name="record_id", type=ParameterType.STRING, description="The 15 or 18-character Salesforce record ID", required=True),
+            ToolParameter(name="data", type=ParameterType.OBJECT, description="Field-value pairs to update (e.g., {\"Name\": \"New Name\"})", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a new record (use create_record or specialized create tools)",
-            "User wants to delete a record (use delete_record)",
-        ],
-        typical_queries=[
-            "Update the account name to 'New Acme Corp'",
-            "Change the opportunity stage to 'Closed Won'",
-            "Update the contact's email address",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="write")],
     )
     async def update_record(
         self,
@@ -993,39 +913,19 @@ class Salesforce:
         )
 
     @tool(
-        app_name="salesforce",
-        tool_name="upload_file_to_salesforce",
+        path="/tools/salesforce/upload_file_to_salesforce",
+        short_description="Upload staged files to Salesforce Files storage",
         description=(
-            "Upload staged files to Salesforce Files storage."       
+            "Upload up to 10 staged files into Salesforce Files by passing their `document_ids` "
+            "(from a *_to_blob staging tool). Returns per-file results with content_document_id. "
+            "Use the output content_document_id with attach_file_to_record to link uploaded files "
+            "to Salesforce records. The file must already be staged in PipesHub blob storage; "
+            "if the file is already in Salesforce, use attach_file_to_record directly."
         ),
-        llm_description=(
-            "Upload up to 10 staged files into Salesforce Files by passing "
-            "their `document_ids` (from a *_to_blob tool); returns per-file "
-            "results. Use output `content_document_id` with "
-            "attach_file_to_record to link the uploaded file(s) to "
-            "Salesforce records."
-        ),
-        args_schema=UploadFileToSalesforceInput,
-        returns=(
-            "JSON object with 'results' (list of outcomes per document_id, each with keys like content_version_id, content_document_id, filename, mime_type, size_bytes, weburl_content_document_id, or 'error' on failure), plus overall 'succeeded' and 'failed' counts"
-        ),
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "Need to land file(s) from another platform into Salesforce Files",
-            "Have documentId(s) from a *_to_blob staging tool",
-            "Planning to attach the same file(s) to one or more Salesforce records",
+        parameters=[
+            ToolParameter(name="document_ids", type=ParameterType.ARRAY, description="List of documentIds registered by a producer tool (1-10 ids per call)", required=True),
         ],
-        when_not_to_use=[
-            "The file is not staged in PipesHub blob storage yet",
-            "The file is already in Salesforce — use attach_file_to_record directly",
-        ],
-        typical_queries=[
-            "Upload these Outlook attachments to Salesforce",
-            "Put the staged files into Salesforce Files",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="write")],
     )
     async def upload_file_to_salesforce(
         self,
@@ -1142,43 +1042,22 @@ class Salesforce:
             return False, json.dumps({SF_JSON_ERROR_KEY: str(e)})
 
     @tool(
-        app_name="salesforce",
-        tool_name="attach_file_to_record",
+        path="/tools/salesforce/attach_file_to_record",
+        short_description="Link a Salesforce file to a record",
         description=(
-            "Link a Salesforce file to a record."       
+            "Creates a ContentDocumentLink between a content_document_id and a record_id, making the "
+            "file visible on the record's Files / Notes & Attachments related list. Usable after "
+            "upload_file_to_salesforce or on its own for existing Salesforce files. Call once per target "
+            "record; the same content_document_id can be linked to multiple records without re-upload. "
+            "The file must already exist in Salesforce — use upload_file_to_salesforce first if needed."
         ),
-        llm_description=(
-            "Step 2 of the cross-platform file transfer flow (and also "
-            "usable on its own to attach an existing Salesforce file to a "
-            "new record). Creates a ContentDocumentLink between "
-            "content_document_id and record_id with the given share_type "
-            "and visibility. The file becomes visible on the record's "
-            "Files / Notes & Attachments related list. Call this once per "
-            "target record; the same content_document_id can be linked to "
-            "multiple records cheaply (no re-upload)."
-        ),
-        args_schema=AttachFileToRecordInput,
-        returns=(
-            "JSON with content_document_link_id, content_document_id, and "
-            "linked_record_id"
-        ),
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "Have a content_document_id and want it visible on a Salesforce record",
-            "After upload_file_to_salesforce, to land the file on Opportunity/Account/Case/etc.",
-            "Linking the same Salesforce file to multiple records",
+        parameters=[
+            ToolParameter(name="content_document_id", type=ParameterType.STRING, description="ContentDocumentId of the file to attach (15/18-char ID starting with '069')", required=True),
+            ToolParameter(name="record_id", type=ParameterType.STRING, description="Salesforce record ID to attach the file to (15 or 18 chars)", required=True),
+            ToolParameter(name="share_type", type=ParameterType.STRING, description="ContentDocumentLink ShareType: 'V' (Viewer), 'C' (Collaborator), or 'I' (Inferred). Defaults to 'V'.", required=False),
+            ToolParameter(name="visibility", type=ParameterType.STRING, description="ContentDocumentLink Visibility: 'AllUsers' or 'InternalUsers'. Defaults to 'AllUsers'.", required=False),
         ],
-        when_not_to_use=[
-            "The file is not yet in Salesforce — use upload_file_to_salesforce first",
-            "Only have a ContentVersion id (069 starts ContentDocument; 068 starts ContentVersion)",
-        ],
-        typical_queries=[
-            "Attach this Salesforce file to opportunity 006xx0000012345",
-            "Link the contract document to all three accounts",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="write")],
     )
     async def attach_file_to_record(
         self,
@@ -1237,38 +1116,18 @@ class Salesforce:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="salesforce",
-        tool_name="describe_object",
-        description="Get full Salesforce describe metadata for an object (fields, types, picklists)",
-        llm_description=(
-            "Returns the full Salesforce describe payload for an sObject: fields, types, "
-            "relationships, and picklist metadata. Inactive picklist entries are removed from "
-            "each field's picklistValues so only assignable values remain. Use this before "
-            "create_record or update_record when you need field API names, types, or valid "
-            "picklist values."
+        path="/tools/salesforce/describe_object",
+        short_description="Get Salesforce object metadata (fields, types, picklists)",
+        description=(
+            "Returns the full Salesforce describe payload for an sObject: fields, types, relationships, "
+            "and picklist metadata. Inactive picklist entries are filtered out so only assignable values "
+            "remain. Use before create_record or update_record to discover field API names, types, or "
+            "valid picklist values. For querying actual data use soql_query or search tools."
         ),
-        args_schema=DescribeObjectInput,
-        returns="JSON with object metadata including fields, relationships, and picklist values",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to know what fields are available on a Salesforce object",
-            "User needs to discover field names before running a query",
-            "User asks about the schema or structure of a Salesforce object",
-            "User wants to see picklist values for a field",
+        parameters=[
+            ToolParameter(name="sobject", type=ParameterType.STRING, description="The Salesforce object API name to describe (e.g., 'Account', 'Opportunity')", required=True),
         ],
-        when_not_to_use=[
-            "User wants to query actual data (use soql_query or search tools)",
-            "User wants to create or update a record (use create/update tools)",
-        ],
-        typical_queries=[
-            "What fields does the Account object have?",
-            "Describe the Opportunity object in Salesforce",
-            "What are the picklist values for Case Status?",
-            "Show me the schema for the Lead object",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="read")],
     )
     async def describe_object(self, sobject: str) -> tuple[bool, str]:
         """Describe a Salesforce object's metadata."""
@@ -1318,33 +1177,18 @@ class Salesforce:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="salesforce",
-        tool_name="list_recent_records",
-        description="List recently viewed records of a Salesforce object",
-        llm_description=(
+        path="/tools/salesforce/list_recent_records",
+        short_description="List recently viewed records of a Salesforce object",
+        description=(
             "Lists the most recently viewed or modified records for a given Salesforce object type. "
-            "Useful for getting a quick overview without constructing a full SOQL query."
+            "Useful for a quick overview without constructing a SOQL query. For records matching "
+            "specific criteria use search tools or soql_query; for a known record ID use get_record."
         ),
-        args_schema=ListRecentRecordsInput,
-        returns="JSON with a list of recent records",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to see recent accounts, contacts, or other records",
-            "User asks for the latest or most recent records of a type",
-            "User wants a quick overview of records without specific filters",
+        parameters=[
+            ToolParameter(name="sobject", type=ParameterType.STRING, description="The Salesforce object API name (e.g., 'Account', 'Contact')", required=True),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of recent records to return (default 10, max 50)", required=False),
         ],
-        when_not_to_use=[
-            "User wants specific records matching criteria (use search tools or soql_query)",
-            "User knows the exact record ID (use get_record)",
-        ],
-        typical_queries=[
-            "Show me recent accounts",
-            "List my latest opportunities",
-            "What are the most recent cases?",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="read")],
     )
     async def list_recent_records(
         self, sobject: str, limit: int = 10
@@ -1375,33 +1219,19 @@ class Salesforce:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="salesforce",
-        tool_name="search_accounts",
-        description="Search for Salesforce accounts",
-        llm_description=(
-            "Searches Salesforce Account records by name and/or industry. "
-            "Returns key fields: Id, Name, Industry, Phone, Website, Type, BillingCity, BillingState. "
-            "For more complex account queries, use soql_query."
+        path="/tools/salesforce/search_accounts",
+        short_description="Search for Salesforce accounts",
+        description=(
+            "Searches Salesforce Account records by name and/or industry. Returns key fields: "
+            "Id, Name, Industry, Phone, Website, Type, BillingCity, BillingState. "
+            "For complex queries with many conditions use soql_query; for cross-object search use sosl_search."
         ),
-        args_schema=SearchAccountsInput,
-        returns="JSON with matching account records",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to find accounts in Salesforce",
-            "User asks to list or search for companies/organizations in Salesforce",
+        parameters=[
+            ToolParameter(name="name", type=ParameterType.STRING, description="Account name to search for (partial match supported)", required=False),
+            ToolParameter(name="industry", type=ParameterType.STRING, description="Filter by industry", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of results (default 10, max 50)", required=False),
         ],
-        when_not_to_use=[
-            "User wants a complex query with many conditions (use soql_query)",
-            "User wants to search across multiple object types (use sosl_search)",
-        ],
-        typical_queries=[
-            "Search for accounts named Acme",
-            "Find all Technology industry accounts",
-            "list accounts matching 'Global'",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="search")],
     )
     async def search_accounts(
         self,
@@ -1428,32 +1258,25 @@ class Salesforce:
             return self._error_response(str(e))
 
     @tool(
-        app_name="salesforce",
-        tool_name="create_account",
-        description="Create a new Salesforce account",
-        llm_description=(
-            "Creates a new Account in Salesforce. Only the Name field is required. "
-            "Optionally provide Industry, Phone, Website, Description, and billing address fields. "
-            "Do not ask the user for optional fields they did not provide."
+        path="/tools/salesforce/create_account",
+        short_description="Create a new Salesforce account",
+        description=(
+            "Creates a new Account in Salesforce. Only Name is required. Optionally provide Industry, "
+            "Phone, Website, Description, and billing address fields. Do not ask the user for optional "
+            "fields they did not provide. To update an existing account use update_record; for Contacts, "
+            "Leads, or Opportunities use their dedicated create tools."
         ),
-        args_schema=CreateAccountInput,
-        returns="JSON with the created account ID",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to create a new account/company in Salesforce",
-            "User asks to add a new organization to the CRM",
+        parameters=[
+            ToolParameter(name="name", type=ParameterType.STRING, description="Account name (required)", required=True),
+            ToolParameter(name="industry", type=ParameterType.STRING, description="Industry", required=False),
+            ToolParameter(name="phone", type=ParameterType.STRING, description="Phone number", required=False),
+            ToolParameter(name="website", type=ParameterType.STRING, description="Website URL", required=False),
+            ToolParameter(name="description", type=ParameterType.STRING, description="Account description", required=False),
+            ToolParameter(name="billing_city", type=ParameterType.STRING, description="Billing city", required=False),
+            ToolParameter(name="billing_state", type=ParameterType.STRING, description="Billing state/province", required=False),
+            ToolParameter(name="billing_country", type=ParameterType.STRING, description="Billing country", required=False),
         ],
-        when_not_to_use=[
-            "User wants to update an existing account (use update_record)",
-            "User wants to create a Contact, Lead, or Opportunity (use their dedicated tools)",
-        ],
-        typical_queries=[
-            "Create a new account named Acme Corp",
-            "Add a new company called TechStart to Salesforce",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="write")],
     )
     async def create_account(
         self,
@@ -1497,33 +1320,20 @@ class Salesforce:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="salesforce",
-        tool_name="search_contacts",
-        description="Search for Salesforce contacts",
-        llm_description=(
-            "Searches Salesforce Contact records by name, email, or parent account. "
-            "Returns key fields: Id, Name, Email, Phone, Title, Account.Name. "
-            "For more complex queries, use soql_query."
+        path="/tools/salesforce/search_contacts",
+        short_description="Search for Salesforce contacts",
+        description=(
+            "Searches Salesforce Contact records by name, email, or parent account. Returns key fields: "
+            "Id, Name, Email, Phone, Title, Account.Name. For complex queries use soql_query; "
+            "for Leads use search_leads instead."
         ),
-        args_schema=SearchContactsInput,
-        returns="JSON with matching contact records",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to find contacts in Salesforce",
-            "User asks to search for a person's contact details in the CRM",
+        parameters=[
+            ToolParameter(name="name", type=ParameterType.STRING, description="Contact name to search for (partial match supported)", required=False),
+            ToolParameter(name="email", type=ParameterType.STRING, description="Filter by email address", required=False),
+            ToolParameter(name="account_id", type=ParameterType.STRING, description="Filter by parent Account ID", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of results (default 10, max 50)", required=False),
         ],
-        when_not_to_use=[
-            "User wants a complex query (use soql_query)",
-            "User is looking for Leads, not Contacts (use search_leads)",
-        ],
-        typical_queries=[
-            "Search for contacts named John",
-            "Find contacts with email @acme.com",
-            "List contacts for account 001XXXXXXXXXXXX",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="search")],
     )
     async def search_contacts(
         self,
@@ -1553,32 +1363,23 @@ class Salesforce:
             return self._error_response(str(e))
 
     @tool(
-        app_name="salesforce",
-        tool_name="create_contact",
-        description="Create a new Salesforce contact",
-        llm_description=(
-            "Creates a new Contact in Salesforce. LastName is required. "
-            "Optionally provide FirstName, Email, Phone, Title, AccountId, and Department. "
-            "Do not ask the user for optional fields they did not provide."
+        path="/tools/salesforce/create_contact",
+        short_description="Create a new Salesforce contact",
+        description=(
+            "Creates a new Contact in Salesforce. LastName is required. Optionally provide FirstName, "
+            "Email, Phone, Title, AccountId, and Department. Do not ask the user for optional fields "
+            "they did not provide. For Leads use create_lead; to update an existing contact use update_record."
         ),
-        args_schema=CreateContactInput,
-        returns="JSON with the created contact ID",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to create a new contact in Salesforce",
-            "User asks to add a person to the CRM",
+        parameters=[
+            ToolParameter(name="last_name", type=ParameterType.STRING, description="Last name (required)", required=True),
+            ToolParameter(name="first_name", type=ParameterType.STRING, description="First name", required=False),
+            ToolParameter(name="email", type=ParameterType.STRING, description="Email address", required=False),
+            ToolParameter(name="phone", type=ParameterType.STRING, description="Phone number", required=False),
+            ToolParameter(name="title", type=ParameterType.STRING, description="Job title", required=False),
+            ToolParameter(name="account_id", type=ParameterType.STRING, description="Parent Account ID to associate this contact with", required=False),
+            ToolParameter(name="department", type=ParameterType.STRING, description="Department", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a Lead (use create_lead)",
-            "User wants to update an existing contact (use update_record)",
-        ],
-        typical_queries=[
-            "Create a contact for John Doe at Acme",
-            "Add a new contact with email john@example.com",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="write")],
     )
     async def create_contact(
         self,
@@ -1620,33 +1421,20 @@ class Salesforce:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="salesforce",
-        tool_name="search_leads",
-        description="Search for Salesforce leads",
-        llm_description=(
-            "Searches Salesforce Lead records by name, company, or status. "
-            "Returns key fields: Id, Name, Company, Email, Phone, Status, LeadSource. "
-            "For more complex queries, use soql_query."
+        path="/tools/salesforce/search_leads",
+        short_description="Search for Salesforce leads",
+        description=(
+            "Searches Salesforce Lead records by name, company, or status. Returns key fields: "
+            "Id, Name, Company, Email, Phone, Status, LeadSource. For existing Contacts use "
+            "search_contacts; for complex queries use soql_query."
         ),
-        args_schema=SearchLeadsInput,
-        returns="JSON with matching lead records",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to find leads in Salesforce",
-            "User asks to search for prospects or potential customers",
+        parameters=[
+            ToolParameter(name="name", type=ParameterType.STRING, description="Lead name to search for (partial match supported)", required=False),
+            ToolParameter(name="company", type=ParameterType.STRING, description="Filter by company name", required=False),
+            ToolParameter(name="status", type=ParameterType.STRING, description="Filter by lead status (e.g., 'Open - Not Contacted', 'Working - Contacted')", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of results (default 10, max 50)", required=False),
         ],
-        when_not_to_use=[
-            "User is looking for existing Contacts (use search_contacts)",
-            "User wants a complex query (use soql_query)",
-        ],
-        typical_queries=[
-            "Search for leads from Acme company",
-            "Find all open leads",
-            "List leads with status 'Working - Contacted'",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="search")],
     )
     async def search_leads(
         self,
@@ -1676,32 +1464,25 @@ class Salesforce:
             return self._error_response(str(e))
 
     @tool(
-        app_name="salesforce",
-        tool_name="create_lead",
-        description="Create a new Salesforce lead",
-        llm_description=(
-            "Creates a new Lead in Salesforce. LastName and Company are required. "
-            "Optionally provide FirstName, Email, Phone, Title, Status, and Industry. "
-            "Do not ask the user for optional fields they did not provide."
+        path="/tools/salesforce/create_lead",
+        short_description="Create a new Salesforce lead",
+        description=(
+            "Creates a new Lead in Salesforce. LastName and Company are required. Optionally provide "
+            "FirstName, Email, Phone, Title, Status, and Industry. Do not ask the user for optional "
+            "fields they did not provide. For Contacts use create_contact; to convert a lead use "
+            "update_record to change its status."
         ),
-        args_schema=CreateLeadInput,
-        returns="JSON with the created lead ID",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to create a new lead in Salesforce",
-            "User asks to add a prospect or potential customer",
+        parameters=[
+            ToolParameter(name="last_name", type=ParameterType.STRING, description="Last name (required)", required=True),
+            ToolParameter(name="company", type=ParameterType.STRING, description="Company name (required)", required=True),
+            ToolParameter(name="first_name", type=ParameterType.STRING, description="First name", required=False),
+            ToolParameter(name="email", type=ParameterType.STRING, description="Email address", required=False),
+            ToolParameter(name="phone", type=ParameterType.STRING, description="Phone number", required=False),
+            ToolParameter(name="title", type=ParameterType.STRING, description="Job title", required=False),
+            ToolParameter(name="status", type=ParameterType.STRING, description="Lead status (e.g., 'Open - Not Contacted')", required=False),
+            ToolParameter(name="industry", type=ParameterType.STRING, description="Industry", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a Contact (use create_contact)",
-            "User wants to convert a lead (use update_record to change status)",
-        ],
-        typical_queries=[
-            "Create a lead for Jane Doe from TechCorp",
-            "Add a new lead with email jane@techcorp.com",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="write")],
     )
     async def create_lead(
         self,
@@ -1745,33 +1526,20 @@ class Salesforce:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="salesforce",
-        tool_name="search_opportunities",
-        description="Search for Salesforce opportunities",
-        llm_description=(
-            "Searches Salesforce Opportunity records by name, stage, or parent account. "
-            "Returns key fields: Id, Name, StageName, Amount, CloseDate, Probability, Account.Name. "
-            "For more complex queries, use soql_query."
+        path="/tools/salesforce/search_opportunities",
+        short_description="Search for Salesforce opportunities",
+        description=(
+            "Searches Salesforce Opportunity records by name, stage, or parent account. Returns key fields: "
+            "Id, Name, StageName, Amount, CloseDate, Probability, Account.Name. For complex queries with "
+            "many conditions or aggregate pipeline data use soql_query."
         ),
-        args_schema=SearchOpportunitiesInput,
-        returns="JSON with matching opportunity records",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to find opportunities or deals in Salesforce",
-            "User asks about the sales pipeline",
+        parameters=[
+            ToolParameter(name="name", type=ParameterType.STRING, description="Opportunity name to search for (partial match supported)", required=False),
+            ToolParameter(name="stage", type=ParameterType.STRING, description="Filter by stage name (e.g., 'Prospecting', 'Qualification', 'Closed Won')", required=False),
+            ToolParameter(name="account_id", type=ParameterType.STRING, description="Filter by parent Account ID", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of results (default 10, max 50)", required=False),
         ],
-        when_not_to_use=[
-            "User wants a complex query with many conditions (use soql_query)",
-            "User wants aggregate pipeline data (use soql_query with SUM/COUNT)",
-        ],
-        typical_queries=[
-            "Search for opportunities in the Qualification stage",
-            "Find all open deals for account Acme",
-            "List opportunities closing this month",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="search")],
     )
     async def search_opportunities(
         self,
@@ -1801,32 +1569,24 @@ class Salesforce:
             return self._error_response(str(e))
 
     @tool(
-        app_name="salesforce",
-        tool_name="create_opportunity",
-        description="Create a new Salesforce opportunity",
-        llm_description=(
+        path="/tools/salesforce/create_opportunity",
+        short_description="Create a new Salesforce opportunity",
+        description=(
             "Creates a new Opportunity in Salesforce. Name, StageName, and CloseDate are required. "
-            "Optionally provide AccountId, Amount, Description, and Probability. "
-            "CloseDate must be in YYYY-MM-DD format. Do not ask the user for optional fields they did not provide."
+            "CloseDate must be in YYYY-MM-DD format. Optionally provide AccountId, Amount, Description, "
+            "and Probability. Do not ask the user for optional fields they did not provide. "
+            "To update an existing opportunity use update_record."
         ),
-        args_schema=CreateOpportunityInput,
-        returns="JSON with the created opportunity ID",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to create a new opportunity or deal in Salesforce",
-            "User asks to add a new sales opportunity",
+        parameters=[
+            ToolParameter(name="name", type=ParameterType.STRING, description="Opportunity name (required)", required=True),
+            ToolParameter(name="stage_name", type=ParameterType.STRING, description="Stage name (required, e.g., 'Prospecting', 'Qualification')", required=True),
+            ToolParameter(name="close_date", type=ParameterType.STRING, description="Expected close date in YYYY-MM-DD format (required)", required=True),
+            ToolParameter(name="account_id", type=ParameterType.STRING, description="Parent Account ID", required=False),
+            ToolParameter(name="amount", type=ParameterType.FLOAT, description="Opportunity amount", required=False),
+            ToolParameter(name="description", type=ParameterType.STRING, description="Opportunity description", required=False),
+            ToolParameter(name="probability", type=ParameterType.FLOAT, description="Probability percentage (0-100)", required=False),
         ],
-        when_not_to_use=[
-            "User wants to update an existing opportunity (use update_record)",
-            "User wants to create an Account or Contact (use their dedicated tools)",
-        ],
-        typical_queries=[
-            "Create an opportunity named 'Enterprise Deal' at Qualification stage closing 2025-12-31",
-            "Add a new $50,000 deal for Acme Corp",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="write")],
     )
     async def create_opportunity(
         self,
@@ -1870,33 +1630,21 @@ class Salesforce:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="salesforce",
-        tool_name="search_cases",
-        description="Search for Salesforce cases",
-        llm_description=(
+        path="/tools/salesforce/search_cases",
+        short_description="Search for Salesforce cases",
+        description=(
             "Searches Salesforce Case records by subject, status, priority, or parent account. "
             "Returns key fields: Id, CaseNumber, Subject, Status, Priority, Origin, Account.Name. "
-            "For more complex queries, use soql_query."
+            "For complex queries with many conditions use soql_query; for cross-object search use sosl_search."
         ),
-        args_schema=SearchCasesInput,
-        returns="JSON with matching case records",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to find support cases in Salesforce",
-            "User asks about open or escalated cases",
+        parameters=[
+            ToolParameter(name="subject", type=ParameterType.STRING, description="Case subject to search for (partial match supported)", required=False),
+            ToolParameter(name="status", type=ParameterType.STRING, description="Filter by case status (e.g., 'New', 'Working', 'Escalated', 'Closed')", required=False),
+            ToolParameter(name="priority", type=ParameterType.STRING, description="Filter by priority (e.g., 'High', 'Medium', 'Low')", required=False),
+            ToolParameter(name="account_id", type=ParameterType.STRING, description="Filter by parent Account ID", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of results (default 10, max 50)", required=False),
         ],
-        when_not_to_use=[
-            "User wants a complex query with many conditions (use soql_query)",
-            "User wants to search across multiple objects (use sosl_search)",
-        ],
-        typical_queries=[
-            "Search for high priority cases",
-            "Find all open cases",
-            "List escalated cases for account Acme",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="search")],
     )
     async def search_cases(
         self,
@@ -1929,33 +1677,23 @@ class Salesforce:
             return self._error_response(str(e))
 
     @tool(
-        app_name="salesforce",
-        tool_name="create_case",
-        description="Create a new Salesforce case",
-        llm_description=(
-            "Creates a new Case (support ticket) in Salesforce. Subject is required. "
-            "Optionally provide Status, Priority, Origin, Description, AccountId, and ContactId. "
-            "Do not ask the user for optional fields they did not provide."
+        path="/tools/salesforce/create_case",
+        short_description="Create a new Salesforce case",
+        description=(
+            "Creates a new Case (support ticket) in Salesforce. Subject is required. Optionally provide "
+            "Status, Priority, Origin, Description, AccountId, and ContactId. Do not ask the user for "
+            "optional fields they did not provide. To update or close an existing case use update_record."
         ),
-        args_schema=CreateCaseInput,
-        returns="JSON with the created case ID",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to create a new support case in Salesforce",
-            "User asks to open a ticket or report an issue",
+        parameters=[
+            ToolParameter(name="subject", type=ParameterType.STRING, description="Case subject (required)", required=True),
+            ToolParameter(name="status", type=ParameterType.STRING, description="Case status (e.g., 'New', 'Working', 'Escalated')", required=False),
+            ToolParameter(name="priority", type=ParameterType.STRING, description="Priority (e.g., 'High', 'Medium', 'Low')", required=False),
+            ToolParameter(name="origin", type=ParameterType.STRING, description="Case origin (e.g., 'Phone', 'Email', 'Web')", required=False),
+            ToolParameter(name="description", type=ParameterType.STRING, description="Case description", required=False),
+            ToolParameter(name="account_id", type=ParameterType.STRING, description="Parent Account ID", required=False),
+            ToolParameter(name="contact_id", type=ParameterType.STRING, description="Associated Contact ID", required=False),
         ],
-        when_not_to_use=[
-            "User wants to update an existing case (use update_record)",
-            "User wants to close a case (use update_record to change Status to 'Closed')",
-        ],
-        typical_queries=[
-            "Create a case for 'Login issue'",
-            "Open a high priority support ticket",
-            "Create a new case for account Acme about billing",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="write")],
     )
     async def create_case(
         self,
@@ -1997,34 +1735,22 @@ class Salesforce:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="salesforce",
-        tool_name="search_products",
-        description="Search for Salesforce products",
-        llm_description=(
-            "Searches Salesforce Product2 records by name, product code, or family. "
-            "Returns key fields: Id, Name, ProductCode, Description, Family, IsActive, QuantityUnitOfMeasure. "
-            "By default only active products are returned. For complex queries, use soql_query."
+        path="/tools/salesforce/search_products",
+        short_description="Search for Salesforce products",
+        description=(
+            "Searches Salesforce Product2 records by name, product code, or family. Returns key fields: "
+            "Id, Name, ProductCode, Description, Family, IsActive, QuantityUnitOfMeasure. By default "
+            "only active products are returned. For line items on an opportunity use soql_query on "
+            "OpportunityLineItem; for complex queries use soql_query."
         ),
-        args_schema=SearchProductsInput,
-        returns="JSON with matching product records",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to find products in Salesforce",
-            "User asks to search the product catalog",
-            "User wants to look up a SKU or product code",
+        parameters=[
+            ToolParameter(name="name", type=ParameterType.STRING, description="Product name to search for (partial match supported)", required=False),
+            ToolParameter(name="product_code", type=ParameterType.STRING, description="Filter by product code (SKU)", required=False),
+            ToolParameter(name="family", type=ParameterType.STRING, description="Filter by product family", required=False),
+            ToolParameter(name="active_only", type=ParameterType.BOOLEAN, description="Only return active products. Default True.", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of results (default 10, max 50)", required=False),
         ],
-        when_not_to_use=[
-            "User wants line items on an opportunity (use soql_query on OpportunityLineItem)",
-            "User wants a complex query (use soql_query)",
-        ],
-        typical_queries=[
-            "Search for products named 'Pro Plan'",
-            "Find products in the Software family",
-            "Look up product SKU ABC-123",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="search")],
     )
     async def search_products(
         self,
@@ -2057,33 +1783,24 @@ class Salesforce:
             return self._error_response(str(e))
 
     @tool(
-        app_name="salesforce",
-        tool_name="create_product",
-        description="Create a new Salesforce product",
-        llm_description=(
-            "Creates a new Product2 record in Salesforce. Only Name is required. "
-            "Optionally provide ProductCode, Description, Family, IsActive, and QuantityUnitOfMeasure. "
-            "Note: To make the product sellable on opportunities, you must also create a PricebookEntry "
-            "in the standard pricebook (not handled by this tool). Do not ask the user for optional fields they did not provide."
+        path="/tools/salesforce/create_product",
+        short_description="Create a new Salesforce product",
+        description=(
+            "Creates a new Product2 record in Salesforce. Only Name is required. Optionally provide "
+            "ProductCode, Description, Family, IsActive, and QuantityUnitOfMeasure. To make the product "
+            "sellable on opportunities, also create a PricebookEntry. Do not ask the user for optional "
+            "fields they did not provide. To add an existing product to an opportunity use "
+            "add_product_to_opportunity; to update an existing product use update_record."
         ),
-        args_schema=CreateProductInput,
-        returns="JSON with the created product ID",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to add a new product to the Salesforce product catalog",
-            "User asks to create a SKU or product entry",
+        parameters=[
+            ToolParameter(name="name", type=ParameterType.STRING, description="Product name (required)", required=True),
+            ToolParameter(name="product_code", type=ParameterType.STRING, description="Product code / SKU", required=False),
+            ToolParameter(name="description", type=ParameterType.STRING, description="Product description", required=False),
+            ToolParameter(name="family", type=ParameterType.STRING, description="Product family", required=False),
+            ToolParameter(name="is_active", type=ParameterType.BOOLEAN, description="Whether the product is active. Default True.", required=False),
+            ToolParameter(name="quantity_unit_of_measure", type=ParameterType.STRING, description="Unit of measure (e.g., 'Each', 'Hours', 'Kg')", required=False),
         ],
-        when_not_to_use=[
-            "User wants to add an existing product to an opportunity (use add_product_to_opportunity)",
-            "User wants to update an existing product (use update_record)",
-        ],
-        typical_queries=[
-            "Create a product named 'Premium License'",
-            "Add a new product with code SKU-001",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="write")],
     )
     async def create_product(
         self,
@@ -2119,33 +1836,20 @@ class Salesforce:
             return self._error_response(str(e))
 
     @tool(
-        app_name="salesforce",
-        tool_name="list_pricebooks",
-        description="List Salesforce price books (Pricebook2)",
-        llm_description=(
-            "Lists Salesforce Pricebook2 records. Returns key fields: Id, Name, Description, "
-            "IsActive, IsStandard. By default all price books (active and inactive) are returned. "
-            "Use this to find a Pricebook Id needed for adding products to opportunities."
+        path="/tools/salesforce/list_pricebooks",
+        short_description="List Salesforce price books (Pricebook2)",
+        description=(
+            "Lists Salesforce Pricebook2 records. Returns key fields: Id, Name, Description, IsActive, "
+            "IsStandard. By default returns all price books (active and inactive). Use to find a "
+            "Pricebook Id needed for adding products to opportunities. For product entries within a "
+            "pricebook use soql_query on PricebookEntry."
         ),
-        args_schema=ListPricebooksInput,
-        returns="JSON with matching price book records",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to list available price books",
-            "User asks which pricebooks exist",
-            "User needs a Pricebook Id to add products to an opportunity",
+        parameters=[
+            ToolParameter(name="name", type=ParameterType.STRING, description="Price book name to search for (partial match supported)", required=False),
+            ToolParameter(name="active_only", type=ParameterType.BOOLEAN, description="Only return active price books. Default False.", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of results (default 20, max 200)", required=False),
         ],
-        when_not_to_use=[
-            "User wants product entries within a pricebook (use soql_query on PricebookEntry)",
-        ],
-        typical_queries=[
-            "List all price books",
-            "Show active pricebooks",
-            "Find the standard pricebook",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="search")],
     )
     async def list_pricebooks(
         self,
@@ -2172,33 +1876,21 @@ class Salesforce:
             return self._error_response(str(e))
 
     @tool(
-        app_name="salesforce",
-        tool_name="create_pricebook_entry",
-        description="Create a Salesforce pricebook entry (PricebookEntry)",
-        llm_description=(
-            "Creates a PricebookEntry in Salesforce to set a product's unit price within a specific pricebook. "
-            "Provide product_id (Product2 Id), pricebook_id (Pricebook2 Id), and unit_price. "
-            "This is required before a product can be sold from that pricebook."
+        path="/tools/salesforce/create_pricebook_entry",
+        short_description="Create a Salesforce pricebook entry",
+        description=(
+            "Creates a PricebookEntry in Salesforce to set a product's unit price within a specific "
+            "pricebook. Required before a product can be sold from that pricebook. Provide product_id, "
+            "pricebook_id, and unit_price. To create a new product use create_product; to add a product "
+            "directly to an opportunity use add_product_to_opportunity."
         ),
-        args_schema=CreatePricebookEntryInput,
-        returns="JSON with the created pricebook entry ID",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to add a product to a pricebook",
-            "User wants to set pricing for a product in a specific pricebook",
-            "User needs a PricebookEntry before adding a line item to an opportunity",
+        parameters=[
+            ToolParameter(name="product_id", type=ParameterType.STRING, description="The Product2 Id to add to the pricebook", required=True),
+            ToolParameter(name="pricebook_id", type=ParameterType.STRING, description="The Pricebook2 Id where the product should be listed", required=True),
+            ToolParameter(name="unit_price", type=ParameterType.FLOAT, description="Unit price for the product in this pricebook", required=True),
+            ToolParameter(name="is_active", type=ParameterType.BOOLEAN, description="Whether the pricebook entry is active. Default True.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a new product record (use create_product)",
-            "User wants to add a product directly to an opportunity (use add_product_to_opportunity)",
-        ],
-        typical_queries=[
-            "Create a pricebook entry for product 01t... in pricebook 01s... at 99.0",
-            "Set this product's unit price in the Standard Price Book",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="write")],
     )
     async def create_pricebook_entry(
         self,
@@ -2227,36 +1919,26 @@ class Salesforce:
             return self._error_response(str(e))
 
     @tool(
-        app_name="salesforce",
-        tool_name="add_product_to_opportunity",
-        description="Add a product line item to a Salesforce opportunity",
-        llm_description=(
-            "Adds a product to a Salesforce Opportunity by creating an OpportunityLineItem. "
-            "You must provide an opportunity_id and either a pricebook_entry_id directly, or a "
-            "product_id (the tool will look up the PricebookEntry on the opportunity's pricebook, "
-            "or on pricebook_id if supplied). Quantity defaults to 1. If unit_price is omitted, "
-            "the PricebookEntry's UnitPrice is used. Note: the opportunity must already have a "
-            "Pricebook2Id set for line items to be added."
+        path="/tools/salesforce/add_product_to_opportunity",
+        short_description="Add a product line item to a Salesforce opportunity",
+        description=(
+            "Adds a product to a Salesforce Opportunity by creating an OpportunityLineItem. Provide "
+            "opportunity_id and either pricebook_entry_id directly, or product_id (the tool looks up "
+            "the PricebookEntry on the opportunity's pricebook). Quantity defaults to 1; if unit_price "
+            "is omitted the PricebookEntry's UnitPrice is used. The opportunity must already have a "
+            "Pricebook2Id set. To create a new product use create_product; to update an existing line "
+            "item use update_record on OpportunityLineItem."
         ),
-        args_schema=AddProductToOpportunityInput,
-        returns="JSON with the created OpportunityLineItem ID",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to add a product to an opportunity",
-            "User wants to add a line item to a deal",
-            "User wants to attach a SKU to an opportunity",
+        parameters=[
+            ToolParameter(name="opportunity_id", type=ParameterType.STRING, description="The Salesforce Opportunity Id", required=True),
+            ToolParameter(name="pricebook_entry_id", type=ParameterType.STRING, description="The PricebookEntry Id for the product. If omitted, provide product_id.", required=False),
+            ToolParameter(name="product_id", type=ParameterType.STRING, description="The Product2 Id. Used to look up the PricebookEntry if pricebook_entry_id is not provided.", required=False),
+            ToolParameter(name="pricebook_id", type=ParameterType.STRING, description="The Pricebook2 Id for PricebookEntry lookup. If omitted, the opportunity's pricebook is used.", required=False),
+            ToolParameter(name="quantity", type=ParameterType.FLOAT, description="Quantity of the product (default 1)", required=False),
+            ToolParameter(name="unit_price", type=ParameterType.FLOAT, description="Unit sales price. If omitted, the PricebookEntry UnitPrice is used.", required=False),
+            ToolParameter(name="description", type=ParameterType.STRING, description="Optional line item description", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a new product in the catalog (use create_product)",
-            "User wants to update an existing line item (use update_record on OpportunityLineItem)",
-        ],
-        typical_queries=[
-            "Add product 01t... to opportunity 006...",
-            "Add 5 units of the Pro Plan product to this opportunity",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="write")],
     )
     async def add_product_to_opportunity(
         self,
@@ -2347,35 +2029,24 @@ class Salesforce:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="salesforce",
-        tool_name="search_tasks",
-        description="Search for Salesforce tasks",
-        llm_description=(
+        path="/tools/salesforce/search_tasks",
+        short_description="Search for Salesforce tasks",
+        description=(
             "Searches Salesforce Task records by subject, status, priority, owner, or related record. "
             "Returns key fields: Id, Subject, Status, Priority, ActivityDate, Owner.Name, What.Name, Who.Name. "
             "WhatId is the related record (Account, Opportunity, Case, etc.); WhoId is the related Contact or Lead. "
-            "For complex queries, use soql_query."
+            "For events/calendar items or complex queries use soql_query."
         ),
-        args_schema=SearchTasksInput,
-        returns="JSON with matching task records",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to find tasks or activities in Salesforce",
-            "User asks about their open or overdue tasks",
-            "User wants to see tasks for a specific account, opportunity, or contact",
+        parameters=[
+            ToolParameter(name="subject", type=ParameterType.STRING, description="Task subject to search for (partial match supported)", required=False),
+            ToolParameter(name="status", type=ParameterType.STRING, description="Filter by task status (e.g., 'Not Started', 'In Progress', 'Completed')", required=False),
+            ToolParameter(name="priority", type=ParameterType.STRING, description="Filter by priority (e.g., 'High', 'Normal', 'Low')", required=False),
+            ToolParameter(name="owner_id", type=ParameterType.STRING, description="Filter by task owner User ID", required=False),
+            ToolParameter(name="what_id", type=ParameterType.STRING, description="Filter by related record ID (Account, Opportunity, Case, etc.)", required=False),
+            ToolParameter(name="who_id", type=ParameterType.STRING, description="Filter by related Contact or Lead ID", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum number of results (default 10, max 50)", required=False),
         ],
-        when_not_to_use=[
-            "User wants events / calendar items (use soql_query on Event)",
-            "User wants a complex query (use soql_query)",
-        ],
-        typical_queries=[
-            "Show my open tasks",
-            "Find tasks for opportunity 006XXXXXXXXXXXX",
-            "List high priority tasks",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="search")],
     )
     async def search_tasks(
         self,
@@ -2414,35 +2085,26 @@ class Salesforce:
             return self._error_response(str(e))
 
     @tool(
-        app_name="salesforce",
-        tool_name="create_task",
-        description="Create a new Salesforce task",
-        llm_description=(
-            "Creates a new Task in Salesforce. Subject is required. "
-            "Use what_id to relate the task to an Account/Opportunity/Case (etc.) and who_id to relate to a Contact/Lead. "
-            "activity_date must be in YYYY-MM-DD format. owner_id defaults to the authenticated user when omitted. "
-            "Do not ask the user for optional fields they did not provide."
+        path="/tools/salesforce/create_task",
+        short_description="Create a new Salesforce task",
+        description=(
+            "Creates a new Task in Salesforce. Subject is required. Use what_id to relate the task to "
+            "an Account/Opportunity/Case and who_id to relate to a Contact/Lead. activity_date must be "
+            "in YYYY-MM-DD format. owner_id defaults to the authenticated user when omitted. Do not ask "
+            "the user for optional fields they did not provide. For calendar events use create_record on "
+            "Event; to update an existing task use update_record."
         ),
-        args_schema=CreateTaskInput,
-        returns="JSON with the created task ID",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to create a new task or to-do in Salesforce",
-            "User asks to add a follow-up activity for an account, contact, or opportunity",
-            "User wants to schedule a call/email/meeting as a task",
+        parameters=[
+            ToolParameter(name="subject", type=ParameterType.STRING, description="Task subject (required)", required=True),
+            ToolParameter(name="status", type=ParameterType.STRING, description="Task status (e.g., 'Not Started', 'In Progress', 'Completed')", required=False),
+            ToolParameter(name="priority", type=ParameterType.STRING, description="Priority (e.g., 'High', 'Normal', 'Low')", required=False),
+            ToolParameter(name="activity_date", type=ParameterType.STRING, description="Due date in YYYY-MM-DD format", required=False),
+            ToolParameter(name="description", type=ParameterType.STRING, description="Task description / comments", required=False),
+            ToolParameter(name="owner_id", type=ParameterType.STRING, description="User ID of the task owner. Defaults to the authenticated user.", required=False),
+            ToolParameter(name="what_id", type=ParameterType.STRING, description="Related record ID (Account, Opportunity, Case, etc.)", required=False),
+            ToolParameter(name="who_id", type=ParameterType.STRING, description="Related Contact or Lead ID", required=False),
         ],
-        when_not_to_use=[
-            "User wants a calendar event (use soql_query / create_record on Event instead)",
-            "User wants to update an existing task (use update_record)",
-        ],
-        typical_queries=[
-            "Create a task to follow up with John tomorrow",
-            "Add a high priority task for opportunity X",
-            "Create a 'Call' task for contact 003XXXXXXXXXXXX",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="write")],
     )
     async def create_task(
         self,
@@ -2486,36 +2148,19 @@ class Salesforce:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="salesforce",
-        tool_name="get_record_chatter",
-        description="Get the Chatter feed for a Salesforce record",
-        llm_description=(
+        path="/tools/salesforce/get_record_chatter",
+        short_description="Get the Chatter feed for a Salesforce record",
+        description=(
             "Returns the Chatter feed elements (posts, comments, updates) for any Salesforce record by ID — "
-            "Account, Opportunity, Case, Contact, Lead, or any other sObject. "
-            "Use this to summarize discussions, recent activity, or comments on a record. "
-            "If you only have a name, search for the record first (e.g., search_opportunities, search_accounts) "
-            "to get the ID, then call this tool."
+            "Account, Opportunity, Case, Contact, Lead, or any sObject. Use to summarize discussions, "
+            "recent activity, or comments on a record. If you only have a name, search for the record "
+            "first to get the ID. For the record's field data use get_record or search tools; for a "
+            "cross-record news feed use soql_query on FeedItem."
         ),
-        args_schema=GetRecordChatterInput,
-        returns="JSON with Chatter feed elements including posts, comments, authors, and timestamps",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User asks what is being discussed on a record's Chatter",
-            "User wants the latest Chatter posts/comments/activity for an opportunity, account, case, etc.",
-            "User asks to summarize discussion or collaboration on a Salesforce record",
+        parameters=[
+            ToolParameter(name="record_id", type=ParameterType.STRING, description="The Salesforce record ID whose Chatter feed should be fetched", required=True),
         ],
-        when_not_to_use=[
-            "User wants the record's field data (use get_record or search_*)",
-            "User wants their own news feed across all records (use soql_query on FeedItem)",
-        ],
-        typical_queries=[
-            "What is being discussed in the Acme opportunity's Chatter?",
-            "Show me the latest Chatter posts on account 001XXXXXXXXXXXX",
-            "Summarize the discussion on this case's feed",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="read")],
     )
     async def get_record_chatter(self, record_id: str) -> tuple[bool, str]:
         """Fetch the Chatter feed for a Salesforce record."""
@@ -2530,34 +2175,20 @@ class Salesforce:
             return self._error_response(str(e))
 
     @tool(
-        app_name="salesforce",
-        tool_name="post_chatter_comment",
-        description="Post a comment / reply on a Salesforce Chatter feed item",
-        llm_description=(
+        path="/tools/salesforce/post_chatter_comment",
+        short_description="Post a comment/reply on a Chatter feed item",
+        description=(
             "Adds a comment (reply) to an existing Chatter FeedElement. Provide the feed element ID "
-            "(starts with '0D5', obtained from get_record_chatter) and the comment text. "
-            "Use this when the user wants to reply to a specific Chatter post."
+            "(starts with '0D5', obtained from get_record_chatter) and the comment text. Use when "
+            "replying to a specific Chatter post. For creating a new top-level post use "
+            "post_chatter_to_record; for reading the feed use get_record_chatter."
         ),
-        args_schema=PostChatterCommentInput,
-        returns="JSON with the created comment details",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to reply to a Chatter post on a record",
-            "User asks to comment on a specific feed item",
-            "User wants to add a comment/reply to a discussion thread",
+        parameters=[
+            ToolParameter(name="feed_element_id", type=ParameterType.STRING, description="The Chatter FeedElement ID to reply to (starts with '0D5')", required=True),
+            ToolParameter(name="text", type=ParameterType.STRING, description="The comment text to post. When is_rich_text=True, supports markdown: **bold**, *italic*, [label](url).", required=True),
+            ToolParameter(name="is_rich_text", type=ParameterType.BOOLEAN, description="If True, text is parsed as markdown and posted as rich text. Default False.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a new top-level post on a record (use post_chatter_to_record)",
-            "User wants to read the feed (use get_record_chatter)",
-        ],
-        typical_queries=[
-            "Reply 'thanks!' to that Chatter post",
-            "Add a comment to feed item 0D5XXXXXXXXXXXX",
-            "Comment on the latest Chatter post on this opportunity",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="write")],
     )
     async def post_chatter_comment(
         self, feed_element_id: str, text: str, is_rich_text: bool = False
@@ -2584,34 +2215,20 @@ class Salesforce:
             return self._error_response(str(e))
 
     @tool(
-        app_name="salesforce",
-        tool_name="post_chatter_to_record",
-        description="Create a new Chatter post on a Salesforce record",
-        llm_description=(
+        path="/tools/salesforce/post_chatter_to_record",
+        short_description="Create a new Chatter post on a Salesforce record",
+        description=(
             "Creates a new top-level Chatter FeedItem on any record (Account, Opportunity, Case, etc.). "
-            "Provide the record ID and the post text. Use this when the user wants to start a new "
-            "Chatter discussion or post an update on a record. To reply to an existing post, use post_chatter_comment instead."
+            "Provide the record ID and the post text. Use when starting a new Chatter discussion or "
+            "posting an update. To reply to an existing post use post_chatter_comment; to read existing "
+            "posts use get_record_chatter."
         ),
-        args_schema=PostChatterToRecordInput,
-        returns="JSON with the created feed item details",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to post a new Chatter update on a record",
-            "User asks to share an update on an opportunity, account, or case",
-            "User wants to start a new Chatter discussion on a record",
+        parameters=[
+            ToolParameter(name="record_id", type=ParameterType.STRING, description="The Salesforce record ID to post to", required=True),
+            ToolParameter(name="text", type=ParameterType.STRING, description="The post text. When is_rich_text=True, supports markdown: **bold**, *italic*, [label](url).", required=True),
+            ToolParameter(name="is_rich_text", type=ParameterType.BOOLEAN, description="If True, text is parsed as markdown and posted as rich text. Default False.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to reply to an existing post (use post_chatter_comment)",
-            "User wants to read existing posts (use get_record_chatter)",
-        ],
-        typical_queries=[
-            "Post 'Closed won!' on the Acme opportunity Chatter",
-            "Add a Chatter update to account 001XXXXXXXXXXXX",
-            "Share a status update on this case",
-        ],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="write")],
     )
     async def post_chatter_to_record(
         self, record_id: str, text: str, is_rich_text: bool = False
@@ -2643,32 +2260,16 @@ class Salesforce:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="salesforce",
-        tool_name="get_current_user",
-        description="Get the current authenticated Salesforce user's info",
-        llm_description=(
-            "Returns information about the currently authenticated Salesforce user, including "
-            "their name, email, profile, and organization details."
+        path="/tools/salesforce/get_current_user",
+        short_description="Get the current authenticated Salesforce user's info",
+        description=(
+            "Returns information about the currently authenticated Salesforce user, including their "
+            "name, email, profile, and organization details. Use when the user wants to know who is "
+            "logged in or needs their Salesforce user ID. For other Salesforce users query the User "
+            "object with soql_query."
         ),
-        args_schema=GetUserInfoInput,
-        returns="JSON with user profile information",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.SEARCH,
-        is_essential=False,
-        requires_auth=True,
-        when_to_use=[
-            "User wants to know who is currently logged in to Salesforce",
-            "User asks about their Salesforce profile or organization",
-            "User needs their Salesforce user ID for other operations",
-        ],
-        when_not_to_use=[
-            "User is asking about a different Salesforce user (use soql_query on User object)",
-        ],
-        typical_queries=[
-            "Who am I in Salesforce?",
-            "Show my Salesforce user info",
-            "What is my Salesforce user ID?",
-        ],
+        parameters=[],
+        tags=[Tag(key="category", value="crm"), Tag(key="type", value="read")],
     )
     async def get_current_user(self) -> tuple[bool, str]:
         """Get the current authenticated user's info."""

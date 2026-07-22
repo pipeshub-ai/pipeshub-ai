@@ -235,92 +235,6 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Error initializing departments: {str(e)}")
             raise
 
-    async def _populate_tools_collections(self) -> None:
-        """Populate tools and tools_ctags collections from the tools registry"""
-        try:
-            # Lazy import to avoid circular dependencies
-            try:
-                from app.agents.tools.discovery import discover_tools
-                from app.agents.tools.registry import _global_tools_registry
-            except ImportError:
-                self.logger.debug("Tools registry not available, skipping tools population")
-                return
-
-            # Discover and register tools
-            self.logger.info("🔍 Discovering tools for Neo4j...")
-            discover_tools(self.logger)
-
-            tool_registry = _global_tools_registry
-            if not tool_registry:
-                self.logger.debug("No tools registry available, skipping tools population")
-                return
-
-            all_tools = tool_registry.get_all_tools()
-            if not all_tools:
-                self.logger.info("No tools found in registry")
-                return
-
-            self.logger.info(f"📦 Populating {len(all_tools)} tools into Neo4j...")
-
-            tools_to_upsert = []
-            ctags_to_upsert = []
-
-            for tool in all_tools.values():
-                tool_id = f"{tool.app_name}_{tool.tool_name}"
-
-                # Generate ctag
-                content = json.dumps({
-                    "description": tool.description,
-                    "parameters": [param.to_json_serializable_dict() for param in tool.parameters],
-                    "returns": tool.returns,
-                    "examples": tool.examples,
-                    "tags": tool.tags
-                }, sort_keys=True)
-                ctag = hashlib.md5(content.encode()).hexdigest()
-
-                # Check if tool exists
-                existing_tool = await self.get_document(tool_id, "tools")
-
-                if existing_tool and existing_tool.get("ctag") == ctag:
-                    # Tool hasn't changed, skip update
-                    continue
-
-                # Prepare tool node (convert _key to id for Neo4j)
-                tool_node = {
-                    "id": tool_id,
-                    "app_name": tool.app_name,
-                    "tool_name": tool.tool_name,
-                    "description": tool.description,
-                    "parameters": [param.to_json_serializable_dict() for param in tool.parameters],
-                    "returns": tool.returns,
-                    "examples": tool.examples,
-                    "tags": tool.tags,
-                    "ctag": ctag,
-                    "created_at": existing_tool.get("created_at") if existing_tool else datetime.now(timezone.utc).isoformat(),
-                    "updated_at": datetime.now(timezone.utc).isoformat()
-                }
-                tools_to_upsert.append(tool_node)
-
-                # Prepare ctag node
-                ctag_node = {
-                    "id": tool.app_name,
-                    "connector_name": tool.app_name,
-                    "ctag": ctag,
-                    "last_updated": datetime.now(timezone.utc).isoformat()
-                }
-                ctags_to_upsert.append(ctag_node)
-
-            # Batch upsert tools
-            if tools_to_upsert:
-                await self.batch_upsert_nodes(tools_to_upsert, "tools")
-            # Batch upsert ctags
-            if ctags_to_upsert:
-                await self.batch_upsert_nodes(ctags_to_upsert, "tools_ctags")
-
-        except Exception as e:
-            self.logger.warning(f"⚠️ Failed to populate tools collections: {str(e)}")
-            # Don't raise - tools population is not critical for provider initialization
-
     # ==================== Transaction Management ====================
 
     async def begin_transaction(self, read: list[str], write: list[str]) -> str:
@@ -16148,6 +16062,41 @@ class Neo4jProvider(IGraphDBProvider):
 
         return result_map
 
+    async def _project_agent_skills(
+        self, agent_id: str, transaction: str | None = None
+    ) -> list[dict]:
+        """Fetch skills explicitly assigned to a single agent (agentHasSkill -> AgentSkills).
+
+        Mirrors the ``linked_skills`` AQL subquery in the Arango provider's
+        ``get_agent``. Kept separate from ``_project_agents_toolsets_and_knowledge``
+        because, like Arango, skill enrichment is only needed for the single-agent
+        fetch (``get_agent``), not the list projection used by ``get_all_agents``.
+        Flat by design — a skill carries no sub-entities analogous to a toolset's tools.
+        """
+        agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+        skill_label = collection_to_label(CollectionNames.AGENT_SKILLS.value)
+        agent_has_skill_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_SKILL.value)
+
+        query = f"""
+        MATCH (agent:{agent_label} {{id: $agent_id}})-[:{agent_has_skill_rel}]->(skill:{skill_label})
+        RETURN skill.name AS name, skill.description AS description, skill.category AS category,
+               skill.subcategory AS subcategory, skill.version AS version, skill.status AS status
+        """
+        result = await self.client.execute_query(
+            query, parameters={"agent_id": agent_id}, txn_id=transaction
+        )
+        return [
+            {
+                "name": row["name"],
+                "description": row["description"],
+                "category": row["category"],
+                "subcategory": row["subcategory"],
+                "version": row["version"],
+                "status": row["status"],
+            }
+            for row in result or []
+        ]
+
     async def get_agent(self, agent_id: str, org_id: str | None = None, transaction: str | None = None) -> dict | None:
         """
         Fetch the complete agent document with linked graph data.
@@ -16159,6 +16108,7 @@ class Neo4jProvider(IGraphDBProvider):
         - Agent document
         - Linked toolsets with their tools (via agentHasToolset -> toolsetHasTool)
         - Linked knowledge with filters (via agentHasKnowledge)
+        - Linked skills (via agentHasSkill)
         - shareWithOrg flag (requires org_id to evaluate the ORG permission edge)
         """
         try:
@@ -16191,6 +16141,7 @@ class Neo4jProvider(IGraphDBProvider):
             agent_projection = projection.get(agent_id, {"toolsets": [], "knowledge": []})
             agent["toolsets"] = agent_projection["toolsets"]
             agent["knowledge"] = agent_projection["knowledge"]
+            agent["skills"] = await self._project_agent_skills(agent_id, transaction)
 
             # shareWithOrg: when org_id is provided match the specific org node;
             # when org_id is absent check whether any Orgs label node has a

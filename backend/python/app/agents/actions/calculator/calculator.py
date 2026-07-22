@@ -2,9 +2,8 @@ import logging
 
 from pydantic import BaseModel, Field
 
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -54,32 +53,16 @@ class Calculator:
         return ["add", "subtract", "multiply", "divide", "power", "square root", "cube root"]
 
     @tool(
-        app_name="calculator",
-        tool_name="calculate_single_operand",
-        args_schema=CalculatorSingleOperandInput,
-        llm_description="Calculate the result of a mathematical operation with a single operand (square root, cube root)",
-        category=ToolCategory.UTILITY,
-        is_essential=True,
-        requires_auth=False,
-        when_to_use=[
-            "User wants to calculate the square root of a number",
-            "User wants to calculate the cube root of a number",
+        path="/tools/calculator/calculate_single_operand",
+        short_description="Single-operand math (square root, cube root)",
+        description="Calculate the result of a mathematical operation with a single operand (square root, cube root).",
+        parameters=[
+            ToolParameter(name="a", type=ParameterType.FLOAT, description="The number to operate on", required=True),
+            ToolParameter(name="operation", type=ParameterType.STRING, description="Mathematical operation: 'sqrt' (square root), 'cbrt' (cube root)", required=True),
         ],
-        when_not_to_use=[
-            "User wants to calculate the result of a mathematical operation with two operands",
-        ],
-        primary_intent=ToolIntent.QUESTION,
-        typical_queries=[
-            "Calculate the square root of 16",
-            "Calculate the cube root of 27",
-            "Calculate the result of 16 + 27",
-            "Calculate the result of 16 - 27",
-            "Calculate the result of 16 * 27",
-            "Calculate the result of 16 / 27",
-            "Calculate the result of 16 ^ 27",
-        ]
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility")],
     )
-    def calculate_single_operand(self, a: float, operation: str) -> float:
+    async def calculate_single_operand(self, a: float, operation: str) -> float:
         """Calculate the result of a mathematical operation
         Args:
             a: The first number
@@ -96,29 +79,17 @@ class Calculator:
             raise ValueError(f"Invalid operation: {operation}")
 
     @tool(
-        app_name="calculator",
-        tool_name="calculate_two_operands",
-        args_schema=CalculatorTwoOperandsInput,
-        llm_description="Calculate the result of a mathematical operation with two operands (add, subtract, multiply, divide, power)",
-        category=ToolCategory.UTILITY,
-        is_essential=True,
-        requires_auth=False,
-        when_to_use=[
-            "User wants to calculate the result of a mathematical operation with two operands",
+        path="/tools/calculator/calculate_two_operands",
+        short_description="Two-operand math (add, subtract, multiply, divide, power)",
+        description="Calculate the result of a mathematical operation with two operands (add, subtract, multiply, divide, power).",
+        parameters=[
+            ToolParameter(name="a", type=ParameterType.FLOAT, description="The first number", required=True),
+            ToolParameter(name="b", type=ParameterType.FLOAT, description="The second number", required=True),
+            ToolParameter(name="operation", type=ParameterType.STRING, description="Mathematical operation: 'add', 'subtract', 'multiply', 'divide', 'power'", required=True),
         ],
-        when_not_to_use=[
-            "User wants to calculate the result of a mathematical operation with a single operand",
-        ],
-        primary_intent=ToolIntent.QUESTION,
-        typical_queries=[
-            "Calculate the result of 16 + 27",
-            "Calculate the result of 16 - 27",
-            "Calculate the result of 16 * 27",
-            "Calculate the result of 16 / 27",
-            "Calculate the result of 16 ^ 27",
-        ]
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="utility")],
     )
-    def calculate_two_operands(self, a: float, b: float, operation: str) -> float:
+    async def calculate_two_operands(self, a: float, b: float, operation: str) -> float:
         """Calculate the result of a mathematical operation
         Args:
             a: The first number

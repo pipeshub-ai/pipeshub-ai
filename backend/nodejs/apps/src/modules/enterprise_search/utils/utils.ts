@@ -9,6 +9,7 @@ import {
   IMessage,
   IMessageCitation,
   IMessageDocument,
+  IMessagePart,
 } from '../types/conversation.interfaces';
 import { IAIResponse } from '../types/conversation.interfaces';
 import mongoose, { ClientSession } from 'mongoose';
@@ -33,6 +34,7 @@ import {
   validateNoXSS,
   validateNoFormatSpecifiers,
 } from '../../../utils/xss-sanitization';
+import { AGUIEventType, frameAGUI, isAGUI, SSEProtocol } from './agui';
 
 const logger = new Logger({
   service: 'enterprise-search',
@@ -46,10 +48,10 @@ export const extractModelInfo = (
   defaultChatMode: string = 'quick',
 ): IAIModel => {
   // Use modelFriendlyName if provided and not empty, otherwise fallback to modelName for backward compatibility
-  const modelFriendlyName = body.modelFriendlyName && body.modelFriendlyName.trim() 
-    ? body.modelFriendlyName.trim() 
-    : (body.modelName || undefined);
-  
+  const modelFriendlyName = body.modelFriendlyName?.trim()
+    ? body.modelFriendlyName.trim()
+    : body.modelName || undefined;
+
   return {
     modelKey: body.modelKey || undefined,
     modelName: body.modelName || undefined,
@@ -69,7 +71,7 @@ export const buildUserQueryMessage = (
   content: query,
   contentFormat: 'MARKDOWN',
   ...(appliedFilters ? { appliedFilters } : {}),
-  modelInfo: chatMode ? { chatMode } as IAIModel : undefined,
+  modelInfo: chatMode ? ({ chatMode } as IAIModel) : undefined,
   ...(attachments && attachments.length > 0 ? { attachments } : {}),
   createdAt: new Date(),
   updatedAt: new Date(),
@@ -85,7 +87,9 @@ export const buildUserQueryMessage = (
 function extractSearchParameter(searchParam: unknown): string {
   // First check: reject arrays explicitly
   if (Array.isArray(searchParam)) {
-    throw new BadRequestError('Search parameter must be a string, not an array');
+    throw new BadRequestError(
+      'Search parameter must be a string, not an array',
+    );
   }
   // Second check: ensure it's a string type
   if (typeof searchParam !== 'string') {
@@ -250,41 +254,132 @@ export const buildAIResponseMessage = (
   // Include referenceData if present (IDs for follow-up queries)
   // This stores technical IDs that were in the response for later reference
   // Filter out invalid items (must have name and at least key or id)
-  if (aiResponse.data.referenceData && Array.isArray(aiResponse.data.referenceData)) {
+  if (
+    aiResponse.data.referenceData &&
+    Array.isArray(aiResponse.data.referenceData)
+  ) {
     message.referenceData = aiResponse.data.referenceData.filter((item) => {
       // Ensure item has name and at least one of key or id (id can be optional)
-      return item && item.name;
+      return item?.name;
     });
+  }
+
+  // Present only when PIPESHUB_PERSIST_REASONING=true on the Python side
+  // (see reasoning_persistence.py) — absent for every existing client/run.
+  if (
+    aiResponse.data.reasoning &&
+    Array.isArray(aiResponse.data.reasoning) &&
+    aiResponse.data.reasoning.length > 0
+  ) {
+    message.reasoning = aiResponse.data.reasoning;
+  }
+
+  // Ordered agent-activity transcript (`agui` protocol only — see
+  // TranscriptCollector/respond.py) — absent for the legacy protocol and
+  // for every pre-existing conversation. Copied through as-is: Python has
+  // already bounded every field (tool args/result previews, truncated
+  // reasoning) before this reaches Node, so no full external tool result
+  // ever lands in Mongo via this path.
+  if (
+    aiResponse.data.parts &&
+    Array.isArray(aiResponse.data.parts) &&
+    aiResponse.data.parts.length > 0
+  ) {
+    message.parts = aiResponse.data.parts;
   }
 
   return message;
 };
 
+// Reconstructs a bot turn's tool activity for `previousConversations[i].
+// tool_results`, in the exact shape `_convert_conversation_turn`
+// (factory.py) already parses (`tool_id`/`tool_name`/`args`/`result`/
+// `status`). Sourced from the already-persisted, already-bounded `parts`
+// transcript (see `messageSchema.parts` — the Python `TranscriptCollector`
+// caps every field before it ever reaches Mongo) rather than reviving a
+// full-payload tool-results field: resending untruncated external tool
+// output over the wire is exactly what `_tool_names_from_state` (Python,
+// agent_loop/respond.py) deliberately stopped doing.
+const toolResultsFromParts = (
+  parts?: IMessagePart[],
+): Array<{
+  tool_id?: string;
+  tool_name?: string;
+  args?: Record<string, unknown>;
+  result: string;
+  status: 'success' | 'error';
+}> => {
+  if (!parts || parts.length === 0) {
+    return [];
+  }
+  return parts
+    .filter((part) => part.type === 'tool_call' && part.toolName)
+    .map((part) => {
+      let args: Record<string, unknown> | undefined;
+      if (part.args) {
+        try {
+          const parsed = JSON.parse(part.args);
+          if (parsed && typeof parsed === 'object') {
+            args = parsed as Record<string, unknown>;
+          }
+        } catch {
+          // `args` wasn't a JSON object (already-summarized text) — the
+          // consumer falls back to {} for non-dict args, which is fine:
+          // the tool call's presence/result matters more than replaying
+          // its exact arguments.
+        }
+      }
+      return {
+        tool_id: part.toolCallId,
+        tool_name: part.toolName,
+        ...(args && { args }),
+        result: part.resultSummary || part.resultPreview || '',
+        status: part.status === 'failed' ? ('error' as const) : ('success' as const),
+      };
+    });
+};
+
 export const formatPreviousConversations = (messages: IMessage[]) => {
   return messages
-    .filter((msg) => msg.messageType !== 'error' && msg.messageType !== 'tool_call')
-    .map((msg) => ({
-      content: msg.content,
-      role: msg.messageType,
-      ...(msg.attachments && msg.attachments.length > 0 && {
-        attachments: msg.attachments,
-      }),
-      // Include referenceData for follow-up queries (IDs from tool responses)
-      ...(msg.referenceData && msg.referenceData.length > 0 && { referenceData: msg.referenceData }),
-    }));
+    .filter(
+      (msg) => msg.messageType !== 'error' && msg.messageType !== 'tool_call',
+    )
+    .map((msg) => {
+      const toolResults =
+        msg.messageType === 'bot_response'
+          ? toolResultsFromParts(msg.parts)
+          : [];
+      return {
+        content: msg.content,
+        role: msg.messageType,
+        ...(msg.attachments &&
+          msg.attachments.length > 0 && {
+            attachments: msg.attachments,
+          }),
+        // Include referenceData for follow-up queries (IDs from tool responses)
+        ...(msg.referenceData &&
+          msg.referenceData.length > 0 && {
+            referenceData: msg.referenceData,
+          }),
+        // Prior tool calls/results for this turn — lets the rebuilt agent
+        // see HOW a past answer was produced instead of text-only history
+        // (see `_convert_conversation_turn`, factory.py).
+        ...(toolResults.length > 0 && { tool_results: toolResults }),
+      };
+    });
 };
 
 export const getPaginationParams = (req: AuthenticatedUserRequest) => {
   try {
     // Validate and sanitize page and limit parameters for XSS
-    
+
     if (req.query?.page) {
       validateNoXSS(req.query.page as string, 'page parameter');
     }
     if (req.query?.limit) {
       validateNoXSS(req.query.limit as string, 'limit parameter');
     }
-    
+
     return safeParsePagination(
       req.query?.page as string | undefined,
       req.query?.limit as string | undefined,
@@ -345,17 +440,23 @@ export const buildFilter = (
     throw new BadRequestError('Either owned or shared must be true');
   }
   const filter: any = {
-    orgId: new mongoose.Types.ObjectId(`${orgId}`),
+    orgId: new mongoose.Types.ObjectId(orgId),
     isDeleted: false,
     isArchived: false,
     $or: [
-      ...(owned ? [{ userId: new mongoose.Types.ObjectId(`${userId}`) }] : []),
-      ...(shared ? [{
-        $and: [
-          { isShared: true },
-          { 'sharedWith.userId': new mongoose.Types.ObjectId(`${userId}`) },
-        ],
-      }] : [])
+      ...(owned ? [{ userId: new mongoose.Types.ObjectId(userId) }] : []),
+      ...(shared
+        ? [
+            {
+              $and: [
+                { isShared: true },
+                {
+                  'sharedWith.userId': new mongoose.Types.ObjectId(userId),
+                },
+              ],
+            },
+          ]
+        : []),
     ],
   };
 
@@ -367,18 +468,20 @@ export const buildFilter = (
   // Use helper function to safely extract and validate search parameter
   if (req.query.search) {
     const searchValue = extractSearchParameter(req.query.search);
-    
+
     // Validate search parameter for XSS
     validateNoXSS(searchValue, 'search parameter');
-    
+
     // Additional validation: limit search length
     if (searchValue.length > 1000) {
-      throw new BadRequestError('Search parameter too long (max 1000 characters)');
+      throw new BadRequestError(
+        'Search parameter too long (max 1000 characters)',
+      );
     }
-    
+
     // Escape special regex characters to prevent regex injection
     const escapedSearch = searchValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    
+
     filter.$and = [
       {
         $or: [
@@ -476,9 +579,7 @@ export const buildFiltersMetadata = (
     page = pagination.page;
     limit = pagination.limit;
   } catch (error: any) {
-    throw new BadRequestError(
-      error.message || 'Invalid pagination parameters',
-    );
+    throw new BadRequestError(error.message || 'Invalid pagination parameters');
   }
 
   addFilterIfApplied('page', page);
@@ -1140,32 +1241,34 @@ export const buildAgentConversationFilter = (
 ) => {
   const filter: any = {
     agentKey,
-    orgId: new mongoose.Types.ObjectId(`${orgId}`),
-    $or: [{ userId: new mongoose.Types.ObjectId(`${userId}`) }],
+    orgId: new mongoose.Types.ObjectId(orgId),
+    $or: [{ userId: new mongoose.Types.ObjectId(userId) }],
     isDeleted: false,
   };
 
   if (conversationId) {
-    filter._id = new mongoose.Types.ObjectId(`${conversationId}`);
+    filter._id = new mongoose.Types.ObjectId(conversationId);
   }
 
   // Handle search with XSS and format string validation
   // Use helper function to safely extract and validate search parameter
   if (req.query.search) {
     const searchValue = extractSearchParameter(req.query.search);
-    
+
     // Validate search parameter for XSS and format specifiers
     validateNoXSS(searchValue, 'search parameter');
     validateNoFormatSpecifiers(searchValue, 'search parameter');
-    
+
     // Additional validation: limit search length
     if (searchValue.length > 1000) {
-      throw new BadRequestError('Search parameter too long (max 1000 characters)');
+      throw new BadRequestError(
+        'Search parameter too long (max 1000 characters)',
+      );
     }
-    
+
     // Escape special regex characters to prevent regex injection
     const escapedSearch = searchValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    
+
     filter.$and = [
       {
         $or: [
@@ -1548,7 +1651,10 @@ export const deleteAgentConversation = async (
 /**
  * Initialize SSE response headers and send connection event
  */
-export const initializeSSEResponse = (res: Response): void => {
+export const initializeSSEResponse = (
+  res: Response,
+  protocol?: SSEProtocol,
+): void => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -1558,20 +1664,41 @@ export const initializeSSEResponse = (res: Response): void => {
   });
 
   res.write(
-    `event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`,
+    isAGUI(protocol)
+      ? frameAGUI(AGUIEventType.CUSTOM, {
+          name: 'conversation_created',
+          value: { message: 'SSE connection established' },
+        })
+      : `event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`,
   );
   (res as any).flush?.();
 };
 
 /**
- * Send error event to client with optional updated conversation
+ * Send error event to client with optional updated conversation.
+ *
+ * AG-UI mode: a true stream-level failure this proxy detected itself
+ * (never reached Python's own `RUN_FINISHED`/`RUN_ERROR`) — always
+ * `RUN_ERROR`, mirroring `AGUIFormatter.error` on the Python side.
  */
 export const sendSSEErrorEvent = async (
   res: Response,
   errorMessage: string,
   details?: string,
   conversation?: any,
+  protocol?: SSEProtocol,
 ): Promise<void> => {
+  if (isAGUI(protocol)) {
+    res.write(
+      frameAGUI(AGUIEventType.RUN_ERROR, {
+        message: errorMessage,
+        code: details ? 'streaming_error' : 'unknown_error',
+        ...(conversation ? { conversation } : {}),
+      }),
+    );
+    return;
+  }
+
   const errorData: any = {
     error: errorMessage,
   };
@@ -1588,7 +1715,9 @@ export const sendSSEErrorEvent = async (
 };
 
 /**
- * Send complete event to client with conversation data
+ * Send complete event to client with conversation data — `RUN_FINISHED`
+ * in AG-UI mode (mirrors `AGUIFormatter.answer_final`'s `RUN_FINISHED`,
+ * which is what this re-emission on top of), legacy `complete` otherwise.
  */
 export const sendSSECompleteEvent = (
   res: Response,
@@ -1596,6 +1725,7 @@ export const sendSSECompleteEvent = (
   recordsUsed: number,
   requestId: string,
   startTime: number,
+  protocol?: SSEProtocol,
 ): void => {
   const responsePayload = {
     conversation,
@@ -1608,7 +1738,11 @@ export const sendSSECompleteEvent = (
     },
   };
 
-  res.write(`event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`);
+  res.write(
+    isAGUI(protocol)
+      ? frameAGUI(AGUIEventType.RUN_FINISHED, { result: responsePayload })
+      : `event: complete\ndata: ${JSON.stringify(responsePayload)}\n\n`,
+  );
 };
 
 /**
@@ -1617,12 +1751,16 @@ export const sendSSECompleteEvent = (
 export const handleRegenerationStreamData = (
   chunk: Buffer,
   buffer: string,
-  existingConversation: IConversationDocument | IAgentConversationDocument | null,
+  existingConversation:
+    | IConversationDocument
+    | IAgentConversationDocument
+    | null,
   messageIndex: number,
   session: ClientSession | null,
   requestId: string,
   res: Response,
   onCompleteData: (data: IAIResponse) => void,
+  protocol?: SSEProtocol,
 ): string => {
   const chunkStr = chunk.toString();
   let newBuffer = buffer + chunkStr;
@@ -1631,6 +1769,7 @@ export const handleRegenerationStreamData = (
   newBuffer = events.pop() || '';
 
   let filteredChunk = '';
+  const agui = isAGUI(protocol);
 
   for (const event of events) {
     if (event.trim()) {
@@ -1644,7 +1783,94 @@ export const handleRegenerationStreamData = (
         .map((line) => line.replace(/^data: ?/, ''));
       const dataLine = dataLines.join('\n');
 
-      if (eventType === 'complete' && dataLine) {
+      if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
+        // Mirrors the legacy `complete` branch below — `result` on
+        // Python's RUN_FINISHED IS the same completion_data shape
+        // `complete.data` carries today (see `AGUIFormatter.answer_final`).
+        try {
+          const parsed = JSON.parse(dataLine);
+          onCompleteData(parsed.result ?? parsed);
+        } catch (parseError: any) {
+          logger.error('Failed to parse RUN_FINISHED event data', {
+            requestId,
+            parseError: parseError.message,
+            dataLine,
+          });
+          filteredChunk += event + '\n\n';
+        }
+      } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
+        try {
+          const errorData = JSON.parse(dataLine);
+          if (existingConversation && messageIndex >= 0) {
+            const errorMessage = errorData.message || 'Unknown error occurred';
+            replaceMessageWithError(
+              existingConversation,
+              messageIndex,
+              errorMessage,
+              session,
+              'streaming_error',
+              errorData.stack,
+            ).catch((err) => {
+              logger.error('Failed to replace message with error', {
+                requestId,
+                error: err.message,
+              });
+            });
+          }
+          filteredChunk += event + '\n\n';
+        } catch (parseError: any) {
+          logger.error('Failed to parse RUN_ERROR event data', {
+            requestId,
+            parseError: parseError.message,
+            dataLine,
+          });
+          filteredChunk += event + '\n\n';
+        }
+      } else if (
+        agui &&
+        eventType === AGUIEventType.CUSTOM &&
+        dataLine &&
+        existingConversation
+      ) {
+        try {
+          const eventData = JSON.parse(dataLine);
+          if (eventData?.name === 'ask_user_question' && eventData.value) {
+            const toolCallMessage = {
+              messageType: 'tool_call' as const,
+              content: '',
+              tools: [
+                {
+                  toolName: 'ask_user_question',
+                  toolResult: eventData.value.toolData ?? eventData.value,
+                },
+              ],
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            };
+            if ('agentKey' in existingConversation) {
+              void AgentConversation.findByIdAndUpdate(
+                existingConversation._id,
+                { $push: { messages: toolCallMessage } },
+              ).catch((saveErr: any) => {
+                logger.error(
+                  'Failed to persist ask_user_question tool_call message during regenerate',
+                  {
+                    requestId,
+                    conversationId: existingConversation._id,
+                    error: saveErr?.message,
+                  },
+                );
+              });
+            }
+          }
+        } catch (parseErr: any) {
+          logger.warn('Failed to parse CUSTOM event data during regenerate', {
+            requestId,
+            error: parseErr?.message,
+          });
+        }
+        filteredChunk += event + '\n\n';
+      } else if (!agui && eventType === 'complete' && dataLine) {
         try {
           const completeData = JSON.parse(dataLine);
           onCompleteData(completeData);
@@ -1656,7 +1882,7 @@ export const handleRegenerationStreamData = (
           });
           filteredChunk += event + '\n\n';
         }
-      } else if (eventType === 'error' && dataLine) {
+      } else if (!agui && eventType === 'error' && dataLine) {
         try {
           const errorData = JSON.parse(dataLine);
           if (existingConversation && messageIndex >= 0) {
@@ -1704,17 +1930,27 @@ export const handleRegenerationStreamData = (
           }
           filteredChunk += event + '\n\n';
         }
-      } else if (eventType === 'ask_user_question' && dataLine && existingConversation) {
+      } else if (
+        eventType === 'ask_user_question' &&
+        dataLine &&
+        existingConversation
+      ) {
         try {
           const eventData = JSON.parse(dataLine);
-          if (eventData && typeof eventData === 'object' && eventData.status === 'success') {
+          if (
+            eventData &&
+            typeof eventData === 'object' &&
+            eventData.status === 'success'
+          ) {
             const toolCallMessage = {
               messageType: 'tool_call' as const,
               content: '',
-              tools: [{
-                toolName: 'ask_user_question',
-                toolResult: eventData.toolData ?? eventData,
-              }],
+              tools: [
+                {
+                  toolName: 'ask_user_question',
+                  toolResult: eventData.toolData ?? eventData,
+                },
+              ],
               createdAt: new Date(),
               updatedAt: new Date(),
             };
@@ -1723,19 +1959,25 @@ export const handleRegenerationStreamData = (
                 existingConversation._id,
                 { $push: { messages: toolCallMessage } },
               ).catch((saveErr: any) => {
-                logger.error('Failed to persist ask_user_question tool_call message during regenerate', {
-                  requestId,
-                  conversationId: existingConversation._id,
-                  error: saveErr?.message,
-                });
+                logger.error(
+                  'Failed to persist ask_user_question tool_call message during regenerate',
+                  {
+                    requestId,
+                    conversationId: existingConversation._id,
+                    error: saveErr?.message,
+                  },
+                );
               });
             }
           }
         } catch (parseErr: any) {
-          logger.warn('Failed to parse ask_user_question event data during regenerate', {
-            requestId,
-            error: parseErr?.message,
-          });
+          logger.warn(
+            'Failed to parse ask_user_question event data during regenerate',
+            {
+              requestId,
+              error: parseErr?.message,
+            },
+          );
         }
         filteredChunk += event + '\n\n';
       } else {
@@ -1830,8 +2072,8 @@ export const handleRegenerationSuccess = async (
   // Populate citationData across ALL messages so the frontend can rebuild its
   // citationMaps for the entire conversation. Otherwise previous messages lose
   // inline citation chips (see attachPopulatedCitations docstring).
-  const isAgent = (updatedConversation as IAgentConversationDocument)
-    .agentKey !== undefined;
+  const isAgent =
+    (updatedConversation as IAgentConversationDocument).agentKey !== undefined;
   const responseConversation = await attachPopulatedCitations(
     updatedConversation._id as mongoose.Types.ObjectId,
     updatedConversation.toObject() as IConversation | IAgentConversation,
@@ -1852,12 +2094,16 @@ export const handleRegenerationSuccess = async (
 export const handleRegenerationError = async (
   res: Response,
   error: Error | any,
-  existingConversation: IConversationDocument | IAgentConversationDocument | null,
+  existingConversation:
+    | IConversationDocument
+    | IAgentConversationDocument
+    | null,
   messageIndex: number,
   conversationId: string,
   session: ClientSession | null,
   requestId: string,
   errorType: string = 'regeneration_error',
+  protocol?: SSEProtocol,
 ): Promise<void> => {
   const errorMessage = error.message || 'Unknown error occurred';
 
@@ -1890,18 +2136,37 @@ export const handleRegenerationError = async (
           errorMessage,
           error.message,
           plainConversation,
+          protocol,
         );
       } else {
-        await sendSSEErrorEvent(res, errorMessage, error.message);
+        await sendSSEErrorEvent(
+          res,
+          errorMessage,
+          error.message,
+          undefined,
+          protocol,
+        );
       }
     } catch (replaceError: any) {
       logger.error('Failed to replace message with error', {
         requestId,
         error: replaceError.message,
       });
-      await sendSSEErrorEvent(res, errorMessage, error.message);
+      await sendSSEErrorEvent(
+        res,
+        errorMessage,
+        error.message,
+        undefined,
+        protocol,
+      );
     }
   } else {
-    await sendSSEErrorEvent(res, errorMessage, error.message);
+    await sendSSEErrorEvent(
+      res,
+      errorMessage,
+      error.message,
+      undefined,
+      protocol,
+    );
   }
 };
