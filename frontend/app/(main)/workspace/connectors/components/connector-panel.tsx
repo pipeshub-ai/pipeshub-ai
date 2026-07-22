@@ -39,7 +39,7 @@ import {
   hasAnySyncFiltersSelected,
   isManualIndexingEnabled,
 } from '../utils/sync-filter-save-guards';
-import type { PanelTab } from '../types';
+import type { PanelTab, SyncStrategy } from '../types';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
 
 /** Non-admin OAuth instances must pick an OAuth app before save. */
@@ -666,7 +666,7 @@ export function ConnectorPanel() {
     try {
       setIsSavingConfig(true);
       const syncPayload: {
-        selectedStrategy: string;
+        selectedStrategy: SyncStrategy;
         customValues: Record<string, unknown>;
         scheduledConfig?: Record<string, unknown>;
         [key: string]: unknown;
