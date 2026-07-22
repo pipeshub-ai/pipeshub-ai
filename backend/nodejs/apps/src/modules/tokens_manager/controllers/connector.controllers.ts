@@ -2050,10 +2050,13 @@ export const reindexConnector =
         reindexBody.statusFilters = statusFilters;
       }
 
+      const isAdmin = await isUserAdmin(req);
+      const headers = buildProxyHeaders(req, isAdmin);
+
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/reindex`,
         HttpMethod.POST,
-        req.headers as Record<string, string>,
+        headers,
         reindexBody,
       );
 
@@ -2086,16 +2089,19 @@ export const resyncConnectorRecords =
         throw new BadRequestError('Connector ID is required');
       }
 
+      const isAdmin = await isUserAdmin(req);
+      const headers = buildProxyHeaders(req, isAdmin);
+
       await validateActiveConnector(
         connectorId,
         appConfig,
-        req.headers as Record<string, string>,
+        headers,
       );
 
       await validateConnectorNotLocked(
         connectorId,
         appConfig,
-        req.headers as Record<string, string>,
+        headers,
       );
 
       const resyncConnectorPayload = {
