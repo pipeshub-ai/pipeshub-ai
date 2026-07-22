@@ -71,7 +71,11 @@ _LANGUAGE_DETECTION_SAMPLE_CHARS = 2000
 # timeout, but the caller unblocks, releases semaphores, and the consumer can retry
 # or skip the record.
 _TEXT_PROCESSING_TIMEOUT_S = 300  # 5 min for sentence-splitting a full record
-_EMBEDDING_BATCH_TIMEOUT_S = 120  # 2 min per embedding batch
+
+# Local CPU-served models (default/sentence-transformers/HF) are much slower per
+# batch than hosted API embedding providers, so they get a much longer allowance.
+_LOCAL_EMBEDDING_BATCH_TIMEOUT_S = 600  # 10 min per embedding batch on local CPU
+_REMOTE_EMBEDDING_BATCH_TIMEOUT_S = 120  # 2 min per embedding batch via hosted API
 
 
 def _detect_record_language(text_blocks: List) -> str:
@@ -952,14 +956,19 @@ class VectorStore(Transformer):
 
         texts = [doc.page_content for doc in documents]
 
+        embedding_timeout = (
+            _LOCAL_EMBEDDING_BATCH_TIMEOUT_S
+            if self._is_local_cpu_embedding()
+            else _REMOTE_EMBEDDING_BATCH_TIMEOUT_S
+        )
         try:
             dense_embeddings = await asyncio.wait_for(
                 self.dense_embeddings.aembed_documents(texts),
-                timeout=_EMBEDDING_BATCH_TIMEOUT_S,
+                timeout=embedding_timeout,
             )
         except asyncio.TimeoutError:
             raise EmbeddingError(
-                f"Dense embedding timed out after {_EMBEDDING_BATCH_TIMEOUT_S}s "
+                f"Dense embedding timed out after {embedding_timeout}s "
                 f"for batch of {len(texts)} texts (record {record_id})"
             )
 
