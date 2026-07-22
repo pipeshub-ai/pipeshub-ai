@@ -452,9 +452,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
-    environment:
-      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
-
     steps:
       - name: Download reports from all jobs
         uses: actions/download-artifact@v4
