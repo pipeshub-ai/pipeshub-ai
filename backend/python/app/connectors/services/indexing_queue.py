@@ -23,6 +23,12 @@ _SNAPSHOT_CACHE_TTL_SECONDS = 2.0
 _snapshot_cache: tuple[float, Optional[dict[str, Any]]] | None = None
 
 
+def clear_indexing_queue_snapshot_cache() -> None:
+    """Drop the in-process snapshot cache (tests / after Redis reconnect)."""
+    global _snapshot_cache
+    _snapshot_cache = None
+
+
 def _as_group_dict(group: Any) -> dict[str, Any]:
     if isinstance(group, dict):
         return group
