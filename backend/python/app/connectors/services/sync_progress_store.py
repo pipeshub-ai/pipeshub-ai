@@ -67,6 +67,8 @@ def summarize_run(run: Optional[dict[str, Any]]) -> dict[str, Any]:
             "isStale": False,
             "isActive": False,
             "syncFailed": False,
+            "failureCode": None,
+            "failureReason": None,
         }
 
     phase = run.get("phase") or SyncPhase.IDLE
@@ -113,6 +115,8 @@ def summarize_run(run: Optional[dict[str, Any]]) -> dict[str, Any]:
         "isStale": is_stale,
         "isActive": is_active,
         "syncFailed": str(run.get("syncFailed", "0")) == "1",
+        "failureCode": run.get("failureCode") or None,
+        "failureReason": run.get("failureReason") or None,
     }
 
 
@@ -215,7 +219,9 @@ class ConnectorSyncProgressStore:
         redis.call('HSET', KEYS[1],
             'phase', ARGV[2],
             'syncFailed', 1,
-            'heartbeatAt', ARGV[3])
+            'heartbeatAt', ARGV[3],
+            'failureCode', ARGV[5],
+            'failureReason', ARGV[6])
         redis.call('EXPIRE', KEYS[1], ARGV[4])
         return 1
     """
@@ -234,6 +240,11 @@ class ConnectorSyncProgressStore:
                 "fail": redis_client.register_script(self._MARK_FAILED_SCRIPT),
                 "clear": redis_client.register_script(self._CLEAR_RUN_SCRIPT),
             }
+
+    @property
+    def redis(self):
+        """Underlying Redis client (shared for best-effort queue snapshots)."""
+        return self._redis
 
     def _log_redis_failure(self, operation: str, connector_id: str, error: Exception) -> None:
         if not self._redis_failure_reported:
@@ -400,7 +411,13 @@ class ConnectorSyncProgressStore:
             self._log_redis_failure("touch_heartbeat", connector_id, e)
 
     async def mark_failed(
-        self, org_id: str, connector_id: str, *, run_id: str | None = None
+        self,
+        org_id: str,
+        connector_id: str,
+        *,
+        run_id: str | None = None,
+        failure_code: str | None = None,
+        failure_reason: str | None = None,
     ) -> None:
         """Mark a discovery failure so clients can distinguish it from completion."""
         if not self._redis or not org_id or not connector_id:
@@ -410,7 +427,14 @@ class ConnectorSyncProgressStore:
                 "fail",
                 self._MARK_FAILED_SCRIPT,
                 [self._key(org_id, connector_id)],
-                [run_id or "", SyncPhase.FAILED, int(time.time() * 1000), self.TTL_SECONDS],
+                [
+                    run_id or "",
+                    SyncPhase.FAILED,
+                    int(time.time() * 1000),
+                    self.TTL_SECONDS,
+                    failure_code or "",
+                    failure_reason or "",
+                ],
             )
         except Exception as e:
             self._log_redis_failure("mark_failed", connector_id, e)

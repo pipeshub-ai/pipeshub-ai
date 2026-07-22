@@ -126,6 +126,19 @@ export async function runConnectorResync(args: {
  * - Active   → resync (kick a new sync job on the already-enabled connector).
  * Matches the legacy frontend: never chains toggle + resync in one action.
  */
+function persistConnectorActive(connectorId: string, isActive: boolean): void {
+  const state = useConnectorsStore.getState();
+  const existing =
+    state.activeConnectors.find((c) => c._key === connectorId) ??
+    state.instances.find((c) => c._key === connectorId) ??
+    (state.selectedInstance?._key === connectorId ? state.selectedInstance : undefined);
+  if (!existing) return;
+  state.upsertConnectorInstance({
+    ...existing,
+    isActive,
+  } as ConnectorInstance);
+}
+
 export async function startConnectorSync(
   instance: { _key: string } & Partial<Pick<ConnectorInstance, 'type'>>,
   options: { force?: boolean } = {}
@@ -135,7 +148,14 @@ export async function startConnectorSync(
   }
   const fresh = await ConnectorsApi.getConnectorInstance(instance._key);
   if (!fresh.isActive) {
-    await ConnectorsApi.toggleConnector(instance._key, 'sync');
+    // Flip the card to "sync enabled" immediately; reconcile from GET after toggle.
+    persistConnectorActive(instance._key, true);
+    try {
+      await ConnectorsApi.toggleConnector(instance._key, 'sync');
+    } catch (err) {
+      persistConnectorActive(instance._key, false);
+      throw err;
+    }
     await refreshConnectorInstanceDetails(instance._key);
     return null;
   }

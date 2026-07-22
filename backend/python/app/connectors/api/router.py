@@ -75,6 +75,7 @@ from app.connectors.sources.local_fs.models import (
     LocalFsFileEventSubmissionResponse,
 )
 from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.indexing_queue import get_indexing_queue_for_progress
 from app.connectors.services.sync_progress_store import (
     get_connector_sync_progress_store,
     summarize_run,
@@ -1576,6 +1577,7 @@ async def get_connector_sync_progress_endpoint(
         if not org_id:
             raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Organization is required")
         run = None
+        store = None
         try:
             store = await get_connector_sync_progress_store(
                 logger, request.app.container.config_service()
@@ -1598,6 +1600,12 @@ async def get_connector_sync_progress_endpoint(
             except Exception as stats_err:
                 logger.debug(f"Failed to load coverage stats for {connector_id}: {stats_err}")
 
+        indexing_queue = None
+        # Shared record-events lag explains "Indexing 0 of N" while discovery is
+        # done but the org-wide indexer is still draining older work.
+        if store is not None and store.redis is not None:
+            indexing_queue = await get_indexing_queue_for_progress(logger, store.redis)
+
         return {
             "success": True,
             "data": {
@@ -1606,6 +1614,7 @@ async def get_connector_sync_progress_endpoint(
                 "phase": run_view["phase"],
                 "run": run_view,
                 "coverage": coverage,
+                "indexingQueue": indexing_queue,
             },
         }
     except Exception as e:

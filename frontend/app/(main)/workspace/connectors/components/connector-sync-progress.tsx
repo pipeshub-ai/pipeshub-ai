@@ -5,6 +5,12 @@ import { useTranslation } from 'react-i18next';
 import { Flex, Text, Box } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
+import {
+  describeIndexingQueueCompact,
+  describeIndexingQueueDetail,
+  shouldShowIndexingQueue,
+} from '../utils/indexing-queue-copy';
+import { describeSyncFailure, resolveFailureSummary } from '../utils/sync-failure-copy';
 import { describeSyncProgress } from '../utils/sync-progress-view';
 import type { ConnectorSyncProgress as ConnectorSyncProgressData } from '../types';
 
@@ -160,22 +166,42 @@ export function ConnectorSyncProgress({
   }
 
   if (view.mode === 'failed') {
+    const failure = describeSyncFailure(view.failureCode);
+    const failureTitle = t(`${failure.key}.title`, { defaultValue: failure.title });
+    const summary = resolveFailureSummary(view.failureCode, view.failureReason);
+    const summaryText = summary.key
+      ? t(summary.key, { defaultValue: summary.text, ...summary.params })
+      : summary.text;
+    const remediation = t(`${failure.key}.remediation`, { defaultValue: failure.remediation });
+
     return (
-      <StatusRow variant={variant} label={statusLabel}>
-        <MaterialIcon name="error" size={16} color="var(--red-11)" />
-        <Text size="2" weight="medium" style={{ color: 'var(--red-11)', lineHeight: '20px' }}>
-          {label}
-        </Text>
-        {view.failed > 0 && (
-          <Text size="2" style={{ color: 'var(--amber-11)', whiteSpace: 'nowrap' }}>
-            ·{' '}
-            {t('workspace.connectors.syncProgress.failedCount', {
-              defaultValue: '{{count}} failed',
-              count: view.failed,
-            })}
+      <Flex direction="column" gap="1" style={{ minWidth: 0, width: '100%' }}>
+        <StatusRow variant={variant} label={statusLabel}>
+          <MaterialIcon name="error" size={16} color="var(--red-11)" />
+          <Text size="2" weight="medium" style={{ color: 'var(--red-11)', lineHeight: '20px' }}>
+            {failureTitle}
           </Text>
-        )}
-      </StatusRow>
+          {view.failed > 0 && (
+            <Text size="2" style={{ color: 'var(--amber-11)', whiteSpace: 'nowrap' }}>
+              ·{' '}
+              {t('workspace.connectors.syncProgress.failedCount', {
+                defaultValue: '{{count}} failed',
+                count: view.failed,
+              })}
+            </Text>
+          )}
+        </StatusRow>
+        <Text
+          size="1"
+          style={{
+            color: 'var(--slate-11)',
+            lineHeight: '16px',
+            paddingLeft: variant === 'card' ? 180 : 0,
+          }}
+        >
+          {summaryText} {remediation}
+        </Text>
+      </Flex>
     );
   }
 
@@ -213,6 +239,38 @@ export function ConnectorSyncProgress({
         ? t(view.detailKey ?? '', { defaultValue: view.detail, ...view.detailParams })
         : null;
 
+  const showQueue = shouldShowIndexingQueue(progress?.indexingQueue, {
+    indexing: view.mode === 'indexing',
+  });
+  const queue = progress?.indexingQueue;
+
+  let queueLine: React.ReactNode = null;
+  if (showQueue && queue) {
+    if (variant === 'card') {
+      const compact = describeIndexingQueueCompact();
+      queueLine = (
+        <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px' }}>
+          {t(compact.key, { defaultValue: compact.text, ...compact.params })}
+        </Text>
+      );
+    } else {
+      const detail = describeIndexingQueueDetail(queue);
+      const jobsText = t(detail.jobs.key, {
+        defaultValue: detail.jobs.text,
+        ...detail.jobs.params,
+      });
+      const etaText = detail.eta
+        ? t(detail.eta.key, { defaultValue: detail.eta.text, ...detail.eta.params })
+        : null;
+      queueLine = (
+        <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px' }}>
+          {jobsText}
+          {etaText ? ` · ${etaText}` : null}
+        </Text>
+      );
+    }
+  }
+
   return (
     <Flex direction="column" gap="2" style={{ width: '100%', minWidth: 0 }}>
       <Flex align="center" justify="between" gap="2">
@@ -243,6 +301,7 @@ export function ConnectorSyncProgress({
           })}
         />
       )}
+      {queueLine}
     </Flex>
   );
 }

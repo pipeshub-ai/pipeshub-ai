@@ -14,6 +14,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Optional, Protocol
 
+from app.connectors.services.sync_failure import classify_sync_failure
 from app.connectors.services.sync_run_context import (
     reset_sync_run_id,
     set_sync_run_id,
@@ -57,6 +58,7 @@ async def run_sync_with_lifecycle(
     """Run ``connector.run_sync()`` with the full progress lifecycle applied."""
     start = time.monotonic()
     failed = False
+    failure_exc: Optional[BaseException] = None
     heartbeat_task: Optional[asyncio.Task] = None
     try:
         token = set_sync_run_id(run_id)
@@ -68,8 +70,9 @@ async def run_sync_with_lifecycle(
             await connector.run_sync()
         finally:
             reset_sync_run_id(token)
-    except BaseException:
+    except BaseException as exc:
         failed = True
+        failure_exc = exc
         raise
     finally:
         if heartbeat_task:
@@ -100,7 +103,16 @@ async def run_sync_with_lifecycle(
             # Discovery is complete once run_sync() returns; freeze the run total so
             # the indexing phase can drive "Indexing X of Y" while apps.status is IDLE.
             if org_id and store and failed:
-                await store.mark_failed(org_id, connector_id, run_id=run_id)
+                classified = classify_sync_failure(
+                    failure_exc or RuntimeError("Sync failed")
+                )
+                await store.mark_failed(
+                    org_id,
+                    connector_id,
+                    run_id=run_id,
+                    failure_code=classified.code,
+                    failure_reason=classified.reason,
+                )
             elif org_id and store:
                 await store.close_discovery(org_id, connector_id, expected_run_id=run_id)
             try:
@@ -112,6 +124,12 @@ async def run_sync_with_lifecycle(
                 )
             if failed:
                 logger.error(
-                    "Connector sync %s failed before discovery completed; progress may be partial",
+                    "Connector sync %s failed before discovery completed; progress may be partial: %s",
                     connector_id,
+                    failure_exc,
+                    exc_info=(
+                        (type(failure_exc), failure_exc, failure_exc.__traceback__)
+                        if failure_exc is not None
+                        else False
+                    ),
                 )

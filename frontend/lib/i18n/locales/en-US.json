@@ -1942,6 +1942,55 @@
             "cancel": "Keep current sync"
           },
           "restartError": "Could not restart the sync. Please try again."
+        },
+        "lastSync": "Last sync",
+        "failure": {
+          "auth": {
+            "title": "Authentication failed",
+            "summary": "This connector could not sign in to the source.",
+            "remediation": "Reconnect in Manage → Authorize. If it still fails, an admin may need to approve the app or its scopes."
+          },
+          "rateLimit": {
+            "title": "Rate limit reached",
+            "summary": "The source temporarily limited how fast we can sync.",
+            "remediation": "Wait a few minutes, then retry. If this keeps happening, reduce sync frequency."
+          },
+          "permission": {
+            "title": "Missing access",
+            "summary": "This account cannot read some of the content selected for sync.",
+            "remediation": "Grant access to the files or Shared Drives this connector should sync, then retry."
+          },
+          "network": {
+            "title": "Connection problem",
+            "summary": "We could not reach the source reliably.",
+            "remediation": "Check network connectivity to the source, then retry the sync."
+          },
+          "cancelled": {
+            "title": "Sync cancelled",
+            "summary": "The sync stopped before it finished.",
+            "remediation": "Start the sync again when you are ready."
+          },
+          "unknown": {
+            "title": "Sync failed",
+            "summary": "Something went wrong while syncing.",
+            "remediation": "Retry the sync. If it fails again, check connector settings or contact an admin."
+          },
+          "reasons": {
+            "unauthorized_client": "Google blocked this app from getting access tokens for the requested scopes.",
+            "invalid_grant": "The saved Google sign-in expired or was revoked.",
+            "invalid_client": "The Google app credentials look invalid or were revoked.",
+            "access_denied": "Access was denied while authorizing this connector."
+          }
+        },
+        "queue": {
+          "waitingCompact": "waiting in queue",
+          "waitingDetail": "Waiting in shared indexing queue · ~{{count}} jobs ahead",
+          "etaAlmostDone": "almost done",
+          "etaAboutAMinute": "about a minute",
+          "etaMinutes": "~{{minutes}} min",
+          "etaMinutesRange": "~{{low}}–{{high}} min",
+          "etaAboutAnHour": "about an hour",
+          "etaMayTakeAWhile": "may take a while"
         }
       },
       "syncStatus": {

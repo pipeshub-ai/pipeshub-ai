@@ -17,6 +17,11 @@ function hasPendingCoverage(progress: ConnectorSyncProgress | null | undefined):
   return ((progress?.coverage?.inProgress ?? 0) + (progress?.coverage?.queued ?? 0)) > 0;
 }
 
+/** Keep polling while the shared indexer still has a meaningful backlog. */
+function hasIndexingQueueBacklog(progress: ConnectorSyncProgress | null | undefined): boolean {
+  return (progress?.indexingQueue?.lag ?? 0) >= 10;
+}
+
 /**
  * Fetch run-scoped sync progress for one connector instance, polling every few
  * seconds while the run is active (either the instance status is SYNCING or the
@@ -42,7 +47,11 @@ export function useConnectorSyncProgress(
       dedupingInterval: ACTIVE_POLL_MS,
       refreshInterval: (latest) => {
         if (Boolean(latest?.isActive) || activeStatus) return ACTIVE_POLL_MS;
-        if (hasPendingCoverage(latest)) return PENDING_COVERAGE_POLL_MS;
+        // Queue lag / ETA need refreshes even after the run counters settle,
+        // otherwise "waiting in queue" freezes on a stale lag number.
+        if (hasIndexingQueueBacklog(latest) || hasPendingCoverage(latest)) {
+          return PENDING_COVERAGE_POLL_MS;
+        }
         return 0;
       },
       refreshWhenHidden: false,

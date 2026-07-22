@@ -24,7 +24,13 @@ export type SyncProgressView =
   | ({ mode: 'discovering'; label: string; detail: string | null; detailKey?: string; detailParams?: Record<string, number> } & Translatable)
   | ({ mode: 'indexing'; label: string; percent: number } & Translatable)
   | ({ mode: 'settled'; label: string; failed: number; hasErrors: boolean } & Translatable)
-  | ({ mode: 'failed'; label: string; failed: number } & Translatable)
+  | ({
+      mode: 'failed';
+      label: string;
+      failed: number;
+      failureCode?: string | null;
+      failureReason?: string | null;
+    } & Translatable)
   | ({ mode: 'deleting'; label: string } & Translatable)
   | { mode: 'none' };
 
@@ -58,6 +64,8 @@ export function describeSyncProgress(
       label: 'Sync failed',
       labelKey: `${KEY_PREFIX}.syncFailed`,
       failed: run.failed ?? 0,
+      failureCode: run.failureCode ?? null,
+      failureReason: run.failureReason ?? null,
     };
   }
 

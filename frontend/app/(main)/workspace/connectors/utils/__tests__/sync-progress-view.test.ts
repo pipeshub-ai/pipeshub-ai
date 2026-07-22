@@ -164,6 +164,27 @@ describe('describeSyncProgress', () => {
     if (view.mode === 'failed') {
       expect(view.label).toBe('Sync failed');
       expect(view.failed).toBe(0);
+      expect(view.failureCode).toBeNull();
+      expect(view.failureReason).toBeNull();
+    }
+  });
+
+  it('passes through failure code and reason for a failed run', () => {
+    const view = describeSyncProgress(
+      makeProgress({
+        isActive: false,
+        phase: 'FAILED',
+        run: {
+          syncFailed: true,
+          failureCode: 'AUTH',
+          failureReason: 'invalid_grant: Token has been expired or revoked.',
+        },
+      })
+    );
+    expect(view.mode).toBe('failed');
+    if (view.mode === 'failed') {
+      expect(view.failureCode).toBe('AUTH');
+      expect(view.failureReason).toContain('invalid_grant');
     }
   });
 

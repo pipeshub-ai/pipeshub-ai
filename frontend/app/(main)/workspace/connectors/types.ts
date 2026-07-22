@@ -499,6 +499,10 @@ export interface SyncProgressRun {
   isStale: boolean;
   isActive: boolean;
   syncFailed: boolean;
+  /** Coarse failure category from the backend (AUTH, RATE_LIMIT, …). */
+  failureCode?: string | null;
+  /** Short human-readable failure reason from the last failed sync. */
+  failureReason?: string | null;
 }
 
 /** Lifetime indexing coverage, used as the idle fallback. */
@@ -512,6 +516,17 @@ export interface SyncProgressCoverage {
   indexingStatus?: Record<string, number>;
 }
 
+/**
+ * Org-wide Redis Streams lag for `record-events`. Explains why a finished
+ * discovery run can sit at "Indexing 0 of N" while older jobs drain.
+ */
+export interface IndexingQueueStatus {
+  lag: number;
+  pending: number;
+  /** Rough seconds remaining from recent drain rate; null when unknown. */
+  etaSeconds?: number | null;
+}
+
 /** GET /api/v1/connectors/{connectorId}/sync-progress -> data */
 export interface ConnectorSyncProgress {
   connectorId: string;
@@ -519,6 +534,7 @@ export interface ConnectorSyncProgress {
   phase: SyncProgressPhase;
   run: SyncProgressRun;
   coverage: SyncProgressCoverage;
+  indexingQueue?: IndexingQueueStatus | null;
 }
 
 export interface ConnectorSyncProgressResponse {

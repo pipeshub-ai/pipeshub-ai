@@ -81,7 +81,13 @@ class TestRunSyncWithLifecycle:
         with pytest.raises(RuntimeError):
             await run_sync_with_lifecycle(**make_args(store, connector, set_idle=set_idle))
 
-        store.mark_failed.assert_awaited_once_with(ORG, CONN, run_id=RUN)
+        store.mark_failed.assert_awaited_once_with(
+            ORG,
+            CONN,
+            run_id=RUN,
+            failure_code="UNKNOWN",
+            failure_reason="boom",
+        )
         store.close_discovery.assert_not_awaited()
         # Status is still reset so the connector isn't stuck in SYNCING.
         set_idle.assert_awaited_once()

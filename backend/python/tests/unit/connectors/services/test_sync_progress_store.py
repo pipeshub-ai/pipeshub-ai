@@ -91,15 +91,21 @@ class FakeRedis:
             if run_id:
                 await self.delete(f"{keys[1]}{run_id}")
             return 1
-        if "'syncFailed'" in script:
-            expected_run_id, phase, heartbeat, ttl = args
+        if "'syncFailed'" in script and "'startedAt'" not in script:
+            expected_run_id, phase, heartbeat, ttl, failure_code, failure_reason = args
             if key not in self.store:
                 return 0
             if expected_run_id and await self.hget(key, "runId") != expected_run_id:
                 return 0
             await self.hset(
                 key,
-                mapping={"phase": phase, "syncFailed": "1", "heartbeatAt": heartbeat},
+                mapping={
+                    "phase": phase,
+                    "syncFailed": "1",
+                    "heartbeatAt": heartbeat,
+                    "failureCode": failure_code,
+                    "failureReason": failure_reason,
+                },
             )
             await self.expire(key, int(ttl))
             return 1
@@ -249,10 +255,18 @@ class TestStoreLifecycle:
     async def test_mark_failed_exposes_failed_run(self) -> None:
         store, _ = make_store()
         await store.start_run(ORG, CONN, run_id="r1")
-        await store.mark_failed(ORG, CONN, run_id="r1")
+        await store.mark_failed(
+            ORG,
+            CONN,
+            run_id="r1",
+            failure_code="AUTH",
+            failure_reason="invalid_grant: token expired",
+        )
         view = summarize_run(await store.get(ORG, CONN))
         assert view["phase"] == SyncPhase.FAILED
         assert view["syncFailed"] is True
+        assert view["failureCode"] == "AUTH"
+        assert view["failureReason"] == "invalid_grant: token expired"
 
     async def test_touch_heartbeat_is_run_scoped(self) -> None:
         store, _ = make_store()

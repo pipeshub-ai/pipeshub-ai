@@ -1935,6 +1935,55 @@
             "cancel": "Laufende Synchronisierung behalten"
           },
           "restartError": "Die Synchronisierung konnte nicht neu gestartet werden. Bitte erneut versuchen."
+        },
+        "lastSync": "Letzte Synchronisierung",
+        "failure": {
+          "auth": {
+            "title": "Authentifizierung fehlgeschlagen",
+            "summary": "Dieser Connector konnte sich bei der Quelle nicht anmelden.",
+            "remediation": "Verbinden Sie unter Verwalten → Autorisieren erneut. Schlägt es weiter fehl, muss ein Admin die App oder ihre Scopes freigeben."
+          },
+          "rateLimit": {
+            "title": "Ratenlimit erreicht",
+            "summary": "Die Quelle hat die Sync-Geschwindigkeit vorübergehend begrenzt.",
+            "remediation": "Warten Sie einige Minuten und versuchen Sie es erneut. Wenn das wiederholt auftritt, verringern Sie die Sync-Häufigkeit."
+          },
+          "permission": {
+            "title": "Fehlender Zugriff",
+            "summary": "Dieses Konto kann einen Teil der zum Sync ausgewählten Inhalte nicht lesen.",
+            "remediation": "Gewähren Sie Zugriff auf die Dateien oder freigegebenen Laufwerke, die synchronisiert werden sollen, und versuchen Sie es erneut."
+          },
+          "network": {
+            "title": "Verbindungsproblem",
+            "summary": "Die Quelle war nicht zuverlässig erreichbar.",
+            "remediation": "Prüfen Sie die Netzwerkverbindung zur Quelle und starten Sie die Synchronisierung erneut."
+          },
+          "cancelled": {
+            "title": "Synchronisierung abgebrochen",
+            "summary": "Die Synchronisierung wurde vor dem Abschluss gestoppt.",
+            "remediation": "Starten Sie die Synchronisierung erneut, wenn Sie bereit sind."
+          },
+          "unknown": {
+            "title": "Synchronisierung fehlgeschlagen",
+            "summary": "Beim Synchronisieren ist etwas schiefgelaufen.",
+            "remediation": "Versuchen Sie die Synchronisierung erneut. Schlägt sie erneut fehl, prüfen Sie die Connector-Einstellungen oder wenden Sie sich an einen Admin."
+          },
+          "reasons": {
+            "unauthorized_client": "Google hat dieser App den Erhalt von Zugriffstoken für die angeforderten Scopes verweigert.",
+            "invalid_grant": "Die gespeicherte Google-Anmeldung ist abgelaufen oder wurde widerrufen.",
+            "invalid_client": "Die Google-App-Zugangsdaten sind ungültig oder wurden widerrufen.",
+            "access_denied": "Beim Autorisieren dieses Connectors wurde der Zugriff verweigert."
+          }
+        },
+        "queue": {
+          "waitingCompact": "warte in Warteschlange",
+          "waitingDetail": "Wartet in gemeinsamer Indexierungs-Warteschlange · ~{{count}} Jobs voraus",
+          "etaAlmostDone": "fast fertig",
+          "etaAboutAMinute": "etwa eine Minute",
+          "etaMinutes": "~{{minutes}} Min.",
+          "etaMinutesRange": "~{{low}}–{{high}} Min.",
+          "etaAboutAnHour": "etwa eine Stunde",
+          "etaMayTakeAWhile": "kann eine Weile dauern"
         }
       },
       "syncStatus": {

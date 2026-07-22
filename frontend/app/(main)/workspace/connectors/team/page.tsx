@@ -443,6 +443,7 @@ function TeamConnectorsPageContent() {
 
     const doStartSync = async (force: boolean) => {
       try {
+        // startConnectorSync already refreshes the instance row + config.
         await startConnectorSync(
           { _key: instanceId, type: connectorTypeInfo?.type },
           { force }
@@ -453,7 +454,6 @@ function TeamConnectorsPageContent() {
           description: t('workspace.connectors.toasts.syncStartedLongDescription'),
           duration: 3000,
         });
-        await refreshConnectorRowQuiet(instanceId);
       } catch (err) {
         // The guard turns this into a confirm-and-restart prompt.
         if (err instanceof ConnectorSyncInProgressError) throw err;
@@ -473,7 +473,6 @@ function TeamConnectorsPageContent() {
     newlyConfiguredConnectorId,
     connectorTypeInfo,
     addToast,
-    refreshConnectorRowQuiet,
     setShowConfigSuccessDialog,
     setNewlyConfiguredConnectorId,
     instances,

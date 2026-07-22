@@ -480,20 +480,24 @@ function PersonalConnectorsPageContent() {
 
     const doStartSync = async (force: boolean) => {
       try {
+        // startConnectorSync already refreshes the instance row + config.
         await startConnectorSync(
           { _key: instanceId, type: connectorTypeInfo?.type },
           { force }
         );
         if (isLocalFsConnectorType(connectorTypeInfo?.type ?? '')) {
-          const fresh = await refreshConnectorRowQuiet(instanceId);
-          let config = instanceConfigs[instanceId];
-          if (!config) {
+          const state = useConnectorsStore.getState();
+          const fresh =
+            state.activeConnectors.find((c) => c._key === instanceId) ??
+            state.instances.find((c) => c._key === instanceId);
+          let config = state.instanceConfigs[instanceId] ?? instanceConfigs[instanceId];
+          if (fresh && !config) {
             config = await ConnectorsApi.getConnectorConfig(instanceId);
             setInstanceConfig(instanceId, config);
           }
-          await ensureLocalWatcherForInstance(fresh, config);
-        } else {
-          await refreshConnectorRowQuiet(instanceId);
+          if (fresh && config) {
+            await ensureLocalWatcherForInstance(fresh, config);
+          }
         }
         addToast({
           variant: 'success',
@@ -520,7 +524,6 @@ function PersonalConnectorsPageContent() {
     newlyConfiguredConnectorId,
     connectorTypeInfo,
     addToast,
-    refreshConnectorRowQuiet,
     setInstanceConfig,
     ensureLocalWatcherForInstance,
     setShowConfigSuccessDialog,

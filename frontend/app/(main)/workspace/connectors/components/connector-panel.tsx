@@ -703,6 +703,38 @@ export function ConnectorPanel() {
       const savedConnectorType = connectorType;
       const scope = useConnectorsStore.getState().selectedScope;
 
+      // Paint sync strategy on the card immediately — don't wait for catalog
+      // refetch (which also waits on per-card sync-progress).
+      const existingConfig = useConnectorsStore.getState().instanceConfigs[currentConnectorId];
+      if (existingConfig) {
+        useConnectorsStore.getState().setInstanceConfig(currentConnectorId, {
+          ...existingConfig,
+          isConfigured: true,
+          config: {
+            ...existingConfig.config,
+            sync: {
+              ...existingConfig.config?.sync,
+              selectedStrategy: syncPayload.selectedStrategy,
+              customValues: syncPayload.customValues,
+              ...(syncPayload.scheduledConfig
+                ? { scheduledConfig: syncPayload.scheduledConfig }
+                : {}),
+            },
+            filters: {
+              ...existingConfig.config?.filters,
+              sync: {
+                ...existingConfig.config?.filters?.sync,
+                values: formData.filters.sync,
+              },
+              indexing: {
+                ...existingConfig.config?.filters?.indexing,
+                values: formData.filters.indexing,
+              },
+            },
+          },
+        });
+      }
+
       // Close the configuration panel
       closePanel();
 

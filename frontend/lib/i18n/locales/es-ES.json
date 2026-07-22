@@ -1932,6 +1932,55 @@
             "cancel": "Mantener la sincronización actual"
           },
           "restartError": "No se pudo reiniciar la sincronización. Inténtalo de nuevo."
+        },
+        "lastSync": "Última sincronización",
+        "failure": {
+          "auth": {
+            "title": "Error de autenticación",
+            "summary": "Este conector no pudo iniciar sesión en el origen.",
+            "remediation": "Vuelva a conectar en Administrar → Autorizar. Si sigue fallando, un administrador puede necesitar aprobar la app o sus permisos."
+          },
+          "rateLimit": {
+            "title": "Límite de solicitudes alcanzado",
+            "summary": "El origen limitó temporalmente la velocidad de sincronización.",
+            "remediation": "Espere unos minutos y vuelva a intentarlo. Si sigue ocurriendo, reduzca la frecuencia de sincronización."
+          },
+          "permission": {
+            "title": "Falta de acceso",
+            "summary": "Esta cuenta no puede leer parte del contenido seleccionado para sincronizar.",
+            "remediation": "Conceda acceso a los archivos o unidades compartidas que deba sincronizar y vuelva a intentarlo."
+          },
+          "network": {
+            "title": "Problema de conexión",
+            "summary": "No pudimos llegar al origen de forma fiable.",
+            "remediation": "Compruebe la conectividad de red con el origen y vuelva a sincronizar."
+          },
+          "cancelled": {
+            "title": "Sincronización cancelada",
+            "summary": "La sincronización se detuvo antes de terminar.",
+            "remediation": "Inicie la sincronización de nuevo cuando esté listo."
+          },
+          "unknown": {
+            "title": "Error de sincronización",
+            "summary": "Algo salió mal al sincronizar.",
+            "remediation": "Vuelva a sincronizar. Si falla otra vez, revise la configuración del conector o contacte a un administrador."
+          },
+          "reasons": {
+            "unauthorized_client": "Google bloqueó que esta app obtenga tokens de acceso para los permisos solicitados.",
+            "invalid_grant": "El inicio de sesión de Google guardado expiró o fue revocado.",
+            "invalid_client": "Las credenciales de la app de Google parecen inválidas o fueron revocadas.",
+            "access_denied": "Se denegó el acceso al autorizar este conector."
+          }
+        },
+        "queue": {
+          "waitingCompact": "en cola de espera",
+          "waitingDetail": "Esperando en la cola compartida de indexación · ~{{count}} trabajos por delante",
+          "etaAlmostDone": "casi listo",
+          "etaAboutAMinute": "alrededor de un minuto",
+          "etaMinutes": "~{{minutes}} min",
+          "etaMinutesRange": "~{{low}}–{{high}} min",
+          "etaAboutAnHour": "alrededor de una hora",
+          "etaMayTakeAWhile": "puede tardar un rato"
         }
       },
       "syncStatus": {

@@ -319,8 +319,12 @@ export function OverviewTab({
   // Run-scoped progress is shown while a sync/indexing run is active; when idle
   // it collapses to nothing and the Records Status grid below is the coverage view.
   const syncProgressView = describeSyncProgress(syncProgress, instance.status);
-  const showRunProgress = syncProgressView.mode === 'discovering' || syncProgressView.mode === 'indexing';
+  const showRunProgress =
+    syncProgressView.mode === 'discovering' ||
+    syncProgressView.mode === 'indexing' ||
+    syncProgressView.mode === 'failed';
   const runData = syncProgress?.run;
+  const showRunBreakdown = showRunProgress && syncProgressView.mode !== 'failed';
 
   return (
     <Flex direction="column" gap="5" style={{ padding: '0' }}>
@@ -338,14 +342,16 @@ export function OverviewTab({
           }}
         >
           <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            {t('workspace.connectors.syncProgress.currentSync', { defaultValue: 'Current sync' })}
+            {syncProgressView.mode === 'failed'
+              ? t('workspace.connectors.syncProgress.lastSync', { defaultValue: 'Last sync' })
+              : t('workspace.connectors.syncProgress.currentSync', { defaultValue: 'Current sync' })}
           </Text>
           <ConnectorSyncProgress
             progress={syncProgress}
             status={instance.status}
             variant="detail"
           />
-          {runData && (
+          {showRunBreakdown && runData && (
             <Flex gap="4" wrap="wrap">
               <SyncBreakdownItem
                 label={t('workspace.connectors.syncProgress.breakdownQueued', { defaultValue: 'Queued this sync' })}
