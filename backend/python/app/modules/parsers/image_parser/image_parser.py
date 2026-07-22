@@ -35,7 +35,9 @@ class ImageParser:
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
         extension = config.get("extension")
-        block_container = self.parse_image(content, extension)
+        # SVG->PNG conversion (cairosvg) is synchronous and can be slow for
+        # complex vector graphics; keep it off the event loop.
+        block_container = await asyncio.to_thread(self.parse_image, content, extension)
         return ParseResult(
             block_container=block_container,
             metadata={"record_name": record_name},

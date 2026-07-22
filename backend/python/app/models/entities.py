@@ -225,6 +225,7 @@ class Record(BaseModel):
     weburl: str | None = None
     signed_url: str | None = None
     fetch_signed_url: str | None = None
+    storage_document_id: str | None = Field(default=None, description="Storage service document ID for stored content (e.g. web crawl HTML)")
     preview_renderable: bool | None = True
     is_shared: bool | None = False
     shared_with_me_record_group_ids: list[str] = Field(default_factory=list)
@@ -324,6 +325,7 @@ class Record(BaseModel):
             "parentNodeId": self.parent_node_id,
             "hideWeburl": self.hide_weburl,
             "isInternal": self.is_internal,
+            "storageDocumentId": self.storage_document_id,
         }
 
     @staticmethod
@@ -373,6 +375,7 @@ class Record(BaseModel):
             md5_hash=arango_base_record.get("md5Checksum"),
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),
+            storage_document_id=arango_base_record.get("storageDocumentId"),
         )
 
     def to_kafka_record(self) -> dict:
@@ -590,6 +593,7 @@ class FileRecord(Record):
             crc32_hash=arango_base_file_record.get("crc32Hash"),
             sha1_hash=arango_base_file_record.get("sha1Hash"),
             sha256_hash=arango_base_file_record.get("sha256Hash"),
+            storage_document_id=arango_base_record.get("storageDocumentId"),
         )
 
     def to_kafka_record(self) -> dict:
@@ -617,6 +621,7 @@ class FileRecord(Record):
             "externalGroupId": self.external_record_group_id,
             "parentExternalRecordId": self.parent_external_record_id,
             "isFile": self.is_file,
+            "storageDocumentId": self.storage_document_id,
         }
 
 class MessageRecord(Record):

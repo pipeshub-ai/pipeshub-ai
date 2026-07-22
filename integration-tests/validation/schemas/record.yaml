@@ -146,3 +146,6 @@ fields:
   weburl:
     required: false
     type: string
+  storage_document_id:
+    required: false
+    type: string

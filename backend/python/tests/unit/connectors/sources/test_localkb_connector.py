@@ -57,7 +57,16 @@ def _make_kb_service():
     logger = MagicMock()
     graph_provider = AsyncMock()
     kafka_service = MagicMock()
-    return KnowledgeBaseService(logger=logger, graph_provider=graph_provider, kafka_service=kafka_service)
+    processor = AsyncMock()
+    processor.on_new_records = AsyncMock()
+    processor.on_record_metadata_update = AsyncMock()
+    processor.on_records_deleted_cascade = AsyncMock(return_value={"success": True, "virtual_record_ids": []})
+    return KnowledgeBaseService(
+        logger=logger,
+        graph_provider=graph_provider,
+        kafka_service=kafka_service,
+        processor=processor,
+    )
 
 
 def _make_knowledge_hub_service():
@@ -293,7 +302,7 @@ class TestKnowledgeBaseService:
 
         result = await svc.get_knowledge_base("kb-1", "user-1")
         assert result["success"] is False
-        assert result["code"] == 403
+        assert result["code"] == 404
 
     @pytest.mark.asyncio
     async def test_list_user_knowledge_bases(self):
@@ -333,7 +342,7 @@ class TestKnowledgeBaseService:
         )
         svc.graph_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
 
-        result = await svc.delete_knowledge_base("kb-1", "user-1")
+        result = await svc.delete_knowledge_base("kb-1", "user-1", "org-1")
         assert result["success"] is False
         assert result["code"] == 403
 
@@ -344,11 +353,11 @@ class TestKnowledgeBaseService:
             return_value={"id": "user-key-1", "fullName": "Test User"}
         )
         svc.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        svc.graph_provider.delete_knowledge_base = AsyncMock(
-            return_value={"success": True, "eventData": []}
+        svc.graph_provider.delete_connector_instance = AsyncMock(
+            return_value={"success": True, "virtual_record_ids": []}
         )
 
-        result = await svc.delete_knowledge_base("kb-1", "user-1")
+        result = await svc.delete_knowledge_base("kb-1", "user-1", "org-1")
         assert result["success"] is True
         assert result["code"] == 200
 
@@ -359,12 +368,10 @@ class TestKnowledgeBaseService:
             return_value={"valid": True}
         )
         svc.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        svc.graph_provider.create_folder = AsyncMock(
-            return_value={"success": True, "id": "folder-1"}
-        )
 
         result = await svc.create_folder_in_kb("kb-1", "Docs", "user-1", "org-1")
         assert result["success"] is True
+        svc.processor.on_new_records.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_create_folder_name_conflict(self):
@@ -402,7 +409,7 @@ class TestKnowledgeBaseService:
 
         result = await svc.get_folder_contents("kb-1", "folder-1", "user-1")
         assert result["success"] is False
-        assert result["code"] == 403
+        assert result["code"] == 404
 
 
 # ===================================================================

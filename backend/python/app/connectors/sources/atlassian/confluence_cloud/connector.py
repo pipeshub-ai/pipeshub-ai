@@ -492,7 +492,6 @@ class ConfluenceConnector(BaseConnector):
                 "Create a single-site (resource-restricted) OAuth app in the "
                 "Atlassian Developer Console, then reconnect."
             ),
-            recipient_roles=[NotificationRecipientRole.ADMIN],
         )
 
     async def _get_fresh_datasource(self) -> ConfluenceDataSource:

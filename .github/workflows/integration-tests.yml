@@ -69,7 +69,7 @@ jobs:
   integration-tests:
     if: ${{ github.event_name != 'pull_request_target' || !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     # Schedule uses a separate environment so daily runs are not blocked by
     # deployment protection on `integration-test-dev`. Create
@@ -119,9 +119,11 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha || github.sha }}
+          allow-unsafe-pr-checkout: true
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

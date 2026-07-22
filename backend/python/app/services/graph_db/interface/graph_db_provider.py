@@ -1651,14 +1651,6 @@ class IGraphDBProvider(ABC):
         """Update knowledge base."""
         pass
 
-    @abstractmethod
-    async def delete_knowledge_base(
-        self,
-        kb_id: str,
-        transaction: str | None = None,
-    ) -> bool:
-        """Delete a knowledge base and all nested content."""
-        pass
 
     @abstractmethod
     async def _validate_folder_creation(self, kb_id: str, user_id: str) -> dict:
@@ -1707,17 +1699,6 @@ class IGraphDBProvider(ABC):
         """
         pass
 
-    @abstractmethod
-    async def create_folder(
-        self,
-        kb_id: str,
-        folder_name: str,
-        org_id: str,
-        parent_folder_id: str | None = None,
-        transaction: str | None = None,
-    ) -> dict | None:
-        """Create folder with proper RECORDS document and edges."""
-        pass
 
     @abstractmethod
     async def get_folder_contents(
@@ -1739,48 +1720,9 @@ class IGraphDBProvider(ABC):
         """Validate that a folder exists and belongs to the KB."""
         pass
 
-    @abstractmethod
-    async def update_folder(
-        self,
-        folder_id: str,
-        updates: dict,
-        transaction: str | None = None,
-    ) -> dict[str, Any]:
-        """Update folder."""
-        pass
 
-    @abstractmethod
-    async def delete_folder(
-        self,
-        kb_id: str,
-        folder_id: str,
-        transaction: str | None = None,
-    ) -> dict[str, Any]:
-        """Delete a folder and all nested content."""
-        pass
 
-    @abstractmethod
-    async def update_record(
-        self,
-        record_id: str,
-        user_id: str,
-        updates: dict,
-        file_metadata: dict | None = None,
-        transaction: str | None = None,
-    ) -> dict | None:
-        """Update a record by ID with automatic KB and permission detection."""
-        pass
 
-    @abstractmethod
-    async def delete_records(
-        self,
-        record_ids: list[str],
-        kb_id: str,
-        folder_id: str | None = None,
-        transaction: str | None = None,
-    ) -> dict:
-        """Delete multiple records and publish delete events."""
-        pass
 
     @abstractmethod
     async def create_kb_permissions(
@@ -1824,17 +1766,6 @@ class IGraphDBProvider(ABC):
         """Get user's permission role on a KB (direct or via team)."""
         pass
 
-    @abstractmethod
-    async def upload_records(
-        self,
-        kb_id: str,
-        user_id: str,
-        org_id: str,
-        files: list[dict],
-        parent_folder_id: str | None = None,
-    ) -> dict:
-        """Upload records to KB root or a folder."""
-        pass
 
     @abstractmethod
     async def is_record_folder(self, record_id: str, transaction: str | None = None) -> bool:
@@ -1869,25 +1800,7 @@ class IGraphDBProvider(ABC):
         """Delete the incoming PARENT_CHILD edge to a record."""
         pass
 
-    @abstractmethod
-    async def create_parent_child_edge(
-        self,
-        parent_id: str,
-        child_id: str,
-        transaction: str | None = None,
-    ) -> bool:
-        """Create PARENT_CHILD edge from parent to child record."""
-        pass
 
-    @abstractmethod
-    async def update_record_external_parent_id(
-        self,
-        record_id: str,
-        new_parent_id: str,
-        transaction: str | None = None,
-    ) -> bool:
-        """Update record's externalParentId."""
-        pass
 
     @abstractmethod
     async def get_kb_permissions(
@@ -3055,6 +2968,24 @@ class IGraphDBProvider(ABC):
             transaction (Optional[str]): Optional transaction context
         """
         pass
+
+    @abstractmethod
+    async def delete_records_recursive(
+        self,
+        record_ids: list[str],
+        connector_id: str,
+        transaction: str | None = None,
+    ) -> dict:
+        """Delete records (files, folders, or any type) and all their containment
+        descendants — the single generic recursive delete for KB and connectors.
+
+        A folder is just a record with children, so there is no folder/file special-casing:
+        each root id is deleted with its whole containment subtree (PARENT_CHILD + ATTACHMENT;
+        reference edges are cleaned but not traversed), scoped by ``connectorId == connector_id``
+        (kb_id for a KB). All edges touching the deleted records are swept, type docs removed
+        from any collection, and a deleteRecord event emitted per record with a virtualRecordId.
+        """
+        raise NotImplementedError
 
     @abstractmethod
     async def delete_connector_instance(
