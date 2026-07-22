@@ -336,6 +336,45 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Failed to initialize Outlook connector: {e}")
             return False
 
+    async def _reinitialize_client_if_needed(self) -> None:
+        """Rebuild the Graph client if its idle HTTP transport has been closed.
+
+        The connector instance is cached and reused across scheduled runs that can be
+        hours/days apart (see EventService._ensure_connector). azure-identity closes the
+        credential's HTTP session when idle, but the wrapper objects stay non-None, so the
+        first Graph call of a later run fails with "HTTP transport has already been closed".
+        Probe the credential and rebuild the client on failure.
+        """
+        try:
+            await self.external_client.get_client().credential.get_token(
+                "https://graph.microsoft.com/.default"
+            )
+            return
+        except Exception as e:
+            self.logger.warning(f"Graph credential needs reinitialization: {e}")
+
+        try:
+            await self.external_client.get_client().close()
+        except Exception:
+            pass
+
+        self.external_client = ExternalMSGraphClient.build_with_config(
+            MSGraphClientWithClientIdSecretConfig(
+                self.credentials.client_id,
+                self.credentials.client_secret,
+                self.credentials.tenant_id
+            ),
+            mode=GraphMode.APP
+        )
+        self.external_outlook_client = OutlookCalendarContactsDataSource(self.external_client)
+        self.external_users_client = UsersGroupsDataSource(self.external_client)
+
+        # Fail loudly if the rebuilt credential still can't get a token (e.g. expired secret).
+        await self.external_client.get_client().credential.get_token(
+            "https://graph.microsoft.com/.default"
+        )
+        self.logger.info("✅ Outlook Graph credential reinitialized")
+
     async def test_connection_and_access(self) -> bool:
         """Test connection and access to external APIs."""
         try:
@@ -443,6 +482,9 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client or not self.external_users_client:
                 raise Exception("External API clients not initialized. Call init() first.")
 
+            # Recover from an idle-closed HTTP transport before the first Graph call.
+            await self._reinitialize_client_if_needed()
+
             # Sync users and get list of users to process
             users_to_sync = await self._sync_users()
 
@@ -544,6 +586,10 @@ class OutlookConnector(BaseConnector):
 
                 if not response.success or not response.data:
                     self.logger.error(f"Failed to get users page {page_num}: {response.error}")
+                    # A page-1 failure means the whole user list is empty — do not let it
+                    # masquerade as a successful zero-user sync; fail so the run is retried.
+                    if page_num == 1 and not response.success:
+                        raise Exception(f"Failed to fetch users (page 1): {response.error}")
                     break
 
                 # response.data is UserCollectionResponse with .value containing list[User]
@@ -590,8 +636,10 @@ class OutlookConnector(BaseConnector):
             return all_users
 
         except Exception as e:
+            # Propagate instead of returning [] — a swallowed failure here makes a dead
+            # transport or auth error look like a legitimately empty tenant.
             self.logger.error(f"Error getting users from external API: {e}")
-            return []
+            raise
 
     async def _sync_user_groups(self) -> list[AppUserGroup]:
         """Sync Microsoft 365 groups and their memberships (full sync)."""
@@ -2783,6 +2831,9 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client or not self.external_users_client:
                 self.logger.error("External API clients not initialized. Call init() first.")
                 raise Exception("External API clients not initialized. Call init() first.")
+
+            # Recover from an idle-closed HTTP transport before the first Graph call.
+            await self._reinitialize_client_if_needed()
 
             # Populate user cache for better performance
             await self._populate_user_cache()

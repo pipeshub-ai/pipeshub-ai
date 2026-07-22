@@ -403,6 +403,7 @@ class TestRunSync:
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
         connector.external_users_client = MagicMock()
+        connector._reinitialize_client_if_needed = AsyncMock()
 
         mock_users = [MagicMock(email="user@example.com", source_user_id="su1")]
         connector._sync_users = AsyncMock(return_value=mock_users)
@@ -463,18 +464,19 @@ class TestGetAllUsersExternal:
     async def test_no_client_raises(self):
         connector = _make_connector()
         connector.external_users_client = None
-        result = await connector._get_all_users_external()
-        assert result == []
+        with pytest.raises(Exception, match="not initialized"):
+            await connector._get_all_users_external()
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_api_failure_raises(self):
+        # A page-1 failure must surface, not masquerade as an empty tenant.
         connector = _make_connector()
         connector.external_users_client = MagicMock()
         connector.external_users_client.users_user_list_user = AsyncMock(
             return_value=_make_graph_response(success=False, error="Error")
         )
-        result = await connector._get_all_users_external()
-        assert result == []
+        with pytest.raises(Exception, match="page 1"):
+            await connector._get_all_users_external()
 
     @pytest.mark.asyncio
     async def test_excludes_azure_ad_guests(self):
@@ -509,6 +511,59 @@ class TestGetAllUsersExternal:
 
         users = await connector._get_all_users_external()
         assert [u.email for u in users] == ["member@test.com"]
+
+
+# ===========================================================================
+# OutlookConnector._reinitialize_client_if_needed
+# ===========================================================================
+
+
+class TestReinitializeClientIfNeeded:
+
+    @pytest.mark.asyncio
+    async def test_no_rebuild_when_transport_alive(self):
+        connector = _make_connector()
+        connector.external_client = MagicMock()
+        connector.external_client.get_client.return_value.credential.get_token = AsyncMock()
+        outlook_before = connector.external_outlook_client = MagicMock()
+        users_before = connector.external_users_client = MagicMock()
+
+        with patch("app.connectors.sources.microsoft.outlook.connector.ExternalMSGraphClient") as mock_ext:
+            await connector._reinitialize_client_if_needed()
+            mock_ext.build_with_config.assert_not_called()
+
+        assert connector.external_outlook_client is outlook_before
+        assert connector.external_users_client is users_before
+
+    @pytest.mark.asyncio
+    async def test_rebuilds_when_transport_closed(self):
+        connector = _make_connector()
+        connector.credentials = OutlookCredentials(
+            tenant_id="t1", client_id="c1", client_secret="s1"
+        )
+
+        old_client = MagicMock()
+        old_client.get_client.return_value.credential.get_token = AsyncMock(
+            side_effect=Exception("HTTP transport has already been closed")
+        )
+        old_client.get_client.return_value.close = AsyncMock()
+        connector.external_client = old_client
+
+        new_client = MagicMock()
+        new_client.get_client.return_value.credential.get_token = AsyncMock()
+
+        with patch("app.connectors.sources.microsoft.outlook.connector.ExternalMSGraphClient") as mock_ext, \
+             patch("app.connectors.sources.microsoft.outlook.connector.OutlookCalendarContactsDataSource") as mock_outlook_ds, \
+             patch("app.connectors.sources.microsoft.outlook.connector.UsersGroupsDataSource") as mock_users_ds:
+            mock_ext.build_with_config.return_value = new_client
+
+            await connector._reinitialize_client_if_needed()
+
+            mock_ext.build_with_config.assert_called_once()
+            old_client.get_client.return_value.close.assert_awaited_once()
+            assert connector.external_client is new_client
+            assert connector.external_outlook_client is mock_outlook_ds.return_value
+            assert connector.external_users_client is mock_users_ds.return_value
 
 
 # ===========================================================================
@@ -2638,6 +2693,7 @@ class TestReindexRecords:
         connector.external_outlook_client = MagicMock()
         connector.external_users_client = MagicMock()
         connector._populate_user_cache = AsyncMock()
+        connector._reinitialize_client_if_needed = AsyncMock()
 
         record = _make_mail_record()
 
@@ -2658,6 +2714,7 @@ class TestReindexRecords:
         connector.external_outlook_client = MagicMock()
         connector.external_users_client = MagicMock()
         connector._populate_user_cache = AsyncMock()
+        connector._reinitialize_client_if_needed = AsyncMock()
 
         record = _make_mail_record(record_type=RecordType.GROUP_MAIL)
 
@@ -2678,6 +2735,7 @@ class TestReindexRecords:
         connector.external_outlook_client = MagicMock()
         connector.external_users_client = MagicMock()
         connector._populate_user_cache = AsyncMock()
+        connector._reinitialize_client_if_needed = AsyncMock()
 
         parent_record = MagicMock()
         parent_record.record_type = RecordType.GROUP_MAIL
@@ -2703,6 +2761,7 @@ class TestReindexRecords:
         connector.external_outlook_client = MagicMock()
         connector.external_users_client = MagicMock()
         connector._populate_user_cache = AsyncMock()
+        connector._reinitialize_client_if_needed = AsyncMock()
 
         updated_record = _make_mail_record()
         non_updated_record = _make_mail_record(external_record_id="ext-2")

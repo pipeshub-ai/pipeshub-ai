@@ -412,6 +412,7 @@ class TestReindexRecords:
         connector.external_outlook_client = MagicMock()
         connector.external_users_client = MagicMock()
         connector._populate_user_cache = AsyncMock()
+        connector._reinitialize_client_if_needed = AsyncMock()
 
         record = _make_mail_record()
 
@@ -432,6 +433,7 @@ class TestReindexRecords:
         connector.external_outlook_client = MagicMock()
         connector.external_users_client = MagicMock()
         connector._populate_user_cache = AsyncMock()
+        connector._reinitialize_client_if_needed = AsyncMock()
 
         record = _make_mail_record(record_type=RecordType.GROUP_MAIL)
 
@@ -452,6 +454,7 @@ class TestReindexRecords:
         connector.external_outlook_client = MagicMock()
         connector.external_users_client = MagicMock()
         connector._populate_user_cache = AsyncMock()
+        connector._reinitialize_client_if_needed = AsyncMock()
 
         parent_record = MagicMock()
         parent_record.record_type = RecordType.GROUP_MAIL
@@ -477,6 +480,7 @@ class TestReindexRecords:
         connector.external_outlook_client = MagicMock()
         connector.external_users_client = MagicMock()
         connector._populate_user_cache = AsyncMock()
+        connector._reinitialize_client_if_needed = AsyncMock()
 
         updated_record = _make_mail_record()
         non_updated_record = _make_mail_record(external_record_id="ext-2")
