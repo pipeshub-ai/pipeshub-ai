@@ -174,6 +174,14 @@ class EventProcessor:
         from app.modules.transformers.transformer import TransformContext  # noqa: PLC0415
 
         # ── Step 1: Parse ────────────────────────────────────────────────────
+        # Advisory only: health probes can race a service startup/restart. The
+        # actual parse call owns retry and circuit-breaker behavior.
+        if not await self.parsing_client.health_check_cached():
+            self.logger.warning(
+                "ParsingService pre-flight health check failed; proceeding with "
+                "the resilient parse request"
+            )
+
         self.logger.info(
             "📤 Sending '%s' to Parsing Service (mime=%s ext=%s)", record_name, mime_type, extension
         )

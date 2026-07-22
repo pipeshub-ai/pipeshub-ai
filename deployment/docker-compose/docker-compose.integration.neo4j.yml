@@ -124,7 +124,7 @@ services:
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 
       # Indexing service config
-      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
+      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-auto}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-5}
 
       - OPIK_API_KEY=${OPIK_API_KEY:-}
@@ -262,7 +262,7 @@ services:
       - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
       - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
       - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
-      - KAFKA_CREATE_TOPICS=record-events:1:1,entity-events:1:1,sync-events:1:1
+      - KAFKA_CREATE_TOPICS=record-events:1:1,record-events-dlq:1:1,entity-events:1:1,sync-events:1:1
       - KAFKA_LOG_RETENTION_HOURS=24
       - KAFKA_NUM_NETWORK_THREADS=3
       - KAFKA_NUM_IO_THREADS=8

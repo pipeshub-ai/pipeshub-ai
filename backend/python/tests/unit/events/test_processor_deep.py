@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.services.docling.client import DoclingClientError
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 
 log = logging.getLogger("test")
@@ -731,9 +732,9 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_parse_returns_none(self):
-        """When docling parse_pdf returns None, yields docling_failed."""
+        """When docling parse_pdf raises, yields docling_failed."""
         proc = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=None)
+        proc.docling_client.parse_pdf = AsyncMock(side_effect=DoclingClientError("parse failed"))
 
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"pdfdata", "vr1")
@@ -743,10 +744,10 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_create_blocks_returns_none_yields_docling_failed(self):
-        """When docling create_blocks returns None, yields docling_failed."""
+        """When docling create_blocks raises, yields docling_failed."""
         proc = _make_processor()
         proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
-        proc.docling_client.create_blocks = AsyncMock(return_value=None)
+        proc.docling_client.create_blocks = AsyncMock(side_effect=DoclingClientError("blocks failed"))
 
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")

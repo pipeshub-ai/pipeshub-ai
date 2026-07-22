@@ -10,8 +10,10 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import app.api.routes.parsing as parsing_routes
 from app.api.routes.parsing import router as parsing_router
 from app.models.blocks import BlocksContainer
+from app.services.parsing.concurrency import ParseTier
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
@@ -26,19 +28,41 @@ from app.services.parsing.registry import ParserRegistry
 # ---------------------------------------------------------------------------
 
 
-def _build_app(registry: ParserRegistry, max_concurrent_parsing: int = 5) -> FastAPI:
+@pytest.fixture(autouse=True)
+def _no_memory_pressure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests exercise the concurrency gates, not the live host's memory
+    headroom — force the heavy-pool admission guard closed by default so
+    results don't depend on how much memory the test runner happens to have
+    free. Individual tests can still override this.
+    """
+    monkeypatch.setattr(parsing_routes, "memory_pressure_high", lambda: False)
+
+
+def _build_app(
+    registry: ParserRegistry,
+    max_concurrent_parsing: int = 5,
+    *,
+    heavy_slots: int | None = None,
+    light_slots: int | None = None,
+) -> FastAPI:
     app = FastAPI()
     app.state.parser_registry = registry
-    # Mirrors the gate set up in parsing_main.py's lifespan.
-    app.state.parse_semaphore = asyncio.Semaphore(max_concurrent_parsing)
-    app.state.max_concurrent_parsing = max_concurrent_parsing
+    # Mirrors the gates set up in parsing_main.py's lifespan: separate heavy
+    # (pdf/doc/docx/...) and light (csv/txt/json/...) pools.
+    heavy = heavy_slots if heavy_slots is not None else max_concurrent_parsing
+    light = light_slots if light_slots is not None else max_concurrent_parsing
+    app.state.parse_gates = {
+        ParseTier.HEAVY: asyncio.Semaphore(heavy),
+        ParseTier.LIGHT: asyncio.Semaphore(light),
+    }
+    app.state.parse_gate_slots = {ParseTier.HEAVY: heavy, ParseTier.LIGHT: light}
     app.include_router(parsing_router)
 
     @app.get("/health")
     async def health_check() -> dict:
         # Deliberately outside the parsing router / semaphore gate, mirroring
         # parsing_main.py's real health endpoint.
-        return {"status": "ok"}
+        return {"status": "healthy"}
 
     return app
 
@@ -262,8 +286,6 @@ async def test_second_request_waits_then_succeeds_once_slot_frees(monkeypatch: p
     first and completes once the first releases its slot — it should not be
     rejected as long as the slot frees before the gate timeout.
     """
-    import app.api.routes.parsing as parsing_routes
-
     monkeypatch.setattr(parsing_routes, "PARSE_QUEUE_WAIT_WARN_SECONDS", 0.05)
     monkeypatch.setattr(parsing_routes, "PARSE_GATE_TIMEOUT_SECONDS", 5.0)
 
@@ -304,8 +326,6 @@ async def test_second_request_gets_503_after_gate_timeout(monkeypatch: pytest.Mo
     """With max_concurrent_parsing=1, a second request that can't get a slot
     within PARSE_GATE_TIMEOUT_SECONDS gets a retryable 503 instead of hanging.
     """
-    import app.api.routes.parsing as parsing_routes
-
     monkeypatch.setattr(parsing_routes, "PARSE_QUEUE_WAIT_WARN_SECONDS", 0.02)
     monkeypatch.setattr(parsing_routes, "PARSE_GATE_TIMEOUT_SECONDS", 0.1)
 
@@ -363,7 +383,75 @@ async def test_health_stays_responsive_while_parse_in_flight() -> None:
 
         health_response = await asyncio.wait_for(client.get("/health"), timeout=1.0)
         assert health_response.status_code == 200
-        assert health_response.json()["status"] == "ok"
+        assert health_response.json()["status"] == "healthy"
 
         release_event.set()
         await parse_task
+
+
+@pytest.mark.asyncio
+async def test_light_parse_proceeds_while_heavy_pool_saturated() -> None:
+    """A light-format request (csv) must not queue behind a saturated heavy
+    pool (pdf) — the two tiers are isolated gates, not one shared semaphore.
+    """
+    heavy_release = asyncio.Event()  # never set — heavy pool stays saturated
+    heavy_parser = _slow_parser(heavy_release, hold_seconds=5.0)
+    light_parser = MagicMock()
+    light_parser.parse = AsyncMock(return_value=_ok_result())
+
+    def _resolve(_mime_type: str, extension: str, _provider: object) -> MagicMock:
+        return heavy_parser if extension == "pdf" else light_parser
+
+    registry = MagicMock(spec=ParserRegistry)
+    registry.resolve = MagicMock(side_effect=_resolve)
+
+    app = _build_app(registry, heavy_slots=1, light_slots=5)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        heavy_task = asyncio.create_task(
+            client.post(
+                "/api/v1/parse",
+                files={"file": ("a.pdf", b"%PDF-1.4", "application/pdf")},
+                data={"mime_type": "application/pdf", "extension": "pdf", "provider": "default"},
+            )
+        )
+        await asyncio.sleep(0.05)  # heavy pool's single slot is now held
+
+        light_response = await asyncio.wait_for(
+            client.post(
+                "/api/v1/parse",
+                files={"file": ("b.csv", b"a,b\n1,2", "text/csv")},
+                data={"mime_type": "text/csv", "extension": "csv", "provider": "default"},
+            ),
+            timeout=1.0,
+        )
+
+        heavy_release.set()
+        await heavy_task
+
+    assert light_response.status_code == 200
+    assert light_response.json()["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_heavy_parse_rejected_under_memory_pressure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A heavy-format request is shed with a retryable 503 when the
+    memory-pressure guard trips, without ever touching the parser registry.
+    """
+    monkeypatch.setattr(parsing_routes, "memory_pressure_high", lambda: True)
+
+    registry = MagicMock(spec=ParserRegistry)
+    app = _build_app(registry, heavy_slots=1, light_slots=5)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/parse",
+        files={"file": ("a.pdf", b"%PDF-1.4", "application/pdf")},
+        data={"mime_type": "application/pdf", "extension": "pdf", "provider": "default"},
+    )
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["success"] is False
+    assert body["error"]["details"]["tier"] == "heavy"
+    registry.resolve.assert_not_called()

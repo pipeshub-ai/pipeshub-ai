@@ -744,15 +744,18 @@ class TestVLMOCRStrategy:
         assert result["markdown"] == "# Page 1"
 
     @pytest.mark.asyncio
-    async def test_process_page_error(self):
+    async def test_process_page_missing_image_returns_empty(self):
         strategy = self._make_strategy()
         strategy._page_images = {}
 
         mock_page = MagicMock()
         mock_page.page_number = 1
+        mock_page.width = 612.0
+        mock_page.height = 792.0
 
-        with pytest.raises(KeyError):
-            await strategy.process_page(mock_page)
+        result = await strategy.process_page(mock_page)
+        assert result["page_number"] == 1
+        assert result["markdown"] == ""
 
     def test_create_llm_from_config(self):
         strategy = self._make_strategy()

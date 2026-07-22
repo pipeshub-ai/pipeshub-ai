@@ -2,6 +2,7 @@ import asyncio
 import json
 import ssl
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Optional, override
@@ -12,7 +13,9 @@ from aiokafka.structs import ConsumerRecord  # type: ignore
 from app.services.messaging.config import (
     IndexingEvent,
     IndexingMessageHandler,
+    REDELIVERY_BACKOFF_SECONDS,
     StreamMessage,
+    Topic,
     messaging_env,
 )
 from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType, format_exception_chain
@@ -30,7 +33,8 @@ if TYPE_CHECKING:
 
 FUTURE_CLEANUP_INTERVAL = 100  # Cleanup completed futures every N messages
 _MAIN_LOOP_OP_TIMEOUT = 5.0
-
+_FAILURE_COOLDOWN_THRESHOLD = 5
+_FAILURE_COOLDOWN_MAX_SECONDS = 30.0
 
 class IndexingKafkaConsumer(IMessagingConsumer):
     """Kafka consumer with dual-semaphore control for indexing pipeline.
@@ -74,6 +78,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._active_futures: set[Future[bool]] = set()
         self._futures_lock = threading.Lock()
         self._backpressure_logged = False
+        self._consecutive_task_failures = 0
+        self._failure_counter_lock = threading.Lock()
 
     @staticmethod
     def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> dict[str, Any]:
@@ -354,8 +360,22 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.info("Starting Kafka consumer loop")
             while self.running:
                 try:
-                    self.__apply_backpressure()
+                    with self._failure_counter_lock:
+                        consecutive_failures = self._consecutive_task_failures
+                    if consecutive_failures >= _FAILURE_COOLDOWN_THRESHOLD:
+                        cooldown = min(
+                            consecutive_failures * 2.0,
+                            _FAILURE_COOLDOWN_MAX_SECONDS,
+                        )
+                        self.logger.warning(
+                            "Downstream failure cooldown: %d consecutive failures, "
+                            "pausing consumption for %.0fs",
+                            consecutive_failures,
+                            cooldown,
+                        )
+                        await asyncio.sleep(cooldown)
 
+                    self.__apply_backpressure()
 
                     message_batch = await self.consumer.getmany(
                         timeout_ms=messaging_env.message_timeout_ms,
@@ -470,11 +490,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         def on_future_done(f: Future[bool]) -> None:
             with self._futures_lock:
                 self._active_futures.discard(f)
-
             try:
-                _ = f.result()
+                success = f.result()
             except Exception as exc:
+                success = False
                 self.logger.error(f"Task completed with unhandled exception: {exc}")
+            with self._failure_counter_lock:
+                if success:
+                    self._consecutive_task_failures = 0
+                else:
+                    self._consecutive_task_failures += 1
 
         future.add_done_callback(on_future_done)
 
@@ -543,29 +568,42 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         
         return f"{message.topic}-{message.partition}-{message.offset}"
 
+    @staticmethod
+    def _compute_redelivery_delay(attempt_count: int) -> float:
+        """Backoff delay (seconds) before the *attempt_count*'th re-queued copy
+        is eligible for reprocessing. 1-indexed to match RetryManager's count."""
+        idx = min(max(attempt_count - 1, 0), len(REDELIVERY_BACKOFF_SECONDS) - 1)
+        return REDELIVERY_BACKOFF_SECONDS[idx]
+
     async def _requeue_message(
-        self, topic: str, message: StreamMessage, stable_message_id: str
+        self, topic: str, message: StreamMessage, stable_message_id: str, attempt_count: int
     ) -> None:
-        """Re-publish a failed message to the same topic for retry.
-        
-        The message goes to the end of the queue, allowing transient errors
-        to resolve before retry. The original offset is committed.
-        
+        """Re-publish a failed message to the same topic for delayed retry.
+
+        The message goes to the end of the queue and is stamped with
+        ``_retry_not_before`` so the consumer defers actually reprocessing it
+        until enough wall-clock time has passed for a transient failure
+        (worker restart, brief saturation) to resolve. The original offset is
+        committed immediately regardless.
+
         Preserves the stable message ID in the payload for retry tracking.
-        
+
         Args:
             topic: Topic to re-queue to
             message: The message to re-queue
             stable_message_id: Stable ID for retry tracking (preserved across re-queues)
+            attempt_count: 1-indexed delivery attempt count, used to compute backoff
         """
         if not self.producer:
             self.logger.error("No producer available for re-queue")
             return
-        
+
+        delay = self._compute_redelivery_delay(attempt_count)
         try:
             payload = dict(message.payload)
             payload["_retry_tracking_id"] = stable_message_id
-            
+            payload["_retry_not_before"] = time.time() + delay
+
             await self._run_on_main_loop(
                 self.producer.send_event(
                     topic=topic,
@@ -573,9 +611,77 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     payload=payload,
                 )
             )
+            self.logger.info(
+                "Re-queued %s to %s, eligible for reprocessing in %.0fs (attempt %d)",
+                stable_message_id, topic, delay, attempt_count,
+            )
         except Exception as e:
             self.logger.error(f"Failed to re-queue message to {topic}: {e}")
             raise
+
+    async def _republish_deferred(self, topic: str, message: StreamMessage) -> None:
+        """Re-publish a message that arrived before its ``_retry_not_before``
+        timestamp, unchanged, without running the handler or touching retry
+        counts. This is a cheap cycle through the queue: no semaphore slot is
+        held and no downstream service call is made.
+        """
+        if not self.producer:
+            self.logger.error("No producer available to defer message")
+            return
+        try:
+            await self._run_on_main_loop(
+                self.producer.send_event(
+                    topic=topic,
+                    event_type=message.eventType,
+                    payload=dict(message.payload),
+                )
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to re-publish deferred message to {topic}: {e}")
+            raise
+
+    async def _publish_to_dlq(
+        self,
+        message: ConsumerRecord,
+        parsed_message: StreamMessage,
+        stable_message_id: str,
+        failure_reason: str,
+    ) -> None:
+        """Publish an exhausted/terminal message to the dead-letter topic.
+
+        Preserves the original payload plus failure metadata so an operator
+        can inspect it and, once the underlying issue is fixed, replay it by
+        re-publishing to the original topic.
+        """
+        if not self.producer:
+            self.logger.error(
+                "No producer available to publish %s to DLQ; message will be lost", stable_message_id
+            )
+            return
+        try:
+            payload = dict(parsed_message.payload)
+            payload["_retry_tracking_id"] = stable_message_id
+            payload["_dlq_original_topic"] = message.topic
+            payload["_dlq_reason"] = failure_reason
+            payload["_dlq_timestamp"] = time.time()
+            # These are only meaningful for the live retry loop, not for a
+            # replayed message; drop them so a re-published DLQ entry starts
+            # its retry budget fresh.
+            payload.pop("_retry_not_before", None)
+
+            await self._run_on_main_loop(
+                self.producer.send_event(
+                    topic=Topic.RECORD_EVENTS_DLQ.value,
+                    event_type=parsed_message.eventType,
+                    payload=payload,
+                )
+            )
+            self.logger.warning(
+                "Published %s to DLQ topic '%s': %s",
+                stable_message_id, Topic.RECORD_EVENTS_DLQ.value, failure_reason,
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to publish {stable_message_id} to DLQ: {e}")
 
     async def __commit_if_appropriate(
         self,
@@ -583,6 +689,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         parsed_message: StreamMessage | None,
         success: bool,
         is_terminal_error: bool = False,
+        failure_reason: str | None = None,
     ) -> None:
         """Commit offset and re-queue message on transient failure.
 
@@ -590,14 +697,18 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         Error classification is based purely on exception type.
 
         On transient failure, the message is published back to the same topic
-        (goes to end of queue) and the original offset is committed. This
-        eliminates all offset ordering issues.
+        (goes to end of queue, stamped with a delayed-eligibility timestamp)
+        and the original offset is committed. This eliminates all offset
+        ordering issues. Messages that are terminal, exhausted, or otherwise
+        un-retryable are published to the dead-letter topic before being
+        committed, so they are not silently discarded.
 
         Args:
             message: The Kafka message record
             parsed_message: The parsed StreamMessage (None if parsing failed)
             success: Whether processing succeeded
             is_terminal_error: Whether the error is terminal (don't retry)
+            failure_reason: Human-readable reason, recorded on the DLQ entry
         """
         message_id = f"{message.topic}-{message.partition}-{message.offset}"
         stable_message_id = self._get_stable_message_id(message, parsed_message)
@@ -606,7 +717,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.info(f"Message {message_id} processed successfully")
             await self._clear_retry_tracking(stable_message_id)
         elif is_terminal_error:
-            self.logger.warning(f"Terminal error for {message_id}, committing without retry")
+            self.logger.warning(f"Terminal error for {message_id}, committing without retry: {failure_reason}")
+            if parsed_message:
+                await self._publish_to_dlq(
+                    message, parsed_message, stable_message_id, failure_reason or "terminal error"
+                )
             await self._clear_retry_tracking(stable_message_id)
         elif self.retry_manager and parsed_message:
             count, should_dead_letter = await self._increment_retry_and_check(stable_message_id)
@@ -614,11 +729,17 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 self.logger.warning(
                     f"Dead-lettering {message_id} (tracking ID: {stable_message_id}) after {count} transient failures"
                 )
+                await self._publish_to_dlq(
+                    message,
+                    parsed_message,
+                    stable_message_id,
+                    failure_reason or f"exhausted after {count} delivery attempts",
+                )
                 await self._clear_retry_tracking(stable_message_id)
             else:
-                # RE-QUEUE: Publish back to same topic for retry
+                # RE-QUEUE: Publish back to same topic for delayed retry
                 try:
-                    await self._requeue_message(message.topic, parsed_message, stable_message_id)
+                    await self._requeue_message(message.topic, parsed_message, stable_message_id, count)
                     self.logger.info(
                         f"Re-queued {message_id} (tracking ID: {stable_message_id}) for retry (attempt {count}/"
                         f"{messaging_env.max_delivery_attempts})"
@@ -629,8 +750,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.warning(
                 f"Message {message_id} failed, no retry manager or unparseable, committing"
             )
+            if parsed_message:
+                await self._publish_to_dlq(
+                    message, parsed_message, stable_message_id, failure_reason or "no retry manager configured"
+                )
 
-        # ALWAYS commit - message is either done, dead-lettered, or re-queued
+        # ALWAYS commit - message is either done, dead-lettered, deferred, or re-queued
         try:
             await self._commit_offset(message)
             self.logger.info(f"Committed offset for {message_id}")
@@ -669,14 +794,34 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             return False
 
         try:
-            await self.parsing_semaphore.acquire()
-            parsing_held = True
-
             parsed_message = self.__parse_message(message)
             if parsed_message is None:
                 self.logger.warning(f"Failed to parse message {message_id}, skipping")
                 await self.__commit_if_appropriate(message, None, success=False, is_terminal_error=True)
                 return False
+
+            # Deferred re-queue: this copy was re-published after a transient
+            # failure and isn't eligible for reprocessing yet. Cycle it back
+            # onto the topic and commit without acquiring a semaphore slot or
+            # calling the handler -- cheap, and gives the downstream service
+            # actual wall-clock time to recover between delivery attempts.
+            retry_not_before = parsed_message.payload.get("_retry_not_before")
+            if retry_not_before is not None:
+                try:
+                    not_before_ts = float(retry_not_before)  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    not_before_ts = None
+                if not_before_ts is not None and time.time() < not_before_ts:
+                    self.logger.debug(
+                        "Deferring %s: not eligible for reprocessing for another %.0fs",
+                        message_id, not_before_ts - time.time(),
+                    )
+                    await self._republish_deferred(topic, parsed_message)
+                    await self._commit_offset(message)
+                    return False
+
+            await self.parsing_semaphore.acquire()
+            parsing_held = True
 
             # Get stable message ID for retry tracking (preserves across re-queues)
             stable_message_id = self._get_stable_message_id(message, parsed_message)
@@ -758,7 +903,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     f"Transient error for {message_id}, checking retry count: {type(e).__name__}"
                 )
 
-            await self.__commit_if_appropriate(message, parsed_message, success=False, is_terminal_error=is_terminal)
+            await self.__commit_if_appropriate(
+                message,
+                parsed_message,
+                success=False,
+                is_terminal_error=is_terminal,
+                failure_reason=f"{type(e).__name__}: {e}",
+            )
             return False
         finally:
             # Ensure semaphores are released even on error

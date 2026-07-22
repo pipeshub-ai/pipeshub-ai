@@ -43,6 +43,37 @@ log "Starting Python services..."
 cd /app/python
 watchmedo auto-restart --recursive --pattern="*.py" --directory="." -- python -m app.connectors_main &
 watchmedo auto-restart --recursive --pattern="*.py" --directory="." -- python -m app.query_main &
+watchmedo auto-restart --recursive --pattern="*.py" --directory="." -- python -m app.docling_main &
+
+DOCLING_PORT="${DOCLING_SERVICE_PORT:-8081}"
+DOCLING_RETRIES=0
+while [ "$DOCLING_RETRIES" -lt 120 ]; do
+    if curl -s -f "http://localhost:${DOCLING_PORT}/health" > /dev/null 2>&1; then
+        log "Docling service health check passed!"
+        break
+    fi
+    DOCLING_RETRIES=$((DOCLING_RETRIES + 1))
+    sleep 2
+done
+if [ "$DOCLING_RETRIES" -eq 120 ]; then
+    log "ERROR: Docling service did not become healthy"
+    exit 1
+fi
+
+# Standalone Parsing/Extraction services are opt-in (USE_PARSING_SERVICE=true,
+# set by default in the hot-reload compose files). Without this block,
+# indexing would call a dead :8092/:8093 -- these ports were exposed in the
+# compose files but nothing here ever bound to them.
+if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
+    log "USE_PARSING_SERVICE=true — starting Parsing and Extraction services..."
+    PARSING_SERVICE_PORT="${PARSING_SERVICE_PORT:-8092}"
+    EXTRACTION_SERVICE_PORT="${EXTRACTION_SERVICE_PORT:-8093}"
+    export PARSING_SERVICE_PORT EXTRACTION_SERVICE_PORT
+    watchmedo auto-restart --recursive --pattern="*.py" --directory="." -- python -m app.parsing_main &
+    watchmedo auto-restart --recursive --pattern="*.py" --directory="." -- python -m app.extraction_main &
+else
+    log "USE_PARSING_SERVICE not set to true — skipping Parsing and Extraction services"
+fi
 
 sleep 15
 
@@ -55,7 +86,6 @@ sleep 5
 log "Starting remaining Python services..."
 cd /app/python
 watchmedo auto-restart --recursive --pattern="*.py" --directory="." -- python -m app.indexing_main &
-watchmedo auto-restart --recursive --pattern="*.py" --directory="." -- python -m app.docling_main &
 
 sleep 10
 

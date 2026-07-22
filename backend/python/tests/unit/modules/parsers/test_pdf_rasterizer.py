@@ -106,6 +106,68 @@ def test_render_batch_from_path_sync_uses_process_pool():
     assert result == fake_pages
 
 
+def _make_pdf(page_texts):
+    """Build a PDF where each entry is the text drawn on that page ('' = blank)."""
+    pytest.importorskip("reportlab")
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    buf = BytesIO()
+    c = canvas.Canvas(buf, pagesize=letter)
+    for text in page_texts:
+        if text:
+            for i in range(20):
+                c.drawString(72, 720 - i * 14, text)
+        c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+def test_detect_scanned_pdf_sync_uses_process_pool():
+    with patch.object(rasterizer, "_run_in_pool", return_value=True) as mock_run:
+        assert rasterizer.detect_scanned_pdf_sync(b"%PDF") is True
+
+    mock_run.assert_called_once_with(
+        rasterizer._worker_detect_scanned_pdf,
+        b"%PDF",
+        rasterizer.SCANNED_PDF_SAMPLE_PAGES,
+        rasterizer.SCANNED_PDF_MIN_CHARS_PER_PAGE,
+        rasterizer.SCANNED_PDF_PAGE_RATIO,
+    )
+
+
+def test_worker_detect_scanned_pdf_digital_document():
+    pdf = _make_pdf(["lorem ipsum dolor sit amet consectetur adipiscing"] * 5)
+    assert rasterizer._worker_detect_scanned_pdf(pdf, 16, 100, 0.3) is False
+
+
+def test_worker_detect_scanned_pdf_textless_document():
+    pdf = _make_pdf([""] * 5)
+    assert rasterizer._worker_detect_scanned_pdf(pdf, 16, 100, 0.3) is True
+
+
+def test_worker_detect_scanned_pdf_mostly_blank_document():
+    pdf = _make_pdf(["lorem ipsum dolor sit amet consectetur adipiscing"] + [""] * 9)
+    assert rasterizer._worker_detect_scanned_pdf(pdf, 16, 100, 0.3) is True
+
+
+def test_worker_detect_scanned_pdf_invalid_bytes_raises():
+    with pytest.raises(Exception):
+        rasterizer._worker_detect_scanned_pdf(b"not a pdf", 16, 100, 0.3)
+
+
+def test_sample_page_indices_small_doc_returns_all_pages():
+    assert rasterizer._sample_page_indices(3, 16) == [0, 1, 2]
+
+
+def test_sample_page_indices_large_doc_is_bounded_and_spread():
+    indices = rasterizer._sample_page_indices(1000, 16)
+    assert len(indices) == 16
+    assert indices[0] == 0
+    assert indices[-1] >= 900
+    assert indices == sorted(indices)
+
+
 def test_broken_process_pool_clears_cache_and_reraises():
     """BrokenProcessPool should clear the cached pool and re-raise."""
     mock_pool = MagicMock()

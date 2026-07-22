@@ -22,6 +22,7 @@ Covers:
 import asyncio
 import json
 import logging
+import time
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
@@ -31,8 +32,10 @@ from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
     PipelineEventData,
+    REDELIVERY_BACKOFF_SECONDS,
     RedisStreamsConfig,
     StreamMessage,
+    Topic,
     messaging_env,
 )
 from app.services.messaging.redis_streams.indexing_consumer import (
@@ -1666,3 +1669,165 @@ class TestModuleConstants:
 
     def test_message_value_field_constant(self):
         assert _MESSAGE_VALUE_FIELD == "value"
+
+
+class TestDelayedRedisRedelivery:
+    def test_redelivery_delay_is_attempt_based_and_capped(self, consumer):
+        assert (
+            consumer._compute_redelivery_delay(1)
+            == REDELIVERY_BACKOFF_SECONDS[0]
+        )
+        assert (
+            consumer._compute_redelivery_delay(2)
+            == REDELIVERY_BACKOFF_SECONDS[1]
+        )
+        assert (
+            consumer._compute_redelivery_delay(99)
+            == REDELIVERY_BACKOFF_SECONDS[-1]
+        )
+
+    @pytest.mark.asyncio
+    async def test_requeue_stamps_delayed_eligibility(self, consumer):
+        consumer.producer = MagicMock()
+        consumer.producer.send_event = AsyncMock()
+        message = StreamMessage(eventType="reindexRecord", payload={"recordId": "r1"})
+        before = time.time()
+
+        await consumer._requeue_message("record-events", message, "stable-1", 1)
+
+        call = consumer.producer.send_event.await_args
+        assert call.kwargs["topic"] == "record-events"
+        assert call.kwargs["payload"]["_retry_tracking_id"] == "stable-1"
+        assert (
+            call.kwargs["payload"]["_retry_not_before"]
+            >= before + REDELIVERY_BACKOFF_SECONDS[0] - 1
+        )
+
+    @pytest.mark.asyncio
+    async def test_deferred_message_stays_pending_without_using_parse_slot(
+        self, consumer
+    ):
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        handler_called = False
+
+        async def handler(_message):
+            nonlocal handler_called
+            handler_called = True
+            if False:
+                yield
+
+        consumer.message_handler = handler
+        fields = _valid_fields(
+            payload={
+                "recordId": "r1",
+                "_retry_not_before": time.time() + 30,
+                "_retry_tracking_id": "stable-1",
+            }
+        )
+
+        with patch.object(
+            consumer, "_ack_message", new=AsyncMock()
+        ) as ack_mock, patch.object(
+            consumer, "_clear_retry_tracking", new=AsyncMock()
+        ):
+            result = await consumer._process_message_wrapper(
+                "record-events", "2-0", fields
+            )
+
+        assert result is False
+        assert handler_called is False
+        ack_mock.assert_not_awaited()
+        assert consumer.parsing_semaphore._value == 1
+
+    @pytest.mark.asyncio
+    async def test_pending_drain_skips_message_until_eligible(self, consumer):
+        consumer.running = True
+        consumer.redis = AsyncMock()
+        fields = _valid_fields(
+            payload={
+                "recordId": "r1",
+                "_retry_not_before": time.time() + 60,
+            }
+        )
+        consumer.redis.xautoclaim = AsyncMock(
+            side_effect=[
+                ("0-0", [("2-0", fields)], []),
+                ("0-0", [], []),
+            ]
+        )
+        consumer.redis.xreadgroup = AsyncMock(return_value=None)
+
+        with patch.object(
+            consumer, "_should_dead_letter", new=AsyncMock(return_value=False)
+        ), patch.object(
+            consumer, "_start_processing_task", new=AsyncMock()
+        ) as start_mock:
+            await consumer._drain_pending()
+
+        start_mock.assert_not_awaited()
+
+
+class TestRedisDlqPublishing:
+    @pytest.mark.asyncio
+    async def test_publish_to_dlq_preserves_failure_metadata(self, consumer):
+        consumer.producer = MagicMock()
+        consumer.producer.send_event = AsyncMock()
+        message = StreamMessage(
+            eventType="reindexRecord",
+            payload={
+                "recordId": "r1",
+                "_retry_not_before": time.time() + 60,
+            },
+        )
+
+        await consumer._publish_to_dlq(
+            "record-events", message, "stable-1", "service unavailable"
+        )
+
+        call = consumer.producer.send_event.await_args
+        assert call.kwargs["topic"] == Topic.RECORD_EVENTS_DLQ.value
+        payload = call.kwargs["payload"]
+        assert payload["_retry_tracking_id"] == "stable-1"
+        assert payload["_dlq_original_topic"] == "record-events"
+        assert payload["_dlq_reason"] == "service unavailable"
+        assert "_retry_not_before" not in payload
+
+    @pytest.mark.asyncio
+    async def test_exhausted_transient_failure_is_published_before_ack(
+        self, consumer
+    ):
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        consumer.retry_manager = MagicMock()
+        consumer.producer = MagicMock()
+        consumer.producer.send_event = AsyncMock()
+
+        async def handler(_message):
+            raise RuntimeError("temporary outage")
+            yield
+
+        consumer.message_handler = handler
+        with patch.object(
+            consumer,
+            "_increment_retry_and_check",
+            new=AsyncMock(return_value=(3, True)),
+        ), patch.object(
+            consumer, "_get_retry_count", new=AsyncMock(return_value=2)
+        ), patch.object(
+            consumer, "_ack_message", new=AsyncMock()
+        ) as ack_mock, patch.object(
+            consumer, "_clear_retry_tracking", new=AsyncMock()
+        ):
+            result = await consumer._process_message_wrapper(
+                "record-events",
+                "3-0",
+                _valid_fields("reindexRecord", {"recordId": "r1"}),
+            )
+
+        assert result is False
+        assert (
+            consumer.producer.send_event.await_args.kwargs["topic"]
+            == Topic.RECORD_EVENTS_DLQ.value
+        )
+        ack_mock.assert_awaited_once_with("record-events", "3-0")

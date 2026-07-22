@@ -24,11 +24,13 @@ from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
     PipelineEventData,
+    Topic,
 )
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
 )
+from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
@@ -76,12 +78,14 @@ class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
                 config_service: ConfigurationService,
                 event_processor: EventProcessor,
+                producer: IMessagingProducer | None = None,
                 ) -> None:
 
         self.logger = logger
         self.config_service = config_service
 
         self.event_processor : EventProcessor = event_processor
+        self.producer = producer
 
     async def _propagate_primary_failure_to_queued_duplicates(
         self,
@@ -152,7 +156,14 @@ class RecordEventHandler(BaseEventService):
             )
 
             # Publish the event to trigger indexing
-            await self.event_processor.graph_provider._publish_record_event("newRecord", payload)
+            if not self.producer:
+                raise IndexingError("No messaging producer configured; cannot publish newRecord event")
+            await self.producer.send_event(
+                topic=Topic.RECORD_EVENTS.value,
+                event_type="newRecord",
+                payload=payload,
+                key=str(next_record_id),
+            )
 
             self.logger.info(f"✅ Successfully triggered indexing for queued duplicate: {next_record_id}")
 
@@ -685,7 +696,16 @@ class RecordEventHandler(BaseEventService):
                     else:
                         self.logger.warning(f"Record {record_id} not found, skipping duplicate handling")
                 else:
-                    self.logger.info(f"🔄 Record {record_id} failed but will retry, not updating status to FAILED yet")
+                    await self.__update_document_status(
+                        record_id=record_id,
+                        indexing_status=ProgressStatus.QUEUED.value,
+                        extraction_status=ProgressStatus.QUEUED.value,
+                        reason=f"Transient failure, awaiting retry: {error_msg}",
+                    )
+                    self.logger.info(
+                        "🔄 Record %s failed but will retry — marked QUEUED",
+                        record_id,
+                    )
             elif record is not None and event_type != EventTypes.DELETE_RECORD.value:
                 # Update queued duplicates for ALL record types (not just FILE)
                 record = await self.event_processor.graph_provider.get_document(

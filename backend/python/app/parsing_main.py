@@ -54,17 +54,18 @@ from app.services.parsing.providers.smart_pdf_parser import SmartPDFParser
 from app.services.parsing.registry import ParserRegistry
 from app.api.routes.parsing import router as parsing_router
 from app.config.constants.ai_models import OCRProvider
-from app.services.messaging.config import messaging_env
+from app.services.parsing.concurrency import (
+    ParseTier,
+    compute_parse_slots,
+    get_memory_limit_bytes,
+)
 
 logger = logging.getLogger("parsing_main")
 
-# Headroom on top of max_concurrent_parsing so a request's own sequential
-# to_thread hops (e.g. LibreOffice write, then Excel/CSV parse) don't starve
-# for a slot while another request is mid-parse.
+# Headroom on top of the combined heavy+light slot count so a request's own
+# sequential to_thread hops (e.g. LibreOffice write, then Excel/CSV parse)
+# don't starve for a slot while another request is mid-parse.
 PARSE_THREAD_POOL_HEADROOM = 4
-# Even with an operator-supplied MAX_CONCURRENT_PARSING, don't let effective
-# concurrency oversubscribe CPU-bound parsers (see startup log warning below).
-CPU_CONCURRENCY_MULTIPLIER = 2
 
 
 def handle_sigterm(signum: int, frame: types.FrameType | None) -> None:
@@ -218,27 +219,32 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.parser_registry = _build_registry(config_service, app_logger)
 
     # ------------------------------------------------------------------
-    # Concurrency gate: bound how many requests parse at once, and size the
-    # loop's default executor (used by every asyncio.to_thread offload) to
-    # match, so CPU-bound parsers can't oversubscribe the box.
+    # Concurrency gates: two isolated pools so a heavy PDF/OCR parse can
+    # never queue behind (or starve) a fast markdown/CSV/JSON parse. Sizes
+    # are auto-derived from CPU + memory limits (cgroup-aware, falling back
+    # to psutil for native macOS/Windows/Linux runs) — see
+    # app/services/parsing/concurrency.py. MAX_CONCURRENT_PARSING remains
+    # the one operator override, pinning the heavy pool directly.
     # ------------------------------------------------------------------
-    requested_concurrency = messaging_env.max_concurrent_parsing
     cpu_count = os.cpu_count() or 1
-    cpu_cap = cpu_count * CPU_CONCURRENCY_MULTIPLIER
-    effective_concurrency = max(1, min(requested_concurrency, cpu_cap))
-    if effective_concurrency < requested_concurrency:
-        app_logger.warning(
-            "MAX_CONCURRENT_PARSING=%d exceeds %dx available CPUs (%d); capping "
-            "effective parsing concurrency to %d. CPU-bound parsers may still "
-            "contend — consider lowering MAX_CONCURRENT_PARSING or scaling out "
-            "via PARSING_UVICORN_WORKERS instead.",
-            requested_concurrency, CPU_CONCURRENCY_MULTIPLIER, cpu_count, effective_concurrency,
-        )
+    mem_limit_bytes = get_memory_limit_bytes()
+    heavy_slots, light_slots = compute_parse_slots(
+        cpu_count=cpu_count,
+        mem_limit_bytes=mem_limit_bytes,
+        override=os.getenv("MAX_CONCURRENT_PARSING"),
+    )
 
-    app.state.parse_semaphore = asyncio.Semaphore(effective_concurrency)
-    app.state.max_concurrent_parsing = effective_concurrency
+    app.state.parse_gates = {
+        ParseTier.HEAVY: asyncio.Semaphore(heavy_slots),
+        ParseTier.LIGHT: asyncio.Semaphore(light_slots),
+    }
+    app.state.parse_gate_slots = {
+        ParseTier.HEAVY: heavy_slots,
+        ParseTier.LIGHT: light_slots,
+    }
 
-    thread_pool_size = effective_concurrency + PARSE_THREAD_POOL_HEADROOM
+    total_slots = heavy_slots + light_slots
+    thread_pool_size = total_slots + PARSE_THREAD_POOL_HEADROOM
     executor = ThreadPoolExecutor(
         max_workers=thread_pool_size,
         thread_name_prefix="parsing-worker",
@@ -246,14 +252,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     asyncio.get_running_loop().set_default_executor(executor)
     app.state.parse_executor = executor
 
+    mem_limit_gib = f"{mem_limit_bytes / (1024**3):.1f}GiB" if mem_limit_bytes else "unknown"
     app_logger.info(
         "✅ Parsing Service started — %d formats registered | "
-        "max_concurrent_parsing=%d (requested=%d, cpu_count=%d) | thread_pool_size=%d | "
+        "heavy_slots=%d light_slots=%d (cpu_count=%d, mem_limit=%s, "
+        "MAX_CONCURRENT_PARSING=%s) | thread_pool_size=%d | "
         "LOCAL_DOCLING_PARSE_WORKERS=%s | PDF_RASTER_WORKERS=%s | PARSING_UVICORN_WORKERS=%s",
         len(app.state.parser_registry.list_all_formats()),
-        effective_concurrency,
-        requested_concurrency,
+        heavy_slots,
+        light_slots,
         cpu_count,
+        mem_limit_gib,
+        os.getenv("MAX_CONCURRENT_PARSING", "auto"),
         thread_pool_size,
         os.getenv("LOCAL_DOCLING_PARSE_WORKERS", "1"),
         os.getenv("PDF_RASTER_WORKERS", "auto"),
@@ -290,10 +300,16 @@ app.include_router(parsing_router)
 
 @app.get("/health")
 async def health_check() -> JSONResponse:
+    """Health check endpoint. ``status`` uses the "healthy"/"unhealthy" values
+    that every other service (indexing, docling, query) reports, so the
+    Node.js aggregator (health.routes.ts) and Docker healthcheck can treat
+    parsing the same way as the rest of the fleet instead of special-casing
+    an "ok" status that only this service used to return.
+    """
     registry: ParserRegistry = app.state.parser_registry
     return JSONResponse(
         content={
-            "status": "ok",
+            "status": "healthy",
             "formats": list(registry.list_all_formats().keys()),
         }
     )
@@ -304,9 +320,10 @@ def run(host: str = "0.0.0.0", port: int | None = None, workers: int | None = No
 
     ``PARSING_UVICORN_WORKERS`` (default 1) scales the service across
     multiple processes for CPU headroom beyond the in-process concurrency
-    gate (``MAX_CONCURRENT_PARSING``, capped per-process at 2x CPU count —
-    see ``lifespan``). Effective service-wide capacity is then
-    ``PARSING_UVICORN_WORKERS x effective max_concurrent_parsing``.
+    gates (auto-sized heavy/light pools — see
+    ``app.services.parsing.concurrency.compute_parse_slots``). Effective
+    service-wide capacity is ``PARSING_UVICORN_WORKERS x (heavy_slots +
+    light_slots)``.
     """
     port = port or int(os.getenv("PARSING_SERVICE_PORT", "8092"))
     workers = workers or max(1, int(os.getenv("PARSING_UVICORN_WORKERS", "1")))

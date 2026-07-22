@@ -154,8 +154,17 @@ services:
       # ML threading
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 
-      # Indexing concurrency
-      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
+      # Indexing concurrency. MAX_CONCURRENT_PARSING=auto derives separate
+      # heavy/light parse pool sizes from detected CPU/memory; set an
+      # integer to pin the heavy pool size instead.
+      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-auto}
+      - VLM_OCR_MAX_CONCURRENT=${VLM_OCR_MAX_CONCURRENT:-1}
+      - PDF_RASTER_WORKERS=${PDF_RASTER_WORKERS:-1}
+      - PAGE_RENDER_BATCH_SIZE=${PAGE_RENDER_BATCH_SIZE:-5}
+      - SCANNED_PDF_SAMPLE_PAGES=${SCANNED_PDF_SAMPLE_PAGES:-16}
+      - SCANNED_PDF_MIN_CHARS_PER_PAGE=${SCANNED_PDF_MIN_CHARS_PER_PAGE:-100}
+      - SCANNED_PDF_PAGE_RATIO=${SCANNED_PDF_PAGE_RATIO:-0.3}
+      - DOCLING_MAX_CONCURRENT=${DOCLING_MAX_CONCURRENT:-1}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-7}
       - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-40}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
@@ -185,7 +194,7 @@ services:
       - PARSING_SERVICE_URL=http://localhost:8092
       - EXTRACTION_SERVICE_URL=http://localhost:8093
       # Set to "true" to route indexing through the standalone parsing/extraction services
-      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
+      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-false}
       # Set to "true" to defer graph enrichment until after vectordb indexing completes
       - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
@@ -231,7 +240,7 @@ services:
         - CMD-SHELL
         - >
           curl -sf http://localhost:3000/api/v1/health/services -o /tmp/hc.json &&
-          python3 -c "import json,sys; d=json.load(open('/tmp/hc.json')); s=d.get('services',{}) or {}; required=('query','connector','indexing','docling'); sys.exit(0 if all(s.get(k)=='healthy' for k in required) and s.get('embedding') in ('healthy','starting') else 1)"
+          python3 -c "import json,sys; d=json.load(open('/tmp/hc.json')); s=d.get('services',{}) or {}; required=('query','connector','indexing','docling'); sys.exit(0 if all(s.get(k)=='healthy' for k in required) and s.get('embedding') in ('healthy','starting') and s.get('parsing') in ('healthy','disabled') else 1)"
       interval: 15s
       timeout: 10s
       retries: 5
@@ -469,7 +478,7 @@ services:
       - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
       - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
       - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
-      - KAFKA_CREATE_TOPICS=record-events:1:1,entity-events:1:1,sync-events:1:1
+      - KAFKA_CREATE_TOPICS=record-events:1:1,record-events-dlq:1:1,entity-events:1:1,sync-events:1:1
       - KAFKA_LOG_RETENTION_HOURS=24
       - KAFKA_NUM_NETWORK_THREADS=3
       - KAFKA_NUM_IO_THREADS=8

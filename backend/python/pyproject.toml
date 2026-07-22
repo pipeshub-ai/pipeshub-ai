@@ -257,6 +257,7 @@ dependencies = [
     "pdfplumber==0.11.9",
     "pillow-avif-plugin==1.5.5",
     "protobuf>=4.25.0,<6",
+    "psutil>=5.9.0",
     "pydantic==2.12.5",
     "py-trello==0.20.1",
     "python-arango==8.1.5",
