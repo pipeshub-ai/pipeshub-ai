@@ -691,7 +691,7 @@ class TestHandleReindex:
         mock_conn.reindex_records = AsyncMock()
 
         # Return one batch then empty
-        batch1 = [MagicMock() for _ in range(50)]  # Less than 100
+        batch1 = [MagicMock(is_placeholder=False) for _ in range(50)]  # Less than 100
         service.graph_provider.get_records_by_status = AsyncMock(
             side_effect=[batch1, []]
         )

@@ -3146,6 +3146,7 @@ class TestStreamRecord:
     async def test_stream_page(self):
         c = _conn()
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.external_record_id = "p1"
         record.record_name = "Test"
@@ -3167,6 +3168,7 @@ class TestStreamRecord:
     async def test_stream_file(self):
         c = _conn()
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.FILE
         record.record_name = "file.pdf"
         record.external_record_id = "att-1"
@@ -3186,6 +3188,7 @@ class TestStreamRecord:
     async def test_unsupported_record_type(self):
         c = _conn()
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.TICKET
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
@@ -3195,6 +3198,7 @@ class TestStreamRecord:
     async def test_stream_exception(self):
         c = _conn()
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.external_record_id = "p1"
         record.record_name = "T"
@@ -4274,6 +4278,7 @@ class TestStreamRecordFullCoverage:
         c._process_page_attachments_for_children = AsyncMock(return_value={})
         c._parse_confluence_page_to_blocks = AsyncMock(return_value=MagicMock(model_dump_json=MagicMock(return_value="{}")))
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.record_name = "Test"
         record.external_record_id = "p1"
@@ -4287,6 +4292,7 @@ class TestStreamRecordFullCoverage:
     async def test_unsupported_type(self):
         c = _c()
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.OTHERS
         from fastapi import HTTPException
         with pytest.raises(HTTPException):
@@ -6070,6 +6076,7 @@ class TestStreamRecordAdditional:
             record_name="comment",
             external_record_id="321748993",
         )
+        record.is_placeholder = False
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
         assert exc_info.value.status_code == 404
@@ -6091,6 +6098,7 @@ class TestStreamRecordAdditional:
             record_name="comment",
             external_record_id="321748993",
         )
+        record.is_placeholder = False
         result = await c.stream_record(record)
         assert result is not None
         assert result.media_type == MimeTypes.HTML.value
@@ -6106,6 +6114,7 @@ class TestStreamRecordAdditional:
             record_name="inline comment",
             external_record_id="321814529",
         )
+        record.is_placeholder = False
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
         assert exc_info.value.status_code == 404
@@ -6119,6 +6128,7 @@ class TestStreamRecordAdditional:
             record_name="unknown",
             external_record_id="x1",
         )
+        record.is_placeholder = False
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
         assert exc_info.value.status_code == 400
@@ -7155,6 +7165,7 @@ class TestStreamRecord:
             external_record_group_id="sp1",
             weburl="https://example.atlassian.net/wiki/spaces/TEST/pages/p1",
         )
+        record.is_placeholder = False
         ds = MagicMock()
         ds.get_page_attachments = AsyncMock(
             return_value=_mk_resp(200, {"results": [], "_links": {}})
@@ -7181,6 +7192,7 @@ class TestStreamRecord:
             record_name="Comment1",
             external_record_id="321748993",
         )
+        record.is_placeholder = False
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
         assert exc_info.value.status_code == 404
@@ -7202,6 +7214,7 @@ class TestStreamRecord:
             record_name="Comment1",
             external_record_id="321748993",
         )
+        record.is_placeholder = False
         result = await c.stream_record(record)
         assert result is not None
         assert result.media_type == MimeTypes.HTML.value
@@ -7216,6 +7229,7 @@ class TestStreamRecord:
             mime_type="application/pdf",
             id="r1",
         )
+        record.is_placeholder = False
         result = await c.stream_record(record)
         assert result is not None
 
@@ -7227,6 +7241,7 @@ class TestStreamRecord:
             record_name="msg",
             external_record_id="m1",
         )
+        record.is_placeholder = False
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
         assert exc_info.value.status_code == 400
@@ -7239,6 +7254,7 @@ class TestStreamRecord:
             record_name="Page",
             external_record_id="p1",
         )
+        record.is_placeholder = False
         c._fetch_page_content = AsyncMock(side_effect=RuntimeError("network fail"))
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
@@ -8527,6 +8543,7 @@ class TestStreamRecordLegacyHtml:
     async def test_legacy_html_mime_streams_html(self):
         c = _mk_connector()
         record = MagicMock(spec=WebpageRecord)
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.mime_type = MimeTypes.HTML.value
         record.external_record_id = "legacy-1"
@@ -9362,6 +9379,7 @@ class TestStreamRecordBlocksPath:
     async def test_stream_page_blocks_end_to_end(self):
         c = _mk_connector()
         record = MagicMock(spec=WebpageRecord)
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.mime_type = MimeTypes.BLOCKS.value
         record.external_record_id = "100001"
@@ -9400,6 +9418,7 @@ class TestStreamRecordBlocksPath:
     async def test_stream_blogpost_uses_blogpost_attachments(self):
         c = _mk_connector()
         record = MagicMock(spec=WebpageRecord)
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_BLOGPOST
         record.mime_type = MimeTypes.BLOCKS.value
         record.external_record_id = "200002"
@@ -9428,6 +9447,7 @@ class TestStreamRecordBlocksPath:
     async def test_stream_attachment_fetch_failure_continues(self):
         c = _mk_connector()
         record = MagicMock(spec=WebpageRecord)
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.mime_type = MimeTypes.BLOCKS.value
         record.external_record_id = "100002"

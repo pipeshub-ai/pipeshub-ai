@@ -553,6 +553,7 @@ class TestStreamRecord:
         c._process_page_attachments_for_children = AsyncMock(return_value={})
         c._parse_confluence_page_to_blocks = AsyncMock(return_value=MagicMock(model_dump_json=MagicMock(return_value="{}")))
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.record_name = "Test"
         record.external_record_id = "p1"
@@ -566,6 +567,7 @@ class TestStreamRecord:
     async def test_unsupported_type(self):
         c = _c()
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.OTHERS
         from fastapi import HTTPException
         with pytest.raises(HTTPException):
