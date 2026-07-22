@@ -1,8 +1,8 @@
 """Normalization + expected-snapshot loading for the Jira streamed-blocks integration test.
 
 The Jira connector streams a ``BlocksContainer`` (``application/blocks`` JSON) built from a
-ticket's ADF description + comments + inline images. That output carries per-run volatile
-values (uuid ids, ``source_group_id`` with the issue id, ``weburl`` with the issue key,
+ticket's rendered HTML description + comments + inline images. That output carries per-run
+volatile values (uuid ids, ``source_group_id`` with the issue id, ``weburl`` with the issue key,
 ``content_hash``, source timestamps, and giant base64 image data-URIs). This module strips /
 placeholders those so the expected snapshot is stable across runs, and loads (or bootstraps)
 the expected-snapshot file.
@@ -92,16 +92,17 @@ async def parse_connector_blocks_via_processor(blocks_data: bytes | str | dict) 
     """Run the connector's ``application/blocks`` through the production ``Processor.process_blocks``
     and return the FINAL parsed ``BlocksContainer`` as a dict.
 
-    Mirrors the parser IT (``process_md_document``) but for connector records: block-groups with
-    ``requires_processing=True`` are parsed into fine-grained typed blocks via the real markdown
-    parser. The graph DB, indexing pipeline and LLM table-enhancement are mocked so only the
-    parsing path runs (no external services, deterministic output).
+    Mirrors the parser IT but for connector records: block-groups with
+    ``requires_processing=True`` are parsed into fine-grained typed blocks via the real HTML
+    (or markdown) parser. The graph DB, indexing pipeline and LLM table-enhancement are mocked
+    so only the parsing path runs (no external services, deterministic output).
     """
     import logging as _logging
     from unittest.mock import AsyncMock, MagicMock, patch
 
     from app.config.constants.arangodb import ExtensionTypes
     from app.events.processor import Processor
+    from app.modules.parsers.html_parser.html_parser import HTMLParser
     from app.modules.parsers.image_parser.image_parser import ImageParser
     from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 
@@ -109,6 +110,7 @@ async def parse_connector_blocks_via_processor(blocks_data: bytes | str | dict) 
     logger.setLevel(_logging.CRITICAL)
     parsers = {
         ExtensionTypes.MD.value: MarkdownParser(),
+        ExtensionTypes.HTML.value: HTMLParser(logger=logger),
         ExtensionTypes.PNG.value: ImageParser(logger),
     }
     with patch("app.events.processor.DoclingClient"):

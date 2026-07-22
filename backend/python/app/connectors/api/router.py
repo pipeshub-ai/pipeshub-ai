@@ -6115,6 +6115,7 @@ async def _ensure_connector_initialized(
         scope = connector_doc.get(ConnectorRequestKeys.SCOPE, ConnectorScope.PERSONAL.value)
         created_by = connector_doc.get("createdBy", "")
         org_id = connector_doc.get("orgId")
+        connector_instance_name = connector_doc.get("name")
 
         # Create connector using factory
         connector = await ConnectorFactory.create_connector(
@@ -6127,6 +6128,7 @@ async def _ensure_connector_initialized(
             created_by=created_by,
             org_id=org_id,
             notification_service=container.connector_notification_service(),
+            connector_instance_name=connector_instance_name,
         )
 
         if not connector:

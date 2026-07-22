@@ -1327,17 +1327,21 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def on_records_deleted_cascade(
-        self, record_ids: list[str], connector_id: str
+        self,
+        record_ids: list[str],
+        connector_id: str,
+        cascade_children: bool = True,
     ) -> dict:
-        """Recursively delete records — the single delete path for files, folders and
-        multi-record deletes, generic across KB and connectors.
+        """Delete records, sweep their edges, and publish deleteRecord events.
 
-        A folder is just a record with children, so there is no folder/file special-casing:
-        each root id is deleted together with its whole containment subtree (a leaf yields
-        just itself; a folder/container yields all descendants). Scoped by
-        ``connectorId == connector_id`` (kb_id for a KB). Returns the provider result
-        (counts, deleted/failed) for the HTTP response and publishes one deleteRecord event
-        per deleted record that has a virtualRecordId (Qdrant cleanup).
+        When *cascade_children* is True (default), the full PARENT_CHILD +
+        ATTACHMENT subtree is deleted — correct for KB folders and connectors
+        whose children should be removed together with the parent.
+
+        When False, only ATTACHMENT edges are traversed so child records linked
+        via PARENT_CHILD survive.  Use this for ticket-system deletions where
+        a parent ticket (e.g. Epic) can be deleted while its child stories remain
+        live at source.
         """
         if not record_ids:
             return {
@@ -1349,7 +1353,9 @@ class DataSourceEntitiesProcessor:
                 "failed_count": 0,
             }
         async with self.data_store_provider.transaction() as tx_store:
-            result = await tx_store.delete_records_recursive(record_ids, connector_id)
+            result = await tx_store.delete_records_recursive(
+                record_ids, connector_id, cascade_children=cascade_children,
+            )
         await self._publish_delete_events((result or {}).get("eventData"))
         return result
 

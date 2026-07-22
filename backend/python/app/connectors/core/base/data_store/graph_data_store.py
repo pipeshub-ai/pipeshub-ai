@@ -247,16 +247,18 @@ class GraphTransactionStore(TransactionStore):
     async def delete_nodes_and_edges(self, keys: list[str], collection: str) -> None:
         return await self.graph_provider.delete_nodes_and_edges(keys, collection, graph_name="knowledgeGraph", transaction=self.txn)
 
-    async def delete_records_recursive(self, record_ids: list[str], connector_id: str) -> dict:
-        """Recursive delete within the active transaction — the single generic delete for
-        files, folders, and multi-record deletes, for KB and connectors.
+    async def delete_records_recursive(
+        self, record_ids: list[str], connector_id: str, cascade_children: bool = True,
+    ) -> dict:
+        """Delete records within the active transaction.
 
-        Reuses the provider's recursive delete: each root id is deleted together with its
-        whole containment subtree (PARENT_CHILD + ATTACHMENT), all edges swept, type docs
-        removed, scoped by ``connectorId == connector_id`` (kb_id for a KB). Returns counts
-        + ``eventData`` with a deleteRecord payload per deleted record that has a virtualRecordId.
+        When *cascade_children* is True (default), the full PARENT_CHILD +
+        ATTACHMENT subtree is deleted.  When False, only ATTACHMENT edges are
+        traversed — child records linked via PARENT_CHILD survive.
         """
-        return await self.graph_provider.delete_records_recursive(record_ids, connector_id, transaction=self.txn)
+        return await self.graph_provider.delete_records_recursive(
+            record_ids, connector_id, transaction=self.txn, cascade_children=cascade_children,
+        )
 
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[AppUserGroup]:
         return await self.graph_provider.get_user_group_by_external_id(connector_id, external_id, transaction=self.txn)

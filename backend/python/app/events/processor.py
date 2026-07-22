@@ -1220,20 +1220,22 @@ class Processor:
                 # This ensures we know the final indices before updating nested block_group ranges
                 block_start_index = current_block_index
                 for new_block in new_blocks_list:
-                    # Assign sequential block index
                     new_block.index = current_block_index
 
-                    # Set parent_index
+                    is_fragment = new_block.parent_block_index is not None
+
+                    if is_fragment:
+                        new_block.parent_block_index += block_start_index
+
                     if new_block.parent_index is None:
-                        new_block.parent_index = final_index
+                        if not is_fragment:
+                            new_block.parent_index = final_index
                     else:
-                        # If parent_index exists, it's a relative index from docling
                         new_block.parent_index = new_block.parent_index + insertion_index
 
                     new_blocks.append(new_block)
 
-                    # Add blocks that directly belong to the parent BlockGroup
-                    if new_block.parent_index == final_index:
+                    if not is_fragment and new_block.parent_index == final_index:
                         bg.children.add_block_index(new_block.index)
 
                     current_block_index += 1
