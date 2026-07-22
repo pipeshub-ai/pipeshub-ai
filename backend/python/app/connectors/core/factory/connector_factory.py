@@ -212,6 +212,7 @@ class ConnectorFactory:
 
         try:
             notification_service = kwargs.pop("notification_service", None)
+            connector_instance_name = kwargs.pop("connector_instance_name", None)
             connector = await connector_class.create_connector(
                 logger=logger,
                 data_store_provider=data_store_provider,
@@ -222,10 +223,13 @@ class ConnectorFactory:
                 **kwargs,
             )
             if connector is not None:
+                # Set org_id on the data_entities_processor if present, using multi-org fix
                 if org_id and getattr(connector, "data_entities_processor", None) is not None:
                     connector.data_entities_processor.org_id = org_id
                 if notification_service is not None:
                     connector._notification_service = notification_service
+                if connector_instance_name:
+                    connector.connector_instance_name = connector_instance_name
             logger.info(f"Created {name} {connector_id} connector successfully")
             return connector
         except Exception as e:
