@@ -1079,16 +1079,37 @@ class TestRecursiveCrawlOrchestration:
         }
         c.processed_urls = 0
 
+        # Per-domain backoff uses event-loop time; advance the clock when sleep is called
+        # so domains become eligible instead of looping forever under a no-op sleep mock.
+        clock = {"now": 1000.0}
+
+        async def advance_sleep(secs):
+            clock["now"] += secs
+
+        mock_loop = MagicMock()
+        mock_loop.time.side_effect = lambda: clock["now"]
+
         with patch(
             "app.connectors.sources.web.connector.fetch_url_with_fallback",
             new_callable=AsyncMock,
             return_value=None,
-        ), patch("app.connectors.sources.web.connector.asyncio.sleep", new_callable=AsyncMock):
+        ), patch(
+            "app.connectors.sources.web.connector.asyncio.sleep",
+            side_effect=advance_sleep,
+        ), patch(
+            "app.connectors.sources.web.connector.asyncio.get_event_loop",
+            return_value=mock_loop,
+        ), patch.object(
+            c, "_ensure_crawl4ai_fetcher", new_callable=AsyncMock, return_value=None
+        ):
             results = []
             async for _ in c._crawl_recursive_generator("https://example.com/start", 0):
                 results.append(_)
         assert results == []
-        assert any("Backing off" in str(call) for call in c.logger.info.call_args_list)
+        assert any(
+            "Rate-limited" in str(call) or "backing off" in str(call).lower()
+            for call in c.logger.info.call_args_list
+        )
 
     @pytest.mark.asyncio
     async def test_enqueues_discovered_links(self):

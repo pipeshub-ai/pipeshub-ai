@@ -118,6 +118,7 @@ class RetryUrl:
     last_attempted: int
     depth: int = 0                  # depth at which the URL was first encountered
     referer: str | None = None   # referer at the time of first attempt
+    retry_after: float | None = None  # server-requested backoff (seconds)
 
 class Status(Enum):
     PENDING = "PENDING"
@@ -353,6 +354,7 @@ class WebConnector(BaseConnector):
         # Crawling state
         self.visited_urls: Set[str] = set()
         self.retry_urls: dict[str, RetryUrl] = {}
+        self._domain_next_retry_at: dict[str, float] = {}  # domain -> monotonic time when retry is allowed
         self.processed_urls: int = 0
         self.base_domain: Optional[str] = None
         self.session: Optional[aiohttp.ClientSession] = None
@@ -418,7 +420,6 @@ class WebConnector(BaseConnector):
                     self.crawl4ai_fetcher = await get_shared_fetcher()
 
             return True
-
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize web connector: {e}", exc_info=True)
             return False
@@ -748,6 +749,7 @@ class WebConnector(BaseConnector):
             # Reset state for new sync
             self.visited_urls.clear()
             self.retry_urls.clear()
+            self._domain_next_retry_at.clear()
             self.processed_urls = 0
 
             # Start crawling
@@ -1047,18 +1049,47 @@ class WebConnector(BaseConnector):
                 if not retry_candidates:
                     break
 
-                min_retries = min(r.retries for r in retry_candidates)
-                backoff = min(_BACKOFF_BASE * (2 ** min_retries), _BACKOFF_CAP)
-                self.logger.info(
-                    "Backing off %.0fs before retrying %d URL(s)",
-                    backoff, len(retry_candidates),
-                )
-                await asyncio.sleep(backoff)
+                now = asyncio.get_event_loop().time()
 
-                for retry_entry in retry_candidates:
-                    normalized = self._normalize_url(retry_entry.url)
-                    if normalized not in self.visited_urls:
-                        queue.append((retry_entry.url, retry_entry.depth, retry_entry.referer))
+                # Group by domain and schedule per-domain exponential backoff so
+                # a rate-limited domain doesn't block crawling of other domains.
+                domain_map: dict[str, list[RetryUrl]] = {}
+                for r in retry_candidates:
+                    domain = urlparse(r.url).netloc
+                    domain_map.setdefault(domain, []).append(r)
+
+                for domain, candidates in domain_map.items():
+                    if domain not in self._domain_next_retry_at:
+                        server_delays = [c.retry_after for c in candidates if c.retry_after]
+                        if server_delays:
+                            backoff = max(server_delays)
+                        else:
+                            min_retries = min(c.retries for c in candidates)
+                            backoff = min(_BACKOFF_BASE * (2 ** min_retries), _BACKOFF_CAP)
+                        self._domain_next_retry_at[domain] = now + backoff
+                        self.logger.info(
+                            "Rate-limited on %s: backing off %.0fs before retry (%d URL(s))",
+                            domain, backoff, len(candidates),
+                        )
+
+                # Sleep only until the soonest eligible domain is ready.
+                earliest = min(self._domain_next_retry_at[d] for d in domain_map)
+                sleep_secs = max(0.0, earliest - now)
+                if sleep_secs > 0:
+                    self.logger.info("Sleeping %.0fs before next domain retry", sleep_secs)
+                    await asyncio.sleep(sleep_secs)
+
+                now = asyncio.get_event_loop().time()
+
+                # Re-enqueue only domains whose backoff has elapsed; leave others
+                # for subsequent passes so their crawl is unblocked independently.
+                for domain, candidates in domain_map.items():
+                    if self._domain_next_retry_at.get(domain, 0) <= now:
+                        for retry_entry in candidates:
+                            normalized = self._normalize_url(retry_entry.url)
+                            if normalized not in self.visited_urls:
+                                queue.append((retry_entry.url, retry_entry.depth, retry_entry.referer))
+                        del self._domain_next_retry_at[domain]
 
                 continue
 
@@ -1155,6 +1186,18 @@ class WebConnector(BaseConnector):
                         max_size_mb=self.max_size_mb,
                     )
 
+                    if self._should_try_crawl4ai_fallback(raw_result):
+                        fetcher = await self._ensure_crawl4ai_fetcher()
+                        if fetcher:
+                            self.logger.info(
+                                "🌐 [crawl4ai fallback] Non-headless strategies failed for %s (status=%s) — trying headless",
+                                current_url,
+                                raw_result.status_code if raw_result else "connection error",
+                            )
+                            crawl4ai_resp = await self._headless_fetch(current_url)
+                            if crawl4ai_resp is not None and crawl4ai_resp.status_code < HttpStatusCode.BAD_REQUEST.value:
+                                raw_result = crawl4ai_resp
+
                     result = await self._validate_fetch_result(
                         current_url, current_depth, referer, raw_result
                     )
@@ -1191,6 +1234,27 @@ class WebConnector(BaseConnector):
                     self.logger.warning("⚠️ Failed to process %s: %s", current_url, e)
                     continue
 
+
+    def _should_try_crawl4ai_fallback(self, result: Optional[FetchResponse]) -> bool:
+        """Return True when non-headless strategies failed and crawl4ai is worth trying."""
+        if result is None:
+            return True  # Hard connection error — headless may succeed
+        if result.status_code < HttpStatusCode.BAD_REQUEST.value:
+            return False  # Already successful
+        # Genuinely absent pages — headless won't change the answer
+        if result.status_code in {404, 405, 410}:
+            return False
+        return True  # Bot-block, rate-limit, or server error — try headless
+
+    async def _ensure_crawl4ai_fetcher(self) -> Optional[Crawl4AIFetcher]:
+        """Return the shared crawl4ai fetcher, initialising it on first use."""
+        if self.crawl4ai_fetcher is None:
+            try:
+                self.crawl4ai_fetcher = await get_shared_fetcher()
+            except Exception as e:
+                self.logger.warning("⚠️ Failed to initialise crawl4ai fetcher for fallback: %s", e)
+                return None
+        return self.crawl4ai_fetcher
 
     def _is_rate_limited(
         self,
@@ -1246,7 +1310,10 @@ class WebConnector(BaseConnector):
                 await probe.close()
 
             if not rendered.success or not (rendered.html or "").strip():
-                return False
+                self.logger.warning(
+                    "⚠️ CSR probe for %s returned no content — defaulting to headless", url,
+                )
+                return True
 
             js_result = rendered.js_execution_result or {}
             pre_len = js_result.get("preLen", -1)
@@ -1255,10 +1322,10 @@ class WebConnector(BaseConnector):
             if pre_len < 0:
                 self.logger.debug(
                     "🔍 CSR probe for %s: init script did not fire, "
-                    "falling back to SSR assumption",
+                    "falling back to CSR assumption",
                     url,
                 )
-                return False
+                return True
 
             analysis = analyze_rendering(pre_len, post_len)
 
@@ -1283,7 +1350,7 @@ class WebConnector(BaseConnector):
 
         except Exception as e:
             self.logger.warning("⚠️ CSR detection failed for %s: %s", url, e)
-            return False
+            return True
 
     def _crawl4ai_result_to_response(self, fetch_result: FetchResult, url: str) -> Optional[FetchResponse]:
         status_code = resolve_fetch_status_code(
@@ -1429,6 +1496,7 @@ class WebConnector(BaseConnector):
                     last_attempted=get_epoch_timestamp_in_ms(),
                     depth=depth,
                     referer=referer,
+                    retry_after=getattr(result, "retry_after", None),
                 )
             return None
         elif not result.success:
@@ -1493,6 +1561,17 @@ class WebConnector(BaseConnector):
                         timeout=15,
                         max_size_mb=self.max_size_mb,
                     )
+                    if self._should_try_crawl4ai_fallback(raw):
+                        fetcher = await self._ensure_crawl4ai_fetcher()
+                        if fetcher:
+                            self.logger.info(
+                                "🌐 [crawl4ai fallback] Non-headless strategies failed for %s (status=%s) — trying headless",
+                                url,
+                                raw.status_code if raw else "connection error",
+                            )
+                            crawl4ai_resp = await self._headless_fetch(url)
+                            if crawl4ai_resp is not None and crawl4ai_resp.status_code < HttpStatusCode.BAD_REQUEST.value:
+                                raw = crawl4ai_resp
                 result = await self._validate_fetch_result(url, depth, referer, raw)
                 if result is None:
                     return None
@@ -2493,9 +2572,14 @@ class WebConnector(BaseConnector):
 
         # 1. Technical & Invisible Noise
         # These are tags that never contain user-facing article content.
+        # NOTE: HTML void elements (link, meta, base) are intentionally
+        # excluded.  html.parser sometimes mis-parses void elements as
+        # non-void containers, nesting subsequent DOM content inside them.
+        # Decomposing such a mis-parsed void tag destroys the entire page.
+        # Since void elements carry no visible text, removing them has no
+        # benefit anyway — get_text() already ignores them.
         technical_tags = [
-            "script", "style", "noscript", "iframe", "meta",
-            "base", "link", "canvas"
+            "script", "style", "noscript", "iframe", "canvas"
         ]
 
         # 2. Functional/Interactive Noise
