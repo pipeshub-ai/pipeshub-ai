@@ -10,7 +10,8 @@ import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
 import {
-  ConnectorSyncInProgressError,
+  isConnectorSyncInProgressError,
+  isConnectorSyncLockedError,
   startConnectorSync,
 } from '../utils/connector-sync-actions';
 import { useSyncConflictGuard } from '../utils/use-sync-conflict-guard';
@@ -455,8 +456,10 @@ function TeamConnectorsPageContent() {
           duration: 3000,
         });
       } catch (err) {
-        // The guard turns this into a confirm-and-restart prompt.
-        if (err instanceof ConnectorSyncInProgressError) throw err;
+        // The guard turns these into a restart prompt or a wait toast.
+        if (isConnectorSyncInProgressError(err) || isConnectorSyncLockedError(err)) {
+          throw err;
+        }
         addToast({
           variant: 'error',
           title: t('workspace.connectors.toasts.syncError'),

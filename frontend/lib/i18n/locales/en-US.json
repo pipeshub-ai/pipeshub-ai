@@ -1941,7 +1941,9 @@
             "confirm": "Restart sync",
             "cancel": "Keep current sync"
           },
-          "restartError": "Could not restart the sync. Please try again."
+          "restartError": "Could not restart the sync. Please try again.",
+          "lockedTitle": "Sync preparing",
+          "lockedMessage": "A full sync is preparing and cannot be interrupted yet. Please wait and try again."
         },
         "lastSync": "Last sync",
         "failure": {

@@ -13,8 +13,8 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
-  ConflictError,
   ConnectorSyncInProgressError,
+  ConnectorSyncLockedError,
   ForbiddenError,
   InternalServerError,
   NotFoundError,
@@ -2142,10 +2142,13 @@ const validateConnectorSyncAvailable = async (
 
   const connector = data.connector;
   if (connector.isLocked) {
+    // Prep window — never force-able. Use a distinct code so the UI asks the
+    // user to wait instead of offering "cancel & restart" (or showing Sync Failed).
     const status = connector.status ?? '';
-    throw new ConflictError(
+    throw new ConnectorSyncLockedError(
       LOCK_MESSAGES[status] ??
         'Another operation is in progress. Please wait and try again.',
+      { currentStatus: status, requestedFullSync: opts.requestedFullSync },
     );
   }
 

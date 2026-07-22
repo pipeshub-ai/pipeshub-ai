@@ -1934,7 +1934,9 @@
             "confirm": "Synchronisierung neu starten",
             "cancel": "Laufende Synchronisierung behalten"
           },
-          "restartError": "Die Synchronisierung konnte nicht neu gestartet werden. Bitte erneut versuchen."
+          "restartError": "Die Synchronisierung konnte nicht neu gestartet werden. Bitte erneut versuchen.",
+          "lockedTitle": "Synchronisierung wird vorbereitet",
+          "lockedMessage": "Eine vollständige Synchronisierung wird vorbereitet und kann noch nicht unterbrochen werden. Bitte warten und erneut versuchen."
         },
         "lastSync": "Letzte Synchronisierung",
         "failure": {

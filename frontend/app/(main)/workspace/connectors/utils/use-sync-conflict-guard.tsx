@@ -3,7 +3,10 @@
 import React, { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
-import { ConnectorSyncInProgressError } from './connector-sync-actions';
+import {
+  isConnectorSyncInProgressError,
+  isConnectorSyncLockedError,
+} from './connector-sync-actions';
 import { describeSyncConflict } from './sync-conflict-copy';
 import { useToastStore } from '@/lib/store/toast-store';
 
@@ -17,9 +20,8 @@ interface PendingConflict {
  * Wraps a resync action so that a backend "sync already in progress" rejection
  * turns into a confirm-and-restart prompt instead of an error.
  *
- * The `action(force)` callback owns its own success/error UI (toasts, button
- * state) and must rethrow only {@link ConnectorSyncInProgressError}. Render the
- * returned `dialog` once in the consuming component.
+ * Locked prep windows (non-forceable) surface a wait toast instead of the
+ * restart dialog. Render the returned `dialog` once in the consuming component.
  */
 export function useSyncConflictGuard() {
   const { t } = useTranslation();
@@ -35,8 +37,24 @@ export function useSyncConflictGuard() {
       try {
         await action(false);
       } catch (err) {
-        if (err instanceof ConnectorSyncInProgressError) {
+        if (isConnectorSyncInProgressError(err)) {
           setPending({ ...meta, retry: () => action(true) });
+          return;
+        }
+        if (isConnectorSyncLockedError(err)) {
+          addToast({
+            variant: 'info',
+            title: t('workspace.connectors.syncProgress.conflict.lockedTitle', {
+              defaultValue: 'Sync preparing',
+            }),
+            description:
+              err instanceof Error && err.message.trim()
+                ? err.message
+                : t('workspace.connectors.syncProgress.conflict.lockedMessage', {
+                    defaultValue:
+                      'A full sync is preparing and cannot be interrupted yet. Please wait and try again.',
+                  }),
+          });
           return;
         }
         // action is expected to handle its own errors; anything reaching here
@@ -44,7 +62,7 @@ export function useSyncConflictGuard() {
         console.error('Unexpected error while triggering sync', err);
       }
     },
-    []
+    [addToast, t]
   );
 
   const handleConfirm = useCallback(async () => {
@@ -53,13 +71,29 @@ export function useSyncConflictGuard() {
     try {
       await pending.retry();
     } catch (error) {
-      console.error('Unable to restart connector sync', error);
-      addToast({
-        variant: 'error',
-        title: t('workspace.connectors.syncProgress.conflict.restartError', {
-          defaultValue: 'Could not restart the sync. Please try again.',
-        }),
-      });
+      if (isConnectorSyncLockedError(error)) {
+        addToast({
+          variant: 'info',
+          title: t('workspace.connectors.syncProgress.conflict.lockedTitle', {
+            defaultValue: 'Sync preparing',
+          }),
+          description:
+            error instanceof Error && error.message.trim()
+              ? error.message
+              : t('workspace.connectors.syncProgress.conflict.lockedMessage', {
+                  defaultValue:
+                    'A full sync is preparing and cannot be interrupted yet. Please wait and try again.',
+                }),
+        });
+      } else {
+        console.error('Unable to restart connector sync', error);
+        addToast({
+          variant: 'error',
+          title: t('workspace.connectors.syncProgress.conflict.restartError', {
+            defaultValue: 'Could not restart the sync. Please try again.',
+          }),
+        });
+      }
     } finally {
       setConfirming(false);
       setPending(null);

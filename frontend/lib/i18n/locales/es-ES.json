@@ -1931,7 +1931,9 @@
             "confirm": "Reiniciar sincronización",
             "cancel": "Mantener la sincronización actual"
           },
-          "restartError": "No se pudo reiniciar la sincronización. Inténtalo de nuevo."
+          "restartError": "No se pudo reiniciar la sincronización. Inténtalo de nuevo.",
+          "lockedTitle": "Preparando sincronización",
+          "lockedMessage": "Una sincronización completa se está preparando y aún no se puede interrumpir. Espera e inténtalo de nuevo."
         },
         "lastSync": "Última sincronización",
         "failure": {

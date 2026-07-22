@@ -17,6 +17,7 @@ export default defineConfig({
       'app/(main)/workspace/connectors/utils/__tests__/sync-failure-copy.test.ts',
       'app/(main)/workspace/connectors/utils/__tests__/indexing-queue-copy.test.ts',
       'app/(main)/workspace/connectors/utils/__tests__/sync-conflict-copy.test.ts',
+      'app/(main)/workspace/connectors/utils/__tests__/resync-conflict-classify.test.ts',
       'lib/socket/__tests__/notification-socket.test.ts',
       'app/(main)/knowledge-base/utils/__tests__/indexing-progress.test.ts',
       'app/(main)/knowledge-base/utils/__tests__/kb-table-item-actions.test.ts',

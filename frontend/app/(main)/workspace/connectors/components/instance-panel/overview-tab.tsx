@@ -19,7 +19,8 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { deriveSyncStatus } from '../instance-card/utils';
 import {
   runConnectorResync,
-  ConnectorSyncInProgressError,
+  isConnectorSyncInProgressError,
+  isConnectorSyncLockedError,
 } from '../../utils/connector-sync-actions';
 import { useSyncConflictGuard } from '../../utils/use-sync-conflict-guard';
 import { isElectron } from '@/lib/electron';
@@ -257,7 +258,10 @@ export function OverviewTab({
         addToast({ variant: 'success', title: 'Sync started' });
         bumpCatalogRefresh();
       } catch (error) {
-        if (error instanceof ConnectorSyncInProgressError) {
+        if (
+          isConnectorSyncInProgressError(error) ||
+          isConnectorSyncLockedError(error)
+        ) {
           throw error;
         }
         console.error('Failed to start sync', { connectorId, error });

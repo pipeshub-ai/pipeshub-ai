@@ -68,6 +68,17 @@ export class ConnectorSyncInProgressError extends HttpError {
   }
 }
 
+/**
+ * Full-sync prep (or another critical section) holds `isLocked`. Distinct from
+ * {@link ConnectorSyncInProgressError}: force/restart is not safe here, so the
+ * client should ask the user to wait rather than offer "cancel & restart".
+ */
+export class ConnectorSyncLockedError extends HttpError {
+  constructor(message: string, metadata?: ErrorMetadata) {
+    super('CONNECTOR_SYNC_LOCKED', message, HTTP_STATUS.CONFLICT, metadata);
+  }
+}
+
 export class TooManyRequestsError extends HttpError {
   constructor(message: string, metadata?: ErrorMetadata) {
     super(

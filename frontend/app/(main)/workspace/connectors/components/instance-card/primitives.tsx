@@ -8,7 +8,8 @@ import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmati
 import { useToastStore } from '@/lib/store/toast-store';
 import {
   runConnectorResync,
-  ConnectorSyncInProgressError,
+  isConnectorSyncInProgressError,
+  isConnectorSyncLockedError,
 } from '../../utils/connector-sync-actions';
 import { useSyncConflictGuard } from '../../utils/use-sync-conflict-guard';
 
@@ -117,7 +118,7 @@ export function SyncButton({
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('idle');
     } catch (err) {
-      if (err instanceof ConnectorSyncInProgressError) {
+      if (isConnectorSyncInProgressError(err) || isConnectorSyncLockedError(err)) {
         setState('idle');
         throw err;
       }
@@ -206,7 +207,7 @@ export function FullSyncButton({
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('idle');
     } catch (err) {
-      if (err instanceof ConnectorSyncInProgressError) {
+      if (isConnectorSyncInProgressError(err) || isConnectorSyncLockedError(err)) {
         setState('idle');
         throw err;
       }
