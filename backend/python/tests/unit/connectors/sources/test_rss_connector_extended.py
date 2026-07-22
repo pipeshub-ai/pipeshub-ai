@@ -341,7 +341,7 @@ class TestProcessEntry:
         assert result is not None
         record, perms = result
         assert record.record_name == "Article"
-        assert record.mime_type == MimeTypes.HTML.value
+        assert record.mime_type == MimeTypes.PLAIN_TEXT.value
         assert len(perms) == 1
 
     async def test_entry_with_html_summary(self):
