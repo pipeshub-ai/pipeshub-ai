@@ -6,7 +6,14 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.models.blocks import Block, BlockGroup, BlockType, DataFormat, GroupType
+from app.models.blocks import (
+    Block,
+    BlockGroup,
+    BlockType,
+    DataFormat,
+    GroupType,
+    SemanticMetadata,
+)
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import ReconciliationContext, TransformContext
 
@@ -21,6 +28,19 @@ def _valid_text_section_group(index: int = 0) -> BlockGroup:
     return BlockGroup(index=index, type=GroupType.TEXT_SECTION)
 
 
+def _make_semantic_metadata(summary: str | None = "A concise summary") -> SemanticMetadata:
+    return SemanticMetadata(
+        summary=summary,
+        departments=["Engineering"],
+        languages=["en"],
+        topics=["testing"],
+        categories=["Software"],
+        sub_category_level_1="Backend",
+        sub_category_level_2="Indexing",
+        sub_category_level_3="Pipeline",
+    )
+
+
 def _make_record(blocks=_SENTINEL, block_groups=_SENTINEL, record_id="rec-123"):
     """Create a mock Record with the given blocks/block_groups.
 
@@ -29,6 +49,9 @@ def _make_record(blocks=_SENTINEL, block_groups=_SENTINEL, record_id="rec-123"):
     """
     record = MagicMock()
     record.id = record_id
+    record.org_id = "org-1"
+    record.virtual_record_id = "vrid-1"
+    record.semantic_metadata = None
     container = MagicMock()
     container.blocks = [] if blocks is _SENTINEL else blocks
     container.block_groups = [] if block_groups is _SENTINEL else block_groups
@@ -58,7 +81,12 @@ def doc_extraction():
 
 @pytest.fixture
 def sink_orchestrator():
-    return AsyncMock()
+    sink = AsyncMock()
+    sink.blob_storage = MagicMock()
+    sink.blob_storage.apply = AsyncMock()
+    sink.vector_store = MagicMock()
+    sink.vector_store.index_record_summary = AsyncMock()
+    return sink
 
 
 @pytest.fixture
@@ -221,3 +249,104 @@ class TestApplyNonEmpty:
 
         with pytest.raises(RuntimeError, match="enrich boom"):
             await pipeline.apply(ctx)
+
+
+# ---------------------------------------------------------------------------
+# _enrich -- blob rewrite + summary indexing after extraction
+# ---------------------------------------------------------------------------
+class TestEnrich:
+    @pytest.mark.asyncio
+    async def test_enrich_with_summary_rewrites_blob_and_indexes_summary(
+        self, pipeline, doc_extraction, sink_orchestrator
+    ):
+        metadata = _make_semantic_metadata(summary="Ticket summary text")
+
+        async def set_metadata(ctx):
+            ctx.record.semantic_metadata = metadata
+
+        doc_extraction.apply = AsyncMock(side_effect=set_metadata)
+        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
+        ctx = _make_ctx(record)
+
+        await pipeline._enrich(ctx)
+
+        doc_extraction.apply.assert_awaited_once_with(ctx)
+        sink_orchestrator.blob_storage.apply.assert_awaited_once_with(ctx)
+        sink_orchestrator.vector_store.index_record_summary.assert_awaited_once_with(
+            "rec-123",
+            "vrid-1",
+            "org-1",
+            metadata,
+        )
+        sink_orchestrator.enrich.assert_awaited_once_with(ctx)
+
+    @pytest.mark.asyncio
+    async def test_enrich_with_empty_summary_rewrites_blob_skips_summary_vector(
+        self, pipeline, doc_extraction, sink_orchestrator
+    ):
+        metadata = _make_semantic_metadata(summary="   ")
+
+        async def set_metadata(ctx):
+            ctx.record.semantic_metadata = metadata
+
+        doc_extraction.apply = AsyncMock(side_effect=set_metadata)
+        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
+        ctx = _make_ctx(record)
+
+        await pipeline._enrich(ctx)
+
+        sink_orchestrator.blob_storage.apply.assert_awaited_once_with(ctx)
+        sink_orchestrator.vector_store.index_record_summary.assert_not_awaited()
+        sink_orchestrator.enrich.assert_awaited_once_with(ctx)
+
+    @pytest.mark.asyncio
+    async def test_enrich_without_semantic_metadata_skips_blob_and_summary(
+        self, pipeline, doc_extraction, sink_orchestrator
+    ):
+        async def clear_metadata(ctx):
+            ctx.record.semantic_metadata = None
+
+        doc_extraction.apply = AsyncMock(side_effect=clear_metadata)
+        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
+        ctx = _make_ctx(record)
+
+        await pipeline._enrich(ctx)
+
+        sink_orchestrator.blob_storage.apply.assert_not_awaited()
+        sink_orchestrator.vector_store.index_record_summary.assert_not_awaited()
+        sink_orchestrator.enrich.assert_awaited_once_with(ctx)
+
+    @pytest.mark.asyncio
+    async def test_enrich_call_order_matches_service_path(
+        self, pipeline, doc_extraction, sink_orchestrator
+    ):
+        """extraction → blob rewrite → summary vector → graph enrich."""
+        metadata = _make_semantic_metadata(summary="Ordered summary")
+        call_order = []
+
+        async def track_extraction(ctx):
+            call_order.append("extraction")
+            ctx.record.semantic_metadata = metadata
+
+        async def track_blob(ctx):
+            call_order.append("blob")
+
+        async def track_summary(*_args, **_kwargs):
+            call_order.append("summary")
+
+        async def track_enrich(ctx):
+            call_order.append("enrich")
+
+        doc_extraction.apply = AsyncMock(side_effect=track_extraction)
+        sink_orchestrator.blob_storage.apply = AsyncMock(side_effect=track_blob)
+        sink_orchestrator.vector_store.index_record_summary = AsyncMock(
+            side_effect=track_summary
+        )
+        sink_orchestrator.enrich = AsyncMock(side_effect=track_enrich)
+
+        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
+        ctx = _make_ctx(record)
+
+        await pipeline._enrich(ctx)
+
+        assert call_order == ["extraction", "blob", "summary", "enrich"]
