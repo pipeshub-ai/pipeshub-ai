@@ -4658,7 +4658,9 @@ class TestOnRecordsMovedKbUpload:
         with patch.object(proc, "_process_record", new_callable=AsyncMock, return_value=new_record):
             await proc.on_records_moved([("missing-ext", new_record, [])])
 
-        assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "newRecord"
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        _topic, messages = proc.messaging_producer.send_messages.await_args.args
+        assert messages[0][1]["eventType"] == "newRecord"
 
     @pytest.mark.asyncio
     async def test_content_change_emits_update(self):
@@ -4671,7 +4673,9 @@ class TestOnRecordsMovedKbUpload:
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         await proc.on_records_moved([("old-ext", new_record, [])])
-        assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "updateRecord"
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        _topic, messages = proc.messaging_producer.send_messages.await_args.args
+        assert messages[0][1]["eventType"] == "updateRecord"
 
     @pytest.mark.asyncio
     async def test_rename_only_no_reindex_event(self):
@@ -4684,7 +4688,7 @@ class TestOnRecordsMovedKbUpload:
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         await proc.on_records_moved([("old-ext", new_record, [])])
-        proc.messaging_producer.send_message.assert_not_awaited()
+        proc.messaging_producer.send_messages.assert_not_awaited()
 
 
 class TestPublishDeleteEvents:

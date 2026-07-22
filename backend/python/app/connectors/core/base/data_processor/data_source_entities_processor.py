@@ -969,13 +969,14 @@ class DataSourceEntitiesProcessor:
             #       the new URL on every sync, and
             #   (b) leave a placeholder's empty `weburl=""` in place when
             #       the real parent record arrives to fill it in.
-            if (
-                record.origin != OriginTypes.UPLOAD
-                and existing_record.indexing_status == ProgressStatus.COMPLETED.value
-            ):
-                # If the existing record is completed, set the indexing status to not started so that it can be reindexed.
-                # KB folders are created COMPLETED and must not be re-queued on metadata updates.
-                record.indexing_status = ProgressStatus.NOT_STARTED.value
+            if record.origin != OriginTypes.UPLOAD:
+                if existing_record.indexing_status == ProgressStatus.COMPLETED.value:
+                    # If the existing record is completed, set the indexing status to not started so that it can be reindexed.
+                    record.indexing_status = ProgressStatus.NOT_STARTED.value
+            elif record.external_revision_id == existing_record.external_revision_id:
+                # KB uploads with unchanged content must keep their indexing status
+                # (folders are created COMPLETED and must not be re-queued on metadata updates).
+                record.indexing_status = existing_record.indexing_status
             if not record.weburl:
                 record.weburl = existing_record.weburl
             #check if revision Id is same as existing record
