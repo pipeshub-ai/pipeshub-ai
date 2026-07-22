@@ -280,6 +280,9 @@ export const DefaultMcpScopes = [
   'team:read',
   'user:read',
   'config:read',
+  'agent:read',
+  'agent:execute',
+  'connector:read',
 ];
 
 export const ScopeCategories = [

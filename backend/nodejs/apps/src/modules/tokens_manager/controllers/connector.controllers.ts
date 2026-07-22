@@ -1915,6 +1915,47 @@ export const getConnectorStats =
     }
   };
 
+export const getRecordContent =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { recordId } = req.params as { recordId: string };
+      const { userId, orgId } = req.user || {};
+
+      // Validate user authentication
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+
+      // Never forward raw client headers: `x-is-admin` survives sanitizeHeaders and
+      // the Python side trusts it for authorization. This route needs no admin rights.
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/records/${encodeURIComponent(recordId)}/content`,
+        HttpMethod.GET,
+        buildProxyHeaders(req, false),
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Getting record content',
+        'Record content not found',
+      );
+
+      logger.info('Record content retrieved successfully');
+    } catch (error: any) {
+      logger.error('Error getting record content', {
+        recordId: req.params.recordId,
+        error,
+      });
+      const handleError = handleBackendError(error, 'get record content');
+      next(handleError);
+      return;
+    }
+  };
+
 interface ConnectorInfo {
   _key: string;
 }
