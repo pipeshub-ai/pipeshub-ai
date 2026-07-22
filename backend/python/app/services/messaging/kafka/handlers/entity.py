@@ -476,6 +476,18 @@ class EntityEventService(BaseEventService):
             except Exception as cancel_err:
                 self.logger.error(f"❌ Failed to cancel sync for connector {connector_id}: {cancel_err}")
 
+            if (
+                hasattr(self.app_container, "connectors_map")
+                and connector_id in self.app_container.connectors_map
+            ):
+                existing_connector = self.app_container.connectors_map.pop(connector_id)
+                try:
+                    if hasattr(existing_connector, "cleanup"):
+                        await existing_connector.cleanup()
+                    self.logger.info(f"Cleaned up connector instance {connector_id}")
+                except Exception as cleanup_err:
+                    self.logger.error(f"Error cleaning up connector {connector_id}: {cleanup_err}")
+
             self.logger.info(f"✅ Successfully disabled apps for org: {org_id}")
             return True
 

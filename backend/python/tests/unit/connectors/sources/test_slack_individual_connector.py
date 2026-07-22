@@ -17,6 +17,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes
 from app.connectors.core.registry.filters import (
+    BooleanOperator,
     DatetimeOperator,
     Filter,
     FilterCollection,
@@ -2210,3 +2211,617 @@ class TestNumericEpochToMs:
 
     def test_none(self) -> None:
         assert _numeric_epoch_to_ms(None) is None
+
+
+class TestSlackIndividualAdditionalCoverage:
+    """Target remaining uncovered branches in individual.connector."""
+
+    def test_compute_sync_window_relative_operator(self) -> None:
+        import time as time_mod
+        from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
+
+        c = _make_connector()
+        c.sync_filters = FilterCollection(
+            filters=[
+                Filter(
+                    key="sync_window",
+                    value=None,
+                    type=FilterType.DATETIME,
+                    operator=FilterOperator.LAST_7_DAYS,
+                )
+            ]
+        )
+        with patch.object(time_mod, "time", return_value=1_000_000.0):
+            out = float(c._compute_sync_window_oldest())
+        assert out == pytest.approx(1_000_000.0 - 7 * 86400, rel=1e-3)
+
+    @pytest.mark.asyncio
+    async def test_warm_user_caches_success_with_pagination(self) -> None:
+        c = _make_connector()
+        page1 = MagicMock(
+            success=True,
+            data={
+                "members": [
+                    {
+                        "id": "U1",
+                        "profile": {
+                            "real_name": "Alice",
+                            "email": "alice@e.com",
+                        },
+                    },
+                    {"id": "", "profile": {}},
+                ],
+                "response_metadata": {"next_cursor": "cur2"},
+            },
+        )
+        page2 = MagicMock(
+            success=True,
+            data={
+                "members": [
+                    {
+                        "id": "U2",
+                        "profile": {"display_name": "Bob"},
+                    },
+                ],
+                "response_metadata": {"next_cursor": ""},
+            },
+        )
+        mock_ds = MagicMock()
+        mock_ds.users_list = AsyncMock(side_effect=[page1, page2])
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
+            await c._warm_all_user_caches()
+        assert c.user_id_to_name_cache["U1"] == "Alice"
+        assert c.user_id_to_email_cache["U1"] == "alice@e.com"
+        assert c.user_id_to_name_cache["U2"] == "Bob"
+
+    @pytest.mark.asyncio
+    async def test_sync_channels_include_exclude_and_pagination(self) -> None:
+        c = _make_connector()
+        c.authenticated_user_email = "me@e.com"
+        c.sync_filters = FilterCollection(
+            filters=[
+                Filter(
+                    key=SyncFilterKey.CHANNEL_IDS,
+                    value=["C1"],
+                    type=FilterType.LIST,
+                    operator=ListOperator.IN,
+                ),
+                Filter(
+                    key=SyncFilterKey.CHANNEL_IDS,
+                    value=["C9"],
+                    type=FilterType.LIST,
+                    operator=ListOperator.NOT_IN,
+                ),
+                Filter(
+                    key=SyncFilterKey.CHANNEL_TYPES,
+                    value=["public_channel"],
+                    type=FilterType.MULTISELECT,
+                    operator=MultiselectOperator.IN,
+                ),
+            ]
+        )
+        page1 = MagicMock(
+            success=True,
+            data={
+                "channels": [
+                    {"id": "C1", "name": "general", "created": "1.0"},
+                    {"id": "C9", "name": "skip-me"},
+                    {"id": "", "name": "no-id"},
+                ],
+                "response_metadata": {"next_cursor": "next"},
+            },
+        )
+        page2 = MagicMock(
+            success=True,
+            data={
+                "channels": [{"id": "C2", "name": "other"}],
+                "response_metadata": {"next_cursor": ""},
+            },
+        )
+        mock_ds = MagicMock()
+        mock_ds.conversations_list = AsyncMock(side_effect=[page1, page2])
+
+        def _to_rg(cd: Any) -> MagicMock:
+            if cd.get("id") != "C1":
+                raise RuntimeError("bad channel")
+            rg = MagicMock()
+            rg.external_group_id = "C1"
+            rg.name = "general"
+            rg.id = "rg-new"
+            return rg
+
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=mock_ds)),
+            patch.object(type(c), "_to_channel_record_group", side_effect=_to_rg),
+            patch.object(c.data_entities_processor, "on_new_record_groups", new=AsyncMock()),
+        ):
+            rgs = await c._sync_channels()
+        assert len(rgs) == 1
+        assert c.channel_groups_cache["C1"] == "rg-new"
+        assert c.channel_id_to_name_cache["C1"] == "general"
+
+    @pytest.mark.asyncio
+    async def test_sync_channels_list_failure(self) -> None:
+        c = _make_connector()
+        mock_ds = MagicMock()
+        mock_ds.conversations_list = AsyncMock(return_value=MagicMock(success=False, error="fail"))
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
+            assert await c._sync_channels() == []
+
+    @pytest.mark.asyncio
+    async def test_fetch_channel_members_pagination_and_errors(self) -> None:
+        c = _make_connector()
+        mock_ds = MagicMock()
+        mock_ds.conversations_members = AsyncMock(
+            side_effect=[
+                MagicMock(
+                    success=True,
+                    data={"members": ["U1"], "response_metadata": {"next_cursor": "c2"}},
+                ),
+                MagicMock(
+                    success=True,
+                    data={"members": ["U2"], "response_metadata": {"next_cursor": ""}},
+                ),
+            ]
+        )
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
+            assert await c._fetch_channel_members("C1") == ["U1", "U2"]
+
+        mock_ds.conversations_members = AsyncMock(
+            return_value=MagicMock(success=False, error="missing_scope")
+        )
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
+            await c._fetch_channel_members("C1")
+
+        mock_ds.conversations_members = AsyncMock(
+            return_value=MagicMock(success=False, error="ratelimited")
+        )
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
+            await c._fetch_channel_members("C1")
+
+    def test_resolve_mpim_name_from_handle_match(self) -> None:
+        c = _make_connector()
+        c.authenticated_user_id = "U0"
+        c.user_id_to_name_cache = {"U1": "Alice Smith", "U2": "Bob Jones"}
+        name = c._resolve_mpim_name(
+            {"id": "G1", "name": "mpdm-alicesmith--bobjones-1"},
+        )
+        assert "Alice Smith" in name
+        assert "Bob Jones" in name
+
+    def test_format_reactions_line(self) -> None:
+        c = _make_connector()
+        line = c._format_reactions_line([{"name": "thumbsup", "count": 3}])
+        assert line and "thumbsup" in line
+        assert c._format_reactions_line([]) is None
+
+    def test_build_message_block_reactions_links_author_only(self) -> None:
+        c = _make_connector()
+        ctx = _ctx(c)
+        ctx.user_id_to_name["U1"] = "Author"
+        msg = {
+            "ts": "100.0",
+            "user": "U1",
+            "text": "see https://ex.com",
+            "reactions": [{"name": "eyes", "count": 1}],
+        }
+        block = c._build_message_block(msg, 0, 0, ctx)
+        assert "Reactions:" in block.data
+        assert "Links:" in block.data
+
+        msg2 = {"ts": "101.0", "user": "U1", "text": ""}
+        block2 = c._build_message_block(msg2, 0, 0, ctx)
+        assert block2.data.startswith("**Author**:")
+
+    def test_classify_url_github_and_gdrive(self) -> None:
+        from app.connectors.sources.slack.individual.connector import SlackIndividualConnector as S
+
+        t, meta = S._classify_url("https://github.com/o/r/issues/42")
+        assert t == "github" and meta["number"] == "42"
+        t2, meta2 = S._classify_url("https://docs.google.com/document/d/abc123/edit")
+        assert t2 == "gdrive" and meta2["file_id"] == "abc123"
+
+    @pytest.mark.asyncio
+    async def test_process_message_batch(self) -> None:
+        c = _make_connector()
+        ctx = _ctx(c)
+        msgs = [
+            {"ts": "10.0", "user": "U1", "text": "a"},
+            {"ts": "11.0", "user": "U1", "text": "b"},
+        ]
+        recs, deferred = await c._process_message_batch(msgs, ctx)
+        assert recs
+        assert isinstance(deferred, list)
+
+    @pytest.mark.asyncio
+    async def test_process_single_with_files_and_links(self) -> None:
+        c = _make_connector()
+        ctx = _ctx(c)
+        msg = {
+            "ts": "30.0",
+            "user": "U1",
+            "text": "file https://github.com/o/r/issues/1",
+            "files": [{"id": "F1", "name": "a.txt", "mimetype": "text/plain", "created": 1}],
+        }
+        recs, deferred = await c._process_single(msg, ctx)
+        assert len(recs) >= 2
+        assert deferred == []
+
+    @pytest.mark.asyncio
+    async def test_process_burst_with_files(self) -> None:
+        from app.connectors.sources.slack.individual.connector import ConversationalBurst
+
+        c = _make_connector()
+        ctx = _ctx(c)
+        burst = ConversationalBurst(
+            messages=[
+                {
+                    "ts": "40.0",
+                    "user": "U1",
+                    "text": "burst",
+                    "files": [{"id": "F3", "name": "c.txt", "mimetype": "text/plain", "created": 1}],
+                },
+                {"ts": "41.0", "user": "U1", "text": "more"},
+            ],
+            start_ts=40.0,
+            end_ts=41.0,
+        )
+        recs, deferred = await c._process_burst(burst, ctx)
+        assert recs
+        assert deferred == []
+
+    @pytest.mark.asyncio
+    async def test_process_thread_with_files_links_and_indexing_off(self) -> None:
+        from app.config.constants.arangodb import ProgressStatus
+
+        c = _make_connector()
+        c.indexing_filters = FilterCollection(
+            filters=[
+                Filter(key="threads", value=False, type=FilterType.BOOLEAN, operator=BooleanOperator.IS),
+                Filter(key="files", value=False, type=FilterType.BOOLEAN, operator=BooleanOperator.IS),
+                Filter(key="links", value=False, type=FilterType.BOOLEAN, operator=BooleanOperator.IS),
+            ]
+        )
+        ctx = _ctx(c)
+        parent = {
+            "ts": "50.0",
+            "user": "U1",
+            "text": "root https://ex.com",
+            "reply_count": 1,
+            "thread_ts": "50.0",
+            "files": [{"id": "F4", "name": "d.txt", "mimetype": "text/plain", "created": 1}],
+        }
+        rg = MagicMock()
+        rg.id = "trg"
+        rg.external_group_id = "thread_C1_50.0"
+        rg.group_type = "SLACK_THREAD"
+
+        async def _replies(*_a, **_k):
+            return [
+                {
+                    "ts": "50.1",
+                    "user": "U2",
+                    "text": "reply https://ex.com/2",
+                },
+            ]
+
+        with (
+            patch.object(c, "_create_thread_record_group", return_value=rg),
+            patch.object(c, "_fetch_thread_replies_raw", new=AsyncMock(side_effect=_replies)),
+            patch.object(c.data_entities_processor, "on_new_record_groups", new=AsyncMock()),
+            patch.object(c.data_entities_processor, "on_new_records", new=AsyncMock()) as on_new,
+            patch.object(c, "_enrich_link_records_linked_id", new=AsyncMock()),
+        ):
+            await c._process_thread(parent, ctx, "ch-rg")
+
+        batch = on_new.await_args[0][0]
+        for rec, _ in batch:
+            if rec.record_type in (RecordType.MESSAGE, RecordType.FILE, RecordType.LINK):
+                assert rec.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    @pytest.mark.asyncio
+    async def test_scan_thread_growth_skips_non_actionable(self) -> None:
+        from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
+
+        c = _make_connector()
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                data={
+                    "messages": [
+                        {"ts": "1.0", "subtype": "bot_message", "bot_id": "B1"},
+                        {"ts": "2.0", "bot_id": "B1"},
+                        {"ts": "3.0", "user": "U1", "thread_ts": "1.0", "text": "reply"},
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                },
+            )
+        )
+        with (
+            patch.object(SlackIndividualConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
+            patch.object(SlackIndividualConnector, "_handle_new_thread", new_callable=AsyncMock) as h,
+        ):
+            await c._scan_channel_thread_growth("C1", "0.0")
+        h.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_message_changes_per_channel_checkpoint(self) -> None:
+        from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
+
+        c = _make_connector()
+        c.channel_groups_cache = {"C1": "rg"}
+        c.audit_log_sync_point.read_sync_point = AsyncMock(
+            return_value={"last_check_time": 1_700_000_000_000},
+        )
+        with (
+            patch.object(SlackIndividualConnector, "_compute_sync_window_oldest", return_value="1.0"),
+            patch.object(SlackIndividualConnector, "_refresh_user_caches", new_callable=AsyncMock),
+            patch.object(SlackIndividualConnector, "_check_channel_changes", new_callable=AsyncMock, return_value=2),
+        ):
+            await c._sync_message_changes()
+        c.audit_log_sync_point.update_sync_point.assert_awaited()
+
+        c2 = _make_connector()
+        c2.channel_groups_cache = {"Cbad": "rg"}
+        with (
+            patch.object(SlackIndividualConnector, "_compute_sync_window_oldest", return_value="1.0"),
+            patch.object(SlackIndividualConnector, "_refresh_user_caches", new_callable=AsyncMock),
+            patch.object(
+                SlackIndividualConnector,
+                "_check_channel_changes",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("scan failed"),
+            ),
+        ):
+            await c2._sync_message_changes()
+        c2.logger.error.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_refresh_user_caches_populates_all_fields(self) -> None:
+        c = _make_connector()
+        u = MagicMock()
+        u.source_user_id = "U9"
+        u.email = "u9@e.com"
+        u.id = "int9"
+        u.full_name = "Nine"
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[u])
+        await c._refresh_user_caches()
+        assert c.user_id_to_email_cache["U9"] == "u9@e.com"
+        assert c.user_id_to_internal_id_cache["U9"] == "int9"
+        assert c.user_id_to_name_cache["U9"] == "Nine"
+
+    @pytest.mark.asyncio
+    async def test_build_message_blocks_burst_with_file_children(self) -> None:
+        c = _make_connector()
+        mr = MagicMock(spec=MessageRecord)
+        mr.id = "id"
+        mr.external_record_id = "burst_C1_abc12345"
+        mr.start_ts = "1.0"
+        mr.end_ts = "2.0"
+        mr.external_record_group_id = "C1"
+        mr.record_group_id = "rg"
+
+        child = MagicMock()
+        child.id = "fid"
+        child.external_record_id = "F1"
+        child.record_name = "doc.pdf"
+
+        tx = MagicMock()
+        tx.__aenter__ = AsyncMock(return_value=tx)
+        tx.__aexit__ = AsyncMock(return_value=None)
+        tx.get_records_by_parent = AsyncMock(return_value=[child])
+        c.data_store_provider.transaction = MagicMock(return_value=tx)
+
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                data={
+                    "messages": [
+                        {
+                            "ts": "1.5",
+                            "user": "U1",
+                            "text": "with file",
+                            "files": [{"id": "F1"}],
+                        },
+                    ],
+                },
+            )
+        )
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)):
+            out = await c._build_message_blocks_for_streaming(mr)
+        assert isinstance(out, bytes)
+
+    @pytest.mark.asyncio
+    async def test_check_updated_file_success(self) -> None:
+        c = _make_connector()
+        fr = MagicMock()
+        fr.record_type = RecordType.FILE
+        fr.external_record_id = "F1"
+        fr.source_updated_at = None
+        fr.source_created_at = 0
+        fr.parent_external_record_id = "10.0"
+        fr.external_record_group_id = "C1"
+        fr.id = "fid"
+        fr.version = 1
+        fr.record_group_id = "rg"
+
+        parent = MagicMock(spec=MessageRecord)
+        parent.id = "mid"
+        parent.external_record_id = "10.0"
+
+        ds = MagicMock()
+        ds.files_info = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                data={
+                    "file": {
+                        "id": "F1",
+                        "name": "u.txt",
+                        "created": 99999,
+                        "mimetype": "text/plain",
+                    },
+                },
+            )
+        )
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent)
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)):
+            result = await c._check_updated_file(fr)
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_init_without_team_info(self) -> None:
+        from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
+
+        logger = MagicMock()
+        dep = MagicMock()
+        dep.org_id = "o"
+        with _patch_base_connector_init():
+            c = SlackIndividualConnector(logger, dep, MagicMock(), MagicMock(), "cid")
+
+        mock_ds = MagicMock()
+        mock_ds.team_info = AsyncMock(return_value=None)
+        mock_ds.auth_test = AsyncMock(
+            return_value=MagicMock(success=True, data={"user_id": "U9"}),
+        )
+        with (
+            patch(
+                "app.connectors.sources.slack.individual.connector.SlackClient.build_from_services",
+                new=AsyncMock(return_value=MagicMock()),
+            ),
+            patch.object(
+                SlackIndividualConnector,
+                "_fresh_datasource",
+                new=AsyncMock(return_value=mock_ds),
+            ),
+        ):
+            assert await c.init() is True
+
+    @pytest.mark.asyncio
+    async def test_fresh_datasource_auth_access_token(self) -> None:
+        c = _make_connector()
+        c.config_service.get_config = AsyncMock(
+            return_value={
+                "credentials": {"access_token": ""},
+                "auth": {"accessToken": "xoxp-from-auth"},
+            },
+        )
+        client = MagicMock()
+        client.get_token = MagicMock(return_value="xoxp-from-auth")
+        c.external_client.get_client = MagicMock(return_value=client)
+        await c._fresh_datasource()
+
+    @pytest.mark.asyncio
+    async def test_sync_channel_messages_checkpoint_and_deferred_incremental(self) -> None:
+        from app.connectors.sources.slack.individual.connector import DeferredThread
+
+        c = _make_connector()
+        c.indexing_filters = FilterCollection(filters=[])
+        c.messages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        parent = {"ts": "99.0", "user": "U1", "text": "t", "reply_count": 1, "thread_ts": "99.0", "latest_reply": "99.1"}
+        ctx_d = _ctx(c)
+        deferred = DeferredThread(msg=parent, ctx=ctx_d, rg_id="rg")
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                data={"messages": [parent], "response_metadata": {"next_cursor": ""}},
+            )
+        )
+        c.audit_log_sync_point.read_sync_point = AsyncMock(
+            return_value={"last_reply_ts": "98.0"},
+        )
+        tx = MagicMock()
+        tx.__aenter__ = AsyncMock(return_value=tx)
+        tx.__aexit__ = AsyncMock(return_value=None)
+        erg = MagicMock()
+        erg.id = "thread-rg"
+        tx.get_record_group_by_external_id = AsyncMock(return_value=erg)
+        c.data_store_provider.transaction = MagicMock(return_value=tx)
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_channel_group_map", new=AsyncMock(return_value={"C1": "rg"})),
+            patch.object(type(c), "_process_message_batch", new=AsyncMock(return_value=([], [deferred]))),
+            patch.object(type(c), "_enrich_link_records_linked_id", new=AsyncMock()),
+            patch.object(type(c), "_process_thread_incremental", new=AsyncMock()) as inc,
+        ):
+            await c.sync_channel_messages("C1")
+        inc.assert_awaited()
+        c.messages_sync_point.update_sync_point.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_channel_deferred_thread_failure_logged(self) -> None:
+        from app.connectors.sources.slack.individual.connector import DeferredThread
+
+        c = _make_connector()
+        c.indexing_filters = FilterCollection(filters=[])
+        c.messages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        parent = {"ts": "99.0", "user": "U1", "text": "t", "reply_count": 1, "thread_ts": "99.0"}
+        ctx_d = _ctx(c)
+        deferred = DeferredThread(msg=parent, ctx=ctx_d, rg_id="rg")
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                data={"messages": [parent], "response_metadata": {"next_cursor": ""}},
+            )
+        )
+        c.audit_log_sync_point.read_sync_point = AsyncMock(return_value=None)
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_channel_group_map", new=AsyncMock(return_value={"C1": "rg"})),
+            patch.object(type(c), "_process_message_batch", new=AsyncMock(return_value=([], [deferred]))),
+            patch.object(type(c), "_enrich_link_records_linked_id", new=AsyncMock()),
+            patch.object(type(c), "_process_thread", new=AsyncMock(side_effect=RuntimeError("thread fail"))),
+        ):
+            await c.sync_channel_messages("C1")
+        c.logger.error.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_build_message_blocks_thread_burst_path(self) -> None:
+        c = _make_connector()
+        mr = MagicMock(spec=MessageRecord)
+        mr.id = "id"
+        mr.external_record_id = "thread_burst_xyz"
+        mr.start_ts = "1.0"
+        mr.end_ts = "2.0"
+        mr.thread_id = "0.5"
+        mr.external_record_group_id = "thread_C1_0.5"
+        mr.record_group_id = "rg"
+        ds = MagicMock()
+        ds.conversations_replies = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                data={"messages": [{"ts": "1.5", "user": "U1", "text": "tb"}]},
+            )
+        )
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)):
+            out = await c._build_message_blocks_for_streaming(mr)
+        assert isinstance(out, bytes)
+
+    @pytest.mark.asyncio
+    async def test_get_filter_options_dm_label_and_warm_fallback(self) -> None:
+        c = _make_connector()
+        c.user_id_to_name_cache.clear()
+        c.user_id_to_email_cache["Udm"] = "dm@e.com"
+        ds = MagicMock()
+        ds.conversations_list = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                data={
+                    "channels": [
+                        {"id": "D1", "is_im": True, "user": "Udm"},
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                },
+            )
+        )
+        with (
+            patch.object(type(c), "_refresh_user_caches", new=AsyncMock()),
+            patch.object(type(c), "_warm_all_user_caches", new=AsyncMock()),
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+        ):
+            resp = await c.get_filter_options("channel_ids")
+        assert resp.success
+        assert resp.options[0].label.startswith("DM:")
