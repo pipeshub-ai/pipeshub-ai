@@ -17,7 +17,6 @@ from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
 from app.agents.registry.toolset_registry import get_toolset_registry
-from app.agents.tools.registry import _global_tools_registry
 from app.api.routes.entity import router as entity_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.config.constants.arangodb import AccountType, CollectionNames
