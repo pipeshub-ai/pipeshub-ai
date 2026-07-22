@@ -48,6 +48,14 @@ on:
           - arango
           - neo4j
           - both
+      run_mode:
+        description: 'When graph_db is "both": run the two backends sequentially in one job (default) or as parallel jobs on separate runners'
+        required: true
+        default: 'sequential'
+        type: choice
+        options:
+          - sequential
+          - parallel
       message_broker:
         description: 'Message broker to use'
         required: true
@@ -62,14 +70,25 @@ permissions:
 
 env:
   PIPESHUB_BASE_URL: http://localhost:3000
-  GRAPH_DB: ${{ github.event.inputs.graph_db || 'both' }}
   MESSAGE_BROKER: ${{ github.event.inputs.message_broker || 'redis' }}
 
 jobs:
   integration-tests:
+    name: Integration Tests (${{ matrix.graph_db }})
     if: ${{ github.event_name != 'pull_request_target' || !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
     timeout-minutes: 180
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each matrix value is one job. "arango"/"neo4j" run that backend only;
+        # "both" runs the two backends sequentially inside a single job.
+        # Sequential is the default; high-priority runs opt into parallel via
+        # the run_mode dispatch input or an `it-parallel` label on the PR. env
+        # context is not available in `strategy`, so this derives from
+        # inputs/labels directly.
+        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || '["both"]') }}
 
     # Schedule uses a separate environment so daily runs are not blocked by
     # deployment protection on `integration-test-dev`. Create
@@ -116,6 +135,10 @@ jobs:
       JIRA_TEST_PROJECT_KEYS: ${{ secrets.JIRA_TEST_PROJECT_KEYS }}
       LINEAR_TEST_API_TOKEN: ${{ secrets.LINEAR_TEST_API_TOKEN }}
       LINEAR_TEST_TEAM_IDS: ${{ secrets.LINEAR_TEST_TEAM_IDS }}
+      # Playwright runs once per workflow: on the job that has the neo4j stack
+      # (the neo4j leg, or the sequential "both" job), or on the arango job when
+      # arango is the only backend selected.
+      RUN_PLAYWRIGHT: ${{ (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both' || github.event.inputs.graph_db == 'arango') && 'true' || 'false' }}
 
     steps:
       - name: Checkout code
@@ -126,11 +149,13 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node.js
+        if: env.RUN_PLAYWRIGHT == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Install frontend deps and Playwright browsers
+        if: env.RUN_PLAYWRIGHT == 'true'
         working-directory: frontend
         run: |
           npm ci
@@ -144,12 +169,13 @@ jobs:
           docker pull pipeshubai/pipeshub-ai-base:runtime || true
 
       - name: Build Neo4j stack images
-        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
+        if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         working-directory: deployment/docker-compose
         run: docker compose -f docker-compose.integration.neo4j.yml build
 
       - name: Build ArangoDB stack images
-        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        # Run even if the Neo4j pass failed, but stop if the run was cancelled.
+        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
         run: docker compose -f docker-compose.integration.arango.yml build
 
@@ -168,12 +194,12 @@ jobs:
           uv pip install -e .
 
       - name: 'Neo4j: Start services'
-        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
+        if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         working-directory: deployment/docker-compose
         run: docker compose -f docker-compose.integration.neo4j.yml up -d
 
       - name: 'Neo4j: Wait for core services'
-        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
+        if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         run: |
           echo "Waiting for core services..."
           timeout 300 bash -c '
@@ -188,7 +214,7 @@ jobs:
           echo "Core services are healthy!"
 
       - name: 'Neo4j: Wait for Python microservices'
-        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
+        if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         run: |
           echo "Waiting for connector and query services..."
           timeout 300 bash -c '
@@ -203,7 +229,7 @@ jobs:
           echo "All services are healthy!"
 
       - name: 'Neo4j: Create organization and admin user'
-        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
+        if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         run: |
           echo "Creating organization..."
           curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
@@ -221,7 +247,7 @@ jobs:
           echo "Organization created successfully!"
 
       - name: 'Neo4j: Skip onboarding'
-        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
+        if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         run: |
           HEADERS=$(mktemp)
           curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
@@ -245,7 +271,7 @@ jobs:
           echo "Onboarding marked as configured!"
 
       - name: 'Neo4j: Run integration tests'
-        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
+        if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         working-directory: integration-tests
         env:
           TEST_GRAPH_DB_TYPE: neo4j
@@ -255,7 +281,7 @@ jobs:
           pytest -m "$MARKERS" -v --tb=short --junitxml=reports/neo4j-results.xml 2>&1
 
       - name: 'Neo4j: Run Playwright e2e tests'
-        if: always() && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
+        if: ${{ !cancelled() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
         working-directory: frontend
         env:
           CI: 'true'
@@ -267,7 +293,7 @@ jobs:
         run: npm run test:e2e 2>&1
 
       - name: 'Neo4j: Dump docker logs'
-        if: always() && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
+        if: always() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/neo4j
@@ -279,17 +305,17 @@ jobs:
           done
 
       - name: 'Neo4j: Tear down services (preserve images)'
-        if: always() && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
+        if: always() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
         run: docker compose -f docker-compose.integration.neo4j.yml down -v
 
       - name: 'ArangoDB: Start services'
-        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
         run: docker compose -f docker-compose.integration.arango.yml up -d
 
       - name: 'ArangoDB: Wait for core services'
-        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         run: |
           echo "Waiting for core services..."
           timeout 300 bash -c '
@@ -304,7 +330,7 @@ jobs:
           echo "Core services are healthy!"
 
       - name: 'ArangoDB: Wait for Python microservices'
-        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         run: |
           echo "Waiting for connector and query services..."
           timeout 300 bash -c '
@@ -319,7 +345,7 @@ jobs:
           echo "All services are healthy!"
 
       - name: 'ArangoDB: Create organization and admin user'
-        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         run: |
           echo "Creating organization..."
           curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
@@ -337,7 +363,7 @@ jobs:
           echo "Organization created successfully!"
 
       - name: 'ArangoDB: Skip onboarding'
-        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         run: |
           HEADERS=$(mktemp)
           curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
@@ -361,7 +387,7 @@ jobs:
           echo "Onboarding marked as configured!"
 
       - name: 'ArangoDB: Run integration tests'
-        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: integration-tests
         env:
           TEST_GRAPH_DB_TYPE: arango
@@ -375,7 +401,7 @@ jobs:
           pytest -m "$MARKERS" -v --tb=short --junitxml=reports/arango-results.xml 2>&1
 
       - name: 'ArangoDB: Run Playwright e2e tests'
-        if: always() && env.GRAPH_DB == 'arango'
+        if: ${{ !cancelled() && matrix.graph_db == 'arango' && env.RUN_PLAYWRIGHT == 'true' }}
         working-directory: frontend
         env:
           CI: 'true'
@@ -387,7 +413,7 @@ jobs:
         run: npm run test:e2e 2>&1
 
       - name: 'ArangoDB: Dump docker logs'
-        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        if: always() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/arango
@@ -399,12 +425,48 @@ jobs:
           done
 
       - name: 'ArangoDB: Tear down services (preserve images)'
-        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        if: always() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
         run: docker compose -f docker-compose.integration.arango.yml down -v
 
-      - name: Collect test results and prepare email
+      - name: Collect Playwright artifacts into reports
+        if: always() && env.RUN_PLAYWRIGHT == 'true'
+        run: |
+          mkdir -p integration-tests/reports/playwright
+          cp -r frontend/playwright-report integration-tests/reports/playwright/html-report 2>/dev/null || true
+          cp frontend/test-results/playwright-junit.xml integration-tests/reports/playwright/ 2>/dev/null || true
+
+      - name: Upload reports artifact
         if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ matrix.graph_db }}
+          path: integration-tests/reports/
+          if-no-files-found: ignore
+
+  report:
+    name: Integration Tests Report
+    needs: integration-tests
+    # Report failed runs, but stay silent when the run was cancelled or skipped.
+    if: ${{ !cancelled() && needs.integration-tests.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    environment:
+      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
+
+    steps:
+      - name: Download reports from all jobs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: reports-*
+          path: integration-tests/reports
+          merge-multiple: true
+
+      - name: Ensure reports directory exists
+        run: mkdir -p integration-tests/reports
+
+      - name: Collect test results and prepare email
         id: test-results
         working-directory: integration-tests
         env:
@@ -469,11 +531,11 @@ jobs:
           PW_FAILED=0
           PW_ERRORS=0
           PW_SKIPPED=0
-          if [ -f "../frontend/test-results/playwright-junit.xml" ]; then
-            pw_tests=$(grep -oP 'tests="\K[0-9]+' "../frontend/test-results/playwright-junit.xml" | head -1)
-            pw_failures=$(grep -oP 'failures="\K[0-9]+' "../frontend/test-results/playwright-junit.xml" | head -1)
-            pw_errors=$(grep -oP 'errors="\K[0-9]+' "../frontend/test-results/playwright-junit.xml" | head -1)
-            pw_skipped=$(grep -oP 'skipped="\K[0-9]+' "../frontend/test-results/playwright-junit.xml" | head -1)
+          if [ -f "reports/playwright/playwright-junit.xml" ]; then
+            pw_tests=$(grep -oP 'tests="\K[0-9]+' "reports/playwright/playwright-junit.xml" | head -1)
+            pw_failures=$(grep -oP 'failures="\K[0-9]+' "reports/playwright/playwright-junit.xml" | head -1)
+            pw_errors=$(grep -oP 'errors="\K[0-9]+' "reports/playwright/playwright-junit.xml" | head -1)
+            pw_skipped=$(grep -oP 'skipped="\K[0-9]+' "reports/playwright/playwright-junit.xml" | head -1)
             PW_TESTS=${pw_tests:-0}
             PW_FAILED=${pw_failures:-0}
             PW_ERRORS=${pw_errors:-0}
@@ -517,19 +579,12 @@ jobs:
             echo "PR_FIELD_EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Collect Playwright artifacts into reports
-        if: always()
-        run: |
-          mkdir -p integration-tests/reports/playwright
-          cp -r frontend/playwright-report integration-tests/reports/playwright/html-report 2>/dev/null || true
-
       - name: Zip reports folder
-        if: always()
         working-directory: integration-tests
         run: zip -r reports.zip reports/
 
       - name: Send Slack report
-        if: always()
+        if: ${{ !cancelled() }}
         id: slack-message
         uses: slackapi/slack-github-action@v2.1.0
         with:
@@ -628,7 +683,7 @@ jobs:
             }
 
       - name: Upload reports zip to Slack
-        if: always()
+        if: ${{ !cancelled() }}
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
@@ -667,7 +722,7 @@ jobs:
             -d "$COMPLETE_PAYLOAD"
 
       - name: Send failed tests list to Slack thread
-        if: always() && (steps.test-results.outputs.TOTAL_FAILED != '0' || steps.test-results.outputs.TOTAL_ERRORS != '0' || steps.test-results.outputs.PW_FAILED != '0' || steps.test-results.outputs.PW_ERRORS != '0')
+        if: ${{ !cancelled() && (steps.test-results.outputs.TOTAL_FAILED != '0' || steps.test-results.outputs.TOTAL_ERRORS != '0' || steps.test-results.outputs.PW_FAILED != '0' || steps.test-results.outputs.PW_ERRORS != '0') }}
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
