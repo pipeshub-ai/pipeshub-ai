@@ -1,6 +1,6 @@
 import type { IndexingQueueStatus } from '../types';
 
-/** Hide the queue line for trivial lag so healthy syncs stay clean. */
+/** Hide the queue line for trivial backlog so healthy syncs stay clean. */
 export const INDEXING_QUEUE_VISIBLE_LAG = 10;
 
 export interface IndexingQueueCopy {
@@ -9,6 +9,18 @@ export interface IndexingQueueCopy {
   /** English fallback for `t(key, { defaultValue, ...params })`. */
   text: string;
   params: Record<string, number | string>;
+}
+
+/**
+ * Undelivered stream lag plus consumer PEL. Lag alone goes to 0 once messages
+ * are delivered, even when the indexer is still chewing through (or retrying)
+ * them — which is exactly when "Indexing 0 of N" feels stuck.
+ */
+export function indexingQueueBacklog(
+  queue: IndexingQueueStatus | null | undefined
+): number {
+  if (!queue) return 0;
+  return Math.max(0, Math.round(queue.lag)) + Math.max(0, Math.round(queue.pending));
 }
 
 /**
@@ -69,14 +81,14 @@ export function formatQueueEta(etaSeconds: number | null | undefined): IndexingQ
 
 /**
  * Whether to surface the shared-queue line under run progress.
- * Shown during indexing when the org stream still has meaningful lag.
+ * Shown during indexing when the org stream still has meaningful backlog.
  */
 export function shouldShowIndexingQueue(
   queue: IndexingQueueStatus | null | undefined,
   opts: { indexing: boolean }
 ): boolean {
   if (!opts.indexing) return false;
-  return (queue?.lag ?? 0) >= INDEXING_QUEUE_VISIBLE_LAG;
+  return indexingQueueBacklog(queue) >= INDEXING_QUEUE_VISIBLE_LAG;
 }
 
 /** Compact card hint — no ETA. */
@@ -92,12 +104,12 @@ export function describeIndexingQueueCompact(): IndexingQueueCopy {
 export function describeIndexingQueueDetail(
   queue: IndexingQueueStatus
 ): { jobs: IndexingQueueCopy; eta: IndexingQueueCopy | null } {
-  const lag = Math.max(0, Math.round(queue.lag));
+  const backlog = indexingQueueBacklog(queue);
   return {
     jobs: {
       key: 'workspace.connectors.syncProgress.queue.waitingDetail',
       text: 'Waiting in shared indexing queue · ~{{count}} jobs ahead',
-      params: { count: lag },
+      params: { count: backlog },
     },
     eta: formatQueueEta(queue.etaSeconds),
   };

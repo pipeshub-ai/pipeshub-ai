@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import useSWR from 'swr';
 import { ConnectorsApi } from '../api';
+import { indexingQueueBacklog } from './indexing-queue-copy';
 import { isActiveConnectorSyncStatus } from './sync-progress-view';
 import type { ConnectorSyncProgress } from '../types';
 
@@ -19,7 +20,7 @@ function hasPendingCoverage(progress: ConnectorSyncProgress | null | undefined):
 
 /** Keep polling while the shared indexer still has a meaningful backlog. */
 function hasIndexingQueueBacklog(progress: ConnectorSyncProgress | null | undefined): boolean {
-  return (progress?.indexingQueue?.lag ?? 0) >= 10;
+  return indexingQueueBacklog(progress?.indexingQueue) >= 10;
 }
 
 /**
