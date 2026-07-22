@@ -1,4 +1,17 @@
 {
+  "collections": {
+    "stats": {
+      "title": "Analytics",
+      "menuLabel": "Analytics",
+      "fetchError": "Failed to load indexing stats",
+      "refreshSuccess": "Stats refreshed",
+      "refreshError": "Failed to refresh stats",
+      "reindexFailedStart": "Reindexing failed records…",
+      "reindexFailedError": "Failed to reindex failed records",
+      "manualIndexStart": "Indexing manual-indexing records…",
+      "manualIndexError": "Failed to start manual indexing"
+    }
+  },
   "resetPassword": {
     "failure": {
       "missingTokenMessage": "This page is only accessible from a password-reset email link. Please use the Forgot Password option on the sign-in page.",

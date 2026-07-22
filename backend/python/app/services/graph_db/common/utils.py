@@ -41,6 +41,7 @@ def build_connector_stats_response(
     statuses: List[str],
     org_id: str,
     connector_id: str,
+    origin: str = "CONNECTOR",
 ) -> Dict[str, Any]:
     """
     Build connector stats response from aggregated query rows.
@@ -53,6 +54,7 @@ def build_connector_stats_response(
         statuses: List of valid indexing status values
         org_id: Organization ID
         connector_id: Connector ID
+        origin: Origin type ("CONNECTOR" or "COLLECTION"), defaults to "CONNECTOR"
 
     Returns:
         Formatted stats response dictionary
@@ -82,7 +84,7 @@ def build_connector_stats_response(
     return {
         "orgId": org_id,
         "connectorId": connector_id,
-        "origin": "CONNECTOR",
+        "origin": origin,
         "stats": {
             "total": total,
             "indexingStatus": indexing_status_counts,

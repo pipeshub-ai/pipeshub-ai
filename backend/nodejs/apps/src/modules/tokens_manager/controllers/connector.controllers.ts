@@ -1855,10 +1855,19 @@ export const getConnectorStats =
 
         queryParams.append('org_id', orgId);
         queryParams.append('connector_id', req.params.connectorId);
+
+        // Forward the admin flag so stats visibility matches connector-list
+        // visibility (admins see team connectors they don't own).
+        const isAdmin = await isUserAdmin(req);
+        const headers: Record<string, string> = {
+          ...(req.headers as Record<string, string>),
+          'X-Is-Admin': isAdmin ? 'true' : 'false',
+        };
+
         const response = await executeConnectorCommand(
           `${appConfig.connectorBackend}/api/v1/stats?${queryParams.toString()}`,
           HttpMethod.GET,
-          req.headers as Record<string, string>,
+          headers,
         );
 
         if (response.statusCode !== 200) {

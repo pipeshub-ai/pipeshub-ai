@@ -162,6 +162,15 @@ interface KnowledgeBaseState {
     | { type: 'create-collection' }
     | null;
 
+  // Collection stats panel
+  collectionStatsPanel: {
+    open: boolean;
+    collectionId: string | null;
+    collectionName: string | null;
+  };
+  collectionStats: Record<string, import('@/app/(main)/workspace/connectors/types').ConnectorStatsResponse['data']>;
+  collectionStatsLoading: boolean;
+
 }
 
 interface KnowledgeBaseActions {
@@ -317,6 +326,12 @@ interface KnowledgeBaseActions {
   ) => void;
   clearPendingSidebarAction: () => void;
 
+  // Collection stats panel actions
+  openCollectionStatsPanel: (collectionId: string, collectionName: string) => void;
+  closeCollectionStatsPanel: () => void;
+  setCollectionStats: (collectionId: string, stats: import('@/app/(main)/workspace/connectors/types').ConnectorStatsResponse['data']) => void;
+  setCollectionStatsLoading: (loading: boolean) => void;
+
   // Bulk actions
   bulkReindexSelected: (
     items: Array<{ id: string; name: string; nodeType?: string; connector?: string; subType?: string }>,
@@ -411,6 +426,15 @@ const initialState: KnowledgeBaseState = {
 
   // Sidebar → Page action bridge
   pendingSidebarAction: null,
+
+  // Collection stats panel
+  collectionStatsPanel: {
+    open: false,
+    collectionId: null,
+    collectionName: null,
+  },
+  collectionStats: {},
+  collectionStatsLoading: false,
 };
 
 export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
@@ -1089,6 +1113,35 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
       clearPendingSidebarAction: () =>
         set((state) => {
           state.pendingSidebarAction = null;
+        }),
+
+      // Collection stats panel actions
+      openCollectionStatsPanel: (collectionId, collectionName) =>
+        set((state) => {
+          state.collectionStatsPanel = {
+            open: true,
+            collectionId,
+            collectionName,
+          };
+        }),
+
+      closeCollectionStatsPanel: () =>
+        set((state) => {
+          state.collectionStatsPanel = {
+            open: false,
+            collectionId: null,
+            collectionName: null,
+          };
+        }),
+
+      setCollectionStats: (collectionId, stats) =>
+        set((state) => {
+          state.collectionStats[collectionId] = stats;
+        }),
+
+      setCollectionStatsLoading: (loading) =>
+        set((state) => {
+          state.collectionStatsLoading = loading;
         }),
 
       bulkReindexSelected: async (items, refreshData) => {
