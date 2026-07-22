@@ -533,9 +533,14 @@ class OutlookConnector(BaseConnector):
             page_num = 1
 
             while True:
-                response: UsersGroupsResponse = await self.external_users_client.users_user_list_user(
-                    next_url=next_url
-                )
+                if next_url:
+                    response: UsersGroupsResponse = await self.external_users_client.users_user_list_user(
+                        next_url=next_url
+                    )
+                else:
+                    response: UsersGroupsResponse = await self.external_users_client.users_user_list_user(
+                        select=OutlookAPIFields.USER_SYNC_SELECT_FIELDS,
+                    )
 
                 if not response.success or not response.data:
                     self.logger.error(f"Failed to get users page {page_num}: {response.error}")
@@ -545,6 +550,14 @@ class OutlookConnector(BaseConnector):
                 user_data = response.data.value if response.data.value else []
 
                 for user in user_data:
+                    # Azure AD guest users have no mailbox in this tenant; never sync them.
+                    if user.user_type == "Guest":
+                        self.logger.info(
+                            "Skipping guest user %s (userType=Guest): no mailbox in this tenant",
+                            user.mail or user.user_principal_name,
+                        )
+                        continue
+
                     display_name = user.display_name or ''
                     given_name = user.given_name or ''
                     surname = user.surname or ''

@@ -132,6 +132,17 @@ class OutlookAPIFields:
         "surname"
     ]
 
+    # User directory fields fetched during user sync (userType drives guest exclusion)
+    USER_SYNC_SELECT_FIELDS: list[str] = [
+        "id",
+        "displayName",
+        "givenName",
+        "surname",
+        "mail",
+        "userPrincipalName",
+        "userType",
+    ]
+
     # Group filter options select fields (for filter UI)
     GROUP_FILTER_SELECT_FIELDS: list[str] = [
         "id",
