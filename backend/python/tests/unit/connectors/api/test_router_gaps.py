@@ -891,7 +891,7 @@ class TestGetConnectorStatsGaps:
         gp.get_connector_stats = AsyncMock(return_value={"success": True, "data": {"count": 10}})
         req = _mock_request(graph_provider=gp)
 
-        result = await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+        result = await get_connector_stats_endpoint(req, "c1", graph_provider=gp)
         assert result["success"] is True
 
     @pytest.mark.asyncio
@@ -901,7 +901,7 @@ class TestGetConnectorStatsGaps:
         req = _mock_request(graph_provider=gp)
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, "c1", graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
@@ -914,7 +914,7 @@ class TestGetConnectorStatsGaps:
         # The router has a latent bug: logger is set AFTER graph_provider.get_connector_stats,
         # so if that call raises, the except block hits UnboundLocalError.
         with pytest.raises((HTTPException, UnboundLocalError)):
-            await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, "c1", graph_provider=gp)
 
 
 # ============================================================================
@@ -4211,7 +4211,7 @@ class TestGetConnectorStatsGapsCoverage:
         gp.get_connector_stats = AsyncMock(return_value={"success": True, "data": {"count": 10}})
         req = _mock_request(graph_provider=gp)
 
-        result = await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+        result = await get_connector_stats_endpoint(req, "c1", graph_provider=gp)
         assert result["success"] is True
 
     @pytest.mark.asyncio
@@ -4221,7 +4221,7 @@ class TestGetConnectorStatsGapsCoverage:
         req = _mock_request(graph_provider=gp)
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, "c1", graph_provider=gp)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
@@ -4234,7 +4234,7 @@ class TestGetConnectorStatsGapsCoverage:
         # The router has a latent bug: logger is set AFTER graph_provider.get_connector_stats,
         # so if that call raises, the except block hits UnboundLocalError.
         with pytest.raises((HTTPException, UnboundLocalError)):
-            await get_connector_stats_endpoint(req, "org-1", "c1", graph_provider=gp)
+            await get_connector_stats_endpoint(req, "c1", graph_provider=gp)
 
 
 # ============================================================================
