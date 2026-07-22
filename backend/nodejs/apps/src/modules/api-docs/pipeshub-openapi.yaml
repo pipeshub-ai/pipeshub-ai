@@ -3789,6 +3789,9 @@ components:
             summaryDocumentId:
               type: string
               nullable: true
+            storageDocumentId:
+              type: string
+              nullable: true
             webUrl:
               type: string
               nullable: true
@@ -6904,6 +6907,9 @@ components:
           type: number
           nullable: true
         summaryDocumentId:
+          type: string
+          nullable: true
+        storageDocumentId:
           type: string
           nullable: true
         virtualRecordId:
