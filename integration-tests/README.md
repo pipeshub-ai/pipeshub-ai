@@ -53,7 +53,8 @@ Run against `https://test.pipeshub.com` and remote Neo4j Aura:
 cd integration-tests
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"    # or: pip install -e .
+pip install uv
+uv pip install -e ".[dev]"    # or: uv pip install -e .
 ```
 
 1. Set **`.env`** to choose the environment: `PIPESHUB_TEST_ENV=prod` (or `local` for local backend).
@@ -194,10 +195,11 @@ cd integration-tests
 ```bash
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
+pip install uv
+uv pip install -e ".[dev]"
 ```
 
-(`.[dev]` is optional if your project doesn’t define dev extras; `pip install -e .` is enough.)
+(`.[dev]` is optional if your project doesn’t define dev extras; `uv pip install -e .` is enough.)
 
 ### 3. Create env files
 
