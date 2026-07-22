@@ -23,13 +23,14 @@ from app.services.messaging.error_classifier import MessageErrorType
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_handler(logger=None, config_service=None, event_processor=None):
+def _make_handler(logger=None, config_service=None, event_processor=None, producer=None):
     """Create a RecordEventHandler with mock dependencies."""
     from app.services.messaging.kafka.handlers.record import RecordEventHandler
 
     logger = logger or MagicMock()
     config_service = config_service or AsyncMock()
     event_processor = event_processor or MagicMock()
+    producer = producer if producer is not None else AsyncMock()
 
     # Ensure event_processor has the nested objects the handler expects
     if not hasattr(event_processor, "graph_provider") or event_processor.graph_provider is None:
@@ -44,6 +45,7 @@ def _make_handler(logger=None, config_service=None, event_processor=None):
         logger=logger,
         config_service=config_service,
         event_processor=event_processor,
+        producer=producer,
     )
 
 
@@ -1495,12 +1497,16 @@ class TestTriggerNextQueuedDuplicate:
         }
         gp.find_next_queued_duplicate = AsyncMock(return_value=next_record)
         gp._create_reindex_event_payload = AsyncMock(return_value={"some": "payload"})
-        gp._publish_record_event = AsyncMock()
 
         await handler._trigger_next_queued_duplicate("r1", "vr1")
 
         gp._create_reindex_event_payload.assert_awaited_once_with(next_record, None)
-        gp._publish_record_event.assert_awaited_once_with("newRecord", {"some": "payload"})
+        handler.producer.send_event.assert_awaited_once_with(
+            topic="record-events",
+            event_type="newRecord",
+            payload={"some": "payload"},
+            key="r2",
+        )
 
     @pytest.mark.asyncio
     async def test_queued_duplicate_found_file_type(self):
@@ -1514,13 +1520,12 @@ class TestTriggerNextQueuedDuplicate:
         gp.find_next_queued_duplicate = AsyncMock(return_value=next_record)
         gp.get_document = AsyncMock(return_value=file_record)
         gp._create_reindex_event_payload = AsyncMock(return_value={"some": "payload"})
-        gp._publish_record_event = AsyncMock()
 
         await handler._trigger_next_queued_duplicate("r1", "vr1")
 
         gp.get_document.assert_awaited_once_with("r2", CollectionNames.FILES.value)
         gp._create_reindex_event_payload.assert_awaited_once_with(next_record, file_record)
-        gp._publish_record_event.assert_awaited_once()
+        handler.producer.send_event.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_exception_updates_queued_duplicates_status(self):

@@ -821,6 +821,11 @@ MONGO_PASSWORD=${MONGO_PASSWORD}
 QDRANT_API_KEY=${QDRANT_API_KEY}
 
 # ── Indexing concurrency ─────────────────────────────────────────────────────
+# MAX_CONCURRENT_PARSING should exceed MAX_CONCURRENT_INDEXING: startup
+# recovery (5 concurrent) and the live consumer (MAX_CONCURRENT_INDEXING
+# concurrent) can both call the Parsing service at once, and too small a
+# value here causes "Parsing saturated" 503s under load. The Parsing service
+# auto-caps this to 2x its CPU count, so raising it is safe on smaller hosts.
 MAX_CONCURRENT_PARSING=5
 MAX_CONCURRENT_INDEXING=7
 MAX_PENDING_INDEXING_TASKS=40

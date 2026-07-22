@@ -349,12 +349,13 @@ start_nodejs
 start_slackbot
 start_embedding
 start_connector
-start_indexing
-start_query
-start_docling
 
 # Conditionally start the standalone Parsing and Extraction services.
 # Set USE_PARSING_SERVICE=true in the environment to enable them.
+# Must start (and pass health checks) *before* Indexing: on startup Indexing
+# recovers in-progress records immediately and, when USE_PARSING_SERVICE=true,
+# routes them through the Parsing service — if that service isn't up yet those
+# recovery calls fail with connection errors / 503s.
 if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
     log "USE_PARSING_SERVICE=true — starting Parsing and Extraction services"
     start_parsing
@@ -362,6 +363,10 @@ if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
 else
     log "USE_PARSING_SERVICE not set — skipping Parsing and Extraction services"
 fi
+
+start_indexing
+start_query
+start_docling
 
 log "All services started. Beginning monitoring cycle (checking every ${CHECK_INTERVAL}s)..."
 
