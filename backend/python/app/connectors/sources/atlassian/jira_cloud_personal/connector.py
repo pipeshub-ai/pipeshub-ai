@@ -20,7 +20,7 @@ from uuid import uuid4
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AppGroups, Connectors
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -55,10 +55,11 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     AUTHORIZE_URL,
     TOKEN_URL,
     JiraConnector,
-    adf_to_text,
+    adf_to_plain_text,
 )
 from app.models.entities import AppUser, RecordGroup, RecordGroupType
 from app.models.permission import Permission
+from app.services.notification.types import NotificationSeverity, NotificationType
 
 
 @(
@@ -76,16 +77,6 @@ from app.models.permission import Permission
                 authorize_url=AUTHORIZE_URL,
                 token_url=TOKEN_URL,
                 redirect_uri="connectors/oauth/callback/JiraCloudPersonal",
-                # ``personal_sync`` uses a deliberately narrower scope set
-                # than the workspace connector — see
-                # ``AtlassianScope.get_jira_personal_read_access`` for which
-                # workspace-only scopes (groups, roles, audit log, app roles)
-                # are dropped. ``team_sync`` mirrors ``personal_sync`` so the
-                # OAuth-flow scope resolver in ``_build_oauth_flow_config``
-                # still emits a non-empty ``scope=`` parameter even if the
-                # per-instance ``connectorScope`` somehow defaults to ``team``
-                # — an empty ``scope`` is what ``auth.atlassian.com`` rejects
-                # with ``error=server_error``.
                 scopes=OAuthScopeConfig(
                     personal_sync=AtlassianScope.get_jira_personal_read_access(),
                     team_sync=AtlassianScope.get_jira_personal_read_access(),
@@ -105,16 +96,6 @@ from app.models.permission import Permission
                         description="The Client Secret from Atlassian Developer Console",
                         field_type="PASSWORD",
                         is_secret=True,
-                    ),
-                    AuthField(
-                        name="baseUrl",
-                        display_name="Atlassian site URL",
-                        placeholder="https://yourcompany.atlassian.net",
-                        description="Atlassian site URL to use. Must match the Jira site you want to sync.",
-                        field_type="URL",
-                        required=True,
-                        max_length=2000,
-                        is_secret=False,
                     ),
                 ],
                 icon_path=IconPaths.connector_icon(Connectors.JIRA_PERSONAL.value),
@@ -349,6 +330,26 @@ class JiraCloudPersonalConnector(JiraConnector):
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
 
+            # Notify the creator of the sync outcome (same as the workspace connector).
+            failed_count = sync_stats.get("failed_count", 0)
+            if projects and failed_count == len(projects):
+                self.logger.error(
+                    "❌ Jira Cloud Personal sync: all %s projects failed to sync issues",
+                    failed_count,
+                )
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("sync failed"),
+                    message=(
+                        f"Issues could not be synced for any of the {failed_count} projects. "
+                        "Run the sync again; if it keeps failing, check the connector's "
+                        "Jira access and configuration."
+                    ),
+                    recipient_user_ids=[self.created_by],
+                )
+                return
+
             self.logger.info(
                 "Jira Cloud Personal sync completed. Total: %s issues "
                 "(New: %s, Updated: %s)",
@@ -356,11 +357,34 @@ class JiraCloudPersonalConnector(JiraConnector):
                 sync_stats["new_count"],
                 sync_stats["updated_count"],
             )
+            await self.notify(
+                type=NotificationType.CONNECTOR_SUCCESS,
+                severity=NotificationSeverity.SUCCESS,
+                title=self._notification_title("sync completed"),
+                message=(
+                    f"Total: {sync_stats['total_synced']} issues "
+                    f"(New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']})"
+                ),
+                recipient_user_ids=[self.created_by],
+            )
 
         except Exception as e:
             self.logger.error(
                 "Error during Jira Cloud Personal sync: %s", e, exc_info=True
             )
+            # Skip if init/multi-site already notified for this failure.
+            if not isinstance(e, ConnectorInitError) and not getattr(e, "_notification_sent", False):
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("sync failed"),
+                    message=(
+                        f"The sync stopped due to an error: {str(e)[:200]}. Recent Jira changes "
+                        "may not be reflected yet. Run the sync again; if it keeps failing, "
+                        "check the connector's configuration."
+                    ),
+                    recipient_user_ids=[self.created_by],
+                )
             raise
 
     async def _fetch_projects(
@@ -399,7 +423,7 @@ class JiraCloudPersonalConnector(JiraConnector):
 
             description = project.get("description")
             if description and isinstance(description, dict):
-                description = adf_to_text(description)
+                description = adf_to_plain_text(description)
             elif not description:
                 description = None
 

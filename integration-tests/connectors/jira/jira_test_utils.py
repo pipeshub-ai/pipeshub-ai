@@ -175,13 +175,18 @@ async def count_jira_group_synced_members(
 async def count_jira_site_groups_bulk(datasource: JiraDataSource) -> int:
     """Count the groups the connector actually syncs into ``Group`` nodes.
 
-    ``_sync_user_groups`` skips any bulk group missing ``groupId`` or ``name``
-    (connector.py: ``if not group_id or not group_name: continue``), so mirror that filter —
-    otherwise a site group with incomplete metadata (e.g. some team-managed access groups)
-    makes the graph count trail the raw bulk count by one.
+    Mirrors ``_sync_user_groups``: skip bulk groups missing ``groupId``/``name``, and skip
+    Atlassian-managed Connect/app groups (``atlassian-addons*``) that the connector never
+    writes as ``Group`` nodes.
     """
     groups = await _jira_fetch_all_groups(datasource)
-    return sum(1 for g in groups if g.get("groupId") and g.get("name"))
+    return sum(
+        1
+        for g in groups
+        if g.get("groupId")
+        and g.get("name")
+        and not str(g.get("name")).startswith("atlassian-addons")
+    )
 
 
 async def _jira_fetch_group_member_emails_with_visible_address(
