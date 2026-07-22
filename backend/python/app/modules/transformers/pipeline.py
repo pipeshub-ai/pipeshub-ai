@@ -197,6 +197,18 @@ class IndexingPipeline:
     async def _enrich(self, ctx: TransformContext) -> None:
         """Phase 2: DocumentExtraction + GraphDB.  Sets extractionStatus=COMPLETED."""
         await self.document_extraction.apply(ctx)
+
+        record = ctx.record
+        if record.semantic_metadata:
+            await self.sink_orchestrator.blob_storage.apply(ctx)
+            if (record.semantic_metadata.summary or "").strip():
+                await self.sink_orchestrator.vector_store.index_record_summary(
+                    record.id,
+                    record.virtual_record_id,
+                    record.org_id,
+                    record.semantic_metadata,
+                )
+
         await self.sink_orchestrator.enrich(ctx)
 
     async def _publish_enrichment_event(self, ctx: TransformContext) -> None:
