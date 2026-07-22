@@ -214,10 +214,18 @@ class Processor:
 
 
     async def process_gmail_message(
-        self, recordName, recordId, version, source, orgId, html_content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None
+        self,
+        recordName: str,
+        recordId: str,
+        version: int | str,
+        source: str,
+        orgId: str,
+        mail_content: bytes | str,
+        virtual_record_id: str,
+        event_type: Optional[str] = None,
+        prev_virtual_record_id: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process Gmail message, yielding phase completion events."""
-        self.logger.info("🚀 Processing Gmail Message")
 
         try:
             async for event in self.process_html_document(
@@ -226,14 +234,14 @@ class Processor:
                 version=version,
                 source=source,
                 orgId=orgId,
-                html_binary=html_content,
+                html_binary=mail_content,
                 virtual_record_id=virtual_record_id,
                 event_type=event_type,
                 prev_virtual_record_id=prev_virtual_record_id,
             ):
                 yield event
 
-            self.logger.info("✅ Gmail Message processing completed successfully using markdown conversion.")
+            self.logger.info("✅ Gmail Message processing completed successfully using HTML processing.")
 
         except Exception as e:
             self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
@@ -1603,8 +1611,6 @@ class Processor:
                 details={"error": str(e)},
             ) from e
 
-
-
     async def _mark_record(self, record_id, indexing_status: ProgressStatus) -> None:
         record = await self.graph_provider.get_document(
                         record_id, CollectionNames.RECORDS.value
@@ -2080,6 +2086,78 @@ class Processor:
             raise
         except Exception as e:
             self.logger.error(f"❌ Error processing {record_type} document: {str(e)}")
+            raise DocumentProcessingError(
+                f"Failed to process document: {str(e)}",
+                doc_id=recordId,
+                details={"error": str(e)},
+            ) from e
+
+    async def process_structured_document(
+        self,
+        recordName: str,
+        recordId: str,
+        file_content: bytes | str | dict | list,
+        virtual_record_id: str,
+        extension: str,
+        event_type: Optional[str] = None,
+        prev_virtual_record_id: Optional[str] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process a JSON or YAML file using its registered parser."""
+        self.logger.info(f"🚀 Starting {extension.upper()} processing for record: {recordName}")
+
+        try:
+            parser = self.parsers.get(extension)
+            if not parser:
+                self.logger.error(f"❌ No parser found for extension: {extension}")
+                await self._mark_record(recordId, ProgressStatus.FAILED)
+                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                return
+
+            if isinstance(file_content, (dict, list)):
+                file_content = json.dumps(file_content, default=str, ensure_ascii=False).encode("utf-8")
+            elif isinstance(file_content, str):
+                file_content = file_content.encode("utf-8")
+
+            result = await parser.parse(file_content, recordName)
+            block_containers = result.block_container
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
+
+            if not block_containers.block_groups and not block_containers.blocks:
+                self.logger.info(f"No content to index for {extension}: {recordName}")
+                await self._mark_record(recordId, ProgressStatus.EMPTY)
+                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+                return
+
+            self.logger.info(
+                f"📊 Created {len(block_containers.block_groups)} block group(s) "
+                f"and {len(block_containers.blocks)} block(s) for {extension}: {recordName}"
+            )
+
+            record = await self.graph_provider.get_document(
+                recordId, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
+                raise DocumentProcessingError(
+                    "Record not found in database", doc_id=recordId
+                )
+
+            record = convert_record_dict_to_record(record)
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+
+            ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+
+            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
+            self.logger.info(f"✅ {extension.upper()} processing completed for: {recordName}")
+
+        except IndexingError:
+            raise
+        except Exception as e:
+            self.logger.error(f"❌ Error processing {extension} document: {str(e)}")
             raise DocumentProcessingError(
                 f"Failed to process document: {str(e)}",
                 doc_id=recordId,

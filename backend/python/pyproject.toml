@@ -178,6 +178,7 @@ dependencies = [
     "Brotli==1.2.0",
     "CairoSVG==2.9.0",
     "celery==5.4.0",
+    "chardet==7.4.3",
     "confluent-kafka==2.8.0",
     "cachetools==6.2.4",
     "cloudscraper==1.2.71",
@@ -279,6 +280,7 @@ dependencies = [
     "selectolax>=0.3.21",
     "sentence-transformers==3.4.1",
     "slack-sdk==3.27.0",
+    "talon==1.4.4",
     "tenacity==8.5.0",
     "thrift>=0.16.0",
     "trafilatura>=1.6.0",
@@ -292,6 +294,12 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 exclude = ["modules", "build*", "dist*", "*.egg-info*", "venv*", ".venv*"]
+
+# cchardet has no wheels for Python 3.12+ and fails to build from source.
+# talon declares it as a dependency; chardet (direct dep above) plus the
+# sys.modules shim in gmail cover runtime needs.
+[tool.uv]
+exclude-dependencies = ["cchardet"]
 
 [build-system]
 requires = ["setuptools>=61.0"]

@@ -335,6 +335,7 @@ class JSONParser:
         table_group.table_metadata = TableMetadata(
             num_of_rows=len(row_indices),
             num_of_cols=len(column_names),
+            num_of_cells=len(row_indices) * len(column_names),
             has_header=True,
             column_names=column_names,
         )
