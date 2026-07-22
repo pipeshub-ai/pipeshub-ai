@@ -1140,6 +1140,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
         return results or []
 
+    async def get_user_accessible_team_app_ids(
+        self,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Public accessor for team-app read visibility (app ``_key`` list)."""
+        return await self._get_user_accessible_team_app_keys(user_id, transaction)
+
     async def get_filtered_connector_instances(
         self,
         collection: str,
@@ -15395,11 +15403,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None
     ) -> dict:
         """
-        Get connector statistics for a specific connector.
+        Get connector statistics for a specific connector or KB collection.
 
         Args:
             org_id (str): Organization ID
-            connector_id (str): Connector ID
+            connector_id (str): Connector ID (or KB app ID)
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
@@ -15409,20 +15417,31 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             self.logger.debug(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 
+            # Detect whether this id is a KB collection (records link directly to the
+            # App node) or an external connector (records link via a RecordGroup). The
+            # only differences are the parent-link target and the origin filter, so a
+            app_doc = await self.get_document(connector_id, CollectionNames.APPS.value, transaction=transaction)
+            is_kb = bool(app_doc) and app_doc.get("type") == Connectors.KNOWLEDGE_BASE.value
+            self.logger.debug(f"📊 Computing {'KB collection' if is_kb else 'external connector'} stats for {connector_id}")
+
             query = """
             FOR doc IN @@records
                 FILTER doc.connectorId == @connector_id
                 FILTER doc.orgId == @org_id
                 FILTER doc.isInternal != true
+                FILTER doc.isPlaceholder != true
+                FILTER doc.isDeleted != true
+                FILTER @origin_filter == null OR doc.origin == @origin_filter
 
-                LET hasParentRecordGroup = FIRST(
+                LET hasParent = FIRST(
                     FOR e IN @@belongs_to
                         FILTER e._from == doc._id
-                        FILTER STARTS_WITH(e._to, @record_group_prefix)
+                        FILTER (@kb_app_id != null AND e._to == @kb_app_id)
+                            OR (@record_group_prefix != null AND STARTS_WITH(e._to, @record_group_prefix))
                         LIMIT 1
                         RETURN 1
                 )
-                FILTER hasParentRecordGroup == 1
+                FILTER hasParent == 1
 
                 LET targetInfo = doc.recordType == @file_record_type ? FIRST(
                     FOR e IN @@is_of_type
@@ -15444,10 +15463,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars={
                     "connector_id": connector_id,
                     "org_id": org_id,
+                    "origin_filter": OriginTypes.UPLOAD.value if is_kb else None,
+                    "kb_app_id": f"{CollectionNames.APPS.value}/{connector_id}" if is_kb else None,
+                    "record_group_prefix": None if is_kb else f"{CollectionNames.RECORD_GROUPS.value}/",
                     "@records": CollectionNames.RECORDS.value,
                     "@belongs_to": CollectionNames.BELONGS_TO.value,
                     "@is_of_type": CollectionNames.IS_OF_TYPE.value,
-                    "record_group_prefix": f"{CollectionNames.RECORD_GROUPS.value}/",
                     "file_record_type": RecordTypes.FILE.value,
                     "files_collection": CollectionNames.FILES.value,
                 },
@@ -15455,7 +15476,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             rows = rows or []
-            result = build_connector_stats_response(rows, statuses, org_id, connector_id)
+            origin = "COLLECTION" if is_kb else "CONNECTOR"
+            result = build_connector_stats_response(rows, statuses, org_id, connector_id, origin=origin)
 
             self.logger.debug(f"✅ Retrieved stats for connector {connector_id}")
             return {

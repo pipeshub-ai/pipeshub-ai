@@ -1585,8 +1585,55 @@ async def get_connector_stats_endpoint(
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 )-> dict[str, Any]:
     try:
-        result = await graph_provider.get_connector_stats(org_id, connector_id)
         logger = request.app.container.logger()
+        connector_registry = request.app.state.connector_registry
+        user_id = request.state.user.get("userId")
+        user_org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
+        if not user_id or not user_org_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
+        # Verify org_id matches user's org (unless admin)
+        if not is_admin and org_id != user_org_id:
+            raise HTTPException(status_code=403, detail="Insufficient permissions to access stats for this organization")
+
+        # Resolve the target once, then gate access by what the user can already
+        # see — so anyone who can view a connector/collection can view its stats:
+        #  - KB collections: any OWNER/WRITER/READER role on the collection
+        #  - Connectors: same visibility rule as the connector listing
+        app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        if not app_doc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Connector instance {connector_id} not found",
+            )
+
+        if app_doc.get("type") == Connectors.KNOWLEDGE_BASE.value:
+            user = await graph_provider.get_user_by_user_id(user_id=user_id)
+            if not user:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"User not found for user_id: {user_id}",
+                )
+            user_role = await graph_provider.get_user_kb_permission(connector_id, user.get("_key"))
+            if user_role not in ("OWNER", "WRITER", "READER"):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Insufficient KB permissions for connector {connector_id}. Required: OWNER, WRITER, or READER",
+                )
+        else:
+            can_view = await connector_registry.can_user_view_connector(
+                connector_id, app_doc, user_id, is_admin=is_admin
+            )
+            if not can_view:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Insufficient permissions to access stats for connector {connector_id}",
+                )
+
+        # Fetch stats from graph provider
+        result = await graph_provider.get_connector_stats(org_id, connector_id)
         if result["success"]:
              return {"success": True, "data": result["data"]}
         else:

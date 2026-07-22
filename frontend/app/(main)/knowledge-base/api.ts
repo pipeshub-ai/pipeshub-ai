@@ -801,5 +801,14 @@ export const KnowledgeBaseApi = {
     );
     return results;
   },
+
+  /**
+   * Get indexing stats for a KB collection (delegates to ConnectorsApi)
+   * @param kbId - Knowledge base collection ID
+   * @returns Promise with connector stats response
+   */
+  async getCollectionStats(kbId: string) {
+    return ConnectorsApi.getConnectorStats(kbId);
+  },
 };
 
