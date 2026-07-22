@@ -259,7 +259,7 @@ pytest -m integration -v --tb=long                 # longer tracebacks
 pytest -m "integration and not slow" -v             # exclude slow
 ```
 
-After each run, an **HTML** report is written to `integration-tests/reports/` with a timestamped filename, e.g. `INTEGRATION_TEST_REPORT_2025-03-09_14-30-45.html`. Open it when debugging: verdict summary, pass/fail/skip counts, **parsed root cause** per failure, **cascade hints** when a later ordered test fails because shared state was never set (e.g. `KeyError: connector_id`), **full tracebacks**, optional captured stdout/stderr, and tables of all results by suite with durations. Keep multiple runs to compare over time.
+After each run, an **HTML** report is written to `integration-tests/reports/` with a graph-DB-tagged, timestamped filename, e.g. `INTEGRATION_TEST_REPORT_neo4j_2025-03-09_14-30-45.html`. Open it when debugging: verdict summary, pass/fail/skip counts, **parsed root cause** per failure, **cascade hints** when a later ordered test fails because shared state was never set (e.g. `KeyError: connector_id`), **full tracebacks**, optional captured stdout/stderr, and tables of all results by suite with durations. Keep multiple runs to compare over time.
 
 ---
 
@@ -327,7 +327,7 @@ Tests clone the [pipeshub-ai/integration-test](https://github.com/pipeshub-ai/in
 | `conftest.py` (package root) | Env load, HTML report hooks, session fixtures: Pipeshub client, Neo4j, sample_data_root. |
 | `connectors/*/` | Per-connector lifecycle test modules. |
 | `helper/integration_report.py` | Builds the HTML report (root cause parsing, cascade hints, full tracebacks). |
-| `reports/INTEGRATION_TEST_REPORT_<timestamp>.html` | HTML report per run (only report artifact). |
+| `reports/INTEGRATION_TEST_REPORT_<graph_db>_<timestamp>.html` | HTML report per run (only report artifact). |
 
 ---
 
