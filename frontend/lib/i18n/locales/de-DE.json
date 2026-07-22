@@ -444,6 +444,32 @@
     "confirm": "Bestätigen"
   },
   "kb": {
+    "indexingProgress": {
+      "steps": {
+        "queued": "Wartend",
+        "extract": "Extrahieren",
+        "index": "Indexieren",
+        "done": "Fertig"
+      },
+      "stage": {
+        "queued": "In Warteschlange",
+        "extracting": "Inhalt wird extrahiert",
+        "indexing": "Indexierung",
+        "completed": "Abgeschlossen",
+        "failed": "Fehlgeschlagen",
+        "processing": "Verarbeitung"
+      },
+      "embeddingChunk": "Einbettung von Chunk {{current}} von {{total}}",
+      "extractingPage": "Extrahiere Seite {{current}} von {{total}}",
+      "rollupProgress": "{{completed}} von {{total}} indexiert",
+      "rollupIndexed": "{{total}} indexiert",
+      "rollupRecords_one": "{{count}} Eintrag: {{completed}} indexiert",
+      "rollupRecords_other": "{{count}} Einträge: {{completed}} indexiert",
+      "rollupFailed": "{{count}} fehlgeschlagen",
+      "rollupSkipped": "{{count}} übersprungen",
+      "indexedTooltip": "Indexiert",
+      "indexingPercent": "Indexierung {{percent}} %"
+    },
     "viewToggle": "Ansicht wechseln",
     "collectionsView": "Sammlungsansicht",
     "allRecordsView": "Alle Datensätze Ansicht",
@@ -1863,6 +1889,53 @@
       "personal": {
         "desktopRequiredTitle": "Desktop-App erforderlich",
         "desktopRequiredDescription": "Der lokale Dateisystem-Konnektor ist nur in der PipesHub-Desktop-App verfügbar. Bitte verwenden Sie die Desktop-App, um diesen Konnektor einzurichten."
+      },
+      "syncProgress": {
+        "status": "Status",
+        "removing": "Wird entfernt…",
+        "indexingCount": "Indexiere {{processed}} von {{total}}",
+        "fullSyncDiscovering": "Vollständige Synchronisierung – Quelle wird synchronisiert…",
+        "discovering": "Quelle wird synchronisiert…",
+        "queuedCount": "{{count}} in der Warteschlange",
+        "stillProcessing_one": "{{count}} Eintrag wird noch verarbeitet",
+        "stillProcessing_other": "{{count}} Einträge werden noch verarbeitet",
+        "indexed": "Indexiert",
+        "syncFailed": "Synchronisierung fehlgeschlagen",
+        "failedCount": "{{count}} fehlgeschlagen",
+        "calculating": "Fortschritt wird berechnet",
+        "currentSync": "Aktuelle Synchronisierung",
+        "breakdownQueued": "In dieser Synchronisierung eingereiht",
+        "breakdownFailed": "Fehlgeschlagen",
+        "breakdownSkipped": "Übersprungen",
+        "badgeFullSync": "Vollständige Synchronisierung…",
+        "badgeSyncing": "Synchronisiere…",
+        "conflict": {
+          "fullOverFull": {
+            "title": "Vollständige Synchronisierung läuft bereits",
+            "message": "Eine vollständige Synchronisierung läuft bereits. Ein Neustart bricht die laufende ab und indexiert alles von Grund auf neu.",
+            "confirm": "Vollständige Synchronisierung neu starten",
+            "cancel": "Laufende Synchronisierung behalten"
+          },
+          "fullOverQuick": {
+            "title": "Eine Synchronisierung läuft",
+            "message": "Eine Synchronisierung läuft gerade. Eine vollständige Synchronisierung bricht sie ab und indexiert alles von Grund auf neu.",
+            "confirm": "Abbrechen & vollständig synchronisieren",
+            "cancel": "Laufende Synchronisierung behalten"
+          },
+          "quickOverFull": {
+            "title": "Vollständige Synchronisierung läuft",
+            "message": "Eine vollständige Synchronisierung läuft und ist gründlicher als eine schnelle Synchronisierung. Eine schnelle Synchronisierung bricht sie ab — besser die vollständige abschließen lassen.",
+            "confirm": "Abbrechen & synchronisieren",
+            "cancel": "Vollständige Synchronisierung behalten"
+          },
+          "quickOverQuick": {
+            "title": "Synchronisierung läuft bereits",
+            "message": "Eine Synchronisierung läuft bereits. Ein Neustart bricht die laufende ab und beginnt von vorn.",
+            "confirm": "Synchronisierung neu starten",
+            "cancel": "Laufende Synchronisierung behalten"
+          },
+          "restartError": "Die Synchronisierung konnte nicht neu gestartet werden. Bitte erneut versuchen."
+        }
       },
       "syncStatus": {
         "paused": "Synchronisierung pausiert",

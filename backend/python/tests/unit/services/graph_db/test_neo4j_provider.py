@@ -37,7 +37,8 @@ class TestIndexingRollups:
         neo4j_provider.client.execute_query.assert_awaited_once()
         query = neo4j_provider.client.execute_query.await_args.args[0]
         kwargs = neo4j_provider.client.execute_query.await_args.kwargs
-        assert "(parent:Record {id: cid})-[:RECORD_RELATION*1..100]->(r:Record)" in query
+        assert "RECORD_RELATION WHERE rels.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']" in query
+        assert "->{1,100}(r:Record)" in query
         assert "coalesce(r.isInternal, false) = false" in query
         assert kwargs["parameters"] == {"ids": ["web-path-1"], "org_id": "org-1"}
         assert kwargs["txn_id"] == "txn-1"

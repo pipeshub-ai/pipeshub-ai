@@ -65,6 +65,53 @@ class FakeRedis:
         keys = keys_and_args[:numkeys]
         args = keys_and_args[numkeys:]
         key = keys[0]
+        if "'startedAt'" in script:
+            run_id, phase, full_sync, now, ttl = args
+            self.store[key] = {
+                "runId": str(run_id),
+                "phase": str(phase),
+                "discovered": "0",
+                "indexed": "0",
+                "failed": "0",
+                "skipped": "0",
+                "total": "0",
+                "fullSync": str(full_sync),
+                "startedAt": str(now),
+                "heartbeatAt": str(now),
+                "syncFailed": "0",
+            }
+            await self.expire(key, int(ttl))
+            return 1
+        if "local run_id" in script:
+            (expected_run_id,) = args
+            run_id = await self.hget(key, "runId")
+            if expected_run_id and run_id != expected_run_id:
+                return 0
+            await self.delete(key)
+            if run_id:
+                await self.delete(f"{keys[1]}{run_id}")
+            return 1
+        if "'syncFailed'" in script:
+            expected_run_id, phase, heartbeat, ttl = args
+            if key not in self.store:
+                return 0
+            if expected_run_id and await self.hget(key, "runId") != expected_run_id:
+                return 0
+            await self.hset(
+                key,
+                mapping={"phase": phase, "syncFailed": "1", "heartbeatAt": heartbeat},
+            )
+            await self.expire(key, int(ttl))
+            return 1
+        if "'heartbeatAt'" in script and "HINCRBY" not in script and "local discovered" not in script:
+            expected_run_id, heartbeat, ttl = args
+            if key not in self.store:
+                return 0
+            if expected_run_id and await self.hget(key, "runId") != expected_run_id:
+                return 0
+            await self.hset(key, "heartbeatAt", heartbeat)
+            await self.expire(key, int(ttl))
+            return 1
         if "HINCRBY" in script:
             expected_run_id, field, count, heartbeat, outcome_id, ttl = args
             if key not in self.store:
@@ -135,7 +182,8 @@ class TestStoreLifecycle:
         await store.add_discovered(ORG, CONN, 3)
         data = await store.get(ORG, CONN)
         assert data["discovered"] == 8
-        assert redis.eval_calls == 3
+        # start_run + one script per add_discovered on the existing run
+        assert redis.eval_calls == 4
 
     async def test_close_discovery_freezes_total(self) -> None:
         store, _ = make_store()
@@ -183,6 +231,35 @@ class TestStoreLifecycle:
         await store.start_run(ORG, CONN, run_id="r1")
         await store.clear(ORG, CONN)
         assert await store.get(ORG, CONN) is None
+
+    async def test_clear_with_stale_run_id_is_noop(self) -> None:
+        # A failed scheduling path carrying an old run_id must not delete the
+        # superseding run that raced in between.
+        store, _ = make_store()
+        await store.start_run(ORG, CONN, run_id="r2")
+        await store.clear(ORG, CONN, expected_run_id="r1")
+        assert (await store.get(ORG, CONN))["runId"] == "r2"
+
+    async def test_clear_with_matching_run_id_removes_run(self) -> None:
+        store, _ = make_store()
+        await store.start_run(ORG, CONN, run_id="r1")
+        await store.clear(ORG, CONN, expected_run_id="r1")
+        assert await store.get(ORG, CONN) is None
+
+    async def test_mark_failed_exposes_failed_run(self) -> None:
+        store, _ = make_store()
+        await store.start_run(ORG, CONN, run_id="r1")
+        await store.mark_failed(ORG, CONN, run_id="r1")
+        view = summarize_run(await store.get(ORG, CONN))
+        assert view["phase"] == SyncPhase.FAILED
+        assert view["syncFailed"] is True
+
+    async def test_touch_heartbeat_is_run_scoped(self) -> None:
+        store, _ = make_store()
+        await store.start_run(ORG, CONN, run_id="r1")
+        before = (await store.get(ORG, CONN))["heartbeatAt"]
+        await store.touch_heartbeat(ORG, CONN, run_id="obsolete")
+        assert (await store.get(ORG, CONN))["heartbeatAt"] == before
 
     async def test_close_discovery_matching_run_id_closes(self) -> None:
         store, _ = make_store()

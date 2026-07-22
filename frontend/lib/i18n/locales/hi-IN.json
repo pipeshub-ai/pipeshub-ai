@@ -444,6 +444,32 @@
     "confirm": "पुष्टि करें"
   },
   "kb": {
+    "indexingProgress": {
+      "steps": {
+        "queued": "कतार में",
+        "extract": "निकालना",
+        "index": "इंडेक्स",
+        "done": "पूर्ण"
+      },
+      "stage": {
+        "queued": "कतार में",
+        "extracting": "सामग्री निकाली जा रही है",
+        "indexing": "इंडेक्स हो रहा है",
+        "completed": "पूर्ण",
+        "failed": "विफल",
+        "processing": "प्रोसेस हो रहा है"
+      },
+      "embeddingChunk": "{{total}} में से {{current}} चंक एम्बेड हो रहा है",
+      "extractingPage": "{{total}} में से {{current}} पृष्ठ निकाला जा रहा है",
+      "rollupProgress": "{{total}} में से {{completed}} इंडेक्स हुए",
+      "rollupIndexed": "{{total}} इंडेक्स हुए",
+      "rollupRecords_one": "{{count}} रिकॉर्ड: {{completed}} इंडेक्स हुआ",
+      "rollupRecords_other": "{{count}} रिकॉर्ड: {{completed}} इंडेक्स हुए",
+      "rollupFailed": "{{count}} विफल",
+      "rollupSkipped": "{{count}} छोड़े गए",
+      "indexedTooltip": "इंडेक्स हो गया",
+      "indexingPercent": "इंडेक्सिंग {{percent}}%"
+    },
     "viewToggle": "व्यू टॉगल",
     "collectionsView": "कलेक्शन व्यू",
     "allRecordsView": "सभी रिकॉर्ड व्यू",
@@ -1861,6 +1887,53 @@
       "personal": {
         "desktopRequiredTitle": "डेस्कटॉप ऐप आवश्यक है",
         "desktopRequiredDescription": "लोकल फ़ाइलसिस्टम कनेक्टर केवल PipesHub डेस्कटॉप ऐप में उपलब्ध है। कृपया इस कनेक्टर को सेट अप करने के लिए डेस्कटॉप ऐप का उपयोग करें।"
+      },
+      "syncProgress": {
+        "status": "स्थिति",
+        "removing": "हटाया जा रहा है…",
+        "indexingCount": "{{total}} में से {{processed}} इंडेक्स हो रहे हैं",
+        "fullSyncDiscovering": "पूर्ण सिंक - स्रोत सिंक हो रहा है…",
+        "discovering": "स्रोत सिंक हो रहा है…",
+        "queuedCount": "{{count}} कतार में",
+        "stillProcessing_one": "{{count}} रिकॉर्ड अभी प्रोसेस हो रहा है",
+        "stillProcessing_other": "{{count}} रिकॉर्ड अभी प्रोसेस हो रहे हैं",
+        "indexed": "इंडेक्स हो गया",
+        "syncFailed": "सिंक विफल",
+        "failedCount": "{{count}} विफल",
+        "calculating": "प्रगति की गणना हो रही है",
+        "currentSync": "वर्तमान सिंक",
+        "breakdownQueued": "इस सिंक में कतारबद्ध",
+        "breakdownFailed": "विफल",
+        "breakdownSkipped": "छोड़े गए",
+        "badgeFullSync": "पूर्ण सिंक…",
+        "badgeSyncing": "सिंक हो रहा है…",
+        "conflict": {
+          "fullOverFull": {
+            "title": "पूर्ण सिंक पहले से चल रहा है",
+            "message": "एक पूर्ण सिंक पहले से चल रहा है। पुनः आरंभ करने पर वर्तमान सिंक रद्द होकर सब कुछ शुरू से फिर इंडेक्स होगा।",
+            "confirm": "पूर्ण सिंक पुनः आरंभ करें",
+            "cancel": "वर्तमान सिंक जारी रखें"
+          },
+          "fullOverQuick": {
+            "title": "एक सिंक चल रहा है",
+            "message": "एक सिंक अभी चल रहा है। पूर्ण सिंक शुरू करने पर वह रद्द होकर सब कुछ शुरू से फिर इंडेक्स होगा।",
+            "confirm": "रद्द करें और पूर्ण सिंक करें",
+            "cancel": "वर्तमान सिंक जारी रखें"
+          },
+          "quickOverFull": {
+            "title": "पूर्ण सिंक चल रहा है",
+            "message": "एक पूर्ण सिंक चल रहा है, जो त्वरित सिंक से अधिक विस्तृत होता है। अभी त्वरित सिंक चलाने से वह रद्द हो जाएगा — पूर्ण सिंक को पूरा होने देने पर विचार करें।",
+            "confirm": "रद्द करें और सिंक करें",
+            "cancel": "पूर्ण सिंक जारी रखें"
+          },
+          "quickOverQuick": {
+            "title": "सिंक पहले से चल रहा है",
+            "message": "एक सिंक पहले से चल रहा है। पुनः आरंभ करने पर वर्तमान सिंक रद्द होकर फिर से शुरू होगा।",
+            "confirm": "सिंक पुनः आरंभ करें",
+            "cancel": "वर्तमान सिंक जारी रखें"
+          },
+          "restartError": "सिंक पुनः आरंभ नहीं हो सका। कृपया फिर से प्रयास करें।"
+        }
       },
       "syncStatus": {
         "paused": "Sync Paused",

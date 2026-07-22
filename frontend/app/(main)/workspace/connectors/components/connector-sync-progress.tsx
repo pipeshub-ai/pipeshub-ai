@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Text, Box } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
@@ -68,12 +69,12 @@ function StatusRow({
   );
 }
 
-function IndeterminateBar({ label }: { label: string }) {
+function IndeterminateBar({ label, valueText }: { label: string; valueText: string }) {
   return (
     <Box
       role="progressbar"
       aria-label={label}
-      aria-valuetext="Progress is being calculated"
+      aria-valuetext={valueText}
       style={{
         position: 'relative',
         width: '100%',
@@ -138,28 +139,52 @@ export function ConnectorSyncProgress({
   status,
   variant = 'card',
 }: ConnectorSyncProgressProps) {
+  const { t } = useTranslation();
   const view = describeSyncProgress(progress, status);
   if (view.mode === 'none') {
     return null;
   }
 
+  const statusLabel = t('workspace.connectors.syncProgress.status', { defaultValue: 'Status' });
+  const label = t(view.labelKey, { defaultValue: view.label, ...view.labelParams });
+
   if (view.mode === 'deleting') {
     return (
-      <StatusRow variant={variant} label="Status">
-        <Spinner size={14} color="var(--red-11)" ariaLabel={view.label} />
+      <StatusRow variant={variant} label={statusLabel}>
+        <Spinner size={14} color="var(--red-11)" ariaLabel={label} />
         <Text size="2" weight="medium" style={{ color: 'var(--red-11)', whiteSpace: 'nowrap' }}>
-          {view.label}
+          {label}
         </Text>
+      </StatusRow>
+    );
+  }
+
+  if (view.mode === 'failed') {
+    return (
+      <StatusRow variant={variant} label={statusLabel}>
+        <MaterialIcon name="error" size={16} color="var(--red-11)" />
+        <Text size="2" weight="medium" style={{ color: 'var(--red-11)', lineHeight: '20px' }}>
+          {label}
+        </Text>
+        {view.failed > 0 && (
+          <Text size="2" style={{ color: 'var(--amber-11)', whiteSpace: 'nowrap' }}>
+            ·{' '}
+            {t('workspace.connectors.syncProgress.failedCount', {
+              defaultValue: '{{count}} failed',
+              count: view.failed,
+            })}
+          </Text>
+        )}
       </StatusRow>
     );
   }
 
   if (view.mode === 'settled') {
     return (
-      <StatusRow variant={variant} label="Status">
+      <StatusRow variant={variant} label={statusLabel}>
         <MaterialIcon name="check_circle" size={16} color="var(--emerald-11)" />
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
-          {view.label}
+          {label}
         </Text>
         {view.hasErrors && (
           <>
@@ -169,7 +194,10 @@ export function ConnectorSyncProgress({
             <Flex align="center" gap="1" style={{ minWidth: 0 }}>
               <MaterialIcon name="error_outline" size={14} color="var(--amber-11)" />
               <Text size="2" weight="medium" style={{ color: 'var(--amber-11)', whiteSpace: 'nowrap' }}>
-                {view.failed} failed
+                {t('workspace.connectors.syncProgress.failedCount', {
+                  defaultValue: '{{count}} failed',
+                  count: view.failed,
+                })}
               </Text>
             </Flex>
           </>
@@ -181,8 +209,8 @@ export function ConnectorSyncProgress({
   const rightLabel =
     view.mode === 'indexing'
       ? `${view.percent}%`
-      : view.mode === 'discovering'
-        ? view.detail
+      : view.mode === 'discovering' && view.detail
+        ? t(view.detailKey ?? '', { defaultValue: view.detail, ...view.detailParams })
         : null;
 
   return (
@@ -195,7 +223,7 @@ export function ConnectorSyncProgress({
           weight="medium"
           style={{ color: 'var(--gray-12)', whiteSpace: 'nowrap' }}
         >
-          {view.label}
+          {label}
         </Text>
         {rightLabel ? (
           <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>
@@ -204,11 +232,16 @@ export function ConnectorSyncProgress({
         ) : null}
       </Flex>
       {view.mode === 'indexing' && view.percent > 0 ? (
-        <DeterminateBar percent={view.percent} label={view.label} />
+        <DeterminateBar percent={view.percent} label={label} />
       ) : (
         // At 0% (nothing terminal yet) a determinate fill is invisible, so show
         // the moving indeterminate bar until real progress lands.
-        <IndeterminateBar label={view.label} />
+        <IndeterminateBar
+          label={label}
+          valueText={t('workspace.connectors.syncProgress.calculating', {
+            defaultValue: 'Progress is being calculated',
+          })}
+        />
       )}
     </Flex>
   );

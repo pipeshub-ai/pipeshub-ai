@@ -48,17 +48,26 @@ export interface IndexingProgressView {
   isActive: boolean;
   /** Short label for the current phase ("Queued", "Extracting content", …). */
   label: string;
+  /** i18n key for `label` (English fallback stays in `label`). */
+  labelKey?: string;
   /** 0–100 indicator from substage metrics when available, else an estimate/fallback. */
   percent: number;
   /** Stepper position: 0 Queued, 1 Extract, 2 Index, 3 Done. */
   stepIndex: number;
   /** Optional sub-line; carries the backend progress message when present. */
   detail?: string;
+  /** i18n key + params for `detail`; absent when detail is a raw backend message. */
+  detailKey?: string;
+  detailParams?: Record<string, number>;
   /** True when percent is a frontend estimate rather than backend-emitted metrics. */
   isEstimated?: boolean;
 }
 
 export const PROGRESS_STEPS = ['Queued', 'Extract', 'Index', 'Done'] as const;
+/** i18n suffixes under kb.indexingProgress.steps.*, index-aligned with PROGRESS_STEPS. */
+export const PROGRESS_STEP_KEYS = ['queued', 'extract', 'index', 'done'] as const;
+
+const KEY_PREFIX = 'kb.indexingProgress';
 
 const STAGE_LABEL: Record<IndexingStage, string> = {
   QUEUED: 'Queued',
@@ -66,6 +75,14 @@ const STAGE_LABEL: Record<IndexingStage, string> = {
   INDEXING: 'Indexing',
   COMPLETED: 'Completed',
   FAILED: 'Failed',
+};
+
+const STAGE_LABEL_KEY: Record<IndexingStage, string> = {
+  QUEUED: `${KEY_PREFIX}.stage.queued`,
+  EXTRACTING: `${KEY_PREFIX}.stage.extracting`,
+  INDEXING: `${KEY_PREFIX}.stage.indexing`,
+  COMPLETED: `${KEY_PREFIX}.stage.completed`,
+  FAILED: `${KEY_PREFIX}.stage.failed`,
 };
 
 /**
@@ -123,28 +140,51 @@ export function extractionDurationMs(input: IndexingProgressInput): number {
   return scaled;
 }
 
+interface ProgressDetail {
+  text: string;
+  /** Absent when the text is a raw backend message that cannot be translated. */
+  key?: string;
+  params?: Record<string, number>;
+}
+
 /** Sub-status under one uploaded file — never say "documents" (that means chunks). */
-export function formatProgressDetail(
+export function describeProgressDetail(
   stage: IndexingStage | null,
   metrics?: IndexingProgressMetrics | null,
-): string | undefined {
+): ProgressDetail | undefined {
   if (!metrics || !(metrics.total > 0)) {
-    return metrics?.message?.trim() || undefined;
+    const message = metrics?.message?.trim();
+    return message ? { text: message } : undefined;
   }
   const current = Math.max(0, Math.min(metrics.current, metrics.total));
   const { total, phase, unit } = metrics;
 
   if (phase === 'embedding' || stage === 'INDEXING' || unit === 'chunks' || unit === 'documents') {
-    return `Embedding chunk ${current} of ${total}`;
+    return {
+      text: `Embedding chunk ${current} of ${total}`,
+      key: `${KEY_PREFIX}.embeddingChunk`,
+      params: { current, total },
+    };
   }
   if (phase === 'extracting' || stage === 'EXTRACTING') {
     if (unit === 'pages' || unit === 'page') {
-      return `Extracting page ${current} of ${total}`;
+      return {
+        text: `Extracting page ${current} of ${total}`,
+        key: `${KEY_PREFIX}.extractingPage`,
+        params: { current, total },
+      };
     }
   }
 
   const message = metrics.message?.trim();
-  return message || undefined;
+  return message ? { text: message } : undefined;
+}
+
+export function formatProgressDetail(
+  stage: IndexingStage | null,
+  metrics?: IndexingProgressMetrics | null,
+): string | undefined {
+  return describeProgressDetail(stage, metrics)?.text;
 }
 
 function percentFromMetrics(stage: IndexingStage, metrics?: IndexingProgressMetrics | null): number | null {
@@ -209,8 +249,13 @@ export interface RollupProgressView {
   percent: number;
   /** e.g. "42 of 96 indexed". */
   label: string;
+  /** i18n key + params for `label` (English fallback stays in `label`). */
+  labelKey: string;
+  labelParams: Record<string, number>;
   /** Optional secondary line for failed/skipped counts, when any. */
   detail?: string;
+  /** i18n key/params pairs whose translations are joined with " · ". */
+  detailParts?: { key: string; params: Record<string, number> }[];
   /** True once nothing is active but some records failed. */
   hasErrors: boolean;
 }
@@ -226,24 +271,42 @@ export function formatRollupFailureDetail(
   return parts.join(' · ');
 }
 
+function rollupFailureDetailParts(
+  rollup: Pick<IndexingRollup, 'completed' | 'total' | 'failed' | 'skipped'>,
+): { key: string; params: Record<string, number> }[] {
+  const parts: { key: string; params: Record<string, number> }[] = [
+    {
+      key: `${KEY_PREFIX}.rollupRecords`,
+      params: { count: rollup.total, completed: rollup.completed },
+    },
+  ];
+  if (rollup.failed > 0) {
+    parts.push({ key: `${KEY_PREFIX}.rollupFailed`, params: { count: rollup.failed } });
+  }
+  if (rollup.skipped > 0) {
+    parts.push({ key: `${KEY_PREFIX}.rollupSkipped`, params: { count: rollup.skipped } });
+  }
+  return parts;
+}
+
 /** Build the container-row display model from an aggregated rollup. */
 export function getRollupProgressView(rollup: IndexingRollup): RollupProgressView {
   const hasNonIndexedResults = rollup.failed > 0 || rollup.skipped > 0;
   const hasErrors = !rollup.isActive && hasNonIndexedResults;
 
-  const detail =
-    !rollup.isActive && hasErrors
-      ? formatRollupFailureDetail(rollup)
-      : undefined;
+  const showProgressLabel = rollup.isActive || hasNonIndexedResults;
   return {
     isActive: rollup.isActive,
     percent: Math.max(0, Math.min(100, rollup.percent)),
-    label: rollup.isActive
+    label: showProgressLabel
       ? `${rollup.completed} of ${rollup.total} indexed`
-      : hasNonIndexedResults
-        ? `${rollup.completed} of ${rollup.total} indexed`
-        : `${rollup.total} indexed`,
-    detail,
+      : `${rollup.total} indexed`,
+    labelKey: showProgressLabel
+      ? `${KEY_PREFIX}.rollupProgress`
+      : `${KEY_PREFIX}.rollupIndexed`,
+    labelParams: { completed: rollup.completed, total: rollup.total },
+    detail: hasErrors ? formatRollupFailureDetail(rollup) : undefined,
+    detailParts: hasErrors ? rollupFailureDetailParts(rollup) : undefined,
     hasErrors,
   };
 }
@@ -261,7 +324,13 @@ export function getIndexingProgressView(
   const status = node.indexingStatus ?? null;
 
   if (status === 'QUEUED') {
-    return { isActive: true, label: 'Queued', percent: STAGE_PERCENT.QUEUED, stepIndex: 0 };
+    return {
+      isActive: true,
+      label: 'Queued',
+      labelKey: STAGE_LABEL_KEY.QUEUED,
+      percent: STAGE_PERCENT.QUEUED,
+      stepIndex: 0,
+    };
   }
 
   if (status === 'IN_PROGRESS') {
@@ -269,6 +338,7 @@ export function getIndexingProgressView(
     const beat = node.lastActivityTimestamp ?? null;
     const inFlightStage = stage === 'EXTRACTING' || stage === 'INDEXING' ? stage : null;
     const label = inFlightStage ? STAGE_LABEL[inFlightStage] : 'Processing';
+    const labelKey = inFlightStage ? STAGE_LABEL_KEY[inFlightStage] : `${KEY_PREFIX}.stage.processing`;
     const stepIndex = stage === 'INDEXING' ? 2 : 1;
 
     // Both stages prefer real backend metrics. Extraction additionally has a
@@ -286,9 +356,19 @@ export function getIndexingProgressView(
       estimatedPercent ??
       (inFlightStage ? STAGE_PERCENT[inFlightStage] : STAGE_PERCENT.EXTRACTING);
     const isEstimated = metricPercent == null && estimatedPercent != null;
-    const detail = formatProgressDetail(inFlightStage, node.indexingProgress);
+    const detail = describeProgressDetail(inFlightStage, node.indexingProgress);
 
-    return { isActive: true, label, percent, stepIndex, detail, isEstimated };
+    return {
+      isActive: true,
+      label,
+      labelKey,
+      percent,
+      stepIndex,
+      detail: detail?.text,
+      detailKey: detail?.key,
+      detailParams: detail?.params,
+      isEstimated,
+    };
   }
 
   return {

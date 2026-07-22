@@ -434,6 +434,10 @@ class Neo4jProvider(IGraphDBProvider):
             "CREATE INDEX record_connector_id IF NOT EXISTS "
             "FOR (n:Record) ON (n.connectorId)"
         )
+        indexes.append(
+            "CREATE INDEX record_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.id)"
+        )
 
         # SINGLE: indexingStatus (pipeline queries)
         indexes.append(
@@ -8009,17 +8013,17 @@ class Neo4jProvider(IGraphDBProvider):
             """,
             "folder": f"""
             UNWIND $ids AS cid
-            MATCH path = (folder:Record {{id: cid}})-[:RECORD_RELATION*1..20]->(r:Record)
+            MATCH (folder:Record {{id: cid}})
+                -[rels:RECORD_RELATION WHERE rels.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']]->{{1,100}}(r:Record)
             WHERE folder.orgId = $org_id AND r.orgId = $org_id
-              AND all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
               AND {leaf_filter}
             {ret}
             """,
             "record": f"""
             UNWIND $ids AS cid
-            MATCH path = (parent:Record {{id: cid}})-[:RECORD_RELATION*1..20]->(r:Record)
+            MATCH (parent:Record {{id: cid}})
+                -[rels:RECORD_RELATION WHERE rels.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']]->{{1,100}}(r:Record)
             WHERE parent.orgId = $org_id AND r.orgId = $org_id
-              AND all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
               AND {leaf_filter}
             {ret}
             """,

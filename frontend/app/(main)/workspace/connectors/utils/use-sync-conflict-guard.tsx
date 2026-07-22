@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 import { ConnectorSyncInProgressError } from './connector-sync-actions';
 import { describeSyncConflict } from './sync-conflict-copy';
@@ -21,6 +22,7 @@ interface PendingConflict {
  * returned `dialog` once in the consuming component.
  */
 export function useSyncConflictGuard() {
+  const { t } = useTranslation();
   const [pending, setPending] = useState<PendingConflict | null>(null);
   const [confirming, setConfirming] = useState(false);
   const addToast = useToastStore((state) => state.addToast);
@@ -54,13 +56,15 @@ export function useSyncConflictGuard() {
       console.error('Unable to restart connector sync', error);
       addToast({
         variant: 'error',
-        title: 'Could not restart the sync. Please try again.',
+        title: t('workspace.connectors.syncProgress.conflict.restartError', {
+          defaultValue: 'Could not restart the sync. Please try again.',
+        }),
       });
     } finally {
       setConfirming(false);
       setPending(null);
     }
-  }, [addToast, pending]);
+  }, [addToast, pending, t]);
 
   const copy = pending
     ? describeSyncConflict(pending.currentStatus, pending.requestedFullSync)
@@ -72,10 +76,10 @@ export function useSyncConflictGuard() {
       onOpenChange={(open) => {
         if (!open && !confirming) setPending(null);
       }}
-      title={copy?.title ?? ''}
-      message={copy?.message ?? ''}
-      confirmLabel={copy?.confirmLabel ?? ''}
-      cancelLabel={copy?.cancelLabel}
+      title={copy ? t(`${copy.key}.title`, { defaultValue: copy.title }) : ''}
+      message={copy ? t(`${copy.key}.message`, { defaultValue: copy.message }) : ''}
+      confirmLabel={copy ? t(`${copy.key}.confirm`, { defaultValue: copy.confirmLabel }) : ''}
+      cancelLabel={copy ? t(`${copy.key}.cancel`, { defaultValue: copy.cancelLabel }) : undefined}
       confirmVariant="danger"
       isLoading={confirming}
       onConfirm={() => void handleConfirm()}

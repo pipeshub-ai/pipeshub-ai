@@ -10,12 +10,25 @@ export function isActiveConnectorSyncStatus(status?: string | null): boolean {
   );
 }
 
+/**
+ * `label`/`detail` are English fallbacks; `labelKey`/`detailKey` (+ params)
+ * point into the i18n catalogs so components render `t(labelKey, { defaultValue:
+ * label, ...labelParams })`.
+ */
+interface Translatable {
+  labelKey: string;
+  labelParams?: Record<string, number>;
+}
+
 export type SyncProgressView =
-  | { mode: 'discovering'; label: string; detail: string | null }
-  | { mode: 'indexing'; label: string; percent: number }
-  | { mode: 'settled'; label: string; failed: number; hasErrors: boolean }
-  | { mode: 'deleting'; label: string }
+  | ({ mode: 'discovering'; label: string; detail: string | null; detailKey?: string; detailParams?: Record<string, number> } & Translatable)
+  | ({ mode: 'indexing'; label: string; percent: number } & Translatable)
+  | ({ mode: 'settled'; label: string; failed: number; hasErrors: boolean } & Translatable)
+  | ({ mode: 'failed'; label: string; failed: number } & Translatable)
+  | ({ mode: 'deleting'; label: string } & Translatable)
   | { mode: 'none' };
+
+const KEY_PREFIX = 'workspace.connectors.syncProgress';
 
 /**
  * Reduce raw sync-progress + connector status into a single render decision.
@@ -23,6 +36,7 @@ export type SyncProgressView =
  * - DELETING -> "Removing…"
  * - DISCOVERING (or active with no run yet) -> indeterminate "Syncing source…"
  * - INDEXING -> determinate "Indexing X of Y"
+ * - failed run -> "Sync failed"
  * - settled -> lifetime coverage ("Indexed", optionally "N failed")
  */
 export function describeSyncProgress(
@@ -31,11 +45,21 @@ export function describeSyncProgress(
 ): SyncProgressView {
   const normalizedStatus = (status ?? '').toUpperCase();
   if (normalizedStatus === CONNECTOR_INSTANCE_STATUS.DELETING) {
-    return { mode: 'deleting', label: 'Removing…' };
+    return { mode: 'deleting', label: 'Removing…', labelKey: `${KEY_PREFIX}.removing` };
   }
 
   const active = Boolean(progress?.isActive) || isActiveConnectorSyncStatus(status);
   const run = progress?.run;
+  // Checked after `active` so a stale failed run can't mask a sync that has
+  // just been restarted (status flips to SYNCING before start_run resets Redis).
+  if (!active && (run?.syncFailed || run?.phase === 'FAILED')) {
+    return {
+      mode: 'failed',
+      label: 'Sync failed',
+      labelKey: `${KEY_PREFIX}.syncFailed`,
+      failed: run.failed ?? 0,
+    };
+  }
 
   if (active) {
     if (run && run.phase === 'INDEXING') {
@@ -47,7 +71,13 @@ export function describeSyncProgress(
           : total > 0
             ? Math.min(100, Math.round((processed / total) * 100))
             : 0;
-      return { mode: 'indexing', label: `Indexing ${processed} of ${total}`, percent };
+      return {
+        mode: 'indexing',
+        label: `Indexing ${processed} of ${total}`,
+        labelKey: `${KEY_PREFIX}.indexingCount`,
+        labelParams: { processed, total },
+        percent,
+      };
     }
     const isFullSync =
       normalizedStatus === CONNECTOR_INSTANCE_STATUS.FULL_SYNCING || Boolean(run?.fullSync);
@@ -55,7 +85,10 @@ export function describeSyncProgress(
     return {
       mode: 'discovering',
       label: isFullSync ? 'Full sync - syncing source…' : 'Syncing source…',
+      labelKey: isFullSync ? `${KEY_PREFIX}.fullSyncDiscovering` : `${KEY_PREFIX}.discovering`,
       detail: discovered > 0 ? `${discovered} queued` : null,
+      detailKey: discovered > 0 ? `${KEY_PREFIX}.queuedCount` : undefined,
+      detailParams: discovered > 0 ? { count: discovered } : undefined,
     };
   }
 
@@ -67,11 +100,19 @@ export function describeSyncProgress(
     return {
       mode: 'indexing',
       label: `${pending} record${pending === 1 ? '' : 's'} still processing`,
+      labelKey: `${KEY_PREFIX}.stillProcessing`,
+      labelParams: { count: pending },
       percent: 0,
     };
   }
   if (total > 0) {
-    return { mode: 'settled', label: 'Indexed', failed, hasErrors: failed > 0 };
+    return {
+      mode: 'settled',
+      label: 'Indexed',
+      labelKey: `${KEY_PREFIX}.indexed`,
+      failed,
+      hasErrors: failed > 0,
+    };
   }
   return { mode: 'none' };
 }

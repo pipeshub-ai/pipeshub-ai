@@ -35,6 +35,7 @@ class SyncPhase:
     DISCOVERING = "DISCOVERING"
     INDEXING = "INDEXING"
     DONE = "DONE"
+    FAILED = "FAILED"
     IDLE = "IDLE"
 
 
@@ -65,6 +66,7 @@ def summarize_run(run: Optional[dict[str, Any]]) -> dict[str, Any]:
             "heartbeatAt": 0,
             "isStale": False,
             "isActive": False,
+            "syncFailed": False,
         }
 
     phase = run.get("phase") or SyncPhase.IDLE
@@ -110,6 +112,7 @@ def summarize_run(run: Optional[dict[str, Any]]) -> dict[str, Any]:
         "heartbeatAt": heartbeat,
         "isStale": is_stale,
         "isActive": is_active,
+        "syncFailed": str(run.get("syncFailed", "0")) == "1",
     }
 
 
@@ -136,6 +139,15 @@ class ConnectorSyncProgressStore:
         end
         redis.call('HINCRBY', KEYS[1], ARGV[2], ARGV[3])
         redis.call('HSET', KEYS[1], 'heartbeatAt', ARGV[4])
+        if redis.call('HGET', KEYS[1], 'phase') == 'INDEXING' then
+            local total = tonumber(redis.call('HGET', KEYS[1], 'total') or '0')
+            local processed = tonumber(redis.call('HGET', KEYS[1], 'indexed') or '0')
+                + tonumber(redis.call('HGET', KEYS[1], 'failed') or '0')
+                + tonumber(redis.call('HGET', KEYS[1], 'skipped') or '0')
+            if processed >= total then
+                redis.call('HSET', KEYS[1], 'phase', 'DONE')
+            end
+        end
         redis.call('EXPIRE', KEYS[1], ARGV[6])
         return 1
     """
@@ -154,10 +166,102 @@ class ConnectorSyncProgressStore:
         redis.call('EXPIRE', KEYS[1], ARGV[4])
         return 1
     """
+    _START_RUN_SCRIPT = """
+        redis.call('DEL', KEYS[1])
+        redis.call('HSET', KEYS[1],
+            'runId', ARGV[1],
+            'phase', ARGV[2],
+            'discovered', 0,
+            'indexed', 0,
+            'failed', 0,
+            'skipped', 0,
+            'total', 0,
+            'fullSync', ARGV[3],
+            'startedAt', ARGV[4],
+            'heartbeatAt', ARGV[4],
+            'syncFailed', 0)
+        redis.call('EXPIRE', KEYS[1], ARGV[5])
+        return 1
+    """
+    _TOUCH_HEARTBEAT_SCRIPT = """
+        if redis.call('EXISTS', KEYS[1]) == 0 then
+            return 0
+        end
+        if ARGV[1] ~= '' and redis.call('HGET', KEYS[1], 'runId') ~= ARGV[1] then
+            return 0
+        end
+        redis.call('HSET', KEYS[1], 'heartbeatAt', ARGV[2])
+        redis.call('EXPIRE', KEYS[1], ARGV[3])
+        return 1
+    """
+    _CLEAR_RUN_SCRIPT = """
+        local run_id = redis.call('HGET', KEYS[1], 'runId')
+        if ARGV[1] ~= '' and run_id ~= ARGV[1] then
+            return 0
+        end
+        redis.call('DEL', KEYS[1])
+        if run_id and run_id ~= '' then
+            redis.call('DEL', KEYS[2] .. run_id)
+        end
+        return 1
+    """
+    _MARK_FAILED_SCRIPT = """
+        if redis.call('EXISTS', KEYS[1]) == 0 then
+            return 0
+        end
+        if ARGV[1] ~= '' and redis.call('HGET', KEYS[1], 'runId') ~= ARGV[1] then
+            return 0
+        end
+        redis.call('HSET', KEYS[1],
+            'phase', ARGV[2],
+            'syncFailed', 1,
+            'heartbeatAt', ARGV[3])
+        redis.call('EXPIRE', KEYS[1], ARGV[4])
+        return 1
+    """
 
     def __init__(self, logger: logging.Logger, redis_client) -> None:
         self.logger = logger
         self._redis = redis_client
+        self._scripts: dict[str, Any] = {}
+        self._redis_failure_reported = False
+        if redis_client and hasattr(redis_client, "register_script"):
+            self._scripts = {
+                "increment": redis_client.register_script(self._INCREMENT_IF_PRESENT_SCRIPT),
+                "close": redis_client.register_script(self._CLOSE_DISCOVERY_SCRIPT),
+                "start": redis_client.register_script(self._START_RUN_SCRIPT),
+                "touch": redis_client.register_script(self._TOUCH_HEARTBEAT_SCRIPT),
+                "fail": redis_client.register_script(self._MARK_FAILED_SCRIPT),
+                "clear": redis_client.register_script(self._CLEAR_RUN_SCRIPT),
+            }
+
+    def _log_redis_failure(self, operation: str, connector_id: str, error: Exception) -> None:
+        if not self._redis_failure_reported:
+            self.logger.warning(
+                "Connector sync progress store %s failed for connector %s: %s",
+                operation,
+                connector_id,
+                error,
+            )
+            self._redis_failure_reported = True
+        else:
+            self.logger.debug(
+                "Connector sync progress store %s remains unavailable for connector %s: %s",
+                operation,
+                connector_id,
+                error,
+            )
+
+    async def _execute_script(
+        self, name: str, script: str, keys: list[str], args: list[Any]
+    ) -> Any:
+        registered = self._scripts.get(name)
+        if registered is not None:
+            result = await registered(keys=keys, args=args)
+        else:
+            result = await self._redis.eval(script, len(keys), *keys, *args)
+        self._redis_failure_reported = False
+        return result
 
     @classmethod
     async def create(
@@ -199,25 +303,14 @@ class ConnectorSyncProgressStore:
         key = self._key(org_id, connector_id)
         now = int(time.time() * 1000)
         try:
-            await self._redis.delete(key)
-            await self._redis.hset(
-                key,
-                mapping={
-                    "runId": run_id,
-                    "phase": SyncPhase.DISCOVERING,
-                    "discovered": 0,
-                    "indexed": 0,
-                    "failed": 0,
-                    "skipped": 0,
-                    "total": 0,
-                    "fullSync": "1" if full_sync else "0",
-                    "startedAt": now,
-                    "heartbeatAt": now,
-                },
+            await self._execute_script(
+                "start",
+                self._START_RUN_SCRIPT,
+                [key],
+                [run_id, SyncPhase.DISCOVERING, "1" if full_sync else "0", now, self.TTL_SECONDS],
             )
-            await self._redis.expire(key, self.TTL_SECONDS)
         except Exception as e:  # best-effort
-            self.logger.debug(f"start_run failed for {connector_id}: {e}")
+            self._log_redis_failure("start_run", connector_id, e)
         return run_id
 
     async def add_discovered(
@@ -229,7 +322,7 @@ class ConnectorSyncProgressStore:
         try:
             await self._increment_if_present(key, "discovered", count, expected_run_id=run_id)
         except Exception as e:
-            self.logger.debug(f"add_discovered failed for {connector_id}: {e}")
+            self._log_redis_failure("add_discovered", connector_id, e)
 
     async def close_discovery(
         self,
@@ -249,17 +342,14 @@ class ConnectorSyncProgressStore:
         key = self._key(org_id, connector_id)
         try:
             now = int(time.time() * 1000)
-            await self._redis.eval(
+            await self._execute_script(
+                "close",
                 self._CLOSE_DISCOVERY_SCRIPT,
-                1,
-                key,
-                expected_run_id or "",
-                SyncPhase.INDEXING,
-                now,
-                self.TTL_SECONDS,
+                [key],
+                [expected_run_id or "", SyncPhase.INDEXING, now, self.TTL_SECONDS],
             )
         except Exception as e:
-            self.logger.debug(f"close_discovery failed for {connector_id}: {e}")
+            self._log_redis_failure("close_discovery", connector_id, e)
 
     async def record_result(
         self,
@@ -291,7 +381,39 @@ class ConnectorSyncProgressStore:
                 outcome_id=f"{outcome}:{record_id}" if record_id else None,
             )
         except Exception as e:
-            self.logger.debug(f"record_result failed for {connector_id}: {e}")
+            self._log_redis_failure("record_result", connector_id, e)
+
+    async def touch_heartbeat(
+        self, org_id: str, connector_id: str, *, run_id: str | None = None
+    ) -> None:
+        """Refresh liveness for a running sync without changing any counters."""
+        if not self._redis or not org_id or not connector_id:
+            return
+        try:
+            await self._execute_script(
+                "touch",
+                self._TOUCH_HEARTBEAT_SCRIPT,
+                [self._key(org_id, connector_id)],
+                [run_id or "", int(time.time() * 1000), self.TTL_SECONDS],
+            )
+        except Exception as e:
+            self._log_redis_failure("touch_heartbeat", connector_id, e)
+
+    async def mark_failed(
+        self, org_id: str, connector_id: str, *, run_id: str | None = None
+    ) -> None:
+        """Mark a discovery failure so clients can distinguish it from completion."""
+        if not self._redis or not org_id or not connector_id:
+            return
+        try:
+            await self._execute_script(
+                "fail",
+                self._MARK_FAILED_SCRIPT,
+                [self._key(org_id, connector_id)],
+                [run_id or "", SyncPhase.FAILED, int(time.time() * 1000), self.TTL_SECONDS],
+            )
+        except Exception as e:
+            self._log_redis_failure("mark_failed", connector_id, e)
 
     async def is_current_run(
         self, org_id: str, connector_id: str, run_id: Optional[str]
@@ -310,7 +432,7 @@ class ConnectorSyncProgressStore:
         try:
             current_run_id = await self._redis.hget(key, "runId")
         except Exception as e:
-            self.logger.debug(f"is_current_run failed for {connector_id}: {e}")
+            self._log_redis_failure("is_current_run", connector_id, e)
             return True
         if current_run_id is None:
             return True
@@ -323,24 +445,33 @@ class ConnectorSyncProgressStore:
         try:
             raw = await self._redis.hgetall(key)
         except Exception as e:
-            self.logger.debug(f"get sync progress failed for {connector_id}: {e}")
+            self._log_redis_failure("get", connector_id, e)
             return None
         if not raw:
             return None
         return self._normalize(raw)
 
-    async def clear(self, org_id: str, connector_id: str) -> None:
+    async def clear(
+        self, org_id: str, connector_id: str, *, expected_run_id: Optional[str] = None
+    ) -> None:
+        """Delete the run hash (and its outcomes set).
+
+        With ``expected_run_id`` this is a no-op unless that run still owns the
+        key, so a failed scheduling path can't wipe out a superseding run that
+        raced in between.
+        """
         if not self._redis or not org_id or not connector_id:
             return
         try:
             key = self._key(org_id, connector_id)
-            run_id = await self._redis.hget(key, "runId")
-            keys = [key]
-            if run_id:
-                keys.append(self._outcomes_key(org_id, connector_id, run_id))
-            await self._redis.delete(*keys)
+            await self._execute_script(
+                "clear",
+                self._CLEAR_RUN_SCRIPT,
+                [key, f"{key}:outcomes:"],
+                [expected_run_id or ""],
+            )
         except Exception as e:
-            self.logger.debug(f"clear sync progress failed for {connector_id}: {e}")
+            self._log_redis_failure("clear", connector_id, e)
 
     async def _increment_if_present(
         self,
@@ -353,17 +484,11 @@ class ConnectorSyncProgressStore:
         outcome_id: str | None = None,
     ) -> None:
         now = int(time.time() * 1000)
-        await self._redis.eval(
+        await self._execute_script(
+            "increment",
             self._INCREMENT_IF_PRESENT_SCRIPT,
-            2,
-            key,
-            outcome_key or f"{key}:noop",
-            expected_run_id or "",
-            field,
-            count,
-            now,
-            outcome_id or "",
-            self.TTL_SECONDS,
+            [key, outcome_key or f"{key}:noop"],
+            [expected_run_id or "", field, count, now, outcome_id or "", self.TTL_SECONDS],
         )
 
     @staticmethod
@@ -398,6 +523,6 @@ async def get_connector_sync_progress_store(
     try:
         _store_singleton = await ConnectorSyncProgressStore.create(logger, config_service)
     except Exception as e:
-        logger.debug(f"Connector sync progress store unavailable: {e}")
+        logger.warning(f"Connector sync progress store unavailable: {e}")
         return None
     return _store_singleton

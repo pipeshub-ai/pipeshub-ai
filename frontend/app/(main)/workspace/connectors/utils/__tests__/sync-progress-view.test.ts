@@ -33,6 +33,7 @@ function makeProgress(
       heartbeatAt: 0,
       isStale: false,
       isActive: overrides.isActive ?? false,
+      syncFailed: false,
       ...overrides.run,
     },
     coverage: overrides.coverage ?? {},
@@ -153,5 +154,24 @@ describe('describeSyncProgress', () => {
   it('renders nothing when idle with no coverage', () => {
     expect(describeSyncProgress(null, 'IDLE').mode).toBe('none');
     expect(describeSyncProgress(makeProgress({ coverage: { total: 0 } })).mode).toBe('none');
+  });
+
+  it('surfaces a failed run as the failed mode without a zero failed count', () => {
+    const view = describeSyncProgress(
+      makeProgress({ isActive: false, phase: 'FAILED', run: { syncFailed: true, failed: 0 } })
+    );
+    expect(view.mode).toBe('failed');
+    if (view.mode === 'failed') {
+      expect(view.label).toBe('Sync failed');
+      expect(view.failed).toBe(0);
+    }
+  });
+
+  it('lets a restarted sync win over a stale failed run', () => {
+    const view = describeSyncProgress(
+      makeProgress({ isActive: false, phase: 'FAILED', run: { syncFailed: true } }),
+      'SYNCING'
+    );
+    expect(view.mode).toBe('discovering');
   });
 });

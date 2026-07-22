@@ -9,6 +9,13 @@ import type { ConnectorSyncProgress } from '../types';
 export { isActiveConnectorSyncStatus } from './sync-progress-view';
 
 const ACTIVE_POLL_MS = 5_000;
+// Coverage draining has no run heartbeat; one permanently stuck record would
+// otherwise keep the fast poll alive forever, so back off to a slow poll.
+const PENDING_COVERAGE_POLL_MS = 30_000;
+
+function hasPendingCoverage(progress: ConnectorSyncProgress | null | undefined): boolean {
+  return ((progress?.coverage?.inProgress ?? 0) + (progress?.coverage?.queued ?? 0)) > 0;
+}
 
 /**
  * Fetch run-scoped sync progress for one connector instance, polling every few
@@ -21,16 +28,23 @@ export function useConnectorSyncProgress(
   enabled = true
 ): { progress: ConnectorSyncProgress | null; loading: boolean } {
   const activeStatus = isActiveConnectorSyncStatus(status);
-  const key = connectorId && enabled ? `connector-sync-progress:${connectorId}` : null;
+  const id = connectorId && enabled ? connectorId : null;
+  const key = id ? `connector-sync-progress:${id}` : null;
   const { data, isLoading, mutate } = useSWR<ConnectorSyncProgress | null>(
     key,
-    () => ConnectorsApi.getConnectorSyncProgress(connectorId!),
+    () => {
+      if (!id) throw new Error('Connector sync progress requested without a connector id');
+      return ConnectorsApi.getConnectorSyncProgress(id);
+    },
     {
       // SWR shares one cache/in-flight request between the instance card and
       // open Overview panel, preventing duplicate polling for the same connector.
       dedupingInterval: ACTIVE_POLL_MS,
-      refreshInterval: (latest) =>
-        Boolean(latest?.isActive) || activeStatus ? ACTIVE_POLL_MS : 0,
+      refreshInterval: (latest) => {
+        if (Boolean(latest?.isActive) || activeStatus) return ACTIVE_POLL_MS;
+        if (hasPendingCoverage(latest)) return PENDING_COVERAGE_POLL_MS;
+        return 0;
+      },
       refreshWhenHidden: false,
       revalidateOnFocus: false,
       revalidateOnReconnect: true,

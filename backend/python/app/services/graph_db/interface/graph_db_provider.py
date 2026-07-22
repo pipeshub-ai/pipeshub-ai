@@ -1490,13 +1490,15 @@ class IGraphDBProvider(ABC):
         self,
         org_id: str,
         containers: list[dict],
+        transaction: str | None = None,
     ) -> dict:
         """
         Aggregate indexing status of indexable leaf records for each container.
 
         Args:
             org_id: Organization ID
-            containers: list of ``{"id": str, "type": "app"|"recordGroup"|"folder"}``
+            containers: list of ``{"id": str, "type": "app"|"recordGroup"|"folder"|"record"}``
+            transaction: Optional graph transaction identifier.
 
         Returns:
             Dict mapping container id -> list of ``{"status", "stage", "cnt"}``

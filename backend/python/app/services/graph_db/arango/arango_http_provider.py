@@ -15519,9 +15519,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Aggregate indexable-leaf-record status counts per container subtree.
 
         Runs at most one AQL per container type. Folder-records and internal
-        placeholder records are excluded from the counts. Nested recordGroups
-        are not descended into here (direct membership only); the graph-DB
-        deployments that need nested rollups use the Neo4j provider.
+        placeholder records are excluded from the counts. Record-group rollups
+        include nested groups, matching the Neo4j provider semantics.
         """
         rollups: dict[str, list[dict]] = {}
         if not containers:
@@ -15583,15 +15582,28 @@ class ArangoHTTPProvider(IGraphDBProvider):
             queries["recordGroup"] = (
                 f"""
                 FOR cid IN @ids
-                FOR edge IN @@belongs_to
-                    FILTER edge._to == CONCAT(@record_group_prefix, cid)
-                    FILTER STARTS_WITH(edge._from, @record_prefix)
-                    LET doc = DOCUMENT(edge._from)
-                    FILTER doc != null
-                    FILTER doc.orgId == @org_id
-                    FILTER doc.isInternal != true
-                    {leaf_filter}
-                    {group_return}
+                    LET docs = UNIQUE((
+                        FOR group_id IN UNIQUE(APPEND(
+                            [CONCAT(@record_group_prefix, cid)],
+                            (
+                                FOR group IN 1..10 INBOUND CONCAT(@record_group_prefix, cid) @@belongs_to
+                                    PRUNE NOT STARTS_WITH(group._id, @record_group_prefix)
+                                    FILTER STARTS_WITH(group._id, @record_group_prefix)
+                                    RETURN group._id
+                            )
+                        ))
+                            FOR edge IN @@belongs_to
+                                FILTER edge._to == group_id
+                                FILTER STARTS_WITH(edge._from, @record_prefix)
+                                LET doc = DOCUMENT(edge._from)
+                                FILTER doc != null
+                                FILTER doc.orgId == @org_id
+                                FILTER doc.isInternal != true
+                                {leaf_filter}
+                                RETURN doc
+                    ))
+                    FOR doc IN docs
+                        {group_return}
                 """,
                 {
                     **base_bind,
@@ -15607,8 +15619,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 f"""
                 FOR cid IN @ids
                 FOR doc, edge, path IN 1..100 OUTBOUND CONCAT(@record_prefix, cid) @@record_relations
-                    OPTIONS {{ order: "bfs", uniqueVertices: "global" }}
                     PRUNE edge.relationshipType NOT IN @rel_types
+                    OPTIONS {{ order: "bfs", uniqueVertices: "global" }}
                     FILTER edge.relationshipType IN @rel_types
                     FILTER doc.orgId == @org_id
                     FILTER doc.isInternal != true
@@ -15629,8 +15641,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 f"""
                 FOR cid IN @ids
                 FOR doc, edge, path IN 1..100 OUTBOUND CONCAT(@record_prefix, cid) @@record_relations
-                    OPTIONS {{ order: "bfs", uniqueVertices: "global" }}
                     PRUNE edge.relationshipType NOT IN @rel_types
+                    OPTIONS {{ order: "bfs", uniqueVertices: "global" }}
                     FILTER edge.relationshipType IN @rel_types
                     FILTER doc.orgId == @org_id
                     FILTER doc.isInternal != true

@@ -479,7 +479,7 @@ export interface RecordTypeStats {
 }
 
 /** Sync run phase for connector sync progress. */
-export type SyncProgressPhase = 'DISCOVERING' | 'INDEXING' | 'DONE' | 'IDLE';
+export type SyncProgressPhase = 'DISCOVERING' | 'INDEXING' | 'DONE' | 'FAILED' | 'IDLE';
 
 /** Run-scoped counters for the current (or most recent) sync run. */
 export interface SyncProgressRun {
@@ -498,6 +498,7 @@ export interface SyncProgressRun {
   heartbeatAt: number;
   isStale: boolean;
   isActive: boolean;
+  syncFailed: boolean;
 }
 
 /** Lifetime indexing coverage, used as the idle fallback. */

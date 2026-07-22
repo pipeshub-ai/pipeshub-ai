@@ -443,6 +443,32 @@
     "confirm": "Confirmar"
   },
   "kb": {
+    "indexingProgress": {
+      "steps": {
+        "queued": "En cola",
+        "extract": "Extraer",
+        "index": "Indexar",
+        "done": "Listo"
+      },
+      "stage": {
+        "queued": "En cola",
+        "extracting": "Extrayendo contenido",
+        "indexing": "Indexando",
+        "completed": "Completado",
+        "failed": "Fallido",
+        "processing": "Procesando"
+      },
+      "embeddingChunk": "Incrustando fragmento {{current}} de {{total}}",
+      "extractingPage": "Extrayendo página {{current}} de {{total}}",
+      "rollupProgress": "{{completed}} de {{total}} indexados",
+      "rollupIndexed": "{{total}} indexados",
+      "rollupRecords_one": "{{count}} registro: {{completed}} indexado",
+      "rollupRecords_other": "{{count}} registros: {{completed}} indexados",
+      "rollupFailed": "{{count}} con error",
+      "rollupSkipped": "{{count}} omitidos",
+      "indexedTooltip": "Indexado",
+      "indexingPercent": "Indexando {{percent}}%"
+    },
     "viewToggle": "Alternar vista",
     "collectionsView": "Vista de colecciones",
     "allRecordsView": "Vista de todos los registros",
@@ -1860,6 +1886,53 @@
       "personal": {
         "desktopRequiredTitle": "Se requiere la aplicación de escritorio",
         "desktopRequiredDescription": "El conector del sistema de archivos local solo está disponible en la aplicación de escritorio de PipesHub. Utilice la aplicación de escritorio para configurar este conector."
+      },
+      "syncProgress": {
+        "status": "Estado",
+        "removing": "Eliminando…",
+        "indexingCount": "Indexando {{processed}} de {{total}}",
+        "fullSyncDiscovering": "Sincronización completa: sincronizando la fuente…",
+        "discovering": "Sincronizando la fuente…",
+        "queuedCount": "{{count}} en cola",
+        "stillProcessing_one": "{{count}} registro aún en proceso",
+        "stillProcessing_other": "{{count}} registros aún en proceso",
+        "indexed": "Indexado",
+        "syncFailed": "Error de sincronización",
+        "failedCount": "{{count}} con error",
+        "calculating": "Calculando el progreso",
+        "currentSync": "Sincronización actual",
+        "breakdownQueued": "En cola en esta sincronización",
+        "breakdownFailed": "Con error",
+        "breakdownSkipped": "Omitidos",
+        "badgeFullSync": "Sincronización completa…",
+        "badgeSyncing": "Sincronizando…",
+        "conflict": {
+          "fullOverFull": {
+            "title": "Ya hay una sincronización completa en curso",
+            "message": "Ya hay una sincronización completa en curso. Reiniciar cancela la actual y vuelve a indexar todo desde cero.",
+            "confirm": "Reiniciar sincronización completa",
+            "cancel": "Mantener la sincronización actual"
+          },
+          "fullOverQuick": {
+            "title": "Hay una sincronización en curso",
+            "message": "Hay una sincronización en curso. Iniciar una sincronización completa la cancelará y volverá a indexar todo desde cero.",
+            "confirm": "Cancelar y sincronizar todo",
+            "cancel": "Mantener la sincronización actual"
+          },
+          "quickOverFull": {
+            "title": "Sincronización completa en curso",
+            "message": "Hay una sincronización completa en curso, que es más exhaustiva que una sincronización rápida. Ejecutar una sincronización rápida ahora la cancelará; considera dejar que la completa termine.",
+            "confirm": "Cancelar y sincronizar",
+            "cancel": "Mantener la sincronización completa"
+          },
+          "quickOverQuick": {
+            "title": "Ya hay una sincronización en curso",
+            "message": "Ya hay una sincronización en curso. Reiniciar cancela la actual y empieza de nuevo.",
+            "confirm": "Reiniciar sincronización",
+            "cancel": "Mantener la sincronización actual"
+          },
+          "restartError": "No se pudo reiniciar la sincronización. Inténtalo de nuevo."
+        }
       },
       "syncStatus": {
         "paused": "Sync Paused",

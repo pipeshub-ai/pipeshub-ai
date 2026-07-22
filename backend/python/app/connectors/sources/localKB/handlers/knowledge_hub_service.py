@@ -6,7 +6,7 @@ import traceback
 from collections import Counter
 from typing import Any
 
-from app.config.constants.arangodb import ProgressStatus
+from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     AppliedFilters,
     AvailableFilters,
@@ -48,7 +48,7 @@ def _is_web_path_placeholder(item: NodeItem) -> bool:
     return (
         _get_node_type_value(item.nodeType) == NodeType.RECORD.value
         and item.isInternal is True
-        and (item.connector or '').upper() == 'WEB'
+        and (item.connector or '').upper() == Connectors.WEB.value
         and item.hasChildren is True
     )
 

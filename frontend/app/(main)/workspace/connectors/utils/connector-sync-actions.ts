@@ -127,7 +127,8 @@ export async function runConnectorResync(args: {
  * Matches the legacy frontend: never chains toggle + resync in one action.
  */
 export async function startConnectorSync(
-  instance: { _key: string } & Partial<Pick<ConnectorInstance, 'type'>>
+  instance: { _key: string } & Partial<Pick<ConnectorInstance, 'type'>>,
+  options: { force?: boolean } = {}
 ): Promise<ResyncOutcome | null> {
   if (!instance._key) {
     throw new Error('startConnectorSync: connectorId (_key) is required');
@@ -144,5 +145,9 @@ export async function startConnectorSync(
       `startConnectorSync: connector type unknown for instance ${instance._key}`
     );
   }
-  return runConnectorResync({ connectorId: instance._key, connectorType: type });
+  return runConnectorResync({
+    connectorId: instance._key,
+    connectorType: type,
+    force: options.force ?? false,
+  });
 }

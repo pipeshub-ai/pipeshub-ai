@@ -1144,12 +1144,23 @@ class DataSourceEntitiesProcessor:
 
     async def _track_record_queued(self, record: Record) -> None:
         """Count one published new/update/reindex event in the active sync run."""
-        org_id = getattr(record, "org_id", "") or self.org_id
-        connector_id = getattr(record, "connector_id", "")
-        if org_id and connector_id:
-            from app.connectors.services.sync_run_context import get_sync_run_id
+        await self._track_records_queued([record])
 
-            await self._track_discovered({(org_id, connector_id, get_sync_run_id()): 1})
+    async def _track_records_queued(self, records: list[Record]) -> None:
+        """Batch discovery updates produced by a bulk move or reindex operation."""
+        if not records:
+            return
+        from app.connectors.services.sync_run_context import get_sync_run_id
+
+        run_id = get_sync_run_id()
+        discovered_by_connector: dict[tuple[str, str, str | None], int] = {}
+        for record in records:
+            org_id = getattr(record, "org_id", "") or self.org_id
+            connector_id = getattr(record, "connector_id", "")
+            if org_id and connector_id:
+                key = (org_id, connector_id, run_id)
+                discovered_by_connector[key] = discovered_by_connector.get(key, 0) + 1
+        await self._track_discovered(discovered_by_connector)
 
     @staticmethod
     def _kafka_payload(record: Record) -> dict:
@@ -1308,8 +1319,6 @@ class DataSourceEntitiesProcessor:
                     },
                     key=record.id,
                 )
-                await self._track_record_queued(record)
-
             for record in records_to_reindex:
                 self.logger.info(
                     "Firing updateRecord event for moved record %s (id=%s): content changed",
@@ -1329,7 +1338,22 @@ class DataSourceEntitiesProcessor:
                     },
                     key=record.id,
                 )
-                await self._track_record_queued(record)
+            await self._track_records_queued(
+                [
+                    *[
+                        record
+                        for record in new_records_to_publish
+                        if record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+                        and not record.is_internal
+                    ],
+                    *[
+                        record
+                        for record in records_to_reindex
+                        if record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+                        and not record.is_internal
+                    ],
+                ]
+            )
 
         except Exception as e:
             self.logger.error(f"on_records_moved failed: {e}", exc_info=True)
@@ -1447,7 +1471,9 @@ class DataSourceEntitiesProcessor:
                     },
                     key=record.id
                 )
-                await self._track_record_queued(record)
+            await self._track_records_queued(
+                [record for record in records if not record.is_internal]
+            )
 
             self.logger.debug(f"Published reindex events for {len(records) - skipped_records} records and skipped {skipped_records} internal records")
         except Exception as e:

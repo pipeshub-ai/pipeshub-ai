@@ -338,7 +338,7 @@ export function OverviewTab({
           }}
         >
           <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            Current sync
+            {t('workspace.connectors.syncProgress.currentSync', { defaultValue: 'Current sync' })}
           </Text>
           <ConnectorSyncProgress
             progress={syncProgress}
@@ -347,13 +347,26 @@ export function OverviewTab({
           />
           {runData && (
             <Flex gap="4" wrap="wrap">
-              <SyncBreakdownItem label="Queued this sync" value={runData.discovered} />
-              <SyncBreakdownItem label="Indexed" value={runData.indexed} />
+              <SyncBreakdownItem
+                label={t('workspace.connectors.syncProgress.breakdownQueued', { defaultValue: 'Queued this sync' })}
+                value={runData.discovered}
+              />
+              <SyncBreakdownItem
+                label={t('workspace.connectors.syncProgress.indexed', { defaultValue: 'Indexed' })}
+                value={runData.indexed}
+              />
               {runData.failed > 0 && (
-                <SyncBreakdownItem label="Failed" value={runData.failed} tone="amber" />
+                <SyncBreakdownItem
+                  label={t('workspace.connectors.syncProgress.breakdownFailed', { defaultValue: 'Failed' })}
+                  value={runData.failed}
+                  tone="amber"
+                />
               )}
               {runData.skipped > 0 && (
-                <SyncBreakdownItem label="Skipped" value={runData.skipped} />
+                <SyncBreakdownItem
+                  label={t('workspace.connectors.syncProgress.breakdownSkipped', { defaultValue: 'Skipped' })}
+                  value={runData.skipped}
+                />
               )}
             </Flex>
           )}

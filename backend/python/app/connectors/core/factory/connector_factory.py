@@ -378,27 +378,24 @@ class ConnectorFactory:
         run_id: Optional[str] = None
         if store and org_id:
             run_id = await store.start_run(org_id, connector_id, full_sync=False)
-        try:
-            from app.connectors.services.sync_run_context import (
-                reset_sync_run_id,
-                set_sync_run_id,
-            )
 
-            token = set_sync_run_id(run_id)
+        async def _get_store():
             try:
-                await connector.run_sync()
-            finally:
-                reset_sync_run_id(token)
-        finally:
-            # A manual (Kafka-driven) sync can supersede this startup-resume run;
-            # in that case leave status/progress to the newer run rather than
-            # clobbering it back to IDLE. See EventService._run_sync_and_clear_status.
-            if store and org_id and not await store.is_current_run(org_id, connector_id, run_id):
-                logger.info(
-                    f"Startup sync for connector {connector_id} was superseded by a newer run; "
-                    "leaving status and progress to the newer run"
-                )
-            else:
-                if store and org_id:
-                    await store.close_discovery(org_id, connector_id, expected_run_id=run_id)
-                await _set_status(AppStatus.IDLE.value)
+                return await get_connector_sync_progress_store(logger, config_service)
+            except Exception:
+                return None
+
+        async def _set_idle_status() -> None:
+            await _set_status(AppStatus.IDLE.value)
+
+        from app.connectors.services.sync_lifecycle import run_sync_with_lifecycle
+
+        await run_sync_with_lifecycle(
+            connector=connector,
+            connector_id=connector_id,
+            org_id=org_id,
+            run_id=run_id,
+            logger=logger,
+            get_store=_get_store,
+            set_idle_status=_set_idle_status,
+        )

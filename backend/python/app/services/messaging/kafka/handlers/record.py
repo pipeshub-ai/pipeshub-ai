@@ -180,6 +180,7 @@ class RecordEventHandler(BaseEventService):
         error_msg = None
         last_exception: Exception | None = None
         record = None
+        heartbeat_task: asyncio.Task | None = None
         try:
             if not event_type:
                 self.logger.error(f"Missing event_type in message {payload}")
@@ -237,6 +238,10 @@ class RecordEventHandler(BaseEventService):
                 self.logger.error(f"❌ Record {record_id} not found in database")
                 await self._track_payload_outcome(payload, outcome="skipped")
                 return
+
+            await self._touch_sync_run(payload)
+            if payload.get("syncRunId"):
+                heartbeat_task = asyncio.create_task(self._heartbeat_sync_run(payload))
 
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
@@ -627,6 +632,9 @@ class RecordEventHandler(BaseEventService):
             self.logger.error(error_msg, exc_info=True)
             raise  # bare re-raise — preserves IndexingError / DocumentProcessingError
         finally:
+            if heartbeat_task:
+                heartbeat_task.cancel()
+                await asyncio.gather(heartbeat_task, return_exceptions=True)
             processing_time = (datetime.now() - start_time).total_seconds()
             self.logger.info(
                 f"Message {message_id} processing completed in {processing_time:.2f}s. "
@@ -738,6 +746,24 @@ class RecordEventHandler(BaseEventService):
                 run_id=payload.get("syncRunId"),
                 record_id=payload.get("recordId"),
             )
+
+    async def _touch_sync_run(self, payload: dict) -> None:
+        """Keep a run alive while a long-running record is being processed."""
+        run_id = payload.get("syncRunId")
+        connector_id = payload.get("connectorId")
+        org_id = payload.get("orgId")
+        if not run_id or not connector_id or not org_id:
+            return
+        from app.connectors.services.sync_progress_store import get_connector_sync_progress_store
+
+        store = await get_connector_sync_progress_store(self.logger, self.config_service)
+        if store:
+            await store.touch_heartbeat(org_id, connector_id, run_id=run_id)
+
+    async def _heartbeat_sync_run(self, payload: dict) -> None:
+        while True:
+            await asyncio.sleep(60)
+            await self._touch_sync_run(payload)
 
     async def _track_indexing_outcome(
         self,

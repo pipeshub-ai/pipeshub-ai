@@ -1,12 +1,15 @@
 'use client';
 
 import { useRef, useSyncExternalStore } from 'react';
-import { Box, Flex, Text, Tooltip } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
+import { Box, Flex, Text, Tooltip, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
+import { isActiveConnectorSyncStatus } from '../../workspace/connectors/utils/sync-progress-view';
 import type { ConnectorSyncStatus, IndexingRollup } from '../types';
 import {
   PROGRESS_STEPS,
+  PROGRESS_STEP_KEYS,
   getIndexingProgressView,
   getRollupProgressView,
   isActiveIndexingStatus,
@@ -45,9 +48,14 @@ export function IndexingProgressIndicator({
   record: IndexingProgressInput;
   compact?: boolean;
 }) {
+  const { t } = useTranslation();
   const active = isActiveIndexingStatus(record.indexingStatus);
   const needsEstimateClock =
-    active && record.indexingStage === 'EXTRACTING' && !record.indexingProgress;
+    active &&
+    record.indexingStage === 'EXTRACTING' &&
+    (!record.indexingProgress ||
+      !(record.indexingProgress.total > 0) ||
+      (record.indexingProgress.phase != null && record.indexingProgress.phase !== 'extracting'));
   const localExtractionStartedAt = useRef<number | null>(null);
   if (needsEstimateClock && record.lastActivityTimestamp == null) {
     localExtractionStartedAt.current ??= Date.now();
@@ -68,6 +76,11 @@ export function IndexingProgressIndicator({
       : { ...record, lastActivityTimestamp: localExtractionStartedAt.current },
     now
   );
+  const label = view.labelKey ? t(view.labelKey, { defaultValue: view.label }) : view.label;
+  const detail =
+    view.detail && view.detailKey
+      ? t(view.detailKey, { defaultValue: view.detail, ...view.detailParams })
+      : view.detail;
   const recordKey = (record as { id?: string }).id ?? record;
   const progressRef = useRef({ recordKey, maxPercent: 0 });
   if (progressRef.current.recordKey !== recordKey) {
@@ -85,22 +98,27 @@ export function IndexingProgressIndicator({
     : activeColor;
 
   return (
-    <Flex direction="column" gap="1" style={{ minWidth: compact ? 180 : 240, maxWidth: compact ? 240 : 320 }}>
+    <Flex direction="column" gap="1" style={{ minWidth: compact ? 120 : 240, maxWidth: compact ? 240 : 320 }}>
+      <VisuallyHidden>
+        <span role="status" aria-live="polite">
+          {label} {displayedPercent}%{detail ? `, ${detail}` : ''}
+        </span>
+      </VisuallyHidden>
       <Flex align="center" justify="between" gap="2">
         <Text size="1" weight="medium" style={{ color: activeText, whiteSpace: 'nowrap' }}>
-          {view.label}
+          {label}
         </Text>
         <Text size="1" weight="medium" style={{ color: activeText, whiteSpace: 'nowrap' }}>
           {displayedPercent}%
         </Text>
       </Flex>
       <Flex align="center" gap="1" style={{ minWidth: 0 }}>
-        {PROGRESS_STEPS.map((label, index) => {
+        {PROGRESS_STEPS.map((stepLabel, index) => {
           const isReached = index <= view.stepIndex;
           const color = isReached ? activeColor : 'var(--slate-6)';
           const textColor = isReached ? activeText : 'var(--slate-9)';
           return (
-            <Flex key={label} align="center" gap="1" style={{ minWidth: 0 }}>
+            <Flex key={stepLabel} align="center" gap="1" style={{ minWidth: 0 }}>
               <Box
                 style={{
                   width: compact ? 6 : 7,
@@ -118,7 +136,9 @@ export function IndexingProgressIndicator({
                   whiteSpace: 'nowrap',
                 }}
               >
-                {label}
+                {t(`kb.indexingProgress.steps.${PROGRESS_STEP_KEYS[index]}`, {
+                  defaultValue: stepLabel,
+                })}
               </Text>
             </Flex>
           );
@@ -127,10 +147,11 @@ export function IndexingProgressIndicator({
       <Box style={{ height: 3, borderRadius: '9999px', background: 'var(--slate-4)', overflow: 'hidden' }}>
         <Box
           role="progressbar"
-          aria-label={`${view.label} indexing progress`}
+          aria-label={`${label} indexing progress`}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={displayedPercent}
+          aria-valuetext={`${label} ${displayedPercent}%`}
           style={{
             width: `${displayedPercent}%`,
             height: '100%',
@@ -142,7 +163,7 @@ export function IndexingProgressIndicator({
           }}
         />
       </Box>
-      {view.detail ? (
+      {detail ? (
         <Text
           size="1"
           style={{
@@ -155,7 +176,7 @@ export function IndexingProgressIndicator({
             whiteSpace: 'normal',
           }}
         >
-          {view.detail}
+          {detail}
         </Text>
       ) : null}
     </Flex>
@@ -177,14 +198,20 @@ export function ContainerRollupIndicator({
   /** Single-line variant for tight spots like the header. */
   inline?: boolean;
 }) {
+  const { t } = useTranslation();
   const view = getRollupProgressView(rollup);
+  const label = t(view.labelKey, { defaultValue: view.label, ...view.labelParams });
+  const detail = view.detailParts
+    ? view.detailParts.map((part) => t(part.key, part.params)).join(' · ')
+    : view.detail;
+  const indexedTooltip = t('kb.indexingProgress.indexedTooltip', { defaultValue: 'Indexed' });
 
   if (inline) {
     if (!view.isActive) {
       // Clean success mirrors a single record: just the green check, "Indexed" on hover.
       if (!view.hasErrors) {
         return (
-          <Tooltip content="Indexed" side="top" delayDuration={200}>
+          <Tooltip content={indexedTooltip} side="top" delayDuration={200}>
             <Flex align="center" style={{ minWidth: 0 }}>
               <MaterialIcon name={getIndexStatusIcon('COMPLETED')} size={16} color="var(--emerald-11)" />
             </Flex>
@@ -193,12 +220,12 @@ export function ContainerRollupIndicator({
       }
       // Failures: icon + aggregate breakdown; keep the same text in the tooltip.
       return (
-        <Tooltip content={view.detail} side="top" delayDuration={200}>
+        <Tooltip content={detail} side="top" delayDuration={200}>
           <Flex align="center" gap="1" style={{ minWidth: 0 }}>
             <MaterialIcon name={getIndexStatusIcon('FAILED')} size={16} color="var(--amber-11)" />
-            {view.detail ? (
+            {detail ? (
               <Text size="1" weight="medium" style={{ color: 'var(--amber-11)', whiteSpace: 'nowrap' }}>
-                {view.detail}
+                {detail}
               </Text>
             ) : null}
           </Flex>
@@ -210,10 +237,18 @@ export function ContainerRollupIndicator({
     return (
       <Flex align="center" gap="2" style={{ minWidth: 0 }}>
         <Text size="1" weight="medium" style={{ color: activeText, whiteSpace: 'nowrap' }}>
-          Indexing {view.percent}%
+          {t('kb.indexingProgress.indexingPercent', {
+            defaultValue: 'Indexing {{percent}}%',
+            percent: view.percent,
+          })}
         </Text>
         <Box style={{ width: 72, height: 3, borderRadius: '9999px', background: 'var(--slate-4)', overflow: 'hidden', flexShrink: 0 }}>
           <Box
+            role="progressbar"
+            aria-label={label}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={view.percent}
             style={{
               width: `${view.percent}%`,
               height: '100%',
@@ -226,7 +261,7 @@ export function ContainerRollupIndicator({
           />
         </Box>
         <Text size="1" style={{ color: 'var(--slate-10)', whiteSpace: 'nowrap' }}>
-          {view.label}
+          {label}
         </Text>
       </Flex>
     );
@@ -236,7 +271,7 @@ export function ContainerRollupIndicator({
     // Clean success mirrors a single record: just the green check, "Indexed" on hover.
     if (!view.hasErrors) {
       return (
-        <Tooltip content="Indexed" side="top" delayDuration={200}>
+        <Tooltip content={indexedTooltip} side="top" delayDuration={200}>
           <Flex align="center" justify="center" style={{ minWidth: 0 }}>
             <MaterialIcon name={getIndexStatusIcon('COMPLETED')} size={16} color="var(--emerald-11)" />
           </Flex>
@@ -245,12 +280,12 @@ export function ContainerRollupIndicator({
     }
     // Failures: icon + aggregate breakdown; keep the same text in the tooltip.
     return (
-      <Tooltip content={view.detail} side="top" delayDuration={200}>
+      <Tooltip content={detail} side="top" delayDuration={200}>
         <Flex align="center" gap="1" style={{ minWidth: 0 }}>
           <MaterialIcon name={getIndexStatusIcon('FAILED')} size={16} color="var(--amber-11)" />
-          {view.detail ? (
+          {detail ? (
             <Text size="1" weight="medium" style={{ color: 'var(--amber-11)', whiteSpace: 'nowrap' }}>
-              {view.detail}
+              {detail}
             </Text>
           ) : null}
         </Flex>
@@ -266,7 +301,7 @@ export function ContainerRollupIndicator({
     <Flex direction="column" gap="1" style={{ minWidth: compact ? 160 : 200, maxWidth: compact ? 220 : 300 }}>
       <Flex align="center" justify="between" gap="2">
         <Text size="1" weight="medium" style={{ color: activeText, whiteSpace: 'nowrap' }}>
-          {view.label}
+          {label}
         </Text>
         <Text size="1" weight="medium" style={{ color: activeText, whiteSpace: 'nowrap' }}>
           {view.percent}%
@@ -274,6 +309,11 @@ export function ContainerRollupIndicator({
       </Flex>
       <Box style={{ height: 3, borderRadius: '9999px', background: 'var(--slate-4)', overflow: 'hidden' }}>
         <Box
+          role="progressbar"
+          aria-label={label}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={view.percent}
           style={{
             width: `${view.percent}%`,
             height: '100%',
@@ -285,9 +325,9 @@ export function ContainerRollupIndicator({
           }}
         />
       </Box>
-      {view.detail ? (
+      {detail ? (
         <Text size="1" style={{ color: 'var(--amber-11)', whiteSpace: 'nowrap' }}>
-          {view.detail}
+          {detail}
         </Text>
       ) : null}
     </Flex>
@@ -296,8 +336,7 @@ export function ContainerRollupIndicator({
 
 /** True while the owning connector is fetching from its source. */
 export function isActiveConnectorSync(status?: ConnectorSyncStatus | null): boolean {
-  const normalized = (status ?? '').toUpperCase();
-  return normalized === 'SYNCING' || normalized === 'FULL_SYNCING';
+  return isActiveConnectorSyncStatus(status);
 }
 
 /**
@@ -315,9 +354,13 @@ export function ConnectorSyncBadge({
   syncStatus?: ConnectorSyncStatus | null;
   variant?: 'chip' | 'pill';
 }) {
+  const { t } = useTranslation();
   if (!isActiveConnectorSync(syncStatus)) return null;
 
-  const label = syncStatus === 'FULL_SYNCING' ? 'Full sync…' : 'Syncing…';
+  const label =
+    syncStatus === 'FULL_SYNCING'
+      ? t('workspace.connectors.syncProgress.badgeFullSync', { defaultValue: 'Full sync…' })
+      : t('workspace.connectors.syncProgress.badgeSyncing', { defaultValue: 'Syncing…' });
   const color = 'var(--indigo-11)';
 
   const spinner = (
@@ -337,6 +380,8 @@ export function ConnectorSyncBadge({
   if (variant === 'chip') {
     return (
       <Flex
+        role="status"
+        aria-live="polite"
         align="center"
         gap="1"
         style={{
@@ -356,7 +401,7 @@ export function ConnectorSyncBadge({
   }
 
   return (
-    <Flex align="center" gap="1" style={{ minWidth: 0 }}>
+    <Flex role="status" aria-live="polite" align="center" gap="1" style={{ minWidth: 0 }}>
       {spinner}
       <Text size="1" weight="medium" style={{ color, whiteSpace: 'nowrap' }}>
         {label}
