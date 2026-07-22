@@ -776,9 +776,8 @@ class TestJiraBlocks:
         """TC-JIRA-BLOCKS-001: stream the frozen blocks ticket, run it through the production
         block parser (``process_blocks``), and deep-equal the FINAL parsed blocks vs the expected snapshot.
 
-        Validates the full path — Jira ADF → connector markdown block-groups (streamed) → parser
-        → fine-grained typed blocks — the same output the indexing pipeline produces, mirroring the
-        parser IT (which validates markdown → blocks) but for a connector record.
+        Validates the full path — Jira rendered HTML → connector HTML block-groups (streamed) →
+        HTML parser → fine-grained typed blocks — the same output the indexing pipeline produces.
         """
         connector_id = jira_connector["connector_id"]
         blocks_key = jira_connector.get("blocks_issue_key")
