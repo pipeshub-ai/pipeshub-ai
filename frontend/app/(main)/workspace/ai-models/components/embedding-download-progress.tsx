@@ -70,15 +70,35 @@ export function EmbeddingDownloadProgress({
     setError(null);
 
     const run = async () => {
-      try {
-        await AIModelsApi.prepareModel(modelName, trustRemoteCode);
-      } catch (err) {
+      const MAX_PREPARE_RETRIES = 30;
+      const PREPARE_RETRY_INTERVAL_MS = 3000;
+
+      let prepared = false;
+      for (let attempt = 0; attempt < MAX_PREPARE_RETRIES; attempt++) {
+        if (controller.signal.aborted) return;
+        try {
+          const result = await AIModelsApi.prepareModel(modelName, trustRemoteCode);
+          if (result?.status === 'ready') {
+            settled = true;
+            onReadyRef.current();
+            return;
+          }
+          prepared = true;
+          break;
+        } catch {
+          if (controller.signal.aborted) return;
+          if (attempt < MAX_PREPARE_RETRIES - 1) {
+            setStatus('checking');
+            await new Promise((r) => setTimeout(r, PREPARE_RETRY_INTERVAL_MS));
+          }
+        }
+      }
+
+      if (!prepared) {
         if (controller.signal.aborted) return;
         settled = true;
         setStatus('failed');
-        setError(
-          err instanceof Error ? err.message : t('workspace.aiModels.downloadPrepareError')
-        );
+        setError(t('workspace.aiModels.downloadPrepareError'));
         return;
       }
 
