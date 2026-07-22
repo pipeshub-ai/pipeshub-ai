@@ -152,7 +152,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
             category=FilterCategory.SYNC,
             description="Restrict sync to specific shared drives. Leave empty to sync all.",
             option_source_type=OptionSourceType.DYNAMIC,
-        )),
+        ))
         .add_filter_field(FilterField(
             name=SyncFilterKey.FOLDER_IDS.value,
             display_name="Folder IDs",
