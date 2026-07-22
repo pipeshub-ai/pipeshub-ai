@@ -79,6 +79,7 @@ class NodeItem(BaseModel):
     permission: Optional[ItemPermission] = Field(None, description="User's permission on this item")
     sharingStatus: Optional[str] = Field(None, description="Sharing status: 'private', 'shared', or 'workspace' (only for kb and app node types)")
     isInternal: bool = Field(False, description="True when the node is an internal/system record group or record (doesn't come from source)")
+    isPlaceholder: bool = Field(False, description="True when the node is a placeholder stub for an out-of-scope ancestor (rendered read-only, no content actions)")
 
     class Config:
         use_enum_values = True

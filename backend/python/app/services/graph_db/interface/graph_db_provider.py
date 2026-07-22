@@ -992,7 +992,9 @@ class IGraphDBProvider(ABC):
         status_filters: list[str] | None,
         limit: int | None = None,
         offset: int = 0,
-        transaction: str | None = None
+        transaction: str | None = None,
+        record_group_id: str | None = None,
+        is_placeholder: bool | None = None,
     ) -> list['Record']:
         """
         Get records by their indexing status.

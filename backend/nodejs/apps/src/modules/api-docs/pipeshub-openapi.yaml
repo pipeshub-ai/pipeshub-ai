@@ -4480,6 +4480,7 @@ components:
         - permission
         - sharingStatus
         - isInternal
+        - isPlaceholder
       properties:
         id:
           type: string
@@ -4522,6 +4523,11 @@ components:
         isInternal:
           type: boolean
           description: True for internal/system nodes that do not originate from a source.
+        isPlaceholder:
+          type: boolean
+          description: >-
+            True for placeholder/stub nodes standing in for an out-of-scope ancestor
+            (rendered read-only, no content actions; excluded from search and indexing).
         createdAt:
           type: integer
           description: Creation timestamp (epoch ms).
@@ -22394,6 +22400,7 @@ paths:
                         permission: null
                         sharingStatus: "workspace"
                         isInternal: false
+                        isPlaceholder: false
                       - id: "f3a4b5b6-5b6c-4e85-9097-3202cfe696fc"
                         name: "Google Drive"
                         nodeType: "app"
@@ -22415,6 +22422,7 @@ paths:
                         permission: null
                         sharingStatus: null
                         isInternal: false
+                        isPlaceholder: false
                     pagination:
                       page: 1
                       limit: 20
@@ -22903,6 +22911,7 @@ paths:
                         permission: null
                         sharingStatus: "workspace"
                         isInternal: false
+                        isPlaceholder: false
                       - id: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
                         name: "HR Policies"
                         nodeType: "record"
@@ -22924,6 +22933,7 @@ paths:
                         permission: null
                         sharingStatus: "private"
                         isInternal: false
+                        isPlaceholder: false
                     pagination:
                       page: 1
                       limit: 20

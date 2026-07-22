@@ -475,40 +475,49 @@ class EventService:
                         status_filters=status_filters,
                     )
                 else:
-                    # Mode 3: Reindex by status
+                    # Mode 3: Reindex by status. Exclude placeholder stubs — they have no
+                    # content and must never be swept into indexing/reindex.
                     records = await self.graph_provider.get_records_by_status(
                         org_id=org_id,
                         connector_id=connector_id,
                         status_filters=status_filters,
                         limit=batch_size,
-                        offset=offset
+                        offset=offset,
+                        is_placeholder=False,
                     )
 
                 if not records:
                     break
 
-                self.logger.info(f"Processing batch of {len(records)} records (offset: {offset})")
+                # Never reindex placeholder stubs — they have no content (R2). Covers every
+                # mode (record id / record group / status); use fetched_count (not the
+                # filtered length) for the end-of-pagination check.
+                fetched_count = len(records)
+                records = [r for r in records if not getattr(r, "is_placeholder", False)]
 
-                # Clear AUTO_INDEX_OFF (etc.) on the same batch we are about to reindex — one graph
-                # read path (get_records_* / get_records_by_status) + status updates only.
-                record_ids_to_queue = [
-                    rid
-                    for r in records
-                    if (rid := getattr(r, "id", None)) and isinstance(rid, str)
-                ]
-                if record_ids_to_queue:
-                    await self.graph_provider.reset_indexing_status_to_queued_for_record_ids(
-                        record_ids_to_queue
-                    )
+                if records:
+                    self.logger.info(f"Processing batch of {len(records)} records (offset: {offset})")
 
-                # Process this batch with typed records
-                await connector.reindex_records(records)
+                    # Clear AUTO_INDEX_OFF (etc.) on the same batch we are about to reindex — one graph
+                    # read path (get_records_* / get_records_by_status) + status updates only.
+                    record_ids_to_queue = [
+                        rid
+                        for r in records
+                        if (rid := getattr(r, "id", None)) and isinstance(rid, str)
+                    ]
+                    if record_ids_to_queue:
+                        await self.graph_provider.reset_indexing_status_to_queued_for_record_ids(
+                            record_ids_to_queue
+                        )
 
-                total_processed += len(records)
+                    # Process this batch with typed records
+                    await connector.reindex_records(records)
+                    total_processed += len(records)
+
                 offset += batch_size
 
                 # If we got fewer records than batch_size, we've reached the end
-                if len(records) < batch_size:
+                if fetched_count < batch_size:
                     break
 
             self.logger.info(f"✅ Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")

@@ -2231,17 +2231,31 @@ class Neo4jProvider(IGraphDBProvider):
         status_filters: list[str] | None,
         limit: int | None = None,
         offset: int = 0,
-        transaction: str | None = None
+        transaction: str | None = None,
+        record_group_id: str | None = None,
+        is_placeholder: bool | None = None,
     ) -> list[Record]:
-        """Get records by indexing status. A None or empty status_filters returns records regardless of status."""
+        """Get records by indexing status. A None or empty status_filters returns records regardless of status.
+        Optionally scope to a record group and/or filter on the placeholder flag
+        (is_placeholder=True only stubs, False excludes them, None ignores it)."""
         try:
             limit_clause = f"SKIP {offset} LIMIT {limit}" if limit else ""
+
+            record_group_clause = "AND r.recordGroupId = $record_group_id" if record_group_id else ""
+            if is_placeholder is True:
+                placeholder_clause = "AND coalesce(r.isPlaceholder, false) = true"
+            elif is_placeholder is False:
+                placeholder_clause = "AND coalesce(r.isPlaceholder, false) = false"
+            else:
+                placeholder_clause = ""
 
             query = f"""
             MATCH (r:Record)
             WHERE r.orgId = $org_id
               AND r.connectorId = $connector_id
               AND ($status_filters IS NULL OR size($status_filters) = 0 OR r.indexingStatus IN $status_filters)
+              {record_group_clause}
+              {placeholder_clause}
             OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(typeDoc)
             RETURN r, typeDoc
             ORDER BY r.id
@@ -2253,7 +2267,8 @@ class Neo4jProvider(IGraphDBProvider):
                 parameters={
                     "org_id": org_id,
                     "connector_id": connector_id,
-                    "status_filters": status_filters
+                    "status_filters": status_filters,
+                    "record_group_id": record_group_id,
                 },
                 txn_id=transaction
             )
@@ -7910,6 +7925,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE f.isFile = false
             }
             AND coalesce(r.isInternal, false) = false
+            AND coalesce(r.isPlaceholder, false) = false
             RETURN r.recordType AS recordType, r.indexingStatus AS indexingStatus, count(*) AS cnt
             """
 
@@ -10174,6 +10190,8 @@ class Neo4jProvider(IGraphDBProvider):
                 if not rid:
                     continue
                 if record.get("isInternal"):
+                    continue
+                if record.get("isPlaceholder"):
                     continue
                 if record.get("indexingStatus") in skip_status:
                     continue
@@ -13686,7 +13704,8 @@ class Neo4jProvider(IGraphDBProvider):
                 hasChildren: has_children,
                 previewRenderable: coalesce(record.previewRenderable, true),
                 userRole: permission_role,
-                isInternal: coalesce(record.isInternal, false)
+                isInternal: coalesce(record.isInternal, false),
+                isPlaceholder: coalesce(record.isPlaceholder, false)
             }}) AS internal_records
         }}
 
@@ -13850,7 +13869,8 @@ class Neo4jProvider(IGraphDBProvider):
                 hasChildren: has_children,
                 previewRenderable: coalesce(record.previewRenderable, true),
                 userRole: permission_role,
-                isInternal: coalesce(record.isInternal, false)
+                isInternal: coalesce(record.isInternal, false),
+                isPlaceholder: coalesce(record.isPlaceholder, false)
             }}) AS direct_records
         }}
 
@@ -13943,7 +13963,8 @@ class Neo4jProvider(IGraphDBProvider):
             hasChildren: has_children,
             previewRenderable: coalesce(record.previewRenderable, true),
             userRole: permission_role,
-            isInternal: coalesce(record.isInternal, false)
+            isInternal: coalesce(record.isInternal, false),
+            isPlaceholder: coalesce(record.isPlaceholder, false)
         }}) AS raw_children
 
         RETURN raw_children
@@ -13972,6 +13993,10 @@ class Neo4jProvider(IGraphDBProvider):
         """
         filter_conditions = []
         filter_params = {}
+
+        # Placeholder stubs have no real content — never surface them in search/filter results
+        # (they only appear in the plain hierarchical browse, for reachability).
+        filter_conditions.append("coalesce(node.isPlaceholder, false) = false")
 
         # Search query filter - will be combined with other conditions
         if search_query:
@@ -14909,7 +14934,8 @@ class Neo4jProvider(IGraphDBProvider):
                    recordType: record.recordType,
                    sizeInBytes: COALESCE(record.sizeInBytes,
                                         CASE WHEN file_info IS NOT NULL THEN file_info.sizeInBytes ELSE null END),
-                   indexingStatus: record.indexingStatus
+                   indexingStatus: record.indexingStatus,
+                   isPlaceholder: COALESCE(record.isPlaceholder, false)
                  }
                ELSE null END
              ) AS record_nodes_with_nulls
@@ -15162,7 +15188,8 @@ class Neo4jProvider(IGraphDBProvider):
                    webUrl: record.webUrl,
                    hasChildren: has_children,
                    previewRenderable: COALESCE(record.previewRenderable, true),
-                   isInternal: COALESCE(record.isInternal, false)
+                   isInternal: COALESCE(record.isInternal, false),
+                   isPlaceholder: COALESCE(record.isPlaceholder, false)
                  }
                ELSE null END
              ) AS record_nodes_with_nulls

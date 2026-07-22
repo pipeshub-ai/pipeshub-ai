@@ -27,6 +27,8 @@ export interface KbNodeNameIconProps {
   name?: string;
   isSelected?: boolean;
   size?: number;
+  /** Placeholder stub for an out-of-scope ancestor — rendered with a distinct icon. */
+  isPlaceholder?: boolean;
 }
 
 export function KbNodeNameIcon({
@@ -41,6 +43,7 @@ export function KbNodeNameIcon({
   name,
   isSelected = false,
   size = 16,
+  isPlaceholder = false,
 }: KbNodeNameIconProps) {
   const isHubFolder =
     isKnowledgeHub &&
@@ -73,6 +76,12 @@ export function KbNodeNameIcon({
     return (
       <FolderIcon variant="default" size={size} color="var(--emerald-11)" />
     );
+  }
+
+  // Placeholder stubs (out-of-scope ancestors) hold hierarchy but carry no real content;
+  // show a muted document icon so they read as distinct from real synced records.
+  if (isPlaceholder) {
+    return <MaterialIcon name="description" size={size} color="var(--slate-9)" />;
   }
 
   const ext = isKnowledgeHub
