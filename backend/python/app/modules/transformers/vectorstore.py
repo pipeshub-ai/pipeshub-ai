@@ -57,7 +57,7 @@ RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
 _DEFAULT_CONCURRENCY_LIMIT = 5
-_LOCAL_CPU_DOCUMENT_BATCH_SIZE = 50
+_LOCAL_CPU_DOCUMENT_BATCH_SIZE = 20
 
 # Blocks are already capped at this size by the parsers (text_splitting.MAX_TEXT_BLOCK_CHARS),
 # but connector-authored blocks can bypass that path — guard defensively here too.
@@ -474,6 +474,24 @@ class VectorStore(Transformer):
                     field_schema=schema,
                 )
         except Exception as e:
+            err_msg = str(e).lower()
+            if "already exists" in err_msg:
+                self.logger.info(
+                    f"Collection '{self.collection_name}' was created concurrently; verifying dimension."
+                )
+                existing_dim = await self._get_existing_vector_dimension(self.collection_name)
+                if existing_dim is not None and existing_dim != embedding_size:
+                    raise VectorStoreError(
+                        f"Embedding model dimension mismatch: collection "
+                        f"'{self.collection_name}' was created with dimension {existing_dim} "
+                        f"but the current model produces dimension {embedding_size}.",
+                        details={
+                            "collection": self.collection_name,
+                            "existing_dim": existing_dim,
+                            "required_dim": embedding_size,
+                        },
+                    )
+                return
             self.logger.error(f"❌ Error creating collection '{self.collection_name}': {e}")
             raise VectorStoreError(
                 "Failed to create collection",
@@ -902,6 +920,7 @@ class VectorStore(Transformer):
             self.embedding_provider is None
             or self.embedding_provider == EmbeddingProvider.DEFAULT.value
             or self.embedding_provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value
+            or self.embedding_provider == EmbeddingProvider.HUGGING_FACE.value
         )
 
     async def _compute_sparse_embeddings(

@@ -289,8 +289,15 @@ export function ModelConfigDialog({
       if (!modelNameForDownload) return true;
 
       const trustRemoteCode = Boolean(currentValues.trustRemoteCode);
-      const prepareResult = await AIModelsApi.prepareModel(modelNameForDownload, trustRemoteCode);
-      if (prepareResult?.status === 'ready') return true;
+      try {
+        const prepareResult = await AIModelsApi.prepareModel(modelNameForDownload, trustRemoteCode);
+        if (prepareResult?.status === 'ready') return true;
+      } catch {
+        // Embedding server may still be starting up (e.g. during onboarding
+        // when all services boot simultaneously). Show the download progress
+        // dialog which will poll until the server becomes reachable and the
+        // model is ready, rather than failing the save outright.
+      }
 
       return waitForModelDownload(modelNameForDownload, trustRemoteCode);
     },
