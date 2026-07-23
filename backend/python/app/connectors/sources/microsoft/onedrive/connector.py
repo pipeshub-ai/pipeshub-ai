@@ -134,15 +134,6 @@ class OneDriveCredentials:
                 required=True,
                 default_value=False
             ),
-            AuthField(
-                name="redirectUri",
-                display_name="Redirect URI",
-                placeholder="http://localhost:3001/connectors/oauth/callback/onedrive",
-                description="The redirect URI for OAuth authentication",
-                field_type="URL",
-                required=False,
-                max_length=2000
-            )
         ])
     ])\
     .with_info(CONNECTOR_EMAIL_IDENTITY_INFO)\
@@ -170,7 +161,6 @@ class OneDriveCredentials:
             description="Enable indexing of shared items",
             default_value=True
         ))
-        .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
         .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
