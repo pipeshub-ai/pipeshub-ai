@@ -218,6 +218,20 @@ record_schema = {
             "isArchived": {"type": "boolean", "default": False},
             "isVLMOcrProcessed": {"type": "boolean", "default": False},
             "deletedByUserId": {"type": ["string", "null"]},
+            "processingStartedAt": {"type": ["number", "null"]},
+            "parsingStatus": {
+                "type": "string",
+                "enum": [
+                    "NOT_STARTED",
+                    "IN_PROGRESS",
+                    "FAILED",
+                    "COMPLETED",
+                    "FILE_TYPE_NOT_SUPPORTED",
+                    "AUTO_INDEX_OFF",
+                    "EMPTY",
+                    "QUEUED",
+                ],
+            },
             "indexingStatus": {
                 "type": "string",
                 "enum": [

@@ -347,8 +347,8 @@ class TestApplyEmptyCleanup:
         # Should NOT raise -- the cleanup is best-effort.
         await pipeline.apply(ctx)
 
-        # The regular "mark EMPTY" batch upsert still runs
-        pipeline.document_extraction.graph_provider.batch_update_nodes.assert_awaited_once()
+        # The regular "mark EMPTY" status update still runs
+        pipeline.document_extraction.graph_provider.update_node.assert_awaited_once()
 
 
 class TestApplyReconciliationContextBuildsWhenNone:

@@ -1,4 +1,5 @@
 replicaCount: 2
+terminationGracePeriodSeconds: 300
 
 # Global configuration
 global:
@@ -265,6 +266,20 @@ persistence:
 config:
   nodeEnv: "production"
   logLevel: "info"
+  # NOTE: with the Kafka broker, per-partition ordering means only one
+  # message per partition is processed at a time — actual concurrency is
+  # also capped by the record-events topic's partition count, regardless
+  # of these settings. Increase the topic's partition count too if you
+  # raise these values on Kafka.
+  maxConcurrentParsing: 5
+  maxConcurrentIndexing: 10
+  maxPendingIndexingTasks: 40
+  distributedIndexingConcurrency: true
+  indexingConcurrencyLeaseSeconds: 120
+  indexingConcurrencyRedisTimeoutSeconds: 5
+  shutdownTaskTimeout: 240
+  staleIndexingRecoveryStartupGraceSeconds: 330
+  staleIndexingRecoveryIntervalSeconds: 60
   backendPort: 3001  # Backend HTTP port; should match service.port and probe ports
   kvStoreType: "redis"  # Key-value store backend (e.g. "redis")
   allowedOrigins: ""  # SECURITY: Set to specific origins (comma-separated) instead of "*"

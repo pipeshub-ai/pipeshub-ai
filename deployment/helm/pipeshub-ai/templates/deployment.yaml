@@ -31,6 +31,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -75,6 +76,26 @@ spec:
               value: {{ .Values.config.nodeEnv | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
+            - name: MAX_CONCURRENT_PARSING
+              value: {{ .Values.config.maxConcurrentParsing | quote }}
+            - name: MAX_CONCURRENT_INDEXING
+              value: {{ .Values.config.maxConcurrentIndexing | quote }}
+            - name: MAX_PENDING_INDEXING_TASKS
+              value: {{ .Values.config.maxPendingIndexingTasks | quote }}
+            - name: DISTRIBUTED_INDEXING_CONCURRENCY
+              value: {{ .Values.config.distributedIndexingConcurrency | quote }}
+            - name: INDEXING_CONCURRENCY_KEY_PREFIX
+              value: {{ printf "%s:indexing:concurrency" (include "pipeshub-ai.fullname" .) | quote }}
+            - name: INDEXING_CONCURRENCY_LEASE_SECONDS
+              value: {{ .Values.config.indexingConcurrencyLeaseSeconds | quote }}
+            - name: INDEXING_CONCURRENCY_REDIS_TIMEOUT_SECONDS
+              value: {{ .Values.config.indexingConcurrencyRedisTimeoutSeconds | quote }}
+            - name: SHUTDOWN_TASK_TIMEOUT
+              value: {{ .Values.config.shutdownTaskTimeout | quote }}
+            - name: STALE_INDEXING_RECOVERY_STARTUP_GRACE_SECONDS
+              value: {{ .Values.config.staleIndexingRecoveryStartupGraceSeconds | quote }}
+            - name: STALE_INDEXING_RECOVERY_INTERVAL_SECONDS
+              value: {{ .Values.config.staleIndexingRecoveryIntervalSeconds | quote }}
             - name: KV_STORE_TYPE
               value: {{ .Values.config.kvStoreType | quote }}
             - name: ALLOWED_ORIGINS

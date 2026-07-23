@@ -1656,6 +1656,7 @@ class WebConnector(BaseConnector):
             )
 
             if existing_record and not content_changed:
+                file_record.parsing_status = existing_record.parsing_status
                 file_record.indexing_status = existing_record.indexing_status
                 file_record.extraction_status = existing_record.extraction_status
 

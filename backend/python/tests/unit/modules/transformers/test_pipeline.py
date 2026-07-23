@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.config.constants.arangodb import ProgressStatus
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import Block, BlockGroup, BlockType, DataFormat, GroupType
 from app.modules.transformers.pipeline import IndexingPipeline
@@ -53,6 +53,7 @@ def doc_extraction():
     de.graph_provider = AsyncMock()
     de.graph_provider.get_document = AsyncMock(return_value={})
     de.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
+    de.graph_provider.update_node = AsyncMock(return_value=True)
     return de
 
 
@@ -79,17 +80,11 @@ class TestApplyEmpty:
 
         await pipeline.apply(ctx)
 
-        # Should fetch the document from graph
-        doc_extraction.graph_provider.get_document.assert_awaited_once_with(
-            "rec-1", CollectionNames.RECORDS.value
-        )
-        # Should batch upsert with EMPTY status
-        doc_extraction.graph_provider.batch_update_nodes.assert_awaited_once()
-        call_args = doc_extraction.graph_provider.batch_update_nodes.call_args
-        docs = call_args[0][0]
-        assert docs[0]["indexingStatus"] == ProgressStatus.EMPTY.value
-        assert docs[0]["isDirty"] is False
-        assert docs[0]["extractionStatus"] == ProgressStatus.NOT_STARTED.value
+        doc_extraction.graph_provider.update_node.assert_awaited_once()
+        fields = doc_extraction.graph_provider.update_node.await_args.args[2]
+        assert fields["indexingStatus"] == ProgressStatus.EMPTY.value
+        assert fields["isDirty"] is False
+        assert fields["extractionStatus"] == ProgressStatus.NOT_STARTED.value
 
         # Should NOT call document_extraction or sink index/enrich
         doc_extraction.apply.assert_not_awaited()
@@ -97,14 +92,14 @@ class TestApplyEmpty:
         sink_orchestrator.enrich.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_empty_blocks_update_failure_logs_warning(self, pipeline, doc_extraction, sink_orchestrator):
-        doc_extraction.graph_provider.batch_update_nodes = AsyncMock(return_value=False)
+    async def test_empty_blocks_update_failure_raises(self, pipeline, doc_extraction, sink_orchestrator):
+        doc_extraction.graph_provider.update_node = AsyncMock(return_value=False)
         record = _make_record(blocks=[], block_groups=[], record_id="rec-fail")
         ctx = _make_ctx(record)
 
-        await pipeline.apply(ctx)
+        with pytest.raises(RuntimeError, match="Failed to persist EMPTY status"):
+            await pipeline.apply(ctx)
 
-        pipeline.logger.warning.assert_called()
         doc_extraction.apply.assert_not_awaited()
         sink_orchestrator.apply.assert_not_awaited()
 

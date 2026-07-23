@@ -53,11 +53,9 @@ class GraphDBTransformer(Transformer):
                         [status_doc], CollectionNames.RECORDS.value
                     )
                     if not success:
-                        self.logger.warning(
-                            "⚠️ Failed to update indexing status for record %s - record may not exist",
-                            record_id,
+                        raise RuntimeError(
+                            f"Failed to persist extractionStatus=FAILED for {record_id}"
                         )
-                        return
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
                 raise
@@ -351,11 +349,9 @@ class GraphDBTransformer(Transformer):
                     [status_doc], CollectionNames.RECORDS.value
                 )
                 if not success:
-                    self.logger.warning(
-                        "⚠️ Failed to update extraction status for record %s - record may not exist",
-                        record_id,
+                    raise RuntimeError(
+                        f"Failed to persist extractionStatus=COMPLETED for {record_id}"
                     )
-                    return
 
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")

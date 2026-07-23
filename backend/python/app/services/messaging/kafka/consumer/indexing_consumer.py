@@ -2,7 +2,10 @@ import asyncio
 import json
 import ssl
 import threading
+import time
+import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import wait as futures_wait
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Optional, override
 
@@ -13,9 +16,16 @@ from app.services.messaging.config import (
     IndexingEvent,
     IndexingMessageHandler,
     StreamMessage,
+    compute_retry_backoff_seconds,
     messaging_env,
 )
-from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType, format_exception_chain
+from app.services.messaging import consumer_concurrency as concurrency
+from app.services.messaging.distributed_concurrency import DistributedLeaseSet
+from app.services.messaging.error_classifier import (
+    MessageErrorClassifier,
+    MessageErrorType,
+    format_exception_chain,
+)
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.utils.request_context import (
@@ -25,19 +35,30 @@ from app.utils.request_context import (
 )
 
 if TYPE_CHECKING:
+    from app.services.messaging.distributed_concurrency import (
+        DistributedConcurrencyManager,
+    )
     from app.services.messaging.interface.producer import IMessagingProducer
     from app.services.messaging.retry_manager import RetryManager
 
 FUTURE_CLEANUP_INTERVAL = 100  # Cleanup completed futures every N messages
 _MAIN_LOOP_OP_TIMEOUT = 5.0
+# How often the retry-backoff wait re-checks self.running, so a shutdown
+# request can interrupt a long (up to 300s) wait instead of holding an
+# active-future slot — and blocking graceful shutdown — for the full delay.
+_DELAY_POLL_INTERVAL_SECONDS = 1.0
+
+# Re-exported for backwards compatibility with existing call sites/tests in
+# this module; canonical definition lives in app.services.messaging.config
+# so the Redis Streams consumer can share the same backoff schedule.
+_compute_retry_backoff_seconds = compute_retry_backoff_seconds
 
 
 class IndexingKafkaConsumer(IMessagingConsumer):
-    """Kafka consumer with dual-semaphore control for indexing pipeline.
+    """Kafka consumer with nested concurrency control for indexing.
 
-    This consumer is designed for the indexing service where messages go through
-    two phases: parsing and indexing. Each phase has its own semaphore to control
-    concurrency independently.
+    MAX_CONCURRENT_INDEXING bounds active handlers across the full pipeline;
+    MAX_CONCURRENT_PARSING further bounds parsing within that active set.
 
     Uses Redis-based RetryManager for persistent retry tracking across restarts.
     Error classification is based purely on exception type, not database status.
@@ -53,6 +74,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         kafka_config: KafkaConsumerConfig,
         retry_manager: Optional["RetryManager"] = None,
         producer: Optional["IMessagingProducer"] = None,
+        concurrency_manager: Optional["DistributedConcurrencyManager"] = None,
     ) -> None:
         self.logger = logger
         self.consumer: AIOKafkaConsumer | None = None
@@ -61,12 +83,15 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.consume_task = None
         self.retry_manager = retry_manager
         self.producer = producer
+        self.concurrency_manager = concurrency_manager
+        self._consumer_instance_id = uuid.uuid4().hex
+        self._distributed_log_times: dict[str, float] = {}
         # Worker thread infrastructure
         self.worker_executor: ThreadPoolExecutor | None = None
         self.worker_loop: asyncio.AbstractEventLoop | None = None
         self.worker_loop_ready = threading.Event()  # Signal when worker loop is ready
         self.main_loop: asyncio.AbstractEventLoop | None = None
-        # Dual semaphores for parsing and indexing phases (created in worker thread)
+        # Nested active-pipeline and parsing gates (created in worker thread)
         self.parsing_semaphore: asyncio.Semaphore | None = None
         self.indexing_semaphore: asyncio.Semaphore | None = None
         self.message_handler: Optional[IndexingMessageHandler] = None
@@ -74,6 +99,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._active_futures: set[Future[bool]] = set()
         self._futures_lock = threading.Lock()
         self._backpressure_logged = False
+        self._partition_lock = threading.Lock()
+        self._in_flight_partitions: set[TopicPartition] = set()
+        self._deferred_partition_offsets: dict[TopicPartition, int] = {}
 
     @staticmethod
     def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> dict[str, Any]:
@@ -202,7 +230,15 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self._active_futures.clear()
 
     def _wait_for_active_futures(self) -> None:
-        """Wait for all active futures to complete with a timeout"""
+        """Wait for all active futures to complete, bounded by ONE shared timeout.
+
+        Uses concurrent.futures.wait() rather than looping over futures and
+        giving each up to shutdown_task_timeout individually — a sequential
+        per-future timeout would let N stuck futures (e.g. messages mid
+        retry-backoff during an outage, see __delay_if_retry_not_ready) stall
+        shutdown for up to N * shutdown_task_timeout instead of a single
+        shutdown_task_timeout window.
+        """
         with self._futures_lock:
             futures_to_wait = list(self._active_futures)
 
@@ -210,23 +246,24 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.info("No active futures to wait for during shutdown")
             return
 
-        self.logger.info(f"Waiting for {len(futures_to_wait)} active tasks to complete (timeout: {messaging_env.shutdown_task_timeout}s)")
+        self.logger.info(f"Waiting for {len(futures_to_wait)} active tasks to complete (timeout: {messaging_env.shutdown_task_timeout}s total)")
+
+        done, not_done = futures_wait(futures_to_wait, timeout=messaging_env.shutdown_task_timeout)
 
         completed = 0
-        timed_out = 0
         errored = 0
-
-        for future in futures_to_wait:
+        for future in done:
             try:
-                future.result(timeout=messaging_env.shutdown_task_timeout)
+                future.result()
                 completed += 1
-            except TimeoutError:
-                timed_out += 1
-                self.logger.warning("Task timed out during shutdown")
-                future.cancel()
             except Exception as e:
                 errored += 1
                 self.logger.warning(f"Task errored during shutdown: {e}")
+
+        for future in not_done:
+            self.logger.warning("Task timed out during shutdown")
+            future.cancel()
+        timed_out = len(not_done)
 
         self.logger.info(
             f"Shutdown task cleanup: {completed} completed, {timed_out} timed out, {errored} errored"
@@ -241,12 +278,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
     async def cleanup(self) -> None:
         """Stop the Kafka consumer and clean up resources"""
         try:
-            # Stop worker thread first
-            self.__stop_worker_thread()
-
-            if self.consumer:
-                await self.consumer.stop()
-                self.logger.info("Kafka consumer stopped")
+            await self.stop()
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")
 
@@ -300,16 +332,32 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             except asyncio.CancelledError:
                 self.logger.debug("Consume task cancelled")
 
-        # Stop worker thread (this waits for active futures)
-        self.__stop_worker_thread()
+        # Keep the main loop responsive while worker tasks finish. They bridge
+        # commits, Redis leases, and retry tracking back onto this loop.
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, self.__stop_worker_thread)
+        except Exception as exc:
+            self.logger.error("Error stopping worker thread: %s", exc)
 
         # Stop the Kafka consumer last
         if self.consumer:
             try:
-                await self.consumer.stop()
+                consumer = self.consumer
+                self.consumer = None
+                await consumer.stop()
                 self.logger.info("✅ Kafka consumer stopped")
             except Exception as e:
                 self.logger.error(f"Error stopping Kafka consumer: {e}")
+        with self._partition_lock:
+            self._in_flight_partitions.clear()
+            self._deferred_partition_offsets.clear()
+
+        # concurrency_manager/retry_manager are injected, not owned — closing
+        # them here would break a restart (start() -> stop() -> start() reuses
+        # the same instances) and duplicate indexing_main's own cleanup of
+        # them. The creator (start_kafka_consumers/stop_kafka_consumers) is
+        # responsible for their lifecycle.
 
     @override
     def is_running(self) -> bool:
@@ -338,15 +386,71 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 )
                 self._backpressure_logged = True
         else:
-            # Resume any paused partitions
+            # A partition remains paused while one of its messages is in flight;
+            # this preserves Kafka's per-partition processing/commit order.
             paused = self.consumer.paused()
-            if paused:
-                self.consumer.resume(*paused)
+            with self._partition_lock:
+                in_flight_partitions = set(self._in_flight_partitions)
+            resumable = paused - in_flight_partitions
+            if resumable:
+                self.consumer.resume(*resumable)
             if self._backpressure_logged:
                 self.logger.info(
                     f"Backpressure cleared: active tasks back to {active_count}/{messaging_env.max_pending_indexing_tasks}"
                 )
                 self._backpressure_logged = False
+
+    def __reserve_partition(self, message: ConsumerRecord) -> bool:
+        # Only one message per partition is ever in flight at a time (Kafka
+        # ordering), so real concurrency is capped by min(MAX_CONCURRENT_*,
+        # partition count) — raising the semaphore limits without also
+        # increasing the topic's partition count won't raise throughput.
+        topic_partition = TopicPartition(message.topic, message.partition)
+        with self._partition_lock:
+            if topic_partition in self._in_flight_partitions:
+                current = self._deferred_partition_offsets.get(topic_partition)
+                self._deferred_partition_offsets[topic_partition] = (
+                    message.offset
+                    if current is None
+                    else min(current, message.offset)
+                )
+                return False
+            self._in_flight_partitions.add(topic_partition)
+
+        self.consumer.pause(topic_partition)
+        return True
+
+    def __finish_partition(
+        self,
+        message: ConsumerRecord,
+        retry_current: bool,
+    ) -> None:
+        topic_partition = TopicPartition(message.topic, message.partition)
+        with self._partition_lock:
+            self._in_flight_partitions.discard(topic_partition)
+            deferred_offset = self._deferred_partition_offsets.pop(
+                topic_partition,
+                None,
+            )
+
+        retry_offset = message.offset if retry_current else None
+        if deferred_offset is not None:
+            retry_offset = (
+                deferred_offset
+                if retry_offset is None
+                else min(retry_offset, deferred_offset)
+            )
+
+        if self.consumer is None:
+            return
+        if retry_offset is not None:
+            self.consumer.seek(topic_partition, retry_offset)
+        if (
+            self.running
+            and self._get_active_task_count()
+            < messaging_env.max_pending_indexing_tasks
+        ):
+            self.consumer.resume(topic_partition)
 
     async def __consume_loop(self) -> None:
         """Main consumption loop with dual semaphore control"""
@@ -356,10 +460,18 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 try:
                     self.__apply_backpressure()
 
+                    available_capacity = max(
+                        1,
+                        messaging_env.max_pending_indexing_tasks
+                        - self._get_active_task_count(),
+                    )
 
                     message_batch = await self.consumer.getmany(
                         timeout_ms=messaging_env.message_timeout_ms,
-                        max_records=messaging_env.message_batch_size_indexing
+                        max_records=min(
+                            max(1, messaging_env.message_batch_size_indexing),
+                            available_capacity,
+                        ),
                     )  # type: ignore
 
                     if not message_batch:
@@ -374,8 +486,25 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
                             try:
                                 self.logger.info(f"Received message: topic={message.topic}, partition={message.partition}, offset={message.offset}")
+                                if self.__defer_if_retry_not_ready(message):
+                                    # Not ready: seeked back already. Kafka's
+                                    # per-partition ordering means we can't
+                                    # skip ahead to later messages in this
+                                    # partition anyway, so stop draining this
+                                    # partition's batch and let the next
+                                    # getmany() poll re-check it — without
+                                    # pausing the partition or spending a
+                                    # worker-thread/active-task slot on a
+                                    # multi-minute sleep in the meantime.
+                                    break
+                                if not self.__reserve_partition(message):
+                                    continue
                                 await self.__start_processing_task(message)
                             except Exception as e:
+                                self.__finish_partition(
+                                    message,
+                                    retry_current=True,
+                                )
                                 self.logger.error(f"Error processing individual message: {e}")
                                 continue
 
@@ -394,6 +523,36 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.info(f"🛑 Consume loop exited. Active tasks remaining: {active_count}")
 
 
+
+    def __defer_if_retry_not_ready(self, message: ConsumerRecord) -> bool:
+        """Seek back to ``message`` and return True if its retry backoff
+        (``_retry_not_before``, stamped by ``_requeue_message``) hasn't
+        elapsed yet.
+
+        Checked here — before ``__reserve_partition`` pauses the partition
+        and before a worker-thread task/active-task slot is spent — so a
+        single backing-off record doesn't tie up pipeline capacity for
+        others while it waits out its (up to 5 minute) backoff. Ordering
+        still means this partition can't skip ahead to later messages, but
+        at least the wait no longer consumes real processing resources.
+        """
+        parsed = self.__parse_message(message)
+        if parsed is None:
+            return False
+        not_before = parsed.payload.get("_retry_not_before")
+        if not not_before:
+            return False
+        try:
+            remaining = float(not_before) - time.time()
+        except (TypeError, ValueError):
+            return False
+        if remaining <= 0:
+            return False
+
+        self.consumer.seek(
+            TopicPartition(message.topic, message.partition), message.offset
+        )
+        return True
 
     def __parse_message(self, message: ConsumerRecord) -> StreamMessage | None:
         """Parse the Kafka message value into a StreamMessage.
@@ -448,19 +607,24 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         Tracks futures to ensure proper cleanup during shutdown.
         """
         if not self.worker_loop:
-            self.logger.error("Worker loop not initialized, cannot process message")
-            return
+            # Raise (not return) so the caller's except-block runs
+            # __finish_partition — otherwise __reserve_partition's pause
+            # above is never undone and this partition wedges forever.
+            raise RuntimeError("Worker loop not initialized, cannot process message")
 
         if not self.running:
-            self.logger.warning("Consumer is stopping, skipping message processing")
-            return
-
+            raise RuntimeError("Consumer is stopping, skipping message processing")
 
         # Submit coroutine to worker thread's event loop and track the future
-        future = asyncio.run_coroutine_threadsafe(
-            self.__process_message_wrapper(message),
-            self.worker_loop
-        )
+        processing_coro = self.__process_message_wrapper(message)
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                processing_coro,
+                self.worker_loop,
+            )
+        except BaseException:
+            processing_coro.close()
+            raise
 
         # Track the future for cleanup during shutdown
         with self._futures_lock:
@@ -471,50 +635,68 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             with self._futures_lock:
                 self._active_futures.discard(f)
 
+            retry_current = False
             try:
                 _ = f.result()
+            except asyncio.CancelledError:
+                # Shutdown/reassignment cancelled the task — don't retry, but
+                # still fall through to __finish_partition below so the
+                # partition gets resumed/committed instead of stalling.
+                pass
             except Exception as exc:
+                retry_current = True
                 self.logger.error(f"Task completed with unhandled exception: {exc}")
+            main_loop = self.main_loop
+            if main_loop is not None and main_loop.is_running():
+                main_loop.call_soon_threadsafe(
+                    self.__finish_partition,
+                    message,
+                    retry_current,
+                )
 
         future.add_done_callback(on_future_done)
 
     async def _run_on_main_loop(self, coro: Any) -> Any:
         """Run a coroutine on the main loop (safe when called from the worker loop)."""
-        current_loop = asyncio.get_running_loop()
-        main_loop = self.main_loop
-        needs_bridge = (
-            main_loop is not None
-            and main_loop.is_running()
-            and current_loop is not main_loop
+        return await concurrency.bridge_to_main_loop(self, coro, _MAIN_LOOP_OP_TIMEOUT)
+
+    def _log_distributed_error(self, operation: str, error: Exception) -> None:
+        concurrency.log_distributed_error(self, operation, error)
+
+    async def _acquire_distributed_slot(
+        self,
+        pool: str,
+        owner: str,
+        limit: int,
+        deadline_seconds: float | None = None,
+    ) -> bool:
+        """Try to acquire a distributed lease; see consumer_concurrency for semantics."""
+        return await concurrency.acquire_distributed_slot(
+            self, pool, owner, limit, deadline_seconds
         )
-        if needs_bridge:
-            future = asyncio.run_coroutine_threadsafe(coro, main_loop)
-            return await asyncio.wait_for(
-                asyncio.wrap_future(future), timeout=_MAIN_LOOP_OP_TIMEOUT
-            )
-        return await coro
+
+    async def _release_distributed_slot(self, pool: str, owner: str) -> None:
+        await concurrency.release_distributed_slot(self, pool, owner)
+
+    async def _renew_distributed_slots(
+        self,
+        leases: DistributedLeaseSet,
+    ) -> None:
+        await concurrency.renew_distributed_slots(self, leases)
+
+    def _start_distributed_renewal(
+        self,
+        leases: DistributedLeaseSet,
+    ) -> asyncio.Future[None]:
+        return concurrency.start_distributed_renewal(self, leases)
 
     async def _clear_retry_tracking(self, message_id: str) -> None:
-        if not self.retry_manager:
-            return
-        try:
-            await self._run_on_main_loop(self.retry_manager.clear(message_id))
-        except Exception as e:
-            self.logger.error(
-                "Failed to clear retry tracking for %s: %s", message_id, e
-            )
+        await concurrency.clear_retry_tracking(self, message_id)
 
     async def _increment_retry_and_check(
         self, message_id: str
     ) -> tuple[int, bool]:
-        if not self.retry_manager:
-            return 0, False
-        result = await self._run_on_main_loop(
-            self.retry_manager.increment_and_check(
-                message_id, messaging_env.max_delivery_attempts
-            )
-        )
-        return result
+        return await concurrency.increment_retry_and_check(self, message_id)
 
     async def _commit_offset(self, message: ConsumerRecord) -> None:
         """Commit offset on the main loop where the Kafka consumer was started."""
@@ -544,7 +726,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         return f"{message.topic}-{message.partition}-{message.offset}"
 
     async def _requeue_message(
-        self, topic: str, message: StreamMessage, stable_message_id: str
+        self, topic: str, message: StreamMessage, stable_message_id: str, retry_count: int = 1
     ) -> None:
         """Re-publish a failed message to the same topic for retry.
         
@@ -552,19 +734,27 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         to resolve before retry. The original offset is committed.
         
         Preserves the stable message ID in the payload for retry tracking.
+        Stamps an absolute `_retry_not_before` timestamp (exponential backoff
+        on retry_count) instead of sleeping here: this call runs inside the
+        `except` clause, before the `finally` block releases the parsing
+        semaphore, so sleeping here would hold that slot for the whole
+        backoff window. The delay is honored later, on the consume side,
+        before any semaphore is acquired (see __process_message_wrapper).
         
         Args:
             topic: Topic to re-queue to
             message: The message to re-queue
             stable_message_id: Stable ID for retry tracking (preserved across re-queues)
+            retry_count: Current delivery attempt count, used to size the backoff
         """
         if not self.producer:
-            self.logger.error("No producer available for re-queue")
-            return
+            raise RuntimeError("No producer available for re-queue")
         
         try:
             payload = dict(message.payload)
             payload["_retry_tracking_id"] = stable_message_id
+            backoff_seconds = _compute_retry_backoff_seconds(retry_count)
+            payload["_retry_not_before"] = time.time() + backoff_seconds
             
             await self._run_on_main_loop(
                 self.producer.send_event(
@@ -572,6 +762,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     event_type=message.eventType,
                     payload=payload,
                 )
+            )
+            self.logger.debug(
+                f"Re-queued {stable_message_id} with {backoff_seconds:.0f}s backoff (attempt {retry_count})"
             )
         except Exception as e:
             self.logger.error(f"Failed to re-queue message to {topic}: {e}")
@@ -618,13 +811,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             else:
                 # RE-QUEUE: Publish back to same topic for retry
                 try:
-                    await self._requeue_message(message.topic, parsed_message, stable_message_id)
+                    await self._requeue_message(message.topic, parsed_message, stable_message_id, retry_count=count)
                     self.logger.info(
                         f"Re-queued {message_id} (tracking ID: {stable_message_id}) for retry (attempt {count}/"
                         f"{messaging_env.max_delivery_attempts})"
                     )
                 except Exception as e:
                     self.logger.error(f"Failed to re-queue {message_id}: {e}")
+                    raise
         else:
             self.logger.warning(
                 f"Message {message_id} failed, no retry manager or unparseable, committing"
@@ -638,16 +832,62 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.error(f"Failed to commit offset for {message_id}: {e}")
             raise
 
+    async def __delay_if_retry_not_ready(
+        self, parsed_message: StreamMessage, message_id: str
+    ) -> bool:
+        """Sleep out the remaining backoff window for a re-queued message.
+
+        Called before any semaphore is acquired (see __process_message_wrapper),
+        so the wait ties up only a pending-task slot, not a parsing/indexing
+        concurrency slot, while a downstream outage clears.
+
+        Sleeps in small increments and re-checks ``self.running`` between
+        them, so a shutdown request interrupts the wait quickly instead of
+        holding this future — and blocking graceful shutdown's per-future
+        wait in __stop_worker_thread — for up to the full ~300s backoff.
+
+        Returns False if the consumer is shutting down and the wait was
+        abandoned early (caller should not process/commit the message —
+        its offset stays uncommitted and it will be redelivered on restart).
+        """
+        not_before = parsed_message.payload.get("_retry_not_before")
+        if not not_before:
+            return True
+        try:
+            remaining = float(not_before) - time.time()
+        except (TypeError, ValueError):
+            return True
+        if remaining <= 0:
+            return True
+
+        self.logger.debug(
+            f"Delaying re-queued message {message_id} for {remaining:.1f}s before processing"
+        )
+        while remaining > 0:
+            if not self.running:
+                self.logger.info(
+                    f"Consumer stopping, abandoning delayed retry for {message_id} "
+                    "(offset left uncommitted, will be redelivered)"
+                )
+                return False
+            await asyncio.sleep(min(_DELAY_POLL_INTERVAL_SECONDS, remaining))
+            remaining -= _DELAY_POLL_INTERVAL_SECONDS
+        return True
+
     async def __process_message_wrapper(self, message: ConsumerRecord) -> bool:
         """Wrapper to handle async task cleanup and semaphore release based on yielded events.
 
-        Semaphore lifecycle (decoupled phases):
-        - parsing_semaphore: acquired at start, released on PARSING_COMPLETE
-        - indexing_semaphore: acquired on PARSING_COMPLETE, released on INDEXING_COMPLETE
+        Semaphore lifecycle:
+        - indexing_semaphore: outer active-pipeline gate, held from handler
+          entry through INDEXING_COMPLETE
+        - parsing_semaphore: nested parse gate, acquired on START_PARSING and
+          released on PARSING_COMPLETE
 
-        The two phases are independent: a record that has finished parsing and
-        moved into the indexing phase no longer blocks a parsing slot, so the
-        next record can start parsing immediately.
+        The outer gate is acquired before the handler so up to
+        MAX_CONCURRENT_INDEXING records can be IN_PROGRESS. Parsing slots are
+        acquired only after the handler requests them, so already-parsed
+        records can keep progressing through extraction/vectordb while new
+        ones wait for a free parse slot.
 
         Error classification is based purely on exception type:
         - TERMINAL: Commit immediately (parsing errors, validation errors)
@@ -662,24 +902,76 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         parsing_held = False
         indexing_held = False
-        parsed_message: StreamMessage | None = None
+        shutting_down = False
+        distributed_leases = DistributedLeaseSet()
+        renewal_task: asyncio.Future[None] | None = None
+        lease_owner = (
+            f"{self._consumer_instance_id}:{message_id}:{uuid.uuid4().hex}"
+        )
 
         if not self.parsing_semaphore or not self.indexing_semaphore:
             self.logger.error(f"Semaphores not initialized for {message_id}")
             return False
 
+        # Parse (and, for re-queued messages, wait out any backoff) before
+        # acquiring the parsing semaphore. This way a retry waiting for a
+        # downed service to recover only occupies a pending-task slot
+        # (counted against backpressure), never a parsing/indexing semaphore
+        # slot — the exact resource a sibling record needs to make progress.
+        parsed_message = self.__parse_message(message)
+        if parsed_message is None:
+            self.logger.warning(f"Failed to parse message {message_id}, skipping")
+            await self.__commit_if_appropriate(message, None, success=False, is_terminal_error=True)
+            return False
+
+        if not await self.__delay_if_retry_not_ready(parsed_message, message_id):
+            return False
+
+        stable_message_id = self._get_stable_message_id(message, parsed_message)
+        record_lock_id = (
+            parsed_message.payload.get("recordId") or stable_message_id
+        )
+        record_pool = f"record:{record_lock_id}"
+
         try:
-            await self.parsing_semaphore.acquire()
-            parsing_held = True
+            # MAX_CONCURRENT_INDEXING is also the active-pipeline bound. Without
+            # this outer permit, parsed records can accumulate while waiting for
+            # an indexing permit and every one can remain IN_PROGRESS in the DB.
+            if self.concurrency_manager is not None:
+                if not await self._acquire_distributed_slot(
+                    "indexing",
+                    lease_owner,
+                    messaging_env.max_concurrent_indexing,
+                ):
+                    return False
+                distributed_leases.add("indexing", lease_owner)
+                # Recovery treats this lease as proof of active processing, so
+                # queued tasks must not own it before entering the indexing gate.
+                renewal_task = self._start_distributed_renewal(
+                    distributed_leases
+                )
 
-            parsed_message = self.__parse_message(message)
-            if parsed_message is None:
-                self.logger.warning(f"Failed to parse message {message_id}, skipping")
-                await self.__commit_if_appropriate(message, None, success=False, is_terminal_error=True)
-                return False
+            await self.indexing_semaphore.acquire()
+            indexing_held = True
 
-            # Get stable message ID for retry tracking (preserves across re-queues)
-            stable_message_id = self._get_stable_message_id(message, parsed_message)
+            if self.concurrency_manager is not None:
+                if not await self._acquire_distributed_slot(
+                    record_pool,
+                    lease_owner,
+                    1,
+                    deadline_seconds=messaging_env.record_lease_wait_seconds,
+                ):
+                    if self.running:
+                        self.logger.debug(
+                            f"Record lease contended for {message_id}; another "
+                            "in-flight duplicate delivery already owns it, "
+                            "dropping this one without commit (offset "
+                            "advances on a later message in this partition)"
+                        )
+                    return False
+                distributed_leases.add(record_pool, lease_owner)
+
+            parsed_message.payload["_processing_started_at"] = int(time.time() * 1000)
 
             # Check current retry count to predict if this will be the final attempt on failure
             current_retry_count = 0
@@ -701,21 +993,97 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 # Carry the producer's trace id into indexing logs.
                 ctx = context_from_envelope({"requestId": parsed_message.requestId})
                 token = set_context(ctx.root_id)
-                try:
+
+                async def consume_handler_events() -> None:
+                    nonlocal parsing_held, indexing_held, success, shutting_down
                     async with asyncio.timeout(messaging_env.record_processing_timeout):
-                        async for event in self.message_handler(parsed_message):
-                            if event.event == IndexingEvent.PARSING_COMPLETE and parsing_held and self.parsing_semaphore:
-                                self.parsing_semaphore.release()
-                                parsing_held = False
-                                self.logger.debug(f"Released parsing semaphore for {message_id}")
-                                await self.indexing_semaphore.acquire()
-                                indexing_held = True
-                                self.logger.debug(f"Acquired indexing semaphore for {message_id}")
-                            elif event.event == IndexingEvent.INDEXING_COMPLETE and indexing_held and self.indexing_semaphore:
-                                self.indexing_semaphore.release()
-                                indexing_held = False
-                                self.logger.debug(f"Released indexing semaphore for {message_id}")
-                                success = True
+                        event_gen = self.message_handler(parsed_message)
+                        try:
+                            async for event in event_gen:
+                                if (
+                                    event.event == IndexingEvent.START_PARSING
+                                    and not parsing_held
+                                    and self.parsing_semaphore
+                                ):
+                                    if self.concurrency_manager is not None:
+                                        if not await self._acquire_distributed_slot(
+                                            "parsing",
+                                            lease_owner,
+                                            messaging_env.max_concurrent_parsing,
+                                        ):
+                                            # Only reason try_acquire gives up
+                                            # (no deadline here) is self.running
+                                            # flipping — abort without raising
+                                            # so the caller doesn't burn a
+                                            # retry attempt on a clean shutdown.
+                                            shutting_down = True
+                                            return
+                                        distributed_leases.add("parsing", lease_owner)
+                                    await self.parsing_semaphore.acquire()
+                                    parsing_held = True
+                                    self.logger.debug(
+                                        f"Acquired parsing semaphore for {message_id}"
+                                    )
+                                elif (
+                                    event.event == IndexingEvent.PARSING_COMPLETE
+                                    and parsing_held
+                                    and self.parsing_semaphore
+                                ):
+                                    distributed_leases.discard("parsing")
+                                    await self._release_distributed_slot(
+                                        "parsing", lease_owner
+                                    )
+                                    self.parsing_semaphore.release()
+                                    parsing_held = False
+                                    self.logger.debug(
+                                        f"Released parsing semaphore for {message_id}"
+                                    )
+                                elif (
+                                    event.event == IndexingEvent.INDEXING_COMPLETE
+                                    and indexing_held
+                                    and self.indexing_semaphore
+                                ):
+                                    distributed_leases.discard("indexing")
+                                    await self._release_distributed_slot(
+                                        "indexing", lease_owner
+                                    )
+                                    self.indexing_semaphore.release()
+                                    indexing_held = False
+                                    self.logger.debug(
+                                        f"Released indexing semaphore for {message_id}"
+                                    )
+                                    success = True
+                        finally:
+                            # If this coroutine is cancelled (timeout, or the
+                            # renewal-loss path cancelling handler_task below)
+                            # while suspended on the semaphore acquire, the
+                            # CancelledError lands here — not inside the
+                            # handler generator. Explicitly closing it
+                            # delivers GeneratorExit so the handler's own
+                            # cleanup (reverting IN_PROGRESS) still runs.
+                            await event_gen.aclose()
+
+                handler_task: asyncio.Task[None] | None = None
+                try:
+                    handler_task = asyncio.create_task(consume_handler_events())
+                    if renewal_task is not None:
+                        done, _pending = await asyncio.wait(
+                            {handler_task, renewal_task},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        if handler_task not in done:
+                            try:
+                                renewal_error = renewal_task.exception()
+                            except asyncio.CancelledError:
+                                renewal_error = RuntimeError(
+                                    "Distributed concurrency lease guard was cancelled"
+                                )
+                            handler_task.cancel()
+                            await asyncio.gather(handler_task, return_exceptions=True)
+                            raise renewal_error or RuntimeError(
+                                "Distributed concurrency lease guard stopped"
+                            )
+                    await handler_task
                 except TimeoutError:
                     self.logger.error(
                         f"Record processing timed out after {messaging_env.record_processing_timeout}s "
@@ -723,10 +1091,30 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     )
                     raise
                 finally:
+                    if handler_task is not None and not handler_task.done():
+                        handler_task.cancel()
+                        await asyncio.gather(
+                            handler_task,
+                            return_exceptions=True,
+                        )
+                    if renewal_task is not None:
+                        renewal_task.cancel()
+                        await asyncio.gather(renewal_task, return_exceptions=True)
+                        renewal_task = None
                     reset_context(token)
             else:
                 self.logger.error(f"No message handler available for {message_id}")
                 await self.__commit_if_appropriate(message, parsed_message, success=False, is_terminal_error=True)
+                return False
+
+            if shutting_down:
+                # Consumer stopped while waiting for the parsing slot: leave
+                # the offset uncommitted (redelivered on restart) instead of
+                # committing/retrying, matching the indexing/record lease
+                # gates above which already just return on shutdown.
+                self.logger.info(
+                    f"Consumer stopping, abandoning {message_id} without commit"
+                )
                 return False
 
             # Commit based on success
@@ -762,12 +1150,24 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             return False
         finally:
             # Ensure semaphores are released even on error
+            if renewal_task is not None:
+                renewal_task.cancel()
+                await asyncio.gather(renewal_task, return_exceptions=True)
+
             if parsing_held and self.parsing_semaphore:
+                if distributed_leases.discard("parsing") is not None:
+                    await self._release_distributed_slot("parsing", lease_owner)
                 self.parsing_semaphore.release()
                 self.logger.debug(f"Released parsing semaphore in finally for {message_id}")
 
             if indexing_held and self.indexing_semaphore:
+                if distributed_leases.discard("indexing") is not None:
+                    await self._release_distributed_slot("indexing", lease_owner)
                 self.indexing_semaphore.release()
                 self.logger.debug(f"Released indexing semaphore in finally for {message_id}")
+
+            for pool, owner in distributed_leases.snapshot():
+                distributed_leases.discard(pool)
+                await self._release_distributed_slot(pool, owner)
 
 

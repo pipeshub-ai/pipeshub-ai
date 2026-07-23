@@ -84,7 +84,7 @@ async def _collect_events(async_gen):
 
 # ===================================================================
 # Lines 156-157: process_image - non-DocumentProcessingError wrapping
-# When batch_update_nodes raises a generic Exception (not
+# When update_node raises a generic Exception (not
 # DocumentProcessingError), it should be wrapped.
 # ===================================================================
 
@@ -97,8 +97,7 @@ class TestProcessImageNonDocError:
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="photo.png", mimeType="image/png")
         )
-        # batch_update_nodes raises a generic error
-        proc.graph_provider.batch_update_nodes = AsyncMock(
+        proc.graph_provider.update_node = AsyncMock(
             side_effect=RuntimeError("db connection lost")
         )
 
@@ -1325,11 +1324,13 @@ class TestEnhanceTablesEmptyCellsDict:
             "app.utils.indexing_helpers.get_table_summary_n_headers",
             new_callable=AsyncMock,
             return_value=mock_response,
-        ):
-            # No get_rows_text needed because non_header_row_dicts will be [{...}]
-            # Actually with empty headers, the condition `isinstance(cells, list) and column_headers`
-            # evaluates to False (empty list is falsy), so row_dicts.append({}) is reached
+        ), patch(
+            "app.utils.indexing_helpers.get_rows_text",
+            new_callable=AsyncMock,
+        ) as mock_get_rows_text:
             await proc._enhance_tables_with_llm(bc)
+
+        mock_get_rows_text.assert_not_awaited()
 
 
 # ===================================================================
