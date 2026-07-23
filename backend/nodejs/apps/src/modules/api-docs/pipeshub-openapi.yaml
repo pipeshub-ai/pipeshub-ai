@@ -3813,6 +3813,12 @@ components:
             isInternal:
               type: boolean
               nullable: true
+            isPlaceholder:
+              type: boolean
+              nullable: true
+              description: >-
+                True for placeholder/stub records standing in for an out-of-scope ancestor
+                (rendered read-only, no content actions; excluded from search and indexing).
             fileRecord:
               type: object
               nullable: true
