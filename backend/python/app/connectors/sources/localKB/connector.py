@@ -32,6 +32,7 @@ from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.models.entities import Record
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
+from app.connectors.core.base.error.stream_errors import to_stream_error
 
 KB_CONNECTOR_NAME = "Collections"
 
@@ -235,10 +236,9 @@ class KnowledgeBaseConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Failed to stream record {record.id}: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to stream record: {str(e)}"
-            )
+            # make_api_call raises ApiCallError carrying the storage service's
+            # own status; without this it flattens to a 500.
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def run_sync(self) -> None:
         """No-op for KB connector - KBs are local storage"""

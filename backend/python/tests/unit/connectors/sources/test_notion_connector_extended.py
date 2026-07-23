@@ -234,8 +234,10 @@ class TestGetSignedUrl:
         c.data_source = None
         record = MagicMock()
         record.external_record_id = "block-1"
-        result = await c.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await c.get_signed_url(record)
+        assert exc_info.value.status_code == 409
+        assert "not connected" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_comment_attachment_prefix(self):
@@ -264,8 +266,10 @@ class TestGetSignedUrl:
         c._get_block_file_url = AsyncMock(side_effect=Exception("API error"))
         record = MagicMock()
         record.external_record_id = "block-123"
-        with pytest.raises(Exception, match="API error"):
+        with pytest.raises(HTTPException) as exc_info:
             await c.get_signed_url(record)
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == "Could not retrieve this item. Please try again."
 
 
 # ===========================================================================
