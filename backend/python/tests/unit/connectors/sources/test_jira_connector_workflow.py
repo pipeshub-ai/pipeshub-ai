@@ -27,7 +27,6 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     DEFAULT_MAX_RESULTS,
     ISSUE_SEARCH_FIELDS,
     JiraConnector,
-    adf_to_plain_text,
 )
 from app.models.entities import (
     AppRole,
@@ -94,92 +93,6 @@ def _make_mock_response(status=200, data=None, text_val=""):
     resp.json = MagicMock(return_value=data or {})
     resp.text = MagicMock(return_value=text_val)
     return resp
-
-
-# ===========================================================================
-# ADF plain-text extraction - covers adf_to_plain_text (searchable description)
-# ===========================================================================
-
-
-class TestAdfToPlainText:
-
-    def test_non_dict_returns_empty(self):
-        assert adf_to_plain_text(None) == ""
-        assert adf_to_plain_text("string") == ""
-        assert adf_to_plain_text(["a", "b"]) == ""
-        assert adf_to_plain_text(42) == ""
-
-    def test_empty_doc(self):
-        assert adf_to_plain_text({}) == ""
-        assert adf_to_plain_text({"type": "doc", "content": []}) == ""
-
-    def test_single_paragraph(self):
-        adf = {"type": "doc", "content": [
-            {"type": "paragraph", "content": [{"type": "text", "text": "Hello world"}]}
-        ]}
-        assert adf_to_plain_text(adf) == "Hello world"
-
-    def test_multiple_blocks_space_joined(self):
-        adf = {"type": "doc", "content": [
-            {"type": "heading", "content": [{"type": "text", "text": "Title"}]},
-            {"type": "paragraph", "content": [{"type": "text", "text": "Body text"}]},
-        ]}
-        assert adf_to_plain_text(adf) == "Title Body text"
-
-    def test_marks_ignored_text_kept(self):
-        adf = {"type": "doc", "content": [
-            {"type": "paragraph", "content": [
-                {"type": "text", "text": "bold", "marks": [{"type": "strong"}]},
-            ]}
-        ]}
-        assert adf_to_plain_text(adf) == "bold"
-
-    def test_nested_table_and_list_collected_in_order(self):
-        adf = {"type": "doc", "content": [
-            {"type": "table", "content": [
-                {"type": "tableRow", "content": [
-                    {"type": "tableCell", "content": [
-                        {"type": "paragraph", "content": [{"type": "text", "text": "cell-1"}]},
-                    ]},
-                ]},
-            ]},
-            {"type": "bulletList", "content": [
-                {"type": "listItem", "content": [
-                    {"type": "paragraph", "content": [{"type": "text", "text": "item-1"}]},
-                ]},
-            ]},
-        ]}
-        assert adf_to_plain_text(adf) == "cell-1 item-1"
-
-    def test_media_node_contributes_no_text(self):
-        # A media node carries only a UUID/alt in attrs, no text child -> nothing added.
-        adf = {"type": "doc", "content": [
-            {"type": "paragraph", "content": [{"type": "text", "text": "before"}]},
-            {"type": "mediaSingle", "content": [
-                {"type": "media", "attrs": {"id": "uuid", "alt": "dk.png", "type": "file"}}
-            ]},
-            {"type": "paragraph", "content": [{"type": "text", "text": "after"}]},
-        ]}
-        assert adf_to_plain_text(adf) == "before after"
-
-    def test_whitespace_collapsed(self):
-        adf = {"type": "doc", "content": [
-            {"type": "paragraph", "content": [{"type": "text", "text": "line1\n\n  line2   line3"}]},
-        ]}
-        assert adf_to_plain_text(adf) == "line1 line2 line3"
-
-    def test_root_node_without_content_key(self):
-        adf = {"type": "paragraph", "content": [{"type": "text", "text": "Direct"}]}
-        assert adf_to_plain_text(adf) == "Direct"
-
-    def test_empty_text_nodes_skipped(self):
-        adf = {"type": "doc", "content": [
-            {"type": "paragraph", "content": [
-                {"type": "text", "text": ""},
-                {"type": "text", "text": "kept"},
-            ]}
-        ]}
-        assert adf_to_plain_text(adf) == "kept"
 
 
 # ===========================================================================

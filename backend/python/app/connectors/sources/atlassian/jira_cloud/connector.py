@@ -150,33 +150,6 @@ ISSUE_SEARCH_FIELDS: list[str] = [
 ]
 
 
-
-def adf_to_plain_text(adf_content: Any) -> str:
-    """Roll a Jira ADF document up into plain text for a record's searchable description.
-
-    A lightweight text roll-up, not a formatter: the full rendered content (images, tables,
-    attachments) is streamed as HTML blocks elsewhere. Used only for the ``description`` field
-    of issue and project records.
-    """
-    if not isinstance(adf_content, dict):
-        return ""
-
-    parts: list[str] = []
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            if node.get("type") == "text" and node.get("text"):
-                parts.append(node["text"])
-            for child in node.get("content") or []:
-                walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                walk(child)
-
-    walk(adf_content)
-    return " ".join(" ".join(parts).split())
-
-
 @ConnectorBuilder("Jira")\
     .in_group(AppGroups.ATLASSIAN.value)\
     .with_description("Sync issues from Jira Cloud")\
@@ -503,92 +476,6 @@ class JiraConnector(BaseConnector):
         return JiraDataSource(self.external_client)
 
     # ============================================================================
-    # Filter Options
-    # ============================================================================
-
-    async def get_filter_options(
-        self,
-        filter_key: str,
-        page: int = 1,
-        limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None
-    ) -> FilterOptionsResponse:
-        """
-        Get dynamic filter options for Jira filters with pagination.
-        """
-        if filter_key == "project_keys":
-            return await self._get_project_options(page, limit, search)
-        else:
-            raise ValueError(f"Unsupported filter key: {filter_key}")
-
-    async def _get_project_options(
-        self,
-        page: int,
-        limit: int,
-        search: Optional[str]
-    ) -> FilterOptionsResponse:
-        """Fetch available Jira projects with pagination.
-
-        Uses search_projects API with optional search term filtering.
-        Jira uses startAt/maxResults pagination (not cursor-based).
-        """
-        # Get fresh datasource with refreshed OAuth token
-        datasource = await self._get_fresh_datasource()
-
-        # Calculate startAt for pagination (Jira uses 0-based startAt)
-        start_at = (page - 1) * limit
-
-        try:
-            # Jira search_projects supports a query parameter for filtering by name or key.
-            # Passing None is handled by the API, so we can directly assign search.
-            query = search
-
-            # Fetch projects using the search_projects API.
-            # No expand parameter needed - we only use 'key' and 'name' which are in default response.
-            response = await datasource.search_projects(
-                maxResults=limit,
-                startAt=start_at,
-                query=query
-            )
-
-            if not response or response.status != HttpStatusCode.OK.value:
-                raise RuntimeError(
-                    f"Failed to fetch projects: HTTP {response.status if response else 'No response'}"
-                )
-
-            response_data = self._safe_json_parse(response, "project search")
-            if response_data is None:
-                raise RuntimeError("Failed to parse project search response")
-            projects_list = response_data.get("values", [])
-
-            # Use Jira's isLast flag as the source of truth for pagination.
-            is_last = response_data.get("isLast", False)
-            has_more = not is_last
-
-            # Convert to FilterOption objects.
-            options = [
-                FilterOption(
-                    id=project.get("key"),  # Use key as id since filter expects keys.
-                    label=f"{project.get('name', '')} ({project.get('key', '')})"
-                )
-                for project in projects_list
-                if project.get("key") and project.get("name")
-            ]
-
-            return FilterOptionsResponse(
-                success=True,
-                options=options,
-                page=page,
-                limit=limit,
-                has_more=has_more,
-                cursor=None  # Jira doesn't use cursor-based pagination.
-            )
-        except Exception as e:
-            self.logger.error(f"❌ Error fetching projects: {e}")
-            raise RuntimeError(f"Failed to fetch project options: {str(e)}")
-
-    # ============================================================================
     # Sync Orchestration
     # ============================================================================
 
@@ -626,26 +513,7 @@ class JiraConnector(BaseConnector):
             groups_members_map = await self._sync_user_groups(jira_users)
 
             # 5. Resolve project filter, then fetch projects
-            allowed_keys = None
-            project_keys_operator = None
-            if self.sync_filters:
-                project_keys_filter = self.sync_filters.get(SyncFilterKey.PROJECT_KEYS)
-                if project_keys_filter:
-                    allowed_keys = project_keys_filter.get_value(default=[])
-                    project_keys_operator = project_keys_filter.get_operator()
-                    if allowed_keys:
-                        operator_value = (
-                            project_keys_operator.value
-                            if hasattr(project_keys_operator, "value")
-                            else str(project_keys_operator) if project_keys_operator else "in"
-                        )
-                        action = "Excluding" if operator_value == "not_in" else "Including"
-                        self.logger.info(f"🔍 Project keys filter: {action} projects: {allowed_keys}")
-                    else:
-                        self.logger.info("🔍 Project keys filter is empty, will fetch all projects")
-            projects, raw_projects = await self._fetch_projects(
-                allowed_keys, project_keys_operator, jira_users
-            )
+            projects, raw_projects = await self._fetch_filtered_projects(jira_users)
 
             # 6. Sync roles, then record groups (projects + permissions)
             project_keys_for_roles = [proj.short_name for proj, _ in projects]
@@ -709,6 +577,90 @@ class JiraConnector(BaseConnector):
             raise
 
     # ============================================================================
+    # Filter Options
+    # ============================================================================
+
+    async def get_filter_options(
+        self,
+        filter_key: str,
+        page: int = 1,
+        limit: int = 20,
+        search: Optional[str] = None,
+        cursor: Optional[str] = None
+    ) -> FilterOptionsResponse:
+        """
+        Get dynamic filter options for Jira filters with pagination.
+        """
+        if filter_key == "project_keys":
+            return await self._get_project_options(page, limit, search)
+        else:
+            raise ValueError(f"Unsupported filter key: {filter_key}")
+
+    async def _get_project_options(
+        self,
+        page: int,
+        limit: int,
+        search: Optional[str]
+    ) -> FilterOptionsResponse:
+        """Fetch available Jira projects with pagination.
+
+        Uses search_projects API with optional search term filtering.
+        Jira uses startAt/maxResults pagination (not cursor-based).
+        """
+        # Get fresh datasource with refreshed OAuth token
+        datasource = await self._get_fresh_datasource()
+
+        # Calculate startAt for pagination (Jira uses 0-based startAt)
+        start_at = (page - 1) * limit
+
+        try:
+            query = search
+
+            # Fetch projects using the search_projects API.
+            # No expand parameter needed - we only use 'key' and 'name' which are in default response.
+            response = await datasource.search_projects(
+                maxResults=limit,
+                startAt=start_at,
+                query=query
+            )
+
+            if not response or response.status != HttpStatusCode.OK.value:
+                raise RuntimeError(
+                    f"Failed to fetch projects: HTTP {response.status if response else 'No response'}"
+                )
+
+            response_data = self._safe_json_parse(response, "project search")
+            if response_data is None:
+                raise RuntimeError("Failed to parse project search response")
+            projects_list = response_data.get("values", [])
+
+            # Use Jira's isLast flag as the source of truth for pagination.
+            is_last = response_data.get("isLast", False)
+            has_more = not is_last
+
+            # Convert to FilterOption objects.
+            options = [
+                FilterOption(
+                    id=project.get("key"),  # Use key as id since filter expects keys.
+                    label=f"{project.get('name', '')} ({project.get('key', '')})"
+                )
+                for project in projects_list
+                if project.get("key") and project.get("name")
+            ]
+
+            return FilterOptionsResponse(
+                success=True,
+                options=options,
+                page=page,
+                limit=limit,
+                has_more=has_more,
+                cursor=None  # Jira doesn't use cursor-based pagination.
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Error fetching projects: {e}")
+            raise RuntimeError(f"Failed to fetch project options: {str(e)}")
+
+    # ============================================================================
     # Sync Points & Checkpoints
     # ============================================================================
 
@@ -770,6 +722,10 @@ class JiraConnector(BaseConnector):
 
         await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
 
+    # ============================================================================
+    # Deletion Handling
+    # ============================================================================
+
     async def _handle_issue_deletions(self, global_last_sync_time: Optional[int]) -> None:
         """
         Detect and handle issue deletions via Audit API.
@@ -796,10 +752,6 @@ class JiraConnector(BaseConnector):
                     audit_sync_key,
                     {"last_sync_time": checkpoint_ms}
                 )
-
-    # ============================================================================
-    # Deletion Handling
-    # ============================================================================
 
     async def _detect_and_handle_deletions(self, last_sync_time: int) -> tuple[int, bool]:
         """
@@ -992,7 +944,7 @@ class JiraConnector(BaseConnector):
             raise
 
     # ============================================================================
-    # User & Group Management
+    # Users, Roles, Groups and Projects Management
     # ============================================================================
 
     async def _fetch_users(
@@ -1143,12 +1095,8 @@ class JiraConnector(BaseConnector):
             )
 
             if response.status != HttpStatusCode.OK.value:
-                # /rest/api/3/users/search requires Browse users and groups (OAuth scope
-                # read:user:jira). A 403 means the account genuinely lacks that permission; a
-                # 401 is an auth/token failure (expired/invalid token) — a different problem the
-                # connection/sync-failed notification already reports. Both degrade user
-                # resolution to the PipesHub-directory reverse lookup, but only 403 gets the
-                # "needs permission" notification — a 401 must not be shown as a permission issue.
+                # Both 401/403 fall back to PipesHub reverse lookup; only 403 notifies
+                # (missing Browse users and groups). 401 is auth failure, already reported.
                 if response.status in (
                     HttpStatusCode.UNAUTHORIZED.value,
                     HttpStatusCode.FORBIDDEN.value,
@@ -1239,11 +1187,8 @@ class JiraConnector(BaseConnector):
         # Process in batches to allow early termination
         batch_size = 20
         email_list = list(candidate_emails)
-        # When the bulk fetch was forbidden, ``unresolved_count`` is 0
-        # (``all_active_account_ids`` was empty) and the standard early-exit
-        # would skip every batch. Disable the early-exit in that case so we
-        # actually exhaust the candidate list and resolve as many directory
-        # users as the per-email endpoint will let us.
+        # Bulk-forbidden leaves unresolved_count at 0; skip early-exit so we
+        # still walk candidates and resolve via the per-email endpoint.
         skip_early_exit = self._user_bulk_forbidden
 
         for i in range(0, len(email_list), batch_size):
@@ -1682,6 +1627,73 @@ class JiraConnector(BaseConnector):
         await asyncio.gather(*[_consumer() for _ in range(pool_size)])
         return results
 
+    async def _process_group(
+        self,
+        group: dict[str, Any],
+        user_by_account_id: dict[str, "AppUser"],
+    ) -> Optional[tuple[str, str, AppUserGroup, list["AppUser"]]]:
+        """Build an AppUserGroup and resolve its members.
+
+        Returns ``(group_id, group_name, user_group, app_users)`` or ``None``
+        when the group should be skipped.
+        """
+        try:
+            group_id = group.get("groupId")
+            group_name = group.get("name")
+
+            if not group_id or not group_name:
+                return None
+
+            if group_name.startswith("atlassian-addons"):
+                self.logger.debug("Skipping system group: %s", group_name)
+                return None
+
+            self.logger.debug(f"Processing group: {group_name} ({group_id})")
+
+            user_group = AppUserGroup(
+                app_name=self.connector_name,
+                connector_id=self.connector_id,
+                source_user_group_id=group_id,
+                name=group_name,
+                org_id=self.data_entities_processor.org_id,
+                description=f"Jira user group: {group_name}",
+            )
+
+            member_account_ids, members_ok = await self._fetch_group_members(group_id, group_name)
+            if not members_ok:
+                self.logger.warning(
+                    f"⚠️ Skipping group {group_name} this sync — membership unavailable (existing membership preserved)"
+                )
+                return None
+
+            app_users: list[AppUser] = []
+            skipped_members = 0
+            if member_account_ids:
+                for account_id in member_account_ids:
+                    user = user_by_account_id.get(account_id)
+                    if user:
+                        app_users.append(user)
+                    else:
+                        skipped_members += 1
+
+            if skipped_members:
+                self.logger.debug(
+                    "Group %s: %s member(s) skipped (no AppUser; private email or not in PipesHub)",
+                    group_name,
+                    skipped_members,
+                )
+
+            if app_users:
+                self.logger.debug(f"Group {group_name}: {len(app_users)} members")
+            else:
+                self.logger.debug(f"Group {group_name}: no resolved members")
+
+            return (group_id, group_name, user_group, app_users)
+
+        except Exception as group_error:
+            self.logger.error(f"❌ Failed to process group {group.get('name')}: {group_error}")
+            return None
+
     async def _sync_user_groups(self, jira_users: list[AppUser]) -> dict[str, list[AppUser]]:
         """
         Sync user groups and return a mapping of group_id/name -> list of AppUser members.
@@ -1706,76 +1718,10 @@ class JiraConnector(BaseConnector):
             # Create accountId -> AppUser lookup (accountId is always present in group member responses)
             user_by_account_id = {user.source_user_id: user for user in jira_users if user.source_user_id}
 
-            async def _process_group(
-                group: dict[str, Any]
-            ) -> Optional[tuple[str, str, AppUserGroup, list[AppUser]]]:
-                """Read-only: build the AppUserGroup and fetch/resolve its members. The caller
-                assembles the map + batch and does the single write."""
-                try:
-                    group_id = group.get("groupId")
-                    group_name = group.get("name")
-
-                    if not group_id or not group_name:
-                        return None
-
-                    # Atlassian-managed Connect/app groups (atlassian-addons,
-                    # atlassian-addons-admin). Member API rejects them by name;
-                    # they are not user groups we sync into PipesHub.
-                    if group_name.startswith("atlassian-addons"):
-                        self.logger.debug("Skipping system group: %s", group_name)
-                        return None
-
-                    self.logger.debug(f"Processing group: {group_name} ({group_id})")
-
-                    # Create AppUserGroup (always create, even if no members)
-                    user_group = AppUserGroup(
-                        app_name=self.connector_name,
-                        connector_id=self.connector_id,
-                        source_user_group_id=group_id,
-                        name=group_name,
-                        org_id=self.data_entities_processor.org_id,
-                        description=f"Jira user group: {group_name}"
-                    )
-
-                    # Fetch member accountIds for this group
-                    member_account_ids, members_ok = await self._fetch_group_members(group_id, group_name)
-                    if not members_ok:
-                        # Couldn't read the full membership (transient) — skip so the group's
-                        # existing membership is preserved rather than overwritten truncated.
-                        self.logger.warning(f"⚠️ Skipping group {group_name} this sync — membership unavailable (existing membership preserved)")
-                        return None
-
-                    # Map member accountIds to AppUser objects
-                    app_users: list[AppUser] = []
-                    skipped_members = 0
-                    if member_account_ids:
-                        for account_id in member_account_ids:
-                            user = user_by_account_id.get(account_id)
-                            if user:
-                                app_users.append(user)
-                            else:
-                                skipped_members += 1
-
-                    if skipped_members:
-                        self.logger.debug(
-                            "Group %s: %s member(s) skipped (no AppUser; private email or not in PipesHub)",
-                            group_name,
-                            skipped_members,
-                        )
-
-                    if app_users:
-                        self.logger.debug(f"Group {group_name}: {len(app_users)} members")
-                    else:
-                        self.logger.debug(f"Group {group_name}: no resolved members")
-
-                    return (group_id, group_name, user_group, app_users)
-
-                except Exception as group_error:
-                    self.logger.error(f"❌ Failed to process group {group.get('name')}: {group_error}")
-                    return None
-
             # Fetch members concurrently (read-only); assemble + single write below.
-            results = await self._map_bounded(groups, _process_group)
+            results = await self._map_bounded(
+                groups, lambda g: self._process_group(g, user_by_account_id)
+            )
 
             user_groups_batch = []
             # Mapping: group_id -> members, group_name -> members (for role actor lookup)
@@ -1932,6 +1878,131 @@ class JiraConnector(BaseConnector):
 
         return member_account_ids, ok
 
+    async def _fetch_project_roles(
+        self,
+        project_key: str,
+        user_by_email: dict[str, "AppUser"],
+        user_by_account_id: dict[str, "AppUser"],
+        groups_members_map: dict[str, list["AppUser"]],
+    ) -> tuple[str, list[tuple[AppRole, list["AppUser"]]], bool]:
+        """Fetch a project's roles + actors and build ``(AppRole, members)`` tuples.
+
+        Returns ``(project_key, roles, failed)``.
+        """
+        project_roles: list[tuple[AppRole, list[AppUser]]] = []
+        try:
+            response = await self._call_with_retry(
+                lambda ds: ds.get_project_roles(projectIdOrKey=project_key),
+                ctx=f"roles for project {project_key}",
+            )
+
+            if response.status != HttpStatusCode.OK.value:
+                self.logger.warning(f"⚠️ Failed to fetch roles for project {project_key}: HTTP {response.status}")
+                return project_key, project_roles, True
+
+            roles_dict = response.json()
+
+            if not roles_dict:
+                self.logger.debug(f"No roles found for project {project_key}")
+                return project_key, project_roles, False
+
+            for role_name, role_url in roles_dict.items():
+                try:
+                    if role_name == "atlassian-addons-project-access":
+                        continue
+
+                    role_id = role_url.rstrip('/').split('/')[-1]
+
+                    role_response = await self._call_with_retry(
+                        lambda ds: ds.get_project_role(
+                            projectIdOrKey=project_key,
+                            id=int(role_id),
+                            excludeInactiveUsers=True,
+                        ),
+                        ctx=f"role {role_name} for project {project_key}",
+                    )
+
+                    if role_response.status != HttpStatusCode.OK.value:
+                        self.logger.warning(f"  {project_key}: Failed to fetch role {role_name}: {role_response.status}")
+                        continue
+
+                    role_data = role_response.json()
+                    actors = role_data.get("actors", [])
+                    role_name_display = role_data.get("name", role_name)
+
+                    app_role = AppRole(
+                        app_name=self.connector_name,
+                        connector_id=self.connector_id,
+                        source_role_id=f"{project_key}_{role_id}",
+                        name=f"{project_key} - {role_name_display}",
+                        org_id=self.data_entities_processor.org_id,
+                        source_created_at=None,
+                        source_updated_at=None,
+                    )
+
+                    member_users: list[AppUser] = []
+
+                    for actor in actors:
+                        actor_type = actor.get("type", "")
+
+                        if actor_type == "atlassian-user-role-actor":
+                            actor_user = actor.get("actorUser", {})
+                            account_id = actor_user.get("accountId")
+                            email = actor_user.get("emailAddress")
+
+                            user = None
+                            if account_id:
+                                user = user_by_account_id.get(account_id)
+                            if not user and email:
+                                user = user_by_email.get(email.lower())
+
+                            if user:
+                                member_users.append(user)
+                            else:
+                                self.logger.debug(
+                                    f"  {project_key}/{role_name}: User not found - "
+                                    f"accountId={account_id}, email={email}"
+                                )
+
+                        elif actor_type == "atlassian-group-role-actor":
+                            group_name = actor.get("name") or actor.get("displayName")
+                            group_id = actor.get("groupId")
+
+                            group_members = []
+                            if group_id and group_id in groups_members_map:
+                                group_members = groups_members_map[group_id]
+                                self.logger.debug(
+                                    f"  {project_key}/{role_name}: Group actor '{group_name}' (id: {group_id}) "
+                                    f"found {len(group_members)} members"
+                                )
+                            elif group_name and group_name in groups_members_map:
+                                group_members = groups_members_map[group_name]
+                                self.logger.debug(
+                                    f"  {project_key}/{role_name}: Group actor '{group_name}' "
+                                    f"found {len(group_members)} members"
+                                )
+                            else:
+                                self.logger.debug(
+                                    f"  {project_key}/{role_name}: Group actor '{group_name}' "
+                                    f"(id: {group_id}) not found in synced groups"
+                                )
+
+                            member_users.extend(group_members)
+
+                    project_roles.append((app_role, member_users))
+
+                except Exception as role_error:
+                    self.logger.error(
+                        f"  {project_key}: Error processing role {role_name}: {role_error}"
+                    )
+                    continue
+
+            return project_key, project_roles, False
+
+        except Exception as project_error:
+            self.logger.error(f"❌ Error syncing roles for project {project_key}: {project_error}")
+            return project_key, project_roles, True
+
     async def _sync_project_roles(
         self,
         project_keys: list[str],
@@ -1969,141 +2040,13 @@ class JiraConnector(BaseConnector):
         total_members = 0
         failed_project_keys: list[str] = []
 
-        async def _fetch_project_roles(
-            project_key: str
-        ) -> tuple[str, list[tuple[AppRole, list[AppUser]]], bool]:
-            """Read-only: fetch a project's roles + actors and build (AppRole, members) tuples.
-            Returns (project_key, roles, failed); the caller batches the single write."""
-            project_roles: list[tuple[AppRole, list[AppUser]]] = []
-            try:
-                # Step 1: Get all project roles for this project (transport + 429 retry)
-                response = await self._call_with_retry(
-                    lambda ds: ds.get_project_roles(projectIdOrKey=project_key),
-                    ctx=f"roles for project {project_key}",
-                )
-
-                if response.status != HttpStatusCode.OK.value:
-                    self.logger.warning(f"⚠️ Failed to fetch roles for project {project_key}: HTTP {response.status}")
-                    return project_key, project_roles, True
-
-                roles_dict = response.json()
-
-                if not roles_dict:
-                    self.logger.debug(f"No roles found for project {project_key}")
-                    return project_key, project_roles, False
-
-                # Step 2: For each role, fetch role details including actors
-                for role_name, role_url in roles_dict.items():
-                    try:
-                        # Skip app-only roles
-                        if role_name == "atlassian-addons-project-access":
-                            continue
-
-                        # Extract role ID from URL
-                        role_id = role_url.rstrip('/').split('/')[-1]
-
-                        # Fetch role details with actors (transport + 429 retry)
-                        role_response = await self._call_with_retry(
-                            lambda ds: ds.get_project_role(
-                                projectIdOrKey=project_key,
-                                id=int(role_id),
-                                excludeInactiveUsers=True,
-                            ),
-                            ctx=f"role {role_name} for project {project_key}",
-                        )
-
-                        if role_response.status != HttpStatusCode.OK.value:
-                            self.logger.warning(f"  {project_key}: Failed to fetch role {role_name}: {role_response.status}")
-                            continue
-
-                        role_data = role_response.json()
-                        actors = role_data.get("actors", [])
-
-                        # Extract available fields from role_data
-                        role_name_display = role_data.get("name", role_name)
-
-                        # Build AppRole with external_id matching Permission format
-                        app_role = AppRole(
-                            app_name=self.connector_name,
-                            connector_id=self.connector_id,
-                            source_role_id=f"{project_key}_{role_id}",
-                            name=f"{project_key} - {role_name_display}",
-                            org_id=self.data_entities_processor.org_id,
-                            source_created_at=None,  # Jira API doesn't provide role creation timestamp
-                            source_updated_at=None   # Jira API doesn't provide role update timestamp
-                        )
-
-                        # Step 3: Extract member users from actors
-                        member_users: list[AppUser] = []
-
-                        for actor in actors:
-                            actor_type = actor.get("type", "")
-
-                            if actor_type == "atlassian-user-role-actor":
-                                # Direct user actor
-                                actor_user = actor.get("actorUser", {})
-                                account_id = actor_user.get("accountId")
-                                email = actor_user.get("emailAddress")
-
-                                # Try to find user by accountId first, then by email
-                                user = None
-                                if account_id:
-                                    user = user_by_account_id.get(account_id)
-                                if not user and email:
-                                    user = user_by_email.get(email.lower())
-
-                                if user:
-                                    member_users.append(user)
-                                else:
-                                    self.logger.debug(
-                                        f"  {project_key}/{role_name}: User not found - "
-                                        f"accountId={account_id}, email={email}"
-                                    )
-
-                            elif actor_type == "atlassian-group-role-actor":
-                                # Group actor - get group members from already-fetched groups
-                                group_name = actor.get("name") or actor.get("displayName")
-                                group_id = actor.get("groupId")
-
-                                # Try to find group members by group_id first, then by name
-                                group_members = []
-                                if group_id and group_id in groups_members_map:
-                                    group_members = groups_members_map[group_id]
-                                    self.logger.debug(
-                                        f"  {project_key}/{role_name}: Group actor '{group_name}' (id: {group_id}) "
-                                        f"found {len(group_members)} members"
-                                    )
-                                elif group_name and group_name in groups_members_map:
-                                    group_members = groups_members_map[group_name]
-                                    self.logger.debug(
-                                        f"  {project_key}/{role_name}: Group actor '{group_name}' "
-                                        f"found {len(group_members)} members"
-                                    )
-                                else:
-                                    self.logger.debug(
-                                        f"  {project_key}/{role_name}: Group actor '{group_name}' "
-                                        f"(id: {group_id}) not found in synced groups"
-                                    )
-
-                                # Add all group members directly to role members (USER->ROLE, not GROUP->ROLE)
-                                member_users.extend(group_members)
-
-                        project_roles.append((app_role, member_users))
-
-                    except Exception as role_error:
-                        self.logger.error(
-                            f"  {project_key}: Error processing role {role_name}: {role_error}"
-                        )
-                        continue
-
-                return project_key, project_roles, False
-
-            except Exception as project_error:
-                self.logger.error(f"❌ Error syncing roles for project {project_key}: {project_error}")
-                return project_key, project_roles, True
-
         # Fetch each project's roles concurrently (read-only); batch the single write below.
-        role_fetch_results = await self._map_bounded(project_keys, _fetch_project_roles)
+        role_fetch_results = await self._map_bounded(
+            project_keys,
+            lambda pk: self._fetch_project_roles(
+                pk, user_by_email, user_by_account_id, groups_members_map
+            ),
+        )
         for project_key, project_roles, failed in role_fetch_results:
             if failed:
                 failed_project_keys.append(project_key)
@@ -2311,6 +2254,75 @@ class JiraConnector(BaseConnector):
 
         return projects
 
+    async def _build_project_record_group(
+        self,
+        project: dict[str, Any],
+        app_roles_mapping: dict[str, Any],
+        perm_user_by_account_id: dict[str, "AppUser"],
+    ) -> Optional[tuple[RecordGroup, list[Permission]]]:
+        """Build a project's RecordGroup and fetch its BROWSE permissions."""
+        try:
+            project_id = project.get("id")
+            project_name = project.get("name")
+            project_key = project.get("key")
+
+            record_group = RecordGroup(
+                id=str(uuid4()),
+                org_id=self.data_entities_processor.org_id,
+                external_group_id=project_id,
+                connector_id=self.connector_id,
+                connector_name=self.connector_name,
+                name=project_name,
+                short_name=project_key,
+                group_type=RecordGroupType.PROJECT,
+                web_url=project.get("url"),
+            )
+
+            project_permissions = await self._fetch_project_permission_scheme(
+                project_key, app_roles_mapping, perm_user_by_account_id
+            )
+
+            if project_permissions is None:
+                self.logger.warning(
+                    f"⚠️ Skipping project {project_key} this sync — permission scheme unavailable (existing access preserved)"
+                )
+                return None
+
+            if project_permissions:
+                self.logger.info(f"🔐 Project {project_key}: {len(project_permissions)} permission grants from scheme")
+
+            return (record_group, project_permissions)
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to build record group for project {project.get('key')}: {e}", exc_info=True
+            )
+            return None
+
+    async def _fetch_filtered_projects(
+        self,
+        jira_users: list["AppUser"],
+    ) -> tuple[list[tuple[RecordGroup, list[Permission]]], list[dict[str, Any]]]:
+        """Resolve the project-keys sync filter, then fetch matching projects."""
+        allowed_keys = None
+        project_keys_operator = None
+        if self.sync_filters:
+            project_keys_filter = self.sync_filters.get(SyncFilterKey.PROJECT_KEYS)
+            if project_keys_filter:
+                allowed_keys = project_keys_filter.get_value(default=[])
+                project_keys_operator = project_keys_filter.get_operator()
+                if allowed_keys:
+                    operator_value = (
+                        project_keys_operator.value
+                        if hasattr(project_keys_operator, "value")
+                        else str(project_keys_operator) if project_keys_operator else "in"
+                    )
+                    action = "Excluding" if operator_value == "not_in" else "Including"
+                    self.logger.info(f"🔍 Project keys filter: {action} projects: {allowed_keys}")
+                else:
+                    self.logger.info("🔍 Project keys filter is empty, will fetch all projects")
+        return await self._fetch_projects(allowed_keys, project_keys_operator, jira_users)
+
     async def _fetch_projects(
         self,
         project_keys: Optional[list[str]] = None,
@@ -2338,60 +2350,12 @@ class JiraConnector(BaseConnector):
                 u.source_user_id: u for u in jira_users if u.source_user_id
             }
 
-        async def _build_project_record_group(
-            project: dict[str, Any]
-        ) -> Optional[tuple[RecordGroup, list[Permission]]]:
-            """Read-only: build the project's RecordGroup and fetch its BROWSE permissions.
-            The single write (on_new_record_groups) is done by the caller after this returns."""
-            try:
-                project_id = project.get("id")
-                project_name = project.get("name")
-                project_key = project.get("key")
-
-                description = project.get("description")
-                if description and isinstance(description, dict):
-                    description = adf_to_plain_text(description)
-                elif not description:
-                    description = None
-
-                record_group = RecordGroup(
-                    id=str(uuid4()),
-                    org_id=self.data_entities_processor.org_id,
-                    external_group_id=project_id,
-                    connector_id=self.connector_id,
-                    connector_name=self.connector_name,
-                    name=project_name,
-                    short_name=project_key,
-                    group_type=RecordGroupType.PROJECT,
-                    description=description,
-                    web_url=project.get("url"),
-                )
-
-                # This determines which groups/users can access the project
-                project_permissions = await self._fetch_project_permission_scheme(
-                    project_key, app_roles_mapping, perm_user_by_account_id
-                )
-
-                if project_permissions is None:
-                    # Scheme couldn't be determined (transient) — skip so the project's existing
-                    # RecordGroup + ACL are preserved rather than overwritten with an empty ACL.
-                    self.logger.warning(f"⚠️ Skipping project {project_key} this sync — permission scheme unavailable (existing access preserved)")
-                    return None
-
-                if project_permissions:
-                    self.logger.info(f"🔐 Project {project_key}: {len(project_permissions)} permission grants from scheme")
-
-                return (record_group, project_permissions)
-
-            except Exception as e:
-                self.logger.error(
-                    f"❌ Failed to build record group for project {project.get('key')}: {e}", exc_info=True
-                )
-                return None
-
         # Fetch each project's permission scheme concurrently (read-only); the single write
         # (on_new_record_groups) is done by the caller after this returns.
-        rg_results = await self._map_bounded(projects, _build_project_record_group)
+        rg_results = await self._map_bounded(
+            projects,
+            lambda p: self._build_project_record_group(p, app_roles_mapping, perm_user_by_account_id),
+        )
         record_groups: list[tuple[RecordGroup, list[Permission]]] = [r for r in rg_results if r is not None]
 
         # Surface any project skipped this sync (transient scheme failure or a bad RecordGroup) so
@@ -2686,7 +2650,7 @@ class JiraConnector(BaseConnector):
 
             # Build records for this batch (read-only transaction)
             async with self.data_store_provider.transaction() as tx_store:
-                records_batch, soft_delete_ids = await self._build_issue_records(
+                records_batch, delete_ids = await self._build_issue_records(
                     batch_issues, project_id, users, tx_store,
                     is_new_project=is_new_project,
                 )
@@ -2694,9 +2658,9 @@ class JiraConnector(BaseConnector):
             # Hard-delete source-removed attachments (with Qdrant vector cleanup).
             # cascade_children=False is safe: FILE records have no outgoing
             # PARENT_CHILD or ATTACHMENT edges, so only the files themselves are deleted.
-            if soft_delete_ids:
+            if delete_ids:
                 await self.data_entities_processor.on_records_deleted_cascade(
-                    soft_delete_ids, self.connector_id, cascade_children=False,
+                    delete_ids, self.connector_id, cascade_children=False,
                 )
 
             self.logger.debug(f"📦 Fetched batch {page_count}: {len(batch_issues)} issues -> {len(records_batch)} records (last updated: {last_issue_updated})")
@@ -2860,11 +2824,6 @@ class JiraConnector(BaseConnector):
         fields = issue.get("fields", {})
         issue_summary = fields.get("summary") or f"Issue {issue_key}"
 
-        # Extract description as plain text for the record's searchable description field.
-        # The full rendered content is streamed as HTML blocks at index time, not here.
-        description_adf = fields.get("description")
-        description_text = adf_to_plain_text(description_adf) if description_adf else None
-
         issue_type_obj = fields.get("issuetype", {})
         raw_issue_type = issue_type_obj.get("name") if issue_type_obj else None
         issue_type = self.value_mapper.map_type(raw_issue_type)
@@ -2874,14 +2833,6 @@ class JiraConnector(BaseConnector):
 
         # Build record name with issue key in square brackets at start for better searchability
         issue_name = f"[{issue_key}] {issue_summary}" if issue_key else issue_summary
-
-        # Add issue type to description for full searchability
-        if issue_type and description_text:
-            description = f"Issue Type: {issue_type}\n\n{description_text}"
-        elif issue_type:
-            description = f"Issue Type: {issue_type}"
-        else:
-            description = description_text
 
         # Extract and map status to standardized value
         status_obj = fields.get("status", {})
@@ -2923,7 +2874,6 @@ class JiraConnector(BaseConnector):
             "issue_id": issue_id,
             "issue_key": issue_key,
             "issue_name": issue_name,
-            "description": description,
             "issue_type": issue_type,
             "parent_external_id": parent_external_id,
             "status": status,
@@ -2959,7 +2909,7 @@ class JiraConnector(BaseConnector):
         performs the deletion via the processor after this read transaction.
         """
         all_records: list[tuple[Record, list[Permission]]] = []
-        deferred_soft_delete_ids: list[str] = []
+        deferred_delete_ids: list[str] = []
         skipped_unchanged_count = 0
 
         # Use the user-facing site URL for weburl construction
@@ -2974,7 +2924,7 @@ class JiraConnector(BaseConnector):
             # advances on success, the same page would be re-fetched and re-fail every sync,
             # wedging the project (and starving every issue with a newer `updated`).
             try:
-                issue_records, issue_soft_delete_ids, skipped = await self._build_records_for_issue(
+                issue_records, issue_delete_ids, skipped = await self._build_records_for_issue(
                     issue, project_id, user_by_account_id, atlassian_domain, tx_store, is_new_project
                 )
             except Exception as e:
@@ -2984,7 +2934,7 @@ class JiraConnector(BaseConnector):
                 )
                 continue
 
-            deferred_soft_delete_ids.extend(issue_soft_delete_ids)
+            deferred_delete_ids.extend(issue_delete_ids)
             all_records.extend(issue_records)
             if skipped:
                 skipped_unchanged_count += 1
@@ -2993,7 +2943,7 @@ class JiraConnector(BaseConnector):
         if skipped_unchanged_count > 0:
             self.logger.debug(f"⏭️ Skipped {skipped_unchanged_count} unchanged issue(s)")
 
-        return all_records, deferred_soft_delete_ids
+        return all_records, deferred_delete_ids
 
     async def _build_records_for_issue(
         self,
@@ -3013,7 +2963,7 @@ class JiraConnector(BaseConnector):
         single malformed record can't abort (and wedge) the whole project's sync.
         """
         records: list[tuple[Record, list[Permission]]] = []
-        soft_delete_ids: list[str] = []
+        delete_ids: list[str] = []
 
         # Extract and process issue data
         issue_data = self._extract_issue_data(issue, user_by_account_id)
@@ -3041,7 +2991,7 @@ class JiraConnector(BaseConnector):
         fields = issue.get("fields", {})
 
         # Collect attachments removed at source (via changelog) for deletion
-        soft_delete_ids.extend(
+        delete_ids.extend(
             await self._handle_attachment_deletions_from_changelog(issue, tx_store)
         )
 
@@ -3080,7 +3030,7 @@ class JiraConnector(BaseConnector):
         # (is_new_project=True means sync points were wiped, so edges need to be
         # recreated even for unchanged issues; _process_record is idempotent).
         if not is_issue_changed and not is_new_project:
-            return records, soft_delete_ids, True
+            return records, delete_ids, True
 
         # Record group is always the project. Parent ticket link follows Jira's
         # parent field for any hierarchy level (Initiative→Epic→Story→Subtask).
@@ -3155,7 +3105,7 @@ class JiraConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch attachments for issue {issue_key}: {e}")
 
-        return records, soft_delete_ids, False
+        return records, delete_ids, False
 
     # ============================================================================
     # Attachments
@@ -3287,39 +3237,41 @@ class JiraConnector(BaseConnector):
     ) -> list[str]:
         """
         Detect attachments removed from an issue (via its changelog) and return the
-        internal ids of the matching FileRecords for deletion by the caller.
+        internal ids of the matching FileRecords for hard-deletion by the caller.
+
+        Description wiki unlinks alone do not delete attachments that are still on
+        the issue — only Attachment-field removals or graph orphans missing from
+        ``fields.attachment`` are deleted.
         """
-        soft_delete_ids: list[str] = []
+        delete_ids: list[str] = []
         try:
             changelog = issue.get("changelog")
             if not changelog:
-                return soft_delete_ids
+                return delete_ids
 
             histories = changelog.get("histories", [])
             if not histories:
-                return soft_delete_ids
+                return delete_ids
 
             issue_key = issue.get("key")
             issue_id = issue.get("id")
             if not issue_id:
-                return soft_delete_ids
+                return delete_ids
 
             # Get current attachments once (used in multiple places)
             fields = issue.get("fields", {}) or {}
             attachments = fields.get("attachment", []) or []
 
-            # Map current attachments by filename for inline attachment resolution
-            attachments_by_filename: dict[str, list[str]] = {}
             current_attachment_ids: set[str] = set()
+            current_filenames: set[str] = set()
 
             for att in attachments:
                 att_id = att.get("id")
                 filename = att.get("filename")
                 if att_id:
                     current_attachment_ids.add(str(att_id))
-                if att_id and filename:
-                    key = str(filename).lower()
-                    attachments_by_filename.setdefault(key, []).append(str(att_id))
+                if filename:
+                    current_filenames.add(str(filename).lower())
 
             # Collect unique deleted attachment IDs from changelog
             deleted_attachment_ids: set[str] = set()
@@ -3333,33 +3285,31 @@ class JiraConnector(BaseConnector):
                     field = item.get("field")
                     field_id = item.get("fieldId")
 
-                    # Track description field changes (inline attachment removed from description)
+                    # Description wiki unlink ≠ attachment deletion. Only queue
+                    # filenames that are no longer among current attachments.
                     if field_id == "description" or field in ("description", "Description"):
                         has_description_change = True
                         from_str = item.get("fromString") or ""
                         to_str = item.get("toString") or ""
 
-                        # Extract filenames from wiki markup
                         from_filenames = self._extract_attachment_filenames_from_wiki(from_str)
                         to_filenames = self._extract_attachment_filenames_from_wiki(to_str)
                         removed_filenames = from_filenames - to_filenames
 
-                        # Map removed filenames to concrete attachment IDs
                         for filename_key in removed_filenames:
-                            matched_ids = attachments_by_filename.get(filename_key, [])
-                            if matched_ids:
-                                deleted_attachment_ids.update(matched_ids)
-                            else:
-                                # Filename not found in current attachments - will search DB by filename
-                                unmatched_removed_filenames.add(filename_key)
+                            if filename_key in current_filenames:
+                                continue
+                            unmatched_removed_filenames.add(filename_key)
 
-                    # Check for explicit attachment deletion events
+                    # Explicit attachment deletion events
                     if field in ("Attachment", "attachment") or field_id == "attachment":
                         from_id = item.get("from")
                         to_id = item.get("to")
-                        # Deletion event: attachment removed from issue
                         if from_id and (to_id is None or to_id == ""):
-                            deleted_attachment_ids.add(str(from_id))
+                            attachment_id = str(from_id)
+                            # Still present at source (e.g. stale changelog) — keep it
+                            if attachment_id not in current_attachment_ids:
+                                deleted_attachment_ids.add(attachment_id)
 
             # Case 1: Delete attachments with explicit IDs from changelog
             deleted_count = 0
@@ -3372,18 +3322,18 @@ class JiraConnector(BaseConnector):
                     )
                     continue
 
-                soft_delete_ids.append(record.id)
+                delete_ids.append(record.id)
                 deleted_count += 1
 
-            # Early return if no unmatched filenames to handle
+            # Early return if no unmatched filenames / description reconciliation needed
             if not unmatched_removed_filenames and not has_description_change:
                 if deleted_count > 0:
                     self.logger.info(
                         f"🗑️ Deleting {deleted_count} attachment(s) for issue {issue_key} based on changelog events"
                     )
-                return soft_delete_ids
+                return delete_ids
 
-            # Case 2: Handle unmatched filenames and description changes
+            # Case 2: filename match for removed-but-gone files + orphan ID diff
             existing_records = await tx_store.get_records_by_parent(
                 connector_id=self.connector_id,
                 parent_external_record_id=issue_id,
@@ -3392,15 +3342,13 @@ class JiraConnector(BaseConnector):
 
             deleted_by_filename = 0
             for record in existing_records:
-                # Check if this record matches an unmatched removed filename
                 record_filename_lower = record.record_name.lower() if record.record_name else ""
                 if unmatched_removed_filenames and record_filename_lower in unmatched_removed_filenames:
-                    soft_delete_ids.append(record.id)
+                    delete_ids.append(record.id)
                     deleted_count += 1
                     deleted_by_filename += 1
                     continue
 
-                # Check if attachment still exists in Jira
                 # Extract attachment ID from external_record_id (handles both "attachment_<id>" and legacy formats)
                 external_id = record.external_record_id
                 attachment_id = external_id.replace("attachment_", "") if external_id.startswith("attachment_") else external_id
@@ -3408,10 +3356,9 @@ class JiraConnector(BaseConnector):
                     continue
 
                 # Attachment no longer exists at source -> delete
-                soft_delete_ids.append(record.id)
+                delete_ids.append(record.id)
                 deleted_count += 1
 
-            # Log summary if any deletions occurred
             if deleted_count > 0:
                 if deleted_by_filename > 0:
                     self.logger.info(
@@ -3420,10 +3367,10 @@ class JiraConnector(BaseConnector):
                     )
                 else:
                     self.logger.info(
-                        f"🗑️ Soft-deleting {deleted_count} attachments for issue {issue_key} that were removed from Jira"
+                        f"🗑️ Deleting {deleted_count} attachment(s) for issue {issue_key} that were removed from Jira"
                     )
 
-            return soft_delete_ids
+            return delete_ids
 
         except Exception as e:
             issue_key = issue.get("key", "unknown")
@@ -3431,7 +3378,7 @@ class JiraConnector(BaseConnector):
                 f"❌ Error handling attachment deletions from changelog for issue {issue_key}: {e}",
                 exc_info=True,
             )
-            return soft_delete_ids
+            return delete_ids
 
     # ============================================================================
     # BlockGroups & Blocks Parsing
@@ -3457,6 +3404,126 @@ class JiraConnector(BaseConnector):
         )
         return [valid]
 
+    async def _build_description_block_group(
+        self,
+        issue_id: str,
+        issue_key: str,
+        issue_name: str,
+        weburl: str,
+        rendered_fields: dict[str, Any],
+        attachments_by_id: dict[str, dict[str, Any]],
+        is_image: Callable[[str], bool],
+        fetch_base64: Callable[[dict[str, Any]], Awaitable[Optional[str]]],
+    ) -> tuple[BlockGroup, set[str]]:
+        """Build the description BlockGroup (index 0) and return referenced attachment IDs."""
+        raw_description_html = rendered_fields.get("description") or ""
+        desc_referenced = extract_attachment_ids(raw_description_html)
+        description_html, _ = await inline_images_as_base64(
+            raw_description_html, attachments_by_id, is_image, fetch_base64
+        )
+        heading = f"<h1>{html_escape(issue_name)}</h1>"
+        description_data = f"{heading}\n{description_html}" if description_html else heading
+
+        description_block_group = BlockGroup(
+            id=str(uuid4()),
+            index=0,
+            name=issue_name,
+            type=GroupType.TEXT_SECTION,
+            sub_type=GroupSubType.CONTENT,
+            description=f"Description for issue {issue_key}" if issue_key else "Issue description",
+            source_group_id=f"{issue_id}_description",
+            data=description_data,
+            format=DataFormat.HTML,
+            weburl=weburl,
+            requires_processing=True,
+        )
+        return description_block_group, desc_referenced
+
+    async def _build_comment_block_groups(
+        self,
+        issue_id: str,
+        issue_key: str,
+        weburl: str,
+        comments_data: list[dict[str, Any]],
+        rendered_body_by_id: dict[str, str],
+        attachments_by_id: dict[str, dict[str, Any]],
+        children_map: dict[str, ChildRecord],
+        is_image: Callable[[str], bool],
+        fetch_base64: Callable[[dict[str, Any]], Awaitable[Optional[str]]],
+        start_index: int,
+    ) -> tuple[list[BlockGroup], set[str], int]:
+        """Build comment thread + comment BlockGroups.
+
+        Returns ``(block_groups, comment_referenced_ids, next_index)``.
+        """
+        block_groups: list[BlockGroup] = []
+        block_group_index = start_index
+        comment_referenced_ids: set[str] = set()
+
+        for thread_comments in self._organize_issue_comments_to_threads(comments_data):
+            if not thread_comments:
+                continue
+
+            thread_block_group_index = block_group_index
+            thread_block_group = BlockGroup(
+                id=str(uuid4()),
+                index=thread_block_group_index,
+                parent_index=0,
+                name="Comments",
+                type=GroupType.TEXT_SECTION,
+                sub_type=GroupSubType.COMMENT_THREAD,
+                description=f"Comments for issue {issue_key}" if issue_key else "Comments",
+                source_group_id=f"{issue_id}_comments",
+                weburl=weburl,
+                requires_processing=False,
+            )
+            block_groups.append(thread_block_group)
+            block_group_index += 1
+
+            for comment in thread_comments:
+                comment_id = str(comment.get("id", ""))
+                raw_comment_html = comment.get("renderedBody") or rendered_body_by_id.get(comment_id, "")
+                if not raw_comment_html:
+                    continue
+
+                c_referenced = extract_attachment_ids(raw_comment_html)
+                comment_referenced_ids |= c_referenced
+                comment_html, _ = await inline_images_as_base64(
+                    raw_comment_html, attachments_by_id, is_image, fetch_base64
+                )
+                comment_children = [
+                    children_map[i]
+                    for i in children_map
+                    if i in c_referenced and not is_image(i)
+                ]
+
+                if self.site_url and issue_key and comment_id:
+                    comment_weburl = f"{self.site_url}/browse/{issue_key}?focusedCommentId={comment_id}"
+                else:
+                    comment_weburl = weburl
+
+                author = comment.get("author", {})
+                author_name = author.get("displayName", "Unknown")
+
+                comment_block_group = BlockGroup(
+                    id=str(uuid4()),
+                    index=block_group_index,
+                    parent_index=thread_block_group_index,
+                    type=GroupType.TEXT_SECTION,
+                    sub_type=GroupSubType.COMMENT,
+                    name=f"Comment by {author_name}",
+                    description=f"Comment by {author_name}",
+                    source_group_id=comment_id,
+                    data=comment_html,
+                    format=DataFormat.HTML,
+                    weburl=comment_weburl,
+                    requires_processing=True,
+                    children_records=comment_children or None,
+                )
+                block_groups.append(comment_block_group)
+                block_group_index += 1
+
+        return block_groups, comment_referenced_ids, block_group_index
 
     async def _parse_issue_to_blocks(
         self,
@@ -3489,7 +3556,6 @@ class JiraConnector(BaseConnector):
 
         issue_id = issue_data.get("id", "")
         fields = issue_data.get("fields", {})
-        # Attachment list fetched with the issue — reused for image resolution (no re-fetch).
         issue_attachments = fields.get("attachment", []) or []
         resolved_issue_key = issue_key or issue_data.get("key", "") or ""
         issue_summary = fields.get("summary") or f"Issue {resolved_issue_key or issue_id}"
@@ -3508,42 +3574,18 @@ class JiraConnector(BaseConnector):
         def is_image(att_id: str) -> bool:
             return mime_by_id.get(att_id, "").startswith("image/")
 
-        # Per-issue base64 cache so an image reused across the description and comments is
-        # fetched at most once for this stream request.
         base64_cache: dict[str, Optional[str]] = {}
 
         async def fetch_base64(attachment: dict[str, Any]) -> Optional[str]:
             return await self._fetch_attachment_as_base64(attachment, base64_cache)
 
-        block_groups: list[BlockGroup] = []
-        blocks: list[Block] = []
-        block_group_index = 0
-
         # 1. Description BlockGroup (index 0). Children are assigned after comments are parsed,
         #    so a file linked in both a comment and the description is owned by the comment.
-        raw_description_html = rendered_fields.get("description") or ""
-        desc_referenced = extract_attachment_ids(raw_description_html)
-        description_html, _ = await inline_images_as_base64(
-            raw_description_html, attachments_by_id, is_image, fetch_base64
+        description_block_group, desc_referenced = await self._build_description_block_group(
+            issue_id, resolved_issue_key, issue_name, weburl,
+            rendered_fields, attachments_by_id, is_image, fetch_base64,
         )
-        heading = f"<h1>{html_escape(issue_name)}</h1>"
-        description_data = f"{heading}\n{description_html}" if description_html else heading
-
-        description_block_group = BlockGroup(
-            id=str(uuid4()),
-            index=block_group_index,
-            name=issue_name,
-            type=GroupType.TEXT_SECTION,
-            sub_type=GroupSubType.CONTENT,
-            description=f"Description for issue {issue_key}" if issue_key else "Issue description",
-            source_group_id=f"{issue_id}_description",
-            data=description_data,
-            format=DataFormat.HTML,
-            weburl=weburl,
-            requires_processing=True,
-        )
-        block_groups.append(description_block_group)
-        block_group_index += 1
+        block_groups: list[BlockGroup] = [description_block_group]
 
         # 2. Comment thread + comment BlockGroups
         rendered_body_by_id = {
@@ -3554,72 +3596,15 @@ class JiraConnector(BaseConnector):
         comment_referenced_ids: set[str] = set()
 
         if comments_data:
-            for thread_comments in self._organize_issue_comments_to_threads(comments_data):
-                if not thread_comments:
-                    continue
-
-                thread_block_group_index = block_group_index
-                thread_block_group = BlockGroup(
-                    id=str(uuid4()),
-                    index=thread_block_group_index,
-                    parent_index=0,
-                    name="Comments",
-                    type=GroupType.TEXT_SECTION,
-                    sub_type=GroupSubType.COMMENT_THREAD,
-                    description=f"Comments for issue {issue_key}" if issue_key else "Comments",
-                    source_group_id=f"{issue_id}_comments",
-                    weburl=weburl,
-                    requires_processing=False,
-                )
-                block_groups.append(thread_block_group)
-                block_group_index += 1
-
-                for comment in thread_comments:
-                    comment_id = str(comment.get("id", ""))
-                    raw_comment_html = comment.get("renderedBody") or rendered_body_by_id.get(comment_id, "")
-                    if not raw_comment_html:
-                        continue
-
-                    c_referenced = extract_attachment_ids(raw_comment_html)
-                    comment_referenced_ids |= c_referenced
-                    comment_html, _ = await inline_images_as_base64(
-                        raw_comment_html, attachments_by_id, is_image, fetch_base64
-                    )
-                    comment_children = [
-                        children_map[i]
-                        for i in children_map
-                        if i in c_referenced and not is_image(i)
-                    ]
-
-                    if self.site_url and issue_key and comment_id:
-                        comment_weburl = f"{self.site_url}/browse/{issue_key}?focusedCommentId={comment_id}"
-                    else:
-                        comment_weburl = weburl
-
-                    author = comment.get("author", {})
-                    author_name = author.get("displayName", "Unknown")
-
-                    comment_block_group = BlockGroup(
-                        id=str(uuid4()),
-                        index=block_group_index,
-                        parent_index=thread_block_group_index,
-                        type=GroupType.TEXT_SECTION,
-                        sub_type=GroupSubType.COMMENT,
-                        name=f"Comment by {author_name}",
-                        description=f"Comment by {author_name}",
-                        source_group_id=comment_id,
-                        data=comment_html,
-                        format=DataFormat.HTML,
-                        weburl=comment_weburl,
-                        requires_processing=True,
-                        children_records=comment_children or None,
-                    )
-                    block_groups.append(comment_block_group)
-                    block_group_index += 1
+            comment_bgs, comment_referenced_ids, _ = await self._build_comment_block_groups(
+                issue_id, resolved_issue_key, weburl, comments_data,
+                rendered_body_by_id, attachments_by_id, children_map,
+                is_image, fetch_base64, start_index=1,
+            )
+            block_groups.extend(comment_bgs)
 
         # 3. Description children: non-image files linked only in the description (a comment,
         #    if it also links the file, owns it) plus standalone attachments referenced nowhere.
-        #    Embedded images are never children — they are inlined as base64.
         all_referenced = desc_referenced | comment_referenced_ids
         description_child_ids: set[str] = set()
         for att_id in desc_referenced:
@@ -3633,7 +3618,7 @@ class JiraConnector(BaseConnector):
         if description_children:
             description_block_group.children_records = description_children
 
-        # Wire BlockGroup parent/child indices (blocks stay empty; content lives in BlockGroups)
+        # Wire BlockGroup parent/child indices
         blockgroup_children_map: dict[int, list[int]] = defaultdict(list)
         for bg in block_groups:
             if bg.parent_index is not None:
@@ -3647,7 +3632,7 @@ class JiraConnector(BaseConnector):
                     block_group_indices=child_bg_indices,
                 )
 
-        return BlocksContainer(blocks=blocks, block_groups=block_groups)
+        return BlocksContainer(blocks=[], block_groups=block_groups)
 
     async def _process_issue_attachments_for_children(
         self,
@@ -3869,8 +3854,7 @@ class JiraConnector(BaseConnector):
         )
 
         if response.status == HttpStatusCode.NOT_FOUND.value:
-            # Streamed after the source issue was deleted (soft-deleted here, but still
-            # visible until reads filter isDeleted). Return a clean 404, not a 500.
+            # Streamed after the source issue was deleted. Return a clean 404, not a 500.
             self.logger.warning(
                 f"Issue {issue_id} not found at source (record {record.external_record_id}) "
                 "— likely deleted in Jira"
@@ -4680,6 +4664,10 @@ class JiraConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error fetching attachment {record.external_record_id}: {e}")
             return None
+
+    # ============================================================================
+    # Factory Method
+    # ============================================================================
 
     @classmethod
     async def create_connector(

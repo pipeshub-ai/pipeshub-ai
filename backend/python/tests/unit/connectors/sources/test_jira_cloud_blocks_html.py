@@ -2,8 +2,6 @@
 
 These cover the ADF->HTML migration: `_parse_issue_to_blocks` now builds BlockGroups from
 Jira's *rendered* HTML (renderedFields) rather than converting ADF to markdown, and
-`adf_to_plain_text` replaces the old `adf_to_text` for a record's searchable description.
-
 The golden case is issue PT-14 from pipeshub.atlassian.net, whose description exercises
 every attachment routing case in one issue:
   - an image inside a table cell         (14062 dk.png)             -> base64-inlined
@@ -19,10 +17,7 @@ import pytest
 from bs4 import BeautifulSoup
 
 from app.connectors.sources.atlassian.core.html_utils import simplify_user_mention_links
-from app.connectors.sources.atlassian.jira_cloud.connector import (
-    JiraConnector,
-    adf_to_plain_text,
-)
+from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.models.blocks import ChildRecord, ChildType, DataFormat
 
 # PT-14 real renderedFields.description (attachment-bearing structure preserved).
@@ -131,9 +126,11 @@ async def test_pt14_golden_blocks():
     assert "/rest/api/3/attachment/content/14062" not in desc.data
     assert "/rest/api/3/attachment/content/14063" not in desc.data
 
-    # Non-image file links are preserved in the HTML (they become children, not base64).
-    assert "/rest/api/3/attachment/content/14061" in desc.data
-    assert "/rest/api/3/attachment/content/14164" in desc.data
+    # Non-image auth-only attachment URLs are stripped to filename text; files stay as children.
+    assert "/rest/api/3/attachment/content/14061" not in desc.data
+    assert "/rest/api/3/attachment/content/14164" not in desc.data
+    assert "Pipeshub_Test_Platform (53a7d884).pdf" in desc.data
+    assert "html_utils.py" in desc.data
 
     # Jira UI chrome must not leak.
     assert "rendericon" not in desc.data
@@ -202,30 +199,6 @@ async def test_weburl_required():
             rendered_fields={"description": "<p>x</p>"},
             comments_data=[],
         )
-
-
-def test_adf_to_plain_text():
-    adf = {
-        "type": "doc",
-        "content": [
-            {"type": "paragraph", "content": [{"type": "text", "text": "Consolidate and lead the work."}]},
-            {"type": "table", "content": [{"type": "tableRow", "content": [
-                {"type": "tableCell", "content": [
-                    {"type": "paragraph", "content": [{"type": "text", "text": "img-1"}]},
-                    {"type": "mediaSingle", "content": [{"type": "media", "attrs": {"id": "u", "alt": "dk.png"}}]},
-                    {"type": "paragraph", "content": [{"type": "text", "text": "test-post"}]},
-                ]},
-            ]}]},
-        ],
-    }
-    assert adf_to_plain_text(adf) == "Consolidate and lead the work. img-1 test-post"
-
-
-def test_adf_to_plain_text_edge_cases():
-    assert adf_to_plain_text(None) == ""
-    assert adf_to_plain_text("string") == ""
-    assert adf_to_plain_text({}) == ""
-    assert adf_to_plain_text({"type": "doc", "content": []}) == ""
 
 
 class TestSimplifyUserMentionLinks:
