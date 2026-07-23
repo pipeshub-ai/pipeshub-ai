@@ -71,7 +71,7 @@ class RegistryBackedStore:
         try:
             metadata = await self._registry.register(
                 actor=self._actor,
-                name=f"tool_result_{tool_name}" if tool_name else "tool_result",
+                name=f"tool_result_{tool_name}.json" if tool_name else "tool_result.json",
                 artifact_type=ArtifactType.TOOL_RESULT,
                 mime_type="application/json",
                 content=content.encode("utf-8"),
