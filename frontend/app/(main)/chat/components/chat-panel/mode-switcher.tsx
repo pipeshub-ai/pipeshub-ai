@@ -24,6 +24,8 @@ interface ModeSwitcherProps {
   isModePanelOpen: boolean;
   /** Whether in full UI mode (affects caret behavior) */
   showFullUI: boolean;
+  /** Whether multiple query modes are available from this control. */
+  showModeSelector?: boolean;
   /** Handler for primary button (mode button or return-to-chat) */
   onLeftClick: () => void;
   /** Handler for secondary button (search toggle) */
@@ -44,6 +46,7 @@ export function ModeSwitcher({
   isSearchMode,
   isModePanelOpen,
   showFullUI,
+  showModeSelector = true,
   onLeftClick,
   onRightClick,
 }: ModeSwitcherProps) {
@@ -167,12 +170,14 @@ export function ModeSwitcher({
                 {t(activeQueryConfig.toolbarLabel)}
               </Text>
             )}
-            <MaterialIcon
-              name={isModePanelOpen && showFullUI ? 'expand_less' : 'expand_more'}
-              size={ICON_SIZES.SMALL}
-              color={modeColors.icon}
-              style={{ marginLeft: 'var(--space-1)' }}
-            />
+            {showModeSelector && (
+              <MaterialIcon
+                name={isModePanelOpen && showFullUI ? 'expand_less' : 'expand_more'}
+                size={ICON_SIZES.SMALL}
+                color={modeColors.icon}
+                style={{ marginLeft: 'var(--space-1)' }}
+              />
+            )}
           </Flex>
 
           {/* Search icon (right) */}

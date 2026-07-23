@@ -18,11 +18,16 @@ const BASE_URL = '/api/v1/configurationManager/web-search';
 // ============================================================
 
 const DEFAULT_WEB_SEARCH_SETTINGS: WebSearchSettings = {
+  enabled: true,
   includeImages: false,
   maxImages: 3,
 };
 
 const normalizeWebSearchSettings = (settings: Record<string, unknown>): WebSearchSettings => {
+  const enabled =
+    typeof settings?.enabled === 'boolean'
+      ? settings.enabled
+      : DEFAULT_WEB_SEARCH_SETTINGS.enabled;
   const includeImages =
     typeof settings?.includeImages === 'boolean'
       ? settings.includeImages
@@ -33,7 +38,7 @@ const normalizeWebSearchSettings = (settings: Record<string, unknown>): WebSearc
       ? parsedMaxImages
       : DEFAULT_WEB_SEARCH_SETTINGS.maxImages;
 
-  return { includeImages, maxImages };
+  return { enabled, includeImages, maxImages };
 };
 
 // ============================================================

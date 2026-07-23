@@ -9,6 +9,7 @@ export interface WebSearchProviderConfiguration {
 }
 
 export interface WebSearchSettings {
+  enabled: boolean;
   includeImages: boolean;
   maxImages: number;
 }

@@ -157,6 +157,13 @@ def get_pdf_conversion_info(
         file_extension = record_name.rsplit(".", 1)[-1].lower()
 
     resolved_mime = mime_type if mime_type else get_mime_type_from_record(record)
+    if file_extension not in _PDF_CONVERTIBLE_EXTENSIONS:
+        if resolved_mime == MimeTypes.PPT.value:
+            file_extension = "ppt"
+        elif resolved_mime in {MimeTypes.PPTX.value, MimeTypes.GOOGLE_SLIDES.value}:
+            # Google Slides exports are returned as OOXML presentations by the
+            # connector, so LibreOffice needs a .pptx suffix to detect them.
+            file_extension = "pptx"
     needs_conversion = (
         file_extension in _PDF_CONVERTIBLE_EXTENSIONS
         or resolved_mime in _PDF_CONVERTIBLE_MIME_TYPES
@@ -1015,9 +1022,13 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
         HTTPException: If conversion fails or output file is not found
     """
     pdf_path = os.path.join(temp_dir, f"{Path(file_path).stem}.pdf")
+    libreoffice_profile_uri = Path(
+        os.path.join(temp_dir, ".libreoffice-profile")
+    ).as_uri()
 
     conversion_cmd = [
         "soffice",
+        f"-env:UserInstallation={libreoffice_profile_uri}",
         "--headless",
         "--convert-to",
         "pdf",
@@ -1058,10 +1069,20 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
             )
 
         if not os.path.exists(pdf_path):
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="PDF conversion failed - output file not found"
+            # LibreOffice may normalize or rename the output basename (for
+            # example, names containing unsupported characters). Accept the
+            # generated PDF instead of failing solely on the expected name.
+            pdf_files = sorted(
+                entry
+                for entry in os.listdir(temp_dir)
+                if entry.lower().endswith(".pdf")
             )
+            if not pdf_files:
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="PDF conversion failed - output file not found"
+                )
+            pdf_path = os.path.join(temp_dir, pdf_files[0])
 
         return pdf_path
 
@@ -1095,7 +1116,15 @@ async def convert_buffer_to_pdf_stream(
         HTTPException: If conversion fails
     """
     with tempfile.TemporaryDirectory() as temp_dir:
-        temp_file_name = record_name if record_name else f"file.{file_extension or 'tmp'}"
+        safe_record_name = Path(record_name).name if record_name else "file"
+        normalized_extension = (file_extension or "").lower().lstrip(".")
+        if (
+            normalized_extension in _PDF_CONVERTIBLE_EXTENSIONS
+            and Path(safe_record_name).suffix.lower().lstrip(".")
+            not in _PDF_CONVERTIBLE_EXTENSIONS
+        ):
+            safe_record_name = f"{safe_record_name}.{normalized_extension}"
+        temp_file_name = safe_record_name
         temp_file_path = os.path.join(temp_dir, temp_file_name)
 
         # Write buffer content to temporary file
