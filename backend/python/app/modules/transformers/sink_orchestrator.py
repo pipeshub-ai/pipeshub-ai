@@ -151,17 +151,16 @@ class SinkOrchestrator(Transformer):
                         "id": record_id,
                         "virtualRecordId": record.virtual_record_id,
                         "indexingStatus": ProgressStatus.NOT_STARTED.value,
+                        "processingStartedAt": None,
                         "isDirty": False,
                     }
                 ],
                 CollectionNames.RECORDS.value,
             )
             if not success:
-                self.logger.warning(
-                    "⚠️ Failed to update record %s status - record may not exist in database",
-                    record_id,
+                raise RuntimeError(
+                    f"Failed to persist sink-only status for record {record_id}"
                 )
-                return
             self.logger.info(
                 "✅ Sink-only mode completed for record %s (vector indexing skipped)",
                 record_id,
@@ -174,7 +173,9 @@ class SinkOrchestrator(Transformer):
             result = await self.vector_store.apply(ctx)
             if result is False:
                 record_service_activity("indexing_service", "document_indexed", connector=connector, status="failed", org=org, kb=kb, mimetype=record.mime_type or "none")
-                return
+                raise RuntimeError(
+                    f"Vector store did not index record {record_id}"
+                )
 
             self.logger.info(f"✅ Vector store indexing succeeded for record {record_id}")
             # Per-record indexing success counter (powers the Ingestion dashboard).
@@ -188,18 +189,23 @@ class SinkOrchestrator(Transformer):
         """Mark indexingStatus=COMPLETED without touching extractionStatus."""
         record = ctx.record
         timestamp = get_epoch_timestamp_in_ms()
-        await self.graph_provider.batch_upsert_nodes(
+        success = await self.graph_provider.batch_upsert_nodes(
             [
                 {
                     "id": record.id,
                     "virtualRecordId": record.virtual_record_id,
                     "indexingStatus": ProgressStatus.COMPLETED.value,
+                    "processingStartedAt": None,
                     "lastIndexTimestamp": timestamp,
                     "isDirty": False,
                 }
             ],
             CollectionNames.RECORDS.value,
         )
+        if not success:
+            raise RuntimeError(
+                f"Failed to persist indexingStatus=COMPLETED for {record.id}"
+            )
         self.logger.info(
             "✅ indexingStatus=COMPLETED recorded for %s", record.id
         )

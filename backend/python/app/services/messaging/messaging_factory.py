@@ -8,6 +8,9 @@ from app.services.messaging.config import (
     RedisStreamsConfig,
     get_message_broker_type,
 )
+from app.services.messaging.distributed_concurrency import (
+    DistributedConcurrencyManager,
+)
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.config.kafka_config import (
@@ -96,6 +99,7 @@ class MessagingFactory:
         consumer_type: ConsumerType = ConsumerType.SIMPLE,
         retry_manager: Optional[RetryManager] = None,
         producer: Optional[IMessagingProducer] = None,
+        concurrency_manager: Optional[DistributedConcurrencyManager] = None,
     ) -> IMessagingConsumer:
         """Create a messaging consumer based on broker type.
 
@@ -124,7 +128,13 @@ class MessagingFactory:
                     f"Expected KafkaConsumerConfig, got {type(config).__name__}"
                 )
             if consumer_type == ConsumerType.INDEXING:
-                return IndexingKafkaConsumer(logger, config, retry_manager, producer)
+                return IndexingKafkaConsumer(
+                    logger,
+                    config,
+                    retry_manager,
+                    producer,
+                    concurrency_manager,
+                )
             return KafkaMessagingConsumer(logger, config, retry_manager)
         else:
             if config is None:
@@ -134,5 +144,11 @@ class MessagingFactory:
                     f"Expected RedisStreamsConfig, got {type(config).__name__}"
                 )
             if consumer_type == ConsumerType.INDEXING:
-                return IndexingRedisStreamsConsumer(logger, config, retry_manager, producer)
+                return IndexingRedisStreamsConsumer(
+                    logger,
+                    config,
+                    retry_manager,
+                    producer,
+                    concurrency_manager,
+                )
             return RedisStreamsConsumer(logger, config, retry_manager)

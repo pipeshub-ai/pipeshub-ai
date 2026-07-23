@@ -89,7 +89,7 @@ class TestIndexingErrorReraise:
         proc.graph_provider.get_document = AsyncMock(
             return_value=_record(recordName="photo.png", mimeType="image/png")
         )
-        proc.graph_provider.batch_update_nodes = AsyncMock(
+        proc.graph_provider.update_node = AsyncMock(
             side_effect=DocumentProcessingError("status boom", doc_id="r1")
         )
 

@@ -32,6 +32,7 @@ def _make_event_processor():
     logger = MagicMock()
     processor = MagicMock()
     graph_provider = AsyncMock()
+    graph_provider.update_node = AsyncMock(return_value=True)
     config_service = MagicMock()
 
     ep = EventProcessor(logger, processor, graph_provider, config_service)
@@ -178,24 +179,22 @@ class TestMarkRecordStatusEdgeCases:
         assert doc["other"] == "data"
 
     @pytest.mark.asyncio
-    async def test_error_with_non_empty_status_does_not_raise(self):
-        """Errors with non-EMPTY statuses are swallowed."""
-        ep, logger, _, gp = _make_event_processor()
-        gp.batch_update_nodes.side_effect = Exception("fail")
+    async def test_error_with_non_empty_status_raises(self):
+        ep, _, _, gp = _make_event_processor()
+        gp.update_node.side_effect = Exception("fail")
         doc = {"_key": "k6"}
 
-        # FAILED is not EMPTY, so exception should be swallowed
-        await ep.mark_record_status(doc, ProgressStatus.FAILED)
-        logger.error.assert_called()
+        with pytest.raises(Exception, match="fail"):
+            await ep.mark_record_status(doc, ProgressStatus.FAILED)
 
     @pytest.mark.asyncio
     async def test_error_with_empty_status_raises(self):
         """Errors with EMPTY status are re-raised."""
         ep, _, _, gp = _make_event_processor()
-        gp.batch_update_nodes.side_effect = Exception("fail")
+        gp.update_node.side_effect = Exception("fail")
         doc = {"_key": "k7"}
 
-        with pytest.raises(Exception, match="Failed to mark record status to EMPTY"):
+        with pytest.raises(Exception, match="fail"):
             await ep.mark_record_status(doc, ProgressStatus.EMPTY)
 
 
@@ -314,7 +313,7 @@ class TestOnEventEdgeCases:
             event_data = _make_event_payload(extension=ExtensionTypes.DOCX.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
 
     @pytest.mark.asyncio
     async def test_virtual_record_id_from_record_when_not_in_payload(self):
@@ -445,7 +444,7 @@ class TestOnEventEdgeCases:
             event_data = _make_event_payload(mime_type=MimeTypes.DOCX.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_docx_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -459,7 +458,7 @@ class TestOnEventEdgeCases:
             event_data = _make_event_payload(mime_type=MimeTypes.XLSX.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_excel_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -473,7 +472,7 @@ class TestOnEventEdgeCases:
             event_data = _make_event_payload(mime_type=MimeTypes.CSV.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_delimited_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -487,7 +486,7 @@ class TestOnEventEdgeCases:
             event_data = _make_event_payload(mime_type=MimeTypes.PPTX.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_pptx_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -501,7 +500,7 @@ class TestOnEventEdgeCases:
             event_data = _make_event_payload(mime_type=MimeTypes.MARKDOWN.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_md_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -534,7 +533,7 @@ class TestOnEventEdgeCases:
             event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_pdf_with_pdf_plumber.assert_called_once()
 
     @pytest.mark.asyncio
@@ -591,7 +590,7 @@ class TestOnEventMimeTypeDispatch:
             event_data = _make_event_payload(mime_type=MimeTypes.GOOGLE_SLIDES.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_pptx_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -604,7 +603,7 @@ class TestOnEventMimeTypeDispatch:
             event_data = _make_event_payload(mime_type=MimeTypes.GOOGLE_DOCS.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_docx_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -617,7 +616,7 @@ class TestOnEventMimeTypeDispatch:
             event_data = _make_event_payload(mime_type=MimeTypes.GOOGLE_SHEETS.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_excel_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -630,7 +629,7 @@ class TestOnEventMimeTypeDispatch:
             event_data = _make_event_payload(mime_type=MimeTypes.HTML.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_html_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -643,7 +642,7 @@ class TestOnEventMimeTypeDispatch:
             event_data = _make_event_payload(mime_type=MimeTypes.PLAIN_TEXT.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_txt_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -656,7 +655,7 @@ class TestOnEventMimeTypeDispatch:
             event_data = _make_event_payload(mime_type=MimeTypes.BLOCKS.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_blocks.assert_called_once()
 
     @pytest.mark.asyncio
@@ -669,7 +668,7 @@ class TestOnEventMimeTypeDispatch:
             event_data = _make_event_payload(mime_type=MimeTypes.GMAIL.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_gmail_message.assert_called_once()
 
 
@@ -691,7 +690,7 @@ class TestOnEventExtensionDispatch:
             event_data = _make_event_payload(extension=ExtensionTypes.DOC.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_doc_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -704,7 +703,7 @@ class TestOnEventExtensionDispatch:
             event_data = _make_event_payload(extension=ExtensionTypes.XLS.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_xls_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -717,7 +716,7 @@ class TestOnEventExtensionDispatch:
             event_data = _make_event_payload(extension=ExtensionTypes.TSV.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_delimited_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -730,7 +729,7 @@ class TestOnEventExtensionDispatch:
             event_data = _make_event_payload(extension=ExtensionTypes.PPT.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_ppt_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -743,7 +742,7 @@ class TestOnEventExtensionDispatch:
             event_data = _make_event_payload(extension=ExtensionTypes.MD.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_md_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -756,7 +755,7 @@ class TestOnEventExtensionDispatch:
             event_data = _make_event_payload(extension=ExtensionTypes.MDX.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_mdx_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -769,7 +768,7 @@ class TestOnEventExtensionDispatch:
             event_data = _make_event_payload(extension=ExtensionTypes.TXT.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_txt_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -782,7 +781,7 @@ class TestOnEventExtensionDispatch:
             event_data = _make_event_payload(extension=ExtensionTypes.PNG.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_image.assert_called_once()
 
     @pytest.mark.asyncio
@@ -795,7 +794,7 @@ class TestOnEventExtensionDispatch:
             event_data = _make_event_payload(extension=ExtensionTypes.JPG.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_image.assert_called_once()
 
     @pytest.mark.asyncio
@@ -818,7 +817,7 @@ class TestOnEventExtensionDispatch:
             event_data = _make_event_payload(extension=ExtensionTypes.HTML.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_html_document.assert_called_once()
 
     @pytest.mark.asyncio
@@ -836,7 +835,7 @@ class TestOnEventExtensionDispatch:
             )
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_md_document.assert_called_once()
         processor.process_txt_document.assert_not_called()
 
@@ -855,7 +854,7 @@ class TestOnEventExtensionDispatch:
             )
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_md_document.assert_called_once()
         processor.process_txt_document.assert_not_called()
 
@@ -1443,7 +1442,7 @@ class TestOnEventSqlRouting:
             event_data = _make_event_payload(mime_type=MimeTypes.SQL_TABLE.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         call_kwargs = processor.process_sql_structured_data.call_args[1]
         assert call_kwargs["record_type"] == "SQL_TABLE"
 
@@ -1457,7 +1456,7 @@ class TestOnEventSqlRouting:
             event_data = _make_event_payload(extension=ExtensionTypes.SQL_TABLE.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_sql_structured_data.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1470,7 +1469,7 @@ class TestOnEventSqlRouting:
             event_data = _make_event_payload(mime_type=MimeTypes.SQL_VIEW.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         call_kwargs = processor.process_sql_structured_data.call_args[1]
         assert call_kwargs["record_type"] == "SQL_VIEW"
 
@@ -1484,7 +1483,7 @@ class TestOnEventSqlRouting:
             event_data = _make_event_payload(extension=ExtensionTypes.SQL_VIEW.value)
             events = await _drain(ep.on_event(event_data))
 
-        assert len(events) == 2
+        assert len(events) == 3
         processor.process_sql_structured_data.assert_called_once()
 
 

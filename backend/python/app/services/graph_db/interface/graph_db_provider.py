@@ -209,6 +209,7 @@ class IGraphDBProvider(ABC):
         filters: dict[str, Any] | None = None,
         sort_field: str | None = None,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Fetch a single page of documents from a collection using database-level
@@ -225,6 +226,8 @@ class IGraphDBProvider(ABC):
                           database's natural order is used (stable per query but
                           not guaranteed across restarts).
             transaction:  Optional transaction ID.
+            raise_on_error: Propagate database errors instead of returning an
+                            empty page.
 
         Returns:
             List of document dicts for the requested page (may be shorter than

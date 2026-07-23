@@ -33,6 +33,7 @@ from app.config.constants.arangodb import (
 )
 from app.events.processor import Processor
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.services.base_client import ServiceUnavailableError
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -192,6 +193,18 @@ class EventProcessor:
             parse_result.provider_used.value if parse_result.provider_used else "unknown",
             len(block_container.blocks),
         )
+
+        record_doc = await self.graph_provider.get_document(
+            record_id, CollectionNames.RECORDS.value
+        )
+        if record_doc is None:
+            raise RuntimeError(f"Record {record_id} not found after parsing")
+
+        await self.update_record_fields(
+            record_doc,
+            {"parsingStatus": ProgressStatus.COMPLETED.value},
+        )
+
         yield PipelineEvent(
             event=IndexingEvent.PARSING_COMPLETE,
             data=PipelineEventData(record_id=record_id),
@@ -201,18 +214,15 @@ class EventProcessor:
             self.logger.info(
                 "⚠️ Empty document for %s — marking EMPTY", record_id
             )
-            record_doc = await self.graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
-            )
-            if record_doc:
-                record_doc.update({
+            await self.update_record_fields(
+                record_doc,
+                {
+                    # parsingStatus is already COMPLETED from the write above.
                     "indexingStatus": ProgressStatus.EMPTY.value,
                     "extractionStatus": ProgressStatus.NOT_STARTED.value,
                     "isDirty": False,
-                })
-                await self.graph_provider.batch_upsert_nodes(
-                    [record_doc], CollectionNames.RECORDS.value
-                )
+                },
+            )
             yield PipelineEvent(
                 event=IndexingEvent.INDEXING_COMPLETE,
                 data=PipelineEventData(record_id=record_id),
@@ -220,12 +230,10 @@ class EventProcessor:
             return
 
         # ── Build Record + TransformContext ─────────────────────────────────
-        record_doc = await self.graph_provider.get_document(
-            record_id, CollectionNames.RECORDS.value
+        await self.update_record_fields(
+            record_doc,
+            {"indexingStatus": ProgressStatus.IN_PROGRESS.value},
         )
-        if record_doc is None:
-            self.logger.warning(f"❌ Record {record_id} not found after parsing")
-            return
 
         record = convert_record_dict_to_record(record_doc)
         record.block_containers = block_container
@@ -253,10 +261,18 @@ class EventProcessor:
             or os.environ.get("DEFER_EXTRACTION", "false").lower() == "true"
         )
         if defer_extraction:
+            await self.update_record_fields(
+                record_doc,
+                {"extractionStatus": ProgressStatus.NOT_STARTED.value},
+            )
             self.logger.info(
                 "📨 Deferring graph enrichment for record %s", record_id
             )
         else:
+            await self.update_record_fields(
+                record_doc,
+                {"extractionStatus": ProgressStatus.IN_PROGRESS.value},
+            )
             try:
                 departments = await self.graph_provider.get_departments(org_id)
                 semantic_metadata = await self.extraction_client.classify(
@@ -287,47 +303,49 @@ class EventProcessor:
                     record_id,
                     enrich_exc,
                 )
+                await self.update_record_fields(
+                    record_doc,
+                    {
+                        "extractionStatus": ProgressStatus.FAILED.value,
+                        "reason": f"Enrichment failed: {enrich_exc}",
+                    },
+                )
 
         yield PipelineEvent(
             event=IndexingEvent.INDEXING_COMPLETE,
             data=PipelineEventData(record_id=record_id),
         )
 
+    async def update_record_fields(self, doc: dict[str, Any], fields: dict[str, Any]) -> None:
+        """Persist a partial record update or fail the current attempt."""
+        record_id = _record_key(doc) or "unknown"
+        doc.update(fields)
+        success = await self.graph_provider.update_node(
+            record_id,
+            CollectionNames.RECORDS.value,
+            fields,
+        )
+        if not success:
+            raise RuntimeError(
+                f"Failed to update record {record_id} fields {tuple(fields)}"
+            )
+
     async def mark_record_status(self, doc: dict[str, Any], status: ProgressStatus) -> None:
-        """
-        Mark the record status to IN_PROGRESS
-        """
-        try:
-            record_id = _record_key(doc) or "unknown"
-
-            doc.update(
-                {
-                    "indexingStatus": status.value,
-                    "extractionStatus": status.value,
-                }
-            )
-
-            docs = [doc]
-            success = await self.graph_provider.batch_update_nodes(
-                docs, CollectionNames.RECORDS.value
-            )
-            if not success:
-                self.logger.warning(
-                    "⚠️ Failed to update record %s status to %s - record may not exist",
-                    record_id, status.value
-                )
-                return
-
-            self.logger.debug(
-                f"🔍 Record {record_id}: Successfully updated status to {status.value}"
-            )
-        except Exception as e:
-            self.logger.error(
-                f"❌ Record {_record_key(doc) or 'unknown'}: Failed to mark record status "
-                f"to {status.value}: {repr(e)}"
-            )
-            if status == ProgressStatus.EMPTY:
-                raise Exception(f"Failed to mark record status to EMPTY: {repr(e)}") from e
+        """Persist the legacy pipeline's indexing and extraction status."""
+        record_id = _record_key(doc) or "unknown"
+        fields = {
+            "indexingStatus": status.value,
+            "extractionStatus": status.value,
+            "processingStartedAt": (
+                get_epoch_timestamp_in_ms()
+                if status == ProgressStatus.IN_PROGRESS
+                else None
+            ),
+        }
+        await self.update_record_fields(doc, fields)
+        self.logger.debug(
+            f"🔍 Record {record_id}: Successfully updated status to {status.value}"
+        )
 
 
 
@@ -410,14 +428,10 @@ class EventProcessor:
             content_for_hash = self._normalize_content_for_dedup(content=content, record_type=record_type, mime_type=mime_type)
             md5_checksum = hashlib.md5(content_for_hash).hexdigest()
             if existing_md5_checksum != md5_checksum:
-                doc.update({"md5Checksum": md5_checksum})
-                success = await self.graph_provider.batch_update_nodes([doc], CollectionNames.RECORDS.value)
-                if not success:
-                    self.logger.warning(
-                        "⚠️ Failed to update MD5 checksum for record %s - record may not exist",
-                        _record_key(doc),
-                    )
-                    return True
+                await self.update_record_fields(
+                    doc,
+                    {"md5Checksum": md5_checksum},
+                )
 
             self.logger.debug("🚀 Calculated md5_checksum: %s for record type: %s", md5_checksum, record_type)
 
@@ -450,23 +464,21 @@ class EventProcessor:
 
         if processed_duplicate:
             # Use data from processed duplicate
-            doc.update({
+            duplicate_fields = {
                 "isDirty": False,
                 "summaryDocumentId": processed_duplicate.get("summaryDocumentId"),
                 "virtualRecordId": processed_duplicate.get("virtualRecordId"),
                 "indexingStatus": processed_duplicate.get("indexingStatus"),
                 "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
-                "extractionStatus": processed_duplicate.get("extractionStatus"),
+                # EMPTY duplicates never ran extraction, so this can be
+                # missing/None on the source record — don't propagate None.
+                "extractionStatus": (
+                    processed_duplicate.get("extractionStatus")
+                    or ProgressStatus.NOT_STARTED.value
+                ),
                 "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
-            })
-            success = await self.graph_provider.batch_update_nodes([doc], CollectionNames.RECORDS.value)
-            if not success:
-                self.logger.warning(
-                    "⚠️ Failed to update duplicate record %s - record may have been deleted. Skipping relationship copy.",
-                    _record_key(doc),
-                )
-                # Don't proceed with copy_document_relationships if record doesn't exist
-                return True
+            }
+            await self.update_record_fields(doc, duplicate_fields)
             
             # Copy all relationships from the processed duplicate to this document
             await self.graph_provider.copy_document_relationships(
@@ -489,16 +501,11 @@ class EventProcessor:
                 f"🚀 Duplicate record {_record_key(in_progress)} is being processed, "
                 "changing status to QUEUED."
             )
-            doc.update({
-                "indexingStatus": ProgressStatus.QUEUED.value,
-            })
-            success = await self.graph_provider.batch_update_nodes([doc], CollectionNames.RECORDS.value)
-            if not success:
-                self.logger.warning(
-                    "⚠️ Failed to mark record %s as QUEUED - record may not exist",
-                    _record_key(doc),
-                )
-            return True  # Marked as queued (or record deleted — skip processing)
+            await self.update_record_fields(
+                doc,
+                {"indexingStatus": ProgressStatus.QUEUED.value},
+            )
+            return True
 
         self.logger.info(
             f"🚀 No duplicate found, proceeding with processing for {_record_key(doc)}"
@@ -603,7 +610,40 @@ class EventProcessor:
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
 
-            await self.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
+            # Fail fast, before writing IN_PROGRESS, if the parsing service's
+            # circuit breaker is already open. This is an in-memory check (no
+            # HTTP call) so it doesn't add latency on the happy path, but it
+            # stops every incoming record from being written to IN_PROGRESS
+            # and burning a parsing-semaphore slot on a service we already
+            # know is down.
+            if self._use_service_pipeline() and self.parsing_client.circuit_open:
+                raise ServiceUnavailableError(
+                    "Parsing service circuit breaker is open; failing fast",
+                    status_code=503,
+                    service_name="ParsingService",
+                )
+
+            if self._use_service_pipeline():
+                # Consumer holds MAX_CONCURRENT_INDEXING before invoking us.
+                # Parsing slots are requested below via START_PARSING so up to
+                # MAX_CONCURRENT_INDEXING records can show IN_PROGRESS while at
+                # most MAX_CONCURRENT_PARSING are actively parsing.
+                processing_started_at = event_data.get(
+                    "_processing_started_at",
+                    get_epoch_timestamp_in_ms(),
+                )
+                await self.update_record_fields(
+                    doc,
+                    {
+                        "parsingStatus": ProgressStatus.IN_PROGRESS.value,
+                        "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+                        "processingStartedAt": processing_started_at,
+                    },
+                )
+            else:
+                # Legacy inline pipeline: parse+index run in-process without a
+                # phase boundary we can hook, keep the historical behaviour.
+                await self.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
 
             prev_virtual_record_id = None
             if event_type == EventTypes.UPDATE_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
@@ -643,6 +683,25 @@ class EventProcessor:
 
             if virtual_record_id is None:
                 virtual_record_id = str(uuid4())
+
+            # Persist the vrid this attempt will index under *before* parsing
+            # starts. If this attempt fails partway through (after vectors are
+            # written but before indexingStatus=COMPLETED), the retry re-reads
+            # this same vrid from the record instead of minting a fresh one —
+            # so record.py's bulk_delete_embeddings (for non-reconciliation
+            # types) or the reconciliation diff (for reconciliation-enabled
+            # types) targets the orphaned vectors instead of abandoning them.
+            if virtual_record_id != doc.get("virtualRecordId"):
+                await self.update_record_fields(
+                    doc, {"virtualRecordId": virtual_record_id}
+                )
+
+            # Ask the consumer for a nested parsing slot only after the record
+            # is already IN_PROGRESS under the outer indexing gate.
+            yield PipelineEvent(
+                event=IndexingEvent.START_PARSING,
+                data=PipelineEventData(record_id=record_id),
+            )
 
             # ── New service pipeline (opt-in via USE_PARSING_SERVICE=true) ──
             if self._use_service_pipeline():
