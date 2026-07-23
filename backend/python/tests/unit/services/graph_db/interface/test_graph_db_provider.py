@@ -348,6 +348,7 @@ class TestAbstractMethodInventory:
         "batch_update_connector_status",
         "get_user_connector_instances",
         "get_filtered_connector_instances",
+        "get_user_accessible_team_app_ids",
         "store_page_token",
         "get_page_token_db",
         # Utility operations

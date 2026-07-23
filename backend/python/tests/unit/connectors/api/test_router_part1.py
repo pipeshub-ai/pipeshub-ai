@@ -1357,16 +1357,28 @@ class TestGetConnectorStatsEndpoint:
         from app.connectors.api.router import get_connector_stats_endpoint
 
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(return_value={
             "success": True,
             "data": {"totalRecords": 100},
         })
+
+        connector_registry = AsyncMock()
+        connector_registry.can_user_view_connector = AsyncMock(return_value=True)
 
         container = MagicMock()
         container.logger = MagicMock(return_value=MagicMock())
         request = MagicMock()
         request.app = MagicMock()
         request.app.container = container
+        request.app.state.connector_registry = connector_registry
+        request.state = MagicMock()
+        request.state.user = MagicMock()
+        request.state.user.get = lambda k, default=None: {
+            "userId": "user-1", "orgId": "org-1",
+        }.get(k, default)
+        request.headers = MagicMock()
+        request.headers.get = lambda k, default=None: default
 
         result = await get_connector_stats_endpoint(request, "org-1", "conn-1", gp)
         assert result["success"] is True
@@ -1376,13 +1388,25 @@ class TestGetConnectorStatsEndpoint:
         from app.connectors.api.router import get_connector_stats_endpoint
 
         gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value={"type": "Slack"})
         gp.get_connector_stats = AsyncMock(return_value={"success": False})
+
+        connector_registry = AsyncMock()
+        connector_registry.can_user_view_connector = AsyncMock(return_value=True)
 
         container = MagicMock()
         container.logger = MagicMock(return_value=MagicMock())
         request = MagicMock()
         request.app = MagicMock()
         request.app.container = container
+        request.app.state.connector_registry = connector_registry
+        request.state = MagicMock()
+        request.state.user = MagicMock()
+        request.state.user.get = lambda k, default=None: {
+            "userId": "user-1", "orgId": "org-1",
+        }.get(k, default)
+        request.headers = MagicMock()
+        request.headers.get = lambda k, default=None: default
 
         with pytest.raises(HTTPException) as exc_info:
             await get_connector_stats_endpoint(request, "org-1", "conn-1", gp)
