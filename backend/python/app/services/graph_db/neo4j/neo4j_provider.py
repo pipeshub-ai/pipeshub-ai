@@ -9598,7 +9598,7 @@ class Neo4jProvider(IGraphDBProvider):
                 // 2. Containment subtree, depth-0 inclusive
                 UNWIND (CASE WHEN size(valid_roots) = 0 THEN [null] ELSE valid_roots END) AS root
                 OPTIONAL MATCH path = (root)-[:RECORD_RELATION*0..20]->(v:Record)
-                WHERE root IS NOT NULL AND all(rel IN relationships(path) WHERE rel.relationshipType IN """ + traversal_types + """
+                WHERE root IS NOT NULL AND all(rel IN relationships(path) WHERE rel.relationshipType IN """ + traversal_types + """)
                 WITH valid_root_keys, collect(DISTINCT v) AS all_vertices
                 // 3. Attach each record's isOfType type doc (any label)
                 UNWIND (CASE WHEN size(all_vertices) = 0 THEN [null] ELSE all_vertices END) AS vert

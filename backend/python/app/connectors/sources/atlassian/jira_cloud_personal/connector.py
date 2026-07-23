@@ -55,7 +55,6 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     AUTHORIZE_URL,
     TOKEN_URL,
     JiraConnector,
-    adf_to_plain_text,
 )
 from app.models.entities import AppUser, RecordGroup, RecordGroupType
 from app.models.permission import Permission
@@ -421,12 +420,6 @@ class JiraCloudPersonalConnector(JiraConnector):
             project_name = project.get("name")
             project_key = project.get("key")
 
-            description = project.get("description")
-            if description and isinstance(description, dict):
-                description = adf_to_plain_text(description)
-            elif not description:
-                description = None
-
             record_group = RecordGroup(
                 id=str(uuid4()),
                 org_id=self.data_entities_processor.org_id,
@@ -436,7 +429,6 @@ class JiraCloudPersonalConnector(JiraConnector):
                 name=project_name,
                 short_name=project_key,
                 group_type=RecordGroupType.PROJECT,
-                description=description,
                 web_url=project.get("url"),
             )
 

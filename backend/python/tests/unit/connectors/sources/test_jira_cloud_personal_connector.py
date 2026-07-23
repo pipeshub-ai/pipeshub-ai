@@ -589,7 +589,7 @@ class TestFetchProjectsDescriptionParsing:
 
         record_groups, _ = await conn._fetch_projects()
 
-        assert record_groups[0][0].description == "Project summary"
+        assert record_groups[0][0].description is None
 
     async def test_empty_description_becomes_none(self) -> None:
         conn = _make_connector()
@@ -623,7 +623,7 @@ class TestFetchProjectsDescriptionParsing:
 
         record_groups, _ = await conn._fetch_projects()
 
-        assert record_groups[0][0].description == "Plain text summary"
+        assert record_groups[0][0].description is None
 
     async def test_logs_debug_when_project_permissions_present(self) -> None:
         conn = _make_connector()

@@ -11,10 +11,7 @@ import pytest
 
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.constants import OAuthConfigKeys
-from app.connectors.sources.atlassian.jira_cloud.connector import (
-    JiraConnector,
-    adf_to_plain_text,
-)
+from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
     _application_role_groups_from_dc_role,
@@ -59,118 +56,6 @@ def _make_dc_connector() -> JiraDataCenterConnector:
     cs = MagicMock()
     cs.get_config = AsyncMock()
     return JiraDataCenterConnector(logger, dep, dsp, cs, "conn-dc-gap", "team", "u1")
-
-
-class TestAdfPlainTextCoverageGaps:
-    """The ADF→markdown converter was replaced by the rendered-HTML block path; the record's
-    searchable ``description`` field now uses ``adf_to_plain_text`` — a plain text roll-up
-    that collects text nodes only (no markdown, no numbering, media contributes nothing)."""
-
-    def test_collects_text_from_nested_lists(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [
-                    {"type": "text", "text": "Before"},
-                    {
-                        "type": "bulletList",
-                        "content": [{
-                            "type": "listItem",
-                            "content": [{
-                                "type": "paragraph",
-                                "content": [{"type": "text", "text": "nested"}],
-                            }],
-                        }],
-                    },
-                ],
-            }],
-        }
-        assert adf_to_plain_text(adf) == "Before nested"
-
-    def test_heading_text_without_markdown_prefix(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "heading",
-                "attrs": {"level": 3},
-                "content": [{"type": "text", "text": "Section"}],
-            }],
-        }
-        result = adf_to_plain_text(adf)
-        assert result == "Section"
-        assert "#" not in result
-
-    def test_ordered_list_text_without_numbering(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "orderedList",
-                "content": [{
-                    "type": "listItem",
-                    "content": [
-                        {"type": "paragraph", "content": [{"type": "text", "text": "Parent"}]},
-                        {
-                            "type": "bulletList",
-                            "content": [{
-                                "type": "listItem",
-                                "content": [{
-                                    "type": "paragraph",
-                                    "content": [{"type": "text", "text": "Child"}],
-                                }],
-                            }],
-                        },
-                    ],
-                }],
-            }],
-        }
-        result = adf_to_plain_text(adf)
-        assert result == "Parent Child"
-        assert "1." not in result
-
-    def test_inline_code_text_is_plain(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [
-                    {"type": "text", "text": "code", "marks": [{"type": "code"}]},
-                    {"type": "hardBreak"},
-                    {"type": "text", "text": "after"},
-                ],
-            }],
-        }
-        result = adf_to_plain_text(adf)
-        assert result == "code after"
-        assert "`" not in result
-
-    def test_single_node_without_doc_content_wrapper(self):
-        adf = {
-            "type": "paragraph",
-            "content": [{"type": "text", "text": "standalone paragraph"}],
-        }
-        assert adf_to_plain_text(adf) == "standalone paragraph"
-
-    def test_media_node_contributes_no_text(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "bulletList",
-                "content": [{
-                    "type": "listItem",
-                    "content": [{
-                        "type": "media",
-                        "attrs": {"id": "missing", "alt": "in-list.png"},
-                    }],
-                }],
-            }],
-        }
-        assert adf_to_plain_text(adf) == ""
-
-    def test_non_dict_input_returns_empty(self):
-        assert adf_to_plain_text(None) == ""
-        assert adf_to_plain_text("not-a-dict") == ""
-        assert adf_to_plain_text([]) == ""
 
 
 class TestCloudInitCoverageGaps:

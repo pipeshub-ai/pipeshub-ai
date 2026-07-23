@@ -16,7 +16,6 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     ISSUE_SEARCH_FIELDS,
     MAX_INLINE_IMAGE_BYTES,
     JiraConnector,
-    adf_to_plain_text,
 )
 from app.models.entities import (
     AppRole,
@@ -39,6 +38,7 @@ def _make_mock_deps():
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_record_deleted = AsyncMock()
+    data_entities_processor.on_record_content_update = AsyncMock()
     data_entities_processor.on_new_app_roles = AsyncMock()
     data_entities_processor.reindex_existing_records = AsyncMock()
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[
@@ -124,48 +124,6 @@ def _make_file_record(attachment_id="99", issue_id="12345", version=0, **kwargs)
     )
     defaults.update(kwargs)
     return FileRecord(**defaults)
-
-
-class TestAdfToPlainText:
-
-    def test_non_dict_input(self):
-        assert adf_to_plain_text("not a dict") == ""
-        assert adf_to_plain_text(42) == ""
-        assert adf_to_plain_text(None) == ""
-
-    def test_paragraph_text(self):
-        adf = {
-            "type": "doc",
-            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Hello world"}]}],
-        }
-        assert adf_to_plain_text(adf) == "Hello world"
-
-    def test_collects_nested_text_and_skips_media(self):
-        adf = {
-            "type": "doc",
-            "content": [
-                {"type": "paragraph", "content": [{"type": "text", "text": "Intro."}]},
-                {"type": "table", "content": [{"type": "tableRow", "content": [
-                    {"type": "tableCell", "content": [
-                        {"type": "paragraph", "content": [{"type": "text", "text": "cell"}]},
-                        {"type": "mediaSingle", "content": [
-                            {"type": "media", "attrs": {"id": "m1", "alt": "x.png"}}
-                        ]},
-                    ]},
-                ]}]},
-            ],
-        }
-        assert adf_to_plain_text(adf) == "Intro. cell"
-
-    def test_whitespace_collapsed(self):
-        adf = {
-            "type": "doc",
-            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a   b \t c"}]}],
-        }
-        assert adf_to_plain_text(adf) == "a b c"
-
-    def test_doc_without_content_key(self):
-        assert adf_to_plain_text({"type": "paragraph"}) == ""
 
 
 class TestFetchApplicationRolesToGroupsMapping:
@@ -526,31 +484,6 @@ class TestExtractIssueData:
         result = connector._extract_issue_data(issue, {})
         assert result["issue_type"].value == "SUBTASK"
         assert result["parent_external_id"] == "1"
-
-    def test_description_with_adf(self):
-        connector = _make_connector()
-        issue = {
-            "id": "3",
-            "key": "D-1",
-            "fields": {
-                "summary": "Desc",
-                "description": {
-                    "type": "doc",
-                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Hello"}]}],
-                },
-                "issuetype": {"name": "Task", "hierarchyLevel": 0},
-                "status": None,
-                "priority": None,
-                "creator": None,
-                "reporter": None,
-                "assignee": None,
-                "created": None,
-                "updated": None,
-                "parent": None,
-            },
-        }
-        result = connector._extract_issue_data(issue, {})
-        assert "Hello" in result["description"]
 
 
 class TestParseJiraTimestamp:
@@ -1245,9 +1178,9 @@ class TestHandleAttachmentDeletionsFromChangelog:
         tx_store = AsyncMock()
         connector._find_attachment_record_by_id = AsyncMock(return_value=mock_record)
 
-        # Method now RETURNS the internal ids to soft-delete; the caller performs the delete.
-        soft_delete_ids = await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
-        assert soft_delete_ids == ["rec-1"]
+        # Method returns internal ids for the caller to hard-delete.
+        delete_ids = await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
+        assert delete_ids == ["rec-1"]
 
     @pytest.mark.asyncio
     async def test_description_change_with_removed_attachment(self):
@@ -1277,8 +1210,8 @@ class TestHandleAttachmentDeletionsFromChangelog:
         tx_store.get_records_by_parent = AsyncMock(return_value=[mock_record])
         connector._find_attachment_record_by_id = AsyncMock(return_value=None)
 
-        soft_delete_ids = await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
-        assert soft_delete_ids == ["rec-1"]
+        delete_ids = await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
+        assert delete_ids == ["rec-1"]
 
     @pytest.mark.asyncio
     async def test_error_is_caught(self):
@@ -1542,6 +1475,7 @@ class TestProcessNewRecords:
         await connector._process_new_records([r2, r1], "PROJ", stats)
 
         connector.data_entities_processor.on_new_records.assert_awaited()
+        connector.data_entities_processor.on_record_content_update.assert_awaited_once()
         assert stats["new_count"] == 1
         assert stats["updated_count"] == 1
 
