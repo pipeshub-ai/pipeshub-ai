@@ -2438,6 +2438,37 @@ def _make_file_record(**kwargs):
 
 class TestStreamRecord:
 
+    @pytest.fixture(autouse=True)
+    def mock_reinitialize(self):
+        with patch(
+            "app.connectors.sources.microsoft.outlook.connector.OutlookConnector._reinitialize_client_if_needed",
+            new_callable=AsyncMock,
+        ) as mock:
+            yield mock
+
+    @pytest.mark.asyncio
+    async def test_stream_record_reinitializes_client(self, mock_reinitialize):
+        connector = _make_connector()
+        connector.external_outlook_client = MagicMock()
+
+        record = _make_mail_record(
+            record_type=RecordType.GROUP_MAIL,
+            external_record_group_id="group-1",
+            thread_id="thread-1",
+            external_record_id="post-1",
+        )
+
+        body_obj = MagicMock()
+        body_obj.content = "<p>Group post body</p>"
+        post_data = MagicMock()
+        post_data.body = body_obj
+        connector.external_outlook_client.groups_threads_get_post = AsyncMock(
+            return_value=_make_graph_response(success=True, data=post_data)
+        )
+
+        await connector.stream_record(record)
+        mock_reinitialize.assert_awaited_once()
+
     @pytest.mark.asyncio
     async def test_stream_group_mail_success(self):
         connector = _make_connector()

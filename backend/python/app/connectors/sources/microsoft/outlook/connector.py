@@ -2565,6 +2565,9 @@ class OutlookConnector(BaseConnector):
                     detail=OutlookHTTPDetails.CLIENT_NOT_INITIALIZED,
                 )
 
+            # Recover from an idle-closed HTTP transport before the first Graph call.
+            await self._reinitialize_client_if_needed()
+
             # Handle group posts (don't need user_id)
             if record.record_type == RecordType.GROUP_MAIL:
                 group_id = record.external_record_group_id
