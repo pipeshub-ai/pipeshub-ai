@@ -107,6 +107,11 @@ app = FastAPI(
 # Trace context — outermost.
 app.add_middleware(RequestContextMiddleware)
 
+# Memory debug endpoints (/debug/memory, /debug/memory/snapshot, /debug/memory/diff, /debug/gc)
+# Must be registered BEFORE the catch-all mount so they're matched first.
+from app.utils.memory_debug import memory_debug_router
+app.include_router(memory_debug_router)
+
 # Mount the Docling service routes
 app.mount("/", docling_app)
 

@@ -53,7 +53,7 @@ def _get_process_pool() -> ProcessPoolExecutor:
 @lru_cache(maxsize=1)
 def _get_converter() -> DocumentConverter:
     pipeline_options = PdfPipelineOptions()
-    pipeline_options.generate_picture_images = True
+    pipeline_options.generate_picture_images = False
     pipeline_options.do_ocr = False
 
     return DocumentConverter(format_options={

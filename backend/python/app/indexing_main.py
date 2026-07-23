@@ -476,6 +476,10 @@ async def health_check() -> JSONResponse:
             },
         )
 
+# Memory debug endpoints (/debug/memory, /debug/memory/snapshot, /debug/memory/diff, /debug/gc)
+from app.utils.memory_debug import memory_debug_router
+app.include_router(memory_debug_router)
+
 
 def run(host: str = "0.0.0.0", port: int = 8091, workers: int | None = None, *, reload: bool = True) -> None:
     """Run the application"""

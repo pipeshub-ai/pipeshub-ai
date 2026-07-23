@@ -1,6 +1,8 @@
 import asyncio
 import base64
 import logging
+import os
+import resource
 from typing import Any
 
 from docling_core.types.doc.document import DoclingDocument
@@ -75,13 +77,22 @@ class DoclingService:
             self.logger.error(f"❌ Failed to initialize Docling service: {str(e)}")
             raise
 
+    def _log_memory(self, label: str, record_name: str) -> float:
+        ru = resource.getrusage(resource.RUSAGE_SELF)
+        rss_mb = ru.ru_maxrss / 1024
+        self.logger.info(f"📊 [MEMORY] {label} ({record_name}): maxRSS={rss_mb:.1f}MB")
+        return rss_mb
+
     async def process_pdf(self, record_name: str, pdf_binary: bytes) -> BlocksContainer:
         """Process PDF using DoclingProcessor (legacy method - does both parse and create blocks)"""
         try:
             self.logger.info(f"🚀 Processing PDF: {record_name}")
             if self.processor is None:
                 raise RuntimeError("DoclingService not initialized: processor is None")
+            before_mb = self._log_memory("before process_pdf", record_name)
             result = await self.processor.load_document(record_name, pdf_binary)
+            after_mb = self._log_memory("after process_pdf", record_name)
+            self.logger.info(f"📊 [MEMORY] process_pdf delta: +{after_mb - before_mb:.1f}MB ({record_name})")
 
             if result is False:
                 raise ValueError("DoclingProcessor returned False - processing failed")
@@ -99,11 +110,14 @@ class DoclingService:
         This is phase 1 of two-phase processing.
         """
         try:
-            self.logger.info(f"🚀 Parsing PDF (phase 1): {record_name}")
+            self.logger.info(f"🚀 Parsing PDF (phase 1): {record_name}, input_size={len(pdf_binary) / (1024*1024):.1f}MB")
             if self.processor is None:
                 raise RuntimeError("DoclingService not initialized: processor is None")
 
+            before_mb = self._log_memory("before parse_pdf", record_name)
             doc = await self.processor.parse_document(record_name, pdf_binary)
+            after_mb = self._log_memory("after parse_pdf", record_name)
+            self.logger.info(f"📊 [MEMORY] parse_pdf delta: +{after_mb - before_mb:.1f}MB ({record_name})")
             self.logger.info(f"✅ Successfully parsed PDF: {record_name}")
             return doc
 
@@ -123,7 +137,10 @@ class DoclingService:
             if self.processor is None:
                 raise RuntimeError("DoclingService not initialized: processor is None")
 
+            before_mb = self._log_memory("before create_blocks", "phase2")
             block_containers = await self.processor.create_blocks(doc, page_number=page_number)
+            after_mb = self._log_memory("after create_blocks", "phase2")
+            self.logger.info(f"📊 [MEMORY] create_blocks delta: +{after_mb - before_mb:.1f}MB")
 
             if block_containers is False:
                 raise ValueError("DoclingProcessor returned False - block creation failed")

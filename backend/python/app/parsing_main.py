@@ -287,6 +287,10 @@ app.add_middleware(RequestContextMiddleware)
 
 app.include_router(parsing_router)
 
+# Memory debug endpoints (/debug/memory, /debug/memory/snapshot, /debug/memory/diff, /debug/gc)
+from app.utils.memory_debug import memory_debug_router
+app.include_router(memory_debug_router)
+
 
 @app.get("/health")
 async def health_check() -> JSONResponse:

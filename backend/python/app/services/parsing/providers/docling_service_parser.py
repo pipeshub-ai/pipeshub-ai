@@ -1,6 +1,8 @@
 """Parser provider that delegates PDF parsing to the external Docling HTTP service."""
 from __future__ import annotations
 
+import logging
+import sys
 from typing import Any
 
 from app.models.blocks import BlocksContainer
@@ -12,6 +14,8 @@ from app.services.parsing.interface import (
     ParseResult,
     ParserProvider,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class DoclingServiceParser:
@@ -31,6 +35,11 @@ class DoclingServiceParser:
     ) -> ParseResult:
         record_name_pdf = record_name if record_name.lower().endswith(".pdf") else f"{record_name}.pdf"
 
+        logger.info(
+            "📊 [MEMORY] before parse_pdf: input_size=%.1fMB",
+            len(content) / (1024 * 1024),
+        )
+
         # Two-phase: parse → create blocks
         parse_result_json = await self._client.parse_pdf(record_name_pdf, content)
         if parse_result_json is None:
@@ -38,6 +47,11 @@ class DoclingServiceParser:
                 ParseErrorCode.PARSE_FAILED,
                 f"Docling service failed to parse '{record_name}'",
             )
+
+        logger.info(
+            "📊 [MEMORY] parse_pdf response: parse_result_json size=%.1fMB",
+            sys.getsizeof(parse_result_json) / (1024 * 1024),
+        )
 
         block_containers: BlocksContainer | None = await self._client.create_blocks(parse_result_json)
         if block_containers is None:
