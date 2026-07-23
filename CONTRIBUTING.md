@@ -8,6 +8,8 @@
 
 Welcome to our open source project! We're excited that you're interested in contributing. This document provides guidelines and instructions to help you get started as a contributor.
 
+dummy
+
 ## 💻 Developer Contribution Build
 
 ## Table of Contents
