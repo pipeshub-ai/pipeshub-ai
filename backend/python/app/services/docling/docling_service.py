@@ -1,6 +1,9 @@
 import asyncio
 import base64
+import contextlib
 import logging
+import os
+import time
 from typing import Any
 
 from docling_core.types.doc.document import DoclingDocument
@@ -12,8 +15,80 @@ from app.models.blocks import BlocksContainer
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.utils.logger import create_logger
 
-PDF_PROCESSING_TIMEOUT_SECONDS = 40 * 60
-PDF_PARSING_TIMEOUT_SECONDS = 40 * 60
+# Must stay below DoclingClient's read timeout (1200s, see
+# app/services/docling/client.py) so this service returns a clean JSON
+# timeout response instead of the caller's httpx.ReadTimeout firing first and
+# leaving this work orphaned server-side.
+PDF_PROCESSING_TIMEOUT_SECONDS = 1100
+PDF_PARSING_TIMEOUT_SECONDS = 1100
+
+# Docling has no natural request queue of its own (unlike the parsing
+# service's asyncio.Semaphore-backed gate) -- without a cap here, every
+# in-flight parsing request piles its docling call onto this process at
+# once, and OCR/VLM-heavy PDFs are CPU/GPU heavy enough that unbounded
+# concurrency is what tips the process into the OOM kill that started this
+# investigation. DOCLING_MAX_CONCURRENT mirrors PARSE_GATE_TIMEOUT_SECONDS's
+# role in parsing.py: bound concurrency, and 503 (retryable via
+# DoclingClient's own retry/circuit-breaker layer) rather than queue forever.
+DOCLING_MAX_CONCURRENT = max(1, int(os.getenv("DOCLING_MAX_CONCURRENT", "1")))
+DOCLING_GATE_TIMEOUT_SECONDS = 120.0
+
+_docling_logger = create_logger(__name__)
+
+# Lazily created (and re-created if the running event loop changes) rather
+# than a plain module-level asyncio.Semaphore(): asyncio.Semaphore binds to
+# the loop that first awaits it, so a semaphore built at import time would
+# raise "bound to a different event loop" if the process ever tears down
+# and recreates its loop (e.g. test runners with per-test loops). In the
+# real service there is exactly one loop for the app's lifetime, so this
+# just amounts to one extra loop check per request.
+_docling_semaphore: asyncio.Semaphore | None = None
+_docling_semaphore_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_docling_semaphore() -> asyncio.Semaphore:
+    global _docling_semaphore, _docling_semaphore_loop
+    loop = asyncio.get_running_loop()
+    if _docling_semaphore is None or _docling_semaphore_loop is not loop:
+        _docling_semaphore = asyncio.Semaphore(DOCLING_MAX_CONCURRENT)
+        _docling_semaphore_loop = loop
+    return _docling_semaphore
+
+
+@contextlib.asynccontextmanager
+async def _docling_concurrency_gate() -> Any:
+    """Bound concurrent Docling work; raise a retryable 503 if saturated.
+
+    Mirrors the parsing service's gate (app/api/routes/parsing.py) so a
+    burst of requests backs off and retries instead of piling up unbounded
+    CPU/GPU work onto this single process.
+    """
+    semaphore = _get_docling_semaphore()
+    start = time.monotonic()
+    try:
+        await asyncio.wait_for(semaphore.acquire(), timeout=DOCLING_GATE_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError as exc:
+        _docling_logger.warning(
+            "Docling saturated: gate timeout after %.0fs (max_concurrent=%d); "
+            "returning 503 to let the caller retry/back off",
+            DOCLING_GATE_TIMEOUT_SECONDS, DOCLING_MAX_CONCURRENT,
+        )
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
+            detail="Docling service is at capacity; retry later.",
+            headers={"Retry-After": "5"},
+        ) from exc
+
+    wait_s = time.monotonic() - start
+    if wait_s >= 1.0:
+        _docling_logger.info(
+            "Docling slot acquired after %.1fs queue wait (max_concurrent=%d)",
+            wait_s, DOCLING_MAX_CONCURRENT,
+        )
+    try:
+        yield
+    finally:
+        semaphore.release()
 
 
 class ProcessRequest(BaseModel):
@@ -204,13 +279,14 @@ async def process_pdf_endpoint(request: ProcessRequest) -> ProcessResponse:
             raise HTTPException(status_code=500, detail="Docling service not available")
 
         # Process the PDF with 40 minute timeout
-        block_containers = await asyncio.wait_for(
-            docling_service.process_pdf(
-                request.record_name,
-                pdf_binary
-            ),
-            timeout=PDF_PROCESSING_TIMEOUT_SECONDS  # 40 minutes in seconds
-        )
+        async with _docling_concurrency_gate():
+            block_containers = await asyncio.wait_for(
+                docling_service.process_pdf(
+                    request.record_name,
+                    pdf_binary
+                ),
+                timeout=PDF_PROCESSING_TIMEOUT_SECONDS  # 40 minutes in seconds
+            )
 
         # Convert BlocksContainer to dict for JSON serialization
         # We'll need to implement a proper serialization method
@@ -285,13 +361,14 @@ async def parse_pdf_endpoint(request: ParseRequest) -> ParseResponse:
             raise HTTPException(status_code=500, detail="Docling service not available")
 
         # Parse the PDF with timeout
-        doc = await asyncio.wait_for(
-            docling_service.parse_pdf_only(
-                request.record_name,
-                pdf_binary
-            ),
-            timeout=PDF_PARSING_TIMEOUT_SECONDS
-        )
+        async with _docling_concurrency_gate():
+            doc = await asyncio.wait_for(
+                docling_service.parse_pdf_only(
+                    request.record_name,
+                    pdf_binary
+                ),
+                timeout=PDF_PARSING_TIMEOUT_SECONDS
+            )
 
         # Serialize ConversionResult document to JSON
         serialized_result = await asyncio.to_thread(serialize_docling_doc, doc)
@@ -333,13 +410,14 @@ async def create_blocks_endpoint(request: CreateBlocksRequest) -> CreateBlocksRe
             raise HTTPException(status_code=500, detail="Docling service not available")
 
         # Create blocks with timeout
-        block_containers = await asyncio.wait_for(
-            docling_service.create_blocks_from_parse_result(
-                doc,
-                page_number=request.page_number
-            ),
-            timeout=PDF_PROCESSING_TIMEOUT_SECONDS
-        )
+        async with _docling_concurrency_gate():
+            block_containers = await asyncio.wait_for(
+                docling_service.create_blocks_from_parse_result(
+                    doc,
+                    page_number=request.page_number
+                ),
+                timeout=PDF_PROCESSING_TIMEOUT_SECONDS
+            )
 
         # Serialize BlocksContainer to dict
         block_containers_dict = serialize_blocks_container(block_containers)

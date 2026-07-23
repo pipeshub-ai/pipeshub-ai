@@ -24,6 +24,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, Form, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 
+from app.services.parsing.concurrency import ParseTier, classify_format, memory_pressure_high
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
@@ -43,7 +44,11 @@ router = APIRouter(prefix="/api/v1/parse", tags=["parsing"])
 PARSE_QUEUE_WAIT_WARN_SECONDS = 10.0
 # Total time a request may wait for a free slot before the gate responds 503
 # (retryable — ParsingClient backs off and retries, see services/parsing/client.py).
-PARSE_GATE_TIMEOUT_SECONDS = 30.0
+# 30s was too tight under burst load: a handful of large documents saturating
+# the 5 parsing slots would spuriously 503 queued requests well before the
+# in-flight parses actually finished, feeding load back into the retry layers
+# instead of just letting requests wait for a slot.
+PARSE_GATE_TIMEOUT_SECONDS = 120.0
 # Parses slower than this are logged as an outlier so pathological documents
 # are identifiable without turning on debug logging. Large PDFs (OCR/VLM
 # heavy documents) can legitimately take several minutes, so this is set
@@ -58,18 +63,19 @@ def _get_registry(request: Request) -> ParserRegistry:
 
 
 async def _acquire_parse_slot(
-    semaphore: asyncio.Semaphore, max_slots: int, message_id: str
+    semaphore: asyncio.Semaphore, max_slots: int, message_id: str, tier: ParseTier
 ) -> bool:
-    """Acquire a parsing slot, logging when the wait indicates saturation.
+    """Acquire a parsing slot from *tier*'s pool, logging on saturation.
 
     Returns True once a slot is acquired. Returns False if
     ``PARSE_GATE_TIMEOUT_SECONDS`` elapses with no free slot — the caller
     should respond 503 so the client's own retry/backoff takes over instead
     of queuing indefinitely.
     """
+    sem_type = f"parsing-{tier.value}"
     available = getattr(semaphore, "_value", -1)
     SemaphoreLogger.log_semaphore_acquire_attempt(
-        "parsing", message_id, available, max_slots, 0, 0
+        sem_type, message_id, available, max_slots, 0, 0
     )
     start = time.monotonic()
     # A bare `wait_for(semaphore.acquire(), ...)` cancels the acquire on
@@ -84,9 +90,9 @@ async def _acquire_parse_slot(
         await asyncio.wait_for(asyncio.shield(acquire_task), timeout=PARSE_QUEUE_WAIT_WARN_SECONDS)
     except asyncio.TimeoutError:
         logger.warning(
-            "Parsing saturated: request waited >%.0fs for a slot "
+            "Parsing saturated: request waited >%.0fs for a %s slot "
             "(max_concurrent_parsing=%d); still waiting up to %.0fs total",
-            PARSE_QUEUE_WAIT_WARN_SECONDS, max_slots, PARSE_GATE_TIMEOUT_SECONDS,
+            PARSE_QUEUE_WAIT_WARN_SECONDS, tier.value, max_slots, PARSE_GATE_TIMEOUT_SECONDS,
         )
         remaining = max(PARSE_GATE_TIMEOUT_SECONDS - PARSE_QUEUE_WAIT_WARN_SECONDS, 0.0)
         try:
@@ -98,11 +104,11 @@ async def _acquire_parse_slot(
             with contextlib.suppress(asyncio.CancelledError):
                 await acquire_task
             logger.warning(
-                "Parsing saturated: gate timeout after %.0fs (max_concurrent_parsing=%d); "
+                "Parsing saturated: %s gate timeout after %.0fs (max_concurrent_parsing=%d); "
                 "returning 503 to let the caller retry/back off",
-                PARSE_GATE_TIMEOUT_SECONDS, max_slots,
+                tier.value, PARSE_GATE_TIMEOUT_SECONDS, max_slots,
             )
-            SemaphoreLogger.log_message_error(message_id, "parse gate timeout — 503")
+            SemaphoreLogger.log_message_error(message_id, f"parse gate timeout ({tier.value}) — 503")
             return False
 
     wait_ms = (time.monotonic() - start) * 1000
@@ -111,8 +117,8 @@ async def _acquire_parse_slot(
     )
     if wait_ms >= 1000:
         logger.info(
-            "Parse slot acquired after %.0fms queue wait (max_concurrent_parsing=%d)",
-            wait_ms, max_slots,
+            "Parse slot acquired after %.0fms queue wait (tier=%s, max_concurrent_parsing=%d)",
+            wait_ms, tier.value, max_slots,
         )
     return True
 
@@ -188,16 +194,42 @@ async def parse_file(
                 },
             })
 
+    tier = classify_format(extension, mime_type)
     message_id = current_display_id()
     logger.info(
-        "Accepted parse request: record='%s' format=%s provider=%s size_bytes=%d",
-        record_name, extension or mime_type or "unknown", provider_enum.value, len(content),
+        "Accepted parse request: record='%s' format=%s provider=%s size_bytes=%d tier=%s",
+        record_name, extension or mime_type or "unknown", provider_enum.value, len(content), tier.value,
     )
 
-    semaphore: asyncio.Semaphore = request.app.state.parse_semaphore
-    max_slots: int = request.app.state.max_concurrent_parsing
+    parse_gates: dict[ParseTier, asyncio.Semaphore] = request.app.state.parse_gates
+    parse_gate_slots: dict[ParseTier, int] = request.app.state.parse_gate_slots
+    semaphore = parse_gates[tier]
+    max_slots = parse_gate_slots[tier]
 
-    if not await _acquire_parse_slot(semaphore, max_slots, message_id):
+    # Heavy parses (Docling/VLM OCR) are the ones that can push a container
+    # over its memory limit; shed load before starting one instead of
+    # admitting it and racing the OOM killer. Light parses are cheap enough
+    # that this check isn't worth the extra cgroup/psutil read per request.
+    if tier is ParseTier.HEAVY and memory_pressure_high():
+        logger.warning(
+            "Rejecting heavy parse: memory pressure high (record='%s'); "
+            "returning 503 to let the caller retry/back off",
+            record_name,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            headers={"Retry-After": "10"},
+            content={
+                "success": False,
+                "error": {
+                    "code": ParseErrorCode.PARSE_FAILED.value,
+                    "message": "Parsing service is under memory pressure; retry later.",
+                    "details": {"tier": tier.value},
+                },
+            },
+        )
+
+    if not await _acquire_parse_slot(semaphore, max_slots, message_id, tier):
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             headers={"Retry-After": "5"},
@@ -206,7 +238,7 @@ async def parse_file(
                 "error": {
                     "code": ParseErrorCode.PARSE_FAILED.value,
                     "message": "Parsing service is at capacity; retry later.",
-                    "details": {"max_concurrent_parsing": max_slots},
+                    "details": {"tier": tier.value, "max_concurrent_parsing": max_slots},
                 },
             },
         )
@@ -251,7 +283,7 @@ async def parse_file(
     finally:
         semaphore.release()
         SemaphoreLogger.log_semaphore_release(
-            "parsing", message_id, getattr(semaphore, "_value", -1), max_slots
+            f"parsing-{tier.value}", message_id, getattr(semaphore, "_value", -1), max_slots
         )
 
     parse_ms = (time.monotonic() - parse_start) * 1000

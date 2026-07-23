@@ -50,7 +50,11 @@ class ParsingClient(BaseServiceClient):
     def __init__(
         self,
         service_url: str | None = None,
-        read_timeout: float = 2400.0,  # 40 min — matching DoclingClient
+        # Must stay below RECORD_PROCESSING_TIMEOUT (default 1800s) so the
+        # Kafka consumer's per-record timeout never fires first and leaves
+        # this request's server-side work orphaned. See DoclingClient, whose
+        # timeout must in turn stay below this one (nested call).
+        read_timeout: float = 1500.0,
         max_retries: int = 3,
         retry_delay: float = 2.0,
     ) -> None:

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from logging import Logger
 from typing import Any, Optional, override
@@ -11,8 +12,10 @@ from redis.asyncio import Redis
 from app.services.messaging.config import (
     IndexingEvent,
     IndexingMessageHandler,
+    REDELIVERY_BACKOFF_SECONDS,
     RedisStreamsConfig,
     StreamMessage,
+    Topic,
     messaging_env,
 )
 from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType, format_exception_chain
@@ -28,6 +31,8 @@ from app.services.messaging.retry_manager import RetryManager
 _BUSYGROUP_ERROR = "BUSYGROUP"
 _MESSAGE_VALUE_FIELD = "value"
 _MAIN_LOOP_OP_TIMEOUT = 5.0
+_FAILURE_COOLDOWN_THRESHOLD = 5
+_FAILURE_COOLDOWN_MAX_SECONDS = 30.0
 
 
 class IndexingRedisStreamsConsumer(IMessagingConsumer):
@@ -68,6 +73,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self._idle_threshold = 3  # Drain pending after N consecutive empty polls
         self._in_flight_message_ids: set[str] = set()
         self._in_flight_lock = threading.Lock()
+        self._consecutive_task_failures = 0
+        self._failure_counter_lock = threading.Lock()
 
 
     @override
@@ -258,20 +265,51 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         with self._in_flight_lock:
             self._in_flight_message_ids.discard(message_id)
 
-    async def _should_dead_letter(self, topic: str, message_id: str) -> bool:
+    async def _dead_letter_pending(
+        self,
+        topic: str,
+        message_id: str,
+        parsed_message: StreamMessage | None,
+        stable_message_id: str,
+        reason: str,
+    ) -> None:
+        if parsed_message is not None:
+            await self._publish_to_dlq(
+                topic, parsed_message, stable_message_id, reason
+            )
+        await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore
+        await self._clear_retry_tracking(stable_message_id)
+
+    async def _should_dead_letter(
+        self,
+        topic: str,
+        message_id: str,
+        fields: dict[str, str] | None = None,
+    ) -> bool:
         """Check if message should be dead-lettered based on failure retry count.
 
         Uses RetryManager (actual transient failures), not Redis times_delivered
         which increments on every XREADGROUP delivery including PEL re-reads.
         """
         max_attempts = messaging_env.max_delivery_attempts
+        parsed_message = (
+            self._parse_message(message_id, fields) if fields is not None else None
+        )
+        stable_message_id = self._get_stable_message_id(
+            message_id, parsed_message
+        )
 
         try:
             if self.retry_manager is not None:
-                failure_count = await self._get_retry_count(message_id)
+                failure_count = await self._get_retry_count(stable_message_id)
                 if failure_count >= max_attempts:
-                    await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore
-                    await self._clear_retry_tracking(message_id)
+                    await self._dead_letter_pending(
+                        topic,
+                        message_id,
+                        parsed_message,
+                        stable_message_id,
+                        f"exhausted after {failure_count} transient failures",
+                    )
                     self.logger.warning(
                         "Dead-lettered %s after %d transient failures (max %d)",
                         message_id,
@@ -291,7 +329,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if details:
                 times_delivered = details[0].get("times_delivered", 0)
                 if times_delivered >= max_attempts:
-                    await self.redis.xack(topic, self.config.group_id, message_id)  # type: ignore
+                    await self._dead_letter_pending(
+                        topic,
+                        message_id,
+                        parsed_message,
+                        stable_message_id,
+                        f"exhausted after {times_delivered} deliveries",
+                    )
                     self.logger.warning(
                         "Dead-lettered %s after %d transient failures (max %d)",
                         message_id,
@@ -342,7 +386,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         if self._is_in_flight(message_id):
                             continue
                         try:
-                            if await self._should_dead_letter(topic, message_id):
+                            if await self._should_dead_letter(
+                                topic, message_id, fields
+                            ):
+                                continue
+                            if self._retry_delay_remaining(
+                                message_id, fields
+                            ) > 0:
                                 continue
                             processed_any = True
                             self.logger.info(
@@ -396,7 +446,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                             drained_any = True
                             last_pending_id = message_id
                             try:
-                                if await self._should_dead_letter(topic, message_id):
+                                if await self._should_dead_letter(
+                                    topic, message_id, fields
+                                ):
+                                    continue
+                                if self._retry_delay_remaining(
+                                    message_id, fields
+                                ) > 0:
                                     continue
                                 processed_any = True
                                 self.logger.info(
@@ -439,6 +495,21 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             await self._drain_pending()
             while self.running:
                 try:
+                    with self._failure_counter_lock:
+                        consecutive_failures = self._consecutive_task_failures
+                    if consecutive_failures >= _FAILURE_COOLDOWN_THRESHOLD:
+                        cooldown = min(
+                            consecutive_failures * 2.0,
+                            _FAILURE_COOLDOWN_MAX_SECONDS,
+                        )
+                        self.logger.warning(
+                            "Downstream failure cooldown: %d consecutive failures, "
+                            "pausing consumption for %.0fs",
+                            consecutive_failures,
+                            cooldown,
+                        )
+                        await asyncio.sleep(cooldown)
+
                     active_count = self._get_active_task_count()
                     if active_count >= messaging_env.max_pending_indexing_tasks:
                         if not self._backpressure_active:
@@ -542,6 +613,20 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             )
             return None
 
+    def _retry_delay_remaining(
+        self, message_id: str, fields: dict[str, str]
+    ) -> float:
+        parsed_message = self._parse_message(message_id, fields)
+        if parsed_message is None:
+            return 0.0
+        retry_not_before = parsed_message.payload.get("_retry_not_before")
+        if retry_not_before is None:
+            return 0.0
+        try:
+            return max(0.0, float(retry_not_before) - time.time())
+        except (TypeError, ValueError):
+            return 0.0
+
     async def _start_processing_task(
         self, stream_name: str, message_id: str, fields: dict[str, str]
     ) -> None:
@@ -564,9 +649,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             with self._futures_lock:
                 self._active_futures.discard(f)
             try:
-                _ = f.result()
+                success = f.result()
             except Exception as exc:
+                success = False
                 self.logger.error("Task completed with unhandled exception: %s", exc)
+            with self._failure_counter_lock:
+                if success:
+                    self._consecutive_task_failures = 0
+                else:
+                    self._consecutive_task_failures += 1
 
         future.add_done_callback(on_future_done)
 
@@ -651,29 +742,31 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         
         return message_id
 
+    @staticmethod
+    def _compute_redelivery_delay(attempt_count: int) -> float:
+        idx = min(
+            max(attempt_count - 1, 0),
+            len(REDELIVERY_BACKOFF_SECONDS) - 1,
+        )
+        return REDELIVERY_BACKOFF_SECONDS[idx]
+
     async def _requeue_message(
-        self, stream_name: str, message: StreamMessage, stable_message_id: str
+        self,
+        stream_name: str,
+        message: StreamMessage,
+        stable_message_id: str,
+        attempt_count: int,
     ) -> None:
-        """Re-publish a failed message to the same stream for retry.
-        
-        The message goes to the end of the queue, allowing transient errors
-        to resolve before retry. The original message is acknowledged.
-        
-        Preserves the stable message ID in the payload for retry tracking.
-        
-        Args:
-            stream_name: Stream to re-queue to
-            message: The message to re-queue
-            stable_message_id: Stable ID for retry tracking (preserved across re-queues)
-        """
+        """Re-publish a failed message with delayed eligibility."""
         if not self.producer:
-            self.logger.error("No producer available for re-queue")
-            return
-        
+            raise RuntimeError("No producer available for re-queue")
+
+        delay = self._compute_redelivery_delay(attempt_count)
         try:
             payload = dict(message.payload)
             payload["_retry_tracking_id"] = stable_message_id
-            
+            payload["_retry_not_before"] = time.time() + delay
+
             await self._run_on_main_loop(
                 self.producer.send_event(
                     topic=stream_name,
@@ -681,9 +774,40 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     payload=payload,
                 )
             )
+            self.logger.info(
+                "Re-queued %s to %s; eligible in %.0fs",
+                stable_message_id,
+                stream_name,
+                delay,
+            )
         except Exception as e:
             self.logger.error(f"Failed to re-queue message to {stream_name}: {e}")
             raise
+
+    async def _publish_to_dlq(
+        self,
+        original_stream: str,
+        message: StreamMessage,
+        stable_message_id: str,
+        failure_reason: str,
+    ) -> None:
+        if not self.producer:
+            raise RuntimeError("No producer available for DLQ publish")
+
+        payload = dict(message.payload)
+        payload["_retry_tracking_id"] = stable_message_id
+        payload["_dlq_original_topic"] = original_stream
+        payload["_dlq_reason"] = failure_reason
+        payload["_dlq_timestamp"] = time.time()
+        payload.pop("_retry_not_before", None)
+
+        await self._run_on_main_loop(
+            self.producer.send_event(
+                topic=Topic.RECORD_EVENTS_DLQ.value,
+                event_type=message.eventType,
+                payload=payload,
+            )
+        )
 
     async def _process_message_wrapper(
         self, stream_name: str, message_id: str, fields: dict[str, str]
@@ -691,28 +815,27 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """Process message with decoupled semaphore control.
 
         Semaphore lifecycle:
-        - parsing_semaphore: acquired at start, released on PARSING_COMPLETE
+        - parsing_semaphore: acquired before the handler, released on PARSING_COMPLETE
         - indexing_semaphore: acquired on PARSING_COMPLETE, released on INDEXING_COMPLETE
 
         The two phases are independent: a record that has finished parsing and
         moved into the indexing phase no longer blocks a parsing slot.
 
         Error classification is based purely on exception type:
-        - TERMINAL: ACK immediately (parsing errors, validation errors)
-        - TRANSIENT: Don't ACK, let PEL retry
+        - TERMINAL: publish to DLQ, then ACK
+        - TRANSIENT: delayed re-queue; publish to DLQ when exhausted
         """
         parsing_held = False
         indexing_held = False
         acked = False
+        parsed_message: StreamMessage | None = None
+        stable_message_id = message_id
 
         if not self.parsing_semaphore or not self.indexing_semaphore:
             self.logger.error("Semaphores not initialized for %s", message_id)
             return False
 
         try:
-            await self.parsing_semaphore.acquire()
-            parsing_held = True
-
             parsed_message = self._parse_message(message_id, fields)
             if parsed_message is None:
                 self.logger.warning(
@@ -726,8 +849,21 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 await self._clear_retry_tracking(message_id)
                 return False
 
-            # Get stable message ID for retry tracking (preserves across re-queues)
             stable_message_id = self._get_stable_message_id(message_id, parsed_message)
+
+            remaining = self._retry_delay_remaining(message_id, fields)
+            if remaining > 0:
+                self.logger.debug(
+                    "Deferring %s for %.0fs before retry",
+                    message_id,
+                    remaining,
+                )
+                # Leave the entry in the PEL. _drain_pending checks its
+                # eligibility without occupying a worker or semaphore slot.
+                return False
+
+            await self.parsing_semaphore.acquire()
+            parsing_held = True
 
             # Check current retry count to predict if this will be the final attempt on failure
             current_retry_count = await self._get_retry_count(stable_message_id)
@@ -811,6 +947,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     message_id,
                     type(e).__name__,
                 )
+                if parsed_message:
+                    await self._publish_to_dlq(
+                        stream_name,
+                        parsed_message,
+                        stable_message_id,
+                        f"terminal {type(e).__name__}: {e}",
+                    )
                 await self._ack_message(stream_name, message_id)
                 acked = True
                 await self._clear_retry_tracking(stable_message_id)
@@ -819,6 +962,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     await self._increment_retry_and_check(stable_message_id)
                 )
                 if should_dead_letter:
+                    await self._publish_to_dlq(
+                        stream_name,
+                        parsed_message,
+                        stable_message_id,
+                        f"exhausted after {failure_count} transient failures: {e}",
+                    )
                     await self._ack_message(stream_name, message_id)
                     acked = True
                     await self._clear_retry_tracking(stable_message_id)
@@ -833,7 +982,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 else:
                     # RE-QUEUE: Publish back to same stream for retry, then ACK
                     try:
-                        await self._requeue_message(stream_name, parsed_message, stable_message_id)
+                        await self._requeue_message(
+                            stream_name,
+                            parsed_message,
+                            stable_message_id,
+                            failure_count,
+                        )
                         await self._ack_message(stream_name, message_id)
                         acked = True
                         self.logger.info(

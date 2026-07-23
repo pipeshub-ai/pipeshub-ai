@@ -310,23 +310,15 @@ class Processor:
             # Use external Docling service
             record_name = recordName if recordName.endswith(".pdf") else f"{recordName}.pdf"
 
-            # Phase 1: Parse PDF (no LLM calls)
+            # Phase 1: Parse PDF (no LLM calls). Raises DoclingClientError /
+            # ServiceCallError on failure, caught by the except block below.
             parse_result = await self.docling_client.parse_pdf(record_name, pdf_binary)
-            if parse_result is None:
-                self.logger.error(f"❌ External Docling service failed to parse {recordName}")
-                yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id=recordId))
-                return
 
             # Signal parsing complete after Docling parsing
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await self.docling_client.create_blocks(parse_result)
-            if block_containers is None:
-                self.logger.error(f"❌ External Docling service failed to create blocks for {recordName}")
-                yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id=recordId))
-                return
 
             record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value

@@ -241,8 +241,8 @@ class TestProcessPage:
         assert result["height"] == 792
 
     @pytest.mark.asyncio
-    async def test_process_page_missing_prerender_raises(self):
-        """Missing pre-rendered image raises KeyError."""
+    async def test_process_page_missing_prerender_returns_empty(self):
+        """Missing pre-rendered image returns empty markdown (graceful degradation)."""
         logger = logging.getLogger("test")
         config = MagicMock()
         strategy = VLMOCRStrategy(logger, config)
@@ -250,9 +250,12 @@ class TestProcessPage:
 
         mock_page = MagicMock(spec=["page_number", "width", "height"])
         mock_page.page_number = 1
+        mock_page.width = 612.0
+        mock_page.height = 792.0
 
-        with pytest.raises(KeyError, match="No pre-rendered image for page 1"):
-            await strategy.process_page(mock_page)
+        result = await strategy.process_page(mock_page)
+        assert result["page_number"] == 1
+        assert result["markdown"] == ""
 
     @pytest.mark.asyncio
     async def test_process_page_llm_error_raises(self):

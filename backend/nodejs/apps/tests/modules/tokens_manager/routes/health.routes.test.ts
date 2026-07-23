@@ -1350,5 +1350,99 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(urls).to.include('http://localhost:8081/health')
       expect(urls).to.include('http://localhost:8002/health')
     })
+
+    describe('parsing service (USE_PARSING_SERVICE)', () => {
+      afterEach(() => {
+        delete process.env.USE_PARSING_SERVICE
+        delete process.env.PARSING_SERVICE_URL
+      })
+
+      it('should report parsing as disabled and skip probing it when USE_PARSING_SERVICE is unset', async () => {
+        delete process.env.USE_PARSING_SERVICE
+        router = createHealthRouter(container, cmContainer)
+        const handler = router.stack.find(
+          (l: any) => l.route && l.route.path === '/services' && l.route.methods.get,
+        )?.route.stack[0].handle
+
+        const axiosStub = sinon.stub(axiosModule, 'get').resolves({
+          status: 200,
+          data: { status: 'healthy' },
+        })
+
+        const res = mockRes()
+        const next = sinon.stub()
+        await handler({}, res, next)
+
+        const jsonArg = res.json.firstCall.args[0]
+        expect(jsonArg.services.parsing).to.equal('disabled')
+        // Non-critical, so overall health is unaffected by parsing being disabled.
+        expect(jsonArg.status).to.equal('healthy')
+        const urls = axiosStub.getCalls().map((c: any) => c.args[0])
+        expect(urls.some((u: string) => u.includes('8092'))).to.be.false
+      })
+
+      it('should report parsing as disabled when USE_PARSING_SERVICE=false', async () => {
+        process.env.USE_PARSING_SERVICE = 'false'
+        router = createHealthRouter(container, cmContainer)
+        const handler = router.stack.find(
+          (l: any) => l.route && l.route.path === '/services' && l.route.methods.get,
+        )?.route.stack[0].handle
+
+        sinon.stub(axiosModule, 'get').resolves({ status: 200, data: { status: 'healthy' } })
+
+        const res = mockRes()
+        const next = sinon.stub()
+        await handler({}, res, next)
+
+        const jsonArg = res.json.firstCall.args[0]
+        expect(jsonArg.services.parsing).to.equal('disabled')
+      })
+
+      it('should probe parsing and report healthy when USE_PARSING_SERVICE=true and it responds healthy', async () => {
+        process.env.USE_PARSING_SERVICE = 'true'
+        process.env.PARSING_SERVICE_URL = 'http://localhost:8092'
+        router = createHealthRouter(container, cmContainer)
+        const handler = router.stack.find(
+          (l: any) => l.route && l.route.path === '/services' && l.route.methods.get,
+        )?.route.stack[0].handle
+
+        const axiosStub = sinon.stub(axiosModule, 'get').resolves({
+          status: 200,
+          data: { status: 'healthy' },
+        })
+
+        const res = mockRes()
+        const next = sinon.stub()
+        await handler({}, res, next)
+
+        const jsonArg = res.json.firstCall.args[0]
+        expect(jsonArg.services.parsing).to.equal('healthy')
+        const urls = axiosStub.getCalls().map((c: any) => c.args[0])
+        expect(urls).to.include('http://localhost:8092/health')
+      })
+
+      it('should report parsing as unhealthy (but overall still healthy) when USE_PARSING_SERVICE=true and it is down', async () => {
+        process.env.USE_PARSING_SERVICE = 'true'
+        router = createHealthRouter(container, cmContainer)
+        const handler = router.stack.find(
+          (l: any) => l.route && l.route.path === '/services' && l.route.methods.get,
+        )?.route.stack[0].handle
+
+        sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+          if (url.includes('8092')) {
+            return Promise.reject(new Error('Parsing down'))
+          }
+          return Promise.resolve({ status: 200, data: { status: 'healthy' } })
+        })
+
+        const res = mockRes()
+        const next = sinon.stub()
+        await handler({}, res, next)
+
+        const jsonArg = res.json.firstCall.args[0]
+        expect(jsonArg.services.parsing).to.equal('unhealthy')
+        expect(jsonArg.status).to.equal('healthy')
+      })
+    })
   })
 })

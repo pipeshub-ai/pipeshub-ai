@@ -821,7 +821,14 @@ MONGO_PASSWORD=${MONGO_PASSWORD}
 QDRANT_API_KEY=${QDRANT_API_KEY}
 
 # ── Indexing concurrency ─────────────────────────────────────────────────────
-MAX_CONCURRENT_PARSING=5
+# "auto" sizes separate heavy (pdf/doc/docx/ppt/xls/images) and light
+# (txt/md/html/csv/json/yaml/...) parse pools from detected CPU/memory; set
+# an integer to pin the heavy pool size instead.
+MAX_CONCURRENT_PARSING=auto
+VLM_OCR_MAX_CONCURRENT=1
+PDF_RASTER_WORKERS=1
+PAGE_RENDER_BATCH_SIZE=5
+DOCLING_MAX_CONCURRENT=1
 MAX_CONCURRENT_INDEXING=7
 MAX_PENDING_INDEXING_TASKS=40
 INDEXING_UVICORN_WORKERS=1
@@ -975,6 +982,9 @@ s = d.get('services', {}) or {}
 # the core application to be usable.
 required = ('query', 'connector', 'indexing', 'docling')
 ok = all(s.get(k) == 'healthy' for k in required)
+# parsing is opt-in (USE_PARSING_SERVICE) -- 'disabled' means the standalone
+# service was never expected to start, so don't block on it.
+ok = ok and s.get('parsing') in ('healthy', 'disabled')
 sys.exit(0 if ok else 1)
 " 2>/dev/null; then
     HEALTHY=true

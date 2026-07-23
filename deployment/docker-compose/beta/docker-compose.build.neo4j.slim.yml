@@ -116,7 +116,7 @@ services:
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 
       # Indexing service config
-      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
+      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-auto}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-5}
       - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-40}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
@@ -181,7 +181,7 @@ services:
         - CMD-SHELL
         - >
           curl -sf http://localhost:3000/api/v1/health/services -o /tmp/hc.json &&
-          python3 -c "import json,sys; d=json.load(open('/tmp/hc.json')); s=d.get('services',{}) or {}; required=('query','connector','indexing','docling'); sys.exit(0 if all(s.get(k)=='healthy' for k in required) and s.get('embedding') in ('healthy','starting') else 1)"
+          python3 -c "import json,sys; d=json.load(open('/tmp/hc.json')); s=d.get('services',{}) or {}; required=('query','connector','indexing','docling'); sys.exit(0 if all(s.get(k)=='healthy' for k in required) and s.get('embedding') in ('healthy','starting') and s.get('parsing') in ('healthy','disabled') else 1)"
       interval: 15s
       timeout: 10s
       retries: 5

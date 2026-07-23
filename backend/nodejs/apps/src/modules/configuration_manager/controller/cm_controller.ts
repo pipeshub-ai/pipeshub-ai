@@ -2970,6 +2970,8 @@ export const streamEmbeddingDownloadProgress =
     const embeddingServerUrl = resolveEmbeddingServerUrl();
     const encodedModel = encodeURIComponent(model);
     let closed = false;
+    let consecutiveErrors = 0;
+    const MAX_CONSECUTIVE_ERRORS = 30;
 
     req.on('close', () => {
       closed = true;
@@ -2981,6 +2983,7 @@ export const streamEmbeddingDownloadProgress =
           `${embeddingServerUrl}/download-progress/${encodedModel}`,
           { timeout: 5000 },
         );
+        consecutiveErrors = 0;
         const payload = { ...response.data, timestamp: Date.now() };
         if (!closed) {
           res.write(`event: progress\ndata: ${JSON.stringify(payload)}\n\n`);
@@ -2990,26 +2993,46 @@ export const streamEmbeddingDownloadProgress =
           break;
         }
       } catch (error: any) {
-        logger.error('Error streaming embedding download progress', { error });
-        // The client may have disconnected while the request above was in
-        // flight — writing to an already-closed response throws.
+        consecutiveErrors++;
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+          logger.error('Embedding server unreachable after max retries', { error });
+          if (!closed) {
+            res.write(
+              `event: progress\ndata: ${JSON.stringify({
+                model,
+                status: 'failed',
+                progress: 0,
+                downloaded_bytes: 0,
+                total_bytes: 0,
+                error: 'Embedding server unavailable. It may still be starting up — please retry.',
+                timestamp: Date.now(),
+              })}\n\n`,
+            );
+          }
+          break;
+        }
+        // Embedding server may still be starting up (downloading the model
+        // in its lifespan warmup). Keep retrying instead of immediately
+        // reporting failure.
+        logger.warn(
+          `Embedding server not reachable (attempt ${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}), retrying...`,
+        );
         if (!closed) {
           res.write(
             `event: progress\ndata: ${JSON.stringify({
               model,
-              status: 'failed',
+              status: 'checking',
               progress: 0,
               downloaded_bytes: 0,
               total_bytes: 0,
-              error: 'Lost connection to embedding server',
+              error: null,
               timestamp: Date.now(),
             })}\n\n`,
           );
         }
-        break;
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 3000));
     }
 
     if (!closed) {

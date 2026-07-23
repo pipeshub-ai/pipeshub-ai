@@ -19,6 +19,7 @@ from app.config.constants.arangodb import (
 from app.events.processor import Processor, convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.entities import RecordType
+from app.services.docling.client import DoclingClientError
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 import logging
 
@@ -442,10 +443,10 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_docling_failure_yields_docling_failed(self):
-        """When Docling returns None, yields docling_failed event."""
+        """When Docling raises, yields docling_failed event."""
         proc, _, gp, _ = _make_processor()
         proc.docling_client = AsyncMock()
-        proc.docling_client.parse_pdf.return_value = None
+        proc.docling_client.parse_pdf.side_effect = DoclingClientError("parse failed")
 
         events = await _collect(
             proc.process_pdf_with_docling(
@@ -1621,9 +1622,9 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_docling_parse_fails(self):
-        """Should yield docling_failed when parse returns None."""
+        """Should yield docling_failed when parse raises."""
         proc, _, gp, config = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=None)
+        proc.docling_client.parse_pdf = AsyncMock(side_effect=DoclingClientError("parse failed"))
 
         events = await _collect(proc.process_pdf_with_docling(
             "test.pdf", "rec-1", b"pdfdata", "vr-1"
@@ -1632,10 +1633,10 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_block_creation_fails(self):
-        """Should yield docling_failed when create_blocks returns None."""
+        """Should yield docling_failed when create_blocks raises."""
         proc, _, gp, config = _make_processor()
         proc.docling_client.parse_pdf = AsyncMock(return_value={"parsed": True})
-        proc.docling_client.create_blocks = AsyncMock(return_value=None)
+        proc.docling_client.create_blocks = AsyncMock(side_effect=DoclingClientError("blocks failed"))
 
         events = await _collect(proc.process_pdf_with_docling(
             "test.pdf", "rec-1", b"pdfdata", "vr-1"
@@ -3231,7 +3232,7 @@ class TestProcessPdfWithDoclingCoverage:
     async def test_parse_failure(self):
         proc = _make_processor_cov()
         proc.docling_client = AsyncMock()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=None)
+        proc.docling_client.parse_pdf = AsyncMock(side_effect=DoclingClientError("parse failed"))
 
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"pdf", "vr1")
@@ -3243,7 +3244,7 @@ class TestProcessPdfWithDoclingCoverage:
         proc = _make_processor_cov()
         proc.docling_client = AsyncMock()
         proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
-        proc.docling_client.create_blocks = AsyncMock(return_value=None)
+        proc.docling_client.create_blocks = AsyncMock(side_effect=DoclingClientError("blocks failed"))
 
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"pdf", "vr1")

@@ -134,9 +134,10 @@ def _noop_gen():
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
 async def test_full_pipeline_happy_path() -> None:
-    """parse → index → enrich all succeed."""
+    """A raced/stale negative health probe must not block the real parse."""
     parsing_client = MagicMock()
     parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+    parsing_client.health_check_cached = AsyncMock(return_value=False)
 
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock(return_value=None)  # no metadata returned
@@ -174,6 +175,7 @@ async def test_enrichment_failure_does_not_block_indexing() -> None:
     """When enrich raises, the INDEXING_COMPLETE event is still yielded."""
     parsing_client = MagicMock()
     parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+    parsing_client.health_check_cached = AsyncMock(return_value=True)
 
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock(side_effect=RuntimeError("LLM down"))
@@ -209,6 +211,7 @@ async def test_deferred_extraction_skips_extraction_client() -> None:
     """When DEFER_EXTRACTION=true the extraction service is not called inline."""
     parsing_client = MagicMock()
     parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+    parsing_client.health_check_cached = AsyncMock(return_value=True)
 
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock()  # should NOT be called

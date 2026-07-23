@@ -94,6 +94,26 @@ class TestRequiredTopics:
 class TestMessagingEnvConfig:
     """Test new unified messaging configuration properties."""
 
+    def test_max_concurrent_parsing_honors_numeric_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.services.messaging.config import messaging_env
+
+        monkeypatch.setenv("MAX_CONCURRENT_PARSING", "3")
+
+        # heavy_slots pinned to 3, light_slots = 3 * LIGHT_TO_HEAVY_RATIO (4) = 12
+        assert messaging_env.max_concurrent_parsing == 3 + 12
+
+    def test_max_concurrent_parsing_auto_sizes_from_cpu(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.services.messaging.config import messaging_env
+
+        monkeypatch.setenv("MAX_CONCURRENT_PARSING", "auto")
+        monkeypatch.setattr("os.cpu_count", lambda: 2)
+        monkeypatch.setattr(
+            "app.services.messaging.config.get_memory_limit_bytes", lambda: None
+        )
+
+        # No memory signal -> CPU-only sizing: heavy=clamp(2,1,4)=2, light=clamp(2*2,4,16)=4
+        assert messaging_env.max_concurrent_parsing == 2 + 4
+
     def test_max_delivery_attempts_default(self, monkeypatch):
         """Test max_delivery_attempts defaults to 3."""
         from app.services.messaging.config import messaging_env

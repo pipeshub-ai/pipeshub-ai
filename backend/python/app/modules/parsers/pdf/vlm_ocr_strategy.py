@@ -30,9 +30,8 @@ class VLMOCRStrategy(OCRStrategy):
     # Default DPI for rendering pages (configurable via RENDER_DPI env var)
     RENDER_DPI = int(os.getenv('RENDER_DPI', '200'))
 
-    # Pages rendered per process-pool submission to cap worker memory usage.
-    # At 200 DPI each page is ~11 MB as a numpy array; 20 pages ≈ 220 MB peak.
-    PAGE_RENDER_BATCH_SIZE = int(os.getenv('PAGE_RENDER_BATCH_SIZE', '20'))
+    # At 200 DPI each page is roughly 11 MB before PNG/base64 expansion.
+    PAGE_RENDER_BATCH_SIZE = int(os.getenv('PAGE_RENDER_BATCH_SIZE', '5'))
     # Default prompt template
     DEFAULT_PROMPT = """# Role
 You are a precise document OCR specialist. Convert the provided document image to clean, accurate markdown.
@@ -228,8 +227,15 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             page_images[page_number] = f"data:image/png;base64,{img_base64}"
         return page_images
 
-    async def _preload_page_images(self) -> None:
-        """Rasterise pages in batches to avoid OOM in the process-pool worker."""
+    async def _preload_page_images(self) -> int:
+        """Rasterise pages in batches to avoid OOM in the process-pool worker.
+
+        Returns the number of pages successfully rasterised.  A batch failure
+        is logged and skipped rather than aborting the entire document — the
+        successfully rendered pages can still be processed by the LLM, and
+        ``process_page`` will emit an empty result for missing pages instead of
+        raising ``KeyError``.
+        """
         total = len(self.doc.pages)
         all_page_numbers = list(range(1, total + 1))
         batch_size = self.PAGE_RENDER_BATCH_SIZE
@@ -239,10 +245,19 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             self.logger.debug(
                 "Rendering page batch %d–%d of %d", batch[0], batch[-1], total
             )
-            batch_images = await asyncio.to_thread(
-                self._render_page_batch_to_base64, batch
-            )
-            self._page_images.update(batch_images)
+            try:
+                batch_images = await asyncio.to_thread(
+                    self._render_page_batch_to_base64, batch
+                )
+                self._page_images.update(batch_images)
+            except Exception:
+                self.logger.exception(
+                    "Failed to rasterise page batch %d–%d; those pages will "
+                    "be skipped during OCR processing",
+                    batch[0], batch[-1],
+                )
+
+        return len(self._page_images)
 
     _coerce_content_to_text = staticmethod(coerce_message_content_to_text)
 
@@ -299,26 +314,30 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             raise
 
     async def process_page(self, page, page_number: Optional[int] = None) -> Dict[str, Any]:
-        """
-        Process a single PDF page with VLM OCR
+        """Process a single PDF page with VLM OCR.
 
-        Args:
-            page: pdfplumber page object
-            page_number: 1-based page number (derived from page if not provided)
-
-        Returns:
-            Dict containing page markdown and metadata
+        Returns an empty-markdown result instead of raising when the
+        pre-rendered image is unavailable (e.g. because the rasterisation
+        batch for this page failed due to OOM).
         """
         if page_number is None:
             page_number = page.page_number
         self.logger.info(f"📄 Processing page {page_number} with VLM OCR")
 
-        try:
-            image_base64 = self._page_images.get(page_number)
-            if image_base64 is None:
-                raise KeyError(f"No pre-rendered image for page {page_number}")
-            markdown = await self._call_llm_for_markdown(image_base64, page_number)
+        image_base64 = self._page_images.get(page_number)
+        if image_base64 is None:
+            self.logger.warning(
+                "Skipping page %d: no pre-rendered image available", page_number
+            )
+            return {
+                "page_number": page_number,
+                "markdown": "",
+                "width": page.width,
+                "height": page.height,
+            }
 
+        try:
+            markdown = await self._call_llm_for_markdown(image_base64, page_number)
             return {
                 "page_number": page_number,
                 "markdown": markdown,
@@ -339,7 +358,12 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         pages = self.doc.pages
         self.logger.info(f"🚀 Processing {len(pages)} pages with VLM OCR (concurrency: {self.CONCURRENCY_LIMIT})")
 
-        await self._preload_page_images()
+        rendered_count = await self._preload_page_images()
+        if rendered_count == 0:
+            raise DocumentProcessingError(
+                "Failed to rasterise any pages for VLM OCR",
+                details={"total_pages": len(pages)},
+            )
 
         semaphore = asyncio.Semaphore(self.CONCURRENCY_LIMIT)
 

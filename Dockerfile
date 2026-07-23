@@ -126,6 +126,7 @@ LOG_FILE="/app/process_monitor.log"
 CHECK_INTERVAL=${CHECK_INTERVAL:-20}
 NODEJS_PORT=${NODEJS_PORT:-3000}
 EMBEDDING_PORT=${EMBEDDING_SERVER_PORT:-8002}
+DOCLING_PORT=${DOCLING_SERVICE_PORT:-8081}
 
 # PIDs of child processes
 NODEJS_PID=""
@@ -210,11 +211,28 @@ start_embedding() {
 }
 
 start_docling() {
-    log "Starting Docling service..."
+    log "Starting Docling service (port ${DOCLING_PORT})..."
     cd /app/python
     python -m app.docling_main &
     DOCLING_PID=$!
     log "Docling started with PID: $DOCLING_PID"
+
+    local RETRY_COUNT=0
+    local MAX_RETRIES=120
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        if curl -s -f "http://localhost:${DOCLING_PORT}/health" > /dev/null 2>&1; then
+            log "Docling service health check passed!"
+            return 0
+        fi
+        if ! kill -0 "$DOCLING_PID" 2>/dev/null; then
+            log "ERROR: Docling exited before becoming healthy"
+            return 1
+        fi
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        sleep 2
+    done
+    log "ERROR: Docling service health check failed after $MAX_RETRIES attempts"
+    return 1
 }
 
 start_indexing() {
@@ -264,7 +282,11 @@ start_query() {
 start_parsing() {
     log "Starting Parsing service (port ${PARSING_PORT})..."
     cd /app/python
-    PARSING_SERVICE_PORT=${PARSING_PORT} python -m app.parsing_main &
+    if [ -n "$PARSING_PID" ]; then
+        kill -TERM -- "-$PARSING_PID" 2>/dev/null || true
+    fi
+    PARSING_SERVICE_PORT="${PARSING_PORT}" python -c \
+        'import os, sys; os.setsid(); os.execv(sys.executable, [sys.executable, "-m", "app.parsing_main"])' &
     PARSING_PID=$!
     log "Parsing service started with PID: $PARSING_PID"
 
@@ -275,6 +297,10 @@ start_parsing() {
         if curl -s -f "http://localhost:${PARSING_PORT}/health" > /dev/null 2>&1; then
             log "Parsing service health check passed!"
             break
+        fi
+        if ! kill -0 "$PARSING_PID" 2>/dev/null; then
+            log "ERROR: Parsing service exited before becoming healthy"
+            return 1
         fi
         RETRY_COUNT=$((RETRY_COUNT + 1))
         log "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 2 seconds..."
@@ -334,7 +360,7 @@ cleanup() {
     [ -n "$INDEXING_PID" ] && kill "$INDEXING_PID" 2>/dev/null || true
     [ -n "$CONNECTOR_PID" ] && kill "$CONNECTOR_PID" 2>/dev/null || true
     [ -n "$QUERY_PID" ] && kill "$QUERY_PID" 2>/dev/null || true
-    [ -n "$PARSING_PID" ] && kill "$PARSING_PID" 2>/dev/null || true
+    [ -n "$PARSING_PID" ] && kill -TERM -- "-$PARSING_PID" 2>/dev/null || true
     [ -n "$EXTRACTION_PID" ] && kill "$EXTRACTION_PID" 2>/dev/null || true
     
     wait
@@ -349,12 +375,15 @@ start_nodejs
 start_slackbot
 start_embedding
 start_connector
-start_indexing
-start_query
 start_docling
 
 # Conditionally start the standalone Parsing and Extraction services.
 # Set USE_PARSING_SERVICE=true in the environment to enable them.
+# Must start (and pass health checks) *before* Indexing: on startup Indexing
+# recovers in-progress records immediately and, when USE_PARSING_SERVICE=true,
+# routes them through the Parsing service — if that service isn't up yet those
+# recovery calls fail with connection errors / 503s.
+
 if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
     log "USE_PARSING_SERVICE=true — starting Parsing and Extraction services"
     start_parsing
@@ -362,6 +391,11 @@ if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then
 else
     log "USE_PARSING_SERVICE not set — skipping Parsing and Extraction services"
 fi
+
+start_query
+# Indexing consumes queued records immediately, so all of its downstream
+# services must be healthy before it starts.
+start_indexing
 
 log "All services started. Beginning monitoring cycle (checking every ${CHECK_INTERVAL}s)..."
 

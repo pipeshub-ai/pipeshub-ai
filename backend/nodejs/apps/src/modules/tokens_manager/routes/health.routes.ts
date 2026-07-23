@@ -207,33 +207,44 @@ export function createHealthRouter(
     }
   });
 
-  // Combined services health check (Python query + connector + indexing + docling + embedding services)
+  // Combined services health check (Python query + connector + indexing + parsing + docling + embedding services)
   router.get('/services', async (_req, res, _next) => {
+    // The standalone parsing service is opt-in (see USE_PARSING_SERVICE in
+    // docker-compose): when disabled, indexing parses in-process and there is
+    // nothing on :8092 to probe, so report 'disabled' instead of flagging a
+    // false-positive outage. Default matches the Python side's own default
+    // (app/events/events.py: os.environ.get("USE_PARSING_SERVICE", "false")).
+    const useParsingService = (process.env.USE_PARSING_SERVICE || 'false').toLowerCase() === 'true';
     try {
       const aiHealthUrl = `${appConfig.aiBackend}/health`;
       const connectorHealthUrl = `${appConfig.connectorBackend}/health`;
       const indexingHealthUrl = `${appConfig.indexingBackend}/health`;
+      const parsingBackend = process.env.PARSING_SERVICE_URL || 'http://localhost:8092';
+      const parsingHealthUrl = `${parsingBackend}/health`;
       const doclingBackend = process.env.DOCLING_BACKEND || 'http://localhost:8081';
       const doclingHealthUrl = `${doclingBackend}/health`;
       const embeddingBackend = (process.env.EMBEDDING_SERVER_URL || 'http://localhost:8002').replace(/\/v1\/?$/, '');
       const embeddingHealthUrl = `${embeddingBackend}/health`;
 
-      const [aiResp, connectorResp, indexingResp, doclingResp, embeddingResp] = await Promise.allSettled([
+      const [aiResp, connectorResp, indexingResp, parsingResp, doclingResp, embeddingResp] = await Promise.allSettled([
         axios.get(aiHealthUrl, { timeout: 3000 }),
         axios.get(connectorHealthUrl, { timeout: 3000 }),
         axios.get(indexingHealthUrl, { timeout: 3000 }),
+        useParsingService ? axios.get(parsingHealthUrl, { timeout: 3000 }) : Promise.resolve(null),
         axios.get(doclingHealthUrl, { timeout: 3000 }),
         axios.get(embeddingHealthUrl, { timeout: 3000 }),
       ]);
 
       const isServiceHealthy = (res: PromiseSettledResult<any>) =>
         res.status === 'fulfilled' &&
+        res.value !== null &&
         res.value.status === 200 &&
         res.value.data?.status === 'healthy';
 
       const aiOk = isServiceHealthy(aiResp);
       const connectorOk = isServiceHealthy(connectorResp);
       const indexingOk = isServiceHealthy(indexingResp);
+      const parsingOk = isServiceHealthy(parsingResp);
       const doclingOk = isServiceHealthy(doclingResp);
       const embeddingOk = isServiceHealthy(embeddingResp);
 
@@ -247,6 +258,7 @@ export function createHealthRouter(
           query: aiOk ? 'healthy' : 'unhealthy',
           connector: connectorOk ? 'healthy' : 'unhealthy',
           indexing: indexingOk ? 'healthy' : 'unhealthy',
+          parsing: useParsingService ? (parsingOk ? 'healthy' : 'unhealthy') : 'disabled',
           docling: doclingOk ? 'healthy' : 'unhealthy',
           embedding: embeddingOk ? 'healthy' : 'unhealthy',
         },
@@ -260,6 +272,7 @@ export function createHealthRouter(
           query: 'unknown',
           connector: 'unknown',
           indexing: 'unknown',
+          parsing: useParsingService ? 'unknown' : 'disabled',
           docling: 'unknown',
           embedding: 'unknown',
         },

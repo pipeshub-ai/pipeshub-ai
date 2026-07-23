@@ -81,8 +81,16 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
             return
 
         logger.info(f"📋 Found {total_records} in-progress record(s) to recover")
+        # Reuse the retry producer set up in start_kafka_consumers (available on the
+        # container by the time recovery runs) so follow-up events can be published.
+        retry_producer = None
+        consumers = getattr(app_container, "kafka_consumers", [])
+        if consumers and len(consumers[0]) > 2:
+            retry_producer = consumers[0][2]
         # Create the message handler that will process these records
-        record_message_handler = await KafkaUtils.create_record_message_handler(app_container)
+        record_message_handler = await KafkaUtils.create_record_message_handler(
+            app_container, producer=retry_producer
+        )
 
         async def process_single_record(idx: int, record: dict[str, Any]) -> None:
             """Process a single record with semaphore control."""
@@ -281,7 +289,9 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> list[Any
             await asyncio.wrap_future(future)
             logger.info("✅Neo4j Graph provider reconnected in worker thread event loop")
 
-        record_message_handler = await KafkaUtils.create_record_message_handler(app_container)
+        record_message_handler = await KafkaUtils.create_record_message_handler(
+            app_container, producer=retry_producer
+        )
         await record_kafka_consumer.start(record_message_handler)  # type: ignore[arg-type]
         consumers.append(("record", record_kafka_consumer, retry_producer))
         logger.info("✅ Record message consumer started")

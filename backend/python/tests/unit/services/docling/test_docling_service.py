@@ -645,3 +645,71 @@ class TestCreateBlocksEndpoint:
                 assert "fail" in resp.error
         finally:
             mod.docling_service = original
+
+
+class TestDoclingConcurrencyGate:
+    """Tests for the process-wide concurrency gate bounding Docling work."""
+
+    @pytest.mark.asyncio
+    async def test_gate_allows_request_within_capacity(self):
+        import app.services.docling.docling_service as mod
+
+        semaphore = mod._get_docling_semaphore()
+        async with mod._docling_concurrency_gate():
+            assert semaphore._value == mod.DOCLING_MAX_CONCURRENT - 1
+        assert semaphore._value == mod.DOCLING_MAX_CONCURRENT
+
+    @pytest.mark.asyncio
+    async def test_gate_releases_slot_on_exception(self):
+        import app.services.docling.docling_service as mod
+
+        semaphore = mod._get_docling_semaphore()
+        with pytest.raises(RuntimeError):
+            async with mod._docling_concurrency_gate():
+                raise RuntimeError("boom")
+        assert semaphore._value == mod.DOCLING_MAX_CONCURRENT
+
+    @pytest.mark.asyncio
+    async def test_gate_returns_503_when_saturated(self):
+        import app.services.docling.docling_service as mod
+        from fastapi import HTTPException
+
+        semaphore = mod._get_docling_semaphore()
+        # Drain every slot so the next acquire must wait.
+        for _ in range(mod.DOCLING_MAX_CONCURRENT):
+            await semaphore.acquire()
+        try:
+            with patch.object(mod, "DOCLING_GATE_TIMEOUT_SECONDS", 0.05):
+                with pytest.raises(HTTPException) as exc_info:
+                    async with mod._docling_concurrency_gate():
+                        pass
+                assert exc_info.value.status_code == mod.HttpStatusCode.SERVICE_UNAVAILABLE.value
+        finally:
+            for _ in range(mod.DOCLING_MAX_CONCURRENT):
+                semaphore.release()
+
+    @pytest.mark.asyncio
+    async def test_endpoints_are_bounded_by_the_same_gate(self):
+        """process-pdf, parse-pdf, and create-blocks all serialize through the
+        same process-wide semaphore, so a slow request on one endpoint
+        throttles the others too.
+        """
+        import app.services.docling.docling_service as mod
+
+        semaphore = mod._get_docling_semaphore()
+        for _ in range(mod.DOCLING_MAX_CONCURRENT):
+            await semaphore.acquire()
+        try:
+            with patch.object(mod, "DOCLING_GATE_TIMEOUT_SECONDS", 0.05), \
+                 pytest.raises(mod.HTTPException):
+                original = mod.docling_service
+                mod.docling_service = DoclingService()
+                try:
+                    from app.services.docling.docling_service import parse_pdf_endpoint
+                    req = ParseRequest(record_name="test.pdf", pdf_binary=base64.b64encode(b"data").decode())
+                    await parse_pdf_endpoint(req)
+                finally:
+                    mod.docling_service = original
+        finally:
+            for _ in range(mod.DOCLING_MAX_CONCURRENT):
+                semaphore.release()

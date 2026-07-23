@@ -1,5 +1,6 @@
 """Tests for OCRHandler and OCRStrategy."""
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -161,7 +162,7 @@ class TestOCRHandlerInit:
         assert handler._strategy_kwargs == {"config": {"key": "val"}}
 
     def test_init_unsupported_strategy_raises(self, logger):
-        """Unsupported strategy type raises ValueError."""
+        """Unsupported strategy type raises DocumentProcessingError."""
         with pytest.raises(DocumentProcessingError, match="Unsupported OCR strategy"):
             OCRHandler(logger, "unknown_strategy")
 
@@ -232,3 +233,48 @@ class TestOCRHandlerProcessDocument:
         assert strategies[0] is not strategies[1]
         strategies[0].load_document.assert_awaited_once_with(b"doc-a")
         strategies[1].load_document.assert_awaited_once_with(b"doc-b")
+
+    @pytest.mark.asyncio
+    async def test_process_document_limits_concurrent_vlm_ocr(self, logger):
+        """The VLM OCR semaphore serializes overlapping process_document calls."""
+        first = MagicMock()
+        second = MagicMock()
+        first.document_analysis_result = {"pages": [{"id": 1}]}
+        second.document_analysis_result = {"pages": [{"id": 2}]}
+
+        entered: list[int] = []
+        first_entered = asyncio.Event()
+        release_first = asyncio.Event()
+
+        async def load_first(_content):
+            entered.append(1)
+            first_entered.set()
+            await release_first.wait()
+
+        async def load_second(_content):
+            entered.append(2)
+
+        first.load_document = AsyncMock(side_effect=load_first)
+        second.load_document = AsyncMock(side_effect=load_second)
+
+        handler = OCRHandler.__new__(OCRHandler)
+        handler.logger = logger
+        handler.provider = OCRProvider.VLM_OCR.value
+        handler._strategy_kwargs = {}
+
+        with patch.object(
+            handler, "_create_strategy", side_effect=[first, second]
+        ), patch(
+            "app.modules.parsers.pdf.ocr_handler._get_vlm_ocr_semaphore",
+            return_value=asyncio.Semaphore(1),
+        ):
+            first_task = asyncio.create_task(handler.process_document(b"one"))
+            await first_entered.wait()
+            second_task = asyncio.create_task(handler.process_document(b"two"))
+            await asyncio.sleep(0)
+            assert entered == [1]
+
+            release_first.set()
+            await asyncio.gather(first_task, second_task)
+
+        assert entered == [1, 2]

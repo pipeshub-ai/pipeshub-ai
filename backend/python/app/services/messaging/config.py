@@ -5,6 +5,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, JsonValue
 
+from app.services.parsing.concurrency import compute_parse_slots, get_memory_limit_bytes
+
 
 class MessageBrokerType(str, Enum):
     """Supported message broker backends."""
@@ -24,6 +26,8 @@ class Topic(str, Enum):
     """Well-known messaging topics."""
 
     RECORD_EVENTS = "record-events"
+    # Shared by Kafka and Redis Streams consumers.
+    RECORD_EVENTS_DLQ = "record-events-dlq"
     ENTITY_EVENTS = "entity-events"
     AI_CONFIG_EVENTS = "ai-config-events"
     SYNC_EVENTS = "sync-events"
@@ -32,6 +36,7 @@ class Topic(str, Enum):
 
 
 REQUIRED_TOPICS: list[str] = [t.value for t in Topic]
+REDELIVERY_BACKOFF_SECONDS: tuple[float, ...] = (60.0, 240.0)
 
 
 class IndexingEvent(str, Enum):
@@ -110,7 +115,23 @@ class MessagingEnvConfig:
 
     @property
     def max_concurrent_parsing(self) -> int:
-        return int(os.getenv("MAX_CONCURRENT_PARSING", "5"))
+        """Upper bound on in-flight parse requests this consumer will submit.
+
+        Mirrors the Parsing Service's own auto-sized heavy+light pool
+        capacity (see ``app.services.parsing.concurrency.compute_parse_slots``)
+        so the indexing consumer doesn't fire off far more concurrent parse
+        requests than the service can admit. This is a coarse local estimate,
+        not a live query of the remote service — the Parsing Service's own
+        gates and 503 admission control (with the consumer's delayed
+        re-queue) are the real backpressure mechanism; this just keeps the
+        common case from generating a flood of requests that immediately
+        503 and get retried.
+        """
+        heavy_slots, light_slots = compute_parse_slots(
+            mem_limit_bytes=get_memory_limit_bytes(),
+            override=os.getenv("MAX_CONCURRENT_PARSING"),
+        )
+        return heavy_slots + light_slots
 
     @property
     def max_concurrent_indexing(self) -> int:
