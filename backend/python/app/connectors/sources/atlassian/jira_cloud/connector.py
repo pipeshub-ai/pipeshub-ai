@@ -339,9 +339,12 @@ class JiraConnector(BaseConnector):
         try:
             if response.status != HttpStatusCode.OK.value:
                 return
-            data = response.json() or {}
         except Exception as e:
-            self.logger.debug("Could not read Jira /myself response: %s", e)
+            self.logger.debug("Could not read Jira /myself status: %s", e)
+            return
+
+        data = self._safe_json_parse(response, "GET /myself")
+        if not data:
             return
 
         email = data.get("emailAddress")
@@ -407,18 +410,9 @@ class JiraConnector(BaseConnector):
             await self._notify_multi_site_ambiguity(e)
             raise ConnectorInitError(str(e)) from e
         except Exception as e:
+            # Setup/HTTP callers surface this via return False → FE error. Background
+            # run_sync notifies on init failure (avoid duplicate inbox alerts on connect).
             self.logger.error(f"❌ Failed to initialize Jira client: {e}")
-            await self.notify(
-                type=NotificationType.CONNECTOR_AUTH_ERROR,
-                severity=NotificationSeverity.ERROR,
-                title=self._notification_title("connection failed"),
-                message=(
-                    f"PipesHub couldn't connect to Jira: {str(e)[:200]}. "
-                    "Verify the connector's credentials and configuration, "
-                    "re-authenticate if needed, then sync again."
-                ),
-                recipient_user_ids=[self.created_by],
-            )
             return False
 
     async def _notify_multi_site_ambiguity(self, error: AtlassianMultiSiteError) -> None:
@@ -482,9 +476,21 @@ class JiraConnector(BaseConnector):
     async def run_sync(self) -> None:
         """Main sync flow: users → groups → projects/roles → issues → deletions."""
         try:
-            # 1. Ensure client is ready (init already notifies on auth failure)
+            # 1. Ensure client is ready. Init itself does not notify (FE shows setup
+            # errors); notify here for background sync when auth/config is broken.
             if not self.data_source:
                 if not await self.init():
+                    await self.notify(
+                        type=NotificationType.CONNECTOR_AUTH_ERROR,
+                        severity=NotificationSeverity.ERROR,
+                        title=self._notification_title("connection failed"),
+                        message=(
+                            f"PipesHub couldn't connect to Jira during sync. "
+                            "Verify the connector's credentials and configuration, "
+                            "re-authenticate if needed, then sync again."
+                        ),
+                        recipient_roles=[NotificationRecipientRole.ADMIN],
+                    )
                     init_error = RuntimeError(
                         f"Jira connector {self.connector_id} init failed; check auth configuration"
                     )
@@ -527,36 +533,30 @@ class JiraConnector(BaseConnector):
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
             await self._handle_issue_deletions(last_sync_time)
 
-            # 8. Outcome: all projects failed → error; otherwise success
-            failed_count = sync_stats.get("failed_count", 0)
-            if projects and failed_count == len(projects):
-                self.logger.error(f"❌ Jira sync: all {failed_count} projects failed to sync issues")
+            # 8. Outcome: notify when any project failed issue sync (include keys)
+            failed_keys = sync_stats.get("failed_project_keys") or []
+            if failed_keys:
+                preview = ", ".join(failed_keys[:10])
+                if len(failed_keys) > 10:
+                    preview = f"{preview}, and {len(failed_keys) - 10} more"
+                self.logger.error(
+                    "❌ Jira sync: %s/%s project(s) failed to sync issues: %s",
+                    len(failed_keys), len(projects), preview,
+                )
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,
                     severity=NotificationSeverity.ERROR,
-                    title=self._notification_title("sync failed"),
+                    title=self._notification_title("couldn't sync some projects"),
                     message=(
-                        f"Issues could not be synced for any of the {failed_count} projects. "
-                        "Run the sync again; if it keeps failing, check the connector's "
-                        "Jira access and configuration."
+                        f"Couldn't sync issues for {len(failed_keys)} project(s): {preview}. "
+                        "Retry sync; check Jira access if it keeps failing."
                     ),
                     recipient_roles=[NotificationRecipientRole.ADMIN],
                 )
-                return
 
             self.logger.info(
                 f"✅ Jira sync completed. Total: {sync_stats['total_synced']} issues "
                 f"(New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']})"
-            )
-            await self.notify(
-                type=NotificationType.CONNECTOR_SUCCESS,
-                severity=NotificationSeverity.SUCCESS,
-                title=self._notification_title("sync completed"),
-                message=(
-                    f"Total: {sync_stats['total_synced']} issues "
-                    f"(New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']})"
-                ),
-                recipient_roles=[NotificationRecipientRole.ADMIN],
             )
 
         except Exception as e:
@@ -1290,8 +1290,8 @@ class JiraConnector(BaseConnector):
     ) -> list[Permission]:
         """Build a single-user BROWSE permission for the configuring user when
         the permission-scheme endpoints return 403 for this project (the account
-        isn't a project admin). 401/transient failures are handled by the caller
-        as a skip, not routed here.
+        isn't a project admin). 401/transient failures return None from the
+        scheme fetch; the caller syncs the RecordGroup with an empty ACL.
 
         Mirrors the ``_app_roles_forbidden`` fallback in
         ``_fetch_application_roles_to_groups_mapping``: rather than indexing
@@ -1362,9 +1362,8 @@ class JiraConnector(BaseConnector):
         - groupCustomField/userCustomField: Dynamic permissions based on issue fields
 
         Returns the BROWSE holders, or ``None`` when the scheme couldn't be determined due to a
-        transient failure (429 after retries / 5xx / parse error). ``None`` tells the caller to
-        SKIP the project this sync so its existing ACL is preserved — as opposed to overwriting it
-        with an empty ACL (which would hide the project from everyone). An empty list means the
+        transient failure (429 after retries / 5xx / parse error). The caller treats ``None`` as
+        an empty permission list and still syncs the RecordGroup. An empty list also means the
         scheme was read and legitimately grants BROWSE to no one.
         """
         permissions: list[Permission] = []
@@ -1379,16 +1378,18 @@ class JiraConnector(BaseConnector):
             if scheme_response.status != HttpStatusCode.OK.value:
                 # Only a 403 is a genuine permission problem (the account isn't a project admin) →
                 # grant the creator direct BROWSE so the project isn't hidden, and notify. A 401
-                # (auth/token) or a 5xx/429 is transient — skip the project and preserve its
-                # existing ACL, so a dead token can't strip a project's access or misreport a
-                # permission problem.
+                # (auth/token) or a 5xx/429 is transient — return None; caller still syncs the
+                # RecordGroup with an empty ACL this run.
                 if scheme_response.status == HttpStatusCode.FORBIDDEN.value:
                     return await self._fallback_permissions_for_forbidden_scheme(
                         project_key=project_key,
                         status=scheme_response.status,
                         stage="permission scheme",
                     )
-                self.logger.warning(f"⚠️ Could not fetch permission scheme for {project_key} (HTTP {scheme_response.status}); skipping to preserve existing ACL")
+                self.logger.warning(
+                    f"⚠️ Could not fetch permission scheme for {project_key} "
+                    f"(HTTP {scheme_response.status}); returning None so caller syncs with empty ACL"
+                )
                 return None
 
             scheme_data = scheme_response.json()
@@ -1402,14 +1403,18 @@ class JiraConnector(BaseConnector):
 
             if grants_response.status != HttpStatusCode.OK.value:
                 # Same rule as the scheme fetch above: 403 → creator-browse fallback + notify;
-                # 401/5xx/429 → skip and preserve the existing ACL.
+                # 401/5xx/429 → None; caller syncs RecordGroup with empty ACL.
                 if grants_response.status == HttpStatusCode.FORBIDDEN.value:
                     return await self._fallback_permissions_for_forbidden_scheme(
                         project_key=project_key,
                         status=grants_response.status,
                         stage=f"permission grants (scheme {scheme_id})",
                     )
-                self.logger.warning(f"⚠️ Could not fetch permission grants for scheme {scheme_id} ({project_key}, HTTP {grants_response.status}); skipping to preserve existing ACL")
+                self.logger.warning(
+                    f"⚠️ Could not fetch permission grants for scheme {scheme_id} "
+                    f"({project_key}, HTTP {grants_response.status}); "
+                    "returning None so caller syncs with empty ACL"
+                )
                 return None
 
             grants_data = grants_response.json()
@@ -1435,8 +1440,8 @@ class JiraConnector(BaseConnector):
             return permissions
 
         except Exception as e:
-            # Couldn't determine the scheme (transport exhaustion / parse error): skip the
-            # project rather than wiping its ACL.
+            # Couldn't determine the scheme (transport exhaustion / parse error): caller syncs
+            # the RecordGroup with empty permissions.
             self.logger.error(f"❌ Error fetching permission scheme for project {project_key}: {e}", exc_info=True)
             return None
 
@@ -1660,11 +1665,14 @@ class JiraConnector(BaseConnector):
             )
 
             member_account_ids, members_ok = await self._fetch_group_members(group_id, group_name)
+            # Transient membership failure → still sync the group (empty members) so it is
+            # not dropped this run. Next successful membership fetch refreshes members.
             if not members_ok:
                 self.logger.warning(
-                    f"⚠️ Skipping group {group_name} this sync — membership unavailable (existing membership preserved)"
+                    f"⚠️ Membership unavailable for group {group_name}; "
+                    "syncing group with empty members this run"
                 )
-                return None
+                member_account_ids = []
 
             app_users: list[AppUser] = []
             skipped_members = 0
@@ -1821,9 +1829,8 @@ class JiraConnector(BaseConnector):
         Fetch all members of a Jira group.
 
         Returns ``(account_ids, ok)``. ``ok`` is False when a page couldn't be read (429 after
-        retries / 5xx / transport), so the caller can SKIP writing this group rather than persist a
-        truncated membership (which would silently drop users' access). ``ok`` is True on a clean
-        read even if the group genuinely has no members.
+        retries / 5xx / transport); the caller still syncs the group with empty members rather
+        than dropping it. ``ok`` is True on a clean read even if the group genuinely has no members.
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
@@ -2282,11 +2289,15 @@ class JiraConnector(BaseConnector):
                 project_key, app_roles_mapping, perm_user_by_account_id
             )
 
+            # Transient scheme failure returns None — still sync the RecordGroup so the
+            # project/issues are not dropped this run. Empty ACL; next successful scheme
+            # fetch will refresh permissions.
             if project_permissions is None:
                 self.logger.warning(
-                    f"⚠️ Skipping project {project_key} this sync — permission scheme unavailable (existing access preserved)"
+                    f"⚠️ Permission scheme unavailable for {project_key}; "
+                    "syncing project with empty permissions this run"
                 )
-                return None
+                project_permissions = []
 
             if project_permissions:
                 self.logger.info(f"🔐 Project {project_key}: {len(project_permissions)} permission grants from scheme")
@@ -2394,12 +2405,12 @@ class JiraConnector(BaseConnector):
         projects: list[tuple[RecordGroup, list[Permission]]],
         jira_users: list[AppUser],
         last_sync_time: Optional[int]
-    ) -> dict[str, int]:
+    ) -> dict[str, Any]:
         """Sync issues for all projects and return statistics."""
         total_synced = 0
         new_count = 0
         updated_count = 0
-        failed_count = 0
+        failed_project_keys: list[str] = []
 
         for project, _ in projects:
             try:
@@ -2411,9 +2422,8 @@ class JiraConnector(BaseConnector):
                 updated_count += project_stats["updated_count"]
             except Exception as e:
                 # Per-project failures self-heal: the project checkpoint only advances on
-                # success, so the next sync resumes it. Log-only here; run_sync escalates
-                # to a failure notification only when EVERY project failed.
-                failed_count += 1
+                # success, so the next sync resumes it. run_sync notifies with the keys.
+                failed_project_keys.append(project.short_name)
                 self.logger.error(f"❌ Error processing issues for project {project.short_name}: {e}", exc_info=True)
                 continue
 
@@ -2421,7 +2431,8 @@ class JiraConnector(BaseConnector):
             "total_synced": total_synced,
             "new_count": new_count,
             "updated_count": updated_count,
-            "failed_count": failed_count
+            "failed_count": len(failed_project_keys),
+            "failed_project_keys": failed_project_keys,
         }
 
     async def _sync_project_issues(
@@ -4139,27 +4150,18 @@ class JiraConnector(BaseConnector):
         """Create a signed URL for a specific record"""
         return ""
 
-    async def _notify_connection_test_failed(self) -> None:
-        await self.notify(
-            type=NotificationType.CONNECTOR_AUTH_ERROR,
-            severity=NotificationSeverity.ERROR,
-            title=self._notification_title("connection test failed"),
-            message=(
-                "Couldn't connect to Jira. Verify the connector's credentials "
-                "and scopes, then test again."
-            ),
-            recipient_user_ids=[self.created_by],
-        )
-
     async def test_connection_and_access(self) -> bool:
-        """Test connection and access to Jira using DataSource"""
+        """Test connection and access to Jira using DataSource.
+
+        Used only on the sync HTTP setup path; callers map False → FE error.
+        No inbox notification here (avoids duplicate alerts with the API response).
+        """
         try:
             # init() always runs (and must succeed) before this in the connector setup
             # flow, so the client/datasource are already built — fail fast if not,
             # rather than re-initializing (mirrors the Confluence connector).
             if not self.data_source:
                 self.logger.error("Jira connector not initialized")
-                await self._notify_connection_test_failed()
                 return False
 
             # Test by fetching user info (simple API call)
@@ -4169,12 +4171,10 @@ class JiraConnector(BaseConnector):
                 self.logger.error(
                     "❌ Connection test failed: /myself returned %s", response.status
                 )
-                await self._notify_connection_test_failed()
                 return False
             return True
         except Exception as e:
             self.logger.error(f"❌ Connection test failed: {e}")
-            await self._notify_connection_test_failed()
             return False
 
     async def run_incremental_sync(self) -> None:

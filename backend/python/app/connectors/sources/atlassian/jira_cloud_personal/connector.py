@@ -245,10 +245,20 @@ class JiraCloudPersonalConnector(JiraConnector):
                 # ``init()`` returns False on missing/invalid auth config; check
                 # the return so a misconfigured connector raises here instead of
                 # surfacing ``ValueError("DataSource not initialized")`` from
-                # the first datasource call several layers down. Init already
-                # sends CONNECTOR_AUTH_ERROR — mark so the except below does not
-                # also send CONNECTOR_SYNC_ERROR for the same failure.
+                # the first datasource call several layers down. Init does not
+                # notify (FE covers setup); notify here for background sync.
                 if not await self.init():
+                    await self.notify(
+                        type=NotificationType.CONNECTOR_AUTH_ERROR,
+                        severity=NotificationSeverity.ERROR,
+                        title=self._notification_title("connection failed"),
+                        message=(
+                            "PipesHub couldn't connect to Jira during sync. "
+                            "Verify the connector's credentials and configuration, "
+                            "re-authenticate if needed, then sync again."
+                        ),
+                        recipient_user_ids=[self.created_by],
+                    )
                     init_error = RuntimeError(
                         f"Jira Cloud Personal connector {self.connector_id} init failed; "
                         "check auth configuration"
@@ -333,25 +343,26 @@ class JiraCloudPersonalConnector(JiraConnector):
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
 
-            # Notify the creator of the sync outcome (same as the workspace connector).
-            failed_count = sync_stats.get("failed_count", 0)
-            if projects and failed_count == len(projects):
+            # Notify the creator when any project failed issue sync (include keys).
+            failed_keys = sync_stats.get("failed_project_keys") or []
+            if failed_keys:
+                preview = ", ".join(failed_keys[:10])
+                if len(failed_keys) > 10:
+                    preview = f"{preview}, and {len(failed_keys) - 10} more"
                 self.logger.error(
-                    "❌ Jira Cloud Personal sync: all %s projects failed to sync issues",
-                    failed_count,
+                    "❌ Jira Cloud Personal sync: %s/%s project(s) failed to sync issues: %s",
+                    len(failed_keys), len(projects), preview,
                 )
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,
                     severity=NotificationSeverity.ERROR,
-                    title=self._notification_title("sync failed"),
+                    title=self._notification_title("couldn't sync some projects"),
                     message=(
-                        f"Issues could not be synced for any of the {failed_count} projects. "
-                        "Run the sync again; if it keeps failing, check the connector's "
-                        "Jira access and configuration."
+                        f"Couldn't sync issues for {len(failed_keys)} project(s): {preview}. "
+                        "Retry sync; check Jira access if it keeps failing."
                     ),
                     recipient_user_ids=[self.created_by],
                 )
-                return
 
             self.logger.info(
                 "Jira Cloud Personal sync completed. Total: %s issues "
@@ -359,16 +370,6 @@ class JiraCloudPersonalConnector(JiraConnector):
                 sync_stats["total_synced"],
                 sync_stats["new_count"],
                 sync_stats["updated_count"],
-            )
-            await self.notify(
-                type=NotificationType.CONNECTOR_SUCCESS,
-                severity=NotificationSeverity.SUCCESS,
-                title=self._notification_title("sync completed"),
-                message=(
-                    f"Total: {sync_stats['total_synced']} issues "
-                    f"(New: {sync_stats['new_count']}, Updated: {sync_stats['updated_count']})"
-                ),
-                recipient_user_ids=[self.created_by],
             )
 
         except Exception as e:
