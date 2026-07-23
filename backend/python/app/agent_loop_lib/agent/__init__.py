@@ -862,7 +862,12 @@ class Agent:
 
             for tr in tool_results:
                 content_str = json.dumps(tr.content) if not isinstance(tr.content, str) else tr.content
-                await context.add(ToolMessage(content=content_str, tool_call_id=tr.tool_call_id, is_error=tr.is_error))
+                await context.add(ToolMessage(
+                    content=content_str,
+                    tool_call_id=tr.tool_call_id,
+                    is_error=tr.is_error,
+                    artifact_meta=tr.artifact_meta,
+                ))
 
             turn.tool_results = tool_results
             self._scope.turns.append(turn)

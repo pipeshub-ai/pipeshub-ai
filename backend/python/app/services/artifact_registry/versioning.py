@@ -124,6 +124,7 @@ class VersionManager:
         source_tool: str | None = None,
         is_temporary: bool = False,
         connector_name: Connectors = Connectors.CODING_SANDBOX,
+        result_schema: dict | None = None,
     ) -> ArtifactMetadata:
         """Create a brand-new, version-1 artifact: blob doc (version-enabled)
         + `records`/`artifacts` graph docs + owner permission edge, all
@@ -168,6 +169,7 @@ class VersionManager:
             is_temporary=is_temporary,
             logical_name=logical_name or name,
             content_hash=content_hash,
+            result_schema=result_schema,
         )
 
         permission_edge = await self._access.grant_owner_permission(actor, artifact_id, now=now)
@@ -431,6 +433,7 @@ def to_metadata(record: ArtifactRecord, *, document_id: str) -> ArtifactMetadata
         content_hash=record.content_hash,
         source_tool=record.source_tool,
         document_id=document_id,
+        result_schema=record.result_schema,
         is_temporary=record.is_temporary,
         created_at=record.created_at,
         updated_at=record.updated_at,
@@ -454,6 +457,7 @@ def to_metadata_from_docs(record: dict, artifact_doc: dict) -> ArtifactMetadata:
         content_hash=artifact_doc.get("contentHash"),
         source_tool=artifact_doc.get("sourceTool"),
         document_id=record.get("externalRecordId"),
+        result_schema=artifact_doc.get("resultSchema"),
         is_temporary=bool(artifact_doc.get("isTemporary", False)),
         created_at=record.get("createdAtTimestamp"),
         updated_at=record.get("updatedAtTimestamp"),

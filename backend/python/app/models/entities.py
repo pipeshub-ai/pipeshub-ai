@@ -2235,6 +2235,7 @@ class ArtifactType(str, Enum):
     # than a copy of the code embedded only in conversation history. See
     # `app/services/artifact_registry/`.
     CODE = "CODE"
+    TOOL_RESULT = "TOOL_RESULT"
     OTHER = "OTHER"
 
 
@@ -2284,6 +2285,7 @@ class ArtifactRecord(Record):
     # re-run producing byte-identical content skips the version bump
     # entirely (see `VersionManager.add_version`).
     content_hash: str | None = Field(default=None, description="SHA-256 hex digest of the current version's content")
+    result_schema: dict | None = Field(default=None, description="JSON Schema describing the tool result structure, for TOOL_RESULT artifacts")
     # Explicit registryVersion -> storageVersion bookkeeping, one entry per
     # version that has been given a durable blob index (see
     # `VersionManager.add_version`). Never derive this mapping
@@ -2313,6 +2315,7 @@ class ArtifactRecord(Record):
             "expiresAt": self.expires_at,
             "logicalName": self.logical_name or self.record_name,
             "contentHash": self.content_hash,
+            "resultSchema": self.result_schema,
             "versions": serialize_artifact_versions(self.versions),
         }
 
@@ -2370,6 +2373,7 @@ class ArtifactRecord(Record):
             expires_at=artifact_doc.get("expiresAt"),
             logical_name=artifact_doc.get("logicalName"),
             content_hash=artifact_doc.get("contentHash"),
+            result_schema=artifact_doc.get("resultSchema"),
             versions=deserialize_artifact_versions(artifact_doc.get("versions")),
         )
 

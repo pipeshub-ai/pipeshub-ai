@@ -246,6 +246,13 @@ const agentConversationSchema = new Schema({
     enum: ['agent_chat'],
     default: 'agent_chat',
   },
+
+  // Context compaction: deterministic summary of older turns, populated
+  // lazily by a background job or on conversation load when turn count
+  // exceeds a threshold.
+  compactedSummary: { type: String },
+  compactedAtTurnIndex: { type: Number },
+  compactedAtTimestamp: { type: Number },
 }, { timestamps: true });
 
 // Create indexes

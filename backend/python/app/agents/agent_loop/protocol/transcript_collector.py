@@ -60,6 +60,7 @@ class MessagePart(TypedDict, total=False):
     status: Literal["running", "completed", "failed", "blocked"]
     resultPreview: str
     resultSummary: str
+    artifactId: str
     runId: str
     roleName: str
     parts: list["MessagePart"]
@@ -183,6 +184,9 @@ class TranscriptCollector(EventEmitter):
                 result_summary = payload.get("result_summary")
                 if isinstance(result_summary, str):
                     part["resultSummary"] = result_summary
+                artifact_id = payload.get("artifact_id")
+                if isinstance(artifact_id, str):
+                    part["artifactId"] = artifact_id
             return
 
         if event.event_type == EventType.TEXT_MESSAGE_START:

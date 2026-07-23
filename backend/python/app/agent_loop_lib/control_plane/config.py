@@ -20,29 +20,59 @@ class RetryHookConfig(BaseModel):
 
 
 class ContextEngineConfig(BaseModel):
-    """Control-plane-level knobs for the Phase 1 context-shaper pipeline
-    (see hooks/middleware/builtin/{budget_reduction,tool_result_clearing,offload,
-    sliding_window,auto_compact}.py). All five run cheapest-first through
-    `pre_model`; each is individually toggleable and independently testable.
+    """Control-plane-level knobs for the context-shaper pipeline.
+
+    PRE_MODEL shapers run cheapest-first:
+        L1  budget_reduction
+        L2  artifact_compaction  (turn-aware, replaces offload)
+        L3  tool_result_clearing
+        L4  loop_compaction      (turn-boundary batch compaction)
+        L5  sliding_window
+        L6  deterministic_compact (extractive, no LLM call)
+        L7  auto_compact         (LLM summariser, last resort)
+        L8  synthesis_guard      (hard budget enforcement)
+
+    POST_TOOL_USE:
+        artifact_registration   (large results → artifacts)
     """
 
     enable_budget_reduction: bool = True
-    max_result_chars: int = 4_000
+    max_result_chars: int = 64_000
+
+    enable_artifact_registration: bool = True
+    artifact_threshold_tokens: int = 2_000
+    artifact_preview_chars: int = 200
+
+    enable_artifact_compaction: bool = True
+    artifact_compaction_trigger_ratio: float = 0.5
 
     enable_tool_result_clearing: bool = True
     clearing_keep_last_n_turns: int = 3
     clearing_trigger_ratio: float = 0.5
 
-    enable_offload: bool = True
+    enable_loop_compaction: bool = True
+    loop_compact_every_n_turns: int = 5
+    loop_compact_keep_recent: int = 6
+    loop_compact_trigger_ratio: float = 0.6
+
+    enable_offload: bool = False
     offload_threshold_tokens: int = 2_000
     offload_preview_lines: int = 10
 
     enable_sliding_window: bool = True
     sliding_window_pin_first_n: int = 1
 
+    enable_deterministic_compact: bool = True
+    deterministic_compact_trigger_ratio: float = 0.85
+    deterministic_compact_keep_last_n: int = 6
+    deterministic_compact_preview_chars: int = 100
+
     enable_auto_compact: bool = True
     auto_compact_trigger_ratio: float = 0.85
-    auto_compact_keep_last_n_messages: int = 6
+    auto_compact_max_tail_ratio: float = 0.6
+
+    enable_synthesis_guard: bool = True
+    synthesis_guard_keep_last_n: int = 2
 
 
 class OSSandboxConfig(BaseModel):

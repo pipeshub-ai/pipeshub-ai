@@ -6,6 +6,7 @@ from pydantic import BaseModel
 # cost math — both BudgetTracker (enforcement) and the CLI (display) read
 # this table instead of keeping their own hardcoded copies in sync by hand.
 MODEL_PRICING: dict[str, tuple[float, float]] = {
+    "claude-sonnet-5": (3.0, 15.0),
     "claude-sonnet-4-6": (3.0, 15.0),
     "claude-opus-4-8": (15.0, 75.0),
     "claude-haiku-4-5": (0.80, 4.0),
@@ -60,12 +61,17 @@ def get_pricing(model: str | None) -> ModelPricing:
 # hardcoded flat number — the single source of truth other model metadata
 # tables in this file already establish the pattern for.
 MODEL_CONTEXT_WINDOW: dict[str, int] = {
+    "claude-sonnet-5": 200_000,
     "claude-sonnet-4-6": 200_000,
     "claude-opus-4-8": 200_000,
     "claude-haiku-4-5": 200_000,
     "claude-haiku-4-5-20251001": 200_000,
     "gpt-5.3-codex": 128_000,
     "gpt-5.5-extra-high": 128_000,
+    "gpt-4o-mini": 128_000,
+    "gpt-4o": 128_000,
+    "gpt-5.4-mini": 128_000,
+    "gpt-5.4": 128_000,
 }
 
 _DEFAULT_CONTEXT_WINDOW = 128_000

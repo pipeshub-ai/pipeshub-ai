@@ -130,6 +130,7 @@ class STTProvider(Enum):
     OPENROUTER = "openRouter"
 
 MAX_OUTPUT_TOKENS = 4096
+MAX_OUTPUT_TOKENS_CLAUDE_MODERN = 16384
 MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
 
 def get_default_embedding_model() -> Embeddings:
@@ -454,8 +455,27 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
     raise ValueError(f"Unsupported embedding config type: {provider}")
 
 def _get_anthropic_max_tokens(model_name: str) -> int:
-    """Gets the max output tokens for an Anthropic model based on its name."""
-    if '4.5' in model_name:
+    """Gets the max output tokens for an Anthropic model based on its name.
+
+    Claude 4.5 supports 64K output tokens.  Claude 4.6+ and Claude 5.x
+    support at least 16K.  Legacy/unrecognised models fall back to 4096.
+    """
+    lowered = model_name.lower() if model_name else ""
+    match = re.search(
+        r"claude[-_]?(?:opus|sonnet|haiku)[-_]?(\d+)(?:[-_.](\d+))?",
+        lowered,
+    )
+    if match:
+        major = int(match.group(1))
+        minor = int(match.group(2)) if match.group(2) is not None else None
+        if major >= 5:
+            return MAX_OUTPUT_TOKENS_CLAUDE_MODERN
+        if major == 4:
+            if minor is not None and minor == 5:
+                return MAX_OUTPUT_TOKENS_CLAUDE_4_5
+            if minor is not None and minor >= 6:
+                return MAX_OUTPUT_TOKENS_CLAUDE_MODERN
+    if "4.5" in lowered:
         return MAX_OUTPUT_TOKENS_CLAUDE_4_5
     return MAX_OUTPUT_TOKENS
 

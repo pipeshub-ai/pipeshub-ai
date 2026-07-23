@@ -3,6 +3,8 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+from googleapiclient.errors import HttpError
+
 from pydantic import BaseModel, Field
 
 from app.agents.actions.google.gmail.utils import GmailUtils
@@ -432,7 +434,7 @@ class Gmail:
             result_size_estimate = result.get("resultSizeEstimate", 0)
 
             # Enrich each message with metadata (subject, from, date, snippet)
-            async def fetch_metadata(msg: Dict[str, Any]) -> Dict[str, Any]:
+            async def fetch_metadata(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 try:
                     meta = await self.client.users_messages_get(
                         userId="me",
@@ -454,11 +456,25 @@ class Gmail:
                         "snippet": meta.get("snippet", ""),
                         "labelIds": meta.get("labelIds", []),
                     }
+                except HttpError as e:
+                    if e.resp.status == 404:
+                        logger.debug("Gmail message %s no longer exists, skipping", msg["id"])
+                        return None
+                    return {
+                        "id": msg["id"],
+                        "threadId": msg.get("threadId", ""),
+                        "subject": "(metadata unavailable)",
+                        "from": "",
+                        "to": "",
+                        "date": "",
+                        "snippet": "",
+                        "labelIds": [],
+                    }
                 except Exception:
                     return {
                         "id": msg["id"],
                         "threadId": msg.get("threadId", ""),
-                        "subject": "(no subject)",
+                        "subject": "(metadata unavailable)",
                         "from": "",
                         "to": "",
                         "date": "",
@@ -466,7 +482,7 @@ class Gmail:
                         "labelIds": [],
                     }
 
-            enriched = await asyncio.gather(*[fetch_metadata(m) for m in messages])
+            enriched = [m for m in await asyncio.gather(*[fetch_metadata(m) for m in messages]) if m is not None]
 
             return True, json.dumps({
                 "messages": list(enriched),

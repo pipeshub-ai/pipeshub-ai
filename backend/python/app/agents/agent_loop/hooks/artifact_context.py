@@ -80,12 +80,14 @@ def _build_reminder(artifacts: list["ArtifactMetadata"]) -> str:
         "reference, update, or build on one of these:",
     ]
     for a in artifacts:
-        line = f"- {a.name!r} (artifact_id={a.artifact_id}, type={a.artifact_type.value}, version={a.version}"
+        parts = [f"artifact_id={a.artifact_id}", f"type={a.artifact_type.value}", f"version={a.version}"]
+        if a.source_tool:
+            parts.append(f"source_tool={a.source_tool}")
         if a.description:
-            line += f", description={a.description!r}"
+            parts.append(f"description={a.description!r}")
         if a.derived_from_code_artifact_id:
-            line += f", derived_from_code_artifact_id={a.derived_from_code_artifact_id}"
-        line += ")"
+            parts.append(f"derived_from_code_artifact_id={a.derived_from_code_artifact_id}")
+        line = f"- {a.name!r} ({', '.join(parts)})"
         lines.append(line)
     lines.append(
         "To reuse one as input: pass its name in run_code's input_artifacts. To update "

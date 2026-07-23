@@ -194,19 +194,26 @@ function preprocessHtmlIndentation(content: string): string {
  * remark-math v6 requires.  remark-math v6 deliberately dropped \( / \[ /
  * \] / \) support (they were ambiguous with backslash escapes in v5).
  *
- * Skips fenced code blocks and inline code spans so we never mangle
- * literal backslash sequences inside code examples.
+ * Skips fenced code blocks, inline code spans, and markdown links/images
+ * so we never mangle literal backslash sequences inside code examples or
+ * escaped brackets inside link text (e.g. `[Title \[Subtitle\]](url)`).
  *
  *   \(...\)  →  $...$        (inline math)
  *   \[...\]  →  $$\n...\n$$  (display math)
  */
 function preprocessMath(content: string): string {
-  // Split on fenced code blocks (``` or ~~~) and inline code spans (`...`).
-  // Even-indexed segments are outside code; odd-indexed are inside code.
-  const parts = content.split(/(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`]*`)/g);
+  // Split on fenced code blocks (``` or ~~~), inline code spans (`...`),
+  // and markdown links/images whose text may contain escaped brackets.
+  // Without the link protection, \[text\] inside [link \[text\]](url)
+  // would be misidentified as display math and converted to $$..$$,
+  // completely breaking the link structure.
+  // Even-indexed segments are outside protected spans; odd-indexed are inside.
+  const parts = content.split(
+    /(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`]*`|!?\[(?:[^\[\]\\]|\\.)*\]\([^)]*\))/g
+  );
   return parts
     .map((part, i) => {
-      if (i % 2 !== 0) return part; // inside code — leave untouched
+      if (i % 2 !== 0) return part; // inside protected span — leave untouched
       return part
         // Block math first (greedy order matters): \[ ... \]
         // Tempered greedy token stops at blank lines (paragraph breaks) so an

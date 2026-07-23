@@ -42,6 +42,7 @@ __all__ = [
     "SystemMessage",
     "UserMessage",
     "AssistantMessage",
+    "ToolMessageMeta",
     "ToolMessage",
     "Message",
 ]
@@ -176,11 +177,27 @@ class AssistantMessage(BaseModel):
         return "".join(part.text for part in self.content if isinstance(part, TextPart))
 
 
+class ToolMessageMeta(BaseModel):
+    """Structured metadata attached when a tool result is registered as an
+    artifact (see ``shape_artifact_registration`` POST_TOOL_USE middleware).
+    Enables downstream context shapers to compact or expand the message
+    without parsing free-form text."""
+
+    artifact_id: str
+    summary: str = ""
+    tool_name: str = ""
+    tool_args: dict[str, Any] | None = None
+    result_schema: dict[str, Any] | None = None
+    original_token_count: int = 0
+    turn_index: int = 0
+
+
 class ToolMessage(BaseModel):
     role: Literal[MessageRole.TOOL] = MessageRole.TOOL
     content: str = ""
     tool_call_id: str | None = None
     is_error: bool = False
+    artifact_meta: ToolMessageMeta | None = None
 
 
 Message = Annotated[

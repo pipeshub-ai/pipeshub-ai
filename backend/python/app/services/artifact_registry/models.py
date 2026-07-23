@@ -9,6 +9,8 @@ against.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from app.models.entities import ArtifactType, LifecycleStatus
@@ -80,6 +82,7 @@ class ArtifactMetadata(BaseModel):
     content_hash: str | None = None
     source_tool: str | None = None
     document_id: str | None = None
+    result_schema: dict[str, Any] | None = None
     is_temporary: bool = False
     created_at: int | None = None
     updated_at: int | None = None

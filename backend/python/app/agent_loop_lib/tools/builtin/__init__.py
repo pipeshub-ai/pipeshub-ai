@@ -11,6 +11,9 @@ from app.agent_loop_lib.tools.builtin.data.memory_tools import (
     MemorySearchTool,
     MemoryWriteTool,
 )
+from app.agent_loop_lib.tools.builtin.data.retrieve_artifact import (
+    RetrieveArtifactContentTool,
+)
 from app.agent_loop_lib.tools.builtin.data.skills import (
     LoadSkillResourceTool,
     LoadSkillTool,
@@ -87,6 +90,7 @@ __all__ = [
     "SkillManageTool",
     "SkillsListTool",
     "SkillSearchTool",
+    "RetrieveArtifactContentTool",
     "ReplanTool",
     "HandoffTool",
     "RouteTaskTool",

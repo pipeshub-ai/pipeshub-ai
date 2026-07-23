@@ -150,6 +150,7 @@ class FunctionTool(Tool):
         tags: list[Tag] | None = None,
         args_summary: ArgsFormatter | None = None,
         result_summary: ResultFormatter | None = None,
+        result_schema: dict[str, Any] | None = None,
     ) -> None:
         if not inspect.iscoroutinefunction(func):
             raise TypeError(
@@ -166,6 +167,7 @@ class FunctionTool(Tool):
         self._tags = list(tags or [])
         self._args_summary = args_summary
         self._result_summary = result_summary
+        self._result_schema = result_schema
 
         self.__name__ = getattr(func, "__name__", self._name)
         self.__doc__ = func.__doc__
@@ -193,6 +195,10 @@ class FunctionTool(Tool):
     @property
     def parameters(self) -> list[ToolParameter]:
         return list(self._parameters)
+
+    @property
+    def result_schema(self) -> dict[str, Any] | None:
+        return self._result_schema
 
     async def execute(self, **kwargs: Any) -> ToolOutput:
         return await self.func(**kwargs)
@@ -245,6 +251,7 @@ class ToolMeta:
     tags: list[Tag] = dc_field(default_factory=list)
     args_summary: ArgsFormatter | None = None
     result_summary: ResultFormatter | None = None
+    result_schema: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +323,10 @@ class BoundMethodTool(Tool):
     def parameters(self) -> list[ToolParameter]:
         return list(self._meta.parameters)
 
+    @property
+    def result_schema(self) -> dict[str, Any] | None:
+        return self._meta.result_schema
+
     def validate(self, kwargs: dict[str, Any]) -> None:
         """Connector tools handle their own input normalization; skip strict
         validation to preserve the same lenient behavior the legacy adapter
@@ -357,6 +368,7 @@ def tool(
     tags: list[Tag] | None = None,
     args_summary: ArgsFormatter | None = None,
     result_summary: ResultFormatter | None = None,
+    result_schema: dict[str, Any] | None = None,
 ) -> Callable:
     """Decorator factory for both standalone async functions and class methods.
 
@@ -403,6 +415,7 @@ def tool(
                 tags=list(tags or []),
                 args_summary=args_summary,
                 result_summary=result_summary,
+                result_schema=result_schema,
             )
             setattr(func, TOOL_META_ATTR, meta)
             return func
@@ -416,6 +429,7 @@ def tool(
             tags=tags,
             args_summary=args_summary,
             result_summary=result_summary,
+            result_schema=result_schema,
         )
 
     return decorator

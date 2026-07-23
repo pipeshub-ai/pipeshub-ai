@@ -128,6 +128,8 @@ export interface IMessagePart {
   resultPreview?: string;
   /** Human-readable summary of the tool result, computed server-side from the full (untruncated) output. */
   resultSummary?: string;
+  /** Blob-backed artifact ID for the full tool result (recoverable on follow-up turns). */
+  artifactId?: string;
   runId?: string;
   roleName?: string;
   parts?: IMessagePart[];
@@ -209,6 +211,9 @@ export interface IConversation {
 
 export interface IAgentConversation extends IConversation {
   agentKey: string;
+  compactedSummary?: string;
+  compactedAtTurnIndex?: number;
+  compactedAtTimestamp?: number;
 }
 
 export interface IMessageDocument extends Document, IMessage {

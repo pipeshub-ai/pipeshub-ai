@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.control_plane.config import ControlPlaneConfig
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.agent.spec import AgentSpec
@@ -22,35 +25,6 @@ _EXECUTE_CODE_BLOCKED_TOOLS = frozenset({
 })
 
 
-
-
-def _make_llm_summarizer(transport_registry, provider: str, model: str):
-    """Build an `AutoCompactHook` summarizer that calls the real LLM via the
-    already-lazy `TransportRegistry` — resolving (and thus instantiating)
-    the transport only the first time compaction actually triggers, not at
-    ControlPlane.start() time."""
-    from app.agent_loop_lib.core.tokens import extract_text
-    from app.agent_loop_lib.core.types import Message, UserMessage
-
-    async def _summarize(messages: list["Message"]) -> str:
-        transport = transport_registry.resolve(provider)
-        joined = "\n".join(
-            f"[{m.role.value}] {extract_text(m)}" for m in messages
-        )
-        response = await transport.complete(
-            messages=[UserMessage(
-                content=(
-                    "Summarize the following conversation history concisely, "
-                    f"preserving all facts, decisions, and open questions:\n\n{joined}"
-                ),
-            )],
-            system="You are a context compaction summarizer. Be concise but lossless on facts.",
-            model=model,
-        )
-        text = response.message.text
-        return text if text else joined[:2_000]
-
-    return _summarize
 
 
 class ControlPlane:
@@ -93,6 +67,7 @@ class ControlPlane:
     async def start(self) -> None:
         from app.agent_loop_lib.hooks.events import HookEvent
         from app.agent_loop_lib.hooks.middleware.builtin.auto_compact import (
+            make_llm_summarizer,
             shape_auto_compact,
         )
         from app.agent_loop_lib.hooks.middleware.builtin.budget_guard import (
@@ -576,16 +551,77 @@ class ControlPlane:
                     e2b_sandbox_guard(max_timeout=float(ebc.e2b_timeout)),
                 )
             elif hook_name == "context_engine":
+                from app.agent_loop_lib.hooks.middleware.builtin.artifact_compaction import (
+                    shape_artifact_compaction,
+                )
+                from app.agent_loop_lib.hooks.middleware.builtin.artifact_registration import (
+                    InMemoryArtifactStore,
+                    shape_artifact_registration,
+                )
+                from app.agent_loop_lib.hooks.middleware.builtin.deterministic_compact import (
+                    shape_deterministic_compact,
+                )
+                from app.agent_loop_lib.hooks.middleware.builtin.loop_compaction import (
+                    shape_loop_compaction,
+                )
+                from app.agent_loop_lib.hooks.middleware.builtin.synthesis_guard import (
+                    shape_synthesis_guard,
+                )
+
                 ce = cfg.context_engine
-                # Registered cheapest-first (PRE_MODEL runs shapers in
-                # registration order): budget reduction -> tool-result
-                # clearing -> offload -> sliding window -> auto-compact.
+
+                artifact_store = InMemoryArtifactStore()
+
+                if ce.enable_artifact_registration:
+                    from app.agent_loop_lib.tools.builtin.data.retrieve_artifact import (
+                        RetrieveArtifactContentTool,
+                    )
+                    from app.agent_loop_lib.tools.errors import ToolNotFoundError
+
+                    def _resolve_schema(tool_name: str):
+                        if self._tool_registry is None:
+                            return None
+                        try:
+                            tool = self._tool_registry.resolve_by_name(tool_name)
+                            return getattr(tool, "result_schema", None)
+                        except ToolNotFoundError:
+                            return None
+                        except Exception:
+                            _logger.warning(
+                                "Unexpected error resolving result_schema for tool %r",
+                                tool_name, exc_info=True,
+                            )
+                            return None
+
+                    kernel.on(HookEvent.POST_TOOL_USE).use(
+                        shape_artifact_registration(
+                            store=artifact_store,
+                            threshold_tokens=ce.artifact_threshold_tokens,
+                            preview_chars=ce.artifact_preview_chars,
+                            resolve_schema=_resolve_schema,
+                        )
+                    )
+
+                    tool_registry.register_tool(
+                        RetrieveArtifactContentTool(store=artifact_store)
+                    )
+
                 if ce.enable_budget_reduction:
                     kernel.on(HookEvent.PRE_MODEL).use(shape_budget_reduction(max_result_chars=ce.max_result_chars))
+                if ce.enable_artifact_compaction:
+                    kernel.on(HookEvent.PRE_MODEL).use(shape_artifact_compaction(
+                        trigger_ratio=ce.artifact_compaction_trigger_ratio,
+                    ))
                 if ce.enable_tool_result_clearing:
                     kernel.on(HookEvent.PRE_MODEL).use(shape_tool_result_clearing(
                         keep_last_n_turns=ce.clearing_keep_last_n_turns,
                         trigger_ratio=ce.clearing_trigger_ratio,
+                    ))
+                if ce.enable_loop_compaction:
+                    kernel.on(HookEvent.PRE_MODEL).use(shape_loop_compaction(
+                        compact_every_n_turns=ce.loop_compact_every_n_turns,
+                        keep_recent=ce.loop_compact_keep_recent,
+                        trigger_ratio=ce.loop_compact_trigger_ratio,
                     ))
                 if ce.enable_offload:
                     kernel.on(HookEvent.PRE_MODEL).use(shape_offload(
@@ -594,11 +630,21 @@ class ControlPlane:
                     ))
                 if ce.enable_sliding_window:
                     kernel.on(HookEvent.PRE_MODEL).use(shape_sliding_window(pin_first_n=ce.sliding_window_pin_first_n))
+                if ce.enable_deterministic_compact:
+                    kernel.on(HookEvent.PRE_MODEL).use(shape_deterministic_compact(
+                        trigger_ratio=ce.deterministic_compact_trigger_ratio,
+                        keep_last_n_messages=ce.deterministic_compact_keep_last_n,
+                        preview_chars=ce.deterministic_compact_preview_chars,
+                    ))
                 if ce.enable_auto_compact:
                     kernel.on(HookEvent.PRE_MODEL).use(shape_auto_compact(
-                        summarizer=_make_llm_summarizer(transport_registry, cfg.transport, model),
+                        summarizer=make_llm_summarizer(transport_registry, cfg.transport, model),
                         trigger_ratio=ce.auto_compact_trigger_ratio,
-                        keep_last_n_messages=ce.auto_compact_keep_last_n_messages,
+                        max_tail_ratio=ce.auto_compact_max_tail_ratio,
+                    ))
+                if ce.enable_synthesis_guard:
+                    kernel.on(HookEvent.PRE_MODEL).use(shape_synthesis_guard(
+                        keep_last_n_tool_results=ce.synthesis_guard_keep_last_n,
                     ))
             elif hook_name == "skill_learning":
                 # Deferred: needs the SkillManager + timeline store, both

@@ -14,6 +14,7 @@ RUN apt-get update && \
         postgresql-client \
         curl \
         gnupg \
+        tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js 20 via nodesource

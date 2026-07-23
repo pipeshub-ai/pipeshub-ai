@@ -152,6 +152,7 @@ class ToolSummary:
     short_description: str
     path: str
     tags: tuple[Tag, ...] = ()
+    result_schema: dict[str, Any] | None = None
 
 
 @dataclass
@@ -226,6 +227,10 @@ class Tool(ABC):
     @abstractmethod
     def parameters(self) -> list[ToolParameter]:
         """Declarative parameter schema used for validation and to_schema()."""
+
+    @property
+    def result_schema(self) -> dict[str, Any] | None:
+        return None
 
     @abstractmethod
     async def execute(self, **kwargs: Any) -> ToolOutput:
@@ -333,6 +338,7 @@ class Tool(ABC):
             short_description=self.short_description,
             path=self.path,
             tags=tuple(self.tags),
+            result_schema=self.result_schema,
         )
 
     def summarize_args(self, args: dict[str, Any]) -> str | None:

@@ -85,6 +85,7 @@ class ArtifactRegistryService:
         content: bytes, conversation_id: str | None, description: str = "",
         source_tool: str | None = None, is_temporary: bool = False,
         connector_name: Connectors = Connectors.CODING_SANDBOX,
+        result_schema: dict | None = None,
     ) -> ArtifactMetadata:
         """Create a version-1 artifact. Use `register_output` instead when
         the caller wants "match an existing logical name in this
@@ -94,6 +95,7 @@ class ArtifactRegistryService:
             actor=actor, name=name, artifact_type=artifact_type, mime_type=mime_type,
             content=content, conversation_id=conversation_id, description=description,
             source_tool=source_tool, is_temporary=is_temporary, connector_name=connector_name,
+            result_schema=result_schema,
         )
 
     async def register_output(

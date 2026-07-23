@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from app.agent_loop_lib.agent import observability as obs
 from app.agent_loop_lib.core.messages import (
@@ -348,12 +348,15 @@ async def execute_tool_call(
     if blocked_reason is not None:
         return ToolCallOutcome(result=tr)
 
-    await agent.emit(EventType.TOOL_RESULT, {
+    result_event: dict[str, Any] = {
         "tool": tr.name, "is_error": tr.is_error,
         "content": str(tr.content)[:200], "tool_call_id": call.id,
         "result_summary": _result_summary(agent, runtime, call, tr),
         "status": ToolCallStatus.ERROR if tr.is_error else ToolCallStatus.SUCCESS,
-    })
+    }
+    if tr.artifact_meta is not None:
+        result_event["artifact_id"] = tr.artifact_meta.artifact_id
+    await agent.emit(EventType.TOOL_RESULT, result_event)
 
     if tr.sources:
         await obs.append_timeline(

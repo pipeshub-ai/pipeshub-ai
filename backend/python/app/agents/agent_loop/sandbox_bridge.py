@@ -43,6 +43,7 @@ Three responsibilities:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import mimetypes
 import os
@@ -254,7 +255,9 @@ class PipesHubCodingSandboxTool(CodingSandboxTool):
                     "one saved via artifacts__save_artifact / image generation) to make "
                     "available in this run. Each is staged at input/artifacts/<name> before "
                     "your code runs — read it from there directly; do not regenerate an "
-                    "artifact that already exists. Works whether this call creates a fresh "
+                    "artifact that already exists. Compacted tool-result artifacts "
+                    "(artifact_1, artifact_2, …) are staged at "
+                    "input/artifacts/<id>.json. Works whether this call creates a fresh "
                     "sandbox or reuses one via sandbox_id — call artifacts__list_artifacts "
                     "first (if available) when unsure of the exact name."
                 ),
@@ -306,6 +309,7 @@ def register_coding_sandbox_hooks(
     *,
     max_code_size: int = 50_000,
     allow_network: bool | None = None,
+    artifact_store: Any = None,
 ) -> None:
     """Wire the coding-sandbox PRE/POST hooks onto `hooks`. Explicit here
     (rather than relying on `ControlPlane.start()`'s auto-add) because the
@@ -314,7 +318,13 @@ def register_coding_sandbox_hooks(
 
     `allow_network` should be the SAME resolved value passed to
     `build_coding_sandbox_manager()`/`register_coding_sandbox_tools()` — it
-    only changes the package-policy deny message's wording."""
+    only changes the package-policy deny message's wording.
+
+    `artifact_store` is the same ``InMemoryArtifactStore`` instance used by
+    ``shape_artifact_registration``.  When provided,
+    ``coding_sandbox_artifact_staging`` checks it FIRST for
+    ``input_artifacts`` refs (e.g. ``artifact_4`` from context-compacted tool
+    results) before falling back to ``ArtifactRegistryService``."""
     network_enabled = sandbox_network_enabled() if allow_network is None else allow_network
     hooks.on(HookEvent.PRE_TOOL_USE).use(
         CODING_SANDBOX_PATH_PATTERN, coding_sandbox_safety(max_code_size=max_code_size),
@@ -323,7 +333,7 @@ def register_coding_sandbox_hooks(
         CODING_SANDBOX_PATH_PATTERN, coding_sandbox_package_policy(allow_network=network_enabled),
     )
     hooks.on(HookEvent.PRE_TOOL_USE).use(
-        CODING_SANDBOX_PATH_PATTERN, coding_sandbox_artifact_staging(context),
+        CODING_SANDBOX_PATH_PATTERN, coding_sandbox_artifact_staging(context, inmemory_store=artifact_store),
     )
     hooks.on(HookEvent.POST_TOOL_USE).use(
         CODING_SANDBOX_PATH_PATTERN, coding_sandbox_artifact_bridge(context, manager),
@@ -422,7 +432,7 @@ def coding_sandbox_result_propagation():
     return _middleware
 
 
-def coding_sandbox_artifact_staging(context: "AgentContext"):
+def coding_sandbox_artifact_staging(context: "AgentContext", *, inmemory_store: Any = None):
     """PRE_TOOL_USE middleware, `run_code` only:
 
     1. Persists the `code` string as a versioned CODE artifact through
@@ -451,6 +461,11 @@ def coding_sandbox_artifact_staging(context: "AgentContext"):
        bytes are fetched; an unknown or unauthorized ref is reported back
        (not silently dropped) via `ctx.metadata`, surfaced in the tool
        response by the POST hook.
+
+    `inmemory_store` is the ``InMemoryArtifactStore`` from context
+    engineering's artifact registration.  Refs like ``artifact_4`` are
+    tried here FIRST — a fast in-process lookup — before falling back to
+    ``ArtifactRegistryService`` (blob-backed, MongoDB/ArangoDB).
     """
 
     async def _middleware(ctx: ToolCallContext, next_fn) -> None:
@@ -460,16 +475,14 @@ def coding_sandbox_artifact_staging(context: "AgentContext"):
             await _capture_code_artifact(context, registry, ctx)
 
         refs = ctx.tool_input.get("input_artifacts")
-        if not refs or registry is None or not context.conversation_id:
+        has_registry = registry is not None and context.conversation_id
+        has_inmemory = inmemory_store is not None
+        if not refs or (not has_registry and not has_inmemory):
             logger.info(
                 "coding_sandbox_artifact_staging: no input_artifacts to stage "
-                "(refs=%s registry=%s conversation_id=%s)",
-                bool(refs), registry is not None, context.conversation_id,
+                "(refs=%s registry=%s inmemory=%s conversation_id=%s)",
+                bool(refs), registry is not None, has_inmemory, context.conversation_id,
             )
-            # Always call, even with nothing to stage — a falsy `files`
-            # is a no-op inside `set_staged_input_files_for_task`, but the
-            # call site staying unconditional means this hook never
-            # accidentally relies on skipping it for correctness.
             set_staged_input_files_for_task(None)
             await next_fn()
             return
@@ -478,7 +491,9 @@ def coding_sandbox_artifact_staging(context: "AgentContext"):
             "coding_sandbox_artifact_staging: resolving %d input_artifact ref(s): %s",
             len(refs), refs,
         )
-        files, resolved, missing = await _resolve_input_artifacts(context, registry, refs)
+        files, resolved, missing = await _resolve_input_artifacts(
+            context, registry, refs, inmemory_store=inmemory_store,
+        )
         logger.info(
             "coding_sandbox_artifact_staging: resolved %d artifact(s) (%s), "
             "missing %d ref(s) (%s), staging %d file(s) totalling %d bytes",
@@ -524,11 +539,16 @@ async def _capture_code_artifact(context: "AgentContext", registry: Any, ctx: To
 
 async def _resolve_input_artifacts(
     context: "AgentContext", registry: Any, refs: list[str],
+    *, inmemory_store: Any = None,
 ) -> tuple[dict[str, bytes], list[dict[str, Any]], list[str]]:
     """Resolve+fetch every ref in `refs`, permission-checked per-ref through
     the registry. Returns `(sandbox_files, resolved_info, missing_refs)` —
     `sandbox_files` is ready for `stage_input_files()`; `resolved_info` and
-    `missing_refs` are model-visible reporting, never raw bytes/URLs."""
+    `missing_refs` are model-visible reporting, never raw bytes/URLs.
+
+    When `inmemory_store` is provided, refs are tried there FIRST (fast,
+    in-process lookup for context-compacted tool results like ``artifact_4``)
+    before falling back to ``ArtifactRegistryService`` (blob-backed)."""
     actor = Actor(org_id=context.org_id, user_id=context.user_id)
     files: dict[str, bytes] = {}
     resolved: list[dict[str, Any]] = []
@@ -536,6 +556,53 @@ async def _resolve_input_artifacts(
     for ref in refs:
         if not isinstance(ref, str) or not ref.strip():
             logger.debug("_resolve_input_artifacts: skipping empty/non-str ref: %r", ref)
+            continue
+
+        # --- Try InMemoryArtifactStore first (context-compacted tool results) ---
+        if inmemory_store is not None:
+            try:
+                content_str = await inmemory_store.get(ref)
+            except Exception:
+                logger.debug("_resolve_input_artifacts: inmemory_store.get(%r) raised", ref, exc_info=True)
+                content_str = None
+            if content_str is not None:
+                staged_path = f"input/artifacts/{ref}.json"
+                files[staged_path] = content_str.encode("utf-8")
+                resolved_entry: dict[str, Any] = {
+                    "ref": ref, "artifact_id": ref, "name": ref,
+                    "version": 0, "path": staged_path,
+                }
+                schema = (
+                    inmemory_store.get_schema(ref)
+                    if hasattr(inmemory_store, "get_schema") else None
+                )
+                tool_name = (
+                    inmemory_store.get_tool_name(ref)
+                    if hasattr(inmemory_store, "get_tool_name") else None
+                )
+                if schema:
+                    resolved_entry["result_schema"] = schema
+                    schema_json = json.dumps({
+                        "artifact_id": ref,
+                        "name": ref,
+                        "tool_name": tool_name or "",
+                        "data_file": staged_path,
+                        "schema": schema,
+                    }, indent=2)
+                    schema_path = f"input/artifacts/{ref}.schema.json"
+                    files[schema_path] = schema_json.encode("utf-8")
+                    resolved_entry["schema_path"] = schema_path
+                resolved.append(resolved_entry)
+                logger.info(
+                    "_resolve_input_artifacts: ref %r resolved from inmemory_store "
+                    "(%d bytes, schema=%s) -> %s",
+                    ref, len(content_str), bool(schema), staged_path,
+                )
+                continue
+
+        # --- Fall back to ArtifactRegistryService (blob-backed) ---
+        if registry is None:
+            missing.append(ref)
             continue
         try:
             metadata: ArtifactMetadata = await registry.resolve(
@@ -560,10 +627,22 @@ async def _resolve_input_artifacts(
             metadata.version, len(content), staged_path,
         )
         files[staged_path] = content
-        resolved.append({
+        resolved_entry: dict[str, Any] = {
             "ref": ref, "artifact_id": metadata.artifact_id, "name": metadata.name,
             "version": metadata.version, "path": staged_path,
-        })
+        }
+        if metadata.result_schema:
+            resolved_entry["result_schema"] = metadata.result_schema
+            schema_json = json.dumps({
+                "artifact_id": metadata.artifact_id,
+                "name": metadata.name,
+                "data_file": staged_path,
+                "schema": metadata.result_schema,
+            }, indent=2)
+            schema_path = f"input/artifacts/{metadata.name}.schema.json"
+            files[schema_path] = schema_json.encode("utf-8")
+            resolved_entry["schema_path"] = schema_path
+        resolved.append(resolved_entry)
     return files, resolved, missing
 
 

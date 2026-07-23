@@ -4,6 +4,7 @@ from app.agent_loop_lib.core.types import MessageRole
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
 _MARKER = "\n[…truncated"
+_OWN_SUFFIX = "by budget_reduction]"
 
 
 def shape_budget_reduction(max_result_chars: int = 64_000):
@@ -22,14 +23,24 @@ def shape_budget_reduction(max_result_chars: int = 64_000):
             if msg.role != MessageRole.TOOL or not isinstance(msg.content, str):
                 shaped.append(msg)
                 continue
-            # Already shaped by a previous pass (or another instance) —
-            # leave as-is so re-running the pipeline is idempotent.
-            if _MARKER in msg.content or len(msg.content) <= max_result_chars:
+            # Artifact-bearing messages have their full content safely stored
+            # in the artifact store — truncate here like any other tool
+            # result.  L2 artifact_compaction handles turn-aware replacement
+            # with compact references on later turns; the model can call
+            # retrieve_artifact_content for the full data.
+            if len(msg.content) <= max_result_chars:
+                shaped.append(msg)
+                continue
+            # Skip only messages already truncated by THIS shaper (avoid
+            # double-truncation on re-runs).  Foreign truncation markers
+            # (e.g. from retrieve_artifact_content) do NOT grant a pass —
+            # those messages can still be far over max_result_chars.
+            if _OWN_SUFFIX in msg.content:
                 shaped.append(msg)
                 continue
             truncated = (
                 msg.content[:max_result_chars]
-                + f"{_MARKER} {len(msg.content) - max_result_chars} chars by budget_reduction]"
+                + f"{_MARKER} {len(msg.content) - max_result_chars} chars {_OWN_SUFFIX}"
             )
             shaped.append(msg.model_copy(update={"content": truncated}))
         ctx.messages = shaped

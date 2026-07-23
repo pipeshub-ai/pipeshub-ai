@@ -25,23 +25,48 @@ _TOOL_CALL_TRUNCATION_NOTE = (
     "before calling task_complete.]"
 )
 
+_TOOL_CALL_TRUNCATION_ESCALATED = (
+    "[Tool call not executed: your response was cut off at the "
+    "maximum output-token limit AGAIN. You have already been "
+    "truncated multiple times in a row — you MUST change your "
+    "approach:\n"
+    "- Split your code into SMALLER pieces across multiple "
+    "run_code calls (e.g. build part 1, then part 2)\n"
+    "- Reduce the amount of content in a single tool call\n"
+    "- Write a shorter, simpler version\n"
+    "Do NOT retry the same long output — it will be truncated again.]"
+)
+
 _TEXT_ONLY_CONTINUATION_NOTE = (
     "[System: your previous response was cut off at the maximum "
     "output-token limit and is incomplete. Continue from where "
     "you stopped, keeping the remainder concise.]"
 )
 
+_CONSECUTIVE_TRUNCATION_THRESHOLD = 2
+
 
 def default_truncation_recovery():
+    consecutive_truncations = 0
+
     async def _middleware(ctx: ModelResponseContext, next_fn) -> None:
+        nonlocal consecutive_truncations
         if getattr(ctx.response, "truncated", False):
+            consecutive_truncations += 1
             if ctx.tool_calls:
+                note = (
+                    _TOOL_CALL_TRUNCATION_ESCALATED
+                    if consecutive_truncations > _CONSECUTIVE_TRUNCATION_THRESHOLD
+                    else _TOOL_CALL_TRUNCATION_NOTE
+                )
                 ctx.recovery_tool_results = [
-                    CoreToolResult(tool_call_id=c.id, name=c.name, content=_TOOL_CALL_TRUNCATION_NOTE, is_error=True)
+                    CoreToolResult(tool_call_id=c.id, name=c.name, content=note, is_error=True)
                     for c in ctx.tool_calls
                 ]
             else:
                 ctx.recovery_message = UserMessage(content=_TEXT_ONLY_CONTINUATION_NOTE, injected=True)
+        else:
+            consecutive_truncations = 0
         await next_fn()
 
     return _middleware

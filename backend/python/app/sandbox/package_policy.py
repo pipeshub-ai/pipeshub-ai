@@ -110,6 +110,7 @@ _PIPESHUB_PYTHON_EXTRAS: frozenset[str] = frozenset({
     "tabulate",
     "plotly",
     "kaleido",
+    "tzdata",
 })
 
 #: Default Python allowlist (before operator env extension).

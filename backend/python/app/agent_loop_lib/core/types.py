@@ -17,6 +17,7 @@ from app.agent_loop_lib.core.messages import (
     ThinkingPart,
     ToolCall,
     ToolMessage,
+    ToolMessageMeta,
     UserMessage,
 )
 from app.agent_loop_lib.core.responses import (
@@ -45,6 +46,7 @@ __all__ = [
     "SystemMessage",
     "UserMessage",
     "AssistantMessage",
+    "ToolMessageMeta",
     "ToolMessage",
     "Message",
     "Confidence",
@@ -80,6 +82,7 @@ class ToolResult(BaseModel):
     content: Any
     is_error: bool = False
     sources: list[Source] = Field(default_factory=list)
+    artifact_meta: ToolMessageMeta | None = None
 
 
 class Confidence(str, Enum):

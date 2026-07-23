@@ -325,6 +325,7 @@ class ArtifactManager:
                     "artifact_type": a.artifact_type.value,
                     "version": a.version,
                     "mime_type": a.mime_type,
+                    "source_tool": a.source_tool,
                     "description": a.description,
                     "derived_from_code_artifact_id": a.derived_from_code_artifact_id,
                     "derived_from_code_version": a.derived_from_code_version,

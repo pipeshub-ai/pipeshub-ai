@@ -46,14 +46,36 @@ class ContextBudget(BaseModel):
     call goes out — derived from the model's real context window (see
     modules/providers/budget/pricing.py) minus headroom for the model's own output, not an
     arbitrary flat number.
+
+    `reserved_artifact_tokens` carves out a dedicated budget for artifact
+    content that may be injected back into context on demand (via
+    ``retrieve_artifact_content``).  When most tools declare
+    ``result_schema``, this can be lowered significantly because schema
+    proxies replace full data in context.
     """
 
     max_tokens: int
     model: str | None = None
     reserved_output_tokens: int = 8_000
+    reserved_artifact_tokens: int = 0
+
+    @property
+    def effective_max_tokens(self) -> int:
+        """Budget available to the shaping pipeline after all reserves."""
+        return max(self.max_tokens - self.reserved_artifact_tokens, 1_000)
 
     @classmethod
-    def for_model(cls, model: str | None, reserved_output_tokens: int = 8_000) -> "ContextBudget":
+    def for_model(
+        cls,
+        model: str | None,
+        reserved_output_tokens: int = 8_000,
+        reserved_artifact_tokens: int = 0,
+    ) -> "ContextBudget":
         window = get_context_window(model)
         max_tokens = max(window - reserved_output_tokens, 1_000)
-        return cls(max_tokens=max_tokens, model=model, reserved_output_tokens=reserved_output_tokens)
+        return cls(
+            max_tokens=max_tokens,
+            model=model,
+            reserved_output_tokens=reserved_output_tokens,
+            reserved_artifact_tokens=reserved_artifact_tokens,
+        )

@@ -210,6 +210,7 @@ class ToolExecutor:
             content=final.data if final.success else (final.error or "tool execution failed"),
             is_error=not final.success,
             sources=list(final.sources),
+            artifact_meta=post_ctx.metadata.get("artifact_meta"),
         )
 
     async def _run(

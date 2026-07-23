@@ -307,7 +307,9 @@ const toolResultsFromParts = (
   tool_name?: string;
   args?: Record<string, unknown>;
   result: string;
+  result_summary?: string;
   status: 'success' | 'error';
+  artifact_id?: string;
 }> => {
   if (!parts || parts.length === 0) {
     return [];
@@ -334,7 +336,9 @@ const toolResultsFromParts = (
         tool_name: part.toolName,
         ...(args && { args }),
         result: part.resultSummary || part.resultPreview || '',
+        ...(part.resultSummary && { result_summary: part.resultSummary }),
         status: part.status === 'failed' ? ('error' as const) : ('success' as const),
+        ...(part.artifactId && { artifact_id: part.artifactId }),
       };
     });
 };

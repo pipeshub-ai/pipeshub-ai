@@ -54,14 +54,31 @@ from app.agent_loop_lib.core.messages import (
     Message,
     ToolCall,
     ToolMessage,
+    ToolMessageMeta,
     UserMessage,
 )
 from app.agent_loop_lib.hooks.events import HookEvent
+from app.agent_loop_lib.hooks.middleware.builtin.artifact_compaction import shape_artifact_compaction
+from app.agent_loop_lib.hooks.middleware.builtin.artifact_registration import (
+    shape_artifact_registration,
+)
+from app.agent_loop_lib.hooks.middleware.builtin._message_boundaries import (
+    shape_tool_pairing_repair,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.auto_compact import (
+    make_llm_summarizer,
+    shape_auto_compact,
+)
+from app.agents.agent_loop.artifact_store import build_artifact_store
 from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import shape_budget_reduction
+from app.agent_loop_lib.hooks.middleware.builtin.deterministic_compact import shape_deterministic_compact
+from app.agent_loop_lib.hooks.middleware.builtin.loop_compaction import shape_loop_compaction
 from app.agent_loop_lib.hooks.middleware.builtin.sliding_window import shape_sliding_window
+from app.agent_loop_lib.hooks.middleware.builtin.synthesis_guard import shape_synthesis_guard
 from app.agent_loop_lib.hooks.middleware.builtin.tool_result_clearing import (
     shape_tool_result_clearing,
 )
+from app.agent_loop_lib.tools.builtin.data.retrieve_artifact import RetrieveArtifactContentTool
 from app.agent_loop_lib.events.base import CompositeEmitter
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
@@ -138,6 +155,13 @@ logger = logging.getLogger(__name__)
 # tool_system.py / react_agent_node's `recursion_limit`); kept as one named
 # constant here rather than a magic number in `create()`.
 _MAX_TURNS = 15
+
+# Phase-1 auto-compact (gentle): protects up to 70% of budget in the tail,
+# summarizes only the oldest portion. Phase-2 (aggressive): if still over
+# budget, shrinks tail to 40%, forcing more into the summary.
+_AUTO_COMPACT_TRIGGER_RATIO = 0.85
+_AUTO_COMPACT_PHASE1_TAIL_RATIO = 0.70
+_AUTO_COMPACT_PHASE2_TAIL_RATIO = 0.40
 
 
 def _composed_agents_enabled() -> bool:
@@ -269,7 +293,13 @@ class PipesHubAgentFactory:
                     "(org_id=%s)", len(skill_manager.catalog_snapshot()), context.org_id,
                 )
 
-        hooks = self._build_hooks(context, sandbox_manager, allow_network=network_enabled)
+        artifact_store = build_artifact_store(context)
+        hooks = self._build_hooks(
+            context, sandbox_manager, allow_network=network_enabled,
+            artifact_store=artifact_store, tool_registry=tool_registry,
+            transport_registry=transport_registry, model_name=model_name,
+        )
+        tool_registry.register_tool(RetrieveArtifactContentTool(store=artifact_store))
         if skill_manager is not None:
             register_skill_preloading(hooks, skill_manager)
         # Lazy-toolset preloading (env+threshold gated — see
@@ -597,33 +627,70 @@ class PipesHubAgentFactory:
     @staticmethod
     def _build_hooks(
         context: "AgentContext", sandbox_manager: Any = None, *, allow_network: bool = False,
+        artifact_store: Any = None, tool_registry: Any = None,
+        transport_registry: Any = None, model_name: str = "",
     ) -> HookRegistry:
-        """Phase 5's five hooks, wired onto a fresh `HookRegistry` (never a
+        """Phase 5's hooks, wired onto a fresh `HookRegistry` (never a
         shared/global one — see that phase's hook docstrings for why
         per-request instances matter for `ToolErrorTracker`/`CitationCollector`
         state isolation across concurrent requests)."""
         hooks = HookRegistry()
 
-        # Context-shaping (PRE_MODEL, cheapest-first — same ordering
-        # `ControlPlane.start()` uses for its own `context_engine` hooks):
-        # this adapter path builds its own `HookRegistry` directly rather
-        # than going through `ControlPlane`, so none of that pipeline
-        # applies unless wired here too. Multi-tool turns with large
-        # results (e.g. a Jira search returning 50+ tickets) would
-        # otherwise grow the outgoing context unbounded within a single
-        # request. `offload`/`auto_compact` are deliberately NOT wired
-        # here — `auto_compact` needs an LLM summarizer bound to this
-        # request's transport, which would need threading the transport
-        # registry/model name into this staticmethod; these three (all
-        # pure-Python, no LLM call) already cover the common blow-up cases.
-        # `ContextBudget` itself needs no wiring here — `Agent.step()`
-        # (`agent/__init__.py`) computes it fresh every turn via
-        # `ContextBudget.for_model(spec.model.model)` regardless of caller.
-        hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction())
-        hooks.on(HookEvent.PRE_MODEL).use(shape_tool_result_clearing(
+        # --- POST_TOOL_USE: artifact registration (Phase 1 of two-phase compaction) ---
+        # Large tool results (>2K tokens) are persisted in the artifact store
+        # and annotated with ToolMessageMeta.  Full content stays for the
+        # current turn; PRE_MODEL shapers below compact it on later turns.
+        if artifact_store is not None:
+            def _resolve_schema(tool_name: str):
+                if tool_registry is None:
+                    return None
+                try:
+                    tool = tool_registry.resolve_by_name(tool_name)
+                    return getattr(tool, "result_schema", None)
+                except Exception:
+                    return None
+
+            hooks.on(HookEvent.POST_TOOL_USE).use(
+                shape_artifact_registration(
+                    store=artifact_store,
+                    resolve_schema=_resolve_schema,
+                    threshold_tokens=4_000,
+                )
+            )
+
+        # --- PRE_MODEL context-shaping pipeline (cheapest-first, L1→L9) ---
+        # Same ordering ControlPlane.start() uses for its context_engine.
+        # L1–L6 are pure-Python (no LLM call). L7a/L7b are LLM-backed
+        # auto-compact — two phases so old conversation history is
+        # summarized first (gentle, keep 12) and old turns second
+        # (aggressive, keep 6) only when the gentle pass wasn't enough.
+        # L9 is the safety-net: validates tool_call/tool_result pairing
+        # after all shapers ran — catches any orphans from shaper
+        # interactions or future shapers that don't use safe_tail_boundary.
+        hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction())           # L1
+        hooks.on(HookEvent.PRE_MODEL).use(shape_artifact_compaction())        # L2
+        hooks.on(HookEvent.PRE_MODEL).use(shape_tool_result_clearing(         # L3
             protected_tool_names=frozenset({"create_plan", "critique_plan"}),
         ))
-        hooks.on(HookEvent.PRE_MODEL).use(shape_sliding_window())
+        hooks.on(HookEvent.PRE_MODEL).use(shape_loop_compaction())            # L4
+        hooks.on(HookEvent.PRE_MODEL).use(shape_sliding_window())             # L5
+        hooks.on(HookEvent.PRE_MODEL).use(shape_deterministic_compact())      # L6
+
+        if transport_registry is not None:
+            summarizer = make_llm_summarizer(transport_registry, "langchain", model_name)
+            hooks.on(HookEvent.PRE_MODEL).use(shape_auto_compact(             # L7a
+                summarizer=summarizer,
+                trigger_ratio=_AUTO_COMPACT_TRIGGER_RATIO,
+                max_tail_ratio=_AUTO_COMPACT_PHASE1_TAIL_RATIO,
+            ))
+            hooks.on(HookEvent.PRE_MODEL).use(shape_auto_compact(             # L7b
+                summarizer=summarizer,
+                trigger_ratio=_AUTO_COMPACT_TRIGGER_RATIO,
+                max_tail_ratio=_AUTO_COMPACT_PHASE2_TAIL_RATIO,
+            ))
+
+        hooks.on(HookEvent.PRE_MODEL).use(shape_synthesis_guard())            # L8
+        hooks.on(HookEvent.PRE_MODEL).use(shape_tool_pairing_repair())       # L9
 
         # LLM transport retry (429/5xx/network) with SSE "retrying..." status
         # feedback — see retry_with_status.py's docstring for why this lives
@@ -667,7 +734,10 @@ class PipesHubAgentFactory:
         # auto-add there does not apply — it, and the artifact/package-policy
         # bridge hooks, must be wired explicitly here.
         if sandbox_manager is not None:
-            register_coding_sandbox_hooks(hooks, context, sandbox_manager, allow_network=allow_network)
+            register_coding_sandbox_hooks(
+                hooks, context, sandbox_manager,
+                allow_network=allow_network, artifact_store=artifact_store,
+            )
 
         return hooks
 
@@ -780,16 +850,45 @@ def _convert_conversation_turn(turn: dict[str, Any]) -> list[Message]:
         call_id = str(entry.get("tool_id") or f"history_{i}")
         args = entry.get("args")
         result = entry.get("result", "")
+        tool_name = str(entry.get("tool_name") or "unknown_tool")
         tool_calls.append(ToolCall(
             id=call_id,
-            name=str(entry.get("tool_name") or "unknown_tool"),
+            name=tool_name,
             arguments=args if isinstance(args, dict) else {},
         ))
         result_str = result if isinstance(result, str) else json.dumps(result, default=str)
+        summary_str = entry.get("result_summary") or ""
+
+        artifact_id = entry.get("artifact_id")
+        artifact_meta = None
+        if isinstance(artifact_id, str) and artifact_id:
+            display_summary = summary_str or (result_str[:200] if result_str else "")
+            artifact_meta = ToolMessageMeta(
+                artifact_id=artifact_id,
+                summary=display_summary,
+                tool_name=tool_name,
+                tool_args=args if isinstance(args, dict) else None,
+                result_schema=None,
+                original_token_count=0,
+                turn_index=-1,
+            )
+            compact_lines = [
+                f"[artifact:{artifact_id}]",
+                f"tool: {tool_name}",
+            ]
+            if display_summary:
+                compact_lines.append(f"summary: {display_summary}")
+            compact_lines.append(
+                f'hint: Use retrieve_artifact_content(artifact_id="{artifact_id}") '
+                "to read, filter, and curate this data before using it"
+            )
+            result_str = "\n".join(compact_lines)
+
         tool_messages.append(ToolMessage(
             content=_scrub_legacy_system_note(result_str),
             tool_call_id=call_id,
             is_error=entry.get("status") == "error",
+            artifact_meta=artifact_meta,
         ))
 
     if tool_calls:
