@@ -63,6 +63,7 @@ from app.models.entities import (
     TicketRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import NotificationSeverity, NotificationType
 
 
 # ===========================================================================
@@ -260,12 +261,15 @@ class TestInitCoverage:
     @pytest.mark.asyncio
     async def test_init_returns_false_on_build_error(self):
         connector = _make_connector()
+        connector.notify = AsyncMock()
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
             MockJiraClient.build_from_services = AsyncMock(side_effect=Exception("network fail"))
 
             result = await connector.init()
             assert result is False
+            # Setup path: FE gets the error; init must not also inbox-notify.
+            connector.notify.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_init_multi_site_raises_connector_init_error(self):
@@ -511,14 +515,18 @@ class TestRunSync:
 
     @pytest.mark.asyncio
     async def test_run_sync_raises_when_init_fails(self):
-        """Regression: ``init()`` returning False must raise."""
+        """Regression: ``init()`` returning False must raise and notify once."""
         connector = _make_connector()
         connector.data_source = None
         connector.init = AsyncMock(return_value=False)
+        connector.notify = AsyncMock()
 
-        with pytest.raises(RuntimeError, match="init failed"):
+        with pytest.raises(RuntimeError, match="init failed") as exc_info:
             await connector.run_sync()
         connector.init.assert_awaited_once()
+        assert getattr(exc_info.value, "_notification_sent", False) is True
+        connector.notify.assert_awaited_once()
+        assert connector.notify.await_args.kwargs["type"] == NotificationType.CONNECTOR_AUTH_ERROR
 
     @pytest.mark.asyncio
     async def test_full_sync_with_users_and_projects(self):
@@ -556,6 +564,52 @@ class TestRunSync:
         connector._sync_user_groups.assert_awaited_once()
         connector._fetch_projects.assert_awaited_once()
         connector._sync_all_project_issues.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_run_sync_notifies_when_any_project_fails(self):
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.site_url = "https://company.atlassian.net"
+        connector.notify = AsyncMock()
+
+        user = _make_app_user()
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[user])
+        connector._fetch_users = AsyncMock(return_value=[user])
+        connector._sync_user_groups = AsyncMock(return_value={})
+
+        mock_rg = MagicMock()
+        mock_rg.short_name = "PROJ"
+        mock_rg.external_group_id = "proj-id-1"
+        connector._fetch_projects = AsyncMock(return_value=(
+            [(mock_rg, [])],
+            [{"key": "PROJ", "lead": None}],
+        ))
+        connector._sync_project_roles = AsyncMock()
+        connector._sync_project_lead_roles = AsyncMock()
+        connector._get_issues_sync_checkpoint = AsyncMock(return_value=None)
+        connector._sync_all_project_issues = AsyncMock(return_value={
+            "total_synced": 2,
+            "new_count": 1,
+            "updated_count": 1,
+            "failed_count": 1,
+            "failed_project_keys": ["KAN"],
+        })
+        connector._update_issues_sync_checkpoint = AsyncMock()
+        connector._handle_issue_deletions = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(None, None),
+        ):
+            await connector.run_sync()
+
+        connector.notify.assert_awaited_once()
+        notify_kwargs = connector.notify.await_args.kwargs
+        assert notify_kwargs["type"] == NotificationType.CONNECTOR_SYNC_ERROR
+        assert notify_kwargs["severity"] == NotificationSeverity.ERROR
+        assert "KAN" in notify_kwargs["message"]
+        connector._handle_issue_deletions.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_run_sync_initializes_if_no_datasource(self):
@@ -1485,6 +1539,8 @@ class TestSyncAllProjectIssues:
             [(mock_rg1, []), (mock_rg2, [])], [], None
         )
         assert result["total_synced"] == 3
+        assert result["failed_count"] == 1
+        assert result["failed_project_keys"] == ["P1"]
 
 
 # ===========================================================================
