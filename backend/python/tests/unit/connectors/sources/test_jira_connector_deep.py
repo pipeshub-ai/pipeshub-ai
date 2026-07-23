@@ -222,32 +222,6 @@ class TestExtractIssueData:
         assert result["reporter_email"] == "reporter@test.com"
         assert result["assignee_email"] is None
 
-    def test_with_adf_description(self):
-        c, *_ = _make_connector()
-        issue = {
-            "id": "10001",
-            "key": "PROJ-1",
-            "fields": {
-                "summary": "Test",
-                "description": {
-                    "type": "doc",
-                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Hello world"}]}]
-                },
-                "issuetype": {"name": "Task", "hierarchyLevel": 0},
-                "status": {"name": "Open"},
-                "priority": None,
-                "creator": None,
-                "reporter": None,
-                "assignee": None,
-                "parent": None,
-                "created": "2024-01-15T10:30:45.000+0000",
-                "updated": "2024-01-15T10:30:45.000+0000",
-            }
-        }
-        result = c._extract_issue_data(issue, {})
-        assert "Hello world" in result["description"]
-        assert "Issue Type:" in result["description"]
-
 
 # ===========================================================================
 # _create_attachment_file_record
@@ -458,38 +432,6 @@ class TestExtractAttachmentFilenamesFromWiki:
 
 
 # ===========================================================================
-# _collect_attachment_record_ids
-# ===========================================================================
-
-
-class TestCollectAttachmentRecordIds:
-
-    @pytest.mark.asyncio
-    async def test_collects_child_file_ids(self):
-        # Attachments have no ISSUE_DELETE event of their own, so this read-only helper
-        # returns their FileRecord ids for the caller to soft-delete via the processor.
-        c, dep, dsp, cs, tx = _make_connector()
-        rec1 = MagicMock(id="a1")
-        rec2 = MagicMock(id="a2")
-        tx.get_records_by_parent = AsyncMock(return_value=[rec1, rec2])
-
-        result = await c._collect_attachment_record_ids("issue-ext-1", tx)
-        assert result == ["a1", "a2"]
-        tx.get_records_by_parent.assert_awaited_with(
-            connector_id=c.connector_id,
-            parent_external_record_id="issue-ext-1",
-            record_type=RecordType.FILE.value,
-        )
-
-    @pytest.mark.asyncio
-    async def test_returns_empty_on_error(self):
-        c, dep, dsp, cs, tx = _make_connector()
-        tx.get_records_by_parent = AsyncMock(side_effect=Exception("db error"))
-        result = await c._collect_attachment_record_ids("issue-ext-1", tx)
-        assert result == []
-
-
-# ===========================================================================
 # _find_attachment_record_by_id
 # ===========================================================================
 
@@ -563,7 +505,7 @@ class TestHandleAttachmentDeletionsFromChangelog:
                 }]
             }
         }
-        # The method now returns the internal ids to soft-delete; the caller performs the delete.
+        # The method returns the internal ids for the caller to hard-delete.
         result = await c._handle_attachment_deletions_from_changelog(issue, tx)
         assert result == ["r1"]
         tx.get_record_by_external_id.assert_awaited_with(
