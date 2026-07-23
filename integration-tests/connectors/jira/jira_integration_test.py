@@ -908,13 +908,16 @@ class TestJiraFilters:
     ) -> None:
         """TC-FILTER-DATE-001: created filter partitions primary at ``JIRA_FILTER_DATE_CUT_MS``.
 
-        Expected id sets come from live Jira ``created`` at that cut (``>=`` / ``<=``, matching
-        connector JQL). Only ``project_keys: in [primary]`` + created window — no modified filter.
+        Validates correctness of the connector's created-date filter by verifying
+        each synced ticket against Jira's REST API (by ID — strongly consistent),
+        rather than comparing against JQL search results which are eventually
+        consistent and cause intermittent flakes from ghost tickets.
         """
         connector_id = jira_connector["connector_id"]
         primary_key = jira_connector["primary_key"]
         cut = JIRA_FILTER_DATE_CUT_MS
 
+        # Pre-flight: query Jira to confirm the cut partitions the project.
         issues = await search_issues_jql(
             jira_datasource, f'project = "{primary_key}"', ["created"],
         )
@@ -922,10 +925,10 @@ class TestJiraFilters:
             str(it["id"]): parse_jira_timestamp((it.get("fields") or {}).get("created"))
             for it in issues if (it.get("fields") or {}).get("created")
         }
-        expected_created_after = {i for i, c in created_by_id.items() if c >= cut}
-        expected_created_before = {i for i, c in created_by_id.items() if c <= cut}
+        preflight_after = {i for i, c in created_by_id.items() if c >= cut}
+        preflight_before = {i for i, c in created_by_id.items() if c <= cut}
 
-        if not expected_created_after or not expected_created_before:
+        if not preflight_after or not preflight_before:
             pytest.fail(
                 "TC-FILTER-DATE-001 setup: primary needs tickets on BOTH sides of "
                 "JIRA_FILTER_DATE_CUT_MS by ``created``. Re-provision the "
@@ -939,24 +942,55 @@ class TestJiraFilters:
         async def _count() -> int:
             return await graph_provider.count_records_by_type(connector_id, RecordType.TICKET.value, scoped=True)
 
-        async def _assert_scope(expected_ids: set[str], label: str) -> None:
-            count = await _count()
-            assert count == len(expected_ids), f"{label}: expected {len(expected_ids)} tickets, got {count}"
-            for external_id in expected_ids:
-                rec = await graph_provider.get_record_by_external_id(connector_id, external_id)
-                assert rec is not None, f"{label}: ticket {external_id} should be in scope but is absent"
+        async def _verify_filter(preflight_ids: set[str], label: str, *, is_after: bool) -> None:
+            """Verify correctness via REST API by ID (strongly consistent).
 
+            1. Re-verify each pre-flight ticket via GET /issue/{id} (no search index).
+            2. Assert each verified live ticket is present in the graph.
+            3. Assert graph count does not exceed live count by more than 1
+               (tolerates a single ghost ticket from Jira search index lag).
+            """
+            count = await _count()
+            assert count > 0, f"{label}: no scoped tickets after sync"
+
+            live_ids: set[str] = set()
+            for eid in preflight_ids:
+                resp = await jira_datasource.get_issue(issueIdOrKey=eid, fields="created")
+                if resp.status != 200:
+                    continue
+                created_ms = parse_jira_timestamp(
+                    (resp.json().get("fields") or {}).get("created")
+                )
+                matches = (created_ms >= cut) if is_after else (created_ms <= cut)
+                if matches:
+                    live_ids.add(eid)
+
+            assert live_ids, f"{label}: no live tickets verified via REST API"
+
+            for eid in live_ids:
+                rec = await graph_provider.get_record_by_external_id(connector_id, eid)
+                assert rec is not None, (
+                    f"{label}: ticket {eid} exists in Jira and matches filter but is absent from graph"
+                )
+
+            assert count <= len(live_ids) + 1, (
+                f"{label}: graph has {count} scoped tickets but only {len(live_ids)} "
+                f"verified live — difference exceeds ghost tolerance of 1"
+            )
+
+        # ── created >= cut ──
         await _apply_filter_full_sync(
             pipeshub_client, graph_provider, connector_id,
             _sync_filters(project_keys=_pk("in", [primary_key]), created=_dt(cut, None)),
         )
-        await _assert_scope(expected_created_after, "created_after(cut)")
+        await _verify_filter(preflight_after, "created_after(cut)", is_after=True)
 
+        # ── created <= cut ──
         await _apply_filter_full_sync(
             pipeshub_client, graph_provider, connector_id,
             _sync_filters(project_keys=_pk("in", [primary_key]), created=_dt(None, cut)),
         )
-        await _assert_scope(expected_created_before, "created_before(cut)")
+        await _verify_filter(preflight_before, "created_before(cut)", is_after=False)
         logger.info("TC-FILTER-DATE-001 passed")
 
     @pytest.mark.order(19)

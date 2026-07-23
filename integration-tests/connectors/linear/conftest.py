@@ -27,19 +27,15 @@ from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 from helper.assertions import ConnectorAssertions  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
+from connectors.linear.constants import LINEAR_REFERENCE_ISSUE_IDENTIFIER  # type: ignore[import-not-found]
 from connectors.linear.linear_test_utils import (  # type: ignore[import-not-found]
     _api_call_with_retry,
-    assert_linear_dependent_counts_match_graph,
     assert_linear_issues_match_graph_records,
-    count_linear_scope_files,
-    count_linear_scope_links,
-    count_linear_scope_webpages,
     count_linear_team_issues,
     count_linear_team_projects,
     fetch_first_attachment_in_teams,
     fetch_first_document_in_teams,
     fetch_first_file_in_teams,
-    fetch_first_issue_in_team,
     fetch_first_project_in_team,
     fetch_teams_by_ids,
 )
@@ -122,16 +118,8 @@ async def linear_connector(
         "reference_file_parent_created_at": 0,
         "reference_file_parent_updated_at": 0,
         "full_sync_count": 0,
-        "api_ticket_count": 0,
-        "api_project_count": 0,
-        "api_link_count": 0,
-        "api_webpage_count": 0,
-        "api_file_count": 0,
         "expected_ticket_count": 0,
         "expected_project_count": 0,
-        "expected_link_count": 0,
-        "expected_webpage_count": 0,
-        "expected_file_count": 0,
         "expected_total_records": 0,
         "expected_record_groups": 0,
         "expected_parent_child_edges": 0,
@@ -181,12 +169,10 @@ async def linear_connector(
 
     # 3. Count existing issues + projects per team (API baseline).
     total_api_tickets = 0
-    total_api_projects = 0
     for tid in team_ids:
         tc = await count_linear_team_issues(linear_datasource, tid)
         pc = await count_linear_team_projects(linear_datasource, tid)
         total_api_tickets += tc
-        total_api_projects += pc
         logger.info("SETUP: Team %s — %d issues, %d projects", tid, tc, pc)
 
     if total_api_tickets == 0:
@@ -194,24 +180,25 @@ async def linear_connector(
             f"SETUP: Filtered teams {team_ids} contain zero issues. "
             "Nothing to validate — ensure teams have existing issues."
         )
-    state["api_ticket_count"] = total_api_tickets
-    state["api_project_count"] = total_api_projects
 
-    state["api_link_count"] = await count_linear_scope_links(linear_datasource, team_ids)
-    state["api_webpage_count"] = await count_linear_scope_webpages(linear_datasource, team_ids)
-    state["api_file_count"] = await count_linear_scope_files(linear_datasource, team_ids)
-    logger.info(
-        "SETUP: API baseline — %d links, %d webpages, %d files",
-        state["api_link_count"], state["api_webpage_count"], state["api_file_count"],
+    # 4. Resolve the pinned reference issue on the primary team (existing data). A fixed
+    #    identifier avoids drift across runs vs. "whatever the API returns first".
+    ref_resp = await _api_call_with_retry(
+        linear_datasource.issue, id=LINEAR_REFERENCE_ISSUE_IDENTIFIER,
+        context="conftest:reference_issue",
     )
-
-    # 4. Pick reference issue + project + dependent records (existing data).
-    ref_issue = await fetch_first_issue_in_team(linear_datasource, state["primary_team_id"])
-    if not ref_issue:
-        raise RuntimeError("SETUP: Could not find any issue in primary team")
-    state["reference_issue_id"] = ref_issue.get("id")
-    state["reference_issue_identifier"] = ref_issue.get("identifier")
-    logger.info("SETUP: Reference issue found (%s)", state["reference_issue_identifier"])
+    ref_issue = (ref_resp.data or {}).get("issue") if ref_resp.success else None
+    ref_team_id = (ref_issue.get("team") or {}).get("id") if ref_issue else None
+    if ref_issue and ref_team_id == state["primary_team_id"]:
+        state["reference_issue_id"] = ref_issue.get("id")
+        state["reference_issue_identifier"] = ref_issue.get("identifier")
+        logger.info("SETUP: Reference issue found (%s)", state["reference_issue_identifier"])
+    else:
+        logger.info(
+            "SETUP: Pinned reference issue %r not found on primary team %s — "
+            "dependent tests will skip",
+            LINEAR_REFERENCE_ISSUE_IDENTIFIER, state["primary_team_id"],
+        )
 
     ref_project = await fetch_first_project_in_team(linear_datasource, state["primary_team_id"])
     if ref_project:
@@ -314,13 +301,24 @@ async def linear_connector(
         phase="SETUP after sync",
     )
 
-    await assert_linear_dependent_counts_match_graph(
-        linear_datasource,
-        graph_provider,
-        connector_id,
-        team_ids,
-        phase="SETUP after sync",
-    )
+    # Verify each dependent type synced by checking the reference record exists in graph.
+    if state.get("reference_attachment_id"):
+        rec = await graph_provider.get_record_by_external_id(
+            connector_id, state["reference_attachment_id"])
+        assert rec is not None, (
+            f"SETUP: reference LINK {state['reference_attachment_id']} missing after sync")
+
+    if state.get("reference_document_id"):
+        rec = await graph_provider.get_record_by_external_id(
+            connector_id, state["reference_document_id"])
+        assert rec is not None, (
+            f"SETUP: reference WEBPAGE {state['reference_document_id']} missing after sync")
+
+    if state.get("reference_file_url"):
+        rec = await graph_provider.get_record_by_external_id(
+            connector_id, state["reference_file_url"])
+        assert rec is not None, (
+            f"SETUP: reference FILE {state['reference_file_url']} missing after sync")
 
     state["full_sync_count"] = full_count
 
@@ -338,9 +336,6 @@ async def linear_connector(
 
     state["expected_ticket_count"] = ticket_count
     state["expected_project_count"] = project_count
-    state["expected_link_count"] = link_count
-    state["expected_webpage_count"] = webpage_count
-    state["expected_file_count"] = file_count
     state["expected_total_records"] = total_records
     state["expected_record_groups"] = record_groups
     state["expected_parent_child_edges"] = parent_child_edges

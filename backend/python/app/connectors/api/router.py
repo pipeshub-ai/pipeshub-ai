@@ -1346,6 +1346,7 @@ async def get_record_content(
             virtual_record_id_to_result={},
             graph_provider=graph_provider,
             org_id=org_id,
+            user_id=user_id,
         )
     except Exception as e:
         logger.error(f"Error fetching record content for {record_id}: {str(e)}", exc_info=True)
