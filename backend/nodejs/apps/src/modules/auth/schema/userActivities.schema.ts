@@ -33,8 +33,10 @@ export interface IUserActivity extends Document {
     | 'AUTH SERVICE'
     | 'GOOGLE OAUTH'
     | 'MICROSOFT OAUTH'
+    | 'AZUREAD OAUTH'
     | 'SSO'
-    | 'OAUTH';
+    | 'OAUTH'
+    | 'GITHUB OAUTH';
   ipAddress: string;
   isDeleted?: boolean;
   createdAt?: Date;
@@ -81,6 +83,7 @@ const UserActivitySchema = new Schema<IUserActivity>(
         'SSO',
         'AZUREAD OAUTH',
         'OAUTH',
+        'GITHUB OAUTH',
       ],
     },
     ipAddress: {
