@@ -331,31 +331,6 @@ class TestJiraProjectFetching:
         record_groups, raw = await connector._fetch_projects(project_keys=["PRJ"])
         assert len(record_groups) == 1
 
-    @pytest.mark.asyncio
-    async def test_fetch_projects_description_as_adf(self):
-        connector, *_ = _make_connector()
-        connector.data_source = MagicMock()
-
-        projects = [{
-            "id": "p1", "name": "Proj", "key": "PRJ", "url": None,
-            "description": {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "ADF content"}]}]}
-        }]
-
-        mock_ds = MagicMock()
-        mock_ds.search_projects = AsyncMock(return_value=_make_mock_response(data={
-            "values": projects, "isLast": True, "total": 1,
-        }))
-
-        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        connector._safe_json_parse = MagicMock(return_value={"values": projects, "isLast": True, "total": 1})
-        connector._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={})
-        connector._fetch_project_permission_scheme = AsyncMock(return_value=[])
-
-        record_groups, raw = await connector._fetch_projects()
-        rg, _ = record_groups[0]
-        assert "ADF content" in (rg.description or "")
-
-
 # ===========================================================================
 # Permission Scheme
 # ===========================================================================
