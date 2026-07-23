@@ -282,12 +282,20 @@ class TestSyncAllProjectIssues:
 
         assert call_count == 2
         assert result["total_synced"] == 1
+        assert result["failed_count"] == 1
+        assert result["failed_project_keys"] == ["P1"]
 
     @pytest.mark.asyncio
     async def test_empty_projects_returns_zeros(self):
         connector = _make_connector()
         result = await connector._sync_all_project_issues([], [], None)
-        assert result == {"total_synced": 0, "new_count": 0, "updated_count": 0, "failed_count": 0}
+        assert result == {
+            "total_synced": 0,
+            "new_count": 0,
+            "updated_count": 0,
+            "failed_count": 0,
+            "failed_project_keys": [],
+        }
 
 
 # ===========================================================================

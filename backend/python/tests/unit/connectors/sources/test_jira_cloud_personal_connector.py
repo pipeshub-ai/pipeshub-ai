@@ -28,6 +28,7 @@ from app.connectors.sources.atlassian.jira_cloud_personal.connector import (
 )
 from app.models.entities import AppUser, AppUserGroup, RecordGroupType
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import NotificationType
 
 
 def _make_logger() -> logging.Logger:
@@ -387,9 +388,10 @@ class TestPersonalRunSyncEdgeCases:
         with pytest.raises(RuntimeError, match="init failed") as exc_info:
             await conn.run_sync()
 
-        # init() already notified AUTH_ERROR; sync path must not send a second alert.
+        # Background sync notifies AUTH_ERROR once; except must not send a second alert.
         assert getattr(exc_info.value, "_notification_sent", False) is True
-        conn.notify.assert_not_awaited()
+        conn.notify.assert_awaited_once()
+        assert conn.notify.await_args.kwargs["type"] == NotificationType.CONNECTOR_AUTH_ERROR
 
     async def test_run_sync_calls_init_when_data_source_missing(self) -> None:
         conn = _make_connector()
