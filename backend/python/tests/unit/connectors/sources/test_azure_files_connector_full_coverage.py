@@ -1094,7 +1094,7 @@ class TestStreamRecord:
         record = _make_file_record()
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_path_info_raises(self, conn):
@@ -1177,7 +1177,7 @@ class TestStreamRecord:
         record = _make_file_record()
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_fallback_exception(self, conn):

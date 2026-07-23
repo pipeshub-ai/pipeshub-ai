@@ -118,6 +118,7 @@ from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.connectors.core.base.error.stream_errors import to_stream_error
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -3474,7 +3475,7 @@ class SlackIndividualConnector(BaseConnector):
             raise
         except Exception as exc:
             self.logger.error(f"stream_record failed: {exc}", exc_info=True)
-            raise HTTPException(500, str(exc))
+            raise to_stream_error(exc, connector=self.display_name) from exc
 
     async def _build_message_blocks_for_streaming(
         self, record: MessageRecord

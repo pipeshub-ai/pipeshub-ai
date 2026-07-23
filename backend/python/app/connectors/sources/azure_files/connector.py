@@ -85,6 +85,13 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.azure.azure_files import AzureFilesClient
 from app.sources.external.azure.azure_files import AzureFilesDataSource
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_downloadable,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
 
@@ -1351,10 +1358,7 @@ class AzureFilesConnector(BaseConnector):
             )
 
         if not self.data_source:
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="Data source not initialized",
-            )
+            raise connector_not_ready(self.display_name)
 
         # Extract file path information
         path_info = self._extract_file_path_info(record)
@@ -1372,7 +1376,12 @@ class AzureFilesConnector(BaseConnector):
         if signed_url:
             # Use SAS URL streaming (existing behavior)
             return create_stream_record_response(
-                stream_content(signed_url, record_id=record.id, file_name=record.record_name),
+                stream_content(
+                    signed_url,
+                    record_id=record.id,
+                    file_name=record.record_name,
+                    connector=self.display_name,
+                ),
                 filename=record.record_name,
                 mime_type=record.mime_type if record.mime_type else "application/octet-stream",
                 fallback_filename=f"record_{record.id}"
@@ -1393,23 +1402,18 @@ class AzureFilesConnector(BaseConnector):
 
             if not download_response.success:
                 error_msg = download_response.error or "Unknown error"
+                self.logger.error(
+                    f"Azure Files download failed for {share_name}/{file_path}: {error_msg}"
+                )
                 if "not found" in error_msg.lower():
-                    raise HTTPException(
-                        status_code=HttpStatusCode.NOT_FOUND.value,
-                        detail=f"File not found: {share_name}/{file_path}",
-                    )
-                else:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=f"Failed to download file: {error_msg}",
-                    )
+                    raise not_found_at_source(self.display_name)
+                raise map_source_status(None, connector=self.display_name)
 
             # Get file content from response
             file_content = download_response.data.get("content")
             if not file_content:
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail="Downloaded file has no content",
+                raise not_downloadable(
+                    "Downloaded file has no content", connector=self.display_name
                 )
 
             # Stream the content in chunks
@@ -1427,10 +1431,7 @@ class AzureFilesConnector(BaseConnector):
                 f"Error downloading file directly for record {record.id}: {e}",
                 exc_info=True
             )
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to stream file: {str(e)}",
-            ) from e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def cleanup(self) -> None:
         """Clean up resources used by the connector."""

@@ -1779,8 +1779,10 @@ export const getRecordBuffer =
 
       // Handle any errors in the stream
       response.data.on('error', (error: any) => {
-        console.error('Stream error:', error);
-        // Only send error if headers haven't been sent yet
+        logger.error('Stream error while proxying record buffer', {
+          error: error?.message,
+          recordId,
+        });
         if (!res.headersSent) {
           try {
             res.status(500).end('Error streaming data');
@@ -1789,7 +1791,12 @@ export const getRecordBuffer =
               error: e,
             });
           }
+          return;
         }
+        // Headers are already out, so the status cannot be corrected. Destroy
+        // the socket so the client sees a truncated transfer rather than
+        // silently saving a partial file as if it were complete.
+        res.destroy(error);
       });
     } catch (error: any) {
       console.error('Error fetching record buffer:', error);

@@ -79,6 +79,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.admin.admin import GoogleAdminDataSource
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
+from app.connectors.core.base.error.stream_errors import map_source_status
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
@@ -2383,10 +2384,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                     _, done = downloader.next_chunk()
                 except HttpError as http_error:
                     self.logger.error(f"HTTP error during {error_context}: {str(http_error)}")
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=f"Error during {error_context}: {str(http_error)}",
-                    )
+                    # HttpError carries Drive's own status on .resp.status —
+                    # mapping it is what tells a revoked token from a deleted file.
+                    raise map_source_status(
+                        http_error.resp.status, connector=self.display_name
+                    ) from http_error
                 except Exception as chunk_error:
                     self.logger.error(f"Error during {error_context}: {str(chunk_error)}")
                     raise HTTPException(

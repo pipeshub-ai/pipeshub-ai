@@ -119,6 +119,7 @@ from app.sources.client.confluence.confluence import (
 from app.sources.external.common.atlassian import AtlassianMultiSiteError
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 from app.utils.streaming import create_stream_record_response
+from app.connectors.core.base.error.stream_errors import to_stream_error
 
 # Confluence Cloud OAuth URLs
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
@@ -3589,9 +3590,7 @@ class ConfluenceConnector(BaseConnector):
             raise  # Re-raise HTTP exceptions as-is
         except Exception as e:
             self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500, detail=f"Failed to stream record: {str(e)}"
-            ) from e
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _fetch_page_content(self, page_id: str, record_type: RecordType) -> str:
         """
