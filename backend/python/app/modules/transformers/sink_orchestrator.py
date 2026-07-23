@@ -3,6 +3,7 @@ import logging
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
+    IndexingStage,
     ProgressStatus,
 )
 from app.models.blocks import (
@@ -18,6 +19,7 @@ from app.modules.transformers.transformer import TransformContext, Transformer
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.modules.activity_metrics import record_service_activity
+from app.utils.indexing_progress import build_indexing_progress
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -145,13 +147,15 @@ class SinkOrchestrator(Transformer):
             raise Exception(f"Record {record_id} not found in database")
 
         if skip_vector_store:
+            timestamp = get_epoch_timestamp_in_ms()
             success = await self.graph_provider.batch_update_nodes(
                 [
                     {
                         "id": record_id,
                         "virtualRecordId": record.virtual_record_id,
-                        "indexingStatus": ProgressStatus.NOT_STARTED.value,
+                        "indexingStatus": ProgressStatus.COMPLETED.value,
                         "isDirty": False,
+                        **build_indexing_progress(IndexingStage.COMPLETED, timestamp=timestamp),
                     }
                 ],
                 CollectionNames.RECORDS.value,
@@ -196,6 +200,7 @@ class SinkOrchestrator(Transformer):
                     "indexingStatus": ProgressStatus.COMPLETED.value,
                     "lastIndexTimestamp": timestamp,
                     "isDirty": False,
+                    **build_indexing_progress(IndexingStage.COMPLETED, timestamp=timestamp),
                 }
             ],
             CollectionNames.RECORDS.value,

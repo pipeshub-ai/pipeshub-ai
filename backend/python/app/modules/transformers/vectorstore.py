@@ -24,7 +24,7 @@ from langchain_core.documents import Document
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import CollectionNames, IndexingStage
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
@@ -52,6 +52,10 @@ from app.utils.aimodels import (
     get_embedding_model,
 )
 from app.utils.llm import get_llm
+from app.utils.indexing_progress import (
+    build_indexing_progress,
+    build_indexing_substage_progress,
+)
 
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 
@@ -963,8 +967,50 @@ class VectorStore(Transformer):
             collection_name=self.collection_name, points=points
         )
 
+    async def _update_indexing_progress(
+        self,
+        record_id: str,
+        *,
+        current: int,
+        total: int,
+        unit: str = "chunks",
+        phase: str = "embedding",
+    ) -> None:
+        if not record_id:
+            return
+        try:
+            progress = build_indexing_substage_progress(
+                current=current,
+                total=total,
+                unit=unit,
+                phase=phase,
+            )
+            await self.graph_provider.batch_update_nodes(
+                [
+                    {
+                        "id": record_id,
+                        **build_indexing_progress(
+                            IndexingStage.INDEXING,
+                            progress=progress,
+                        ),
+                    }
+                ],
+                CollectionNames.RECORDS.value,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Failed to update indexing progress for record %s: %s",
+                record_id,
+                str(e),
+            )
+
     async def _process_document_chunks(
-        self, langchain_document_chunks: List[Document], record_id: str = ""
+        self,
+        langchain_document_chunks: List[Document],
+        record_id: str = "",
+        *,
+        progress_offset: int = 0,
+        progress_total: int | None = None,
     ) -> None:
         self.logger.info(
             f"⏱️ Embedding {len(langchain_document_chunks)} document chunks"
@@ -974,9 +1020,36 @@ class VectorStore(Transformer):
             _LOCAL_CPU_DOCUMENT_BATCH_SIZE if use_local_sequential else _DEFAULT_DOCUMENT_BATCH_SIZE
         )
 
+        completed_documents = progress_offset
+        total_documents = progress_total or len(langchain_document_chunks)
+        progress_lock = asyncio.Lock()
+        last_progress_emit = time.monotonic()
+
         async def process_batch(batch_start: int, batch: List[Document]) -> int:
+            nonlocal completed_documents, last_progress_emit
             try:
                 await self._embed_and_upsert_documents(batch, record_id)
+                async with progress_lock:
+                    completed_documents += len(batch)
+                    now = time.monotonic()
+                    should_emit = (
+                        completed_documents >= total_documents
+                        or now - last_progress_emit >= 2.0
+                    )
+                    if should_emit:
+                        last_progress_emit = now
+                        progress_current = completed_documents
+                    else:
+                        progress_current = None
+                # Graph persistence is observability, not part of embedding
+                # correctness. Do not serialize concurrent batches on its I/O,
+                # and emit at most every two seconds (plus the final update).
+                if progress_current is not None:
+                    await self._update_indexing_progress(
+                        record_id,
+                        current=progress_current,
+                        total=total_documents,
+                    )
                 return len(batch)
             except Exception as e:
                 self.logger.warning(f"Batch at {batch_start} failed: {e}")
@@ -1041,15 +1114,33 @@ class VectorStore(Transformer):
         self.logger.info(
             f"📊 Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
         )
+        total_chunks = len(langchain_docs) + len(image_chunks)
+        completed_chunks = 0
+        await self._update_indexing_progress(
+            record_id,
+            current=completed_chunks,
+            total=total_chunks,
+        )
 
         if image_chunks:
             image_base64s = [c.get("image_uri") for c in image_chunks]
             points = await self._process_image_embeddings(image_chunks, image_base64s, record_id)
             await self._store_image_points(points)
+            completed_chunks += len(image_chunks)
+            await self._update_indexing_progress(
+                record_id,
+                current=completed_chunks,
+                total=total_chunks,
+            )
 
         if langchain_docs:
             try:
-                await self._process_document_chunks(langchain_docs, record_id)
+                await self._process_document_chunks(
+                    langchain_docs,
+                    record_id,
+                    progress_offset=completed_chunks,
+                    progress_total=total_chunks,
+                )
             except Exception as e:
                 raise VectorStoreError(
                     "Failed to store documents in vector store: " + str(e),
@@ -1420,14 +1511,33 @@ class VectorStore(Transformer):
                 # Partial update: no full delete; only changed blocks
                 langchain_docs = [d for d in documents_to_embed if isinstance(d, Document)]
                 image_chunks = [d for d in documents_to_embed if not isinstance(d, Document)]
+                total_chunks = len(langchain_docs) + len(image_chunks)
+                completed_chunks = 0
+                await self._update_indexing_progress(
+                    record_id,
+                    current=completed_chunks,
+                    total=total_chunks,
+                )
                 if langchain_docs:
-                    await self._process_document_chunks(langchain_docs, record_id)
+                    await self._process_document_chunks(
+                        langchain_docs,
+                        record_id,
+                        progress_offset=completed_chunks,
+                        progress_total=total_chunks,
+                    )
+                    completed_chunks += len(langchain_docs)
                 if image_chunks:
                     image_base64s = [c.get("image_uri") for c in image_chunks]
                     points = await self._process_image_embeddings(
                         image_chunks, image_base64s, record_id
                     )
                     await self._store_image_points(points)
+                    completed_chunks += len(image_chunks)
+                    await self._update_indexing_progress(
+                        record_id,
+                        current=completed_chunks,
+                        total=total_chunks,
+                    )
             else:
                 await self._create_embeddings(documents_to_embed, record_id, virtual_record_id)
 

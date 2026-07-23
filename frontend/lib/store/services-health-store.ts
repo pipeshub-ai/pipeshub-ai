@@ -9,7 +9,14 @@ import { apiClient } from '@/lib/api/axios-instance';
 // Types
 // ========================================
 
-export type ServiceStatus = 'healthy' | 'unhealthy' | 'unknown';
+export type ServiceStatus = 'healthy' | 'unhealthy' | 'unknown' | 'pending' | 'starting';
+
+export interface ServiceHealthDetail {
+  status: ServiceStatus;
+  message?: string;
+  endpoint?: string;
+  latencyMs?: number;
+}
 
 export type InfraServices = Record<string, ServiceStatus>;
 
@@ -18,6 +25,7 @@ export interface AppServices {
   connector: ServiceStatus;
   indexing: ServiceStatus;
   docling: ServiceStatus;
+  embedding: ServiceStatus;
 }
 
 interface ServicesHealthState {
@@ -239,6 +247,7 @@ export const APP_SERVICE_LABELS: Record<string, string> = {
   connector: 'Connector Service',
   indexing: 'Indexing Service',
   docling: 'Docling Service',
+  embedding: 'Embedding Service',
 };
 
 export function formatServiceList(items: string[]): string {

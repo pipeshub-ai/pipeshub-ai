@@ -32,6 +32,7 @@ from app.services.messaging.error_classifier import (
 from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.indexing_progress import build_indexing_progress, stage_for_status
 from app.utils.jwt import generate_jwt
 
 
@@ -179,6 +180,7 @@ class RecordEventHandler(BaseEventService):
         error_msg = None
         last_exception: Exception | None = None
         record = None
+        heartbeat_task: asyncio.Task | None = None
         try:
             if not event_type:
                 self.logger.error(f"Missing event_type in message {payload}")
@@ -234,7 +236,12 @@ class RecordEventHandler(BaseEventService):
 
             if record is None:
                 self.logger.error(f"❌ Record {record_id} not found in database")
+                await self._track_payload_outcome(payload, outcome="skipped")
                 return
+
+            await self._touch_sync_run(payload)
+            if payload.get("syncRunId"):
+                heartbeat_task = asyncio.create_task(self._heartbeat_sync_run(payload))
 
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
@@ -625,6 +632,9 @@ class RecordEventHandler(BaseEventService):
             self.logger.error(error_msg, exc_info=True)
             raise  # bare re-raise — preserves IndexingError / DocumentProcessingError
         finally:
+            if heartbeat_task:
+                heartbeat_task.cancel()
+                await asyncio.gather(heartbeat_task, return_exceptions=True)
             processing_time = (datetime.now() - start_time).total_seconds()
             self.logger.info(
                 f"Message {message_id} processing completed in {processing_time:.2f}s. "
@@ -661,8 +671,11 @@ class RecordEventHandler(BaseEventService):
                         reason=error_msg,
                     )
                     if record is not None:
+                        await self._track_indexing_outcome(
+                            record, ProgressStatus.FAILED.value, payload
+                        )
                         virtual_record_id = record.get("virtualRecordId")
-                        
+
                         # Decide duplicate handling based on error type
                         if (last_exception and 
                             MessageErrorClassifier.classify_by_exception(last_exception)
@@ -694,14 +707,105 @@ class RecordEventHandler(BaseEventService):
                 if record is not None:
                     indexing_status = record.get("indexingStatus")
                     virtual_record_id = record.get("virtualRecordId")
+                    await self._track_indexing_outcome(record, indexing_status, payload)
                     if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
-                        await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
+                        duplicate_count = await self.event_processor.graph_provider.update_queued_duplicates_status(
+                            record_id, indexing_status, virtual_record_id
+                        )
+                        if duplicate_count:
+                            await self._track_indexing_outcome(
+                                record,
+                                indexing_status,
+                                payload,
+                                count=duplicate_count,
+                            )
                     elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
                         # Find and trigger indexing for the next queued duplicate
                         self.logger.info(f"🔄 Current record {record_id} has status {indexing_status}, triggering next queued duplicate")
                         await self._trigger_next_queued_duplicate(record_id, virtual_record_id)
                 else:
                     self.logger.warning(f"Record {record_id} not found in database")
+
+    # Terminal indexing states, bucketed for run-scoped connector progress.
+    async def _track_payload_outcome(self, payload: dict, *, outcome: str) -> None:
+        """Resolve a deleted/missing record using the event's immutable ownership."""
+        if payload.get("origin") != OriginTypes.CONNECTOR.value or not payload.get("syncRunId"):
+            return
+        connector_id = payload.get("connectorId")
+        org_id = payload.get("orgId")
+        if not connector_id or not org_id:
+            return
+        from app.connectors.services.sync_progress_store import get_connector_sync_progress_store
+
+        store = await get_connector_sync_progress_store(self.logger, self.config_service)
+        if store:
+            await store.record_result(
+                org_id,
+                connector_id,
+                outcome=outcome,
+                run_id=payload.get("syncRunId"),
+                record_id=payload.get("recordId"),
+            )
+
+    async def _touch_sync_run(self, payload: dict) -> None:
+        """Keep a run alive while a long-running record is being processed."""
+        run_id = payload.get("syncRunId")
+        connector_id = payload.get("connectorId")
+        org_id = payload.get("orgId")
+        if not run_id or not connector_id or not org_id:
+            return
+        from app.connectors.services.sync_progress_store import get_connector_sync_progress_store
+
+        store = await get_connector_sync_progress_store(self.logger, self.config_service)
+        if store:
+            await store.touch_heartbeat(org_id, connector_id, run_id=run_id)
+
+    async def _heartbeat_sync_run(self, payload: dict) -> None:
+        while True:
+            await asyncio.sleep(60)
+            await self._touch_sync_run(payload)
+
+    async def _track_indexing_outcome(
+        self,
+        record: dict,
+        indexing_status: str | None,
+        payload: dict,
+        *,
+        count: int = 1,
+    ) -> None:
+        """Best-effort: bump the connector run-scoped indexed/failed/skipped counter.
+
+        No-op unless the record belongs to a connector with an active tracked run.
+        """
+        try:
+            if record.get("origin") != OriginTypes.CONNECTOR.value:
+                return
+            connector_id = record.get("connectorId")
+            org_id = record.get("orgId")
+            run_id = payload.get("syncRunId")
+            if not connector_id or not org_id or not run_id:
+                return
+            from app.utils.indexing_progress import terminal_outcome_for_status
+
+            outcome = terminal_outcome_for_status(indexing_status)
+            if outcome is None:
+                return
+
+            from app.connectors.services.sync_progress_store import (
+                get_connector_sync_progress_store,
+            )
+            store = await get_connector_sync_progress_store(self.logger, self.config_service)
+            if store:
+                await store.record_result(
+                    org_id,
+                    connector_id,
+                    outcome=outcome,
+                    run_id=run_id,
+                    record_id=record.get("id") if count == 1 else None,
+                    count=count,
+                )
+        except Exception as e:
+            self.logger.debug(f"Failed to track indexing outcome for sync progress: {e}")
 
     async def __update_document_status(
         self,
@@ -728,6 +832,13 @@ class RecordEventHandler(BaseEventService):
                     "extractionStatus": extraction_status,
                 }
             )
+
+            try:
+                stage = stage_for_status(ProgressStatus(indexing_status))
+            except ValueError:
+                stage = None
+            if stage is not None:
+                doc.update(build_indexing_progress(stage))
 
             if reason:
                 doc["reason"] = reason

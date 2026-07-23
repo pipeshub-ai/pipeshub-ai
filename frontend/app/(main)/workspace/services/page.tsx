@@ -21,6 +21,7 @@ import {
   selectInfraServices,
   selectAppServices,
   selectLastChecked,
+  type ServiceHealthDetail,
   type ServiceStatus,
 } from '@/lib/store/services-health-store';
 import { apiClient } from '@/lib/api/axios-instance';
@@ -94,6 +95,13 @@ function ServiceStatusBadge({ status }: { status: ServiceStatus | undefined }) {
       </Badge>
     );
   }
+  if (status === 'pending' || status === 'starting') {
+    return (
+      <Badge color="amber" variant="soft" size="1" style={{ flexShrink: 0 }}>
+        {status === 'pending' ? 'Pending' : 'Starting'}
+      </Badge>
+    );
+  }
   if (status === 'healthy') {
     return (
       <Badge color="green" variant="soft" size="1" style={{ flexShrink: 0 }}>
@@ -111,12 +119,22 @@ function ServiceStatusBadge({ status }: { status: ServiceStatus | undefined }) {
 function ServiceRow({
   meta,
   status,
+  detail,
   displayName,
 }: {
   meta: ServiceMeta;
   status: ServiceStatus | undefined;
+  detail?: ServiceHealthDetail;
   displayName?: string;
 }) {
+  const displayStatus = detail?.status ?? status;
+  const detailColor =
+    displayStatus === 'healthy'
+      ? 'var(--green-11)'
+      : displayStatus === 'unhealthy'
+        ? 'var(--red-11)'
+        : 'var(--amber-11)';
+
   return (
     <Flex
       align="center"
@@ -177,12 +195,41 @@ function ServiceRow({
         >
           {meta.description}
         </Text>
+        {detail?.message ? (
+          <Text
+            size="1"
+            style={{
+              color: detailColor,
+              display: 'block',
+              marginTop: 4,
+              fontWeight: 300,
+            }}
+          >
+            {detail.message}
+          </Text>
+        ) : null}
       </Box>
 
       {/* Status badge */}
-      <ServiceStatusBadge status={status} />
+      <ServiceStatusBadge status={displayStatus} />
     </Flex>
   );
+}
+
+function hasPendingServices(
+  services: Record<string, ServiceStatus> | null | undefined,
+  details?: Record<string, ServiceHealthDetail> | null,
+): boolean {
+  if (!services) return false;
+  return Object.entries(services).some(([key, status]) => {
+    const detailStatus = details?.[key]?.status;
+    return (
+      status === 'starting' ||
+      status === 'pending' ||
+      detailStatus === 'starting' ||
+      detailStatus === 'pending'
+    );
+  });
 }
 
 // ========================================
@@ -205,6 +252,8 @@ export default function ServicesPage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [localInfra, setLocalInfra] = useState(infraServices);
   const [localApp, setLocalApp] = useState(appServices);
+  const [localInfraDetails, setLocalInfraDetails] = useState<Record<string, ServiceHealthDetail> | null>(null);
+  const [localAppDetails, setLocalAppDetails] = useState<Record<string, ServiceHealthDetail> | null>(null);
   const [localServiceNames, setLocalServiceNames] = useState<Record<string, string> | null>(null);
   const [localDeployment, setLocalDeployment] = useState<Deployment | null>(null);
   const [localLastChecked, setLocalLastChecked] = useState(lastChecked);
@@ -230,6 +279,8 @@ export default function ServicesPage() {
 
       setLocalInfra(infraData?.services ?? null);
       setLocalApp(servicesData?.services ?? null);
+      setLocalInfraDetails(infraData?.details ?? null);
+      setLocalAppDetails(servicesData?.details ?? null);
       setLocalServiceNames(infraData?.serviceNames ?? null);
       setLocalDeployment(infraData?.deployment ?? null);
       setLocalLastChecked(Date.now());
@@ -255,6 +306,19 @@ export default function ServicesPage() {
     if (!isProfileInitialized || isAdmin === false) return;
     fetchHealth();
   }, [isProfileInitialized, isAdmin, fetchHealth]);
+
+  useEffect(() => {
+    if (!isProfileInitialized || isAdmin === false) return undefined;
+    const shouldPoll =
+      hasPendingServices(localInfra, localInfraDetails) ||
+      hasPendingServices(localApp as unknown as Record<string, ServiceStatus> | null, localAppDetails);
+    if (!shouldPoll) return undefined;
+
+    const interval = window.setInterval(() => {
+      void fetchHealth();
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, [fetchHealth, isAdmin, isProfileInitialized, localApp, localAppDetails, localInfra, localInfraDetails]);
 
   const handleRefresh = useCallback(() => {
     setIsRefreshing(true);
@@ -349,6 +413,7 @@ export default function ServicesPage() {
                 key={meta.key}
                 meta={meta}
                 status={localInfra?.[meta.key as keyof typeof localInfra]}
+                detail={localInfraDetails?.[meta.key]}
                 displayName={localServiceNames?.[meta.key]}
               />
             ))}
@@ -385,6 +450,7 @@ export default function ServicesPage() {
                 key={meta.key}
                 meta={meta}
                 status={localApp?.[meta.key as keyof typeof localApp]}
+                detail={localAppDetails?.[meta.key]}
               />
             ))}
           </Flex>

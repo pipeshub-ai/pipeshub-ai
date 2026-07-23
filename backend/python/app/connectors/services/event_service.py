@@ -1,7 +1,6 @@
 """Generic Event Service for handling connector-specific events"""
 
 import logging
-import time
 from typing import Any
 
 from dependency_injector import providers
@@ -17,6 +16,10 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.task_manager import sync_task_manager
+from app.connectors.services.sync_lifecycle import run_sync_with_lifecycle
+from app.connectors.services.sync_progress_store import (
+    get_connector_sync_progress_store,
+)
 from app.containers.connector import ConnectorAppContainer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -59,6 +62,15 @@ class EventService:
         await self.graph_provider.batch_upsert_nodes(
             [payload], CollectionNames.APPS.value
         )
+
+    async def _sync_progress_store(self):
+        """Best-effort accessor for the run-scoped progress store (None if Redis down)."""
+        try:
+            return await get_connector_sync_progress_store(
+                self.logger, self.app_container.config_service()
+            )
+        except Exception:
+            return None
 
     def _get_connector(self, connector_id: str) -> BaseConnector | None:
         """
@@ -282,6 +294,9 @@ class EventService:
 
         self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id}, full_sync: {effective_full_sync} (payload: {full_sync}, pending: {pending_full_sync})")
 
+        store = await self._sync_progress_store()
+        run_id: str | None = None
+
         if effective_full_sync:
             # --- Full sync: acquire lock for the prep phase ---
             try:
@@ -322,8 +337,14 @@ class EventService:
                 except Exception as edge_error:
                     self.logger.error(f"Error deleting connector sync edges for {connector_id}: {edge_error}")
 
+                # Do not create progress state until the destructive preparation
+                # succeeded; otherwise a failed prep leaves a phantom active run.
+                if store:
+                    run_id = await store.start_run(
+                        org_id, connector_id, full_sync=effective_full_sync
+                    )
                 # Schedule the background sync task
-                await sync_task_manager.start_sync(connector_id, self._run_sync_and_clear_status(connector, connector_id))
+                await sync_task_manager.start_sync(connector_id, self._run_sync_and_clear_status(connector, connector_id, org_id, run_id))
                 self.logger.info(f"Started full sync task for {connector_name} {connector_id}")
 
                 # Clear only when we consumed a persisted pending flag (avoids redundant writes on manual full sync).
@@ -340,6 +361,8 @@ class EventService:
 
             except Exception as e:
                 self.logger.error(f"❌ Failed during full sync prep for {connector_id}: {e}")
+                if store and run_id:
+                    await store.clear(org_id, connector_id, expected_run_id=run_id)
                 # Release lock immediately so the connector is not stuck
                 try:
                     await self._update_app_status(connector_id, status=AppStatus.IDLE.value, is_locked=False)
@@ -365,28 +388,44 @@ class EventService:
                 self.logger.error(f"❌ Failed to set SYNCING status for connector {connector_id}: {status_err}")
                 # Non-fatal: proceed with sync even if status write failed
 
-            await sync_task_manager.start_sync(connector_id, self._run_sync_and_clear_status(connector, connector_id))
-            self.logger.info(f"Started sync task for {connector_name} {connector_id}")
+            if store:
+                run_id = await store.start_run(
+                    org_id, connector_id, full_sync=effective_full_sync
+                )
+            try:
+                await sync_task_manager.start_sync(
+                    connector_id,
+                    self._run_sync_and_clear_status(connector, connector_id, org_id, run_id),
+                )
+                self.logger.info(f"Started sync task for {connector_name} {connector_id}")
+            except Exception:
+                if store and run_id:
+                    await store.clear(org_id, connector_id, expected_run_id=run_id)
+                raise
 
         return True
 
-    async def _run_sync_and_clear_status(self, connector: BaseConnector, connector_id: str) -> None:
+    async def _run_sync_and_clear_status(
+        self,
+        connector: BaseConnector,
+        connector_id: str,
+        org_id: str | None = None,
+        run_id: str | None = None,
+    ) -> None:
         """Wrap run_sync() so that status is cleared to null when the task finishes."""
-        start = time.monotonic()
-        try:
-            await connector.run_sync()
-        finally:
-            elapsed = time.monotonic() - start
-            mins, secs = divmod(elapsed, 60)
-            elapsed_str = f"{int(mins)}m {secs:.1f}s" if mins else f"{secs:.1f}s"
-            self.logger.info(
-                f"✅ Sync finished for connector {connector_id} — total time: {elapsed_str}"
-            )
-            try:
-                await self._update_app_status(connector_id, status=AppStatus.IDLE.value)
-                self.logger.info(f"✅ Cleared status for connector {connector_id} after sync")
-            except Exception as clear_err:
-                self.logger.error(f"❌ Failed to clear status for connector {connector_id}: {clear_err}")
+
+        async def _set_idle_status() -> None:
+            await self._update_app_status(connector_id, status=AppStatus.IDLE.value)
+
+        await run_sync_with_lifecycle(
+            connector=connector,
+            connector_id=connector_id,
+            org_id=org_id,
+            run_id=run_id,
+            logger=self.logger,
+            get_store=self._sync_progress_store,
+            set_idle_status=_set_idle_status,
+        )
 
     async def _handle_reindex(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Handle reindex event for a connector with pagination support.
@@ -540,6 +579,9 @@ class EventService:
         try:
             # Cancel any running sync task for this connector before deleting
             await sync_task_manager.cancel_sync(connector_id)
+            store = await self._sync_progress_store()
+            if store:
+                await store.clear(org_id, connector_id)
 
             # Delete from graph DB
             result = await self.graph_provider.delete_connector_instance(

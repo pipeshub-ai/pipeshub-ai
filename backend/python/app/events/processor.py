@@ -1,5 +1,6 @@
 import io
 import json
+import time
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
@@ -8,6 +9,7 @@ from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     ExtensionTypes,
+    IndexingStage,
     OriginTypes,
     ProgressStatus,
 )
@@ -36,6 +38,10 @@ from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import is_multimodal_llm
+from app.utils.indexing_progress import (
+    build_indexing_progress,
+    build_indexing_substage_progress,
+)
 from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -109,6 +115,7 @@ class Processor:
 
         # Initialize Docling client for external service
         self.docling_client = DoclingClient()
+        self._last_extraction_progress_emit: dict[str, float] = {}
 
     def _create_transform_context(
         self,
@@ -122,6 +129,55 @@ class Processor:
             event_type=event_type,
             prev_virtual_record_id=prev_virtual_record_id,
         )
+
+    async def _emit_extraction_progress(
+        self,
+        record_id: str,
+        *,
+        current: int,
+        total: int,
+        unit: str = "pages",
+    ) -> None:
+        """Best-effort write of real extraction sub-progress to the record doc.
+
+        Keeps the record in EXTRACTING and lets the UI render actual page-level
+        progress instead of a size-based estimate. Failures are swallowed: a
+        progress write must never break the extraction it is reporting on.
+        """
+        if not record_id or total <= 0:
+            return
+        now = time.monotonic()
+        previous = self._last_extraction_progress_emit.get(record_id, 0)
+        if current < total and now - previous < 2:
+            return
+        self._last_extraction_progress_emit[record_id] = now
+        try:
+            progress = build_indexing_substage_progress(
+                current=current,
+                total=total,
+                unit=unit,
+                phase="extracting",
+            )
+            await self.graph_provider.batch_update_nodes(
+                [
+                    {
+                        "id": record_id,
+                        **build_indexing_progress(
+                            IndexingStage.EXTRACTING, progress=progress
+                        ),
+                    }
+                ],
+                CollectionNames.RECORDS.value,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "⚠️ Failed to emit extraction progress for record %s: %s",
+                record_id,
+                str(e),
+            )
+        finally:
+            if current >= total:
+                self._last_extraction_progress_emit.pop(record_id, None)
 
     async def process_image(self, record_id, content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Process image content, yielding phase completion events."""
@@ -457,12 +513,21 @@ class Processor:
                 block_index_offset = 0
                 block_group_index_offset = 0
 
-                for page_number, conv_res in all_conv_results:
+                # Real per-page extraction progress: this loop is the LLM-heavy part
+                # of extraction, so its page count is the honest unit to report.
+                total_pages = len(all_conv_results)
+                await self._emit_extraction_progress(recordId, current=0, total=total_pages)
+
+                for pages_done, (page_number, conv_res) in enumerate(all_conv_results, start=1):
                     try:
                         page_block_containers = await processor.create_blocks(conv_res, page_number=page_number)
                     except Exception as e:
                         self.logger.error(f"❌ Failed to create blocks for page {page_number}: {str(e)}")
                         raise
+
+                    await self._emit_extraction_progress(
+                        recordId, current=pages_done, total=total_pages
+                    )
 
                     if page_block_containers:
                         # Adjust block indices to be unique across all pages

@@ -6,7 +6,7 @@ import traceback
 from collections import Counter
 from typing import Any
 
-from app.config.constants.arangodb import ProgressStatus
+from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     AppliedFilters,
     AvailableFilters,
@@ -16,6 +16,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     CurrentNode,
     FilterOption,
     FiltersInfo,
+    IndexingRollup,
     ItemPermission,
     KnowledgeHubNodesResponse,
     NodeItem,
@@ -28,6 +29,33 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
 )
 from app.models.entities import RecordType
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.indexing_progress import build_container_rollup, normalize_indexing_progress
+
+# Maps a node type to the container type understood by the rollup aggregation,
+# or None when the node is not a container that can carry a rollup. 'kb' (the
+# Collection app) aggregates like any other app node.
+def _rollup_container_type(node_type: str | None) -> str | None:
+    if node_type in (NodeType.APP.value, 'kb'):
+        return NodeType.APP.value
+    if node_type == NodeType.RECORD_GROUP.value:
+        return NodeType.RECORD_GROUP.value
+    if node_type == NodeType.FOLDER.value:
+        return NodeType.FOLDER.value
+    return None
+
+def _is_web_path_placeholder(item: NodeItem) -> bool:
+    """Internal web connector URL path records behave as navigable containers."""
+    return (
+        _get_node_type_value(item.nodeType) == NodeType.RECORD.value
+        and item.isInternal is True
+        and (item.connector or '').upper() == Connectors.WEB.value
+        and item.hasChildren is True
+    )
+
+def _rollup_container_type_for_item(item: NodeItem) -> str | None:
+    if _is_web_path_placeholder(item):
+        return NodeType.RECORD.value
+    return _rollup_container_type(_get_node_type_value(item.nodeType))
 
 FOLDER_MIME_TYPES = [
     'application/vnd.folder',
@@ -214,6 +242,7 @@ class KnowledgeHubService:
                         name=parent_info['name'],
                         nodeType=parent_info['nodeType'],
                         subType=parent_info.get('subType'),
+                        isInternal=bool(parent_info.get('isInternal', False)),
                     )
 
             # Build applied filters
@@ -293,6 +322,9 @@ class KnowledgeHubService:
                     response.permissions = await self._get_permissions(
                         user_key, org_id, parent_id, parent_type
                     )
+
+                if 'indexingRollup' in include:
+                    await self._attach_indexing_rollups(items, org_id, current_node=current_node)
 
             return response
 
@@ -685,6 +717,8 @@ class KnowledgeHubService:
                 name=node_info['name'],
                 nodeType=node_info['nodeType'],
                 subType=node_info.get('subType'),
+                syncStatus=node_info.get('syncStatus'),
+                isInternal=bool(node_info.get('isInternal', False)),
             )
         return None
 
@@ -796,8 +830,12 @@ class KnowledgeHubService:
             connector=doc.get('connector'),
             recordType=doc.get('recordType'),
             recordGroupType=doc.get('recordGroupType'),
+            syncStatus=doc.get('syncStatus'),
             indexingStatus=doc.get('indexingStatus'),
             reason=doc.get('reason'),
+            indexingStage=doc.get('indexingStage'),
+            lastActivityTimestamp=doc.get('lastActivityTimestamp'),
+            indexingProgress=normalize_indexing_progress(doc.get('indexingProgress')),
             createdAt=doc.get('createdAt', 0),
             updatedAt=doc.get('updatedAt', 0),
             sizeInBytes=doc.get('sizeInBytes'),
@@ -811,6 +849,70 @@ class KnowledgeHubService:
             isInternal=bool(doc.get('isInternal', False)),
         )
 
+
+    async def _attach_indexing_rollups(
+        self,
+        items: list[NodeItem],
+        org_id: str,
+        current_node: CurrentNode | None = None,
+    ) -> None:
+        """Compute and attach an aggregated indexing rollup to each container item
+        and, when browsing inside a container, to that current node itself (so the
+        folder/collection you are viewing shows its own aggregate in the header —
+        not just its child rows).
+
+        Best-effort: a rollup failure must never break the node listing, so any
+        error is swallowed and the affected nodes simply carry no rollup.
+        """
+        containers: list[dict] = []
+        seen_containers: set[tuple[str, str]] = set()
+
+        def add_container(container_id: str, container_type: str) -> None:
+            key = (container_id, container_type)
+            if key not in seen_containers:
+                seen_containers.add(key)
+                containers.append({"id": container_id, "type": container_type})
+
+        for item in items:
+            rollup_type = _rollup_container_type_for_item(item)
+            if rollup_type and item.id:
+                add_container(item.id, rollup_type)
+
+        current_rollup_type = (
+            _rollup_container_type(current_node.nodeType) if current_node else None
+        )
+        if (
+            current_node
+            and current_rollup_type is None
+            and current_node.nodeType == NodeType.RECORD.value
+            and current_node.isInternal
+        ):
+            current_rollup_type = "record"
+        if current_node and current_rollup_type and current_node.id:
+            add_container(current_node.id, current_rollup_type)
+
+        if not containers:
+            return
+
+        try:
+            raw = await self.graph_provider.get_indexing_rollups(org_id=org_id, containers=containers)
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to attach indexing rollups: {str(e)}")
+            return
+
+        for item in items:
+            rows = raw.get(item.id)
+            if rows:
+                rollup = build_container_rollup(rows)
+                if rollup is not None:
+                    item.indexingRollup = IndexingRollup(**rollup)
+
+        if current_node and current_rollup_type:
+            rows = raw.get(current_node.id)
+            if rows:
+                rollup = build_container_rollup(rows)
+                if rollup is not None:
+                    current_node.indexingRollup = IndexingRollup(**rollup)
 
     def _role_to_permission(self, role: str) -> ItemPermission:
         """

@@ -449,6 +449,32 @@
     "confirm": "Confirm"
   },
   "kb": {
+    "indexingProgress": {
+      "steps": {
+        "queued": "Queued",
+        "extract": "Extract",
+        "index": "Index",
+        "done": "Done"
+      },
+      "stage": {
+        "queued": "Queued",
+        "extracting": "Extracting content",
+        "indexing": "Indexing",
+        "completed": "Completed",
+        "failed": "Failed",
+        "processing": "Processing"
+      },
+      "embeddingChunk": "Embedding chunk {{current}} of {{total}}",
+      "extractingPage": "Extracting page {{current}} of {{total}}",
+      "rollupProgress": "{{completed}} of {{total}} indexed",
+      "rollupIndexed": "{{total}} indexed",
+      "rollupRecords_one": "{{count}} record: {{completed}} indexed",
+      "rollupRecords_other": "{{count}} records: {{completed}} indexed",
+      "rollupFailed": "{{count}} failed",
+      "rollupSkipped": "{{count}} skipped",
+      "indexedTooltip": "Indexed",
+      "indexingPercent": "Indexing {{percent}}%"
+    },
     "viewToggle": "View Toggle",
     "collectionsView": "Collections View",
     "allRecordsView": "All Records View",
@@ -1870,6 +1896,104 @@
       "personal": {
         "desktopRequiredTitle": "Desktop app required",
         "desktopRequiredDescription": "Local filesystem connector is only available in the PipesHub desktop app. Please use the desktop app to set up this connector."
+      },
+      "syncProgress": {
+        "status": "Status",
+        "removing": "Removing…",
+        "indexingCount": "Indexing {{processed}} of {{total}}",
+        "fullSyncDiscovering": "Full sync - syncing source…",
+        "discovering": "Syncing source…",
+        "queuedCount": "{{count}} queued",
+        "stillProcessing_one": "{{count}} record still processing",
+        "stillProcessing_other": "{{count}} records still processing",
+        "indexed": "Indexed",
+        "syncFailed": "Sync failed",
+        "failedCount": "{{count}} failed",
+        "calculating": "Progress is being calculated",
+        "currentSync": "Current sync",
+        "breakdownQueued": "Queued this sync",
+        "breakdownFailed": "Failed",
+        "breakdownSkipped": "Skipped",
+        "badgeFullSync": "Full sync…",
+        "badgeSyncing": "Syncing…",
+        "conflict": {
+          "fullOverFull": {
+            "title": "Full sync already running",
+            "message": "A full sync is already in progress. Restarting cancels the current one and re-indexes everything from scratch.",
+            "confirm": "Restart full sync",
+            "cancel": "Keep current sync"
+          },
+          "fullOverQuick": {
+            "title": "A sync is running",
+            "message": "A sync is currently in progress. Starting a full sync will cancel it and re-index everything from scratch.",
+            "confirm": "Cancel & full sync",
+            "cancel": "Keep current sync"
+          },
+          "quickOverFull": {
+            "title": "Full sync in progress",
+            "message": "A full sync is running and is more thorough than a quick sync. Running a quick sync now will cancel it — consider letting the full sync finish.",
+            "confirm": "Cancel & sync",
+            "cancel": "Keep full sync"
+          },
+          "quickOverQuick": {
+            "title": "Sync already running",
+            "message": "A sync is already in progress. Restarting cancels the current one and starts over.",
+            "confirm": "Restart sync",
+            "cancel": "Keep current sync"
+          },
+          "restartError": "Could not restart the sync. Please try again.",
+          "lockedTitle": "Sync preparing",
+          "lockedMessage": "A full sync is preparing and cannot be interrupted yet. Please wait and try again."
+        },
+        "lastSync": "Last sync",
+        "failure": {
+          "auth": {
+            "title": "Authentication failed",
+            "summary": "This connector could not sign in to the source.",
+            "remediation": "Reconnect in Manage → Authorize. If it still fails, an admin may need to approve the app or its scopes."
+          },
+          "rateLimit": {
+            "title": "Rate limit reached",
+            "summary": "The source temporarily limited how fast we can sync.",
+            "remediation": "Wait a few minutes, then retry. If this keeps happening, reduce sync frequency."
+          },
+          "permission": {
+            "title": "Missing access",
+            "summary": "This account cannot read some of the content selected for sync.",
+            "remediation": "Grant access to the files or Shared Drives this connector should sync, then retry."
+          },
+          "network": {
+            "title": "Connection problem",
+            "summary": "We could not reach the source reliably.",
+            "remediation": "Check network connectivity to the source, then retry the sync."
+          },
+          "cancelled": {
+            "title": "Sync cancelled",
+            "summary": "The sync stopped before it finished.",
+            "remediation": "Start the sync again when you are ready."
+          },
+          "unknown": {
+            "title": "Sync failed",
+            "summary": "Something went wrong while syncing.",
+            "remediation": "Retry the sync. If it fails again, check connector settings or contact an admin."
+          },
+          "reasons": {
+            "unauthorized_client": "Google blocked this app from getting access tokens for the requested scopes.",
+            "invalid_grant": "The saved Google sign-in expired or was revoked.",
+            "invalid_client": "The Google app credentials look invalid or were revoked.",
+            "access_denied": "Access was denied while authorizing this connector."
+          }
+        },
+        "queue": {
+          "waitingCompact": "waiting in queue",
+          "waitingDetail": "Waiting in shared indexing queue · ~{{count}} jobs ahead",
+          "etaAlmostDone": "almost done",
+          "etaAboutAMinute": "about a minute",
+          "etaMinutes": "~{{minutes}} min",
+          "etaMinutesRange": "~{{low}}–{{high}} min",
+          "etaAboutAnHour": "about an hour",
+          "etaMayTakeAWhile": "may take a while"
+        }
       },
       "syncStatus": {
         "paused": "Sync Paused",

@@ -19,8 +19,17 @@ import type {
 import { FolderIcon } from '@/app/components/ui';
 import { KbNodeNameIcon } from '../utils/kb-node-name-icon';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
+import { getIndexingProgressView } from '../utils/indexing-progress';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import {
+  ContainerRollupIndicator,
+  ConnectorSyncBadge,
+  IndexingProgressIndicator,
+  isActiveConnectorSync,
+} from './indexing-progress-indicator';
+import {
+  isFolderLikeTableItem,
+  isWebPathPlaceholder,
   runItemMenuOpenFromMenu,
   shouldHideIndexingStatusForHubRecord,
   shouldShowDownloadForTableItem,
@@ -171,7 +180,7 @@ function TableRow({
 
   // Determine if item is a file (record) for extension preservation
   const isFile = isKnowledgeHubNode(item)
-    ? item.nodeType === 'record'
+    ? item.nodeType === 'record' && !isWebPathPlaceholder(item)
     : item.type === 'file';
 
   // Per-item permission (Knowledge Hub nodes only) — a shared item can have a
@@ -257,9 +266,20 @@ function TableRow({
     !!onReindex,
   );
 
-  const isFolder = isHubNode
-    ? ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType)
-    : item.type === 'folder';
+  const isFolder = isFolderLikeTableItem(item);
+  const displayNodeType = isKnowledgeHubNode(item) && isWebPathPlaceholder(item)
+    ? 'folder'
+    : isKnowledgeHubNode(item)
+      ? item.nodeType
+      : undefined;
+  const activeProgressView =
+    isKnowledgeHubNode(item) && (item.indexingStatus === 'IN_PROGRESS' || item.indexingStatus === 'QUEUED')
+      ? getIndexingProgressView(item)
+      : null;
+  const containerRollup = isKnowledgeHubNode(item) ? item.indexingRollup ?? null : null;
+  const syncStatus = isKnowledgeHubNode(item) ? item.syncStatus ?? null : null;
+  const isSyncing = isActiveConnectorSync(syncStatus);
+  const rowHeight = activeProgressView || containerRollup?.isActive || isSyncing ? '76px' : '60px';
 
   // Status label for tooltip
   const getStatusLabel = (): string => {
@@ -277,8 +297,11 @@ function TableRow({
       let baseLabel: string;
       let showReason = true;
       switch (item.indexingStatus) {
-        case 'COMPLETED': baseLabel = 'Completed'; showReason = false; break;
-        case 'IN_PROGRESS': baseLabel = 'In Progress'; showReason = false; break;
+        case 'COMPLETED': baseLabel = 'Indexed'; showReason = false; break;
+        case 'IN_PROGRESS': {
+          const view = getIndexingProgressView(item);
+          return view.detail ? `${view.label} — ${view.detail}` : view.label;
+        }
         case 'FAILED': baseLabel = 'Failed'; break;
         case 'FILE_TYPE_NOT_SUPPORTED': baseLabel = 'File Type Not Supported'; break;
         case 'NOT_STARTED': baseLabel = 'Not Started'; break;
@@ -292,7 +315,7 @@ function TableRow({
     let baseLabel: string;
     let showReason = true;
     switch (item.status) {
-      case 'indexed': baseLabel = 'Completed'; showReason = false; break;
+      case 'indexed': baseLabel = 'Indexed'; showReason = false; break;
       case 'processing': baseLabel = 'In Progress'; showReason = false; break;
       case 'pending': baseLabel = 'Pending'; showReason = false; break;
       case 'failed': baseLabel = 'Failed'; break;
@@ -377,7 +400,7 @@ function TableRow({
       aria-selected={isSelected}
       aria-label={item.name}
       style={{
-        height: '60px',
+        minHeight: rowHeight,
         backgroundColor: isSelected
           ? 'var(--accent-3)'
           : isHovered
@@ -425,7 +448,7 @@ function TableRow({
       >
         <KbNodeNameIcon
           isKnowledgeHub={isKnowledgeHubNode(item)}
-          nodeType={isKnowledgeHubNode(item) ? item.nodeType : undefined}
+          nodeType={displayNodeType}
           connector={isKnowledgeHubNode(item) ? item.connector : undefined}
           subType={isKnowledgeHubNode(item) ? item.subType : undefined}
           extension={isKnowledgeHubNode(item) ? item.extension : undefined}
@@ -514,8 +537,8 @@ function TableRow({
         )}
       </Flex>
 
-      {/* Status — tooltip only when an icon exists (avoid empty tooltip when status is null) */}
-      <Flex align="center" justify="center" style={{ width: '60px', padding: '0 var(--space-2)' }}>
+      {/* Status — active indexing shows full progression; terminal statuses stay compact. */}
+      <Flex align="center" justify="center" style={{ width: 'clamp(96px, 22vw, 220px)', padding: '0 var(--space-2)' }}>
         {(() => {
           if (shouldHideIndexingStatusForHubRecord(item)) {
             return (
@@ -524,10 +547,29 @@ function TableRow({
               </Text>
             );
           }
+          // Container rows show connector sync (if any) plus an aggregated rollup
+          // rolled up from their subtree.
+          if (containerRollup || isSyncing) {
+            return (
+              <Flex direction="column" align="center" gap="1">
+                {isSyncing && <ConnectorSyncBadge syncStatus={syncStatus} variant="pill" />}
+                {containerRollup && <ContainerRollupIndicator rollup={containerRollup} compact />}
+              </Flex>
+            );
+          }
           const statusIcon = getStatusIcon();
           const statusLabel = getStatusLabel();
           if (!statusIcon) {
             return <Box style={{ display: 'inline-flex', minHeight: '20px' }} />;
+          }
+          if (isKnowledgeHubNode(item) && (item.indexingStatus === 'IN_PROGRESS' || item.indexingStatus === 'QUEUED')) {
+            return (
+              <Tooltip content={statusLabel} side="top" delayDuration={200}>
+                <Box>
+                  <IndexingProgressIndicator record={item} compact />
+                </Box>
+              </Tooltip>
+            );
           }
           return (
             <Tooltip content={statusLabel} side="top" delayDuration={200}>
@@ -667,7 +709,6 @@ export function KbListView({
   onDownload,
 }: KbListViewProps) {
   const isMobile = useIsMobile();
-  console.log('pagination data', pagination);
 
   return (
     <>
@@ -703,7 +744,7 @@ export function KbListView({
         <TableHeaderCell label="File Name" field="name" flex={1} sort={sort} onSort={onSort} />
 
         {/* Status */}
-        <TableHeaderCell label="Status" width="60px" sort={sort} onSort={onSort} />
+        <TableHeaderCell label="Status" width="clamp(96px, 22vw, 220px)" sort={sort} onSort={onSort} />
 
         {/* Source - Only shown in All Records mode */}
         {showSourceColumn && (

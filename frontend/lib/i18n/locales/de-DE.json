@@ -444,6 +444,32 @@
     "confirm": "Bestätigen"
   },
   "kb": {
+    "indexingProgress": {
+      "steps": {
+        "queued": "Wartend",
+        "extract": "Extrahieren",
+        "index": "Indexieren",
+        "done": "Fertig"
+      },
+      "stage": {
+        "queued": "In Warteschlange",
+        "extracting": "Inhalt wird extrahiert",
+        "indexing": "Indexierung",
+        "completed": "Abgeschlossen",
+        "failed": "Fehlgeschlagen",
+        "processing": "Verarbeitung"
+      },
+      "embeddingChunk": "Einbettung von Chunk {{current}} von {{total}}",
+      "extractingPage": "Extrahiere Seite {{current}} von {{total}}",
+      "rollupProgress": "{{completed}} von {{total}} indexiert",
+      "rollupIndexed": "{{total}} indexiert",
+      "rollupRecords_one": "{{count}} Eintrag: {{completed}} indexiert",
+      "rollupRecords_other": "{{count}} Einträge: {{completed}} indexiert",
+      "rollupFailed": "{{count}} fehlgeschlagen",
+      "rollupSkipped": "{{count}} übersprungen",
+      "indexedTooltip": "Indexiert",
+      "indexingPercent": "Indexierung {{percent}} %"
+    },
     "viewToggle": "Ansicht wechseln",
     "collectionsView": "Sammlungsansicht",
     "allRecordsView": "Alle Datensätze Ansicht",
@@ -1863,6 +1889,104 @@
       "personal": {
         "desktopRequiredTitle": "Desktop-App erforderlich",
         "desktopRequiredDescription": "Der lokale Dateisystem-Konnektor ist nur in der PipesHub-Desktop-App verfügbar. Bitte verwenden Sie die Desktop-App, um diesen Konnektor einzurichten."
+      },
+      "syncProgress": {
+        "status": "Status",
+        "removing": "Wird entfernt…",
+        "indexingCount": "Indexiere {{processed}} von {{total}}",
+        "fullSyncDiscovering": "Vollständige Synchronisierung – Quelle wird synchronisiert…",
+        "discovering": "Quelle wird synchronisiert…",
+        "queuedCount": "{{count}} in der Warteschlange",
+        "stillProcessing_one": "{{count}} Eintrag wird noch verarbeitet",
+        "stillProcessing_other": "{{count}} Einträge werden noch verarbeitet",
+        "indexed": "Indexiert",
+        "syncFailed": "Synchronisierung fehlgeschlagen",
+        "failedCount": "{{count}} fehlgeschlagen",
+        "calculating": "Fortschritt wird berechnet",
+        "currentSync": "Aktuelle Synchronisierung",
+        "breakdownQueued": "In dieser Synchronisierung eingereiht",
+        "breakdownFailed": "Fehlgeschlagen",
+        "breakdownSkipped": "Übersprungen",
+        "badgeFullSync": "Vollständige Synchronisierung…",
+        "badgeSyncing": "Synchronisiere…",
+        "conflict": {
+          "fullOverFull": {
+            "title": "Vollständige Synchronisierung läuft bereits",
+            "message": "Eine vollständige Synchronisierung läuft bereits. Ein Neustart bricht die laufende ab und indexiert alles von Grund auf neu.",
+            "confirm": "Vollständige Synchronisierung neu starten",
+            "cancel": "Laufende Synchronisierung behalten"
+          },
+          "fullOverQuick": {
+            "title": "Eine Synchronisierung läuft",
+            "message": "Eine Synchronisierung läuft gerade. Eine vollständige Synchronisierung bricht sie ab und indexiert alles von Grund auf neu.",
+            "confirm": "Abbrechen & vollständig synchronisieren",
+            "cancel": "Laufende Synchronisierung behalten"
+          },
+          "quickOverFull": {
+            "title": "Vollständige Synchronisierung läuft",
+            "message": "Eine vollständige Synchronisierung läuft und ist gründlicher als eine schnelle Synchronisierung. Eine schnelle Synchronisierung bricht sie ab — besser die vollständige abschließen lassen.",
+            "confirm": "Abbrechen & synchronisieren",
+            "cancel": "Vollständige Synchronisierung behalten"
+          },
+          "quickOverQuick": {
+            "title": "Synchronisierung läuft bereits",
+            "message": "Eine Synchronisierung läuft bereits. Ein Neustart bricht die laufende ab und beginnt von vorn.",
+            "confirm": "Synchronisierung neu starten",
+            "cancel": "Laufende Synchronisierung behalten"
+          },
+          "restartError": "Die Synchronisierung konnte nicht neu gestartet werden. Bitte erneut versuchen.",
+          "lockedTitle": "Synchronisierung wird vorbereitet",
+          "lockedMessage": "Eine vollständige Synchronisierung wird vorbereitet und kann noch nicht unterbrochen werden. Bitte warten und erneut versuchen."
+        },
+        "lastSync": "Letzte Synchronisierung",
+        "failure": {
+          "auth": {
+            "title": "Authentifizierung fehlgeschlagen",
+            "summary": "Dieser Connector konnte sich bei der Quelle nicht anmelden.",
+            "remediation": "Verbinden Sie unter Verwalten → Autorisieren erneut. Schlägt es weiter fehl, muss ein Admin die App oder ihre Scopes freigeben."
+          },
+          "rateLimit": {
+            "title": "Ratenlimit erreicht",
+            "summary": "Die Quelle hat die Sync-Geschwindigkeit vorübergehend begrenzt.",
+            "remediation": "Warten Sie einige Minuten und versuchen Sie es erneut. Wenn das wiederholt auftritt, verringern Sie die Sync-Häufigkeit."
+          },
+          "permission": {
+            "title": "Fehlender Zugriff",
+            "summary": "Dieses Konto kann einen Teil der zum Sync ausgewählten Inhalte nicht lesen.",
+            "remediation": "Gewähren Sie Zugriff auf die Dateien oder freigegebenen Laufwerke, die synchronisiert werden sollen, und versuchen Sie es erneut."
+          },
+          "network": {
+            "title": "Verbindungsproblem",
+            "summary": "Die Quelle war nicht zuverlässig erreichbar.",
+            "remediation": "Prüfen Sie die Netzwerkverbindung zur Quelle und starten Sie die Synchronisierung erneut."
+          },
+          "cancelled": {
+            "title": "Synchronisierung abgebrochen",
+            "summary": "Die Synchronisierung wurde vor dem Abschluss gestoppt.",
+            "remediation": "Starten Sie die Synchronisierung erneut, wenn Sie bereit sind."
+          },
+          "unknown": {
+            "title": "Synchronisierung fehlgeschlagen",
+            "summary": "Beim Synchronisieren ist etwas schiefgelaufen.",
+            "remediation": "Versuchen Sie die Synchronisierung erneut. Schlägt sie erneut fehl, prüfen Sie die Connector-Einstellungen oder wenden Sie sich an einen Admin."
+          },
+          "reasons": {
+            "unauthorized_client": "Google hat dieser App den Erhalt von Zugriffstoken für die angeforderten Scopes verweigert.",
+            "invalid_grant": "Die gespeicherte Google-Anmeldung ist abgelaufen oder wurde widerrufen.",
+            "invalid_client": "Die Google-App-Zugangsdaten sind ungültig oder wurden widerrufen.",
+            "access_denied": "Beim Autorisieren dieses Connectors wurde der Zugriff verweigert."
+          }
+        },
+        "queue": {
+          "waitingCompact": "warte in Warteschlange",
+          "waitingDetail": "Wartet in gemeinsamer Indexierungs-Warteschlange · ~{{count}} Jobs voraus",
+          "etaAlmostDone": "fast fertig",
+          "etaAboutAMinute": "etwa eine Minute",
+          "etaMinutes": "~{{minutes}} Min.",
+          "etaMinutesRange": "~{{low}}–{{high}} Min.",
+          "etaAboutAnHour": "etwa eine Stunde",
+          "etaMayTakeAWhile": "kann eine Weile dauern"
+        }
       },
       "syncStatus": {
         "paused": "Synchronisierung pausiert",

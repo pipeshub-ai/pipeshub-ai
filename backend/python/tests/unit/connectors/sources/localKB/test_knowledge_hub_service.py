@@ -10,6 +10,7 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     FOLDER_MIME_TYPES,
     KnowledgeHubService,
     _get_node_type_value,
+    _is_web_path_placeholder,
 )
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     AppliedFilters,
@@ -375,6 +376,102 @@ class TestDocToNodeItem:
         }
         item = service._doc_to_node_item(doc)
         assert item.isInternal is True
+
+
+# ============================================================================
+# _attach_indexing_rollups
+# ============================================================================
+class TestAttachIndexingRollups:
+    def _web_path_placeholder(self) -> NodeItem:
+        return NodeItem(
+            id="web-path-1",
+            name="docs.pipeshub.com/ai-models/llm/",
+            nodeType=NodeType.RECORD,
+            parentId=None,
+            origin=OriginType.CONNECTOR,
+            connector="WEB",
+            createdAt=0,
+            updatedAt=0,
+            hasChildren=True,
+            isInternal=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_internal_web_path_records_attach_child_rollups(self, service, mock_graph_provider):
+        item = self._web_path_placeholder()
+        assert _is_web_path_placeholder(item) is True
+
+        mock_graph_provider.get_indexing_rollups.return_value = {
+            "web-path-1": [
+                {"status": "COMPLETED", "stage": "COMPLETED", "cnt": 4},
+            ],
+        }
+
+        await service._attach_indexing_rollups([item], org_id="org-1")
+
+        mock_graph_provider.get_indexing_rollups.assert_awaited_once_with(
+            org_id="org-1",
+            containers=[{"id": "web-path-1", "type": "record"}],
+        )
+        assert item.indexingRollup is not None
+        assert item.indexingRollup.total == 4
+        assert item.indexingRollup.completed == 4
+        assert item.indexingRollup.status == "COMPLETED"
+
+    @pytest.mark.asyncio
+    async def test_internal_non_web_records_do_not_request_rollups(self, service, mock_graph_provider):
+        item = self._web_path_placeholder()
+        item.connector = "SLACK"
+
+        await service._attach_indexing_rollups([item], org_id="org-1")
+
+        mock_graph_provider.get_indexing_rollups.assert_not_awaited()
+        assert item.indexingRollup is None
+
+    @pytest.mark.asyncio
+    async def test_internal_current_record_attaches_child_rollup(self, service, mock_graph_provider):
+        current_node = CurrentNode(
+            id="web-path-1",
+            name="docs.pipeshub.com/ai-models/llm/",
+            nodeType="record",
+            subType="FILE",
+            isInternal=True,
+        )
+        mock_graph_provider.get_indexing_rollups.return_value = {
+            "web-path-1": [{"status": "IN_PROGRESS", "stage": "INDEXING", "cnt": 2}],
+        }
+
+        await service._attach_indexing_rollups(
+            [], org_id="org-1", current_node=current_node
+        )
+
+        mock_graph_provider.get_indexing_rollups.assert_awaited_once_with(
+            org_id="org-1",
+            containers=[{"id": "web-path-1", "type": "record"}],
+        )
+        assert current_node.indexingRollup is not None
+        assert current_node.indexingRollup.isActive is True
+
+    @pytest.mark.asyncio
+    async def test_duplicate_item_and_current_node_only_query_once(self, service, mock_graph_provider):
+        item = self._web_path_placeholder()
+        current_node = CurrentNode(
+            id=item.id,
+            name=item.name,
+            nodeType="record",
+            subType="FILE",
+            isInternal=True,
+        )
+        mock_graph_provider.get_indexing_rollups.return_value = {}
+
+        await service._attach_indexing_rollups(
+            [item], org_id="org-1", current_node=current_node
+        )
+
+        mock_graph_provider.get_indexing_rollups.assert_awaited_once_with(
+            org_id="org-1",
+            containers=[{"id": "web-path-1", "type": "record"}],
+        )
 
 
 # ============================================================================

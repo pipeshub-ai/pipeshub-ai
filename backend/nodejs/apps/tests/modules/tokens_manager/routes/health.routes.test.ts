@@ -997,8 +997,7 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.status).to.equal('unhealthy')
     })
 
-    it('should handle unexpected error in overall try-catch', async () => {
-      // Make Promise.allSettled itself throw by breaking axiosModule
+    it('should return per-service starting details when service checks throw synchronously', async () => {
       sinon.stub(axiosModule, 'get').throws(new Error('Unexpected'))
 
       const handler = findHandler('/services', 'get')
@@ -1010,8 +1009,10 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(res.status.calledWith(200)).to.be.true
       const jsonArg = res.json.firstCall.args[0]
       expect(jsonArg.status).to.equal('unhealthy')
-      expect(jsonArg.services.query).to.equal('unknown')
-      expect(jsonArg.services.connector).to.equal('unknown')
+      expect(jsonArg.services.query).to.equal('unhealthy')
+      expect(jsonArg.services.connector).to.equal('unhealthy')
+      expect(jsonArg.details.query.status).to.equal('starting')
+      expect(jsonArg.details.query.message).to.equal('Waiting for Query Service')
     })
 
     it('should still be healthy when only indexing is down (non-critical)', async () => {
@@ -1282,15 +1283,22 @@ describe('tokens_manager/routes/health.routes', () => {
     })
 
     it('should include all service keys as unknown in error fallback', async () => {
-      sinon.stub(axiosModule, 'get').throws(new Error('Unexpected'))
+      sinon.stub(axiosModule, 'get').resolves({
+        status: 200,
+        data: { status: 'healthy' },
+      })
 
       const handler = findHandler('/services', 'get')
       const res = mockRes()
+      // Force the primary response serialization to throw so the handler falls
+      // into its outer catch block; the fallback re-sends via res.json.
+      res.json.onFirstCall().throws(new Error('serialization failed'))
       const next = sinon.stub()
 
       await handler({}, res, next)
 
-      const jsonArg = res.json.firstCall.args[0]
+      const jsonArg = res.json.secondCall.args[0]
+      expect(jsonArg.status).to.equal('unhealthy')
       expect(jsonArg.services.query).to.equal('unknown')
       expect(jsonArg.services.connector).to.equal('unknown')
       expect(jsonArg.services.indexing).to.equal('unknown')

@@ -75,6 +75,75 @@ def connected_provider(provider):
     return provider
 
 
+class TestIndexingRollups:
+    @pytest.mark.asyncio
+    async def test_record_container_rollup_traverses_record_relation_descendants(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [
+            {
+                "id": "web-path-1",
+                "status": "COMPLETED",
+                "stage": "COMPLETED",
+                "cnt": 4,
+            }
+        ]
+
+        result = await connected_provider.get_indexing_rollups(
+            org_id="org-1",
+            containers=[{"id": "web-path-1", "type": "record"}],
+            transaction="txn-1",
+        )
+
+        connected_provider.http_client.execute_aql.assert_awaited_once()
+        query = connected_provider.http_client.execute_aql.await_args.args[0]
+        kwargs = connected_provider.http_client.execute_aql.await_args.kwargs
+        assert "OUTBOUND CONCAT(@record_prefix, cid) @@record_relations" in query
+        assert "FILTER doc.isInternal != true" in query
+        assert kwargs["bind_vars"]["ids"] == ["web-path-1"]
+        assert kwargs["bind_vars"]["record_prefix"] == "records/"
+        assert kwargs["txn_id"] == "txn-1"
+        assert result == {
+            "web-path-1": [
+                {"status": "COMPLETED", "stage": "COMPLETED", "cnt": 4}
+            ]
+        }
+
+    @pytest.mark.asyncio
+    async def test_folder_rollup_prunes_before_traversal_options(self, connected_provider):
+        # AQL grammar: PRUNE must precede OPTIONS or the query fails to parse.
+        connected_provider.http_client.execute_aql.return_value = []
+
+        await connected_provider.get_indexing_rollups(
+            org_id="org-1",
+            containers=[{"id": "folder-1", "type": "folder"}],
+        )
+
+        query = connected_provider.http_client.execute_aql.await_args.args[0]
+        assert query.index("PRUNE edge.relationshipType") < query.index("OPTIONS {")
+
+    @pytest.mark.asyncio
+    async def test_record_group_rollup_descends_nested_groups(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = [
+            {"id": "rg-1", "status": "COMPLETED", "stage": "COMPLETED", "cnt": 2}
+        ]
+
+        result = await connected_provider.get_indexing_rollups(
+            org_id="org-1",
+            containers=[{"id": "rg-1", "type": "recordGroup"}],
+        )
+
+        query = connected_provider.http_client.execute_aql.await_args.args[0]
+        kwargs = connected_provider.http_client.execute_aql.await_args.kwargs
+        # The nested-group subquery must be parenthesized inside UNIQUE((...))
+        # — bare UNIQUE(FOR ...) is an AQL syntax error that fails silently here.
+        assert "UNIQUE((" in query
+        assert "FOR group IN 1..10 INBOUND CONCAT(@record_group_prefix, cid) @@belongs_to" in query
+        assert "PRUNE NOT STARTS_WITH(group._id, @record_group_prefix)" in query
+        assert kwargs["bind_vars"]["record_group_prefix"] == "recordGroups/"
+        assert result == {
+            "rg-1": [{"status": "COMPLETED", "stage": "COMPLETED", "cnt": 2}]
+        }
+
+
 # ---------------------------------------------------------------------------
 # __init__
 # ---------------------------------------------------------------------------

@@ -57,6 +57,8 @@ import {
   isKbCollectionsHubApp,
 } from './utils/all-records-transformer';
 import { buildFilterParams, buildAllRecordsFilterParams, hasKnowledgeHubFlatteningFilters } from './utils';
+import { hasActiveIndexing } from './utils/indexing-progress';
+import { isActiveConnectorSync } from './components/indexing-progress-indicator';
 import { ShareSidebar } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { createKBShareAdapter } from './share-adapter';
@@ -138,6 +140,7 @@ function KnowledgeBasePageContent() {
     setIsLoadingTableData,
     setTableDataError,
     setSelectedNode,
+    patchVisibleRecordProgress,
     setCollectionsPagination,
     setCollectionsPage,
     setCollectionsLimit,
@@ -261,6 +264,37 @@ function KnowledgeBasePageContent() {
       ? allRecordsTableData?.items ?? []
       : tableData?.items ?? [];
   }, [isAllRecordsMode, allRecordsTableData?.items, tableData?.items]);
+
+  // The container currently being browsed (its own aggregate is shown in the
+  // header). Its rollup keeps polling alive during a reindex even when no child
+  // row is individually active yet.
+  const currentNodeRollup = useMemo(
+    () =>
+      (isAllRecordsMode ? allRecordsTableData : tableData)?.currentNode?.indexingRollup ?? null,
+    [isAllRecordsMode, allRecordsTableData, tableData],
+  );
+
+  // Sync status of the connector currently being browsed (shown as a chip in the
+  // header). Any active sync also keeps polling alive so the chip clears itself.
+  const currentNodeSyncStatus = useMemo(
+    () =>
+      (isAllRecordsMode ? allRecordsTableData : tableData)?.currentNode?.syncStatus ?? null,
+    [isAllRecordsMode, allRecordsTableData, tableData],
+  );
+
+  // Auto-poll for indexing status only while a visible record is still in
+  // flight (QUEUED/IN_PROGRESS), or the container being viewed is still
+  // aggregating. Gating on this boolean keeps the polling effect (and its
+  // backoff) alive across refetches and stops the moment everything reaches a
+  // terminal state, so settled views never poll.
+  const hasActiveRecords = useMemo(
+    () =>
+      hasActiveIndexing(tableItems) ||
+      currentNodeRollup?.isActive === true ||
+      isActiveConnectorSync(currentNodeSyncStatus) ||
+      tableItems.some((item) => isActiveConnectorSync((item as { syncStatus?: string }).syncStatus)),
+    [tableItems, currentNodeRollup, currentNodeSyncStatus],
+  );
 
   const collectionRootNodes = useMemo(
     () => [
@@ -1332,6 +1366,102 @@ function KnowledgeBasePageContent() {
     hasCollections,
     clearTableData,
   ]);
+
+  const pollVisibleRecordProgress = useCallback(async () => {
+    const currentState = useKnowledgeBaseStore.getState();
+    if (isAllRecordsMode) {
+      const params = buildAllRecordsFilterParams(
+        { ...currentState.allRecordsFilter, searchQuery: currentState.allRecordsSearchQuery },
+        currentState.allRecordsSort,
+        currentState.allRecordsPagination
+      );
+      // Polling only patches row/current-node progress. Do not recompute counts,
+      // breadcrumbs or filter facets on every refresh.
+      params.include = 'indexingRollup';
+      const nodeType = searchParams.get('nodeType');
+      const nodeId = searchParams.get('nodeId');
+      const data = nodeType && nodeId
+        ? await KnowledgeHubApi.loadFolderData(nodeType as NodeType, nodeId, params, {
+            suppressErrorToast: true,
+          })
+        : await KnowledgeHubApi.getAllRootItems(params, { suppressErrorToast: true });
+      patchVisibleRecordProgress(data.items, data.currentNode);
+      return;
+    }
+
+    const nodeType = selectedNode?.nodeType ?? searchParams.get('nodeType');
+    const nodeId = selectedNode?.nodeId ?? searchParams.get('nodeId') ?? searchParams.get('folderId');
+
+    const params = buildFilterParams(
+      { ...currentState.filter, searchQuery: currentState.searchQuery },
+      currentState.sort,
+      currentState.collectionsPagination
+    );
+    params.include = 'indexingRollup';
+    if (!nodeType || !nodeId) {
+      const useFlattenedSearch = hasKnowledgeHubFlatteningFilters(
+        currentState.filter,
+        currentState.searchQuery
+      );
+      const data = await KnowledgeHubApi.getNavigationNodes(
+        useFlattenedSearch
+          ? { ...params, origins: 'COLLECTION' }
+          : { ...params, nodeTypes: 'app', origins: 'COLLECTION', flattened: false },
+        { suppressErrorToast: true }
+      );
+      patchVisibleRecordProgress(data.items, data.currentNode);
+      return;
+    }
+    const data = await KnowledgeHubApi.loadFolderData(nodeType as NodeType, nodeId, params, {
+      suppressErrorToast: true,
+    });
+    patchVisibleRecordProgress(data.items, data.currentNode);
+  }, [isAllRecordsMode, patchVisibleRecordProgress, searchParams, selectedNode]);
+
+  const pollProgressRef = useRef(pollVisibleRecordProgress);
+  pollProgressRef.current = pollVisibleRecordProgress;
+
+  useEffect(() => {
+    if (!hasActiveRecords) return undefined;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const startedAt = Date.now();
+
+    const nextDelay = (): number => {
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < 60_000) return 4_000;
+      if (elapsed < 5 * 60_000) return 10_000;
+      return 30_000;
+    };
+
+    const schedule = () => {
+      timer = setTimeout(async () => {
+        if (cancelled) return;
+        // Skip the network round-trip while the tab is hidden, but keep the
+        // loop alive so it resumes promptly when the user returns.
+        if (typeof document === 'undefined' || !document.hidden) {
+          try {
+            await pollProgressRef.current();
+          } catch {
+            // Best-effort; a transient failure shouldn't kill the poll loop.
+          }
+        }
+        if (!cancelled) schedule();
+      }, nextDelay());
+    };
+
+    if (typeof document === 'undefined' || !document.hidden) {
+      void pollProgressRef.current().catch(() => {
+        // Best-effort; a transient failure shouldn't kill the poll loop.
+      });
+    }
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [hasActiveRecords]);
 
   // Handle refresh
   const handleRefresh = useCallback(async () => {
@@ -2856,6 +2986,7 @@ function KnowledgeBasePageContent() {
               pageViewMode={pageViewMode}
               breadcrumbs={isAllRecordsMode ? allRecordsBreadcrumbs : tableData?.breadcrumbs}
               currentTitle={currentTitle}
+              currentNodeSyncStatus={currentNodeSyncStatus}
               onBreadcrumbClick={handleBreadcrumbClick}
               onInfoClick={handleFolderInfoClick}
               onFind={handleFind}

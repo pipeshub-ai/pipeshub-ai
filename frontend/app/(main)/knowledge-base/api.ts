@@ -141,7 +141,7 @@ export const KnowledgeHubApi = {
         params: {
           page: 1,
           limit: DEFAULT_PAGE_SIZE,
-          include: 'counts,permissions,breadcrumbs,availableFilters',
+          include: 'counts,permissions,breadcrumbs,availableFilters,indexingRollup',
           // Data area: Never use onlyContainers (we need both folders AND files)
           ...params,
         },
@@ -277,17 +277,21 @@ export const KnowledgeHubApi = {
    * @param params - Optional filters, pagination, sorting
    * @returns All root-level items with metadata
    */
-  async getAllRootItems(params?: Partial<KnowledgeHubQueryParams>) {
+  async getAllRootItems(
+    params?: Partial<KnowledgeHubQueryParams>,
+    options?: { suppressErrorToast?: boolean }
+  ) {
     const { data } = await apiClient.get<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes`,
       {
         params: {
           page: 1,
           limit: DEFAULT_PAGE_SIZE,
-          include: 'counts,permissions,breadcrumbs,availableFilters',
+          include: 'counts,permissions,breadcrumbs,availableFilters,indexingRollup',
           // Data area: Never use onlyContainers (we need all root items including records)
           ...params,
         },
+        ...(options?.suppressErrorToast ? { suppressErrorToast: true } : {}),
       }
     );
     return data;
@@ -307,10 +311,13 @@ export const KnowledgeHubApi = {
    * @param params Query parameters for filtering, pagination, sorting
    * @returns Root nodes or filtered results with metadata
    */
-  async getNavigationNodes(params?: KnowledgeHubQueryParams): Promise<KnowledgeHubApiResponse> {
+  async getNavigationNodes(
+    params?: KnowledgeHubQueryParams,
+    options?: { suppressErrorToast?: boolean }
+  ): Promise<KnowledgeHubApiResponse> {
     const { data } = await apiClient.get<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes`,
-      { params }
+      { params, ...(options?.suppressErrorToast ? { suppressErrorToast: true } : {}) }
     );
     return data;
   },
@@ -714,9 +721,10 @@ export const KnowledgeBaseApi = {
   /**
    * Get full record details including metadata and permissions
    */
-  async getRecordDetails(recordId: string) {
+  async getRecordDetails(recordId: string, options?: { suppressErrorToast?: boolean }) {
     const { data } = await apiClient.get<RecordDetailsResponse>(
-      `${BASE_URL}/record/${recordId}`
+      `${BASE_URL}/record/${recordId}`,
+      options?.suppressErrorToast ? { suppressErrorToast: true } : undefined
     );
     return data;
   },

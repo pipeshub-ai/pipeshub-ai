@@ -6,7 +6,12 @@ import { Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 import { useToastStore } from '@/lib/store/toast-store';
-import { runConnectorResync } from '../../utils/connector-sync-actions';
+import {
+  runConnectorResync,
+  isConnectorSyncInProgressError,
+  isConnectorSyncLockedError,
+} from '../../utils/connector-sync-actions';
+import { useSyncConflictGuard } from '../../utils/use-sync-conflict-guard';
 
 // ========================================
 // InfoRow
@@ -85,19 +90,22 @@ type SyncState = 'idle' | 'syncing' | 'failed';
 export function SyncButton({
   connectorId,
   connectorType,
+  currentStatus,
 }: {
   connectorId: string;
   /** Registry connector type (e.g. "Google Drive"), not the instance display name */
   connectorType: string;
+  /** Live instance status, used to phrase the "already syncing" prompt. */
+  currentStatus?: string;
 }) {
   const [state, setState] = useState<SyncState>('idle');
   const addToast = useToastStore((s) => s.addToast);
+  const { guard, dialog } = useSyncConflictGuard();
 
-  const handleClick = async () => {
-    if (state === 'syncing') return;
+  const doSync = async (force: boolean) => {
     setState('syncing');
     try {
-      const outcome = await runConnectorResync({ connectorId, connectorType });
+      const outcome = await runConnectorResync({ connectorId, connectorType, force });
       if (outcome.kind === 'requires-desktop') {
         setState('idle');
         addToast({
@@ -109,11 +117,20 @@ export function SyncButton({
       addToast({ variant: 'success', title: 'Sync started' });
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('idle');
-    } catch {
+    } catch (err) {
+      if (isConnectorSyncInProgressError(err) || isConnectorSyncLockedError(err)) {
+        setState('idle');
+        throw err;
+      }
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('failed');
       addToast({ variant: 'error', title: 'Sync failed' });
     }
+  };
+
+  const handleClick = () => {
+    if (state === 'syncing') return;
+    void guard(doSync, { requestedFullSync: false, currentStatus });
   };
 
   const config = {
@@ -135,17 +152,20 @@ export function SyncButton({
   }[state];
 
   return (
-    <Button
-      variant={state === 'syncing' ? 'soft' : 'solid'}
-      color={state === 'failed' ? 'red' : state === 'syncing' ? 'gray' : 'jade'}
-      size="1"
-      onClick={handleClick}
-      disabled={state === 'syncing'}
-      style={{ cursor: state === 'syncing' ? 'default' : 'pointer', flexShrink: 0 }}
-    >
-      <MaterialIcon name={config.icon} size={16} color={config.color} />
-      {config.label}
-    </Button>
+    <>
+      <Button
+        variant={state === 'syncing' ? 'soft' : 'solid'}
+        color={state === 'failed' ? 'red' : state === 'syncing' ? 'gray' : 'jade'}
+        size="1"
+        onClick={handleClick}
+        disabled={state === 'syncing'}
+        style={{ cursor: state === 'syncing' ? 'default' : 'pointer', flexShrink: 0 }}
+      >
+        <MaterialIcon name={config.icon} size={16} color={config.color} />
+        {config.label}
+      </Button>
+      {dialog}
+    </>
   );
 }
 
@@ -153,23 +173,27 @@ export function SyncButton({
 export function FullSyncButton({
   connectorId,
   connectorType,
+  currentStatus,
 }: {
   connectorId: string;
   connectorType: string;
+  /** Live instance status, used to phrase the "already syncing" prompt. */
+  currentStatus?: string;
 }) {
   const { t } = useTranslation();
   const [state, setState] = useState<SyncState>('idle');
   const [confirmOpen, setConfirmOpen] = useState(false);
   const addToast = useToastStore((s) => s.addToast);
+  const { guard, dialog: conflictDialog } = useSyncConflictGuard();
 
-  const handleConfirmFullSync = async () => {
-    if (state === 'syncing') return;
+  const doFullSync = async (force: boolean) => {
     setState('syncing');
     try {
       const outcome = await runConnectorResync({
         connectorId,
         connectorType,
         fullSync: true,
+        force,
       });
       if (outcome.kind === 'requires-desktop') {
         setState('idle');
@@ -182,13 +206,22 @@ export function FullSyncButton({
       addToast({ variant: 'success', title: 'Full sync started' });
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('idle');
-    } catch {
+    } catch (err) {
+      if (isConnectorSyncInProgressError(err) || isConnectorSyncLockedError(err)) {
+        setState('idle');
+        throw err;
+      }
       await new Promise((resolve) => setTimeout(resolve, 2000));
       setState('failed');
       addToast({ variant: 'error', title: 'Full sync failed' });
     } finally {
       setConfirmOpen(false);
     }
+  };
+
+  const handleConfirmFullSync = () => {
+    if (state === 'syncing') return;
+    void guard(doFullSync, { requestedFullSync: true, currentStatus });
   };
 
   const config = {
@@ -240,8 +273,9 @@ export function FullSyncButton({
         cancelLabel={t('common.cancel', { defaultValue: 'Cancel' })}
         confirmVariant="primary"
         isLoading={state === 'syncing'}
-        onConfirm={() => void handleConfirmFullSync()}
+        onConfirm={() => handleConfirmFullSync()}
       />
+      {conflictDialog}
     </>
   );
 }

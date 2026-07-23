@@ -1,18 +1,25 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Flex, Box, Text, Checkbox, IconButton, DropdownMenu } from '@radix-ui/themes';
+import { Flex, Box, Text, Checkbox, IconButton, DropdownMenu, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon, FolderIcon } from '@/app/components/ui';
-import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import { formatSize } from '@/lib/utils/formatters';
 import { CARD_ICONS } from './grid-card-icons';
 import {
+  isFolderLikeTableItem,
+  isWebPathPlaceholder,
   runItemMenuOpenFromMenu,
   shouldHideIndexingStatusForHubRecord,
   shouldShowDownloadForTableItem,
 } from '../utils/kb-table-item-actions';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
+import {
+  ContainerRollupIndicator,
+  ConnectorSyncBadge,
+  IndexingProgressIndicator,
+  isActiveConnectorSync,
+} from './indexing-progress-indicator';
 import { useTranslation } from 'react-i18next';
 import {
   getReindexMenuState,
@@ -78,7 +85,7 @@ function GridCard({
 
   // Determine if item is a file (record) for extension preservation
   const isFile = isKnowledgeHubNode(item)
-    ? item.nodeType === 'record'
+    ? item.nodeType === 'record' && !isWebPathPlaceholder(item)
     : item.type === 'file';
 
   // Per-item permission (Knowledge Hub nodes only) — a shared item can have a
@@ -164,9 +171,10 @@ function GridCard({
     !!onReindex,
   );
 
-  const isFolder = isHubNode
-    ? ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType)
-    : item.type === 'folder';
+  const isFolder = isFolderLikeTableItem(item);
+  const containerRollup = isHubNode ? item.indexingRollup ?? null : null;
+  const syncStatus = isHubNode ? item.syncStatus ?? null : null;
+  const isSyncing = isActiveConnectorSync(syncStatus);
 
   // Status badge component (only shown for files)
   const getStatusBadge = () => {
@@ -184,33 +192,35 @@ function GridCard({
       switch (item.indexingStatus) {
         case 'COMPLETED':
           return (
-            <Flex
-              align="center"
-              justify="center"
-              style={{
-                backgroundColor: 'var(--accent-2)',
-                border: '1px solid var(--accent-7)',
-                borderRadius: 'var(--radius-1)',
-                padding: '4px 6px',
-              }}
-            >
-              <MaterialIcon name="check_circle" size={12} color="var(--accent-a11)" />
-            </Flex>
+            <Tooltip content="Indexed" side="top" delayDuration={200}>
+              <Flex
+                align="center"
+                justify="center"
+                style={{
+                  backgroundColor: 'var(--emerald-2)',
+                  border: '1px solid var(--emerald-7)',
+                  borderRadius: 'var(--radius-1)',
+                  padding: '4px 6px',
+                }}
+              >
+                <MaterialIcon name="check_circle" size={12} color="var(--emerald-11)" />
+              </Flex>
+            </Tooltip>
           );
-        case 'IN_PROGRESS':
+        case 'IN_PROGRESS': {
           return (
-            <Flex
-              align="center"
-              justify="center"
+            <Box
               style={{
-                backgroundColor: 'var(--amber-2)',
-                border: '1px solid var(--amber-7)',
-                borderRadius: 'var(--radius-1)',
+                backgroundColor: 'var(--blue-2)',
+                border: '1px solid var(--blue-6)',
+                borderRadius: 'var(--radius-2)',
+                padding: '6px 8px',
               }}
             >
-              <LapTimerIcon size={16} color="var(--amber-9)" />
-            </Flex>
+              <IndexingProgressIndicator record={item} compact />
+            </Box>
           );
+        }
         case 'FAILED':
           return (
             <Flex
@@ -258,18 +268,16 @@ function GridCard({
           );
         case 'QUEUED':
           return (
-            <Flex
-              align="center"
-              justify="center"
+            <Box
               style={{
                 backgroundColor: 'var(--blue-2)',
-                border: '1px solid var(--blue-7)',
-                borderRadius: 'var(--radius-1)',
-                padding: '4px 6px',
+                border: '1px solid var(--blue-6)',
+                borderRadius: 'var(--radius-2)',
+                padding: '6px 8px',
               }}
             >
-              <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={12} color="var(--blue-9)" />
-            </Flex>
+              <IndexingProgressIndicator record={item} compact />
+            </Box>
           );
         case 'AUTO_INDEX_OFF':
           return (
@@ -323,18 +331,20 @@ function GridCard({
     switch (item.status) {
       case 'indexed':
         return (
-          <Flex
-            align="center"
-            justify="center"
-            style={{
-              backgroundColor: 'var(--accent-2)',
-              border: '1px solid var(--accent-7)',
-              borderRadius: 'var(--radius-1)',
-              padding: '4px 6px',
-            }}
-          >
-            <MaterialIcon name="check_circle" size={12} color="var(--accent-9)" />
-          </Flex>
+          <Tooltip content="Indexed" side="top" delayDuration={200}>
+            <Flex
+              align="center"
+              justify="center"
+              style={{
+                backgroundColor: 'var(--emerald-2)',
+                border: '1px solid var(--emerald-7)',
+                borderRadius: 'var(--radius-1)',
+                padding: '4px 6px',
+              }}
+            >
+              <MaterialIcon name="check_circle" size={12} color="var(--emerald-11)" />
+            </Flex>
+          </Tooltip>
         );
       case 'processing':
         return (
@@ -653,7 +663,14 @@ function GridCard({
 
         {/* Bottom section: status badge or placeholder */}
         <Flex align="center" style={{ minHeight: '20px' }}>
-          {isFolder ? null : shouldHideIndexingStatusForHubRecord(item) ? (
+          {isFolder ? (
+            containerRollup || isSyncing ? (
+              <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
+                {isSyncing && <ConnectorSyncBadge syncStatus={syncStatus} variant="pill" />}
+                {containerRollup && <ContainerRollupIndicator rollup={containerRollup} compact />}
+              </Flex>
+            ) : null
+          ) : shouldHideIndexingStatusForHubRecord(item) ? (
             <Text
               size="2"
               weight="medium"

@@ -128,6 +128,51 @@ export type IndexingStatus =
   | 'AUTO_INDEX_OFF'
   | 'QUEUED'
   | 'EMPTY';
+
+/**
+ * Coarse pipeline phase within an IN_PROGRESS record. Refines `indexingStatus`
+ * so the UI can show where a record is (and detect stalls). Written by the
+ * backend at the shared pipeline checkpoints, so it is file-type and model
+ * agnostic.
+ */
+export type IndexingStage =
+  | 'QUEUED'
+  | 'EXTRACTING'
+  | 'INDEXING'
+  | 'COMPLETED'
+  | 'FAILED';
+export interface IndexingProgressMetrics {
+  current: number;
+  total: number;
+  unit: string;
+  phase: string;
+  message?: string | null;
+}
+
+/**
+ * Aggregated indexing progress for a container node (folder / recordGroup / app),
+ * rolled up from all indexable leaf records in its subtree. Only present on
+ * container rows when the API is asked for `include=indexingRollup`.
+ */
+export interface IndexingRollup {
+  total: number;
+  completed: number;
+  inProgress: number;
+  queued: number;
+  failed: number;
+  skipped: number;
+  percent: number;
+  status: 'COMPLETED' | 'IN_PROGRESS' | 'QUEUED' | 'COMPLETED_WITH_ERRORS';
+  isActive: boolean;
+}
+
+/**
+ * Sync state of the owning connector, surfaced on connector-origin container nodes
+ * and on the current node while browsing connector content. Distinct from indexing:
+ * this is the connector fetching new/changed records from the source.
+ */
+export type ConnectorSyncStatus = 'IDLE' | 'SYNCING' | 'FULL_SYNCING' | string;
+
 export type SharingStatus = 'private' | 'team' | 'personal' | 'shared';
 
 /**
@@ -208,6 +253,11 @@ export interface KnowledgeHubNode {
   recordType?: RecordType | null;
   indexingStatus?: IndexingStatus | null;
   reason?: string | null;
+  indexingStage?: IndexingStage | null;
+  lastActivityTimestamp?: number | null;
+  indexingProgress?: IndexingProgressMetrics | null;
+  indexingRollup?: IndexingRollup | null;
+  syncStatus?: ConnectorSyncStatus | null;
   sizeInBytes?: number | null;
   mimeType?: string | null;
   extension?: string | null;
@@ -303,6 +353,8 @@ export interface KnowledgeHubApiResponse {
     subType?: string;
     origin?: string;
     indexingStatus?: string;
+    indexingRollup?: IndexingRollup | null;
+    syncStatus?: ConnectorSyncStatus | null;
     version?: number;
     createdAt?: number;
     updatedAt?: number;
@@ -347,6 +399,7 @@ export interface EnhancedFolderTreeNode extends FolderTreeNode {
   extension?: string | null;
   mimeType?: string | null;
   indexingStatus?: IndexingStatus | null;
+  isInternal?: boolean;
 }
 
 export type SidebarSection = 'shared' | 'private';
@@ -486,6 +539,9 @@ export interface RecordDetailsResponse {
     isArchived: boolean;
     indexingStatus: IndexingStatus;
     reason?: string;
+    indexingStage?: IndexingStage | null;
+    lastActivityTimestamp?: number | null;
+    indexingProgress?: IndexingProgressMetrics | null;
     connectorName?: string;
     hideWeburl?: boolean;
     previewRenderable?: boolean;

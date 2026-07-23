@@ -434,6 +434,10 @@ class Neo4jProvider(IGraphDBProvider):
             "CREATE INDEX record_connector_id IF NOT EXISTS "
             "FOR (n:Record) ON (n.connectorId)"
         )
+        indexes.append(
+            "CREATE INDEX record_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.id)"
+        )
 
         # SINGLE: indexingStatus (pipeline queries)
         indexes.append(
@@ -684,7 +688,27 @@ class Neo4jProvider(IGraphDBProvider):
         # Remove _id if present (we'll reconstruct it if needed)
         neo4j_node.pop("_id", None)
 
+        # Neo4j node properties must be primitives or arrays of primitives; it
+        # rejects nested maps (e.g. ``indexingProgress``) and arrays of maps.
+        # JSON-encode those so writes don't fail; readers decode as needed.
+        for key, value in list(neo4j_node.items()):
+            if isinstance(value, dict) or (
+                isinstance(value, list)
+                and any(isinstance(item, (dict, list)) for item in value)
+            ):
+                neo4j_node[key] = json.dumps(value)
+
         return neo4j_node
+
+    def _prepare_neo4j_node_for_write(self, arango_node: dict, collection: str) -> dict:
+        """Validate against the Arango-shaped schema, then encode for Neo4j storage.
+
+        Nested fields like ``indexingProgress`` are validated as objects here and
+        JSON-encoded in ``_arango_to_neo4j_node`` because Neo4j properties must
+        be primitives.
+        """
+        self.validator.validate_node_update(collection, arango_node)
+        return self._arango_to_neo4j_node(arango_node, collection)
 
     def _neo4j_to_arango_node(self, neo4j_node: dict, collection: str) -> dict:
         """
@@ -698,6 +722,19 @@ class Neo4jProvider(IGraphDBProvider):
             Node in ArangoDB format (with _key, _id)
         """
         arango_node = neo4j_node.copy()
+
+        # Nested maps are JSON properties in Neo4j. Decode at the provider
+        # boundary so every query/projection has the same Arango-shaped value.
+        for key, value in list(arango_node.items()):
+            if not isinstance(value, str):
+                continue
+            if key == "indexingProgress":
+                try:
+                    decoded = json.loads(value)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if isinstance(decoded, dict):
+                    arango_node[key] = decoded
 
         # Convert id to _key
         if "id" in arango_node:
@@ -915,15 +952,13 @@ class Neo4jProvider(IGraphDBProvider):
             # Convert nodes to Neo4j format
             neo4j_nodes = []
             for node in nodes:
-                neo4j_node = self._arango_to_neo4j_node(node, collection)
+                neo4j_node = self._prepare_neo4j_node_for_write(node, collection)
                 # Ensure id exists
                 if "id" not in neo4j_node:
                     if "_key" in neo4j_node:
                         neo4j_node["id"] = neo4j_node.pop("_key")
                     else:
                         neo4j_node["id"] = str(uuid.uuid4())
-                # Validate nodes before writing
-                self.validator.validate_node_update(collection, neo4j_node)
                 neo4j_nodes.append(neo4j_node)
 
             # Use UNWIND for batch upsert
@@ -1011,10 +1046,8 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             label = collection_to_label(collection)
 
-            # Convert updates to Neo4j format
-            updates = self._arango_to_neo4j_node(node_updates, collection)
-            # Validate updates before writing
-            self.validator.validate_node_update(collection, updates)
+            # Validate against the object schema, then encode nested fields for Neo4j.
+            updates = self._prepare_neo4j_node_for_write(node_updates, collection)
 
             query = f"""
             MATCH (n:{label} {{id: $key}})
@@ -1063,9 +1096,7 @@ class Neo4jProvider(IGraphDBProvider):
             # Convert nodes to Neo4j format and validate
             neo4j_nodes = []
             for node in nodes:
-                neo4j_node = self._arango_to_neo4j_node(node, collection)
-                self.validator.validate_node_update(collection, neo4j_node)
-                neo4j_nodes.append(neo4j_node)
+                neo4j_nodes.append(self._prepare_neo4j_node_for_write(node, collection))
 
             # Use UNWIND to batch update multiple nodes
             # MATCH ensures we only update existing nodes (no CREATE)
@@ -7936,6 +7967,91 @@ class Neo4jProvider(IGraphDBProvider):
                 "data": None
             }
 
+    async def get_indexing_rollups(
+        self,
+        org_id: str,
+        containers: list[dict],
+        transaction: str | None = None,
+    ) -> dict:
+        """Aggregate indexable-leaf-record status counts per container subtree.
+
+        Runs at most one query per container type (app / recordGroup / folder / record).
+        Folder and internal placeholder records are excluded from the counts.
+        """
+        rollups: dict[str, list[dict]] = {}
+        if not containers:
+            return rollups
+
+        ids_by_type: dict[str, list[str]] = {"app": [], "recordGroup": [], "folder": [], "record": []}
+        for c in containers:
+            c_id = c.get("id")
+            c_type = c.get("type")
+            if c_id and c_type in ids_by_type:
+                ids_by_type[c_type].append(c_id)
+
+        # Common leaf-record eligibility: not internal, and not a folder-record.
+        leaf_filter = (
+            "coalesce(r.isInternal, false) = false "
+            "AND NOT EXISTS { MATCH (r)-[:IS_OF_TYPE]->(f:File) WHERE f.isFile = false }"
+        )
+        ret = "RETURN cid AS id, r.indexingStatus AS status, r.indexingStage AS stage, count(DISTINCT r) AS cnt"
+
+        queries = {
+            # Records carry connectorId = owning app id (mirrors the ArangoDB rollup),
+            # which is robust to how RecordGroup/App edges are wired.
+            "app": f"""
+            MATCH (r:Record)
+            WHERE r.connectorId IN $ids AND r.orgId = $org_id AND {leaf_filter}
+            WITH r.connectorId AS cid, r
+            {ret}
+            """,
+            "recordGroup": f"""
+            UNWIND $ids AS cid
+            MATCH (rg0:RecordGroup {{id: cid}})<-[:BELONGS_TO*0..10]-(rg:RecordGroup)<-[:BELONGS_TO]-(r:Record)
+            WHERE rg0.orgId = $org_id AND r.orgId = $org_id AND {leaf_filter}
+            {ret}
+            """,
+            "folder": f"""
+            UNWIND $ids AS cid
+            MATCH (folder:Record {{id: cid}})
+                -[rels:RECORD_RELATION WHERE rels.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']]->{{1,100}}(r:Record)
+            WHERE folder.orgId = $org_id AND r.orgId = $org_id
+              AND {leaf_filter}
+            {ret}
+            """,
+            "record": f"""
+            UNWIND $ids AS cid
+            MATCH (parent:Record {{id: cid}})
+                -[rels:RECORD_RELATION WHERE rels.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']]->{{1,100}}(r:Record)
+            WHERE parent.orgId = $org_id AND r.orgId = $org_id
+              AND {leaf_filter}
+            {ret}
+            """,
+        }
+
+        for c_type, ids in ids_by_type.items():
+            if not ids:
+                continue
+            try:
+                results = await self.client.execute_query(
+                    queries[c_type],
+                    parameters={"ids": ids, "org_id": org_id},
+                    txn_id=transaction,
+                )
+                for row in results or []:
+                    c_id = row.get("id")
+                    if not c_id:
+                        continue
+                    rollups.setdefault(c_id, []).append({
+                        "status": row.get("status"),
+                        "stage": row.get("stage"),
+                        "cnt": row.get("cnt") or 0,
+                    })
+            except Exception as e:
+                self.logger.warning(f"⚠️ Failed to compute indexing rollup for {c_type} containers: {str(e)}")
+
+        return rollups
+
     async def reindex_single_record(
         self,
         record_id: str,
@@ -10722,6 +10838,9 @@ class Neo4jProvider(IGraphDBProvider):
                 origin: record.origin,
                 connectorName: COALESCE(record.connectorName, "KNOWLEDGE_BASE"),
                 indexingStatus: record.indexingStatus,
+                indexingStage: record.indexingStage,
+                lastActivityTimestamp: record.lastActivityTimestamp,
+                indexingProgress: record.indexingProgress,
                 createdAtTimestamp: record.createdAtTimestamp,
                 updatedAtTimestamp: record.updatedAtTimestamp,
                 sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
@@ -11054,6 +11173,9 @@ class Neo4jProvider(IGraphDBProvider):
                 origin: record.origin,
                 connectorName: COALESCE(record.connectorName, "KNOWLEDGE_BASE"),
                 indexingStatus: record.indexingStatus,
+                indexingStage: record.indexingStage,
+                lastActivityTimestamp: record.lastActivityTimestamp,
+                indexingProgress: record.indexingProgress,
                 createdAtTimestamp: record.createdAtTimestamp,
                 updatedAtTimestamp: record.updatedAtTimestamp,
                 sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
@@ -11103,6 +11225,9 @@ class Neo4jProvider(IGraphDBProvider):
                 origin: record.origin,
                 connectorName: COALESCE(record.connectorName, "KNOWLEDGE_BASE"),
                 indexingStatus: record.indexingStatus,
+                indexingStage: record.indexingStage,
+                lastActivityTimestamp: record.lastActivityTimestamp,
+                indexingProgress: record.indexingProgress,
                 createdAtTimestamp: record.createdAtTimestamp,
                 updatedAtTimestamp: record.updatedAtTimestamp,
                 sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
@@ -11375,6 +11500,9 @@ class Neo4jProvider(IGraphDBProvider):
                 origin: record.origin,
                 connectorName: COALESCE(record.connectorName, "KNOWLEDGE_BASE"),
                 indexingStatus: record.indexingStatus,
+                indexingStage: record.indexingStage,
+                lastActivityTimestamp: record.lastActivityTimestamp,
+                indexingProgress: record.indexingProgress,
                 version: record.version,
                 isLatestVersion: COALESCE(record.isLatestVersion, true),
                 createdAtTimestamp: record.createdAtTimestamp,
@@ -11591,6 +11719,9 @@ class Neo4jProvider(IGraphDBProvider):
                 origin: record.origin,
                 connectorName: COALESCE(record.connectorName, "KNOWLEDGE_BASE"),
                 indexingStatus: record.indexingStatus,
+                indexingStage: record.indexingStage,
+                lastActivityTimestamp: record.lastActivityTimestamp,
+                indexingProgress: record.indexingProgress,
                 version: record.version,
                 isLatestVersion: COALESCE(record.isLatestVersion, true),
                 createdAtTimestamp: record.createdAtTimestamp,
@@ -12507,6 +12638,7 @@ class Neo4jProvider(IGraphDBProvider):
                               WHEN app.type = 'KB' THEN 'shared'
                               ELSE coalesce(app.scope, 'personal')
                           END,
+                          syncStatus: app.status,
                           userRole: permission_role
                       }}
                       ELSE null
@@ -13265,7 +13397,18 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (app:App {id: $node_id})
             WHERE app.name IS NOT NULL
 
-            WITH record, rg, app
+            // Resolve the owning connector app for records / record groups so we can
+            // surface its sync status. KB (collection) content never syncs.
+            OPTIONAL MATCH (rgApp:App {id: rg.connectorId})
+            OPTIONAL MATCH (recApp:App {id: record.connectorId})
+
+            WITH record, rg, app,
+                 CASE
+                     WHEN app IS NOT NULL THEN app.status
+                     WHEN rg IS NOT NULL AND rg.connectorName <> 'KB' THEN rgApp.status
+                     WHEN record IS NOT NULL AND record.connectorName <> 'KB' THEN recApp.status
+                     ELSE null
+                 END AS sync_status
 
             // Determine result based on which node was found
             RETURN CASE
@@ -13276,7 +13419,9 @@ class Neo4jProvider(IGraphDBProvider):
                         WHEN record.mimeType IN $folder_mime_types THEN 'folder'
                         ELSE 'record'
                     END,
-                    subType: record.recordType
+                    subType: record.recordType,
+                    syncStatus: sync_status,
+                    isInternal: coalesce(record.isInternal, false)
                 }
                 WHEN rg IS NOT NULL THEN {
                     id: rg.id,
@@ -13285,13 +13430,15 @@ class Neo4jProvider(IGraphDBProvider):
                     subType: CASE
                         WHEN rg.connectorName = 'KB' THEN 'COLLECTION'
                         ELSE coalesce(rg.groupType, rg.connectorName)
-                    END
+                    END,
+                    syncStatus: sync_status
                 }
                 WHEN app IS NOT NULL THEN {
                     id: app.id,
                     name: app.name,
                     nodeType: 'app',
-                    subType: app.type
+                    subType: app.type,
+                    syncStatus: sync_status
                 }
                 ELSE null
             END AS result
@@ -13673,6 +13820,9 @@ class Neo4jProvider(IGraphDBProvider):
                 recordGroupType: null,
                 indexingStatus: record.indexingStatus,
                 reason: record.reason,
+                indexingStage: record.indexingStage,
+                lastActivityTimestamp: record.lastActivityTimestamp,
+                indexingProgress: record.indexingProgress,
                 createdAt: CASE WHEN record.connectorName = 'KB'
                     THEN coalesce(record.createdAtTimestamp, 0)
                     ELSE coalesce(record.sourceCreatedAtTimestamp, record.createdAtTimestamp, 0) END,
@@ -13837,6 +13987,9 @@ class Neo4jProvider(IGraphDBProvider):
                 recordGroupType: null,
                 indexingStatus: record.indexingStatus,
                 reason: record.reason,
+                indexingStage: record.indexingStage,
+                lastActivityTimestamp: record.lastActivityTimestamp,
+                indexingProgress: record.indexingProgress,
                 createdAt: CASE WHEN record.connectorName = 'KB'
                     THEN coalesce(record.createdAtTimestamp, 0)
                     ELSE coalesce(record.sourceCreatedAtTimestamp, record.createdAtTimestamp, 0) END,
@@ -13930,6 +14083,9 @@ class Neo4jProvider(IGraphDBProvider):
             recordGroupType: null,
             indexingStatus: record.indexingStatus,
             reason: record.reason,
+            indexingStage: record.indexingStage,
+            lastActivityTimestamp: record.lastActivityTimestamp,
+            indexingProgress: record.indexingProgress,
             createdAt: CASE WHEN record.connectorName = 'KB'
                 THEN coalesce(record.createdAtTimestamp, 0)
                 ELSE coalesce(record.sourceCreatedAtTimestamp, record.createdAtTimestamp, 0) END,
@@ -14909,7 +15065,10 @@ class Neo4jProvider(IGraphDBProvider):
                    recordType: record.recordType,
                    sizeInBytes: COALESCE(record.sizeInBytes,
                                         CASE WHEN file_info IS NOT NULL THEN file_info.sizeInBytes ELSE null END),
-                   indexingStatus: record.indexingStatus
+                   indexingStatus: record.indexingStatus,
+                   indexingStage: record.indexingStage,
+                   lastActivityTimestamp: record.lastActivityTimestamp,
+                   indexingProgress: record.indexingProgress
                  }
                ELSE null END
              ) AS record_nodes_with_nulls
@@ -15149,6 +15308,9 @@ class Neo4jProvider(IGraphDBProvider):
                    recordGroupType: null,
                    indexingStatus: record.indexingStatus,
                    reason: record.reason,
+                   indexingStage: record.indexingStage,
+                   lastActivityTimestamp: record.lastActivityTimestamp,
+                   indexingProgress: record.indexingProgress,
                    createdAt: CASE WHEN record.connectorName = 'KB'
                      THEN COALESCE(record.createdAtTimestamp, 0)
                      ELSE COALESCE(record.sourceCreatedAtTimestamp, record.createdAtTimestamp, 0) END,

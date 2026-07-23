@@ -2217,6 +2217,9 @@ class TestKbUploadedCodeFileHandling:
 
         assert len(events) == 2
         mock_dl.assert_awaited_once()
+        # The stage stays EXTRACTING until the vector store flips it to INDEXING at
+        # embedding time; the record handler no longer writes a stage on
+        # parsing_complete, so with a mocked pipeline there is no stage write here.
         gp.batch_update_nodes.assert_not_called()
 
     @pytest.mark.asyncio

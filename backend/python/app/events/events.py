@@ -35,6 +35,7 @@ from app.events.processor import Processor
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.indexing_progress import build_indexing_progress, stage_for_status
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -306,6 +307,10 @@ class EventProcessor:
                     "extractionStatus": status.value,
                 }
             )
+
+            stage = stage_for_status(status)
+            if stage is not None:
+                doc.update(build_indexing_progress(stage))
 
             docs = [doc]
             success = await self.graph_provider.batch_update_nodes(

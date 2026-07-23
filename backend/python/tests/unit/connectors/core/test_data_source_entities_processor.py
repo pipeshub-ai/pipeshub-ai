@@ -3536,12 +3536,14 @@ class TestOnRecordContentUpdate:
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         record = _make_record()
+        proc._track_record_queued = AsyncMock()
 
         await proc.on_record_content_update(record)
 
         proc.messaging_producer.send_message.assert_awaited()
         call_args = proc.messaging_producer.send_message.call_args
         assert call_args[0][1]["eventType"] == "updateRecord"
+        proc._track_record_queued.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_skips_auto_index_off(self):

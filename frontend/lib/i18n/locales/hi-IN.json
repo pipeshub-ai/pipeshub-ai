@@ -444,6 +444,32 @@
     "confirm": "पुष्टि करें"
   },
   "kb": {
+    "indexingProgress": {
+      "steps": {
+        "queued": "कतार में",
+        "extract": "निकालना",
+        "index": "इंडेक्स",
+        "done": "पूर्ण"
+      },
+      "stage": {
+        "queued": "कतार में",
+        "extracting": "सामग्री निकाली जा रही है",
+        "indexing": "इंडेक्स हो रहा है",
+        "completed": "पूर्ण",
+        "failed": "विफल",
+        "processing": "प्रोसेस हो रहा है"
+      },
+      "embeddingChunk": "{{total}} में से {{current}} चंक एम्बेड हो रहा है",
+      "extractingPage": "{{total}} में से {{current}} पृष्ठ निकाला जा रहा है",
+      "rollupProgress": "{{total}} में से {{completed}} इंडेक्स हुए",
+      "rollupIndexed": "{{total}} इंडेक्स हुए",
+      "rollupRecords_one": "{{count}} रिकॉर्ड: {{completed}} इंडेक्स हुआ",
+      "rollupRecords_other": "{{count}} रिकॉर्ड: {{completed}} इंडेक्स हुए",
+      "rollupFailed": "{{count}} विफल",
+      "rollupSkipped": "{{count}} छोड़े गए",
+      "indexedTooltip": "इंडेक्स हो गया",
+      "indexingPercent": "इंडेक्सिंग {{percent}}%"
+    },
     "viewToggle": "व्यू टॉगल",
     "collectionsView": "कलेक्शन व्यू",
     "allRecordsView": "सभी रिकॉर्ड व्यू",
@@ -1861,6 +1887,104 @@
       "personal": {
         "desktopRequiredTitle": "डेस्कटॉप ऐप आवश्यक है",
         "desktopRequiredDescription": "लोकल फ़ाइलसिस्टम कनेक्टर केवल PipesHub डेस्कटॉप ऐप में उपलब्ध है। कृपया इस कनेक्टर को सेट अप करने के लिए डेस्कटॉप ऐप का उपयोग करें।"
+      },
+      "syncProgress": {
+        "status": "स्थिति",
+        "removing": "हटाया जा रहा है…",
+        "indexingCount": "{{total}} में से {{processed}} इंडेक्स हो रहे हैं",
+        "fullSyncDiscovering": "पूर्ण सिंक - स्रोत सिंक हो रहा है…",
+        "discovering": "स्रोत सिंक हो रहा है…",
+        "queuedCount": "{{count}} कतार में",
+        "stillProcessing_one": "{{count}} रिकॉर्ड अभी प्रोसेस हो रहा है",
+        "stillProcessing_other": "{{count}} रिकॉर्ड अभी प्रोसेस हो रहे हैं",
+        "indexed": "इंडेक्स हो गया",
+        "syncFailed": "सिंक विफल",
+        "failedCount": "{{count}} विफल",
+        "calculating": "प्रगति की गणना हो रही है",
+        "currentSync": "वर्तमान सिंक",
+        "breakdownQueued": "इस सिंक में कतारबद्ध",
+        "breakdownFailed": "विफल",
+        "breakdownSkipped": "छोड़े गए",
+        "badgeFullSync": "पूर्ण सिंक…",
+        "badgeSyncing": "सिंक हो रहा है…",
+        "conflict": {
+          "fullOverFull": {
+            "title": "पूर्ण सिंक पहले से चल रहा है",
+            "message": "एक पूर्ण सिंक पहले से चल रहा है। पुनः आरंभ करने पर वर्तमान सिंक रद्द होकर सब कुछ शुरू से फिर इंडेक्स होगा।",
+            "confirm": "पूर्ण सिंक पुनः आरंभ करें",
+            "cancel": "वर्तमान सिंक जारी रखें"
+          },
+          "fullOverQuick": {
+            "title": "एक सिंक चल रहा है",
+            "message": "एक सिंक अभी चल रहा है। पूर्ण सिंक शुरू करने पर वह रद्द होकर सब कुछ शुरू से फिर इंडेक्स होगा।",
+            "confirm": "रद्द करें और पूर्ण सिंक करें",
+            "cancel": "वर्तमान सिंक जारी रखें"
+          },
+          "quickOverFull": {
+            "title": "पूर्ण सिंक चल रहा है",
+            "message": "एक पूर्ण सिंक चल रहा है, जो त्वरित सिंक से अधिक विस्तृत होता है। अभी त्वरित सिंक चलाने से वह रद्द हो जाएगा — पूर्ण सिंक को पूरा होने देने पर विचार करें।",
+            "confirm": "रद्द करें और सिंक करें",
+            "cancel": "पूर्ण सिंक जारी रखें"
+          },
+          "quickOverQuick": {
+            "title": "सिंक पहले से चल रहा है",
+            "message": "एक सिंक पहले से चल रहा है। पुनः आरंभ करने पर वर्तमान सिंक रद्द होकर फिर से शुरू होगा।",
+            "confirm": "सिंक पुनः आरंभ करें",
+            "cancel": "वर्तमान सिंक जारी रखें"
+          },
+          "restartError": "सिंक पुनः आरंभ नहीं हो सका। कृपया फिर से प्रयास करें।",
+          "lockedTitle": "सिंक तैयार हो रहा है",
+          "lockedMessage": "पूर्ण सिंक तैयार हो रहा है और अभी रोका नहीं जा सकता। कृपया प्रतीक्षा करें और फिर प्रयास करें।"
+        },
+        "lastSync": "अंतिम सिंक",
+        "failure": {
+          "auth": {
+            "title": "प्रमाणीकरण विफल",
+            "summary": "यह कनेक्टर स्रोत में साइन इन नहीं कर सका।",
+            "remediation": "Manage → Authorize में फिर से कनेक्ट करें। अगर फिर विफल हो, एडमिन को ऐप या उसके scopes अनुमोदित करने पड़ सकते हैं।"
+          },
+          "rateLimit": {
+            "title": "रेट लिमिट पूरी हो गई",
+            "summary": "स्रोत ने अस्थायी रूप से सिंक की गति सीमित कर दी।",
+            "remediation": "कुछ मिनट प्रतीक्षा करें, फिर पुनः प्रयास करें। अगर यह बार-बार हो, सिंक की आवृत्ति कम करें।"
+          },
+          "permission": {
+            "title": "पहुंच अनुपलब्ध",
+            "summary": "यह खाता सिंक के लिए चुनी गई कुछ सामग्री नहीं पढ़ सकता।",
+            "remediation": "जिन फ़ाइलों या Shared Drives को सिंक करना है उन तक पहुँच दें, फिर पुनः प्रयास करें।"
+          },
+          "network": {
+            "title": "कनेक्शन समस्या",
+            "summary": "हम स्रोत तक विश्वसनीय रूप से नहीं पहुँच सके।",
+            "remediation": "स्रोत से नेटवर्क कनेक्टिविटी जाँचें, फिर सिंक पुनः प्रयास करें।"
+          },
+          "cancelled": {
+            "title": "सिंक रद्द",
+            "summary": "सिंक पूरा होने से पहले रुक गया।",
+            "remediation": "जब तैयार हों तब सिंक दोबारा शुरू करें।"
+          },
+          "unknown": {
+            "title": "सिंक विफल",
+            "summary": "सिंक करते समय कुछ गलत हुआ।",
+            "remediation": "सिंक पुनः प्रयास करें। अगर फिर विफल हो, कनेक्टर सेटिंग्स जाँचें या एडमिन से संपर्क करें।"
+          },
+          "reasons": {
+            "unauthorized_client": "Google ने अनुरोधित scopes के लिए इस ऐप को एक्सेस टोकन लेने से रोक दिया।",
+            "invalid_grant": "सहेजा गया Google साइन-इन समाप्त हो गया या रद्द कर दिया गया।",
+            "invalid_client": "Google ऐप क्रेडेंशियल्स अमान्य लगते हैं या रद्द कर दिए गए।",
+            "access_denied": "इस कनेक्टर को अधिकृत करते समय पहुँच अस्वीकृत हुई।"
+          }
+        },
+        "queue": {
+          "waitingCompact": "कतार में प्रतीक्षा",
+          "waitingDetail": "साझा इंडेक्सिंग कतार में प्रतीक्षा · ~{{count}} जॉब आगे",
+          "etaAlmostDone": "लगभग पूरा",
+          "etaAboutAMinute": "लगभग एक मिनट",
+          "etaMinutes": "~{{minutes}} मि",
+          "etaMinutesRange": "~{{low}}–{{high}} मि",
+          "etaAboutAnHour": "लगभग एक घंटा",
+          "etaMayTakeAWhile": "कुछ समय लग सकता है"
+        }
       },
       "syncStatus": {
         "paused": "Sync Paused",

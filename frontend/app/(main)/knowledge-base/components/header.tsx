@@ -6,8 +6,9 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/components/sidebar';
 import { useKnowledgeBaseStore } from '../store';
-import type { ViewMode, PageViewMode, Breadcrumb } from '../types';
+import type { ViewMode, PageViewMode, Breadcrumb, ConnectorSyncStatus } from '../types';
 import { FolderIcon } from '@/app/components/ui';
+import { ConnectorSyncBadge } from './indexing-progress-indicator';
 import { useTranslation } from 'react-i18next';
 import { ShareHeaderGroup } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
@@ -16,6 +17,8 @@ interface KBHeaderProps {
   pageViewMode: PageViewMode;
   breadcrumbs?: Breadcrumb[];
   currentTitle?: string;
+  /** Sync status of the owning connector while browsing connector content. */
+  currentNodeSyncStatus?: ConnectorSyncStatus | null;
   onBreadcrumbClick?: (breadcrumb: Breadcrumb) => void;
   onInfoClick?: () => void;
 
@@ -167,6 +170,7 @@ export function Header({
   pageViewMode,
   breadcrumbs,
   currentTitle: _currentTitle,
+  currentNodeSyncStatus,
   onBreadcrumbClick,
   onInfoClick,
   onFind,
@@ -332,6 +336,13 @@ export function Header({
           renderBreadcrumbs()
         )}
       </Flex>
+
+      {/* Connector sync for the container being viewed. */}
+      {!isSearchActive && currentNodeSyncStatus && (
+        <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
+          <ConnectorSyncBadge syncStatus={currentNodeSyncStatus} variant="chip" />
+        </Flex>
+      )}
 
       {/* Right: Actions */}
       <Flex align="center" gap={isMobile ? '1' : '4'} style={{ flexShrink: 0 }}>

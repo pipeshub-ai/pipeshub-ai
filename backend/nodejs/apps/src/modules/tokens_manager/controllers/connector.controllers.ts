@@ -13,7 +13,8 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
-  ConflictError,
+  ConnectorSyncInProgressError,
+  ConnectorSyncLockedError,
   ForbiddenError,
   InternalServerError,
   NotFoundError,
@@ -1915,6 +1916,75 @@ export const getConnectorStats =
     }
   };
 
+export const getConnectorSyncProgress =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { userId, orgId } = req.user || {};
+
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+
+      if (!req.params.connectorId) {
+        throw new BadRequestError('Connector ID is required');
+      }
+
+      try {
+        const queryParams = new URLSearchParams();
+        queryParams.append('connector_id', req.params.connectorId);
+        const response = await executeConnectorCommand(
+          `${appConfig.connectorBackend}/api/v1/sync-progress?${queryParams.toString()}`,
+          HttpMethod.GET,
+          buildProxyHeaders(req, false),
+          undefined,
+          5_000,
+        );
+
+        if (response.statusCode === 403) {
+          throw new ForbiddenError(
+            'You do not have permission to access connector sync progress',
+          );
+        }
+        if (response.statusCode === 404) {
+          throw new NotFoundError('Connector not found');
+        }
+        if (response.statusCode !== 200) {
+          throw new InternalServerError(
+            'Failed to get connector sync progress via Python service',
+          );
+        }
+
+        res.status(200).json(response.data);
+      } catch (pythonServiceError: any) {
+        logger.error('Error calling Python service for sync progress', {
+          userId,
+          orgId,
+          error: pythonServiceError.message,
+          response: pythonServiceError.response?.data,
+          requestId: req.context?.requestId,
+        });
+
+        throw pythonServiceError instanceof ForbiddenError ||
+          pythonServiceError instanceof NotFoundError ||
+          pythonServiceError instanceof InternalServerError
+          ? pythonServiceError
+          : new InternalServerError(
+              `Failed to get connector sync progress: ${pythonServiceError.message}`,
+            );
+      }
+    } catch (error: any) {
+      logger.error('Error getting connector sync progress', {
+        connectorId: req.params.connectorId,
+        error,
+      });
+      next(error);
+      return;
+    }
+  };
+
 export const getRecordContent =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -2004,10 +2074,60 @@ const LOCK_MESSAGES: Record<string, string> = {
   SYNCING: 'A sync is already in progress. Please wait and try again.',
 };
 
-const validateConnectorNotLocked = async (
+const SYNC_IN_PROGRESS_MESSAGES: Record<string, string> = {
+  FULL_SYNCING: 'A full sync is already in progress for this connector.',
+  SYNCING: 'A sync is already in progress for this connector.',
+};
+
+/**
+ * True when the run-scoped progress store reports an active run. `apps.status`
+ * only reflects the discovery phase (it flips back to IDLE while records are
+ * still indexing), so this covers the indexing phase too. Fails open: a lookup
+ * error must never block a legitimate resync.
+ */
+const isConnectorSyncRunActive = async (
   connectorId: string,
   appConfig: AppConfig,
   headers: Record<string, string>,
+): Promise<boolean> => {
+  try {
+    const queryParams = new URLSearchParams();
+    queryParams.append('connector_id', connectorId);
+    // This guard only needs the active-run bit. Avoid the graph statistics
+    // query used for settled-state UI coverage.
+    queryParams.append('include_coverage', 'false');
+    const response = await executeConnectorCommand(
+      `${appConfig.connectorBackend}/api/v1/sync-progress?${queryParams.toString()}`,
+      HttpMethod.GET,
+      headers,
+      undefined,
+      5_000,
+    );
+    if (response.statusCode !== 200) {
+      return false;
+    }
+    const body = response.data as { data?: { isActive?: boolean } } | undefined;
+    return Boolean(body?.data?.isActive);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Gate a resync trigger. Rejects when a sync is already running unless the
+ * caller passed `force` (the client's explicit "cancel current & restart").
+ * `isLocked` is the brief full-sync prep window and is never force-able:
+ * racing that section can corrupt state, so it always 409s.
+ *
+ * "In progress" spans both phases: discovery (reflected by `apps.status`) and
+ * indexing (status is back to IDLE but the run-scoped store still reports
+ * `isActive`). Checking status first avoids the extra call during discovery.
+ */
+const validateConnectorSyncAvailable = async (
+  connectorId: string,
+  appConfig: AppConfig,
+  headers: Record<string, string>,
+  opts: { force: boolean; requestedFullSync: boolean },
 ): Promise<void> => {
   const response = await executeConnectorCommand(
     `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
@@ -2022,11 +2142,36 @@ const validateConnectorNotLocked = async (
 
   const connector = data.connector;
   if (connector.isLocked) {
+    // Prep window — never force-able. Use a distinct code so the UI asks the
+    // user to wait instead of offering "cancel & restart" (or showing Sync Failed).
     const status = connector.status ?? '';
-    const message =
+    throw new ConnectorSyncLockedError(
       LOCK_MESSAGES[status] ??
-      'Another operation is in progress. Please wait and try again.';
-    throw new ConflictError(message);
+        'Another operation is in progress. Please wait and try again.',
+      { currentStatus: status, requestedFullSync: opts.requestedFullSync },
+    );
+  }
+
+  if (opts.force) {
+    return;
+  }
+
+  const status = (connector.status ?? '').toUpperCase();
+  let inProgress = status === 'SYNCING' || status === 'FULL_SYNCING';
+  if (!inProgress) {
+    inProgress = await isConnectorSyncRunActive(
+      connectorId,
+      appConfig,
+      headers,
+    );
+  }
+
+  if (inProgress) {
+    throw new ConnectorSyncInProgressError(
+      SYNC_IN_PROGRESS_MESSAGES[status] ??
+        'A sync is already in progress for this connector.',
+      { currentStatus: status, requestedFullSync: opts.requestedFullSync },
+    );
   }
 };
 
@@ -2080,6 +2225,7 @@ export const resyncConnectorRecords =
       const orgId = req.user?.orgId;
       const connectorName = req.body.connectorName;
       const fullSync = req.body.fullSync || false;
+      const force = req.body.force === true;
       if (!userId || !orgId) {
         throw new BadRequestError('User not authenticated');
       }
@@ -2098,10 +2244,11 @@ export const resyncConnectorRecords =
         headers,
       );
 
-      await validateConnectorNotLocked(
+      await validateConnectorSyncAvailable(
         connectorId,
         appConfig,
         headers,
+        { force, requestedFullSync: fullSync },
       );
 
       const resyncConnectorPayload = {

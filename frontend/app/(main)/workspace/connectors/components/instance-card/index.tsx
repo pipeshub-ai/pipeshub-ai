@@ -15,10 +15,12 @@ import {
   FullSyncButton,
 } from './primitives';
 import { InlineEditableName } from '../inline-editable-name';
-import { InstanceSyncOperationIndicator, InstanceSetupStatusRow } from './instance-status-badges';
+import { InstanceSetupStatusRow } from './instance-status-badges';
 import { deriveSyncStatusState, getSyncStrategyLabel, getSyncIntervalLabel } from './utils';
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import { usePollInstanceWhileSyncing } from '../../utils/use-poll-instance-while-syncing';
+import { useConnectorSyncProgress } from '../../utils/use-connector-sync-progress';
+import { ConnectorSyncProgress } from '../connector-sync-progress';
 import type { ConnectorInstance, ConnectorConfig, ConnectorScope } from '../../types';
 
 // ========================================
@@ -65,6 +67,12 @@ export function InstanceCard({
   const updatedByEntry = useUserDirectoryEntry(instance.updatedBy);
 
   usePollInstanceWhileSyncing(instance._key, instance.status);
+
+  const { progress: syncProgress } = useConnectorSyncProgress(
+    instance._key,
+    instance.status,
+    Boolean(instance._key) && instance.supportsSync
+  );
 
   useEffect(() => {
     setIdentityIconError(false);
@@ -293,6 +301,14 @@ export function InstanceCard({
 
         <InfoRow label="LAST SYNCED" value={lastSynced} />
 
+        {instance._key && instance.supportsSync ? (
+          <ConnectorSyncProgress
+            progress={syncProgress}
+            status={instance.status}
+            variant="card"
+          />
+        ) : null}
+
         {instance._key && instance.supportsSync && (
           <Flex align="center" gap="4" style={{ marginTop: 2 }}>
             <Text
@@ -339,9 +355,16 @@ export function InstanceCard({
               borderTop: '1px solid var(--gray-a3)',
             }}
           >
-            <SyncButton connectorId={instance._key} connectorType={instance.type} />
-            <FullSyncButton connectorId={instance._key} connectorType={instance.type} />
-            <InstanceSyncOperationIndicator instance={instance} />
+            <SyncButton
+              connectorId={instance._key}
+              connectorType={instance.type}
+              currentStatus={instance.status}
+            />
+            <FullSyncButton
+              connectorId={instance._key}
+              connectorType={instance.type}
+              currentStatus={instance.status}
+            />
           </Flex>
         )}
       </Flex>

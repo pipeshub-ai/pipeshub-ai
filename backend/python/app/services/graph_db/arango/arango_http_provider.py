@@ -30,8 +30,10 @@ from app.config.constants.arangodb import (
     Connectors,
     DepartmentNames,
     GraphNames,
+    IndexingStage,
     OriginTypes,
     ProgressStatus,
+    RecordRelations,
     RecordTypes,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
@@ -119,6 +121,7 @@ from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.common.utils import build_connector_stats_response, dedupe_agents_by_id
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.indexing_progress import build_indexing_progress, stage_for_status
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Constants for ArangoDB document ID format
@@ -1353,7 +1356,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     continue
                 if record.get("indexingStatus") in skip_status:
                     continue
-                to_upsert.append({"_key": rid, "indexingStatus": ProgressStatus.QUEUED.value})
+                to_upsert.append({
+                    "_key": rid,
+                    "indexingStatus": ProgressStatus.QUEUED.value,
+                    **build_indexing_progress(IndexingStage.QUEUED),
+                })
 
             if to_upsert:
                 await self.batch_upsert_nodes(to_upsert, coll)
@@ -5705,6 +5712,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }
                 if reason:
                     dup_update["reason"] = reason
+                try:
+                    dup_stage = stage_for_status(ProgressStatus(new_indexing_status))
+                except ValueError:
+                    dup_stage = None
+                if dup_stage is not None:
+                    dup_update.update(build_indexing_progress(dup_stage, timestamp=current_timestamp))
                 updated_records.append(dup_update)
 
             if not updated_records:
@@ -10485,6 +10498,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         origin: record.origin,
                         connectorName: record.connectorName || "KNOWLEDGE_BASE",
                         indexingStatus: record.indexingStatus,
+                        indexingStage: record.indexingStage,
+                        lastActivityTimestamp: record.lastActivityTimestamp,
+                        indexingProgress: record.indexingProgress,
                         version: record.version,
                         isLatestVersion: record.isLatestVersion,
                         createdAtTimestamp: record.createdAtTimestamp,
@@ -10766,6 +10782,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         origin: record.origin,
                         connectorName: record.connectorName || "KNOWLEDGE_BASE",
                         indexingStatus: record.indexingStatus,
+                        indexingStage: record.indexingStage,
+                        lastActivityTimestamp: record.lastActivityTimestamp,
+                        indexingProgress: record.indexingProgress,
                         version: record.version,
                         isLatestVersion: record.isLatestVersion,
                         createdAtTimestamp: record.createdAtTimestamp,
@@ -12249,7 +12268,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 SORT record.{sort_field} {sort_order.upper()}
                 LIMIT @skip, @limit
                 LET fileRecord = FIRST(FOR fileEdge IN @@is_of_type FILTER fileEdge._from == record._id LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }})
-                RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb: {{ id: item.kb_id || null, name: item.kb_name || null }} }}
+                RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, indexingStage: record.indexingStage, lastActivityTimestamp: record.lastActivityTimestamp, indexingProgress: record.indexingProgress, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb: {{ id: item.kb_id || null, name: item.kb_name || null }} }}
             """
             bind = {
                 "user_from": user_from,
@@ -12418,7 +12437,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 LET fileRecord = FIRST(FOR f IN all_files FILTER f.record_id == record._id RETURN f.file)
                 SORT record.{sort_by or "recordName"} {(sort_order or "asc").upper()}
                 LIMIT @skip, @limit
-                RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb_id: item.kb_id, folder: {{ id: item.folder_id, name: item.folder_name }} }}
+                RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, indexingStage: record.indexingStage, lastActivityTimestamp: record.lastActivityTimestamp, indexingProgress: record.indexingProgress, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb_id: item.kb_id, folder: {{ id: item.folder_id, name: item.folder_name }} }}
             """
             records = await self.execute_query(main_query, bind_vars=filter_bind)
             count_query = f"""
@@ -13270,6 +13289,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: CONCAT("/app/", app._key),
                     hasChildren: has_children,
                     sharingStatus: sharingStatus,
+                    syncStatus: app.status,
                     userRole: normalized_role
                 }}
         )
@@ -14020,6 +14040,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     recordType: record.recordType,
                     recordGroupType: null,
                     indexingStatus: record.indexingStatus,
+                    indexingStage: record.indexingStage,
+                    lastActivityTimestamp: record.lastActivityTimestamp,
+                    indexingProgress: record.indexingProgress,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
                     sizeInBytes: {size_expr},
@@ -14116,6 +14139,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         recordGroupType: null,
                         indexingStatus: record.indexingStatus,
                         reason: record.reason,
+                        indexingStage: record.indexingStage,
+                        lastActivityTimestamp: record.lastActivityTimestamp,
+                        indexingProgress: record.indexingProgress,
                         createdAt: (record_parent_app != null AND record_parent_app.type == "KB")
                             ? (record.createdAtTimestamp != null ? record.createdAtTimestamp : 0)
                             : (record.sourceCreatedAtTimestamp != null ? record.sourceCreatedAtTimestamp : (record.createdAtTimestamp != null ? record.createdAtTimestamp : 0)),
@@ -14702,21 +14728,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET rg = record == null ? DOCUMENT("recordGroups", @node_id) : null
         LET app = record == null AND rg == null ? DOCUMENT("apps", @node_id) : null
 
+        // Resolve the owning connector app so we can surface its sync status.
+        // KB (collection) content never syncs, so it is excluded.
+        LET connector_app = app != null ? app : (
+            rg != null AND rg.connectorName != "KB" ? DOCUMENT(CONCAT("apps/", rg.connectorId)) : (
+                record != null AND record.connectorName != "KB" ? DOCUMENT(CONCAT("apps/", record.connectorId)) : null
+            )
+        )
+        LET sync_status = connector_app != null ? connector_app.status : null
+
         LET result = record != null AND record._key != null AND record.recordName != null ? {
             id: record._key,
             name: record.recordName,
             nodeType: record.mimeType IN @folder_mime_types ? "folder" : "record",
-            subType: record.recordType
+            subType: record.recordType,
+            syncStatus: sync_status,
+            isInternal: record.isInternal == true
         } : (rg != null AND rg._key != null AND rg.groupName != null ? {
             id: rg._key,
             name: rg.groupName,
             nodeType: "recordGroup",
-            subType: rg.connectorName == "KB" ? "COLLECTION" : (rg.groupType || rg.connectorName)
+            subType: rg.connectorName == "KB" ? "COLLECTION" : (rg.groupType || rg.connectorName),
+            syncStatus: sync_status
         } : (app != null AND app._key != null AND app.name != null ? {
             id: app._key,
             name: app.name,
             nodeType: "app",
-            subType: app.type
+            subType: app.type,
+            syncStatus: sync_status
         } : null))
 
         RETURN result
@@ -15471,6 +15510,173 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "data": None,
             }
 
+    async def get_indexing_rollups(
+        self,
+        org_id: str,
+        containers: list[dict],
+        transaction: str | None = None,
+    ) -> dict:
+        """Aggregate indexable-leaf-record status counts per container subtree.
+
+        Runs at most one AQL per container type. Folder-records and internal
+        placeholder records are excluded from the counts. Record-group rollups
+        include nested groups, matching the Neo4j provider semantics.
+        """
+        rollups: dict[str, list[dict]] = {}
+        if not containers:
+            return rollups
+
+        ids_by_type: dict[str, list[str]] = {"app": [], "recordGroup": [], "folder": [], "record": []}
+        for c in containers:
+            c_id = c.get("id")
+            c_type = c.get("type")
+            if c_id and c_type in ids_by_type:
+                ids_by_type[c_type].append(c_id)
+
+        # Reused by every branch: drop folder-records (isOfType -> file with isFile=false).
+        leaf_filter = """
+                LET targetInfo = doc.recordType == @file_record_type ? FIRST(
+                    FOR e IN @@is_of_type
+                        FILTER e._from == doc._id
+                        LIMIT 1
+                        LET t = DOCUMENT(e._to)
+                        RETURN t == null ? null : { id: t._id, isFile: t.isFile }
+                ) : null
+                FILTER targetInfo == null
+                    OR PARSE_IDENTIFIER(targetInfo.id).collection != @files_collection
+                    OR targetInfo.isFile == true
+        """
+        group_return = """
+                COLLECT id = cid, status = doc.indexingStatus, stage = doc.indexingStage WITH COUNT INTO cnt
+                RETURN { id, status, stage, cnt }
+        """
+
+        base_bind = {
+            "org_id": org_id,
+            "@records": CollectionNames.RECORDS.value,
+            "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+            "file_record_type": RecordTypes.FILE.value,
+            "files_collection": CollectionNames.FILES.value,
+        }
+
+        queries: dict[str, tuple[str, dict[str, Any]]] = {}
+
+        if ids_by_type["app"]:
+            queries["app"] = (
+                f"""
+                FOR doc IN @@records
+                    FILTER doc.connectorId IN @ids
+                    FILTER doc.orgId == @org_id
+                    FILTER doc.isInternal != true
+                    {leaf_filter}
+                    COLLECT id = doc.connectorId,
+                            status = doc.indexingStatus,
+                            stage = doc.indexingStage
+                        WITH COUNT INTO cnt
+                    RETURN {{ id, status, stage, cnt }}
+                """,
+                {**base_bind, "ids": ids_by_type["app"]},
+            )
+
+        if ids_by_type["recordGroup"]:
+            queries["recordGroup"] = (
+                f"""
+                FOR cid IN @ids
+                    LET docs = UNIQUE((
+                        FOR group_id IN UNIQUE(APPEND(
+                            [CONCAT(@record_group_prefix, cid)],
+                            (
+                                FOR group IN 1..10 INBOUND CONCAT(@record_group_prefix, cid) @@belongs_to
+                                    PRUNE NOT STARTS_WITH(group._id, @record_group_prefix)
+                                    FILTER STARTS_WITH(group._id, @record_group_prefix)
+                                    RETURN group._id
+                            )
+                        ))
+                            FOR edge IN @@belongs_to
+                                FILTER edge._to == group_id
+                                FILTER STARTS_WITH(edge._from, @record_prefix)
+                                LET doc = DOCUMENT(edge._from)
+                                FILTER doc != null
+                                FILTER doc.orgId == @org_id
+                                FILTER doc.isInternal != true
+                                {leaf_filter}
+                                RETURN doc
+                    ))
+                    FOR doc IN docs
+                        {group_return}
+                """,
+                {
+                    **base_bind,
+                    "@belongs_to": CollectionNames.BELONGS_TO.value,
+                    "record_group_prefix": f"{CollectionNames.RECORD_GROUPS.value}/",
+                    "record_prefix": f"{CollectionNames.RECORDS.value}/",
+                    "ids": ids_by_type["recordGroup"],
+                },
+            )
+
+        if ids_by_type["folder"]:
+            queries["folder"] = (
+                f"""
+                FOR cid IN @ids
+                FOR doc, edge, path IN 1..100 OUTBOUND CONCAT(@record_prefix, cid) @@record_relations
+                    PRUNE edge.relationshipType NOT IN @rel_types
+                    OPTIONS {{ order: "bfs", uniqueVertices: "global" }}
+                    FILTER edge.relationshipType IN @rel_types
+                    FILTER doc.orgId == @org_id
+                    FILTER doc.isInternal != true
+                    {leaf_filter}
+                    {group_return}
+                """,
+                {
+                    **base_bind,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "record_prefix": f"{CollectionNames.RECORDS.value}/",
+                    "rel_types": [RecordRelations.PARENT_CHILD.value, RecordRelations.ATTACHMENT.value],
+                    "ids": ids_by_type["folder"],
+                },
+            )
+
+        if ids_by_type["record"]:
+            queries["record"] = (
+                f"""
+                FOR cid IN @ids
+                FOR doc, edge, path IN 1..100 OUTBOUND CONCAT(@record_prefix, cid) @@record_relations
+                    PRUNE edge.relationshipType NOT IN @rel_types
+                    OPTIONS {{ order: "bfs", uniqueVertices: "global" }}
+                    FILTER edge.relationshipType IN @rel_types
+                    FILTER doc.orgId == @org_id
+                    FILTER doc.isInternal != true
+                    {leaf_filter}
+                    {group_return}
+                """,
+                {
+                    **base_bind,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "record_prefix": f"{CollectionNames.RECORDS.value}/",
+                    "rel_types": [RecordRelations.PARENT_CHILD.value, RecordRelations.ATTACHMENT.value],
+                    "ids": ids_by_type["record"],
+                },
+            )
+
+        for c_type, (query, bind_vars) in queries.items():
+            try:
+                rows = await self.http_client.execute_aql(
+                    query, bind_vars=bind_vars, txn_id=transaction
+                )
+                for row in rows or []:
+                    c_id = row.get("id")
+                    if not c_id:
+                        continue
+                    rollups.setdefault(c_id, []).append({
+                        "status": row.get("status"),
+                        "stage": row.get("stage"),
+                        "cnt": row.get("cnt") or 0,
+                    })
+            except Exception as e:
+                self.logger.warning(f"⚠️ Failed to compute indexing rollup for {c_type} containers: {str(e)}")
+
+        return rollups
+
     def _get_app_children_subquery(self, app_id: str, org_id: str, user_key: str) -> tuple[str, dict[str, Any]]:
         """Generate AQL sub-query to fetch children for an App.
 
@@ -15679,6 +15885,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     recordGroupType: null,
                     indexingStatus: record.indexingStatus,
                     reason: record.reason,
+                    indexingStage: record.indexingStage,
+                    lastActivityTimestamp: record.lastActivityTimestamp,
+                    indexingProgress: record.indexingProgress,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
                     sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
@@ -15839,6 +16048,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     recordGroupType: null,
                     indexingStatus: record.indexingStatus,
                     reason: record.reason,
+                    indexingStage: record.indexingStage,
+                    lastActivityTimestamp: record.lastActivityTimestamp,
+                    indexingProgress: record.indexingProgress,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
                     sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
@@ -15943,6 +16155,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     recordGroupType: null,
                     indexingStatus: record.indexingStatus,
                     reason: record.reason,
+                    indexingStage: record.indexingStage,
+                    lastActivityTimestamp: record.lastActivityTimestamp,
+                    indexingProgress: record.indexingProgress,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
                     sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
@@ -16083,6 +16298,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     recordGroupType: null,
                     indexingStatus: record.indexingStatus,
                     reason: record.reason,
+                    indexingStage: record.indexingStage,
+                    lastActivityTimestamp: record.lastActivityTimestamp,
+                    indexingProgress: record.indexingProgress,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
                     sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
@@ -16176,6 +16394,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     recordGroupType: null,
                     indexingStatus: record.indexingStatus,
                     reason: record.reason,
+                    indexingStage: record.indexingStage,
+                    lastActivityTimestamp: record.lastActivityTimestamp,
+                    indexingProgress: record.indexingProgress,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
                     sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,

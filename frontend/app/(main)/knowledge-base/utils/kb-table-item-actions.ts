@@ -12,13 +12,39 @@ function isKnowledgeHubTableItem(item: KbTableItem): item is KnowledgeHubNode {
 }
 
 /**
+ * Web connector URL path segments are stored as internal HTML records so they can
+ * sit in the same parent/child graph as pages, but in the browser they behave as
+ * containers. Treat them like folders for icons, actions, and rollup status.
+ */
+export function isWebPathPlaceholder(item: KbTableItem): item is KnowledgeHubNode {
+  return (
+    isKnowledgeHubTableItem(item) &&
+    item.nodeType === 'record' &&
+    item.isInternal === true &&
+    item.connector?.toUpperCase() === 'WEB' &&
+    item.hasChildren === true
+  );
+}
+
+export function isFolderLikeTableItem(item: KbTableItem): boolean {
+  if (!isKnowledgeHubTableItem(item)) {
+    return item.type === 'folder';
+  }
+  return (
+    ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType) ||
+    isWebPathPlaceholder(item)
+  );
+}
+
+/**
  * Matches legacy all-records DataGrid: do not render indexing status for internal hub records.
  */
 export function shouldHideIndexingStatusForHubRecord(item: KbTableItem): boolean {
   return (
     isKnowledgeHubTableItem(item) &&
     item.nodeType === 'record' &&
-    item.isInternal === true
+    item.isInternal === true &&
+    !isWebPathPlaceholder(item)
   );
 }
 
@@ -42,7 +68,7 @@ export function runItemMenuOpenFromMenu(
   onPreview?: (item: KbTableItem) => void,
 ): void {
   const usePreview =
-    (isKnowledgeHubTableItem(item) && item.nodeType === 'record') ||
+    (isKnowledgeHubTableItem(item) && item.nodeType === 'record' && !isWebPathPlaceholder(item)) ||
     (!isKnowledgeHubTableItem(item) && item.type === 'file');
   if (usePreview && onPreview) onPreview(item);
   else onItemClick(item);

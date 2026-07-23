@@ -9,7 +9,12 @@ import { isElectron } from '@/lib/electron';
 import { isLocalFsConnectorType } from '../utils/local-fs-helpers';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
-import { startConnectorSync } from '../utils/connector-sync-actions';
+import {
+  isConnectorSyncInProgressError,
+  isConnectorSyncLockedError,
+  startConnectorSync,
+} from '../utils/connector-sync-actions';
+import { useSyncConflictGuard } from '../utils/use-sync-conflict-guard';
 import { filterConnectorsForScope } from '../utils/filter-connectors-by-scope';
 import { fetchFilteredConnectorLists } from '../utils/fetch-filtered-connector-lists';
 import {
@@ -466,47 +471,69 @@ function PersonalConnectorsPageContent() {
   );
 
   // ── Success dialog handlers ─────────────────────────────────
+  const { guard: syncConflictGuard, dialog: syncConflictDialog } = useSyncConflictGuard();
+
   const handleStartSyncingFromDialog = useCallback(async () => {
     setShowConfigSuccessDialog(false);
     const instanceId = newlyConfiguredConnectorId;
     setNewlyConfiguredConnectorId(null);
     if (!instanceId) return;
 
-    try {
-      await startConnectorSync({ _key: instanceId, type: connectorTypeInfo?.type });
-      if (isLocalFsConnectorType(connectorTypeInfo?.type ?? '')) {
-        const fresh = await refreshConnectorRowQuiet(instanceId);
-        let config = instanceConfigs[instanceId];
-        if (!config) {
-          config = await ConnectorsApi.getConnectorConfig(instanceId);
-          setInstanceConfig(instanceId, config);
+    const doStartSync = async (force: boolean) => {
+      try {
+        // startConnectorSync already refreshes the instance row + config.
+        await startConnectorSync(
+          { _key: instanceId, type: connectorTypeInfo?.type },
+          { force }
+        );
+        if (isLocalFsConnectorType(connectorTypeInfo?.type ?? '')) {
+          const state = useConnectorsStore.getState();
+          const fresh =
+            state.activeConnectors.find((c) => c._key === instanceId) ??
+            state.instances.find((c) => c._key === instanceId);
+          let config = state.instanceConfigs[instanceId] ?? instanceConfigs[instanceId];
+          if (fresh && !config) {
+            config = await ConnectorsApi.getConnectorConfig(instanceId);
+            setInstanceConfig(instanceId, config);
+          }
+          if (fresh && config) {
+            await ensureLocalWatcherForInstance(fresh, config);
+          }
         }
-        await ensureLocalWatcherForInstance(fresh, config);
-      } else {
-        await refreshConnectorRowQuiet(instanceId);
+        addToast({
+          variant: 'success',
+          title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'connector' }),
+          description: t('workspace.connectors.toasts.syncStartedLongDescription'),
+          duration: 3000,
+        });
+      } catch (err) {
+        // The guard turns these into a restart prompt or a wait toast.
+        if (isConnectorSyncInProgressError(err) || isConnectorSyncLockedError(err)) {
+          throw err;
+        }
+        addToast({
+          variant: 'error',
+          title: t('workspace.connectors.toasts.syncError'),
+        });
       }
-      addToast({
-        variant: 'success',
-        title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'connector' }),
-        description: t('workspace.connectors.toasts.syncStartedLongDescription'),
-        duration: 3000,
-      });
-    } catch {
-      addToast({
-        variant: 'error',
-        title: t('workspace.connectors.toasts.syncError'),
-      });
-    }
+    };
+
+    const currentStatus = instances.find((i) => i._key === instanceId)?.status;
+    await syncConflictGuard(doStartSync, {
+      requestedFullSync: false,
+      currentStatus,
+    });
   }, [
     newlyConfiguredConnectorId,
     connectorTypeInfo,
     addToast,
-    refreshConnectorRowQuiet,
     setInstanceConfig,
     ensureLocalWatcherForInstance,
     setShowConfigSuccessDialog,
     setNewlyConfiguredConnectorId,
     instanceConfigs,
+    instances,
+    syncConflictGuard,
     t,
   ]);
 
@@ -548,6 +575,7 @@ function PersonalConnectorsPageContent() {
           onStartSyncing={handleStartSyncingFromDialog}
           onDoLater={handleDoLater}
         />
+        {syncConflictDialog}
       </>
     );
   }

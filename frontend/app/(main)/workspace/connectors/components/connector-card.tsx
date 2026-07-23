@@ -190,21 +190,23 @@ function ActiveInstanceBar({
 }) {
   const [isAddHovered, setIsAddHovered] = useState(false);
   const { t } = useTranslation();
-  const onlyOnePill = (activeCount > 0) !== (inactiveCount > 0);
 
   const handleBadgeClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     onBadgeClick?.();
   };
 
+  const onlyOnePill = (activeCount > 0) !== (inactiveCount > 0);
+
   return (
-    <Flex align="center" gap="2" style={{ width: '100%', overflow: 'hidden' }}>
-      {/* Scrollable pills container */}
+    <Flex align="start" gap="2" style={{ width: '100%' }}>
+      {/* Pills wrap onto new lines instead of scrolling off-screen, so no
+          instance-count pill is ever clipped on a narrow tile. */}
       <Flex
         align="center"
         gap="2"
-        className="no-scrollbar"
-        style={{ flex: 1, overflowX: 'auto', minWidth: 0 }}
+        wrap="wrap"
+        style={{ flex: 1, minWidth: 0, minHeight: 32 }}
       >
         {/* Active pill */}
         {activeCount > 0 && (

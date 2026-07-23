@@ -688,6 +688,10 @@ class TestGetConnectorStatsException:
         gp.get_connector_stats = AsyncMock(return_value={"success": True, "data": None})
         req = MagicMock()
         req.app.container.logger.return_value = MagicMock()
+        req.state.user.get = lambda key, default=None: {
+            "orgId": "o1",
+            "userId": "user-1",
+        }.get(key, default)
 
         # result["data"] is None so accessing it won't raise, but
         # we make the result dict trigger an exception on the return
@@ -698,7 +702,6 @@ class TestGetConnectorStatsException:
         with pytest.raises(HTTPException) as exc:
             await get_connector_stats_endpoint(
                 request=req,
-                org_id="o1",
                 connector_id="c1",
                 graph_provider=gp,
             )

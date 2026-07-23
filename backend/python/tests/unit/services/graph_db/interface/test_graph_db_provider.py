@@ -245,6 +245,7 @@ class TestAbstractMethodInventory:
         "get_graph_user_keys_by_mongo_user_ids",
         "get_account_type",
         "get_connector_stats",
+        "get_indexing_rollups",
         "get_users",
         "get_app_user_by_email",
         "get_app_users",

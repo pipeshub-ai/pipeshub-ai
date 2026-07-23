@@ -12,6 +12,43 @@ def neo4j_provider() -> Neo4jProvider:
     return provider
 
 
+class TestIndexingRollups:
+    @pytest.mark.asyncio
+    async def test_record_container_rollup_traverses_record_relation_descendants(
+        self, neo4j_provider: Neo4jProvider
+    ):
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[
+                {
+                    "id": "web-path-1",
+                    "status": "COMPLETED",
+                    "stage": "COMPLETED",
+                    "cnt": 4,
+                }
+            ]
+        )
+
+        result = await neo4j_provider.get_indexing_rollups(
+            org_id="org-1",
+            containers=[{"id": "web-path-1", "type": "record"}],
+            transaction="txn-1",
+        )
+
+        neo4j_provider.client.execute_query.assert_awaited_once()
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        kwargs = neo4j_provider.client.execute_query.await_args.kwargs
+        assert "RECORD_RELATION WHERE rels.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']" in query
+        assert "->{1,100}(r:Record)" in query
+        assert "coalesce(r.isInternal, false) = false" in query
+        assert kwargs["parameters"] == {"ids": ["web-path-1"], "org_id": "org-1"}
+        assert kwargs["txn_id"] == "txn-1"
+        assert result == {
+            "web-path-1": [
+                {"status": "COMPLETED", "stage": "COMPLETED", "cnt": 4}
+            ]
+        }
+
+
 class TestConnectionManagement:
     @pytest.mark.asyncio
     async def test_connect_success_uses_env_values(self):
