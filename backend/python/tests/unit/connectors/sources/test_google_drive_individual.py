@@ -1098,7 +1098,9 @@ class TestStreamRecord:
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 400
+            # record-not-downloadable: Drive understood the request and refused
+            # to serve this format, which is not a malformed-request 400.
+            assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_pdf_download_http_error_other(self, connector):
@@ -2728,7 +2730,9 @@ class TestStreamRecordFullCoverage:
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 400
+            # record-not-downloadable: Drive understood the request and refused
+            # to serve this format, which is not a malformed-request 400.
+            assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_pdf_download_http_error_other(self, connector):

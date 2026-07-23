@@ -1976,7 +1976,7 @@ class TestStreamContentCoverage:
 
     @pytest.mark.asyncio
     async def test_stream_content_400_error(self):
-        """400 Bad Request should raise HTTPException."""
+        """400 Bad Request maps to 422 - the source refused the request."""
         from fastapi import HTTPException
 
         from app.utils.streaming import stream_content
@@ -1996,7 +1996,7 @@ class TestStreamContentCoverage:
             with pytest.raises(HTTPException) as exc_info:
                 async for _ in stream_content("https://example.com/file.pdf", "rec-1", "file.pdf"):
                     pass
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_content_403_error(self):

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.connectors.sources.github.connector import GithubConnector, RecordUpdate
 from app.models.entities import RecordType
@@ -1835,8 +1836,11 @@ class TestStreamRecord:
         github_connector_cov.data_source.get_attachment_files_content = AsyncMock(
             return_value=_make_response(False, error="not found")
         )
-        with pytest.raises(Exception, match="Failed to fetch file"):
+        # A bare Exception surfaced as an opaque 500; the source's own status
+        # must reach the client instead.
+        with pytest.raises(HTTPException) as exc_info:
             await github_connector_cov.stream_record(record)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_stream_unsupported_type(self, github_connector_cov):

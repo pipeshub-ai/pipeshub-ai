@@ -80,6 +80,7 @@ from app.sources.client.github.github import (
 )
 from app.sources.external.github.github_ import GitHubDataSource
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.connectors.core.base.error.stream_errors import not_found_at_source
 
 if TYPE_CHECKING:
     from github.PullRequest import PullRequest
@@ -311,7 +312,10 @@ class GithubConnector(BaseConnector):
             record_url = record.weburl
             file_data_res = await self.data_source.get_attachment_files_content(record_url)
             if not file_data_res.success or not file_data_res.data:
-                raise Exception(f"Failed to fetch file from {record_url}: {file_data_res.error}")
+                self.logger.error(
+                    f"Failed to fetch file from {record_url}: {file_data_res.error}"
+                )
+                raise not_found_at_source(self.display_name)
             file_data = file_data_res.data
             async def stream_markdown(
                 markdown_content:str, chunk_size:int=160000
