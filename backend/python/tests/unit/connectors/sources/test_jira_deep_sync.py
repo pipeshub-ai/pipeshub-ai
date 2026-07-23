@@ -53,6 +53,7 @@ def _make_mock_deps():
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_app_roles = AsyncMock()
     dep.on_record_deleted = AsyncMock()
+    dep.on_record_content_update = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[
         MagicMock(email="user@example.com"),
     ])
@@ -1123,6 +1124,8 @@ class TestProcessNewRecords:
 
         assert stats["new_count"] == 1
         assert stats["updated_count"] == 1
+        connector.data_entities_processor.on_new_records.assert_awaited()
+        connector.data_entities_processor.on_record_content_update.assert_awaited_once()
 
 
 # ===========================================================================

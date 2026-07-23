@@ -51,7 +51,6 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     ISSUE_SEARCH_FIELDS,
     USER_PAGE_SIZE,
     JiraConnector,
-    adf_to_plain_text,
 )
 from app.models.entities import (
     AppRole,
@@ -84,6 +83,7 @@ def _make_mock_deps():
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.on_record_deleted = AsyncMock()
+    dep.on_record_content_update = AsyncMock()
     dep.on_records_deleted_cascade = AsyncMock(return_value={
         "success": True, "deleted_records": [], "failed_records": [],
         "total_requested": 0, "successfully_deleted": 0, "failed_count": 0,
@@ -1406,29 +1406,6 @@ class TestFetchProjectsCoverage:
         assert rgs[0][0].short_name == "PROJ"
 
     @pytest.mark.asyncio
-    async def test_adf_description(self):
-        connector = _make_connector()
-        connector.data_source = MagicMock()
-
-        mock_ds = MagicMock()
-        mock_ds.search_projects = AsyncMock(return_value=_make_mock_response(200, {
-            "values": [{
-                "id": "1", "key": "PROJ", "name": "Project",
-                "description": {"type": "doc", "content": [
-                    {"type": "paragraph", "content": [{"type": "text", "text": "ADF desc"}]}
-                ]},
-            }],
-            "isLast": True,
-            "total": 1,
-        }))
-        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        connector._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={})
-        connector._fetch_project_permission_scheme = AsyncMock(return_value=[])
-
-        rgs, raw = await connector._fetch_projects()
-        assert "ADF desc" in rgs[0][0].description
-
-    @pytest.mark.asyncio
     async def test_pagination_no_filter(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
@@ -2633,8 +2610,7 @@ class TestHandleAttachmentDeletionsFromChangelogCoverage:
         connector._find_attachment_record_by_id = AsyncMock(side_effect=[None])
 
         result = await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
-        # removed.png soft-deleted by filename match; orphan.pdf by ID diff (not in current attachments).
-        # The method returns the internal ids for the caller to soft-delete.
+        # removed.png deleted by filename match; orphan.pdf by ID diff (not in current attachments).
         assert set(result) == {"rec-1", "rec-2"}
 
     @pytest.mark.asyncio
@@ -2722,13 +2698,47 @@ class TestHandleAttachmentDeletionsFromChangelogCoverage:
         mock_record.record_name = "kept.png"
 
         tx_store = AsyncMock()
-        tx_store.delete_records_and_relations = AsyncMock()
         tx_store.get_records_by_parent = AsyncMock(return_value=[mock_record])
         connector._find_attachment_record_by_id = AsyncMock(return_value=None)
 
-        await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
+        result = await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
         # kept.png is still in current attachments, should NOT be deleted
-        tx_store.delete_records_and_relations.assert_not_awaited()
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_description_unlink_does_not_delete_still_attached_file(self):
+        """Removing a wiki filename from description must not delete the FileRecord while still attached."""
+        connector = _make_connector()
+        issue = {
+            "id": "1",
+            "key": "P-1",
+            "fields": {
+                "attachment": [{"id": "13828", "filename": "image-20260619-124828.png"}],
+            },
+            "changelog": {
+                "histories": [{
+                    "items": [{
+                        "field": "description",
+                        "fieldId": "description",
+                        "fromString": "!image-20260619-124828.png|thumbnail! some text",
+                        "toString": "some text",
+                    }],
+                }],
+            },
+        }
+
+        mock_record = MagicMock()
+        mock_record.id = "rec-1"
+        mock_record.external_record_id = "attachment_13828"
+        mock_record.record_name = "image-20260619-124828.png"
+
+        tx_store = AsyncMock()
+        tx_store.get_records_by_parent = AsyncMock(return_value=[mock_record])
+        connector._find_attachment_record_by_id = AsyncMock(return_value=mock_record)
+
+        result = await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
+        assert result == []
+        connector._find_attachment_record_by_id.assert_not_awaited()
 
 
 # ===========================================================================
@@ -3090,6 +3100,8 @@ class TestProcessNewRecordsCoverage:
 
         assert stats["new_count"] == 2
         assert stats["updated_count"] == 1
+        connector.data_entities_processor.on_new_records.assert_awaited()
+        connector.data_entities_processor.on_record_content_update.assert_awaited_once()
 
 
 # ===========================================================================
