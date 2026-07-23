@@ -58,7 +58,7 @@
           "Position"
         ]
       },
-      "format": null,
+      "format": "json",
       "weburl": null,
       "comments": [],
       "source_modified_date": null
@@ -115,7 +115,7 @@
           "%"
         ]
       },
-      "format": null,
+      "format": "json",
       "weburl": null,
       "comments": [],
       "source_modified_date": null
@@ -170,7 +170,7 @@
           "Authorised"
         ]
       },
-      "format": null,
+      "format": "json",
       "weburl": null,
       "comments": [],
       "source_modified_date": null
@@ -229,7 +229,7 @@
           "Grade"
         ]
       },
-      "format": null,
+      "format": "json",
       "weburl": null,
       "comments": [],
       "source_modified_date": null

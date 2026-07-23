@@ -520,6 +520,7 @@ class TestTables:
         container = converter.convert(html)
         assert len(container.block_groups) == 1
         assert container.block_groups[0].type == GroupType.TABLE
+        assert container.block_groups[0].format == DataFormat.JSON
         row_blocks = [
             block for block in container.blocks
             if block.type == BlockType.TABLE_ROW

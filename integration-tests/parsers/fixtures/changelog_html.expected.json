@@ -54,7 +54,7 @@
           "Types"
         ]
       },
-      "format": null,
+      "format": "json",
       "weburl": null,
       "comments": [],
       "source_modified_date": null

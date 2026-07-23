@@ -170,7 +170,7 @@
           "Screenshot"
         ]
       },
-      "format": null,
+      "format": "json",
       "weburl": null,
       "comments": [],
       "source_modified_date": null
@@ -229,7 +229,7 @@
           "Preview"
         ]
       },
-      "format": null,
+      "format": "json",
       "weburl": null,
       "comments": [],
       "source_modified_date": null
@@ -282,7 +282,7 @@
           "Details"
         ]
       },
-      "format": null,
+      "format": "json",
       "weburl": null,
       "comments": [],
       "source_modified_date": null
@@ -335,7 +335,7 @@
           "Details"
         ]
       },
-      "format": null,
+      "format": "json",
       "weburl": null,
       "comments": [],
       "source_modified_date": null
@@ -388,7 +388,7 @@
           "Content"
         ]
       },
-      "format": null,
+      "format": "json",
       "weburl": null,
       "comments": [],
       "source_modified_date": null
@@ -441,7 +441,7 @@
           "Content"
         ]
       },
-      "format": null,
+      "format": "json",
       "weburl": null,
       "comments": [],
       "source_modified_date": null

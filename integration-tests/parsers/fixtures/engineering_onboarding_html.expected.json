@@ -268,7 +268,7 @@
           "Length"
         ]
       },
-      "format": null,
+      "format": "json",
       "weburl": null,
       "comments": [],
       "source_modified_date": null
@@ -359,7 +359,7 @@
           "Slack handle"
         ]
       },
-      "format": null,
+      "format": "json",
       "weburl": null,
       "comments": [],
       "source_modified_date": null

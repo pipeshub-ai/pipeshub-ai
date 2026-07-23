@@ -32,7 +32,7 @@ Block / group mapping (mirrors markdown_to_blocks.MarkdownToBlocksConverter):
                          └─ Block(TEXT, LIST_ITEM, MARKDOWN)  per <li>
     ol               → BlockGroup(ORDERED_LIST)  (same; nested lists stay markdown)
 
-    table            → BlockGroup(TABLE)  + TableMetadata (column_names, captions, …)
+    table            → BlockGroup(TABLE, JSON)  + TableMetadata (column_names, captions, …)
                          └─ Block(TABLE_ROW, JSON)  per collapsed body row
                             (colspan/rowspan merged into logical columns; nested <table>
                              in a cell → markdown pipe table appended to cell text)
@@ -1424,6 +1424,7 @@ class _DomWalker:
         self,
         group_type: GroupType,
         sub_type: GroupSubType | None = None,
+        format: DataFormat | None = None,
     ) -> None:
         """Create a ``BlockGroup`` and push it onto the nesting stack.
 
@@ -1436,6 +1437,7 @@ class _DomWalker:
             type=group_type,
             sub_type=sub_type,
             parent_index=parent_index,
+            format=format,
         )
         self.block_groups.append(group)
         if self.group_stack:
@@ -2171,7 +2173,7 @@ class _DomWalker:
         because the table group wires row indices in ``group.children`` and
         then pops itself off the stack without propagating row indices upward.
         """
-        self._open_group(GroupType.TABLE)
+        self._open_group(GroupType.TABLE, format=DataFormat.JSON)
         open_group = self.group_stack[-1]
         group = self.block_groups[open_group.index]
 
