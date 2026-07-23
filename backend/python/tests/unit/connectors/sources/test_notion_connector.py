@@ -659,8 +659,9 @@ class TestNotionConnector:
             version=1,
             is_file=True,
         )
-        result = await connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_get_signed_url_routes_to_comment_attachment(self):
@@ -2278,12 +2279,13 @@ class TestInit:
 
 class TestGetSignedUrl:
     @pytest.mark.asyncio
-    async def test_no_datasource_returns_none(self):
+    async def test_no_datasource_raises_connector_not_ready(self):
         conn = _make_connector_fullcov()
         conn.data_source = None
         record = _make_file_record(external_record_id="block-1")
-        result = await conn.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await conn.get_signed_url(record)
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_comment_attachment_prefix_ca(self):
@@ -2318,8 +2320,9 @@ class TestGetSignedUrl:
         conn.data_source = MagicMock()
         conn._get_block_file_url = AsyncMock(side_effect=Exception("fail"))
         record = _make_file_record(external_record_id="block-abc")
-        with pytest.raises(Exception, match="fail"):
+        with pytest.raises(HTTPException) as exc_info:
             await conn.get_signed_url(record)
+        assert exc_info.value.status_code == 500
 
 
 # ===================================================================

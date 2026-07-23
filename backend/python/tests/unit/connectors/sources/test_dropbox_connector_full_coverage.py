@@ -2825,8 +2825,11 @@ class TestGetSignedUrl:
         provider.transaction = _transaction
         connector.data_store_provider = provider
 
-        result = await connector.get_signed_url(record)
-        assert result is None
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == "Could not retrieve this item. Please try again."
 
 
 # ===========================================================================
