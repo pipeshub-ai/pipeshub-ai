@@ -1974,6 +1974,52 @@ class TestHandleParentRecordParentChild:
         tx_store.batch_upsert_records.assert_awaited()
         tx_store.create_record_group_relation.assert_awaited()
 
+    @pytest.mark.asyncio
+    async def test_existing_placeholder_parent_reanchored_to_group(self):
+        """A pre-existing placeholder parent is re-anchored to its record group
+        (restores the BELONGS_TO edge a full sync deletes)."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+
+        parent = _make_record(external_record_id="parent-ext", is_placeholder=True)
+        parent.id = "parent-id"
+        parent.external_record_group_id = "ext-grp-1"
+        tx_store.get_record_by_external_id.return_value = parent
+
+        mock_group = MagicMock()
+        mock_group.id = "grp-internal-1"
+        tx_store.get_record_group_by_external_id.return_value = mock_group
+
+        record = _make_record()
+        record.id = "child-id"
+        record.parent_external_record_id = "parent-ext"
+        record.parent_record_type = RecordType.CONFLUENCE_PAGE
+
+        await proc._handle_parent_record(record, tx_store)
+
+        tx_store.create_record_group_relation.assert_awaited_with("parent-id", "grp-internal-1")
+        tx_store.create_record_relation.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_existing_real_parent_not_reanchored(self):
+        """A pre-existing real (non-placeholder) parent is not re-anchored — it re-syncs itself."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+
+        parent = _make_record(external_record_id="parent-ext")  # is_placeholder defaults False
+        parent.id = "parent-id"
+        tx_store.get_record_by_external_id.return_value = parent
+
+        record = _make_record()
+        record.id = "child-id"
+        record.parent_external_record_id = "parent-ext"
+        record.parent_record_type = RecordType.CONFLUENCE_PAGE
+
+        await proc._handle_parent_record(record, tx_store)
+
+        tx_store.create_record_group_relation.assert_not_awaited()
+        tx_store.create_record_relation.assert_awaited()
+
 
 # ===========================================================================
 # delete_user_group_by_id
@@ -4548,6 +4594,7 @@ class TestKbUploadProcessRecord:
             external_revision_id="rev1",
             indexing_status=ProgressStatus.COMPLETED.value,
             weburl="/kb/folder",
+            is_placeholder=False,
         )
         tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
         record = _make_kb_upload_record()
@@ -4770,6 +4817,7 @@ class TestProcessRecordCompletedReindex:
             indexing_status=ProgressStatus.COMPLETED.value,
             weburl="http://old",
             external_revision_id="rev-1",
+            is_placeholder=False,
         )
         tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
         record = MagicMock()
@@ -4782,6 +4830,7 @@ class TestProcessRecordCompletedReindex:
         record.id = None
         record.is_shared_with_me = False
         record.record_name = "doc"
+        record.is_placeholder = False
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         with patch.object(proc, "_handle_record_group", new_callable=AsyncMock, return_value="rg1"), patch.object(
@@ -4790,3 +4839,89 @@ class TestProcessRecordCompletedReindex:
             await proc._process_record(record, [], tx_store)
 
         assert record.indexing_status == ProgressStatus.NOT_STARTED.value
+
+
+# ===========================================================================
+# is_placeholder flag lifecycle (create / reconcile) + get_placeholder_records
+# ===========================================================================
+
+
+class TestPlaceholderFlag:
+    def test_create_placeholder_sets_flag(self):
+        """Stub parents are flagged is_placeholder across record subtypes."""
+        proc = _make_processor()
+        record = _make_record()
+
+        file_stub = proc._create_placeholder_parent_record(
+            "parent-file", RecordType.FILE, record
+        )
+        page_stub = proc._create_placeholder_parent_record(
+            "parent-page", RecordType.CONFLUENCE_PAGE, record
+        )
+
+        assert file_stub.is_placeholder is True
+        assert page_stub.is_placeholder is True
+
+    @pytest.mark.asyncio
+    async def test_process_record_promotes_stub(self):
+        """A real record replacing a stub clears is_placeholder."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        existing = _make_record(external_revision_id="v0", is_placeholder=True)
+        existing.id = "rec-1"
+        existing.indexing_status = ProgressStatus.NOT_STARTED.value
+        tx_store.get_record_by_external_id.return_value = existing
+
+        # Isolate the flag logic from the heavier graph/permission helpers.
+        proc._handle_record_group = AsyncMock(return_value=None)
+        proc._handle_new_record = AsyncMock()
+        proc._handle_updated_record = AsyncMock()
+        proc._link_record_to_group = AsyncMock()
+        proc._handle_parent_record = AsyncMock()
+        proc._handle_record_permissions = AsyncMock()
+
+        incoming = _make_record(external_revision_id="v1")  # is_placeholder defaults False
+        await proc._process_record(incoming, [], tx_store)
+
+        assert incoming.is_placeholder is False
+
+    @pytest.mark.asyncio
+    async def test_process_record_keeps_stub_for_sweep_backfill(self):
+        """The sweep re-submits a stub with is_placeholder=True; it must stay a stub
+        so out-of-scope ancestors are never promoted to indexed records."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        existing = _make_record(external_revision_id="v0", is_placeholder=True)
+        existing.id = "rec-1"
+        existing.indexing_status = ProgressStatus.NOT_STARTED.value
+        tx_store.get_record_by_external_id.return_value = existing
+
+        proc._handle_record_group = AsyncMock(return_value=None)
+        proc._handle_new_record = AsyncMock()
+        proc._handle_updated_record = AsyncMock()
+        proc._link_record_to_group = AsyncMock()
+        proc._handle_parent_record = AsyncMock()
+        proc._handle_record_permissions = AsyncMock()
+
+        incoming = _make_record(external_revision_id="v1", is_placeholder=True)
+        await proc._process_record(incoming, [], tx_store)
+
+        assert incoming.is_placeholder is True
+
+    @pytest.mark.asyncio
+    async def test_get_placeholder_records_queries_by_flag(self):
+        """get_placeholder_records scopes by connector + optional group with the flag set."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        sentinel = _make_record()
+        tx_store.get_records_by_status = AsyncMock(return_value=[sentinel])
+
+        result = await proc.get_placeholder_records("conn-1", record_group_id="rg-1")
+
+        assert result == [sentinel]
+        kwargs = tx_store.get_records_by_status.call_args.kwargs
+        assert kwargs["connector_id"] == "conn-1"
+        assert kwargs["record_group_id"] == "rg-1"
+        assert kwargs["is_placeholder"] is True
+        assert kwargs["status_filters"] is None

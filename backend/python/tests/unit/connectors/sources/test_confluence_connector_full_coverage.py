@@ -42,6 +42,7 @@ def _make_mock_deps():
     dep.reindex_existing_records = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_placeholder_records = AsyncMock(return_value=[])
     dep.get_all_app_users = AsyncMock(return_value=[])
     dep.migrate_group_to_user_by_external_id = AsyncMock()
 
@@ -552,6 +553,7 @@ class TestStreamRecord:
         c._process_page_attachments_for_children = AsyncMock(return_value={})
         c._parse_confluence_page_to_blocks = AsyncMock(return_value=MagicMock(model_dump_json=MagicMock(return_value="{}")))
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.record_name = "Test"
         record.external_record_id = "p1"
@@ -565,6 +567,7 @@ class TestStreamRecord:
     async def test_unsupported_type(self):
         c = _c()
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.OTHERS
         from fastapi import HTTPException
         with pytest.raises(HTTPException):

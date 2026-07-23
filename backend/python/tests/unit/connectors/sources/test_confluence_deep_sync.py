@@ -51,6 +51,7 @@ def _make_mock_deps():
     dep.on_record_deleted = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_placeholder_records = AsyncMock(return_value=[])
     dep.migrate_group_to_user_by_external_id = AsyncMock()
 
     dsp = MagicMock()

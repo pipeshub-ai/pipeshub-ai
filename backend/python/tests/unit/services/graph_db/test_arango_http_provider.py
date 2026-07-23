@@ -15081,14 +15081,15 @@ class TestExecuteOutlookRecordDeletion:
 class TestBuildKnowledgeHubFilterConditions:
     def test_no_filters(self, connected_provider):
         conditions, params = connected_provider._build_knowledge_hub_filter_conditions()
-        assert conditions == []
+        # Placeholder stubs are always excluded from search/filter, even with no other filters.
+        assert conditions == ["(node.isPlaceholder != true)"]
         assert params == {}
 
     def test_search_query(self, connected_provider):
         conditions, params = connected_provider._build_knowledge_hub_filter_conditions(
             search_query="Test"
         )
-        assert len(conditions) == 1
+        assert len(conditions) == 2  # search LIKE + placeholder exclusion
         assert "search_query" in params
         assert params["search_query"] == "test"
 
@@ -15096,15 +15097,15 @@ class TestBuildKnowledgeHubFilterConditions:
         conditions, params = connected_provider._build_knowledge_hub_filter_conditions(
             node_types=["folder", "record", "recordGroup", "app"]
         )
-        assert len(conditions) == 1
-        assert "folder" in conditions[0]
-        assert "record" in conditions[0]
+        assert len(conditions) == 2  # placeholder exclusion (index 0) + node-type filter
+        assert "folder" in conditions[1]
+        assert "record" in conditions[1]
 
     def test_record_types(self, connected_provider):
         conditions, params = connected_provider._build_knowledge_hub_filter_conditions(
             record_types=["FILE", "MAIL"]
         )
-        assert len(conditions) == 1
+        assert len(conditions) == 2  # placeholder exclusion + record-type filter
         assert "record_types" in params
 
     def test_indexing_status(self, connected_provider):
@@ -15119,7 +15120,7 @@ class TestBuildKnowledgeHubFilterConditions:
         )
         assert "created_at_gte" in params
         assert "created_at_lte" in params
-        assert len(conditions) == 2
+        assert len(conditions) == 3  # placeholder exclusion + gte + lte
 
     def test_updated_at(self, connected_provider):
         conditions, params = connected_provider._build_knowledge_hub_filter_conditions(
@@ -15157,8 +15158,8 @@ class TestBuildKnowledgeHubFilterConditions:
         conditions, params = connected_provider._build_knowledge_hub_filter_conditions(
             only_containers=True
         )
-        assert len(conditions) == 1
-        assert "hasChildren" in conditions[0]
+        assert len(conditions) == 2  # placeholder exclusion (index 0) + only-containers filter
+        assert "hasChildren" in conditions[1]
 
     def test_all_filters(self, connected_provider):
         conditions, params = connected_provider._build_knowledge_hub_filter_conditions(

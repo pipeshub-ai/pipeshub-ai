@@ -63,6 +63,7 @@ def _make_mock_deps():
     data_entities_processor.on_record_deleted = AsyncMock()
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    data_entities_processor.get_placeholder_records = AsyncMock(return_value=[])
     data_entities_processor.migrate_group_to_user_by_external_id = AsyncMock()
 
     data_store_provider = MagicMock()
@@ -1935,6 +1936,7 @@ def _make_mock_deps_cov():
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_all_app_users = AsyncMock(return_value=[])
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_placeholder_records = AsyncMock(return_value=[])
     dep.migrate_group_to_user_by_external_id = AsyncMock()
     dep.on_record_content_update = AsyncMock()
     dep.on_updated_record_permissions = AsyncMock()
@@ -3144,6 +3146,7 @@ class TestStreamRecord:
     async def test_stream_page(self):
         c = _conn()
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.external_record_id = "p1"
         record.record_name = "Test"
@@ -3165,6 +3168,7 @@ class TestStreamRecord:
     async def test_stream_file(self):
         c = _conn()
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.FILE
         record.record_name = "file.pdf"
         record.external_record_id = "att-1"
@@ -3184,6 +3188,7 @@ class TestStreamRecord:
     async def test_unsupported_record_type(self):
         c = _conn()
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.TICKET
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
@@ -3193,6 +3198,7 @@ class TestStreamRecord:
     async def test_stream_exception(self):
         c = _conn()
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.external_record_id = "p1"
         record.record_name = "T"
@@ -3786,6 +3792,7 @@ def _make_mock_deps_fullcov():
     dep.reindex_existing_records = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_placeholder_records = AsyncMock(return_value=[])
     dep.get_all_app_users = AsyncMock(return_value=[])
     dep.migrate_group_to_user_by_external_id = AsyncMock()
 
@@ -4271,6 +4278,7 @@ class TestStreamRecordFullCoverage:
         c._process_page_attachments_for_children = AsyncMock(return_value={})
         c._parse_confluence_page_to_blocks = AsyncMock(return_value=MagicMock(model_dump_json=MagicMock(return_value="{}")))
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.record_name = "Test"
         record.external_record_id = "p1"
@@ -4284,6 +4292,7 @@ class TestStreamRecordFullCoverage:
     async def test_unsupported_type(self):
         c = _c()
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.OTHERS
         from fastapi import HTTPException
         with pytest.raises(HTTPException):
@@ -6067,6 +6076,7 @@ class TestStreamRecordAdditional:
             record_name="comment",
             external_record_id="321748993",
         )
+        record.is_placeholder = False
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
         assert exc_info.value.status_code == 404
@@ -6088,6 +6098,7 @@ class TestStreamRecordAdditional:
             record_name="comment",
             external_record_id="321748993",
         )
+        record.is_placeholder = False
         result = await c.stream_record(record)
         assert result is not None
         assert result.media_type == MimeTypes.HTML.value
@@ -6103,6 +6114,7 @@ class TestStreamRecordAdditional:
             record_name="inline comment",
             external_record_id="321814529",
         )
+        record.is_placeholder = False
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
         assert exc_info.value.status_code == 404
@@ -6116,6 +6128,7 @@ class TestStreamRecordAdditional:
             record_name="unknown",
             external_record_id="x1",
         )
+        record.is_placeholder = False
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
         assert exc_info.value.status_code == 400
@@ -7152,6 +7165,7 @@ class TestStreamRecord:
             external_record_group_id="sp1",
             weburl="https://example.atlassian.net/wiki/spaces/TEST/pages/p1",
         )
+        record.is_placeholder = False
         ds = MagicMock()
         ds.get_page_attachments = AsyncMock(
             return_value=_mk_resp(200, {"results": [], "_links": {}})
@@ -7178,6 +7192,7 @@ class TestStreamRecord:
             record_name="Comment1",
             external_record_id="321748993",
         )
+        record.is_placeholder = False
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
         assert exc_info.value.status_code == 404
@@ -7199,6 +7214,7 @@ class TestStreamRecord:
             record_name="Comment1",
             external_record_id="321748993",
         )
+        record.is_placeholder = False
         result = await c.stream_record(record)
         assert result is not None
         assert result.media_type == MimeTypes.HTML.value
@@ -7213,6 +7229,7 @@ class TestStreamRecord:
             mime_type="application/pdf",
             id="r1",
         )
+        record.is_placeholder = False
         result = await c.stream_record(record)
         assert result is not None
 
@@ -7224,6 +7241,7 @@ class TestStreamRecord:
             record_name="msg",
             external_record_id="m1",
         )
+        record.is_placeholder = False
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
         assert exc_info.value.status_code == 400
@@ -7236,6 +7254,7 @@ class TestStreamRecord:
             record_name="Page",
             external_record_id="p1",
         )
+        record.is_placeholder = False
         c._fetch_page_content = AsyncMock(side_effect=RuntimeError("network fail"))
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
@@ -8524,6 +8543,7 @@ class TestStreamRecordLegacyHtml:
     async def test_legacy_html_mime_streams_html(self):
         c = _mk_connector()
         record = MagicMock(spec=WebpageRecord)
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.mime_type = MimeTypes.HTML.value
         record.external_record_id = "legacy-1"
@@ -9359,6 +9379,7 @@ class TestStreamRecordBlocksPath:
     async def test_stream_page_blocks_end_to_end(self):
         c = _mk_connector()
         record = MagicMock(spec=WebpageRecord)
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.mime_type = MimeTypes.BLOCKS.value
         record.external_record_id = "100001"
@@ -9397,6 +9418,7 @@ class TestStreamRecordBlocksPath:
     async def test_stream_blogpost_uses_blogpost_attachments(self):
         c = _mk_connector()
         record = MagicMock(spec=WebpageRecord)
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_BLOGPOST
         record.mime_type = MimeTypes.BLOCKS.value
         record.external_record_id = "200002"
@@ -9425,6 +9447,7 @@ class TestStreamRecordBlocksPath:
     async def test_stream_attachment_fetch_failure_continues(self):
         c = _mk_connector()
         record = MagicMock(spec=WebpageRecord)
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.mime_type = MimeTypes.BLOCKS.value
         record.external_record_id = "100002"
@@ -9484,3 +9507,186 @@ class TestFilterOptionsCursorParseFailure:
 
         assert result.has_more is False
         assert result.cursor is None
+
+
+# ===========================================================================
+# _sweep_placeholder_records - ancestor-closure frontier walk
+# ===========================================================================
+
+
+def _wp_stub(ext_id, parent=None, is_placeholder=False):
+    """Minimal WebpageRecord for placeholder-sweep tests."""
+    return WebpageRecord(
+        record_name=f"page-{ext_id}",
+        record_type=RecordType.CONFLUENCE_PAGE,
+        external_record_id=ext_id,
+        version=1,
+        origin=OriginTypes.CONNECTOR.value,
+        connector_name=Connectors.CONFLUENCE,
+        connector_id="conn-conf-1",
+        parent_external_record_id=parent,
+        parent_record_type=RecordType.CONFLUENCE_PAGE if parent else None,
+        is_placeholder=is_placeholder,
+    )
+
+
+def _folder_stub(ext_id, parent=None, is_placeholder=False):
+    """Minimal folder FileRecord (is_file=False) for placeholder-sweep tests."""
+    return FileRecord(
+        record_name=f"folder-{ext_id}",
+        record_type=RecordType.FILE,
+        external_record_id=ext_id,
+        version=1,
+        origin=OriginTypes.CONNECTOR.value,
+        connector_name=Connectors.CONFLUENCE,
+        connector_id="conn-conf-1",
+        parent_external_record_id=parent,
+        parent_record_type=RecordType.CONFLUENCE_PAGE if parent else None,
+        is_file=False,
+        is_placeholder=is_placeholder,
+    )
+
+
+class TestSweepPlaceholderRecords:
+    @pytest.mark.asyncio
+    async def test_walks_full_ancestor_chain_once(self):
+        """C -> B -> A (all out of scope): every ancestor backfilled once, kept as stub."""
+        c = _make_connector()
+        c.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[_wp_stub("C", parent="B", is_placeholder=True)]
+        )
+
+        fetched = {
+            "C": _wp_stub("C", parent="B"),
+            "B": _wp_stub("B", parent="A"),
+            "A": _wp_stub("A", parent=None),
+        }
+        c._check_and_fetch_updated_record = AsyncMock(
+            side_effect=lambda org_id, rec: (fetched[rec.external_record_id], [])
+        )
+        stubs = {
+            "B": _wp_stub("B", parent="A", is_placeholder=True),
+            "A": _wp_stub("A", parent=None, is_placeholder=True),
+        }
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: stubs.get(ext_id)
+        )
+
+        await c._sweep_placeholder_records("org-conf-1")
+
+        # Each ancestor fetched from source exactly once.
+        fetched_ids = sorted(call.args[1].external_record_id for call in c._check_and_fetch_updated_record.call_args_list)
+        assert fetched_ids == ["A", "B", "C"]
+
+        # Every backfilled record submitted and kept as a stub (never indexed).
+        submitted = [r for call in c.data_entities_processor.on_new_records.call_args_list for (r, _p) in call.args[0]]
+        assert sorted(r.external_record_id for r in submitted) == ["A", "B", "C"]
+        assert all(r.is_placeholder is True for r in submitted)
+
+    @pytest.mark.asyncio
+    async def test_cyclic_source_terminates(self):
+        """Malformed source cycle C -> B -> C: visited guard stops the walk."""
+        c = _make_connector()
+        c.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[_wp_stub("C", parent="B", is_placeholder=True)]
+        )
+        fetched = {
+            "C": _wp_stub("C", parent="B"),
+            "B": _wp_stub("B", parent="C"),  # cycle back to C
+        }
+        c._check_and_fetch_updated_record = AsyncMock(
+            side_effect=lambda org_id, rec: (fetched[rec.external_record_id], [])
+        )
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: _wp_stub(ext_id, parent="C", is_placeholder=True)
+        )
+
+        await c._sweep_placeholder_records("org-conf-1")
+
+        # C and B each fetched once; C not re-fetched despite the cycle.
+        fetched_ids = sorted(call.args[1].external_record_id for call in c._check_and_fetch_updated_record.call_args_list)
+        assert fetched_ids == ["B", "C"]
+
+    @pytest.mark.asyncio
+    async def test_stops_at_real_ancestor_boundary(self):
+        """Walk stops when a parent is already a real (non-placeholder) record."""
+        c = _make_connector()
+        c.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[_wp_stub("C", parent="B", is_placeholder=True)]
+        )
+        c._check_and_fetch_updated_record = AsyncMock(
+            side_effect=lambda org_id, rec: (_wp_stub("C", parent="B"), [])
+        )
+        # B already exists as a real record -> boundary, must not be walked.
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=_wp_stub("B", parent="A", is_placeholder=False)
+        )
+
+        await c._sweep_placeholder_records("org-conf-1")
+
+        fetched_ids = [call.args[1].external_record_id for call in c._check_and_fetch_updated_record.call_args_list]
+        assert fetched_ids == ["C"]  # only the seed; B was a real boundary
+
+    @pytest.mark.asyncio
+    async def test_folder_ancestor_synced_as_real_not_stub(self):
+        """A folder ancestor is fetched via the folder API and synced as a real folder
+        (is_placeholder=False); the content page stays a stub."""
+        c = _make_connector()
+        # Seed: page C whose parent is folder F (out of scope).
+        c.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[_wp_stub("C", parent="F", is_placeholder=True)]
+        )
+
+        page_c = _wp_stub("C", parent="F")
+        page_c.parent_record_type = RecordType.FILE  # parent is a folder
+        c._check_and_fetch_updated_record = AsyncMock(return_value=(page_c, []))
+
+        # Folder fetch returns a real folder record (root; no further parent).
+        folder_f_real = _folder_stub("F", parent=None)
+        c._fetch_folder_for_sweep = AsyncMock(return_value=(folder_f_real, []))
+
+        # After page C is submitted, the F stub exists in the graph as a folder placeholder.
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: _folder_stub("F", is_placeholder=True)
+            if ext_id == "F"
+            else None
+        )
+
+        await c._sweep_placeholder_records("org-conf-1")
+
+        # Folder fetched via the folder path, not _check_and_fetch_updated_record.
+        c._fetch_folder_for_sweep.assert_awaited_once()
+
+        submitted = {
+            r.external_record_id: r
+            for call in c.data_entities_processor.on_new_records.call_args_list
+            for (r, _p) in call.args[0]
+        }
+        assert submitted["C"].is_placeholder is True   # content page stays a stub
+        assert submitted["F"].is_placeholder is False  # folder synced as a real record
+
+    @pytest.mark.asyncio
+    async def test_fetch_failure_still_restores_structural_edges(self):
+        """When the source fetch fails, the persisted stub is still re-submitted so a full
+        sync's deleted structural edges (record group + parent) get restored."""
+        c = _make_connector()
+        c.data_entities_processor.get_placeholder_records = AsyncMock(
+            return_value=[_wp_stub("B", parent="A", is_placeholder=True)]
+        )
+        # Every source fetch fails.
+        c._check_and_fetch_updated_record = AsyncMock(return_value=None)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: _wp_stub("A", parent=None, is_placeholder=True)
+            if ext_id == "A" else None
+        )
+
+        await c._sweep_placeholder_records("org-conf-1")
+
+        # Despite fetch failure, B (and its walked parent A) are re-submitted to restore edges.
+        submitted = {
+            r.external_record_id
+            for call in c.data_entities_processor.on_new_records.call_args_list
+            for (r, _p) in call.args[0]
+        }
+        assert "B" in submitted
+        assert "A" in submitted

@@ -1351,6 +1351,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     continue
                 if record.get("isInternal"):
                     continue
+                if record.get("isPlaceholder"):
+                    continue
                 if record.get("indexingStatus") in skip_status:
                     continue
                 to_upsert.append({"_key": rid, "indexingStatus": ProgressStatus.QUEUED.value})
@@ -3239,12 +3241,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
         status_filters: list[str] | None,
         limit: int | None = None,
         offset: int = 0,
-        transaction: str | None = None
+        transaction: str | None = None,
+        record_group_id: str | None = None,
+        is_placeholder: bool | None = None,
     ) -> list[Record]:
         """
         Get records by their indexing status with pagination support.
         Returns properly typed Record instances (FileRecord, MailRecord, etc.)
         A None or empty status_filters returns records regardless of status.
+        Optionally scope to a record group (record_group_id) and/or filter on the
+        placeholder flag: is_placeholder=True returns only stubs, False excludes them,
+        None ignores the flag.
         """
         try:
             self.logger.debug(f"Retrieving records for connector {connector_id} with status filters: {status_filters}, limit: {limit}, offset: {offset}")
@@ -3264,6 +3271,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "connector_id": connector_id,
                 "status_filters": status_filters,
             }
+
+            record_group_clause = ""
+            if record_group_id:
+                record_group_clause = "AND record.recordGroupId == @record_group_id"
+                bind_vars["record_group_id"] = record_group_id
+
+            # `!= true` (not `== false`) so records predating the field (isPlaceholder absent) are treated as non-placeholders.
+            if is_placeholder is True:
+                placeholder_clause = "AND record.isPlaceholder == true"
+            elif is_placeholder is False:
+                placeholder_clause = "AND record.isPlaceholder != true"
+            else:
+                placeholder_clause = ""
 
             # Generate conditions for each collection
             for record_types in collection_to_types.values():
@@ -3301,6 +3321,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER record.orgId == @org_id
                     AND record.connectorId == @connector_id
                     AND (@status_filters == null OR LENGTH(@status_filters) == 0 OR record.indexingStatus IN @status_filters)
+                    {record_group_clause}
+                    {placeholder_clause}
                 SORT record._key
                 {limit_clause}
 
@@ -14020,6 +14042,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     recordType: record.recordType,
                     recordGroupType: null,
                     indexingStatus: record.indexingStatus,
+                    isPlaceholder: record.isPlaceholder,
                     createdAt: {self._knowledge_hub_record_projected_created_at_expr("record")},
                     updatedAt: {self._knowledge_hub_record_projected_updated_at_expr("record")},
                     sizeInBytes: {size_expr},
@@ -14128,7 +14151,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         webUrl: record.webUrl,
                         hasChildren: has_children,
                         previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                        isInternal: record.isInternal ? true : false
+                        isInternal: record.isInternal ? true : false,
+                        isPlaceholder: record.isPlaceholder ? true : false
                     }
                 )[0] : null
 
@@ -15414,6 +15438,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER doc.connectorId == @connector_id
                 FILTER doc.orgId == @org_id
                 FILTER doc.isInternal != true
+                FILTER doc.isPlaceholder != true
 
                 LET hasParentRecordGroup = FIRST(
                     FOR e IN @@belongs_to
@@ -15688,7 +15713,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
                     userRole: normalized_role,
-                    isInternal: record.isInternal ? true : false
+                    isInternal: record.isInternal ? true : false,
+                    isPlaceholder: record.isPlaceholder ? true : false
                 }}
         ) : []
         RETURN internal_records
@@ -15848,7 +15874,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
                     userRole: normalized_role,
-                    isInternal: record.isInternal ? true : false
+                    isInternal: record.isInternal ? true : false,
+                    isPlaceholder: record.isPlaceholder ? true : false
                 }}
         )
         RETURN direct_records
@@ -15952,7 +15979,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
                     userRole: normalized_role,
-                    isInternal: record.isInternal ? true : false
+                    isInternal: record.isInternal ? true : false,
+                    isPlaceholder: record.isPlaceholder ? true : false
                 }}
         ) : []
 
@@ -16092,7 +16120,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
                     userRole: normalized_role,
-                    isInternal: record.isInternal ? true : false
+                    isInternal: record.isInternal ? true : false,
+                    isPlaceholder: record.isPlaceholder ? true : false
                 }}
         )
 
@@ -16185,7 +16214,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
                     userRole: normalized_role,
-                    isInternal: record.isInternal ? true : false
+                    isInternal: record.isInternal ? true : false,
+                    isPlaceholder: record.isPlaceholder ? true : false
                 }}
         )
         """
@@ -16215,6 +16245,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         filter_conditions = []
         filter_params = {}
+
+        # Placeholder stubs have no real content — never surface them in search/filter results
+        # (they only appear in the plain hierarchical browse, for reachability).
+        filter_conditions.append("(node.isPlaceholder != true)")
 
         # Search query filter - lowercased for case-insensitive LIKE (see LOWER(@search_query) in AQL)
         if search_query:

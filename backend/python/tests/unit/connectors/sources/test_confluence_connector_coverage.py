@@ -52,6 +52,7 @@ def _make_mock_deps():
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_all_app_users = AsyncMock(return_value=[])
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_placeholder_records = AsyncMock(return_value=[])
     dep.migrate_group_to_user_by_external_id = AsyncMock()
     dep.on_record_content_update = AsyncMock()
     dep.on_updated_record_permissions = AsyncMock()
@@ -1108,6 +1109,7 @@ class TestStreamRecord:
     async def test_stream_page(self):
         c = _conn()
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.external_record_id = "p1"
         record.record_name = "Test"
@@ -1124,6 +1126,7 @@ class TestStreamRecord:
     async def test_stream_file(self):
         c = _conn()
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.FILE
         record.record_name = "file.pdf"
         record.external_record_id = "att-1"
@@ -1143,6 +1146,7 @@ class TestStreamRecord:
     async def test_unsupported_record_type(self):
         c = _conn()
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.TICKET
         with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
@@ -1152,6 +1156,7 @@ class TestStreamRecord:
     async def test_stream_exception(self):
         c = _conn()
         record = MagicMock()
+        record.is_placeholder = False
         record.record_type = RecordType.CONFLUENCE_PAGE
         record.external_record_id = "p1"
         record.record_name = "T"

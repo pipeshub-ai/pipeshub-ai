@@ -216,6 +216,7 @@ class DataSourceEntitiesProcessor:
             "mime_type": MimeTypes.UNKNOWN.value,
             "source_created_at": 0,  # Will be updated when real parent is synced
             "source_updated_at": 0,  # Will be updated when real parent is synced
+            "is_placeholder": True,  # Reconciled to False when the real record syncs
         }
 
         # Map RecordType to appropriate Record class
@@ -306,6 +307,14 @@ class DataSourceEntitiesProcessor:
                 await tx_store.batch_upsert_records([parent_record])
 
                 # Link record to group AFTER saving (when record.id is available for edges)
+                if record_group_id:
+                    await self._link_record_to_group(parent_record, record_group_id, tx_store)
+            elif parent_record is not None and parent_record.is_placeholder:
+                # A pre-existing placeholder never re-syncs as a real record, so its
+                # record-group (BELONGS_TO) edge isn't restored after a full sync (which
+                # deletes all edges). Re-anchor it here — idempotently — so the placeholder
+                # and its subtree stay reachable from the record group.
+                record_group_id = await self._handle_record_group(parent_record, tx_store)
                 if record_group_id:
                     await self._link_record_to_group(parent_record, record_group_id, tx_store)
 
@@ -978,6 +987,10 @@ class DataSourceEntitiesProcessor:
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
             if not record.weburl:
                 record.weburl = existing_record.weburl
+            # A real record replacing a stub promotes it out of placeholder state.
+            # Set explicitly so we don't depend on batch_upsert overwrite-vs-merge semantics.
+            if existing_record.is_placeholder and not record.is_placeholder:
+                record.is_placeholder = False
             #check if revision Id is same as existing record
             if record.external_revision_id != existing_record.external_revision_id:
                 await self._handle_updated_record(record, existing_record, tx_store)
@@ -1096,6 +1109,10 @@ class DataSourceEntitiesProcessor:
                         and record.is_file is False
                     ):
                         self.logger.debug(f"Skipping newRecord event for KB folder {record.id}")
+                        continue
+
+                    if record.is_placeholder:
+                        self.logger.debug(f"Skipping automatic indexing event for placeholder record {record.id}")
                         continue
 
                     await self.messaging_producer.send_message(
@@ -1376,6 +1393,11 @@ class DataSourceEntitiesProcessor:
             for record in records:
                 if record.is_internal:
                     self.logger.debug(f"Skipping reindex event for internal record {record.id}")
+                    skipped_records += 1
+                    continue
+
+                if record.is_placeholder:
+                    self.logger.debug(f"Skipping reindex event for placeholder record {record.id}")
                     skipped_records += 1
                     continue
 
@@ -1847,6 +1869,26 @@ class DataSourceEntitiesProcessor:
                 connector_id=connector_id,
                 parent_external_record_id=parent_external_record_id,
                 record_type=record_type,
+            )
+
+    async def get_placeholder_records(
+        self,
+        connector_id: str,
+        record_group_id: str | None = None,
+    ) -> list[Record]:
+        """Return unreconciled placeholder (stub) records for a connector.
+
+        Used by a connector's post-sync sweep to backfill ancestors that were
+        never synced (e.g. filtered out of scope). Pass ``record_group_id`` to
+        scope the sweep to a single record group.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_records_by_status(
+                org_id=self.org_id,
+                connector_id=connector_id,
+                status_filters=None,
+                record_group_id=record_group_id,
+                is_placeholder=True,
             )
 
     async def get_app_by_id(self, connector_id: str) -> AppMetadata | None:

@@ -260,6 +260,7 @@ record_schema = {
             "parentNodeId": {"type": ["string", "null"], "default": None},
             "hideWeburl": {"type": "boolean", "default": False},
             "isInternal": {"type": "boolean", "default": False},
+            "isPlaceholder": {"type": "boolean", "default": False},
             "md5Checksum": {"type": ["string", "null"]},
             "sizeInBytes": {"type": ["number", "null"]},
             "storageDocumentId": {"type": ["string", "null"]},
