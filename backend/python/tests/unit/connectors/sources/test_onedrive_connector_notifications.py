@@ -48,6 +48,7 @@ def _make_transient_odata_error() -> ODataError:
     err = ODataError()
     err.error = MainError()
     err.error.code = "ServiceUnavailable"
+    err.error.message = "Microsoft Graph is temporarily unavailable"
     err.response_status_code = 503
     return err
 
@@ -217,40 +218,51 @@ class TestSyncUserGroupsNotifications:
 class TestProcessUsersInBatchesNotifications:
 
     @pytest.mark.asyncio
-    async def test_files_probe_403_notifies_and_raises(self):
+    async def test_user_drive_403_raises_without_notification(self):
         connector = _make_connector()
-        connector._probe_drives_scope = AsyncMock(side_effect=_make_403_odata_error())
-
-        with pytest.raises(ODataError):
-            await connector._process_users_in_batches([])
-
-        _assert_notify(
-            connector,
-            notification_type=NotificationType.CONNECTOR_AUTH_ERROR,
-            severity=NotificationSeverity.ERROR,
-            title="Files sync failed",
-            message=(
-                "Please check your authentication credentials are correct "
-                "and has Files.Read.All API permission."
-            ),
+        active_user = MagicMock()
+        active_user.email = "active@test.com"
+        connector.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[active_user]
+        )
+        user = MagicMock()
+        user.email = "active@test.com"
+        user.source_user_id = "su-1"
+        connector.msgraph_client = MagicMock()
+        connector.msgraph_client.get_user_drive = AsyncMock(
+            side_effect=_make_403_odata_error()
         )
 
+        with pytest.raises(ODataError):
+            await connector._process_users_in_batches([user])
+
+        connector.msgraph_client.get_user_drive.assert_awaited_once_with("su-1")
+        connector.notify.assert_not_called()
+
     @pytest.mark.asyncio
-    async def test_files_probe_transient_error_does_not_notify(self):
+    async def test_user_drive_transient_error_does_not_notify(self):
         connector = _make_connector()
-        connector._probe_drives_scope = AsyncMock(
+        active_user = MagicMock()
+        active_user.email = "active@test.com"
+        connector.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[active_user]
+        )
+        user = MagicMock()
+        user.email = "active@test.com"
+        user.source_user_id = "su-1"
+        connector.msgraph_client = MagicMock()
+        connector.msgraph_client.get_user_drive = AsyncMock(
             side_effect=_make_transient_odata_error()
         )
 
         with pytest.raises(ODataError):
-            await connector._process_users_in_batches([])
+            await connector._process_users_in_batches([user])
 
         connector.notify.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_onedrive_users_warns(self):
         connector = _make_connector()
-        connector._probe_drives_scope = AsyncMock()
 
         active_user = MagicMock()
         active_user.email = "active@test.com"
@@ -270,7 +282,7 @@ class TestProcessUsersInBatchesNotifications:
             connector,
             notification_type=NotificationType.CONNECTOR_RECORD_SYNC_ERROR,
             severity=NotificationSeverity.WARNING,
-            title="No users with OneDrive found",
+            title="No OneDrive users synced",
             message=(
                 "Ensure that your OneDrive users are invited to Pipeshub, and verify "
                 "that your application has Files.Read.All API permission with admin consent."
@@ -280,7 +292,6 @@ class TestProcessUsersInBatchesNotifications:
     @pytest.mark.asyncio
     async def test_users_with_onedrive_does_not_warn(self):
         connector = _make_connector()
-        connector._probe_drives_scope = AsyncMock()
 
         active_user = MagicMock()
         active_user.email = "active@test.com"
@@ -427,7 +438,6 @@ class TestConnectionAndAccessNotifications:
         connector = _make_connector()
         connector._probe_users_scope = AsyncMock()
         connector._probe_groups_scope = AsyncMock()
-        connector._probe_drives_scope = AsyncMock()
 
         result = await connector.test_connection_and_access()
 
@@ -435,14 +445,12 @@ class TestConnectionAndAccessNotifications:
         connector.notify.assert_not_called()
         connector._probe_users_scope.assert_awaited_once()
         connector._probe_groups_scope.assert_awaited_once()
-        connector._probe_drives_scope.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_missing_user_read_all_notifies_with_scope_in_message(self):
         connector = _make_connector()
         connector._probe_users_scope = AsyncMock(side_effect=_make_403_odata_error())
         connector._probe_groups_scope = AsyncMock()
-        connector._probe_drives_scope = AsyncMock()
 
         result = await connector.test_connection_and_access()
 
@@ -460,7 +468,6 @@ class TestConnectionAndAccessNotifications:
         connector = _make_connector()
         connector._probe_users_scope = AsyncMock()
         connector._probe_groups_scope = AsyncMock(side_effect=_make_403_odata_error())
-        connector._probe_drives_scope = AsyncMock()
 
         result = await connector.test_connection_and_access()
 
@@ -474,29 +481,10 @@ class TestConnectionAndAccessNotifications:
         )
 
     @pytest.mark.asyncio
-    async def test_missing_files_read_all_notifies_with_scope_in_message(self):
-        connector = _make_connector()
-        connector._probe_users_scope = AsyncMock()
-        connector._probe_groups_scope = AsyncMock()
-        connector._probe_drives_scope = AsyncMock(side_effect=_make_403_odata_error())
-
-        result = await connector.test_connection_and_access()
-
-        assert result is False
-        _assert_notify(
-            connector,
-            notification_type=NotificationType.CONNECTOR_AUTH_ERROR,
-            severity=NotificationSeverity.ERROR,
-            title="OneDrive: missing API permissions",
-            message_contains="Files.Read.All",
-        )
-
-    @pytest.mark.asyncio
     async def test_all_missing_scopes_single_notification_lists_all(self):
         connector = _make_connector()
         connector._probe_users_scope = AsyncMock(side_effect=_make_403_odata_error())
         connector._probe_groups_scope = AsyncMock(side_effect=_make_403_odata_error())
-        connector._probe_drives_scope = AsyncMock(side_effect=_make_403_odata_error())
 
         result = await connector.test_connection_and_access()
 
@@ -505,29 +493,38 @@ class TestConnectionAndAccessNotifications:
         message = connector.notify.await_args.kwargs["message"]
         assert "User.Read.All" in message
         assert "Group.Read.All" in message
-        assert "Files.Read.All" in message
         assert connector.notify.await_args.kwargs["type"] is NotificationType.CONNECTOR_AUTH_ERROR
 
     @pytest.mark.asyncio
-    async def test_transient_error_returns_false_without_notification(self):
+    async def test_transient_error_propagates_sanitized_message_without_notification(self):
         connector = _make_connector()
         connector._probe_users_scope = AsyncMock(side_effect=_make_transient_odata_error())
         connector._probe_groups_scope = AsyncMock()
-        connector._probe_drives_scope = AsyncMock()
 
-        result = await connector.test_connection_and_access()
+        with pytest.raises(
+            ConnectionError,
+            match=(
+                r"ServiceUnavailable: Microsoft Graph is temporarily unavailable "
+                r"\(HTTP 503\)"
+            ),
+        ):
+            await connector.test_connection_and_access()
 
-        assert result is False
         connector.notify.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_generic_exception_returns_false_without_notification(self):
+    async def test_generic_exception_propagates_safe_message_without_notification(self):
         connector = _make_connector()
         connector._probe_users_scope = AsyncMock(side_effect=RuntimeError("network down"))
         connector._probe_groups_scope = AsyncMock()
-        connector._probe_drives_scope = AsyncMock()
 
-        result = await connector.test_connection_and_access()
+        with pytest.raises(
+            ConnectionError,
+            match=(
+                "Unable to check Microsoft Graph permission "
+                "User.Read.All: network down"
+            ),
+        ):
+            await connector.test_connection_and_access()
 
-        assert result is False
         connector.notify.assert_not_called()

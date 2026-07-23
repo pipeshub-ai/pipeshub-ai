@@ -92,6 +92,20 @@ def sanitize_azure_error(error: Exception) -> str:
         return description.strip()
     return str(error).strip()
 
+
+def sanitize_graph_error(error: ODataError) -> str:
+    """Return useful Graph error fields without SDK internals or request IDs."""
+    graph_error = error.error
+    error_code = graph_error.code.strip() if graph_error and graph_error.code else ""
+    error_message = graph_error.message.strip() if graph_error and graph_error.message else ""
+    status_code = error.response_status_code
+
+    details = ": ".join(part for part in (error_code, error_message) if part)
+    if status_code:
+        return f"{details or 'Microsoft Graph request failed'} (HTTP {status_code})"
+    return details or "Microsoft Graph request failed"
+
+
 @dataclass
 class OneDriveCredentials:
     tenant_id: str
@@ -1278,30 +1292,6 @@ class OneDriveConnector(BaseConnector):
             users: List of users to process
         """
         try:
-            # Probe for Files.Read.All API permission
-            try:
-                await self._probe_drives_scope()
-            except ODataError as e:
-                self.logger.error(f"❌ Error in files sync: {e}", exc_info=True)
-                error_code = (e.error.code or "") if e.error else ""
-                if error_code == "Authorization_RequestDenied" or e.response_status_code == 403:
-                    await self.notify(
-                        type=NotificationType.CONNECTOR_AUTH_ERROR,
-                        severity=NotificationSeverity.ERROR,
-                        title="Files sync failed",
-                        message="Please check your authentication credentials are correct and has Files.Read.All API permission.",
-                        payload={
-                            "connector_id": self.connector_id,
-                            "connector_name": self.connector_name.value,
-                            "connector_scope": self.scope,
-                        },
-                        recipient_user_ids=[self.created_by],
-                    )
-                raise
-            except Exception as e:
-                self.logger.error(f"❌ Error in files sync: {e}", exc_info=True)
-                raise
-
             all_active_users = await self.data_entities_processor.get_all_active_users()
             active_user_emails = {active_user.email.lower() for active_user in all_active_users}
 
@@ -1327,8 +1317,10 @@ class OneDriveConnector(BaseConnector):
                 await self.notify(
                     type=NotificationType.CONNECTOR_RECORD_SYNC_ERROR,
                     severity=NotificationSeverity.WARNING,
-                    title="No users with OneDrive found",
-                    message="Ensure that your OneDrive users are invited to Pipeshub, and verify that your application has Files.Read.All API permission with admin consent.",
+                    title="No OneDrive users synced",
+                    message=(
+                        "Ensure that your OneDrive users are invited to Pipeshub, and verify that your application has Files.Read.All API permission with admin consent."
+                    ),
                     recipient_user_ids=[self.created_by],
                     payload={
                         "connector_id": self.connector_id,
@@ -1368,21 +1360,23 @@ class OneDriveConnector(BaseConnector):
         try:
             await self.msgraph_client.get_user_drive(user_id)
             return True
-        except Exception as e:
+        except ODataError as e:
             error_message = str(e).lower()
-            error_code = ""
+            error_code = (e.error.code or "").lower() if e.error else ""
 
-            # Extract error code if it's an ODataError
-            if hasattr(e, 'error') and hasattr(e.error, 'code'):
-                error_code = e.error.code.lower() if e.error.code else ""
-
-            if any(indicator in error_message or indicator in error_code for indicator in [
-                "resourcenotfound",
-                "itemnotfound",
-                "request_resourcenotfound",
-                "404"
-            ]):
+            if (
+                e.response_status_code == 404
+                or error_code in {
+                    "resourcenotfound",
+                    "itemnotfound",
+                    "request_resourcenotfound",
+                }
+                or "404" in error_message
+            ):
                 return False
+            raise
+        except Exception as e:
+            self.logger.error("❌ Error checking if user has OneDrive: %s", e)
             raise
     
     async def _sync_users(self) -> List[AppUser]:
@@ -1810,19 +1804,21 @@ class OneDriveConnector(BaseConnector):
 
     async def test_connection_and_access(self) -> bool:
         """
-        Probe all three required Microsoft Graph application permissions:
+        Probe the Microsoft Graph directory permissions used during sync:
           - User.Read.All  → GET /users?$top=1&$select=id
           - Group.Read.All → GET /groups?$top=1&$select=id
-          - Files.Read.All → GET /drives?$top=1&$select=id
 
-        Returns True only when all three probes succeed.
+        Drive access is checked for each active user during file sync. Microsoft
+        Graph can return the same 404 response for an unprovisioned drive and
+        insufficient file access, so these cases cannot be distinguished here.
+
+        Returns True only when both directory probes succeed.
         """
         self.logger.info("Testing connection and access to OneDrive")
 
         scope_probes = [
             ("User.Read.All",  self._probe_users_scope),
             ("Group.Read.All", self._probe_groups_scope),
-            ("Files.Read.All", self._probe_drives_scope),
         ]
 
         all_passed = True
@@ -1832,25 +1828,33 @@ class OneDriveConnector(BaseConnector):
                 await probe()
                 self.logger.info(f"✅ Permission verified: {scope_name}")
             except ODataError as e:
-                all_passed = False
                 error_code = (e.error.code or "") if e.error else ""
                 if error_code == "Authorization_RequestDenied" or e.response_status_code == 403:
-                    # permission not granted — actionable by the user.
+                    all_passed = False
                     missing_scopes.append(scope_name)
                     self.logger.error(
                         f"❌ Missing required Microsoft Graph permission: {scope_name} "
                         f"(Azure error code: {error_code})"
                     )
                 else:
-                    # Transient error (429 TooManyRequests, 503 ServiceUnavailable,
-                    # 500 InternalServerError, …) — log only, no notification.
                     self.logger.error(
                         f"❌ Unexpected Graph API error while probing {scope_name} "
-                        f"(code={error_code}): {e}"
+                        f"(code={error_code}): {e}",
+                        exc_info=True,
                     )
+                    raise ConnectionError(
+                        f"Microsoft Graph error while checking {scope_name}: "
+                        f"{sanitize_graph_error(e)}"
+                    ) from e
             except Exception as e:
-                all_passed = False
-                self.logger.error(f"❌ Error testing {scope_name} permission: {e}")
+                self.logger.error(
+                    f"❌ Error testing {scope_name} permission: {e}",
+                    exc_info=True,
+                )
+                raise ConnectionError(
+                    f"Unable to check Microsoft Graph permission {scope_name}: "
+                    f"{sanitize_azure_error(e)}"
+                ) from e
 
         if missing_scopes:
             await self.notify(
@@ -1891,32 +1895,6 @@ class OneDriveConnector(BaseConnector):
                 )
             )
         )
-
-    async def _probe_drives_scope(self) -> None:
-        """
-        Probe Files.Read.All via GET /users/{first_user_id}/drives.
-
-        The global GET /drives endpoint is scoped to user/group/site and cannot
-        be called tenant-wide. Instead we fetch the first available user, then
-        list that user's drives:
-          - 200 + empty list  → user has no OneDrive yet, but Files.Read.All IS present.
-          - 403               → Files.Read.All scope is not granted.
-        """
-        users_response = await self.client.users.get(
-            RequestConfiguration(
-                query_parameters=UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
-                    top=1, select=["id", "displayName"]
-                )
-            )
-        )
-
-        if not (users_response and users_response.value):
-            self.logger.debug("No users found; skipping Files.Read.All drive probe")
-            return
-
-        user = users_response.value[0]
-        await self.client.users.by_user_id(user.id).drives.get()
-
     @classmethod
     async def create_connector(cls, logger: Logger,
                                data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str,
