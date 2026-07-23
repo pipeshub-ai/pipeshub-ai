@@ -530,6 +530,7 @@ class BlockContainerValidator:
 
     def _check_table_row_blocks(self, blocks, block_groups, issues) -> None:
         n_groups = len(block_groups)
+        fragment_parent_indices = self._block_indices_with_fragment_children(blocks)
         for i, block in enumerate(blocks):
             if self._block_type(block) != BlockType.TABLE_ROW.value:
                 continue
@@ -584,7 +585,11 @@ class BlockContainerValidator:
                     location=loc,
                 ))
             elif not has_cells:
-                if not isinstance(row_text, str) or not row_text.strip():
+                row_container_index = block.index if block.index is not None else i
+                has_fragment_children = row_container_index in fragment_parent_indices
+                if not has_fragment_children and (
+                    not isinstance(row_text, str) or not row_text.strip()
+                ):
                     issues.append(ValidationIssue(
                         severity=Severity.WARNING,
                         code="TABLE_ROW_NO_EMBEDDABLE_CONTENT",
@@ -711,6 +716,15 @@ class BlockContainerValidator:
     # ──────────────────────────────────────────────────────────────────────
     # Helpers
     # ──────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _block_indices_with_fragment_children(blocks) -> set[int]:
+        """Block indices referenced by image-split fragment children."""
+        parents: set[int] = set()
+        for block in blocks:
+            if block.parent_block_index is not None:
+                parents.add(block.parent_block_index)
+        return parents
 
     @staticmethod
     def _is_index_range_in_bounds(r: IndexRange, upper_bound: int) -> bool:

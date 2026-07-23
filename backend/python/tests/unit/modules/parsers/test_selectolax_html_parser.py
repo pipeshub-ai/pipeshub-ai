@@ -430,7 +430,9 @@ class TestLists:
         html = "<ul><li>Item 1</li> hello world <li>Item 2</li></ul>"
         container = converter.convert(html)
         list_items = [b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM]
-        paragraphs = [b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH]
+        paragraphs = [
+            b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH
+        ]
         assert len(list_items) == 2
         assert list_items[0].data == "Item 1"
         assert list_items[1].data == "Item 2"
@@ -442,7 +444,9 @@ class TestLists:
         html = "<ul><div>orphan in div</div><li>Real</li></ul>"
         container = converter.convert(html)
         list_items = [b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM]
-        paragraphs = [b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH]
+        paragraphs = [
+            b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH
+        ]
         assert len(list_items) == 1
         assert list_items[0].data == "Real"
         assert len(paragraphs) == 1
@@ -452,7 +456,9 @@ class TestLists:
         html = '<ol><li>First</li><a href="https://x.com">link</a><li>Second</li></ol>'
         container = converter.convert(html)
         list_items = [b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM]
-        paragraphs = [b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH]
+        paragraphs = [
+            b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH
+        ]
         assert len(list_items) == 2
         assert list_items[0].data == "First"
         assert list_items[1].data == "Second"
@@ -474,12 +480,33 @@ class TestLists:
         )
         container = converter.convert(html)
         list_items = [b for b in container.blocks if b.sub_type == BlockSubType.LIST_ITEM]
-        paragraphs = [b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH]
+        paragraphs = [
+            b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH
+        ]
         assert len(list_items) == 2
         assert list_items[0].data == "Item 1"
         assert list_items[1].data == "Item 2"
         assert len(paragraphs) == 1
         assert paragraphs[0].data == "hello world"
+
+    def test_bare_text_sibling_of_nested_blocks_emitted_as_paragraph(
+        self, converter: HtmlToBlocksConverter
+    ) -> None:
+        """Gmail-style mixed content: text + nested div/img must keep the text."""
+        html = (
+            '<div dir="ltr">'
+            "An airplane is a fixed-wing aircraft."
+            "<div><br></div>"
+            '<div><img src="cid:ii_mrtb2uoe0" alt="image.png"><br></div>'
+            "</div>"
+        )
+        container = converter.convert(html)
+        paragraphs = [
+            b for b in container.blocks if b.sub_type == BlockSubType.PARAGRAPH
+        ]
+        assert len(paragraphs) == 1
+        assert paragraphs[0].data == "An airplane is a fixed-wing aircraft."
+        assert paragraphs[0].format == DataFormat.TXT
 
 
 class TestTables:
@@ -493,6 +520,7 @@ class TestTables:
         container = converter.convert(html)
         assert len(container.block_groups) == 1
         assert container.block_groups[0].type == GroupType.TABLE
+        assert container.block_groups[0].format == DataFormat.JSON
         row_blocks = [
             block for block in container.blocks
             if block.type == BlockType.TABLE_ROW
