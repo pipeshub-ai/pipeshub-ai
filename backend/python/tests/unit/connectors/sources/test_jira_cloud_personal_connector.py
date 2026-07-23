@@ -382,9 +382,14 @@ class TestPersonalRunSyncEdgeCases:
         conn = _make_connector()
         conn.data_source = None
         conn.init = AsyncMock(return_value=False)
+        conn.notify = AsyncMock()
 
-        with pytest.raises(RuntimeError, match="init failed"):
+        with pytest.raises(RuntimeError, match="init failed") as exc_info:
             await conn.run_sync()
+
+        # init() already notified AUTH_ERROR; sync path must not send a second alert.
+        assert getattr(exc_info.value, "_notification_sent", False) is True
+        conn.notify.assert_not_awaited()
 
     async def test_run_sync_calls_init_when_data_source_missing(self) -> None:
         conn = _make_connector()
