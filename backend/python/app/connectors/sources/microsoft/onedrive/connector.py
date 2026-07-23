@@ -1821,7 +1821,6 @@ class OneDriveConnector(BaseConnector):
             ("Group.Read.All", self._probe_groups_scope),
         ]
 
-        all_passed = True
         missing_scopes: List[str] = []
         for scope_name, probe in scope_probes:
             try:
@@ -1830,7 +1829,6 @@ class OneDriveConnector(BaseConnector):
             except ODataError as e:
                 error_code = (e.error.code or "") if e.error else ""
                 if error_code == "Authorization_RequestDenied" or e.response_status_code == 403:
-                    all_passed = False
                     missing_scopes.append(scope_name)
                     self.logger.error(
                         f"❌ Missing required Microsoft Graph permission: {scope_name} "
@@ -1857,15 +1855,16 @@ class OneDriveConnector(BaseConnector):
                 ) from e
 
         if missing_scopes:
+            message = (
+                f"OneDrive is missing the following Microsoft Graph permissions: "
+                f"{', '.join(missing_scopes)}. "
+                "Please grant these application permissions in Azure AD and provide admin consent."
+            )
             await self.notify(
                 type=NotificationType.CONNECTOR_AUTH_ERROR,
                 severity=NotificationSeverity.ERROR,
                 title="OneDrive: missing API permissions",
-                message=(
-                    f"OneDrive is missing the following Microsoft Graph permissions: "
-                    f"{', '.join(missing_scopes)}. "
-                    "Please grant these application permissions in Azure AD and provide admin consent."
-                ),
+                message=message,
                 recipient_user_ids=[self.created_by],
                 payload={
                     "connector_id": self.connector_id,
@@ -1873,8 +1872,9 @@ class OneDriveConnector(BaseConnector):
                     "connector_scope": self.scope,
                 },
             )
+            raise ConnectionError(message)
 
-        return all_passed
+        return True
 
     async def _probe_users_scope(self) -> None:
         """Probe User.Read.All via GET /users?$top=1&$select=id."""

@@ -4052,29 +4052,29 @@ class TestConnectionAndAccess:
         connector.notify.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_missing_user_read_all_returns_false_with_notification(self):
-        """403 on users probe → False, notification lists User.Read.All."""
+    async def test_missing_user_read_all_raises_after_notification(self):
+        """403 on users probe → notify, then raise with User.Read.All in message."""
         connector = _make_connector_cov()
         connector._probe_users_scope = AsyncMock(side_effect=_make_403_odata_error_cov())
         connector._probe_groups_scope = AsyncMock()
         connector.notify = AsyncMock()
 
-        result = await connector.test_connection_and_access()
+        with pytest.raises(ConnectionError, match=r"User\.Read\.All"):
+            await connector.test_connection_and_access()
 
-        assert result is False
         connector.notify.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_missing_group_read_all_returns_false_with_notification(self):
-        """403 on groups probe → False, notification fired."""
+    async def test_missing_group_read_all_raises_after_notification(self):
+        """403 on groups probe → notify, then raise with Group.Read.All in message."""
         connector = _make_connector_cov()
         connector._probe_users_scope = AsyncMock()
         connector._probe_groups_scope = AsyncMock(side_effect=_make_403_odata_error_cov())
         connector.notify = AsyncMock()
 
-        result = await connector.test_connection_and_access()
+        with pytest.raises(ConnectionError, match=r"Group\.Read\.All"):
+            await connector.test_connection_and_access()
 
-        assert result is False
         connector.notify.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -4094,15 +4094,18 @@ class TestConnectionAndAccess:
 
     @pytest.mark.asyncio
     async def test_all_directory_scopes_missing_single_notification(self):
-        """Both directory probes return 403 → exactly one notification fired."""
+        """Both directory probes return 403 → one notification, then raise listing both."""
         connector = _make_connector_cov()
         connector._probe_users_scope = AsyncMock(side_effect=_make_403_odata_error_cov())
         connector._probe_groups_scope = AsyncMock(side_effect=_make_403_odata_error_cov())
         connector.notify = AsyncMock()
 
-        result = await connector.test_connection_and_access()
+        with pytest.raises(
+            ConnectionError,
+            match=r"User\.Read\.All.*Group\.Read\.All",
+        ):
+            await connector.test_connection_and_access()
 
-        assert result is False
         connector.notify.assert_awaited_once()
 
     @pytest.mark.asyncio

@@ -452,9 +452,9 @@ class TestConnectionAndAccessNotifications:
         connector._probe_users_scope = AsyncMock(side_effect=_make_403_odata_error())
         connector._probe_groups_scope = AsyncMock()
 
-        result = await connector.test_connection_and_access()
+        with pytest.raises(ConnectionError, match=r"User\.Read\.All"):
+            await connector.test_connection_and_access()
 
-        assert result is False
         _assert_notify(
             connector,
             notification_type=NotificationType.CONNECTOR_AUTH_ERROR,
@@ -469,9 +469,9 @@ class TestConnectionAndAccessNotifications:
         connector._probe_users_scope = AsyncMock()
         connector._probe_groups_scope = AsyncMock(side_effect=_make_403_odata_error())
 
-        result = await connector.test_connection_and_access()
+        with pytest.raises(ConnectionError, match=r"Group\.Read\.All"):
+            await connector.test_connection_and_access()
 
-        assert result is False
         _assert_notify(
             connector,
             notification_type=NotificationType.CONNECTOR_AUTH_ERROR,
@@ -486,9 +486,12 @@ class TestConnectionAndAccessNotifications:
         connector._probe_users_scope = AsyncMock(side_effect=_make_403_odata_error())
         connector._probe_groups_scope = AsyncMock(side_effect=_make_403_odata_error())
 
-        result = await connector.test_connection_and_access()
+        with pytest.raises(
+            ConnectionError,
+            match=r"User\.Read\.All.*Group\.Read\.All|Group\.Read\.All.*User\.Read\.All",
+        ):
+            await connector.test_connection_and_access()
 
-        assert result is False
         connector.notify.assert_awaited_once()
         message = connector.notify.await_args.kwargs["message"]
         assert "User.Read.All" in message
