@@ -9,6 +9,7 @@ Usage in a *_main.py:
 """
 from __future__ import annotations
 
+import ctypes
 import gc
 import os
 import sys
@@ -54,6 +55,112 @@ def _get_proc_status_memory() -> dict[str, float]:
     return result
 
 
+def _get_smaps_rollup() -> dict[str, float]:
+    """Read /proc/self/smaps_rollup for detailed memory breakdown (Linux only).
+
+    Key fields:
+    - Rss: actual physical memory used
+    - Pss: proportional share (accounts for shared pages)
+    - Anonymous: heap + stack (non-file-backed) — this is where C malloc lives
+    - Shared_Clean/Shared_Dirty: shared libraries
+    - Private_Clean/Private_Dirty: private mappings
+    """
+    result: dict[str, float] = {}
+    try:
+        with open("/proc/self/smaps_rollup") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    key = parts[0].rstrip(":")
+                    try:
+                        result[key] = int(parts[1]) / 1024  # KB → MB
+                    except ValueError:
+                        pass
+    except (FileNotFoundError, OSError):
+        pass
+    return result
+
+
+def _malloc_trim() -> bool:
+    """Call glibc malloc_trim(0) to release free heap pages back to the OS.
+
+    Returns True if memory was actually released.
+    This only works on Linux with glibc (which Docker containers use).
+    """
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        return libc.malloc_trim(0) != 0
+    except (OSError, AttributeError):
+        return False
+
+
+def _get_malloc_stats() -> str | None:
+    """Call malloc_stats() and capture its stderr output (Linux/glibc only).
+
+    Returns the text output or None if unavailable.
+    """
+    try:
+        import io
+        import contextlib
+
+        libc = ctypes.CDLL("libc.so.6")
+        # malloc_stats prints to stderr; capture via pipe
+        r_fd, w_fd = os.pipe()
+        old_stderr = os.dup(2)
+        os.dup2(w_fd, 2)
+        try:
+            libc.malloc_stats()
+        finally:
+            os.dup2(old_stderr, 2)
+            os.close(old_stderr)
+            os.close(w_fd)
+
+        with os.fdopen(r_fd, "r") as f:
+            return f.read()
+    except (OSError, AttributeError):
+        return None
+
+
+def _get_child_processes_rss() -> list[dict[str, Any]]:
+    """Get RSS of child processes (ProcessPoolExecutor workers) via /proc."""
+    children: list[dict[str, Any]] = []
+    my_pid = os.getpid()
+    try:
+        proc_dir = "/proc"
+        for entry in os.listdir(proc_dir):
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            if pid == my_pid:
+                continue
+            try:
+                stat_path = f"{proc_dir}/{pid}/stat"
+                with open(stat_path) as f:
+                    stat_parts = f.read().split()
+                ppid = int(stat_parts[3])
+                if ppid != my_pid:
+                    continue
+                # Read RSS from /proc/pid/status
+                status_path = f"{proc_dir}/{pid}/status"
+                rss_kb = 0
+                name = stat_parts[1].strip("()")
+                with open(status_path) as f:
+                    for line in f:
+                        if line.startswith("VmRSS:"):
+                            rss_kb = int(line.split()[1])
+                            break
+                children.append({
+                    "pid": pid,
+                    "name": name,
+                    "rss_mb": round(rss_kb / 1024, 1),
+                })
+            except (FileNotFoundError, OSError, IndexError, ValueError):
+                continue
+    except (FileNotFoundError, OSError):
+        pass
+    return children
+
+
 @memory_debug_router.get("/memory")
 async def debug_memory() -> JSONResponse:
     """Return memory usage summary: RSS, tracemalloc top allocators, gc stats."""
@@ -74,10 +181,14 @@ async def debug_memory() -> JSONResponse:
 
     traced = tracemalloc.get_traced_memory()
     proc_mem = _get_proc_status_memory()
+    smaps = _get_smaps_rollup()
+    children = _get_child_processes_rss()
 
     return JSONResponse(content={
         "rss_mb": round(_get_rss_mb(), 1),
         "proc_memory": {k: round(v, 1) for k, v in proc_mem.items()},
+        "smaps_rollup_mb": {k: round(v, 1) for k, v in smaps.items()},
+        "child_processes": children,
         "tracemalloc_current_mb": round(traced[0] / (1024 * 1024), 2),
         "tracemalloc_peak_mb": round(traced[1] / (1024 * 1024), 2),
         "top_allocations": top_allocations,
@@ -151,6 +262,34 @@ async def debug_force_gc() -> JSONResponse:
         "rss_before_mb": round(rss_before, 1),
         "rss_after_mb": round(rss_after, 1),
         "gc_garbage_count": len(gc.garbage),
+    })
+
+
+@memory_debug_router.post("/memory/malloc_trim")
+async def debug_malloc_trim() -> JSONResponse:
+    """Call glibc malloc_trim(0) to return freed heap pages to the OS.
+
+    If RSS drops significantly after this, the issue is heap fragmentation
+    (glibc's allocator holding freed pages in its arena). If RSS doesn't
+    drop, the memory is still actively referenced by C extensions.
+    """
+    if not _ENABLED:
+        return JSONResponse(status_code=501, content={"error": "Memory debug disabled"})
+
+    gc.collect()
+    rss_before = _get_rss_mb()
+    proc_before = _get_proc_status_memory()
+    trimmed = _malloc_trim()
+    rss_after = _get_rss_mb()
+    proc_after = _get_proc_status_memory()
+
+    return JSONResponse(content={
+        "malloc_trim_returned_memory": trimmed,
+        "rss_before_mb": round(rss_before, 1),
+        "rss_after_mb": round(rss_after, 1),
+        "rss_freed_mb": round(rss_before - rss_after, 1),
+        "VmRSS_before_mb": round(proc_before.get("VmRSS", 0), 1),
+        "VmRSS_after_mb": round(proc_after.get("VmRSS", 0), 1),
     })
 
 
