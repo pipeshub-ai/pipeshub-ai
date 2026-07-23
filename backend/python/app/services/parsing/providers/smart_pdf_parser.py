@@ -32,6 +32,7 @@ _LOW_DENSITY_THRESHOLD = 0.01
 
 # Fraction of pages that must need OCR before we switch the whole document
 _OCR_PAGE_THRESHOLD = 0.3
+_MAX_SAMPLE_PAGES = 5
 
 
 def _page_needs_ocr(page: Any) -> bool:
@@ -65,11 +66,11 @@ def _detect_needs_ocr(content: bytes) -> bool:
     """Return True when enough pages appear scanned/image-heavy."""
     try:
         with pdfplumber.open(io.BytesIO(content)) as pdf:
-            total = len(pdf.pages)
-            if total == 0:
+            if not pdf.pages:
                 return False
-            ocr_pages = sum(1 for p in pdf.pages if _page_needs_ocr(p))
-            return (ocr_pages / total) >= _OCR_PAGE_THRESHOLD
+            sample = pdf.pages[:_MAX_SAMPLE_PAGES]
+            ocr_pages = sum(1 for p in sample if _page_needs_ocr(p))
+            return (ocr_pages / len(sample)) >= _OCR_PAGE_THRESHOLD
     except Exception:  # noqa: BLE001
         return False
 
