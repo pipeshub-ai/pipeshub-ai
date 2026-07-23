@@ -249,6 +249,11 @@ class DoclingClient:
                     )
 
                     if response.status_code == HttpStatusCode.SUCCESS.value:
+                        raw_bytes = len(response.content)
+                        self.logger.info(
+                            "📊 [MEMORY] parse_pdf raw response size=%.1fMB",
+                            raw_bytes / (1024 * 1024),
+                        )
                         result = await asyncio.to_thread(response.json)
                         if result.get("success"):
                             return result["parse_result"]
