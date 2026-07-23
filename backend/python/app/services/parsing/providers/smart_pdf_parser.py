@@ -102,7 +102,7 @@ class SmartPDFParser:
         # Full-document pdfplumber scan is synchronous CPU work; keep it off
         # the event loop so one large PDF can't stall every other request.
         needs_ocr = await asyncio.to_thread(_detect_needs_ocr, content)
-        if needs_ocr:
+        if needs_ocr and False:
             logger.info(
                 "SmartPDFParser: '%s' appears scanned, using OCR provider",
                 record_name,
