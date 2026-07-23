@@ -682,18 +682,24 @@ class TestEnsureConnectorInitializedDocNotFound:
 class TestGetConnectorStatsException:
     @pytest.mark.asyncio
     async def test_generic_exception_after_success(self):
-        """Line 1542 — exception in result parsing after logger is set."""
+        """When stats lookup returns success=False, raises 404."""
         from app.connectors.api.router import get_connector_stats_endpoint
         gp = AsyncMock()
-        gp.get_connector_stats = AsyncMock(return_value={"success": True, "data": None})
+        gp.get_document = AsyncMock(return_value={"type": "Slack"})
+        gp.get_connector_stats = AsyncMock(return_value={"success": False})
+
+        registry = AsyncMock()
+        registry.can_user_view_connector = AsyncMock(return_value=True)
+
         req = MagicMock()
         req.app.container.logger.return_value = MagicMock()
-
-        # result["data"] is None so accessing it won't raise, but
-        # we make the result dict trigger an exception on the return
-        bad_result = MagicMock()
-        bad_result.__getitem__ = MagicMock(side_effect=[True, RuntimeError("serialize")])
-        gp.get_connector_stats = AsyncMock(return_value={"success": False})
+        req.app.state.connector_registry = registry
+        req.state.user = MagicMock()
+        req.state.user.get = lambda k, default=None: {
+            "userId": "user-1", "orgId": "o1",
+        }.get(k, default)
+        req.headers = MagicMock()
+        req.headers.get = lambda k, default=None: default
 
         with pytest.raises(HTTPException) as exc:
             await get_connector_stats_endpoint(

@@ -3273,6 +3273,29 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_user_accessible_team_app_ids(
+        self,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return the ids of team-scoped apps this user may access.
+
+        Mirrors the team-visibility rules used by
+        :meth:`get_filtered_connector_instances` for non-admin users: an app is
+        accessible when the user has a direct ``userAppRelation`` edge to it, or
+        reaches it through a team ``PERMISSION`` edge. Used to gate read-only
+        access (e.g. connector stats) so it matches connector-list visibility.
+
+        Args:
+            user_id: External userId value (as stored in ``user.userId``).
+            transaction: Optional transaction ID.
+
+        Returns:
+            List of accessible team app ids (empty when the user has none).
+        """
+        pass
+
+    @abstractmethod
     async def store_page_token(
         self,
         channel_id: str,

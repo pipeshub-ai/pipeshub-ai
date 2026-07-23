@@ -21895,5 +21895,108 @@ class TestGetRecordsByParentRecord:
         assert bind_vars["user_key"] == "user_456"
 
 
+# ---------------------------------------------------------------------------
+# get_connector_stats KB branch
+# ---------------------------------------------------------------------------
 
 
+class TestGetConnectorStatsKB:
+    @pytest.mark.asyncio
+    async def test_kb_collection_stats_with_upload_records(self, connected_provider):
+        """KB collection should return non-zero stats for UPLOAD records."""
+        from app.config.constants.arangodb import Connectors, OriginTypes
+        
+        # Mock KB app doc
+        connected_provider.get_document = AsyncMock(return_value={
+            "type": Connectors.KNOWLEDGE_BASE.value,
+            "name": "My Collection"
+        })
+        
+        # Mock query results with KB upload records
+        connected_provider.http_client.execute_aql.return_value = [
+            {"recordType": "FILE", "indexingStatus": "COMPLETED", "cnt": 10},
+            {"recordType": "FILE", "indexingStatus": "FAILED", "cnt": 2},
+        ]
+        
+        with patch(
+            "app.services.graph_db.arango.arango_http_provider.build_connector_stats_response",
+            return_value={"total": 12, "origin": "COLLECTION"}
+        ) as mock_build:
+            result = await connected_provider.get_connector_stats("org1", "kb1")
+            
+            assert result["success"] is True
+            mock_build.assert_called_once()
+            # Verify origin param was passed
+            call_args = mock_build.call_args
+            assert call_args[1].get("origin") == "COLLECTION"
+
+    @pytest.mark.asyncio
+    async def test_kb_collection_excludes_folder_records(self, connected_provider):
+        """KB stats should exclude folder records (isFile: false)."""
+        from app.config.constants.arangodb import Connectors
+        
+        connected_provider.get_document = AsyncMock(return_value={
+            "type": Connectors.KNOWLEDGE_BASE.value
+        })
+        
+        # Query should filter folders via targetInfo.isFile check
+        connected_provider.http_client.execute_aql.return_value = []
+        
+        result = await connected_provider.get_connector_stats("org1", "kb1")
+
+        # Verify the KB query was used (KB app link set, connector prefix absent)
+        call_args = connected_provider.http_client.execute_aql.call_args
+        bind_vars = call_args[1]["bind_vars"]
+        assert bind_vars["kb_app_id"] is not None
+        assert bind_vars["record_group_prefix"] is None
+
+    @pytest.mark.asyncio
+    async def test_external_connector_unchanged(self, connected_provider):
+        """External connectors should use the record-group link and no origin filter."""
+        connected_provider.get_document = AsyncMock(return_value={
+            "type": "SLACK",
+            "name": "Slack Connector"
+        })
+
+        connected_provider.http_client.execute_aql.return_value = [
+            {"recordType": "MESSAGE", "indexingStatus": "COMPLETED", "cnt": 50}
+        ]
+
+        with patch(
+            "app.services.graph_db.arango.arango_http_provider.build_connector_stats_response",
+            return_value={"total": 50, "origin": "CONNECTOR"}
+        ) as mock_build:
+            result = await connected_provider.get_connector_stats("org1", "conn1")
+
+            assert result["success"] is True
+            assert mock_build.call_args[1].get("origin") == "CONNECTOR"
+
+        # Connector path: record-group prefix set, KB app link and origin filter absent
+        bind_vars = connected_provider.http_client.execute_aql.call_args[1]["bind_vars"]
+        assert bind_vars["kb_app_id"] is None
+        assert bind_vars["origin_filter"] is None
+        assert bind_vars["record_group_prefix"] is not None
+
+    @pytest.mark.asyncio
+    async def test_kb_stats_query_filters(self, connected_provider):
+        """KB stats query should filter by origin=UPLOAD, orgId, and exclude internal/placeholder/deleted."""
+        from app.config.constants.arangodb import Connectors, CollectionNames, OriginTypes
+        
+        connected_provider.get_document = AsyncMock(return_value={
+            "type": Connectors.KNOWLEDGE_BASE.value
+        })
+        
+        connected_provider.http_client.execute_aql.return_value = []
+        
+        await connected_provider.get_connector_stats("org1", "kb1")
+        
+        call_args = connected_provider.http_client.execute_aql.call_args
+        query = call_args[0][0]
+        bind_vars = call_args[1]["bind_vars"]
+        
+        # Verify KB-specific filters in query
+        assert "origin == @origin_filter" in query
+        assert "isDeleted != true" in query
+        assert bind_vars["origin_filter"] == OriginTypes.UPLOAD.value
+        assert bind_vars["kb_app_id"] == f"{CollectionNames.APPS.value}/kb1"
+        assert bind_vars["record_group_prefix"] is None

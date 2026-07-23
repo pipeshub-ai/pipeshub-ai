@@ -7887,11 +7887,11 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: str | None = None
     ) -> dict:
         """
-        Get connector statistics for a specific connector.
+        Get connector statistics for a specific connector or KB collection.
 
         Args:
             org_id (str): Organization ID
-            connector_id (str): Connector ID
+            connector_id (str): Connector ID (or KB app ID)
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
@@ -7901,26 +7901,54 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             self.logger.debug(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 
-            query = """
-            MATCH (app:App {id: $connector_id})
-            MATCH (app)<-[:BELONGS_TO*1..10]-(rg:RecordGroup)
-            MATCH (rg)<-[:BELONGS_TO]-(r:Record)
-            WHERE NOT EXISTS {
+            # Detect whether this id is a KB collection (records link directly to the
+            # App node) or an external connector (records link via a RecordGroup). Only
+            # the parent-linkage pattern and the origin filter differ, so a single query
+            # body is shared and the linkage MATCH is swapped in.
+            app_query = "MATCH (app:App {id: $connector_id}) RETURN app.type AS type"
+            app_result = await self.client.execute_query(
+                app_query,
+                parameters={"connector_id": connector_id},
+                txn_id=transaction
+            )
+            is_kb = bool(app_result) and app_result[0].get("type") == Connectors.KNOWLEDGE_BASE.value
+            self.logger.debug(f"📊 Computing {'KB collection' if is_kb else 'external connector'} stats for {connector_id}")
+
+            linkage = (
+                "MATCH (app)<-[:BELONGS_TO]-(r:Record)"
+                if is_kb
+                else "MATCH (app)<-[:BELONGS_TO*1..10]-(rg:RecordGroup) "
+                     "MATCH (rg)<-[:BELONGS_TO]-(r:Record)"
+            )
+
+            query = f"""
+            MATCH (app:App {{id: $connector_id}})
+            {linkage}
+            WHERE r.orgId = $org_id
+            AND ($origin_filter IS NULL OR r.origin = $origin_filter)
+            AND coalesce(r.isInternal, false) = false
+            AND coalesce(r.isPlaceholder, false) = false
+            AND coalesce(r.isDeleted, false) = false
+            AND NOT EXISTS {{
                 MATCH (r)-[:IS_OF_TYPE]->(f:File)
                 WHERE f.isFile = false
-            }
-            AND coalesce(r.isInternal, false) = false
+            }}
             RETURN r.recordType AS recordType, r.indexingStatus AS indexingStatus, count(*) AS cnt
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"connector_id": connector_id},
+                parameters={
+                    "connector_id": connector_id,
+                    "org_id": org_id,
+                    "origin_filter": OriginTypes.UPLOAD.value if is_kb else None,
+                },
                 txn_id=transaction
             )
 
             rows = results or []
-            result = build_connector_stats_response(rows, statuses, org_id, connector_id)
+            origin = "COLLECTION" if is_kb else "CONNECTOR"
+            result = build_connector_stats_response(rows, statuses, org_id, connector_id, origin=origin)
 
             self.logger.debug(f"✅ Retrieved stats for connector {connector_id}")
             return {
@@ -12065,6 +12093,14 @@ class Neo4jProvider(IGraphDBProvider):
             txn_id=transaction,
         )
         return [r["app_id"] for r in results] if results else []
+
+    async def get_user_accessible_team_app_ids(
+        self,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Public accessor for team-app read visibility (app ``id`` list)."""
+        return await self._get_user_accessible_team_app_ids(user_id, transaction)
 
     async def get_filtered_connector_instances(
         self,
