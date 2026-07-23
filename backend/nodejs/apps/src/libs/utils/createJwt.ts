@@ -197,3 +197,74 @@ export const jwtGeneratorForValidateEmailLink = (
 
   return { validateEmailToken, mailAuthToken };
 };
+
+export const jwtGeneratorForOrgEmailVerification = (
+  orgId: string,
+  contactEmail: string,
+  scopedJwtSecret: string,
+  smtpOrgId: string,
+) => {
+  const orgVerificationToken = jwt.sign(
+    {
+      orgId,
+      contactEmail,
+      scopes: [TokenScopes.ORG_EMAIL_VERIFY],
+    },
+    scopedJwtSecret,
+    { expiresIn: '24h' },
+  );
+  // Use smtpOrgId (admin org) so the communication service resolves the
+  // admin org's SMTP config — the new org has none configured yet.
+  const mailAuthToken = jwt.sign(
+    { contactEmail, orgId: smtpOrgId, scopes: [TokenScopes.SEND_MAIL] },
+    scopedJwtSecret,
+    { expiresIn: '25h' },
+  );
+  return { orgVerificationToken, mailAuthToken };
+};
+
+export const jwtGeneratorForOtpMail = (
+  email: string,
+  adminOrgId: string,
+  scopedJwtSecret: string,
+) => {
+  return jwt.sign(
+    { email, orgId: adminOrgId, scopes: [TokenScopes.SEND_MAIL] },
+    scopedJwtSecret,
+    { expiresIn: '10m' },
+  );
+};
+
+export const jwtGeneratorForEmailVerified = (
+  email: string,
+  scopedJwtSecret: string,
+  hashProof: string[] = [],
+) => {
+  const expiryTime = (process.env.EMAIL_VERIFIED_TOKEN_EXPIRY || '30d') as string;
+  return jwt.sign(
+    { email, scopes: [TokenScopes.EMAIL_VERIFIED], hashProof },
+    scopedJwtSecret,
+    { expiresIn: expiryTime } as jwt.SignOptions,
+  );
+};
+
+export const jwtGeneratorForMailAuth = (
+  userEmail: string,
+  userId: string,
+  orgId: string,
+  scopedJwtSecret: string,
+): string => {
+  return jwt.sign(
+    {
+      userEmail,
+      userId,
+      orgId,
+      scopes: [TokenScopes.SEND_MAIL],
+    },
+    scopedJwtSecret,
+    { expiresIn: '1h' },
+  );
+};
+
+
+
