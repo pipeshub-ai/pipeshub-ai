@@ -633,8 +633,9 @@ class TestGetSignedUrl:
         record.external_record_id = "mybucket/path/file.txt"
         record.id = "rec-1"
         record.record_name = "file.txt"
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_no_such_key(self, s3_connector):
@@ -648,8 +649,9 @@ class TestGetSignedUrl:
         record.external_record_id = "mybucket/path/file.txt"
         record.id = "rec-1"
         record.record_name = "file.txt"
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_key_without_bucket_prefix(self, s3_connector):
@@ -1531,7 +1533,9 @@ class TestGetSignedUrlFullCoverage:
         )
         connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         rec = _record()
-        assert await connector.get_signed_url(rec) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(rec)
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_no_such_key(self, connector):
@@ -1541,7 +1545,9 @@ class TestGetSignedUrlFullCoverage:
         )
         connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         rec = _record()
-        assert await connector.get_signed_url(rec) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(rec)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_generic_error(self, connector):
@@ -1551,7 +1557,9 @@ class TestGetSignedUrlFullCoverage:
         )
         connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         rec = _record()
-        assert await connector.get_signed_url(rec) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(rec)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_exception(self, connector):
@@ -1559,7 +1567,9 @@ class TestGetSignedUrlFullCoverage:
         connector.data_source.generate_presigned_url = AsyncMock(side_effect=Exception("boom"))
         connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         rec = _record()
-        assert await connector.get_signed_url(rec) is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(rec)
+        assert exc_info.value.status_code == 500
 
 
 class TestStreamRecordFullCoverage:

@@ -4442,8 +4442,11 @@ class TestGetSignedUrl:
         record = MagicMock(id="r1")
         connector.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(side_effect=Exception("DB error"))
 
-        result = await connector.get_signed_url(record)
-        assert result is None
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == "Could not retrieve this item. Please try again."
 
 
 # ===========================================================================
