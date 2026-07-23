@@ -4985,7 +4985,7 @@ class TestReindexSingleRecord:
             new_callable=AsyncMock,
             return_value={"permission": "OWNER", "source": "DIRECT"}
         ), patch.object(
-            connected_provider, "reset_indexing_status_to_queued_for_record_ids",
+            connected_provider, "update_indexing_status_for_record_ids",
             new_callable=AsyncMock
         ):
             result = await connected_provider.reindex_single_record(
@@ -5073,7 +5073,7 @@ class TestReindexSingleRecord:
             new_callable=AsyncMock,
             return_value="OWNER"
         ), patch.object(
-            connected_provider, "reset_indexing_status_to_queued_for_record_ids",
+            connected_provider, "update_indexing_status_for_record_ids",
             new_callable=AsyncMock
         ):
             result = await connected_provider.reindex_single_record("r1", "u1", "org1", depth=100)
@@ -5094,7 +5094,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 14
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 15
 
 
 # ---------------------------------------------------------------------------
@@ -7742,7 +7742,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 14
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 15
 
 
 # ---------------------------------------------------------------------------
@@ -11801,7 +11801,7 @@ class TestReindexSingleRecordSuccess:
             new_callable=AsyncMock,
             return_value={"permission": "OWNER", "source": "DIRECT"}
         ), patch.object(
-            connected_provider, "reset_indexing_status_to_queued_for_record_ids",
+            connected_provider, "update_indexing_status_for_record_ids",
             new_callable=AsyncMock
         ):
             result = await connected_provider.reindex_single_record("r1", "u1", "org1")
@@ -11829,7 +11829,7 @@ class TestReindexSingleRecordSuccess:
             connected_provider, "get_user_kb_permission",
             new_callable=AsyncMock, return_value="OWNER"
         ), patch.object(
-            connected_provider, "reset_indexing_status_to_queued_for_record_ids",
+            connected_provider, "update_indexing_status_for_record_ids",
             new_callable=AsyncMock
         ):
             result = await connected_provider.reindex_single_record("r1", "u1", "org1")
@@ -18416,7 +18416,7 @@ class TestReindexSingleRecordFullCoverage:
         ])
         connected_provider_fullcov.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         connected_provider_fullcov._check_record_permissions = AsyncMock(return_value={"permission": "OWNER"})
-        connected_provider_fullcov.reset_indexing_status_to_queued_for_record_ids = AsyncMock()
+        connected_provider_fullcov.update_indexing_status_for_record_ids = AsyncMock()
         result = await connected_provider_fullcov.reindex_single_record("r1", "u1", "org1", depth=-1)
         assert result["success"] is True
 
@@ -18600,19 +18600,19 @@ class TestFindFileByNameInParent:
 
 
 # ---------------------------------------------------------------------------
-# reset_indexing_status_to_queued_for_record_ids
+# update_indexing_status_for_record_ids
 # ---------------------------------------------------------------------------
 
 
-class TestResetIndexingStatusToQueued:
-    """Tests for reset_indexing_status_to_queued_for_record_ids method."""
+class TestUpdateIndexingStatusForRecordIds:
+    """Tests for update_indexing_status_for_record_ids method."""
 
     @pytest.mark.asyncio
     async def test_empty_list_returns_early(self, connected_provider):
         """Should return early without calling execute_query for empty list."""
         connected_provider.execute_query = AsyncMock()
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids([])
+        await connected_provider.update_indexing_status_for_record_ids([], "QUEUED")
         
         connected_provider.execute_query.assert_not_called()
 
@@ -18621,8 +18621,9 @@ class TestResetIndexingStatusToQueued:
         """Should filter out None, empty strings, and non-string values."""
         connected_provider.execute_query = AsyncMock(return_value=[])
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(
-            [None, "", "valid1", 123, "valid2", "", None]
+        await connected_provider.update_indexing_status_for_record_ids(
+            [None, "", "valid1", 123, "valid2", "", None],
+            "QUEUED",
         )
         
         connected_provider.execute_query.assert_called_once()
@@ -18636,7 +18637,7 @@ class TestResetIndexingStatusToQueued:
         connected_provider.execute_query = AsyncMock(return_value=None)
         connected_provider.batch_upsert_nodes = AsyncMock()
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(["rec1"])
+        await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
         
         connected_provider.batch_upsert_nodes.assert_not_called()
 
@@ -18646,7 +18647,7 @@ class TestResetIndexingStatusToQueued:
         connected_provider.execute_query = AsyncMock(return_value=[])
         connected_provider.batch_upsert_nodes = AsyncMock()
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(["rec1"])
+        await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
         
         connected_provider.batch_upsert_nodes.assert_not_called()
 
@@ -18659,7 +18660,7 @@ class TestResetIndexingStatusToQueued:
         ])
         connected_provider.batch_upsert_nodes = AsyncMock()
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(["rec1", "rec2"])
+        await connected_provider.update_indexing_status_for_record_ids(["rec1", "rec2"], "QUEUED")
         
         connected_provider.batch_upsert_nodes.assert_called_once()
         call_args = connected_provider.batch_upsert_nodes.call_args[0]
@@ -18668,25 +18669,25 @@ class TestResetIndexingStatusToQueued:
         assert upserted[0]["_key"] == "rec2"
 
     @pytest.mark.asyncio
-    async def test_skips_already_queued_records(self, connected_provider):
-        """Should skip records that already have QUEUED status."""
+    async def test_updates_already_queued_records(self, connected_provider):
+        """Should update records even when they already have QUEUED status."""
         connected_provider.execute_query = AsyncMock(return_value=[
             {"_key": "rec1", "indexingStatus": "QUEUED"},
             {"_key": "rec2", "indexingStatus": "COMPLETED"},
         ])
         connected_provider.batch_upsert_nodes = AsyncMock()
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(["rec1", "rec2"])
+        await connected_provider.update_indexing_status_for_record_ids(["rec1", "rec2"], "QUEUED")
         
         connected_provider.batch_upsert_nodes.assert_called_once()
         call_args = connected_provider.batch_upsert_nodes.call_args[0]
         upserted = call_args[0]
-        assert len(upserted) == 1
-        assert upserted[0]["_key"] == "rec2"
+        assert len(upserted) == 2
+        assert {u["_key"] for u in upserted} == {"rec1", "rec2"}
 
     @pytest.mark.asyncio
     async def test_mixed_states_filters_correctly(self, connected_provider):
-        """Should handle records with mixed states: internal, queued, and valid."""
+        """Should handle records with mixed states: internal and valid."""
         connected_provider.execute_query = AsyncMock(return_value=[
             {"_key": "rec1", "isInternal": True, "indexingStatus": "COMPLETED"},
             {"_key": "rec2", "indexingStatus": "QUEUED"},
@@ -18696,15 +18697,17 @@ class TestResetIndexingStatusToQueued:
         ])
         connected_provider.batch_upsert_nodes = AsyncMock()
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(
-            ["rec1", "rec2", "rec3", "rec4", "rec5"]
+        await connected_provider.update_indexing_status_for_record_ids(
+            ["rec1", "rec2", "rec3", "rec4", "rec5"],
+            "QUEUED",
         )
         
         connected_provider.batch_upsert_nodes.assert_called_once()
         call_args = connected_provider.batch_upsert_nodes.call_args[0]
         upserted = call_args[0]
-        assert len(upserted) == 3
+        assert len(upserted) == 4
         upserted_keys = [u["_key"] for u in upserted]
+        assert "rec2" in upserted_keys
         assert "rec3" in upserted_keys
         assert "rec4" in upserted_keys
         assert "rec5" in upserted_keys
@@ -18717,7 +18720,7 @@ class TestResetIndexingStatusToQueued:
         ])
         connected_provider.batch_upsert_nodes = AsyncMock()
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(["rec1"])
+        await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
         
         connected_provider.batch_upsert_nodes.assert_called_once()
         call_args = connected_provider.batch_upsert_nodes.call_args
@@ -18733,11 +18736,11 @@ class TestResetIndexingStatusToQueued:
         """Should log error when exception occurs during query."""
         connected_provider.execute_query = AsyncMock(side_effect=Exception("Query failed"))
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(["rec1"])
+        await connected_provider.update_indexing_status_for_record_ids(["rec1"], "QUEUED")
         
         connected_provider.logger.error.assert_called_once()
         error_msg = connected_provider.logger.error.call_args[0][0]
-        assert "Failed bulk reset records to QUEUED" in error_msg
+        assert "Failed to update records to" in error_msg
 
     @pytest.mark.asyncio
     async def test_skips_records_without_id(self, connected_provider):
@@ -18748,7 +18751,7 @@ class TestResetIndexingStatusToQueued:
         ])
         connected_provider.batch_upsert_nodes = AsyncMock()
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(["rec1", "rec2"])
+        await connected_provider.update_indexing_status_for_record_ids(["rec1", "rec2"], "QUEUED")
         
         connected_provider.batch_upsert_nodes.assert_called_once()
         call_args = connected_provider.batch_upsert_nodes.call_args[0]
@@ -18761,8 +18764,9 @@ class TestResetIndexingStatusToQueued:
         """Should deduplicate record IDs before querying."""
         connected_provider.execute_query = AsyncMock(return_value=[])
         
-        await connected_provider.reset_indexing_status_to_queued_for_record_ids(
-            ["rec1", "rec2", "rec1", "rec3", "rec2"]
+        await connected_provider.update_indexing_status_for_record_ids(
+            ["rec1", "rec2", "rec1", "rec3", "rec2"],
+            "QUEUED",
         )
         
         connected_provider.execute_query.assert_called_once()

@@ -510,7 +510,7 @@ class TestGithubStubMethods:
         assert result is None
 
     async def test_reindex_records(self, github_connector):
-        result = await github_connector.reindex_records()
+        result = await github_connector.reindex_records([])
         assert result is None
 
     async def test_run_incremental_sync(self, github_connector):
@@ -1571,7 +1571,7 @@ class TestSyncIssuesFull:
 class TestMiscMethods:
     @pytest.mark.asyncio
     async def test_reindex_records(self, github_connector_cov):
-        await github_connector_cov.reindex_records()
+        await github_connector_cov.reindex_records([])
 
     @pytest.mark.asyncio
     async def test_run_incremental_sync(self, github_connector_cov):

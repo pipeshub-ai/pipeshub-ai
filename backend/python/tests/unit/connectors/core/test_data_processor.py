@@ -42,6 +42,17 @@ def _make_processor():
     proc = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
     proc.org_id = "org-1"
     proc.messaging_producer = AsyncMock()
+    # Default: every record exists, every publish is acked, every CAS wins.
+    # Tests that care override these.
+    data_store_provider.get_existing_record_keys = AsyncMock(
+        side_effect=lambda ids: set(ids)
+    )
+    data_store_provider.compare_and_set_indexing_status = AsyncMock(
+        side_effect=lambda ids, expected, new_status: list(ids)
+    )
+    proc.messaging_producer.send_messages = AsyncMock(
+        side_effect=lambda topic, messages: [True] * len(messages)
+    )
     return proc
 
 
@@ -419,7 +430,7 @@ class TestOnNewRecords:
         await proc.on_new_records([])
 
         proc.logger.warning.assert_called()
-        proc.messaging_producer.send_message.assert_not_awaited()
+        proc.messaging_producer.send_messages.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_publishes_events(self):
@@ -437,7 +448,10 @@ class TestOnNewRecords:
 
         await proc.on_new_records([(record, [])])
 
-        proc.messaging_producer.send_message.assert_awaited()
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        topic, messages = proc.messaging_producer.send_messages.await_args.args
+        assert topic == "record-events"
+        assert [key for key, _ in messages] == ["rec-1"]
 
     @pytest.mark.asyncio
     async def test_auto_index_off_skips_publish(self):
@@ -456,7 +470,7 @@ class TestOnNewRecords:
 
         await proc.on_new_records([(record, [])])
 
-        proc.messaging_producer.send_message.assert_not_awaited()
+        proc.messaging_producer.send_messages.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
@@ -538,9 +552,14 @@ class TestOnRecordContentUpdate:
 
         await proc.on_record_content_update(record)
 
-        # Should have called batch_upsert_nodes for status reset
-        tx_store.batch_upsert_nodes.assert_awaited()
+        # Status is promoted to QUEUED only after the event is on the topic, via a
+        # conditional swap - never written ahead of the publish.
         proc.messaging_producer.send_message.assert_awaited()
+        proc.data_store_provider.compare_and_set_indexing_status.assert_awaited_once_with(
+            ["rec-1"],
+            ProgressStatus.NOT_STARTED.value,
+            ProgressStatus.QUEUED.value,
+        )
 
 
 # ===========================================================================
@@ -608,7 +627,7 @@ class TestReindexExistingRecords:
 
         await proc.reindex_existing_records([])
 
-        proc.messaging_producer.send_message.assert_not_awaited()
+        proc.messaging_producer.send_messages.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_publishes_reindex_events(self):
@@ -628,7 +647,10 @@ class TestReindexExistingRecords:
 
         await proc.reindex_existing_records([record1, record2])
 
-        assert proc.messaging_producer.send_message.call_count == 2
+        # Both records must go out in a single batched call, not one send each.
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        _topic, messages = proc.messaging_producer.send_messages.await_args.args
+        assert len(messages) == 2
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
@@ -641,7 +663,7 @@ class TestReindexExistingRecords:
         ctx.__aexit__ = AsyncMock(return_value=False)
         proc.data_store_provider.transaction.return_value = ctx
 
-        proc.messaging_producer.send_message = AsyncMock(
+        proc.messaging_producer.send_messages = AsyncMock(
             side_effect=RuntimeError("kafka error")
         )
 
@@ -657,68 +679,39 @@ class TestReindexExistingRecords:
 # ===========================================================================
 
 
-class TestResetIndexingStatusToQueued:
+class TestMarkQueuedAfterPublish:
     @pytest.mark.asyncio
-    async def test_resets_status(self):
-        """Resets indexing status to QUEUED."""
+    async def test_swaps_not_started_to_queued(self):
+        """Promotes published records NOT_STARTED -> QUEUED in one bulk call."""
         proc = _make_processor()
-        tx_store = _make_tx_store()
 
-        mock_record = MagicMock()
-        mock_record.indexing_status = ProgressStatus.COMPLETED.value
-        tx_store.get_record_by_key.return_value = mock_record
+        await proc._mark_queued_after_publish(["rec-1", "rec-2"])
 
-        await proc._reset_indexing_status_to_queued("rec-1", tx_store)
-
-        tx_store.batch_upsert_nodes.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_skips_if_already_queued(self):
-        """Does not reset if already QUEUED."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-
-        mock_record = {"indexingStatus": ProgressStatus.QUEUED.value}
-        tx_store.get_record_by_key.return_value = mock_record
-
-        await proc._reset_indexing_status_to_queued("rec-1", tx_store)
-
-        tx_store.batch_upsert_nodes.assert_not_awaited()
+        proc.data_store_provider.compare_and_set_indexing_status.assert_awaited_once_with(
+            ["rec-1", "rec-2"],
+            ProgressStatus.NOT_STARTED.value,
+            ProgressStatus.QUEUED.value,
+        )
 
     @pytest.mark.asyncio
-    async def test_resets_empty_status_to_queued(self):
-        """Resets EMPTY to QUEUED so manual reindex can re-run indexing."""
+    async def test_empty_list_is_a_noop(self):
+        """No records published means no status write at all."""
         proc = _make_processor()
-        tx_store = _make_tx_store()
 
-        mock_record = MagicMock()
-        mock_record.indexing_status = ProgressStatus.EMPTY.value
-        tx_store.get_record_by_key.return_value = mock_record
+        await proc._mark_queued_after_publish([])
 
-        await proc._reset_indexing_status_to_queued("rec-1", tx_store)
-
-        tx_store.batch_upsert_nodes.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_record_not_found_logs_warning(self):
-        """Logs warning when record not found."""
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-        tx_store.get_record_by_key.return_value = None
-
-        await proc._reset_indexing_status_to_queued("missing", tx_store)
-
-        proc.logger.warning.assert_called()
+        proc.data_store_provider.compare_and_set_indexing_status.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_logged_not_raised(self):
-        """Errors are logged but do not propagate."""
+        """A failed status write must not fail the publish - the event is already sent."""
         proc = _make_processor()
-        tx_store = _make_tx_store()
-        tx_store.get_record_by_key.side_effect = RuntimeError("db error")
+        proc.data_store_provider.compare_and_set_indexing_status.side_effect = RuntimeError("db error")
 
         # Should not raise
-        await proc._reset_indexing_status_to_queued("rec-1", tx_store)
+        await proc._mark_queued_after_publish(["rec-1"])
+
+        proc.logger.error.assert_called()
 
         proc.logger.error.assert_called()
 
@@ -2280,7 +2273,7 @@ class TestInternalRecordSkip:
 
         await proc.on_new_records([(record, [])])
 
-        proc.messaging_producer.send_message.assert_not_awaited()
+        proc.messaging_producer.send_messages.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_reindex_skips_internal(self):
@@ -2298,7 +2291,7 @@ class TestInternalRecordSkip:
 
         await proc.reindex_existing_records([record])
 
-        proc.messaging_producer.send_message.assert_not_awaited()
+        proc.messaging_producer.send_messages.assert_not_awaited()
 
 
 # ===========================================================================

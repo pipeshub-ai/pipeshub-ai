@@ -11,12 +11,13 @@ from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     EventTypes,
+    ProgressStatus,
 )
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.core.sync.task_manager import sync_task_manager
+from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
 from app.containers.connector import ConnectorAppContainer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -388,14 +389,39 @@ class EventService:
             except Exception as clear_err:
                 self.logger.error(f"❌ Failed to clear status for connector {connector_id}: {clear_err}")
 
+    @staticmethod
+    def _reindex_task_key(
+        connector_id: str,
+        record_id: str | None,
+        record_group_id: str | None,
+        depth: int,
+        user_key: str | None,
+        status_filters: list[str] | None,
+    ) -> str:
+        """Identify a reindex request by everything that changes its result set.
+
+        A redelivered event must collapse onto the running task, but two genuinely
+        different requests (reindex-FAILED then reindex-AUTO_INDEX_OFF, or the same
+        folder at a different depth) must be allowed to run side by side.
+        """
+        target = record_id or record_group_id or "*"
+        filters = ",".join(sorted(status_filters or []))
+        return f"reindex:{connector_id}:{target}:{depth}:{user_key or '*'}:{filters}"
+
     async def _handle_reindex(self, connector_name: str, payload: dict[str, Any]) -> bool:
-        """Handle reindex event for a connector with pagination support.
+        """Validate a reindex event and hand the work to a background task.
+
+        Returns as soon as the task is scheduled. The reindex itself can run for
+        hours, and this handler is awaited inline by the Kafka poll loop — doing the
+        work here would stall polling past max.poll.interval.ms, get the consumer
+        evicted, and have the event redelivered forever.
 
         Supports three modes:
         1. Record with depth: recordId + depth - reindex a folder and its children
         2. Record group with depth: recordGroupId + depth - reindex all records in a record group
         3. Status-based: statusFilters - reindex records by indexing status (e.g., FAILED)
         """
+        connector_id = payload.get("connectorId")
         try:
 
             org_id = payload.get("orgId")
@@ -403,7 +429,6 @@ class EventService:
             record_group_id = payload.get("recordGroupId")
             depth = payload.get("depth", 0)
             raw_status_filters = payload.get("statusFilters")
-            connector_id = payload.get("connectorId")
             user_key = payload.get("userKey")
             # Parent-scoped modes: optional filter; connector-wide mode: default FAILED,
             # except for KB connectors, where a KB-wide reindex means "reindex everything".
@@ -427,96 +452,152 @@ class EventService:
                 self.logger.error(f"{connector_name.capitalize()} {connector_id} connector could not be initialized")
                 return False
 
-            connector_app_name = connector.app.get_app_name()
-            # Get connector enum value
-            enum_key = connector_app_name.name.upper().replace(" ", "_")
-            connector_enum = getattr(Connectors, enum_key, None)
-            if not connector_enum:
+            # Reject a connector whose app name maps to no known Connectors member,
+            # while we can still report it synchronously.
+            enum_key = connector.app.get_app_name().name.upper().replace(" ", "_")
+            if not getattr(Connectors, enum_key, None):
                 self.logger.error(f"Unknown connector name: {connector_name}")
                 return False
 
-            # Log which mode we're using
-            if record_id is not None:
-                self.logger.info(f"Starting reindex for {connector_name}, {connector_id} connector record {record_id} with depth {depth}")
-            elif record_group_id is not None:
-                self.logger.info(f"Starting reindex for {connector_name}, {connector_id} connector record group {record_group_id} with depth {depth}")
-            else:
-                self.logger.info(f"Starting reindex for {connector_name}, {connector_id} connector with status filters: {status_filters}")
-
-            # Fetch and process records in batches of 100
-            batch_size = 100
-            offset = 0
-            total_processed = 0
-
-            while True:
-                # Fetch batch of typed Record instances based on mode
-                if record_id is not None:
-                    # Mode 1: Reindex a folder and its children
-                    records = await self.graph_provider.get_records_by_parent_record(
-                        parent_record_id=record_id,
-                        connector_id=connector_id,
-                        org_id=org_id,
-                        depth=depth,
-                        user_key=user_key,
-                        limit=batch_size,
-                        offset=offset,
-                        status_filters=status_filters,
-                    )
-                elif record_group_id is not None:
-                    # Mode 2: Reindex records in a record group
-                    records = await self.graph_provider.get_records_by_record_group(
-                        record_group_id=record_group_id,
-                        connector_id=connector_id,
-                        org_id=org_id,
-                        depth=depth,
-                        user_key=user_key,
-                        limit=batch_size,
-                        offset=offset,
-                        status_filters=status_filters,
-                    )
-                else:
-                    # Mode 3: Reindex by status
-                    records = await self.graph_provider.get_records_by_status(
-                        org_id=org_id,
-                        connector_id=connector_id,
-                        status_filters=status_filters,
-                        limit=batch_size,
-                        offset=offset
-                    )
-
-                if not records:
-                    break
-
-                self.logger.info(f"Processing batch of {len(records)} records (offset: {offset})")
-
-                # Clear AUTO_INDEX_OFF (etc.) on the same batch we are about to reindex — one graph
-                # read path (get_records_* / get_records_by_status) + status updates only.
-                record_ids_to_queue = [
-                    rid
-                    for r in records
-                    if (rid := getattr(r, "id", None)) and isinstance(rid, str)
-                ]
-                if record_ids_to_queue:
-                    await self.graph_provider.reset_indexing_status_to_queued_for_record_ids(
-                        record_ids_to_queue
-                    )
-
-                # Process this batch with typed records
-                await connector.reindex_records(records)
-
-                total_processed += len(records)
-                offset += batch_size
-
-                # If we got fewer records than batch_size, we've reached the end
-                if len(records) < batch_size:
-                    break
-
-            self.logger.info(f"✅ Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
+            task_key = self._reindex_task_key(
+                connector_id, record_id, record_group_id, depth, user_key, status_filters
+            )
+            task = await reindex_task_manager.start_if_idle(
+                task_key,
+                self._run_reindex(
+                    connector=connector,
+                    connector_name=connector_name,
+                    connector_id=connector_id,
+                    org_id=org_id,
+                    record_id=record_id,
+                    record_group_id=record_group_id,
+                    depth=depth,
+                    user_key=user_key,
+                    status_filters=status_filters,
+                ),
+            )
+            if task is None:
+                self.logger.info(
+                    f"Reindex already running for {connector_name} {connector_id} ({task_key}) - ignoring duplicate event"
+                )
             return True
 
         except Exception as e:
             self.logger.error(f"Failed to handle reindex for {connector_name.capitalize()} {connector_id}: {str(e)}", exc_info=True)
             return False
+
+    async def _run_reindex(
+        self,
+        connector: BaseConnector,
+        connector_name: str,
+        connector_id: str,
+        org_id: str,
+        record_id: str | None,
+        record_group_id: str | None,
+        depth: int,
+        user_key: str | None,
+        status_filters: list[str] | None,
+    ) -> None:
+        """Walk every matching record once and hand each batch to the connector.
+
+        Pages with a keyset cursor rather than an offset. The result set mutates
+        while we iterate — records leave it as we set them NOT_STARTED, and the
+        indexing service can push them back into it by marking them FAILED — so a
+        positional offset both skips records and never terminates. A cursor only
+        moves forward, so every record is visited at most once and the walk is a
+        single pass over the key range regardless of what changes underneath it.
+        """
+        if record_id is not None:
+            self.logger.info(f"Starting reindex for {connector_name}, {connector_id} connector record {record_id} with depth {depth}")
+        elif record_group_id is not None:
+            self.logger.info(f"Starting reindex for {connector_name}, {connector_id} connector record group {record_group_id} with depth {depth}")
+        else:
+            self.logger.info(f"Starting reindex for {connector_name}, {connector_id} connector with status filters: {status_filters}")
+
+        batch_size = 100
+        after_key: str | None = None
+        total_processed = 0
+
+        # A record the indexing service is actively working on must not be
+        # republished: that would run two pipelines against the same
+        # virtualRecordId. Everything else, including AUTO_INDEX_OFF, is fair game.
+        exclude_statuses = [ProgressStatus.IN_PROGRESS.value]
+
+        while True:
+            if record_id is not None:
+                # Mode 1: Reindex a folder and its children
+                records = await self.graph_provider.get_records_by_parent_record(
+                    parent_record_id=record_id,
+                    connector_id=connector_id,
+                    org_id=org_id,
+                    depth=depth,
+                    user_key=user_key,
+                    limit=batch_size,
+                    status_filters=status_filters,
+                    after_key=after_key,
+                    exclude_statuses=exclude_statuses,
+                )
+            elif record_group_id is not None:
+                # Mode 2: Reindex records in a record group
+                records = await self.graph_provider.get_records_by_record_group(
+                    record_group_id=record_group_id,
+                    connector_id=connector_id,
+                    org_id=org_id,
+                    depth=depth,
+                    user_key=user_key,
+                    limit=batch_size,
+                    status_filters=status_filters,
+                    after_key=after_key,
+                    exclude_statuses=exclude_statuses,
+                )
+            else:
+                # Mode 3: Reindex by status
+                records = await self.graph_provider.get_records_by_status(
+                    org_id=org_id,
+                    connector_id=connector_id,
+                    status_filters=status_filters,
+                    limit=batch_size,
+                    after_key=after_key,
+                    exclude_statuses=exclude_statuses,
+                )
+
+            if not records:
+                break
+
+            self.logger.info(f"Processing batch of {len(records)} records (after_key: {after_key})")
+
+            # Advance the cursor from the last row of the batch, before doing any
+            # work: a record that fails and flips back into the filter must not be
+            # picked up again by this run. Taking it from anything other than the
+            # final row would rewind the cursor and re-fetch the batch forever.
+            last_id = records[-1].id
+            if not last_id:
+                self.logger.error(
+                    f"Last record of batch has no usable id - stopping reindex for "
+                    f"{connector_id}; cannot advance the cursor safely"
+                )
+                break
+            after_key = last_id
+
+            record_ids_to_update = [r.id for r in records if r.id]
+            if record_ids_to_update:
+                await self.graph_provider.update_indexing_status_for_record_ids(
+                    record_ids_to_update, ProgressStatus.NOT_STARTED.value
+                )
+
+            # Connectors that publish via on_new_records drop AUTO_INDEX_OFF records;
+            # reindex is an explicit user action, so clear that in memory too.
+            for record in records:
+                record.indexing_status = ProgressStatus.NOT_STARTED.value
+
+            await connector.reindex_records(records)
+
+            total_processed += len(records)
+
+            if len(records) < batch_size:
+                break
+
+        self.logger.info(f"✅ Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
 
     async def _handle_delete(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """
@@ -538,8 +619,10 @@ class EventService:
         self.logger.info(f"🗑️ Processing async deletion for {connector_name} connector {connector_id}")
 
         try:
-            # Cancel any running sync task for this connector before deleting
+            # Cancel any running sync/reindex task for this connector before deleting,
+            # so neither keeps touching records that are about to disappear.
             await sync_task_manager.cancel_sync(connector_id)
+            await reindex_task_manager.cancel_by_prefix(f"reindex:{connector_id}:")
 
             # Delete from graph DB
             result = await self.graph_provider.delete_connector_instance(

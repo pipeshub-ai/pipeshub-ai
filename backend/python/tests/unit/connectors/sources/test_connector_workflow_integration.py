@@ -530,6 +530,22 @@ class MockDataStoreProvider:
         async with self.transaction() as tx:
             return await func(tx, *args, **kwargs)
 
+    async def get_existing_record_keys(self, record_ids):
+        return {
+            rid
+            for rid in record_ids
+            if self._store.get_node(CollectionNames.RECORDS.value, rid) is not None
+        }
+
+    async def compare_and_set_indexing_status(self, record_ids, expected, new_status):
+        swapped = []
+        for rid in record_ids:
+            doc = self._store.get_node(CollectionNames.RECORDS.value, rid)
+            if doc is not None and doc.get("indexingStatus") == expected:
+                doc["indexingStatus"] = new_status
+                swapped.append(rid)
+        return swapped
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -884,7 +900,11 @@ class TestGoogleDriveFullSyncWorkflow:
             for i in range(4)
         ]
         await processor.on_new_records([(f, []) for f in files])
-        assert processor.messaging_producer.send_message.call_count == 4
+        # All four go out in one batched call, not one send each.
+        assert processor.messaging_producer.send_messages.call_count == 1
+        _topic, messages = processor.messaging_producer.send_messages.await_args.args
+        assert len(messages) == 4
+        assert all(m["eventType"] == "newRecord" for _key, m in messages)
 
     @pytest.mark.asyncio
     async def test_sync_folder_record(self, processor, graph_store):
@@ -963,7 +983,7 @@ class TestGoogleDriveFullSyncWorkflow:
             indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
         )
         await processor.on_new_records([(file_rec, [])])
-        assert processor.messaging_producer.send_message.call_count == 0
+        assert processor.messaging_producer.send_messages.call_count == 0
 
     @pytest.mark.asyncio
     async def test_sync_inherit_permissions_edge(self, processor, graph_store):
@@ -1004,7 +1024,10 @@ class TestGoogleDriveFullSyncWorkflow:
         ]
         await processor.on_new_records([(f, []) for f in files])
         assert graph_store.count_collection(CollectionNames.RECORDS.value) >= 15
-        assert processor.messaging_producer.send_message.call_count == 15
+        # One batched call carries all 15, rather than 15 separate sends.
+        assert processor.messaging_producer.send_messages.call_count == 1
+        _topic, _msgs = processor.messaging_producer.send_messages.await_args.args
+        assert len(_msgs) == 15
 
 
 # ===========================================================================
@@ -1615,7 +1638,7 @@ class TestErrorRecoveryWorkflow:
     async def test_empty_records_list_noop(self, processor, graph_store):
         """on_new_records with empty list does nothing (no error)."""
         await processor.on_new_records([])
-        assert processor.messaging_producer.send_message.call_count == 0
+        assert processor.messaging_producer.send_messages.call_count == 0
 
     @pytest.mark.asyncio
     async def test_duplicate_records_idempotent(self, processor, graph_store):
@@ -2040,12 +2063,14 @@ class TestReindexWorkflow:
             for i in range(3)
         ]
         await processor.on_new_records([(f, []) for f in files])
-        processor.messaging_producer.send_message.reset_mock()
+        processor.messaging_producer.send_messages.reset_mock()
 
         await processor.reindex_existing_records(files)
-        assert processor.messaging_producer.send_message.call_count == 3
-        for call in processor.messaging_producer.send_message.call_args_list:
-            assert call[0][1]["eventType"] == "reindexRecord"
+        # One batched call carries all 3, rather than 3 separate sends.
+        assert processor.messaging_producer.send_messages.call_count == 1
+        _topic, _msgs = processor.messaging_producer.send_messages.await_args.args
+        assert len(_msgs) == 3
+        assert all(m["eventType"] == "reindexRecord" for _key, m in _msgs)
 
     @pytest.mark.asyncio
     async def test_reindex_skips_internal_records(self, processor, graph_store):
@@ -2053,16 +2078,16 @@ class TestReindexWorkflow:
         file_rec = make_file_record(external_id="reindex-internal-001", record_group_ext_id="drive-reindex")
         file_rec.is_internal = True
         await processor.on_new_records([(file_rec, [])])
-        processor.messaging_producer.send_message.reset_mock()
+        processor.messaging_producer.send_messages.reset_mock()
 
         await processor.reindex_existing_records([file_rec])
-        assert processor.messaging_producer.send_message.call_count == 0
+        assert processor.messaging_producer.send_messages.call_count == 0
 
     @pytest.mark.asyncio
     async def test_reindex_empty_list(self, processor, graph_store):
         """Reindexing empty list does nothing."""
         await processor.reindex_existing_records([])
-        assert processor.messaging_producer.send_message.call_count == 0
+        assert processor.messaging_producer.send_messages.call_count == 0
 
 
 # ===========================================================================
@@ -2307,7 +2332,10 @@ class TestComplexRealWorldScenarios:
         ]
         await processor.on_new_records(records)
         assert graph_store.count_collection(CollectionNames.RECORDS.value) >= 50
-        assert processor.messaging_producer.send_message.call_count == 50
+        # One batched call carries all 50, rather than 50 separate sends.
+        assert processor.messaging_producer.send_messages.call_count == 1
+        _topic, _msgs = processor.messaging_producer.send_messages.await_args.args
+        assert len(_msgs) == 50
 
     @pytest.mark.asyncio
     async def test_link_record_on_ticket(self, processor, graph_store):
@@ -2438,7 +2466,7 @@ class TestEdgeCasesAndDataIntegrity:
         file_rec = make_file_record(external_id="internal-001", record_group_ext_id="drive-internal")
         file_rec.is_internal = True
         await processor.on_new_records([(file_rec, [])])
-        assert processor.messaging_producer.send_message.call_count == 0
+        assert processor.messaging_producer.send_messages.call_count == 0
 
     @pytest.mark.asyncio
     async def test_record_without_record_group_type(self, processor, graph_store):

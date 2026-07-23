@@ -969,13 +969,14 @@ class DataSourceEntitiesProcessor:
             #       the new URL on every sync, and
             #   (b) leave a placeholder's empty `weburl=""` in place when
             #       the real parent record arrives to fill it in.
-            if (
-                record.origin != OriginTypes.UPLOAD
-                and existing_record.indexing_status == ProgressStatus.COMPLETED.value
-            ):
-                # If the existing record is completed, set the indexing status to not started so that it can be reindexed.
-                # KB folders are created COMPLETED and must not be re-queued on metadata updates.
-                record.indexing_status = ProgressStatus.NOT_STARTED.value
+            if record.origin != OriginTypes.UPLOAD:
+                if existing_record.indexing_status == ProgressStatus.COMPLETED.value:
+                    # If the existing record is completed, set the indexing status to not started so that it can be reindexed.
+                    record.indexing_status = ProgressStatus.NOT_STARTED.value
+            elif record.external_revision_id == existing_record.external_revision_id:
+                # KB uploads with unchanged content must keep their indexing status
+                # (folders are created COMPLETED and must not be re-queued on metadata updates).
+                record.indexing_status = existing_record.indexing_status
             if not record.weburl:
                 record.weburl = existing_record.weburl
             #check if revision Id is same as existing record
@@ -1033,29 +1034,28 @@ class DataSourceEntitiesProcessor:
 
         return record
 
-    async def _reset_indexing_status_to_queued(self, record_id: str, tx_store: TransactionStore) -> None:
+    async def _mark_queued_after_publish(self, record_ids: list[str]) -> None:
         """
-        Reset indexing status to QUEUED before sending update/reindex events.
-        Only skips if status is already QUEUED.
+        Promote records to QUEUED once their events are on the topic.
+
+        Must run after the publish, never before: a record marked QUEUED for an
+        event that then fails to publish is stuck forever, since nothing consumes
+        QUEUED. Running after opens the opposite risk — the indexing service may
+        already have taken the record to IN_PROGRESS or COMPLETED — so the write is
+        a compare-and-swap that simply loses if it is no longer NOT_STARTED. Losing
+        is the correct outcome, not an error.
         """
+        if not record_ids:
+            return
         try:
-            # Get the record — get_record_by_key delegates to get_document which returns a raw dict
-            record = await tx_store.get_record_by_key(record_id)
-            if not record:
-                self.logger.warning(f"Record {record_id} not found for status reset")
-                return
-            self.logger.debug(f"Record: {record}")
-            # The document uses camelCase keys (indexingStatus), not snake_case attributes
-            current_status = record.get("indexingStatus")
-            if current_status == ProgressStatus.QUEUED.value:
-                self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
-                return
-            record["indexingStatus"] = ProgressStatus.QUEUED.value
-            await tx_store.batch_upsert_nodes([record], CollectionNames.RECORDS.value)
-            self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
+            await self.data_store_provider.compare_and_set_indexing_status(
+                record_ids,
+                ProgressStatus.NOT_STARTED.value,
+                ProgressStatus.QUEUED.value,
+            )
         except Exception as e:
-            # Log but don't fail the main operation if status update fails
-            self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
+            # Never fail a publish over a status write; the records are already on the topic.
+            self.logger.error(f"❌ Failed to mark {len(record_ids)} record(s) QUEUED: {str(e)}")
 
     @retry_on_deadlock()
     async def on_new_records(self, records_with_permissions: list[tuple[Record, list[Permission]]]) -> None:
@@ -1073,36 +1073,51 @@ class DataSourceEntitiesProcessor:
                     if processed_record:
                         records_to_publish.append(processed_record)
 
-            if records_to_publish:
-                for record in records_to_publish:
-                    # Skip publishing indexing events for records with AUTO_INDEX_OFF status
-                    if hasattr(record, 'indexing_status') and record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
-                        self.logger.debug(
-                            f"Skipping automatic indexing event for record {record.id} "
-                            f"with AUTO_INDEX_OFF status"
+            publishable: list[Record] = []
+            for record in records_to_publish:
+                # Skip publishing indexing events for records with AUTO_INDEX_OFF status
+                if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
+                    self.logger.debug(
+                        f"Skipping automatic indexing event for record {record.id} "
+                        f"with AUTO_INDEX_OFF status"
+                    )
+                    continue
+
+                if record.is_internal:
+                    self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
+                    continue
+
+                # KB folders carry no indexable content; they are created COMPLETED
+                # and must not emit a newRecord event (the indexing consumer would
+                # skip them anyway, but this avoids leaving them stuck non-COMPLETED).
+                if (
+                    record.origin == OriginTypes.UPLOAD
+                    and isinstance(record, FileRecord)
+                    and record.is_file is False
+                ):
+                    self.logger.debug(f"Skipping newRecord event for KB folder {record.id}")
+                    continue
+
+                publishable.append(record)
+
+            if publishable:
+                acked = await self.messaging_producer.send_messages(
+                    "record-events",
+                    [
+                        (
+                            record.id,
+                            {
+                                "eventType": "newRecord",
+                                "timestamp": get_epoch_timestamp_in_ms(),
+                                "payload": record.to_kafka_record(),
+                            },
                         )
-                        continue
-
-                    if record.is_internal:
-                        self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
-                        continue
-
-                    # KB folders carry no indexable content; they are created COMPLETED
-                    # and must not emit a newRecord event (the indexing consumer would
-                    # skip them anyway, but this avoids leaving them stuck non-COMPLETED).
-                    if (
-                        record.origin == OriginTypes.UPLOAD
-                        and isinstance(record, FileRecord)
-                        and record.is_file is False
-                    ):
-                        self.logger.debug(f"Skipping newRecord event for KB folder {record.id}")
-                        continue
-
-                    await self.messaging_producer.send_message(
-                            "record-events",
-                            {"eventType": "newRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
-                            key=record.id
-                        )
+                        for record in publishable
+                    ],
+                )
+                await self._mark_queued_after_publish(
+                    [r.id for r, ok in zip(publishable, acked) if ok]
+                )
         except Exception as e:
             self.logger.error(f"Transaction on_new_records failed: {str(e)}")
             raise e
@@ -1114,22 +1129,20 @@ class DataSourceEntitiesProcessor:
             processed_record = await self._process_record(record, [], tx_store)
 
             # Skip publishing update events for records with AUTO_INDEX_OFF status
-            if hasattr(processed_record, 'indexing_status') and processed_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
+            if processed_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
                 self.logger.debug(
                     f"Skipping content update event for record {record.id} with AUTO_INDEX_OFF status"
                 )
                 return
 
-            # Reset indexing status to QUEUED before sending update event
-            current_status = processed_record.indexing_status if hasattr(processed_record, 'indexing_status') else None
-            if current_status != ProgressStatus.QUEUED.value:
-                await self._reset_indexing_status_to_queued(record.id, tx_store)
-
-            await self.messaging_producer.send_message(
-                "record-events",
-                {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
-                key=record.id
-            )
+        # Publish after the transaction commits. Publishing inside it would put the
+        # event on the topic even if the transaction went on to roll back.
+        await self.messaging_producer.send_message(
+            "record-events",
+            {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
+            key=record.id
+        )
+        await self._mark_queued_after_publish([record.id])
 
     @retry_on_deadlock()
     async def on_record_metadata_update(self, record: Record) -> None:
@@ -1239,39 +1252,52 @@ class DataSourceEntitiesProcessor:
 
 
             # Publish events outside the transaction.
-            for record in new_records_to_publish:
-                if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
-                    continue
-                if record.is_internal:
-                    continue
-                await self.messaging_producer.send_message(
+            def _publishable(candidates: list[Record]) -> list[Record]:
+                return [
+                    r
+                    for r in candidates
+                    if r.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+                    and not r.is_internal
+                ]
+
+            new_batch = _publishable(new_records_to_publish)
+            if new_batch:
+                await self.messaging_producer.send_messages(
                     "record-events",
-                    {
-                        "eventType": "newRecord",
-                        "timestamp": get_epoch_timestamp_in_ms(),
-                        "payload": record.to_kafka_record(),
-                    },
-                    key=record.id,
+                    [
+                        (
+                            record.id,
+                            {
+                                "eventType": "newRecord",
+                                "timestamp": get_epoch_timestamp_in_ms(),
+                                "payload": record.to_kafka_record(),
+                            },
+                        )
+                        for record in new_batch
+                    ],
                 )
 
-            for record in records_to_reindex:
+            reindex_batch = _publishable(records_to_reindex)
+            for record in reindex_batch:
                 self.logger.info(
                     "Firing updateRecord event for moved record %s (id=%s): content changed",
                     record.record_name,
                     record.id,
                 )
-                if record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
-                    continue
-                if record.is_internal:
-                    continue
-                await self.messaging_producer.send_message(
+            if reindex_batch:
+                await self.messaging_producer.send_messages(
                     "record-events",
-                    {
-                        "eventType": "updateRecord",
-                        "timestamp": get_epoch_timestamp_in_ms(),
-                        "payload": record.to_kafka_record(),
-                    },
-                    key=record.id,
+                    [
+                        (
+                            record.id,
+                            {
+                                "eventType": "updateRecord",
+                                "timestamp": get_epoch_timestamp_in_ms(),
+                                "payload": record.to_kafka_record(),
+                            },
+                        )
+                        for record in reindex_batch
+                    ],
                 )
 
         except Exception as e:
@@ -1352,46 +1378,56 @@ class DataSourceEntitiesProcessor:
                 self.logger.info("No records to reindex")
                 return
 
+            existing_keys = await self.data_store_provider.get_existing_record_keys(
+                [r.id for r in records]
+            )
+
+            to_publish: list[Record] = []
+            missing = 0
             skipped_records = 0
-
-            # Verify records exist in database before reindexing
-            existing_records: list[Record] = []
-            async with self.data_store_provider.transaction() as tx_store:
-                for record in records:
-                    # Check if record exists in database
-                    existing = await tx_store.get_record_by_key(record.id)
-                    if not existing:
-                        self.logger.warning(
-                            f"Skipping reindex for record {record.id} ({record.record_name}): "
-                            f"record not found in database"
-                        )
-                        continue
-
-                    existing_records.append(record)
-                    current_status = record.indexing_status if hasattr(record, 'indexing_status') else None
-                    if current_status != ProgressStatus.QUEUED.value and not record.is_internal:
-                        await self._reset_indexing_status_to_queued(record.id, tx_store)
-
-            # Now send the reindex events
             for record in records:
+                if record.id not in existing_keys:
+                    self.logger.warning(
+                        f"Skipping reindex for record {record.id} ({record.record_name}): "
+                        f"record not found in database"
+                    )
+                    missing += 1
+                    continue
                 if record.is_internal:
                     self.logger.debug(f"Skipping reindex event for internal record {record.id}")
                     skipped_records += 1
                     continue
+                to_publish.append(record)
 
-                payload = record.to_kafka_record()
+            if not to_publish:
+                return
 
-                await self.messaging_producer.send_message(
-                    "record-events",
-                    {
-                        "eventType": "reindexRecord",
-                        "timestamp": get_epoch_timestamp_in_ms(),
-                        "payload": payload
-                    },
-                    key=record.id
-                )
+            acked = await self.messaging_producer.send_messages(
+                "record-events",
+                [
+                    (
+                        record.id,
+                        {
+                            "eventType": "reindexRecord",
+                            "timestamp": get_epoch_timestamp_in_ms(),
+                            "payload": record.to_kafka_record(),
+                        },
+                    )
+                    for record in to_publish
+                ],
+            )
 
-            self.logger.debug(f"Published reindex events for {len(records) - skipped_records} records and skipped {skipped_records} internal records")
+            # Only records whose event actually reached the broker may be marked
+            # QUEUED; marking a failed publish would strand the record, since nothing
+            # consumes QUEUED.
+            published_ids = [r.id for r, ok in zip(to_publish, acked) if ok]
+            await self._mark_queued_after_publish(published_ids)
+
+            self.logger.debug(
+                f"Published reindex events for {len(published_ids)} records; "
+                f"skipped {skipped_records} internal, {missing} missing, "
+                f"{len(to_publish) - len(published_ids)} failed to publish"
+            )
         except Exception as e:
             self.logger.error(f"Failed to publish reindex events: {str(e)}")
             raise e

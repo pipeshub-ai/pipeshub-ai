@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.connectors.services.event_service import EventService
 
 from app.config.constants.arangodb import CollectionNames
@@ -682,7 +683,12 @@ class TestHandleReindex:
             assert result is True
 
     @pytest.mark.asyncio
-    async def test_batch_paging(self, service):
+    async def test_schedules_background_task_and_returns_immediately(self, service):
+        """_handle_reindex must hand off and return, never page inline.
+
+        The Kafka poll loop awaits this handler, so doing the work here would stall
+        polling and get the consumer evicted.
+        """
         mock_conn = AsyncMock()
         mock_conn.app = MagicMock()
         mock_app_name = MagicMock()
@@ -690,20 +696,70 @@ class TestHandleReindex:
         mock_conn.app.get_app_name.return_value = mock_app_name
         mock_conn.reindex_records = AsyncMock()
 
-        # Return one batch then empty
-        batch1 = [MagicMock() for _ in range(50)]  # Less than 100
-        service.graph_provider.get_records_by_status = AsyncMock(
-            side_effect=[batch1, []]
-        )
+        service.graph_provider.get_records_by_status = AsyncMock(side_effect=[[], []])
 
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
-             patch("app.connectors.services.event_service.Connectors") as mock_connectors:
+             patch("app.connectors.services.event_service.Connectors") as mock_connectors, \
+             patch.object(reindex_task_manager, "start_if_idle", new_callable=AsyncMock) as mock_start:
             mock_connectors.GMAIL = MagicMock()
             result = await service._handle_reindex("gmail", {
                 "orgId": "org1", "connectorId": "c1"
             })
+
             assert result is True
-            mock_conn.reindex_records.assert_awaited_once()
+            mock_start.assert_awaited_once()
+            # Nothing may have been fetched on the handler's own thread of control.
+            service.graph_provider.get_records_by_status.assert_not_awaited()
+            # Close the coroutine start_if_idle was handed but never ran.
+            mock_start.await_args.args[1].close()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_event_does_not_restart_running_reindex(self, service):
+        """A redelivered event must collapse onto the in-flight task, not restart it."""
+        mock_conn = AsyncMock()
+        mock_conn.app = MagicMock()
+        mock_app_name = MagicMock()
+        mock_app_name.name = "GMAIL"
+        mock_conn.app.get_app_name.return_value = mock_app_name
+
+        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
+             patch("app.connectors.services.event_service.Connectors") as mock_connectors, \
+             patch.object(reindex_task_manager, "start_if_idle", new_callable=AsyncMock, return_value=None) as mock_start:
+            mock_connectors.GMAIL = MagicMock()
+            result = await service._handle_reindex("gmail", {
+                "orgId": "org1", "connectorId": "c1"
+            })
+
+            # Still True: the event is handled, so Kafka must commit it.
+            assert result is True
+            mock_start.assert_awaited_once()
+            mock_start.await_args.args[1].close()
+
+    @pytest.mark.asyncio
+    async def test_run_reindex_pages_with_keyset_cursor(self, service):
+        """_run_reindex walks batches by cursor and stops on a short batch."""
+        mock_conn = AsyncMock()
+        mock_conn.reindex_records = AsyncMock()
+
+        batch1 = [MagicMock(id=f"rec-{i:03d}") for i in range(50)]  # < batch_size
+        service.graph_provider.get_records_by_status = AsyncMock(side_effect=[batch1, []])
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+
+        await service._run_reindex(
+            connector=mock_conn,
+            connector_name="gmail",
+            connector_id="c1",
+            org_id="org1",
+            record_id=None,
+            record_group_id=None,
+            depth=0,
+            user_key=None,
+            status_filters=["FAILED"],
+        )
+
+        mock_conn.reindex_records.assert_awaited_once()
+        # A short batch ends the walk without a second fetch.
+        assert service.graph_provider.get_records_by_status.await_count == 1
 
     @pytest.mark.asyncio
     async def test_unknown_connector_name(self, service):

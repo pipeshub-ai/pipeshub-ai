@@ -39,6 +39,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
@@ -1548,6 +1549,14 @@ async def reindex_single_record(
                     }
                     await kafka_service.publish_event(event_data["topic"], event)
                     logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                    # Only the single-record path owns this record's status; the
+                    # sync-events paths hand off to the reindex handler instead.
+                    if event_data["topic"] == "record-events":
+                        await graph_provider.compare_and_set_indexing_status(
+                            [record_id],
+                            ProgressStatus.NOT_STARTED.value,
+                            ProgressStatus.QUEUED.value,
+                        )
                 except Exception as e:
                     logger.error(f"❌ Failed to publish event: {str(e)}")
 

@@ -788,7 +788,7 @@ class GithubConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
 
-    async def reindex_records(self) -> None:
+    async def reindex_records(self, record_results: list[Record]) -> None:
         return
 
     async def run_incremental_sync(self) -> None:

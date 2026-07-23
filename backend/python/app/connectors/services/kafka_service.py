@@ -59,6 +59,24 @@ class KafkaService:
             )
             raise
 
+    @staticmethod
+    def _event_key(event: dict) -> str:
+        record_id = event.get("payload", {}).get("recordId")
+        return str(record_id) if record_id else str(event.get("timestamp", ""))
+
+    async def publish_events(self, topic: str, events: list[dict]) -> list[bool]:
+        """
+        Publish many events to one topic in a single batch.
+        :return: Per-event success flags, in input order.
+        """
+        if not events:
+            return []
+        await self._ensure_producer()
+        return await self._producer.send_messages(  # type: ignore
+            topic,
+            [(self._event_key(event), event) for event in events],
+        )
+
     async def publish_event(self, topic: str, event: dict) -> bool:
         """
         Publish an event to a specified topic.
@@ -69,8 +87,7 @@ class KafkaService:
         try:
             await self._ensure_producer()
 
-            record_id = event.get("payload", {}).get("recordId")
-            key = str(record_id) if record_id else str(event.get("timestamp", ""))
+            key = self._event_key(event)
 
             return await self._producer.send_message(  # type: ignore
                 topic=topic,

@@ -150,9 +150,27 @@ class GraphTransactionStore(TransactionStore):
     async def get_record_by_external_revision_id(self, connector_id: str, external_revision_id: str) -> Optional[Record]:
         return await self.graph_provider.get_record_by_external_revision_id(connector_id, external_revision_id, transaction=self.txn)
 
-    async def get_records_by_status(self, org_id: str, connector_id: str, status_filters: list[str], limit: Optional[int] = None, offset: int = 0) -> list[Record]:
+    async def get_records_by_status(
+        self,
+        org_id: str,
+        connector_id: str,
+        status_filters: list[str],
+        limit: Optional[int] = None,
+        offset: int = 0,
+        after_key: Optional[str] = None,
+        exclude_statuses: Optional[list[str]] = None,
+    ) -> list[Record]:
         """Get records by status. Returns properly typed Record instances."""
-        return await self.graph_provider.get_records_by_status(org_id, connector_id, status_filters, limit, offset, transaction=self.txn)
+        return await self.graph_provider.get_records_by_status(
+            org_id,
+            connector_id,
+            status_filters,
+            limit,
+            offset,
+            transaction=self.txn,
+            after_key=after_key,
+            exclude_statuses=exclude_statuses,
+        )
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
         return await self.graph_provider.get_record_group_by_external_id(connector_id, external_id, transaction=self.txn)
@@ -766,6 +784,18 @@ class GraphDataStore(DataStoreProvider):
     def __init__(self, logger: Logger, graph_provider: IGraphDBProvider) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
+
+    async def compare_and_set_indexing_status(
+        self, record_ids: list[str], expected: str, new_status: str
+    ) -> list[str]:
+        # No transaction: this races the indexing service, so it has to be a single
+        # atomic statement whose effect is visible right away.
+        return await self.graph_provider.compare_and_set_indexing_status(
+            record_ids, expected, new_status
+        )
+
+    async def get_existing_record_keys(self, record_ids: list[str]) -> set[str]:
+        return await self.graph_provider.get_existing_record_keys(record_ids)
 
     @asynccontextmanager
     async def transaction(self) -> AsyncContextManager["TransactionStore"]:

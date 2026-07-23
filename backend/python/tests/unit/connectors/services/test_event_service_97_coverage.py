@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.constants.arangodb import ProgressStatus
 from app.connectors.services.event_service import EventService
 
 
@@ -315,109 +316,115 @@ class TestNormalSyncStatusFailure:
 class TestReindexBatchPaging:
     """Cover the batch paging loop that iterates when batch_size records returned."""
 
+    @staticmethod
+    def _batch(n, start=0):
+        # Ids must be sortable strings: the cursor is taken from records[-1].id.
+        return [MagicMock(id=f"rec-{i:04d}") for i in range(start, start + n)]
+
     @pytest.mark.asyncio
     async def test_multiple_batches_by_status(self, service):
-        """Branch 418->372: first batch has 100 records, second batch has 50, third empty."""
+        """A full batch keeps paging; a short batch ends the walk."""
         mock_conn = AsyncMock()
-        mock_conn.app = MagicMock()
-        mock_app_name = MagicMock()
-        mock_app_name.name = "GMAIL"
-        mock_conn.app.get_app_name.return_value = mock_app_name
         mock_conn.reindex_records = AsyncMock()
 
-        # First batch: 100 records (full batch => continue looping)
-        batch1 = [MagicMock() for _ in range(100)]
-        # Second batch: 50 records (< batch_size => stop)
-        batch2 = [MagicMock() for _ in range(50)]
-
         service.graph_provider.get_records_by_status = AsyncMock(
-            side_effect=[batch1, batch2]
+            side_effect=[self._batch(100), self._batch(50, start=100)]
+        )
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+
+        await service._run_reindex(
+            connector=mock_conn, connector_name="gmail", connector_id="c1",
+            org_id="org1", record_id=None, record_group_id=None, depth=0,
+            user_key=None, status_filters=["FAILED"],
         )
 
-        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
-             patch("app.connectors.services.event_service.Connectors") as mock_connectors:
-            mock_connectors.GMAIL = MagicMock()
-            result = await service._handle_reindex("gmail", {
-                "orgId": "org1", "connectorId": "c1"
-            })
-            assert result is True
-            assert mock_conn.reindex_records.await_count == 2
+        assert mock_conn.reindex_records.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_cursor_advances_past_processed_records(self, service):
+        """Each batch must resume after the previous batch's last id.
+
+        The cursor is what stops a record that flips back into the filter from being
+        picked up twice in one run.
+        """
+        mock_conn = AsyncMock()
+        mock_conn.reindex_records = AsyncMock()
+
+        service.graph_provider.get_records_by_status = AsyncMock(
+            side_effect=[self._batch(100), self._batch(10, start=100)]
+        )
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+
+        await service._run_reindex(
+            connector=mock_conn, connector_name="gmail", connector_id="c1",
+            org_id="org1", record_id=None, record_group_id=None, depth=0,
+            user_key=None, status_filters=["FAILED"],
+        )
+
+        calls = service.graph_provider.get_records_by_status.await_args_list
+        assert calls[0].kwargs["after_key"] is None
+        assert calls[1].kwargs["after_key"] == "rec-0099"
+        # An actively-indexing record must never be republished.
+        assert calls[0].kwargs["exclude_statuses"] == [ProgressStatus.IN_PROGRESS.value]
 
     @pytest.mark.asyncio
     async def test_multiple_batches_by_record_id(self, service):
         """Paging loop with record ID mode: multiple batches."""
         mock_conn = AsyncMock()
-        mock_conn.app = MagicMock()
-        mock_app_name = MagicMock()
-        mock_app_name.name = "GMAIL"
-        mock_conn.app.get_app_name.return_value = mock_app_name
         mock_conn.reindex_records = AsyncMock()
 
-        batch1 = [MagicMock() for _ in range(100)]
-        batch2 = [MagicMock() for _ in range(30)]
-
         service.graph_provider.get_records_by_parent_record = AsyncMock(
-            side_effect=[batch1, batch2]
+            side_effect=[self._batch(100), self._batch(30, start=100)]
+        )
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+
+        await service._run_reindex(
+            connector=mock_conn, connector_name="gmail", connector_id="c1",
+            org_id="org1", record_id="r1", record_group_id=None, depth=2,
+            user_key=None, status_filters=None,
         )
 
-        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
-             patch("app.connectors.services.event_service.Connectors") as mock_connectors:
-            mock_connectors.GMAIL = MagicMock()
-            result = await service._handle_reindex("gmail", {
-                "orgId": "org1", "connectorId": "c1",
-                "recordId": "r1", "depth": 2
-            })
-            assert result is True
-            assert mock_conn.reindex_records.await_count == 2
+        assert mock_conn.reindex_records.await_count == 2
 
     @pytest.mark.asyncio
     async def test_multiple_batches_by_record_group(self, service):
-        """Paging loop with record group mode: multiple batches."""
+        """An empty batch ends the walk."""
         mock_conn = AsyncMock()
-        mock_conn.app = MagicMock()
-        mock_app_name = MagicMock()
-        mock_app_name.name = "GMAIL"
-        mock_conn.app.get_app_name.return_value = mock_app_name
         mock_conn.reindex_records = AsyncMock()
 
-        batch1 = [MagicMock() for _ in range(100)]
-        batch2 = []  # Empty batch ends loop
-
         service.graph_provider.get_records_by_record_group = AsyncMock(
-            side_effect=[batch1, batch2]
+            side_effect=[self._batch(100), []]
+        )
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+
+        await service._run_reindex(
+            connector=mock_conn, connector_name="gmail", connector_id="c1",
+            org_id="org1", record_id=None, record_group_id="rg1", depth=1,
+            user_key=None, status_filters=None,
         )
 
-        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
-             patch("app.connectors.services.event_service.Connectors") as mock_connectors:
-            mock_connectors.GMAIL = MagicMock()
-            result = await service._handle_reindex("gmail", {
-                "orgId": "org1", "connectorId": "c1",
-                "recordGroupId": "rg1", "depth": 1
-            })
-            assert result is True
-            assert mock_conn.reindex_records.await_count == 1
+        assert mock_conn.reindex_records.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_reindex_exception_returns_false(self, service):
-        """General exception in _handle_reindex returns False."""
+    async def test_reindex_exception_propagates_out_of_run(self, service):
+        """_run_reindex does not swallow: the task manager logs the failure.
+
+        _handle_reindex can no longer report this - it returns before the work starts.
+        """
         mock_conn = AsyncMock()
-        mock_conn.app = MagicMock()
-        mock_app_name = MagicMock()
-        mock_app_name.name = "GMAIL"
-        mock_conn.app.get_app_name.return_value = mock_app_name
         mock_conn.reindex_records = AsyncMock(side_effect=Exception("reindex boom"))
 
         service.graph_provider.get_records_by_status = AsyncMock(
-            return_value=[MagicMock()]
+            return_value=self._batch(1)
         )
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
 
-        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
-             patch("app.connectors.services.event_service.Connectors") as mock_connectors:
-            mock_connectors.GMAIL = MagicMock()
-            result = await service._handle_reindex("gmail", {
-                "orgId": "org1", "connectorId": "c1"
-            })
-            assert result is False
+        with pytest.raises(Exception, match="reindex boom"):
+            await service._run_reindex(
+                connector=mock_conn, connector_name="gmail", connector_id="c1",
+                org_id="org1", record_id=None, record_group_id=None, depth=0,
+                user_key=None, status_filters=["FAILED"],
+            )
 
 
 # ===========================================================================
