@@ -1,6 +1,7 @@
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 
 import asyncio
+import os
 import traceback
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -15,16 +16,23 @@ from app.api.middlewares.request_context import RequestContextMiddleware
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
+from app.agents.registry.toolset_registry import get_toolset_registry
+from app.agents.tools.registry import _global_tools_registry
 from app.api.routes.entity import router as entity_router
 from app.api.routes.toolsets import router as toolsets_router
-from app.config.constants.arangodb import AccountType
+from app.config.constants.arangodb import AccountType, CollectionNames
+from app.config.constants.service import config_node_constants
 from app.connectors.api.router import router
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector_registry import (
     ConnectorRegistry,
 )
+from app.connectors.core.registry.oauth_config_registry import get_oauth_config_registry
 from app.connectors.core.sync.task_manager import sync_task_manager
 from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.connectors.sources.localKB.api.knowledge_hub_router import knowledge_hub_router
@@ -36,6 +44,7 @@ from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -74,9 +83,6 @@ async def refresh_toolset_tokens(app_container: ConnectorAppContainer) -> bool:
     logger.info("🔄 Triggering initial toolset token refresh...")
 
     try:
-        from app.connectors.core.base.token_service.startup_service import (
-            startup_service,
-        )
         toolset_refresh_service = startup_service.get_toolset_token_refresh_service()
 
         if not toolset_refresh_service:
@@ -158,6 +164,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                         connector_id=connector_id,
                         scope=scope,
                         created_by=created_by,
+                        org_id=org_id,
                         notification_service=app_container.connector_notification_service(),
                     )
                 except Exception as e:
@@ -364,9 +371,6 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
 
 async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60) -> None:
     """Periodically refresh the connector_active gauge; best-effort, never fatal."""
-    from app.config.constants.arangodb import CollectionNames
-    from app.telemetry.modules.connector_metrics import set_connector_active
-
     while True:
         try:
             docs = await graph_provider.get_all_documents(CollectionNames.APPS.value)
@@ -401,6 +405,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = app_container.logger()
     graph_provider = data_store.graph_provider
 
+    # Shared KB entities processor: routes KB (Collections) CRUD through the same
+    # DataSourceEntitiesProcessor connectors use. Initialized once (sets up the Kafka
+    # producer). Org-agnostic — kb_service sets record.org_id from the request org.
+    kb_entities_processor = DataSourceEntitiesProcessor(
+        logger, data_store, app_container.config_service()
+    )
+    await kb_entities_processor.initialize()
+    app.state.kb_entities_processor = kb_entities_processor
+    logger.info("✅ KB entities processor initialized")
+
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
     except Exception as e:
@@ -424,9 +438,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Initialize toolset registry (in-memory, fast tool lookup)
     logger.info("🔄 Initializing in-memory toolset registry...")
-    from app.agents.registry.toolset_registry import get_toolset_registry
-    from app.agents.tools.registry import _global_tools_registry
-
     toolset_registry = get_toolset_registry()
     toolset_registry.auto_discover_toolsets()
     app.state.toolset_registry = toolset_registry
@@ -438,9 +449,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Initialize OAuth config registry (completely independent, no connector registry needed)
     # Note: OAuth registry is populated when connectors are registered above
-    from app.connectors.core.registry.oauth_config_registry import (
-        get_oauth_config_registry,
-    )
     oauth_registry = get_oauth_config_registry()
     app.state.oauth_config_registry = oauth_registry
     logger.info("✅ OAuth config registry initialized")
@@ -450,6 +458,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Start messaging producer first
     try:
         await start_messaging_producer(app_container)
+        startup_service.set_messaging_producer(app_container.messaging_producer)
         logger.info("✅ Messaging producer started successfully")
     except Exception as e:
         logger.error(f"❌ Failed to start messaging producer: {str(e)}")
@@ -622,16 +631,11 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
     performing its own probes (which fail for managed deployments like Neo4j
     Aura that don't expose HTTP discovery ports 7474/7473).
     """
-    import asyncio
-    import os
-
     data_store = os.getenv("DATA_STORE", "arangodb").lower()
 
     # ── ArangoDB ──────────────────────────────────────────────────────────────
     if data_store == "arangodb":
         try:
-            from app.config.constants.service import config_node_constants
-
             container = request.app.container  # type: ignore[attr-defined]
             config_service = container.config_service()
             arangodb_config = await config_service.get_config(
@@ -726,8 +730,6 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
 
     The provider is created once and cached on app.state for subsequent calls.
     """
-    import os
-
     from app.services.vector_db.models import HealthStatus
     from app.services.vector_db.vector_db_provider_factory import VectorDBProviderFactory
     from app.utils.logger import create_logger

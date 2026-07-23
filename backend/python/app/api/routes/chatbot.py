@@ -874,7 +874,7 @@ async def _generate_internal_search_stream(
 
                 has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
                 has_slack_connector = await has_slack_connector_configured(graph_provider, user_id, org_id)
-                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
+                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider, user_id=user_id)
                 deferred_tools = [fetch_tool]
                 if has_sql_connector:
                     deferred_tools.append(create_execute_query_tool(
@@ -973,7 +973,7 @@ async def _generate_internal_search_stream(
                     has_slack_connector=has_slack_connector,
                 )
 
-                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
+                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider, user_id=user_id)
                 tools.append(fetch_tool)
                 tool_runtime_kwargs = {
                     "blob_store": blob_store,

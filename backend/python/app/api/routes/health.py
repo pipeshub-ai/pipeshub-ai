@@ -1204,7 +1204,6 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
     try:
         logger = request.app.container.logger()
         logger.info(f"Health check endpoint called for {model_type}")
-        logger.debug(f"Request body: {model_config}")
 
         if model_type == "embedding":
             logger.info(f"Performing embedding health check for {model_config.get('provider')} with configuration model {model_config.get('configuration', {}).get('model', '')}")

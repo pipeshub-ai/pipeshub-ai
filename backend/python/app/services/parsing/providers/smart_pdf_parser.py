@@ -5,6 +5,7 @@ stays encapsulated inside the registry rather than being spread across callers.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 from typing import Any
@@ -97,7 +98,9 @@ class SmartPDFParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
-        needs_ocr = _detect_needs_ocr(content)
+        # Full-document pdfplumber scan is synchronous CPU work; keep it off
+        # the event loop so one large PDF can't stall every other request.
+        needs_ocr = await asyncio.to_thread(_detect_needs_ocr, content)
         if needs_ocr:
             logger.info(
                 "SmartPDFParser: '%s' appears scanned, using OCR provider",

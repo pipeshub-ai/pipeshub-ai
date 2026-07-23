@@ -106,7 +106,7 @@ services:
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-true}
 
       # MCP OAuth scopes
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read,agent:read,agent:execute,connector:read}
 
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
@@ -120,6 +120,7 @@ services:
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-5}
       - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-40}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
+      - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
       - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
       - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}

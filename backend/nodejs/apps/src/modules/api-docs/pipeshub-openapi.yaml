@@ -3679,17 +3679,14 @@ components:
             - recordType
             - origin
             - version
-            - isLatestVersion
             - createdAtTimestamp
             - updatedAtTimestamp
             - sourceCreatedAtTimestamp
             - sourceLastModifiedTimestamp
-            - lastSyncTimestamp
             - indexingStatus
             - extractionStatus
             - isDeleted
             - isArchived
-            - isDirty
             - isVLMOcrProcessed
             - mimeType
             - sizeInBytes
@@ -3712,6 +3709,15 @@ components:
             externalGroupId:
               type: string
               nullable: true
+            externalParentId:
+              type: string
+              nullable: true
+            externalRevisionId:
+              type: string
+              nullable: true
+            recordGroupId:
+              type: string
+              nullable: true
             connectorId:
               type: string
             connectorName:
@@ -3724,6 +3730,7 @@ components:
               type: integer
             isLatestVersion:
               type: boolean
+              nullable: true
             createdAtTimestamp:
               type: integer
               format: int64
@@ -3739,6 +3746,7 @@ components:
             lastSyncTimestamp:
               type: integer
               format: int64
+              nullable: true
             lastIndexTimestamp:
               type: integer
               format: int64
@@ -3749,25 +3757,62 @@ components:
               type: string
             extractionStatus:
               type: string
+            reason:
+              type: string
+              nullable: true
             isDeleted:
               type: boolean
             isArchived:
               type: boolean
+            deletedByUserId:
+              type: string
+              nullable: true
             isDirty:
               type: boolean
+              nullable: true
             isVLMOcrProcessed:
               type: boolean
+              nullable: true
             mimeType:
               type: string
+              nullable: true
             sizeInBytes:
               type: integer
               format: int64
+              nullable: true
             md5Checksum:
               type: string
+              nullable: true
             virtualRecordId:
               type: string
+              nullable: true
+            summaryDocumentId:
+              type: string
+              nullable: true
+            storageDocumentId:
+              type: string
+              nullable: true
             webUrl:
               type: string
+              nullable: true
+            previewRenderable:
+              type: boolean
+              nullable: true
+            isShared:
+              type: boolean
+              nullable: true
+            isDependentNode:
+              type: boolean
+              nullable: true
+            parentNodeId:
+              type: string
+              nullable: true
+            hideWeburl:
+              type: boolean
+              nullable: true
+            isInternal:
+              type: boolean
+              nullable: true
             fileRecord:
               type: object
               nullable: true
@@ -3777,10 +3822,7 @@ components:
                 - orgId
                 - name
                 - extension
-                - mimeType
-                - sizeInBytes
                 - isFile
-                - webUrl
               properties:
                 id:
                   type: string
@@ -3790,15 +3832,39 @@ components:
                   type: string
                 extension:
                   type: string
+                etag:
+                  type: string
+                  nullable: true
+                ctag:
+                  type: string
+                  nullable: true
+                md5Checksum:
+                  type: string
+                  nullable: true
+                quickXorHash:
+                  type: string
+                  nullable: true
+                crc32Hash:
+                  type: string
+                  nullable: true
+                sha1Hash:
+                  type: string
+                  nullable: true
+                sha256Hash:
+                  type: string
+                  nullable: true
                 mimeType:
                   type: string
+                  nullable: true
                 sizeInBytes:
                   type: integer
                   format: int64
+                  nullable: true
                 isFile:
                   type: boolean
                 webUrl:
                   type: string
+                  nullable: true
                 path:
                   type: string
                   nullable: true
@@ -3968,6 +4034,29 @@ components:
                 enum: [OWNER, WRITER, READER]
               accessType:
                 type: string
+
+    GetRecordContentResponseSchema:
+      type: object
+      additionalProperties: false
+      description: |
+        Response returned by GET /connectors/record/{recordId}/content.
+
+        `content` is the record's full parsed content flattened into a single
+        plain-text string: a metadata header (title, source, key fields, and a
+        short summary), then the record's block/table text in reading order, and
+        finally a foreign-key related-tables footer for `SQL_TABLE` records.
+
+        For `TICKET` records (e.g. Jira) the metadata header is refreshed with
+        live ticket fields (status, assignee, comments) at request time rather
+        than the last-indexed snapshot. `content` may be empty for records with
+        no extractable text (e.g. image-only or not-yet-parsed records).
+      required:
+        - content
+      properties:
+        content:
+          type: string
+          description: >-
+            The record's full parsed content as a single plain-text string.
 
     DeleteRecordResponseSchema:
       type: object
@@ -6841,6 +6930,9 @@ components:
           type: number
           nullable: true
         summaryDocumentId:
+          type: string
+          nullable: true
+        storageDocumentId:
           type: string
           nullable: true
         virtualRecordId:
@@ -29083,6 +29175,89 @@ paths:
           description: Insufficient OAuth scope or no access to connector stats
         '404':
           description: Connector not found
+
+  /connectors/record/{recordId}/content:
+    get:
+      tags:
+        - Connector
+      summary: Get a record's full parsed content and metadata
+      description: |
+        Retrieve the full parsed content and metadata of a single record —
+        the same content PipesHub's own RAG/chat pipeline uses to answer
+        questions, returned directly instead of via chat.
+
+        **When to use this vs. the other record endpoints:**
+        - `GET /knowledgeBase/record/{recordId}` returns metadata only
+          (name, type, indexing status, size) — no content.
+        - `GET /knowledgeBase/stream/record/{recordId}` returns the original,
+          unparsed file bytes — use it to download/open the source file.
+        - **This endpoint** returns the record's full parsed content as a
+          single plain-text `content` string (a metadata header, then the
+          block/table text in reading order, then any foreign-key related
+          tables) — use it when you need the record's actual textual/tabular
+          content without downloading and re-parsing the original file yourself.
+
+        **Typical flow:** obtain a `recordId` from a `pipeshub_search` hit or
+        a chat citation's `recordId`, then call this endpoint to read the
+        full content when the search snippet or citation excerpt isn't
+        enough to answer the question.
+
+        **Permission scoping:**
+
+        The requesting user/token must have access to the record; access is
+        verified via the knowledge graph before content is returned — a
+        caller with a valid scope but no access to this specific record gets
+        a `403`.
+      operationId: getRecordContent
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: recordId
+          in: path
+          required: true
+          description: >-
+            Record ID to fetch. Obtain it from a `pipeshub_search` result
+            (`hits[*].recordId`) or a chat citation (`citations[*].recordId`).
+          schema:
+            type: string
+      responses:
+        '200':
+          description: |
+            Successful operation. When the record has no available content
+            (e.g. not indexed), `content` is the literal `No record found`
+            rather than an error status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetRecordContentResponseSchema'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            OAuth token is missing the `connector:read` scope, or the
+            authenticated user does not have access to this record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while fetching record content
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/{connectorId}/reindex:
     post:

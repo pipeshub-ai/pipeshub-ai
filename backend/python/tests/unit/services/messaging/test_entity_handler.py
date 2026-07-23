@@ -1175,6 +1175,54 @@ class TestOrgCreatedBusinessAccount:
 
 
 # ===================================================================
+# __get_or_create_knowledge_base - creation path (KB refactor)
+# ===================================================================
+
+class TestGetOrCreateKnowledgeBaseCreationActive:
+
+    @pytest.mark.asyncio
+    async def test_rollback_on_kb_upsert_failure(self):
+        """Failed KB app write rolls back the transaction and returns empty."""
+        svc = _make_service()
+        svc.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+        svc.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
+        svc.graph_provider.batch_upsert_nodes = AsyncMock(side_effect=RuntimeError("upsert failed"))
+        svc.graph_provider.rollback_transaction = AsyncMock()
+
+        result = await svc._EntityEventService__get_or_create_knowledge_base(
+            "user-key", "user-1", "org-1"
+        )
+        assert result == {}
+        svc.graph_provider.rollback_transaction.assert_awaited_once_with("txn1")
+
+    @pytest.mark.asyncio
+    async def test_connector_registration_failure_still_returns_kb(self):
+        """KB app is created even when runtime connector registration fails."""
+        svc = _make_service()
+        svc.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+        svc.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
+        svc.graph_provider.batch_upsert_nodes = AsyncMock()
+        svc.graph_provider.batch_create_edges = AsyncMock()
+        svc.graph_provider.commit_transaction = AsyncMock()
+        svc.app_container.data_store = AsyncMock(return_value=AsyncMock())
+        svc.app_container.connector_notification_service.return_value = MagicMock()
+        svc.app_container.connectors_map = {}
+
+        with patch(
+            "app.services.messaging.kafka.handlers.entity.ConnectorFactory.create_and_start_sync",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("connector start failed"),
+        ):
+            result = await svc._EntityEventService__get_or_create_knowledge_base(
+                "user-key", "user-1", "org-1"
+            )
+
+        assert result.get("success") is True
+        assert "kb_id" in result
+        svc.logger.warning.assert_called()
+
+
+# ===================================================================
 # __get_or_create_knowledge_base - edge cases
 # ===================================================================
 

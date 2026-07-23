@@ -147,7 +147,7 @@ services:
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-true}
 
       # Auth / tokens
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read,agent:read,agent:execute,connector:read}
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
 
@@ -159,6 +159,7 @@ services:
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-7}
       - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-40}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
+      - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
       - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
       - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
@@ -179,6 +180,14 @@ services:
       # Code sandbox
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+
+      # Standalone parsing / extraction services (opt-in)
+      - PARSING_SERVICE_URL=http://localhost:8092
+      - EXTRACTION_SERVICE_URL=http://localhost:8093
+      # Set to "true" to route indexing through the standalone parsing/extraction services
+      - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
+      # Set to "true" to defer graph enrichment until after vectordb indexing completes
+      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
     depends_on:
       qdrant:
@@ -430,6 +439,9 @@ services:
     environment:
       - ZOOKEEPER_CLIENT_PORT=2181
       - ZOOKEEPER_TICK_TIME=2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
     networks:
       - pipeshub
     healthcheck:
@@ -461,6 +473,8 @@ services:
       - KAFKA_LOG_RETENTION_HOURS=24
       - KAFKA_NUM_NETWORK_THREADS=3
       - KAFKA_NUM_IO_THREADS=8
+    volumes:
+      - kafka_data:/var/lib/kafka/data
     networks:
       - pipeshub
     healthcheck:
@@ -492,6 +506,13 @@ volumes:
     driver: local
   # KV store volume (only populated when kv-etcd profile is active)
   etcd_data:
+    driver: local
+  # Broker volumes (only populated when broker-kafka profile is active)
+  zookeeper_data:
+    driver: local
+  zookeeper_log:
+    driver: local
+  kafka_data:
     driver: local
 
 networks:

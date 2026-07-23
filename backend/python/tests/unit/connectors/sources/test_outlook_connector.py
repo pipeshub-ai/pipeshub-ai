@@ -476,6 +476,40 @@ class TestGetAllUsersExternal:
         result = await connector._get_all_users_external()
         assert result == []
 
+    @pytest.mark.asyncio
+    async def test_excludes_azure_ad_guests(self):
+        connector = _make_connector()
+
+        member = MagicMock()
+        member.display_name = "Member User"
+        member.given_name = "Member"
+        member.surname = "User"
+        member.mail = "member@test.com"
+        member.user_principal_name = "member@test.com"
+        member.id = "member-1"
+        member.user_type = "Member"
+
+        guest = MagicMock()
+        guest.display_name = "Guest User"
+        guest.given_name = "Guest"
+        guest.surname = "User"
+        guest.mail = "guest@test.com"
+        guest.user_principal_name = "guest@test.com"
+        guest.id = "guest-1"
+        guest.user_type = "Guest"
+
+        mock_data = MagicMock()
+        mock_data.value = [member, guest]
+        mock_data.odata_next_link = None
+
+        connector.external_users_client = MagicMock()
+        connector.external_users_client.users_user_list_user = AsyncMock(
+            return_value=_make_graph_response(success=True, data=mock_data)
+        )
+
+        users = await connector._get_all_users_external()
+        assert [u.email for u in users] == ["member@test.com"]
+
 
 # ===========================================================================
 # OutlookConnector._get_all_microsoft_365_groups

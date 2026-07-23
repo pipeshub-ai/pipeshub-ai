@@ -30,6 +30,7 @@ from app.models.entities import (
     TicketRecord,
 )
 from app.modules.qna.prompt_templates import (
+    agent_block_group_prompt,
     block_group_prompt,
     qna_prompt_context,
     qna_prompt_context_header,
@@ -2180,6 +2181,154 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
     except Exception as e:
         raise Exception(f"Error in record_to_message_content: {e}") from e
 
+
+def record_to_text(record: dict[str, Any]) -> str:
+    """Convert a record JSON object into a single plain-text string.
+
+    Text-only counterpart of record_to_message_content: same <record> header,
+    block/table/group traversal, and foreign-key footer, but with the per-block
+    Citation ID and Block Index scaffolding removed (this string is returned as-is
+    by the get_record_content endpoint, so citation refs have no consumer) and
+    images omitted. Uses agent_block_group_prompt — the ref-free group template
+    already used by Record.to_llm_full_context — for tables and groups.
+    """
+    try:
+        content: list[str] = []
+        context_metadata = record.get("context_metadata", "")
+        content.append(f"""<record>\n{context_metadata}\n\nRecord blocks (sorted):\n\n""")
+
+        block_containers = record.get("block_containers", {})
+        blocks = block_containers.get("blocks", [])
+        block_groups = block_containers.get("block_groups", [])
+        fragment_map = _build_fragment_map(blocks)
+
+        seen_block_groups = set()
+
+        for block in blocks:
+            block_type = block.get("type")
+
+            # Skip fragment blocks — they are rendered via their container's group expansion.
+            if block.get("parent_block_index") is not None:
+                continue
+
+            data = block.get("data", "")
+
+            if block_type == BlockType.IMAGE.value:
+                continue
+            elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
+                content.append(f"* Block Type: {block_type}\n* Block Content: {data}\n\n")
+            elif block_type == BlockType.TABLE_ROW.value:
+                block_group_index = block.get("parent_index")
+                block_group_id = f"{record.get('virtual_record_id', '')}-{block_group_index}"
+                if block_group_id in seen_block_groups:
+                    continue
+                seen_block_groups.add(block_group_id)
+                if block_group_index is not None:
+                    corresponding_block_group = block_groups[block_group_index]
+
+                    block_type = corresponding_block_group.get("type")
+                    data = corresponding_block_group.get("data", {})
+
+                    if block_type == GroupType.TABLE.value:
+                        children = corresponding_block_group.get("children")
+                        rows_to_be_included_list = []
+                        if children:
+                            if isinstance(children, dict) and 'block_ranges' in children:
+                                for range_obj in children.get('block_ranges', []):
+                                    start = range_obj.get('start')
+                                    end = range_obj.get('end')
+                                    if start is not None and end is not None:
+                                        rows_to_be_included_list.extend(range(start, end + 1))
+                            elif isinstance(children, list):
+                                rows_to_be_included_list = [child.get("block_index") for child in children if child.get("block_index") is not None]
+
+                        child_results = []
+                        for row_index in rows_to_be_included_list:
+                            if row_index < len(blocks):
+                                block = blocks[row_index]
+                                block_data = block.get("data", {})
+                                if isinstance(block_data, dict):
+                                    row_text = block_data.get("row_natural_language_text", "")
+                                else:
+                                    row_text = str(block_data)
+                                if row_text:
+                                    child_results.append({"content": row_text})
+                                else:
+                                    # Container TABLE_ROW with image-split fragments:
+                                    # keep the text fragments in reading order (images omitted).
+                                    container_idx = block.get("index")
+                                    if container_idx is not None and container_idx in fragment_map:
+                                        for frag in sorted(fragment_map[container_idx], key=lambda b: b.get("index", 0)):
+                                            if frag.get("type") == BlockType.TEXT.value:
+                                                frag_data = frag.get("data", "")
+                                                if frag_data:
+                                                    child_results.append({"content": _safe_stringify_content(frag_data)})
+
+                        if child_results:
+                            template = Template(agent_block_group_prompt)
+                            rendered_form = template.render(
+                                block_group_index=block_group_index,
+                                label=GroupType.TABLE.value,
+                                blocks=child_results,
+                            )
+                            content.append(f"{rendered_form}\n\n")
+            elif(block.get("parent_index") is not None):
+                parent_index = block.get("parent_index")
+                block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
+                if block_group_id in seen_block_groups:
+                    continue
+                template = Template(agent_block_group_prompt)
+                if parent_index >= len(block_groups):
+                    continue
+                block_group = block_groups[parent_index]
+                block_group_type = block_group.get("type")
+                if block_group_type not in valid_group_labels:
+                    continue
+
+                virtual_record_id = record.get("virtual_record_id", "")
+                group_blocks = build_group_blocks(block_groups, blocks, parent_index, virtual_record_id, record, {}, is_multimodal_llm=False, fragment_map=fragment_map)
+
+                if not group_blocks:
+                    continue
+                seen_block_groups.add(block_group_id)
+                rendered_form = template.render(
+                    block_group_index=parent_index,
+                    label=block_group.get("type"),
+                    blocks=group_blocks,
+                )
+                content.append(f"{rendered_form}\n\n")
+            else:
+                continue
+
+        fk_parent = record.get("fk_parent_record_ids")
+        fk_child = record.get("fk_child_record_ids")
+        if fk_parent or fk_child:
+            fk_lines = ["\nForeign Key Related Tables:"]
+            if fk_parent:
+                for fk in fk_parent:
+                    parent_table = fk.get("parentTable", "")
+                    src_col = fk.get("sourceColumn", "")
+                    tgt_col = fk.get("targetColumn", "")
+                    rid = fk.get("record_id", "")
+                    fk_lines.append(
+                        f"  - Parent Table: {parent_table} (Record ID: {rid}, "
+                        f"FK: {src_col} -> {tgt_col})"
+                    )
+            if fk_child:
+                for fk in fk_child:
+                    child_table = fk.get("childTable", "")
+                    src_col = fk.get("sourceColumn", "")
+                    tgt_col = fk.get("targetColumn", "")
+                    rid = fk.get("record_id", "")
+                    fk_lines.append(
+                        f"  - Child Table: {child_table} (Record ID: {rid}, "
+                        f"FK: {src_col} -> {tgt_col})"
+                    )
+            content.append("\n".join(fk_lines) + "\n")
+
+        return "".join(content)
+    except Exception as e:
+        raise Exception(f"Error in record_to_text: {e}") from e
 
 
 def context_includes_jira_tickets(

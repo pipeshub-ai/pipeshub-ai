@@ -47,6 +47,7 @@ from app.utils.chat_helpers import (
     get_message_content as _get_message_content,
     get_record,
     record_to_message_content as _record_to_message_content,
+    record_to_text,
 )
 
 # ---------------------------------------------------------------------------
@@ -1689,6 +1690,93 @@ class TestRecordToMessageContent:
         result = record_to_message_content(record)
         text = _all_text(result)
         assert "grouped" not in text
+
+
+# ===================================================================
+# record_to_text
+# ===================================================================
+class TestRecordToText:
+    """record_to_text renders a record into a single plain-text string, faithful to
+    record_to_message_content but without the Citation ID / Block Index scaffolding."""
+
+    # Only the two fields the endpoint drops — Block Type / Block Group Index stay.
+    _SCAFFOLDING = ("Block Index", "Citation ID")
+
+    def _assert_clean(self, text: str) -> None:
+        for marker in self._SCAFFOLDING:
+            assert marker not in text, f"unexpected scaffolding {marker!r} in output"
+
+    def test_returns_string(self):
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [_make_text_block(index=0, data="Hello")]
+        assert isinstance(record_to_text(record), str)
+
+    def test_text_blocks_and_context_metadata(self):
+        record = _make_record_blob(context_metadata="Record ID       : rec-1\nType: FILE")
+        record["block_containers"]["blocks"] = [
+            _make_text_block(index=0, data="First paragraph"),
+            _make_text_block(index=1, data="Second paragraph"),
+        ]
+        text = record_to_text(record)
+        assert "Record ID       : rec-1" in text
+        assert "First paragraph" in text
+        assert "Second paragraph" in text
+        assert "* Block Content: First paragraph" in text
+        self._assert_clean(text)
+
+    def test_images_omitted(self):
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [
+            _make_image_block(index=0),
+            _make_text_block(index=1, data="visible text"),
+        ]
+        text = record_to_text(record)
+        assert "data:image" not in text
+        assert "visible text" in text
+
+    def test_table_rows_rendered_once(self):
+        row0 = _make_table_row_block(index=0, row_text="Row 0", parent_index=0)
+        row1 = _make_table_row_block(index=1, row_text="Row 1", parent_index=0)
+        table_group = _make_table_group(index=0, children_block_indices=[0, 1])
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [row0, row1]
+        record["block_containers"]["block_groups"] = [table_group]
+        text = record_to_text(record)
+        assert "Row 0" in text
+        assert "Row 1" in text
+        self._assert_clean(text)
+
+    def test_list_group_rendered(self):
+        block = _make_text_block(index=0, data="Item in list", parent_index=0)
+        group = _make_list_group(index=0, children_block_indices=[0])
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [block]
+        record["block_containers"]["block_groups"] = [group]
+        text = record_to_text(record)
+        assert "Item in list" in text
+        self._assert_clean(text)
+
+    def test_fk_footer_for_sql_table(self):
+        record = _make_record_blob(record_type="SQL_TABLE")
+        record["fk_parent_record_ids"] = [
+            {"parentTable": "orders", "record_id": "rec-9", "sourceColumn": "order_id", "targetColumn": "id"}
+        ]
+        record["fk_child_record_ids"] = [
+            {"childTable": "line_items", "record_id": "rec-7", "sourceColumn": "id", "targetColumn": "order_id"}
+        ]
+        text = record_to_text(record)
+        assert "Foreign Key Related Tables:" in text
+        assert "Parent Table: orders" in text
+        assert "Child Table: line_items" in text
+
+    def test_empty_record_has_header_and_metadata_only(self):
+        record = _make_record_blob(context_metadata="Record ID       : rec-1")
+        record["block_containers"]["blocks"] = []
+        text = record_to_text(record)
+        assert "<record>" in text
+        assert "Record ID       : rec-1" in text
+        assert "* Block Content:" not in text
+        self._assert_clean(text)
 
 
 # ===================================================================

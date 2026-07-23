@@ -115,9 +115,10 @@ class EventService:
             config_service = self.app_container.config_service()
             data_store_provider = GraphDataStore(self.logger, self.graph_provider)
 
-            # Extract scope and createdBy from connector document
+            # Extract scope, createdBy and org from connector document
             scope = connector_doc.get("scope", "personal")
             created_by = connector_doc.get("createdBy", "")
+            org_id = connector_doc.get("orgId")
 
             connector = await ConnectorFactory.initialize_connector(
                 name=connector_name,
@@ -127,6 +128,7 @@ class EventService:
                 connector_id=connector_id,
                 scope=scope,
                 created_by=created_by,
+                org_id=org_id,
                 notification_service=self.app_container.connector_notification_service(),
             )
 
@@ -213,6 +215,7 @@ class EventService:
                 connector_id=connector_id,
                 scope=scope,
                 created_by=created_by,
+                org_id=org_id,
                 notification_service=self.app_container.connector_notification_service(),
             )
 
@@ -244,6 +247,20 @@ class EventService:
             self.logger.error("orgId is required in start sync payload")
             return False
 
+        connector_doc = await self.graph_provider.get_document(
+            document_key=connector_id,
+            collection=CollectionNames.APPS.value,
+        )
+
+        if connector_doc and (
+            connector_doc.get(ConnectorStateKeys.IS_ACTIVE) is False
+            or connector_doc.get(ConnectorStateKeys.IS_AUTHENTICATED) is False
+        ):
+            self.logger.warning(
+                f"Skipping {connector_name} sync for {connector_id}: connector is disabled or requires re-authentication"
+            )
+            return False
+
         connector = await self._ensure_connector(connector_name, connector_id)
         if not connector:
             self.logger.error(f"{connector_name.capitalize()} {connector_id} connector could not be initialized")
@@ -253,11 +270,6 @@ class EventService:
             self.logger.error(f"{connector_name.capitalize()} {connector_id} connector not initialized")
             return False
 
-        # Load apps document only after connector is valid (avoids extra I/O on init failure).
-        connector_doc = await self.graph_provider.get_document(
-            document_key=connector_id,
-            collection=CollectionNames.APPS.value,
-        )
         pending_full_sync = False
         if connector_doc:
             pending_full_sync = bool(connector_doc.get(ConnectorStateKeys.PENDING_FULL_SYNC, False))

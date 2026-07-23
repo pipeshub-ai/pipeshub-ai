@@ -144,7 +144,8 @@ class TestInitSession:
     async def test_init_creates_session(self):
         connector = _make_connector()
         connector.config_service.get_config = AsyncMock(return_value=_mock_config())
-        result = await connector.init()
+        with patch.object(connector, "_detect_csr", new_callable=AsyncMock, return_value=False):
+            result = await connector.init()
         assert result is True
         assert connector.session is not None
         await connector.session.close()
@@ -585,6 +586,8 @@ class TestFetchAndProcessUrl:
         connector.visited_urls = set()
         connector.url_should_contain = []
         connector._ensure_parent_records_exist = AsyncMock()
+        connector._process_html_content = AsyncMock(return_value="<html>processed</html>")
+        connector._store_crawled_content = AsyncMock(return_value="storage-doc-id")
 
         html_content = b"<html><head><title>Test</title></head><body>content</body></html>"
         content_hash = hashlib.md5(BeautifulSoup(html_content, "html.parser").get_text(separator="\n", strip=True).encode("utf-8")).hexdigest()
@@ -596,6 +599,7 @@ class TestFetchAndProcessUrl:
         existing.parent_external_record_id = None
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = "COMPLETED"
+        existing.storage_document_id = "existing-storage-doc-id"
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         with patch("app.connectors.sources.web.connector.fetch_url_with_fallback",
