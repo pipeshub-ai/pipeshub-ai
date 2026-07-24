@@ -34,6 +34,7 @@ from app.modules.qna.prompt_templates import (
     block_group_prompt,
     qna_prompt_context,
     qna_prompt_context_header,
+    qna_navigation_tools_block,
     qna_prompt_instructions_1,
     qna_prompt_instructions_2,
     qna_prompt_simple,
@@ -2342,7 +2343,7 @@ def context_includes_jira_tickets(
     )
 
 
-def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, has_sql_connector: bool=False, image_blocks: list[dict[str, Any]] | None = None, has_slack_connector: bool=False) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, has_sql_connector: bool=False, image_blocks: list[dict[str, Any]] | None = None, has_slack_connector: bool=False, has_navigation_tools: bool=True) -> tuple[list[dict[str, Any]], CitationRefMapper]:
 
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
@@ -2427,6 +2428,7 @@ def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_
                     has_sql_connector=has_sql_connector,
                     fetch_full_record_tool_block=fetch_block,
                     has_slack_connector=has_slack_connector,
+                    navigation_tools_block=qna_navigation_tools_block if has_navigation_tools else "",
                     )
 
         content.append({

@@ -4496,6 +4496,11 @@ async def _build_conversation_messages(
                         content = parts
                 messages.append(HumanMessage(content=content))
             elif role == "bot_response":
+                if isinstance(content, str):
+                    # Tiny refs are per-request; stale refN links in a stored answer
+                    # would be copied by the LLM and can never resolve this turn.
+                    from app.utils.citations import strip_unresolved_ref_links
+                    content = strip_unresolved_ref_links(content)
                 messages.append(AIMessage(content=content))
 
     # ALWAYS add ALL reference data (from entire history, not just window)
@@ -6696,7 +6701,7 @@ async def respond_node(
 
     # Generate success response
     final_results = state.get("final_results", [])
-    virtual_record_map = state.get("virtual_record_id_to_result", {})
+    virtual_record_map = state.setdefault("virtual_record_id_to_result", {})
     query = state.get("query", "")
     org_id = state.get("org_id", "")
 
@@ -6909,23 +6914,15 @@ async def respond_node(
         else:
             all_queries = [query]
 
-        # Create the agent-specific fetch_full_record tool (mirrors the chatbot
-        # pipeline: returns raw record dicts so execute_tool_calls in streaming.py
-        # formats them via record_to_message_content() — identical to chatbot).
-        tools = []
+        # Dynamic record tools (fetch_full_record, lookup_record, navigate) — mirrors
+        # the chatbot pipeline: fetch_full_record returns raw record dicts so
+        # execute_tool_calls in streaming.py formats them via record_to_message_content(),
+        # identical to chatbot. Shared helper keeps this in sync with tool_system.py.
+        from app.modules.agents.qna.tool_system import build_dynamic_record_tools
+        tools = build_dynamic_record_tools(state)
         if virtual_record_map:
-            from app.utils.fetch_full_record import (
-                create_fetch_full_record_tool,
-            )
-            fetch_tool = create_fetch_full_record_tool(
-                virtual_record_map,
-                org_id=org_id,
-                graph_provider=graph_provider,
-                user_id=user_id,
-            )
-            tools = [fetch_tool]
             log.debug(
-                f"Added agent fetch_full_record tool "
+                f"Dynamic record tools ready "
                 f"({len(virtual_record_map)} records available, "
             )
 

@@ -477,6 +477,48 @@ class TestNormalizeCitationsAndChunks:
             _, citations = normalize_citations_and_chunks(answer, docs, records=[record])
         assert citations[0]["content"] == "Row content here"
 
+    def test_record_fallback_table_row_missing_nl_text_falls_back_to_cells(self):
+        """When row_natural_language_text is empty, cells should be joined as fallback."""
+        url = _url(REC1, 0)
+        record = {
+            "id": REC1,
+            "block_containers": {
+                "blocks": [{
+                    "type": BlockType.TABLE_ROW.value,
+                    "data": {"row_natural_language_text": "", "cells": ["Alice", "30"]},
+                    "index": 0,
+                }]
+            },
+        }
+        docs = [_make_doc("vr1", 0, "chunk", block_web_url="http://no-match")]
+        answer = f"See [1]({url})."
+        with patch("app.utils.citations.get_enhanced_metadata", return_value={
+            "origin": "O", "recordName": "N", "recordId": REC1, "mimeType": "M", "orgId": "Org",
+        }):
+            _, citations = normalize_citations_and_chunks(answer, docs, records=[record])
+        assert citations[0]["content"] == "Alice, 30"
+
+    def test_record_fallback_table_row_missing_nl_text_falls_back_to_row_json(self):
+        """When row_natural_language_text and cells are both absent, raw row JSON is used."""
+        url = _url(REC1, 0)
+        record = {
+            "id": REC1,
+            "block_containers": {
+                "blocks": [{
+                    "type": BlockType.TABLE_ROW.value,
+                    "data": {"row_natural_language_text": "", "row": '{"id": 42, "name": "test"}'},
+                    "index": 0,
+                }]
+            },
+        }
+        docs = [_make_doc("vr1", 0, "chunk", block_web_url="http://no-match")]
+        answer = f"See [1]({url})."
+        with patch("app.utils.citations.get_enhanced_metadata", return_value={
+            "origin": "O", "recordName": "N", "recordId": REC1, "mimeType": "M", "orgId": "Org",
+        }):
+            _, citations = normalize_citations_and_chunks(answer, docs, records=[record])
+        assert "42" in citations[0]["content"]
+
     def test_record_fallback_image_block(self):
         url = _url(REC1, 0)
         record = {
@@ -970,6 +1012,66 @@ class TestTinyRefHelpers:
 
     def test_build_tiny_web_ref_url(self):
         assert build_tiny_web_ref_url("ref2") == "https://ref2.xyz"
+
+
+class TestStripUnresolvedRefLinks:
+    """Unresolved refN links must never reach the frontend or the stored answer:
+    the browser renders them as broken relative links (<base_url>/chat/refN) and
+    stored raw refs get replayed as history and copied by the LLM forever."""
+
+    def test_generic_label_removed_entirely(self):
+        from app.utils.citations import strip_unresolved_ref_links
+        t = "The bug bash found 5 issues [source](ref162)."
+        assert strip_unresolved_ref_links(t) == "The bug bash found 5 issues."
+
+    def test_descriptive_label_kept_as_plain_text(self):
+        from app.utils.citations import strip_unresolved_ref_links
+        t = "See [Daily Bug Bash Notes](ref158) for details."
+        assert strip_unresolved_ref_links(t) == "See Daily Bug Bash Notes for details."
+
+    def test_numeric_label_removed(self):
+        from app.utils.citations import strip_unresolved_ref_links
+        assert strip_unresolved_ref_links("Fact [3](ref9).") == "Fact."
+
+    def test_tiny_web_ref_url_target_stripped(self):
+        from app.utils.citations import strip_unresolved_ref_links
+        t = "Result [source](https://ref12.xyz) end."
+        assert strip_unresolved_ref_links(t) == "Result end."
+
+    def test_resolved_full_url_links_untouched(self):
+        from app.utils.citations import strip_unresolved_ref_links
+        t = "Fact [3](http://localhost:3000/record/abc/preview#blockIndex=5)."
+        assert strip_unresolved_ref_links(t) == t
+
+    def test_external_web_links_untouched(self):
+        from app.utils.citations import strip_unresolved_ref_links
+        t = "See [docs](https://example.com/guide) here."
+        assert strip_unresolved_ref_links(t) == t
+
+    def test_multiple_adjacent_unresolved_refs(self):
+        from app.utils.citations import strip_unresolved_ref_links
+        t = "5 issues total [source](ref158)[source](ref159)."
+        assert strip_unresolved_ref_links(t) == "5 issues total."
+
+    def test_empty_text_passthrough(self):
+        from app.utils.citations import strip_unresolved_ref_links
+        assert strip_unresolved_ref_links("") == ""
+
+    def test_normalize_pipeline_strips_unmatched_refs(self):
+        """End-to-end: a ref missing from ref_to_url is stripped by
+        normalize_citations_and_chunks instead of surviving as a broken link."""
+        text = "Known fact [source](ref1). Stale fact [source](ref162)."
+        ref_to_url = {"ref1": "http://localhost:3000/record/rec-1/preview#blockIndex=0"}
+        records = [{
+            "id": "rec-1",
+            "block_containers": {"blocks": [{"index": 0, "type": "text", "data": "hello"}]},
+        }]
+        normalized, citations = normalize_citations_and_chunks(
+            text, [], records, ref_to_url=ref_to_url,
+        )
+        assert "ref162" not in normalized
+        assert "/chat/ref" not in normalized
+        assert len(citations) == 1
 
 
 class TestDisplayUrlForLlm:

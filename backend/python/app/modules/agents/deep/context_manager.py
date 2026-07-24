@@ -254,6 +254,11 @@ async def build_conversation_messages(
                         content = parts
                 messages.append(HumanMessage(content=content))
             elif role == "bot_response":
+                if isinstance(content, str):
+                    # Tiny refs are per-request; stale refN links in a stored answer
+                    # would be copied by the LLM and can never resolve this turn.
+                    from app.utils.citations import strip_unresolved_ref_links
+                    content = strip_unresolved_ref_links(content)
                 messages.append(AIMessage(content=content))
 
     # Append reference data so the LLM can reuse IDs/keys
@@ -407,6 +412,9 @@ async def build_respond_conversation_context(
                     content = parts
             messages.append(HumanMessage(content=content))
         elif role == "bot_response":
+            if isinstance(content, str):
+                from app.utils.citations import strip_unresolved_ref_links
+                content = strip_unresolved_ref_links(content)
             messages.append(AIMessage(content=content))
 
     if messages:

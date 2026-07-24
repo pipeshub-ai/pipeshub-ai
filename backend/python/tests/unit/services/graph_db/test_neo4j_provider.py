@@ -1933,6 +1933,47 @@ class TestTraversalAndRecordLookups:
         assert missing is None
 
     @pytest.mark.asyncio
+    async def test_get_record_by_weburl_matches_interface_signature(self, neo4j_provider: Neo4jProvider):
+        """Regression test: signature must be (weburl, org_id=None, transaction=None) to
+        match IGraphDBProvider — a prior mismatch (connector_id, web_url) silently swapped
+        the two positional args at every call site."""
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"r": {"_key": "r1"}}])
+        neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "r1"})  # type: ignore[method-assign]
+        with patch(
+            "app.services.graph_db.neo4j.neo4j_provider.Record.from_arango_base_record",
+            return_value={"weburl": "record"},
+        ):
+            found = await neo4j_provider.get_record_by_weburl("https://example.com/doc")
+        assert found == {"weburl": "record"}
+        query, kwargs = neo4j_provider.client.execute_query.await_args.args[0], neo4j_provider.client.execute_query.await_args.kwargs
+        assert "orgId" not in query
+        assert kwargs["parameters"] == {"web_url": "https://example.com/doc"}
+
+    @pytest.mark.asyncio
+    async def test_get_record_by_weburl_scopes_to_org_id(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"r": {"_key": "r1"}}])
+        neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "r1"})  # type: ignore[method-assign]
+        with patch(
+            "app.services.graph_db.neo4j.neo4j_provider.Record.from_arango_base_record",
+            return_value={"weburl": "record"},
+        ):
+            await neo4j_provider.get_record_by_weburl("https://example.com/doc", org_id="org-1")
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        kwargs = neo4j_provider.client.execute_query.await_args.kwargs
+        assert "orgId" in query
+        assert kwargs["parameters"] == {"web_url": "https://example.com/doc", "org_id": "org-1"}
+
+    @pytest.mark.asyncio
+    async def test_get_record_by_weburl_not_found_and_exception(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        missing = await neo4j_provider.get_record_by_weburl("https://example.com/nope")
+        assert missing is None
+
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=Exception("boom"))
+        errored = await neo4j_provider.get_record_by_weburl("https://example.com/boom")
+        assert errored is None
+
+    @pytest.mark.asyncio
     async def test_get_record_by_conversation_index_success_and_none(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(return_value=[{"r": {"id": "r1"}}])
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "r1"})  # type: ignore[method-assign]

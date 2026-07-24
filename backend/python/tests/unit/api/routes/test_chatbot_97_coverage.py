@@ -718,7 +718,12 @@ class TestAskAIStreamOuterExceptionRequestState:
         class FailingUser:
             def get(self, key, default=None):
                 user_calls[0] += 1
-                if user_calls[0] > 3:
+                # askAIStream itself now reads orgId/userId/email twice before
+                # dispatching to the stream generator (the auth guard added for
+                # "orgId check must always exist", plus record_event) — let
+                # those succeed so the failure still happens deeper, inside
+                # the generator's own protected try/except, as intended.
+                if user_calls[0] > 5:
                     raise RuntimeError("state error on second access")
                 return real_user.get(key, default)
 

@@ -707,6 +707,54 @@ class TestAskAIStreamEndpoint:
         assert isinstance(result, StreamingResponse)
         assert result.media_type == "text/event-stream"
 
+    @pytest.mark.asyncio
+    async def test_missing_org_id_raises_400(self):
+        """orgId is closed over by every dynamic tool built for this request
+        (fetch_full_record/lookup_record/navigate) — it must never be empty."""
+        from fastapi import HTTPException
+
+        from app.api.routes.chatbot import askAIStream
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={"query": "hello"})
+        request.state.user = {"userId": "user-1"}  # orgId missing
+
+        with pytest.raises(HTTPException) as exc_info:
+            await askAIStream(request, AsyncMock(), AsyncMock(), AsyncMock())
+        assert exc_info.value.status_code == 400
+        assert "org" in exc_info.value.detail.lower()
+
+    @pytest.mark.asyncio
+    async def test_missing_user_id_raises_400(self):
+        from fastapi import HTTPException
+
+        from app.api.routes.chatbot import askAIStream
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={"query": "hello"})
+        request.state.user = {"orgId": "org-1"}  # userId missing
+
+        with pytest.raises(HTTPException) as exc_info:
+            await askAIStream(request, AsyncMock(), AsyncMock(), AsyncMock())
+        assert exc_info.value.status_code == 400
+        assert "user" in exc_info.value.detail.lower()
+
+    @pytest.mark.asyncio
+    async def test_empty_user_state_raises_400_not_500(self):
+        """An unauthenticated request (no user on request.state at all) must
+        fail closed with a clear 400, not fall through to an org-less stream."""
+        from fastapi import HTTPException
+
+        from app.api.routes.chatbot import askAIStream
+
+        request = MagicMock()
+        request.json = AsyncMock(return_value={"query": "hello"})
+        request.state = MagicMock(spec=[])  # no `.user` attribute at all
+
+        with pytest.raises(HTTPException) as exc_info:
+            await askAIStream(request, AsyncMock(), AsyncMock(), AsyncMock())
+        assert exc_info.value.status_code == 400
+
 
 # ---------------------------------------------------------------------------
 # Additional get_model_config coverage
