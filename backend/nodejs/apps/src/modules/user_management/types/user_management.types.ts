@@ -94,6 +94,7 @@ export type UserGroupFilter = FilterQuery<{
 
 export type UserFilter = FilterQuery<{
   _id: { $in: string[] };
+  orgId?: string;
   isDeleted: { $ne: boolean };
   $or?: Array<{ fullName?: { $regex: string; $options: string }; email?: { $regex: string; $options: string } }>;
 }>;
