@@ -23,6 +23,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
+    enrich_records_with_graph_context,
     get_flattened_results,
 )
 
@@ -324,6 +325,17 @@ class Retrieval:
             )
             logger_instance.info(f"Processed {len(flattened_results)} flattened results")
 
+            # === GRAPH CONTEXT ENRICHMENT ===
+            if flattened_results and graph_provider:
+                await enrich_records_with_graph_context(
+                    virtual_record_id_to_result,
+                    graph_provider,
+                    flattened_results,
+                    virtual_to_record_map,
+                    blob_store=blob_store,
+                    org_id=org_id,
+                    config_service=config_service,
+                )
 
             final_results = search_results if not flattened_results else flattened_results
 
