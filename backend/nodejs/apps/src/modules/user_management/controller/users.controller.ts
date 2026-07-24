@@ -1633,7 +1633,14 @@ export class UserController {
     ) {
       input = input.subarray(3);
     }
-    const workbook = XLSX.read(input, { type: 'buffer', codepage: 65001 });
+    // Cap rows read so a small but densely-packed upload can't inflate into a
+    // huge sheet and block the event loop; the MAX_BULK_INVITE check runs later
+    // on the extracted emails, so a header row + the limit is enough headroom.
+    const workbook = XLSX.read(input, {
+      type: 'buffer',
+      codepage: 65001,
+      sheetRows: MAX_BULK_INVITE + 5,
+    });
     const emails: string[] = [];
     for (const sheetName of workbook.SheetNames) {
       const sheet = workbook.Sheets[sheetName];
@@ -1664,7 +1671,7 @@ export class UserController {
     inviterName: string | undefined,
     org: { registeredName?: string; shortName?: string } | null,
   ): Promise<InviteResult> {
-    const existingUsers = await Users.find({ email: { $in: emails } });
+    const existingUsers = await Users.find({ email: { $in: emails }, orgId });
     const activeUsers = existingUsers.filter((user) => !user.isDeleted);
     const deletedUsers = existingUsers.filter((user) => user.isDeleted);
 
@@ -1702,7 +1709,11 @@ export class UserController {
         { email: { $in: deletedEmails }, isDeleted: true, orgId },
         { $set: { isDeleted: false } },
       );
-      restoredUsers = await Users.find({ email: { $in: deletedEmails } });
+      restoredUsers = await Users.find({
+        email: { $in: deletedEmails },
+        orgId,
+        isDeleted: false,
+      });
     }
 
     for (let i = 0; i < existingUsers.length; ++i) {
@@ -1735,6 +1746,27 @@ export class UserController {
           orgId,
         })),
       );
+    }
+
+    // Password-auth is an org-wide setting, so resolve it once for the whole
+    // batch instead of once per recipient (previously N internal HTTP calls).
+    // Any user in the org yields the same answer; probe with the first we have.
+    const probeUserId =
+      newUsers[0]?._id?.toString() ??
+      pendingUsersToReinvite[0]?._id?.toString() ??
+      restoredUsers[0]?._id?.toString();
+    let isPasswordAuthEnabled = false;
+    if (probeUserId) {
+      const authToken = fetchConfigJwtGenerator(
+        probeUserId,
+        orgId,
+        this.config.scopedJwtSecret,
+      );
+      const authResult = await this.authService.passwordMethodEnabled(authToken);
+      if (authResult.statusCode !== 200) {
+        throw new InternalServerError('Error fetching auth methods');
+      }
+      isPasswordAuthEnabled = Boolean(authResult.data?.isPasswordAuthEnabled);
     }
 
     const mailFailed: string[] = [];
@@ -1783,6 +1815,9 @@ export class UserController {
             syncAction: SyncAction.Immediate,
           } as UserAddedEvent,
         };
+        // A concurrent request may have disconnected the shared producer;
+        // start() is idempotent and reconnects so the event isn't dropped.
+        await this.eventService.start();
         await this.eventService.publishEvent(event);
       }
 
@@ -1793,6 +1828,7 @@ export class UserController {
         inviterName,
         org,
         false,
+        isPasswordAuthEnabled,
       );
       if (statusCode !== 200) {
         mailFailed.push(email);
@@ -1821,6 +1857,7 @@ export class UserController {
           syncAction: SyncAction.Immediate,
         } as UserAddedEvent,
       };
+      await this.eventService.start();
       await this.eventService.publishEvent(event);
 
       const statusCode = await this.sendInviteMail(
@@ -1830,6 +1867,7 @@ export class UserController {
         inviterName,
         org,
         true,
+        isPasswordAuthEnabled,
       );
       if (statusCode !== 200) {
         mailFailed.push(email);
@@ -1854,17 +1892,8 @@ export class UserController {
     inviterName: string | undefined,
     org: { registeredName?: string; shortName?: string } | null,
     rejoin: boolean,
+    isPasswordAuthEnabled: boolean,
   ): Promise<number> {
-    const authToken = fetchConfigJwtGenerator(
-      userId,
-      orgId,
-      this.config.scopedJwtSecret,
-    );
-    const authResult = await this.authService.passwordMethodEnabled(authToken);
-    if (authResult.statusCode !== 200) {
-      throw new InternalServerError('Error fetching auth methods');
-    }
-
     const subject = `You are invited to ${rejoin ? 're-join' : 'join'} ${org?.registeredName} `;
     const invitee = inviterName;
     const orgName = org?.shortName || org?.registeredName;
@@ -1873,7 +1902,7 @@ export class UserController {
     // batch: return a non-200 so the caller records it in mailFailed instead.
     try {
       let result;
-      if (authResult.data?.isPasswordAuthEnabled) {
+      if (isPasswordAuthEnabled) {
         const { passwordResetToken, mailAuthToken } =
           jwtGeneratorForNewAccountPassword(
             email,
@@ -1930,12 +1959,16 @@ export class UserController {
     if (summary.mailFailed.length > 0) {
       parts.push(`${summary.mailFailed.length} failed to email`);
     }
+    const severity =
+      summary.mailFailed.length > 0 || summary.invalid.length > 0
+        ? 'warning'
+        : 'success';
     await this.publishInviteNotification(
       userId,
       orgId,
       'Bulk invite finished',
       parts.join(', '),
-      'success',
+      severity,
       { invalid: summary.invalid, mailFailed: summary.mailFailed },
     );
   }
