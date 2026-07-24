@@ -229,6 +229,8 @@ class SyncFilterKey(str, Enum):
     CHANNEL_TYPES = "channel_types"
     BOOK_IDS = "book_ids"
     GROUP_IDS = "group_ids"
+    ORG_IDS = "org_ids"
+    REPO_IDS = "repo_ids"
 
     # Content filters
     CONTENT_STATUS = "content_status"

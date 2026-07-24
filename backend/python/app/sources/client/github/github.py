@@ -59,6 +59,16 @@ class GitHubClientViaToken:
     def get_token(self) ->str:
         return self.token
 
+    def set_token(self, token: str) -> None:
+        """Rotate the access token and rebuild the underlying PyGithub SDK instance.
+
+        PyGithub binds the ``Auth.Token`` at construction time, so a refreshed
+        OAuth access token requires a new ``Github`` instance rather than
+        mutating the existing one in place.
+        """
+        self.token = token
+        self.create_client()
+
 
 class GitHubConfig(BaseModel):
     token: str

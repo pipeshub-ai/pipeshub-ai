@@ -16,6 +16,8 @@ from github.ContentFile import ContentFile  # type: ignore
 from github.Deployment import Deployment  # type: ignore
 from github.DeploymentStatus import DeploymentStatus  # type: ignore
 from github.File import File  # type: ignore
+from github.Commit import CommitSearchResult  # type: ignore
+from github.Comparison import Comparison  # type: ignore
 from github.GitBlob import GitBlob  # type: ignore
 from github.GitRef import GitRef  # type: ignore
 from github.GitRelease import GitRelease  # type: ignore
@@ -26,6 +28,7 @@ from github.Invitation import Invitation  # type: ignore
 from github.Issue import Issue  # type: ignore
 from github.IssueComment import IssueComment  # type: ignore
 from github.Label import Label  # type: ignore
+from github.Membership import Membership  # type: ignore
 from github.NamedUser import NamedUser  # type: ignore
 from github.Organization import Organization  # type: ignore
 from github.PullRequest import PullRequest  # type: ignore
@@ -915,11 +918,19 @@ class GitHubDataSource:
             return GitHubResponse(success=False, error=str(e))
 
 
-    def list_collaborators(self, owner: str, repo: str) -> GitHubResponse[list[NamedUser]]:
-        """List collaborators."""
+    def list_collaborators(
+        self, owner: str, repo: str, affiliation: str | None = None
+    ) -> GitHubResponse[list[NamedUser]]:
+        """List collaborators. affiliation: 'outside' | 'direct' | 'all'.
+
+        Each returned ``NamedUser`` carries a ``.permissions`` (admin/maintain/
+        push/triage/pull booleans) reflecting its role on *this* repo — no
+        extra per-user permission call is needed.
+        """
         try:
             r = self._repo(owner, repo)
-            users = list(r.get_collaborators())
+            params = self._not_none(affiliation=affiliation)
+            users = list(r.get_collaborators(**params))
             return GitHubResponse(success=True, data=users)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
@@ -946,7 +957,8 @@ class GitHubDataSource:
 
 
     def list_repo_teams(self, owner: str, repo: str) -> GitHubResponse[list[Team]]:
-        """List teams with access to the repo."""
+        """List teams with access to the repo. Each Team's `.permission` reflects
+        its role (pull/triage/push/maintain/admin) on *this* repo specifically."""
         try:
             r = self._repo(owner, repo)
             teams = list(r.get_teams())
@@ -954,6 +966,165 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
+    # -----------------------
+    # Org members / teams (GitHub Teams connector)
+    # -----------------------
+
+    def list_user_orgs(self) -> GitHubResponse[list[Organization]]:
+        """List organizations the authenticated (token-owning) user belongs to.
+
+        Requires the ``read:org`` OAuth scope. Used for org-picker filter
+        options and to discover the sync scope when no ``ORG_IDS`` filter is
+        configured.
+        """
+        try:
+            me = self._sdk.get_user()
+            orgs = list(me.get_orgs())
+            return GitHubResponse(success=True, data=orgs)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def list_org_members(self, org: str, role: str = "all") -> GitHubResponse[list[NamedUser]]:
+        """List members of an organization. role: 'all' | 'admin' | 'member'."""
+        try:
+            o = self._sdk.get_organization(org)
+            members = list(o.get_members(role=role))
+            return GitHubResponse(success=True, data=members)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def get_org_membership(self, org: str, username: str) -> GitHubResponse[Membership]:
+        """Get a single member's org-level role (admin/member) and state."""
+        try:
+            o = self._sdk.get_organization(org)
+            membership = o.get_membership(username)
+            return GitHubResponse(success=True, data=membership)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def list_org_teams(self, org: str) -> GitHubResponse[list[Team]]:
+        """List all teams in an organization."""
+        try:
+            o = self._sdk.get_organization(org)
+            teams = list(o.get_teams())
+            return GitHubResponse(success=True, data=teams)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def list_team_members(self, org: str, team_slug: str) -> GitHubResponse[list[NamedUser]]:
+        """List members of a team by slug."""
+        try:
+            o = self._sdk.get_organization(org)
+            team = o.get_team_by_slug(team_slug)
+            members = list(team.get_members())
+            return GitHubResponse(success=True, data=members)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    # -----------------------
+    # Code indexing (Git Tree / Compare Commits)
+    # -----------------------
+
+    def get_git_tree(
+        self, owner: str, repo: str, tree_sha: str, recursive: bool = False
+    ) -> GitHubResponse[GitTree]:
+        """Fetch a git tree. ``recursive=True`` returns the full flat tree in one
+        call (subject to GitHub's 100,000-entry / 7MB truncation limit — check
+        ``.truncated`` on the returned ``GitTree``)."""
+        try:
+            r = self._repo(owner, repo)
+            tree = r.get_git_tree(sha=tree_sha, recursive=recursive)
+            return GitHubResponse(success=True, data=tree)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def compare_commits(self, owner: str, repo: str, base: str, head: str) -> GitHubResponse[Comparison]:
+        """Compare two commits/refs. ``.files`` is capped at 300 entries and
+        ``.status`` may be 'diverged' on a force-push/history rewrite — callers
+        must fall back to a full sync in either overflow case."""
+        try:
+            r = self._repo(owner, repo)
+            comparison = r.compare(base=base, head=head)
+            return GitHubResponse(success=True, data=comparison)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def list_commits(
+        self,
+        owner: str,
+        repo: str,
+        sha: str | None = None,
+        path: str | None = None,
+        since: datetime.datetime | None = None,
+        until: datetime.datetime | None = None,
+        author: str | None = None,
+    ) -> GitHubResponse[list[Commit]]:
+        """List commits, optionally filtered by branch/path/author/date range.
+        Used for commit-email extraction and file timestamp backfill."""
+        try:
+            r = self._repo(owner, repo)
+            params = self._not_none(sha=sha, path=path, since=since, until=until, author=author)
+            commits = list(r.get_commits(**params))
+            return GitHubResponse(success=True, data=commits)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def get_repo_by_id(self, repo_id: int) -> GitHubResponse[Repository]:
+        """Resolve a repository from its stable numeric ID (survives rename/transfer)."""
+        try:
+            r = self._sdk.get_repo(repo_id)
+            return GitHubResponse(success=True, data=r)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    # -----------------------
+    # Search (email reverse-lookup)
+    # -----------------------
+
+    def search_users_by_email(self, email: str) -> GitHubResponse[list[NamedUser]]:
+        """Search users by email. Only matches users with a *public* profile
+        email — cannot resolve hidden emails (use ``search_commits_by_author_email``
+        for that)."""
+        try:
+            query = f"{email} in:email"
+            users = list(self._sdk.search_users(query))
+            return GitHubResponse(success=True, data=users)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def search_commits_by_author_email(
+        self, email: str, org: str | None = None
+    ) -> GitHubResponse[list[CommitSearchResult]]:
+        """Reverse-lookup a GitHub login from a commit author email, even when the
+        user's profile email is private — GitHub links commit emails to accounts
+        internally so ``author-email:`` search still resolves ``.author`` (the
+        linked ``NamedUser``, may be ``None`` if unlinked) on each result, distinct
+        from ``.commit.author`` (the raw git author name/email/date).
+        Subject to the Search API's 30 req/min budget (separate from core REST)."""
+        try:
+            query = f"author-email:{email}"
+            if org:
+                query += f" org:{org}"
+            commits = list(self._sdk.search_commits(query))
+            return GitHubResponse(success=True, data=commits)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def search_commits_by_author_login(
+        self, login: str, org: str | None = None
+    ) -> GitHubResponse[list[CommitSearchResult]]:
+        """Find commits authored by a GitHub login (``author:`` qualifier), optionally
+        scoped to an org. Used for Phase 3 commit-email extraction: reads
+        ``.commit.author.email`` off the first usable hit instead of walking every
+        repo's commit history for this user."""
+        try:
+            query = f"author:{login}"
+            if org:
+                query += f" org:{org}"
+            commits = list(self._sdk.search_commits(query))
+            return GitHubResponse(success=True, data=commits)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
 
     def list_repo_hooks(self, owner: str, repo: str) -> GitHubResponse[list[Hook]]:
         """List repo webhooks."""
