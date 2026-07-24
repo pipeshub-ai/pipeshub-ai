@@ -3298,15 +3298,29 @@ class BoxDataSource:
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
 
-    async def events_get_events(self, stream_type: Optional[str] = None, stream_position: Optional[str] = None, **kwargs) -> BoxResponse:
+    async def events_get_events(
+        self,
+        stream_type: Optional[str] = None,
+        stream_position: Optional[str] = None,
+        limit: Optional[int] = None,
+        event_type: Optional[List[str]] = None,
+        created_after: Optional[str] = None,
+        created_before: Optional[str] = None,
+        **kwargs,
+    ) -> BoxResponse:
         """Get events for the current user or enterprise
 
         API Endpoint: events.get_events
         Namespace: events
 
         Args:
-            stream_type (str, optional): Type of event stream
+            stream_type (str, optional): Type of event stream (e.g. 'all', 'changes', 'admin_logs', 'admin_logs_streaming')
             stream_position (str, optional): Starting position in stream
+            limit (int, optional): Max number of events to return per page
+            event_type (List[str], optional): Filter by event type(s). Only used with stream_type
+                'admin_logs' or 'admin_logs_streaming'.
+            created_after (str, optional): Lower bound date/time (ISO 8601). Only used with stream_type 'admin_logs'.
+            created_before (str, optional): Upper bound date/time (ISO 8601). Only used with stream_type 'admin_logs'.
 
         Returns:
             BoxResponse: SDK response
@@ -3318,11 +3332,17 @@ class BoxDataSource:
 
         try:
             loop = asyncio.get_running_loop()
-            # Add kwargs to parameters if provided
-            if kwargs:
-                # Handle additional parameters from kwargs
-                pass
-            response = await loop.run_in_executor(None, lambda: manager.get_events(stream_type=stream_type, stream_position=stream_position))
+            response = await loop.run_in_executor(
+                None,
+                lambda: manager.get_events(
+                    stream_type=stream_type,
+                    stream_position=stream_position,
+                    limit=limit,
+                    event_type=event_type,
+                    created_after=created_after,
+                    created_before=created_before,
+                ),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))
