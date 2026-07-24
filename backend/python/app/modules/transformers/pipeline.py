@@ -159,8 +159,9 @@ class IndexingPipeline:
                     status_fields,
                 )
                 if not success:
-                    raise RuntimeError(
-                        f"Failed to persist EMPTY status for record {record_id}"
+                    self.logger.warning(
+                        "⚠️ Failed to update indexing status for record %s - record may not exist",
+                        record_id,
                     )
                 return
 

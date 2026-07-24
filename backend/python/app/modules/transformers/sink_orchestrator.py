@@ -19,6 +19,7 @@ from app.modules.transformers.vectorstore import VectorStore
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.exceptions.indexing_exceptions import IndexingError
 
 
 class SinkOrchestrator(Transformer):
@@ -158,9 +159,11 @@ class SinkOrchestrator(Transformer):
                 CollectionNames.RECORDS.value,
             )
             if not success:
-                raise RuntimeError(
-                    f"Failed to persist sink-only status for record {record_id}"
+                self.logger.warning(
+                    "⚠️ Failed to update record %s status - record may not exist in database",
+                    record_id,
                 )
+                return
             self.logger.info(
                 "✅ Sink-only mode completed for record %s (vector indexing skipped)",
                 record_id,
@@ -173,8 +176,9 @@ class SinkOrchestrator(Transformer):
             result = await self.vector_store.apply(ctx)
             if result is False:
                 record_service_activity("indexing_service", "document_indexed", connector=connector, status="failed", org=org, kb=kb, mimetype=record.mime_type or "none")
-                raise RuntimeError(
-                    f"Vector store did not index record {record_id}"
+                raise IndexingError(
+                    message=f"Vector store did not index record {record_id}",
+                    record_id=record_id,
                 )
 
             self.logger.info(f"✅ Vector store indexing succeeded for record {record_id}")
@@ -189,7 +193,7 @@ class SinkOrchestrator(Transformer):
         """Mark indexingStatus=COMPLETED without touching extractionStatus."""
         record = ctx.record
         timestamp = get_epoch_timestamp_in_ms()
-        success = await self.graph_provider.batch_upsert_nodes(
+        await self.graph_provider.batch_upsert_nodes(
             [
                 {
                     "id": record.id,
@@ -202,10 +206,6 @@ class SinkOrchestrator(Transformer):
             ],
             CollectionNames.RECORDS.value,
         )
-        if not success:
-            raise RuntimeError(
-                f"Failed to persist indexingStatus=COMPLETED for {record.id}"
-            )
         self.logger.info(
             "✅ indexingStatus=COMPLETED recorded for %s", record.id
         )

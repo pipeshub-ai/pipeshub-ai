@@ -316,7 +316,7 @@ class EventProcessor:
             data=PipelineEventData(record_id=record_id),
         )
 
-    async def update_record_fields(self, doc: dict[str, Any], fields: dict[str, Any]) -> None:
+    async def update_record_fields(self, doc: dict[str, Any], fields: dict[str, Any]) -> bool:
         """Persist a partial record update or fail the current attempt."""
         record_id = _record_key(doc) or "unknown"
         doc.update(fields)
@@ -326,9 +326,12 @@ class EventProcessor:
             fields,
         )
         if not success:
-            raise RuntimeError(
-                f"Failed to update record {record_id} fields {tuple(fields)}"
+            self.logger.warning(
+                f"❌ Failed to update record {record_id} fields {tuple(fields)}"
             )
+            return False
+        
+        return True
 
     async def mark_record_status(self, doc: dict[str, Any], status: ProgressStatus) -> None:
         """Persist the legacy pipeline's indexing and extraction status."""
@@ -428,10 +431,12 @@ class EventProcessor:
             content_for_hash = self._normalize_content_for_dedup(content=content, record_type=record_type, mime_type=mime_type)
             md5_checksum = hashlib.md5(content_for_hash).hexdigest()
             if existing_md5_checksum != md5_checksum:
-                await self.update_record_fields(
+                success = await self.update_record_fields(
                     doc,
                     {"md5Checksum": md5_checksum},
                 )
+                if not success:
+                    return True
 
             self.logger.debug("🚀 Calculated md5_checksum: %s for record type: %s", md5_checksum, record_type)
 
@@ -478,7 +483,9 @@ class EventProcessor:
                 ),
                 "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
             }
-            await self.update_record_fields(doc, duplicate_fields)
+            success = await self.update_record_fields(doc, duplicate_fields)
+            if not success:
+                return True
             
             # Copy all relationships from the processed duplicate to this document
             await self.graph_provider.copy_document_relationships(

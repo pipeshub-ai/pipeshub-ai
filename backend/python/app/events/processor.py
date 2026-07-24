@@ -163,9 +163,9 @@ class Processor:
                         status_fields,
                     )
                     if not success:
-                        raise RecordStatusUpdateError(
-                            f"Failed to persist multimodal status for record {record_id}",
-                            record_id=record_id,
+                        self.logger.warning(
+                            "⚠️ Failed to update indexing status for record %s - record may not exist",
+                            record_id,
                         )
                     # Yield both events since we're skipping processing
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1642,10 +1642,11 @@ class Processor:
             status_update,
         )
         if not success:
-            raise RecordStatusUpdateError(
-                f"Failed to persist record status for {record_id}",
-                record_id=record_id,
+            self.logger.warning(
+                "⚠️ Failed to update indexing status for record %s - record may not exist",
+                record_id,
             )
+            return
 
     async def process_html_document(
         self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None

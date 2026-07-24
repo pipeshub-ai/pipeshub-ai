@@ -822,9 +822,11 @@ class RecordEventHandler(BaseEventService):
                 updates,
             )
             if not success:
-                raise RuntimeError(
-                    f"Failed to persist document status for record {record_id}"
+                self.logger.warning(
+                    "⚠️ Failed to update document status for record %s - record may not exist",
+                    record_id,
                 )
+                return None
             self.logger.info(f"✅ Updated document status for record {record_id}")
             return record
         except Exception as e:
