@@ -278,24 +278,32 @@ class TestSharePointCleanupExtended:
         await c.cleanup()
 
 
+def _mock_all_sp_probes(connector):
+    connector._probe_sp_users_scope = AsyncMock()
+    connector._probe_sp_groups_scope = AsyncMock()
+    connector._probe_sp_site_drives_scope = AsyncMock()
+    connector._probe_sp_sites_scope = AsyncMock()
+    connector._probe_legacy_sharepoint_sites_scope = AsyncMock()
+    connector.notify = AsyncMock()
+
+
 class TestSharePointTestConnection:
     @pytest.mark.asyncio
     async def test_connection_success(self):
         c = _make_connector()
-        c.client = MagicMock()
-        root_site = MagicMock()
-        root_site.display_name = "Root Site"
-        c.client.sites.by_site_id.return_value.get = AsyncMock(return_value=root_site)
+        _mock_all_sp_probes(c)
         result = await c.test_connection_and_access()
         assert result is True
+        c.notify.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_connection_always_returns_true(self):
-        """SharePoint test_connection_and_access always returns True (no actual check)."""
+        """When all permission probes succeed, test_connection_and_access returns True."""
         c = _make_connector()
-        c.client = MagicMock()
+        _mock_all_sp_probes(c)
         result = await c.test_connection_and_access()
         assert result is True
+        c.notify.assert_not_called()
 
 
 class TestSharePointMisc:

@@ -1260,12 +1260,23 @@ class TestHandleWebhookNotification:
 # test_connection_and_access
 # ===========================================================================
 
+def _mock_all_sp_probes(connector):
+    connector._probe_sp_users_scope = AsyncMock()
+    connector._probe_sp_groups_scope = AsyncMock()
+    connector._probe_sp_site_drives_scope = AsyncMock()
+    connector._probe_sp_sites_scope = AsyncMock()
+    connector._probe_legacy_sharepoint_sites_scope = AsyncMock()
+    connector.notify = AsyncMock()
+
+
 class TestTestConnectionAndAccess:
     @pytest.mark.asyncio
     async def test_always_returns_true(self):
         c = _make_connector()
+        _mock_all_sp_probes(c)
         result = await c.test_connection_and_access()
         assert result is True
+        c.notify.assert_not_called()
 
 
 # ===========================================================================
