@@ -157,15 +157,49 @@ spec:
               value: "{{ include "pipeshub-ai.fullname" . }}-kafka:9092"
             
             # Redis config
+            {{- if .Values.redisCluster.enabled }}
+            {{- /* Cluster mode: app discovers shards via REDIS_NODES, switched on by REDIS_MODE=cluster */}}
+            - name: REDIS_MODE
+              value: "cluster"
+            {{- $nodeCount := .Values.redisCluster.cluster.nodes | default 6 | int }}
+            {{- $headless := printf "%s-redis-cluster-headless" .Release.Name }}
+            {{- $nodes := list }}
+            {{- range $i, $_ := until $nodeCount }}
+            {{- $nodes = append $nodes (printf "%s-redis-cluster-%d.%s:6379" $.Release.Name $i $headless) }}
+            {{- end }}
+            - name: REDIS_NODES
+              value: {{ join "," $nodes | quote }}
+            - name: REDIS_HOST
+              value: "{{ .Release.Name }}-redis-cluster"
+            - name: REDIS_PORT
+              value: "6379"
+            {{- if .Values.redisCluster.celeryRedisUrl }}
+            {{- /* Celery/kombu is not cluster-aware; use a standalone Redis. */}}
+            - name: CELERY_REDIS_URL
+              value: {{ .Values.redisCluster.celeryRedisUrl | quote }}
+            {{- end }}
+            {{- if .Values.redisCluster.usePassword }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-redis-cluster
+                  key: redis-password
+            {{- else }}
+            - name: REDIS_PASSWORD
+              value: ""
+            {{- end }}
+            {{- else }}
             {{- /*
-              Connection target:
-                - standalone or replication (no sentinel): use the Bitnami "<release>-redis-master" Service.
-                  This is a stable Service that the chart updates to follow the current master pod, so the
-                  app does not need Sentinel awareness.
-                - sentinel enabled: the app MUST use a Sentinel-aware client. The chart still exposes the
-                  master Service for compatibility, but failover updates may lag and stale connections are
-                  possible. Enable Sentinel only if the app is migrated to a Sentinel client.
+              Standalone / replication path (no Sentinel). Connect to the
+              Bitnami "<release>-redis-master" Service — a stable Service that
+              the chart updates to follow the current master pod, so the app
+              does not need Sentinel awareness.
+
+              If sentinel is ever enabled, the app would need a Sentinel-aware
+              client; failover updates against this Service may lag.
             */}}
+            - name: REDIS_MODE
+              value: "standalone"
             - name: REDIS_HOST
               value: "{{ .Release.Name }}-redis-master"
             - name: REDIS_PORT
@@ -183,6 +217,7 @@ spec:
               value: ""
             - name: REDIS_URL
               value: "redis://{{ .Release.Name }}-redis-master:6379"
+            {{- end }}
             {{- end }}
             
             # MongoDB config

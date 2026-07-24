@@ -165,6 +165,8 @@ class RedisEnv(str, Enum):
     PORT = "REDIS_PORT"
     PASSWORD = "REDIS_PASSWORD"
     DB = "REDIS_DB"
+    MODE = "REDIS_MODE"
+    NODES = "REDIS_NODES"
 
 
 class RedisDefaults(str, Enum):
@@ -173,6 +175,7 @@ class RedisDefaults(str, Enum):
     HOST = "localhost"
     PORT = "6379"
     DB = "0"
+    MODE = "standalone"
 
 
 class RedisConfig(Enum):

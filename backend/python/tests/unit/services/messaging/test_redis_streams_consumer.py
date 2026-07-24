@@ -54,7 +54,7 @@ class TestInitialize:
         mock_redis.xgroup_create = AsyncMock()
 
         with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
+            "app.services.messaging.redis_streams.consumer.build_redis_client",
             return_value=mock_redis,
         ):
             await c.initialize()
@@ -77,7 +77,7 @@ class TestInitialize:
         mock_redis.xgroup_create = AsyncMock()
 
         with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
+            "app.services.messaging.redis_streams.consumer.build_redis_client",
             return_value=mock_redis,
         ):
             await c.initialize()
@@ -94,7 +94,7 @@ class TestInitialize:
         )
 
         with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
+            "app.services.messaging.redis_streams.consumer.build_redis_client",
             return_value=mock_redis,
         ):
             await c.initialize()
@@ -111,7 +111,7 @@ class TestInitialize:
         )
 
         with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
+            "app.services.messaging.redis_streams.consumer.build_redis_client",
             return_value=mock_redis,
         ):
             with pytest.raises(Exception, match="Connection lost"):
@@ -155,7 +155,7 @@ class TestStartStop:
         mock_redis.close = AsyncMock()
 
         with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
+            "app.services.messaging.redis_streams.consumer.build_redis_client",
             return_value=mock_redis,
         ):
             await c.start(handler)
@@ -314,7 +314,7 @@ class TestInitializeStaleConsumerCleanup:
         mock_redis.xgroup_create = AsyncMock()
 
         with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
+            "app.services.messaging.redis_streams.consumer.build_redis_client",
             return_value=mock_redis,
         ):
             await c.initialize()
@@ -333,7 +333,7 @@ class TestInitializeStaleConsumerCleanup:
         )
 
         with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
+            "app.services.messaging.redis_streams.consumer.build_redis_client",
             return_value=mock_redis,
         ):
             # Should not raise
@@ -361,7 +361,7 @@ class TestStartErrorPath:
         assert c.redis is None
 
         with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
+            "app.services.messaging.redis_streams.consumer.build_redis_client",
             return_value=mock_redis,
         ):
             await c.start(handler)
@@ -392,7 +392,7 @@ class TestStartErrorPath:
         c.redis = mock_redis
 
         with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
+            "app.services.messaging.redis_streams.consumer.build_redis_client",
         ) as mock_cls:
             await c.start(handler)
             mock_cls.assert_not_called()
@@ -415,7 +415,7 @@ class TestStartErrorPath:
         handler = AsyncMock(return_value=True)
 
         with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
+            "app.services.messaging.redis_streams.consumer.build_redis_client",
             side_effect=Exception("Connection refused"),
         ):
             with pytest.raises(Exception, match="Connection refused"):

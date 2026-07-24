@@ -253,7 +253,13 @@ class TestGetEnvFallback:
         with patch("app.config.configuration_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)):
             result = svc._get_env_fallback("/services/redis")
 
-        assert result == {"host": "redis.local", "port": 6380, "password": "s3cret"}
+        assert result == {
+            "host": "redis.local",
+            "port": 6380,
+            "password": "s3cret",
+            "mode": "standalone",
+            "nodes": "",
+        }
 
     def test_redis_fallback_empty_password_becomes_none(self):
         svc = _build_service()

@@ -52,7 +52,7 @@ class MessagingUtils:
         batch_size: int | None = None,
     ) -> RedisStreamsConfig:
         """Build RedisStreamsConfig with optional batch_size override.
-        
+
         Args:
             redis_config: Base Redis connection config
             client_id: Consumer client ID
@@ -65,6 +65,9 @@ class MessagingUtils:
             "port": redis_config.port,
             "password": redis_config.password,
             "db": redis_config.db,
+            "mode": getattr(redis_config, "mode", "standalone"),
+            "nodes": getattr(redis_config, "nodes", []),
+            "tls": getattr(redis_config, "tls", False),
             "max_len": messaging_env.redis_streams_maxlen,
             "client_id": client_id,
             "group_id": group_id,
