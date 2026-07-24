@@ -9,7 +9,11 @@ from typing import TYPE_CHECKING
 
 from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
 from docling.datamodel.base_models import DocumentStream, InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.datamodel.pipeline_options import (
+    PdfPipelineOptions,
+    TableFormerMode,
+    TableStructureOptions,
+)
 from docling.document_converter import (
     DocumentConverter,
     MarkdownFormatOption,
@@ -50,12 +54,18 @@ def _get_process_pool() -> ProcessPoolExecutor:
     )
 
 
+
 @lru_cache(maxsize=1)
 def _get_converter() -> DocumentConverter:
-    pipeline_options = PdfPipelineOptions()
-    pipeline_options.generate_picture_images = True
-    pipeline_options.do_ocr = False
-
+    pipeline_options = PdfPipelineOptions(
+        do_ocr=False,
+        table_structure_options=TableStructureOptions(
+            mode=TableFormerMode.FAST,
+        ),
+        generate_picture_images=True,
+        images_scale=0.5,
+        queue_max_size=20,
+    )
     return DocumentConverter(format_options={
         InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options, backend=PyPdfiumDocumentBackend),
         InputFormat.DOCX: WordFormatOption(),
