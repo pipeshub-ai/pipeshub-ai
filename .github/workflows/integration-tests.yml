@@ -135,6 +135,11 @@ jobs:
       JIRA_TEST_PROJECT_KEYS: ${{ secrets.JIRA_TEST_PROJECT_KEYS }}
       LINEAR_TEST_API_TOKEN: ${{ secrets.LINEAR_TEST_API_TOKEN }}
       LINEAR_TEST_TEAM_IDS: ${{ secrets.LINEAR_TEST_TEAM_IDS }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      SMTP_FROM_EMAIL: ${{ secrets.SMTP_FROM_EMAIL || secrets.SMTP_USERNAME }}
       # Playwright runs once per workflow: on the job that has the neo4j stack
       # (the neo4j leg, or the sequential "both" job), or on the arango job when
       # arango is the only backend selected.
