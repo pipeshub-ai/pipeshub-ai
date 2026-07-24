@@ -86,6 +86,7 @@ from app.connectors.sources.gitlab_personal.connector import GitLabPersonalConne
 from app.connectors.sources.snowflake.connector import SnowflakeConnector
 from app.connectors.sources.postgres.connector import PostgreSQLConnector
 from app.connectors.sources.mariadb.connector import MariaDBConnector
+from app.connectors.sources.odoo.connector import OdooConnector
 
 class ConnectorFactory:
     """Generic factory for creating and managing connectors"""
@@ -132,6 +133,7 @@ class ConnectorFactory:
         "gitlab": GitLabConnector,
         "gitlabpersonal": GitLabPersonalConnector,
         "mariadb": MariaDBConnector,
+        "odoo": OdooConnector,
         "slackworkspace": SlackConnector,
         # "slack": SlackIndividualConnector,
     }

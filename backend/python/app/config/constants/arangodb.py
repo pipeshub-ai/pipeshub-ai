@@ -78,6 +78,7 @@ class Connectors(Enum):
     SNOWFLAKE = "SNOWFLAKE"
     POSTGRESQL = "POSTGRESQL"
     MARIADB = "MARIADB"
+    ODOO = "ODOO"
 
     UNKNOWN = "UNKNOWN"
 
@@ -118,6 +119,7 @@ class AppGroups(Enum):
     SNOWFLAKE = "Snowflake"
     POSTGRESQL = "PostgreSQL"
     MARIADB = "MariaDB"
+    ODOO = "Odoo"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
