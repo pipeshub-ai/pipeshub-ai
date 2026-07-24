@@ -645,6 +645,97 @@ def _create_web_tools(state: ChatState) -> list:
 
 
 # ============================================================================
+# Dynamic per-conversation record tools (fetch_full_record, lookup_record, navigate)
+# ============================================================================
+
+def build_dynamic_record_tools(state: ChatState) -> list:
+    """Build the per-conversation "read a record" tool set shared by every agent
+    entry point: ``fetch_full_record`` (existing), ``lookup_record``, ``navigate``.
+
+    Single place to add/change these three so tool_system.py, qna/nodes.py, and
+    deep/respond.py can't drift the way the 4 duplicated wiring blocks already had
+    (see plan). ``fetch_full_record`` only registers once retrieval has populated
+    ``virtual_record_id_to_result``; ``lookup_record``/``navigate`` register whenever
+    ``graph_provider`` + ``org_id`` + ``user_id`` are present — they're useful even
+    *before* retrieval (e.g. resolving a URL pasted into the first message).
+    """
+    tools: list = []
+    state_logger = state.get("logger")
+    graph_provider = state.get("graph_provider")
+    org_id = state.get("org_id", "")
+    user_id = state.get("user_id", "")
+    # setdefault (not get) so lookup_record's writes into this dict are visible
+    # to fetch_full_record later in the same turn/conversation.
+    virtual_record_map = state.setdefault("virtual_record_id_to_result", {})
+
+    if virtual_record_map:
+        try:
+            from app.utils.fetch_full_record import create_fetch_full_record_tool
+            tools.append(create_fetch_full_record_tool(
+                virtual_record_map,
+                org_id=org_id,
+                graph_provider=graph_provider,
+                user_id=user_id,
+            ))
+            if state_logger:
+                state_logger.debug(f"Added agent fetch_full_record tool ({len(virtual_record_map)} records)")
+        except Exception as e:
+            if state_logger:
+                state_logger.warning(f"Failed to add agent fetch_full_record tool: {e}")
+
+    if graph_provider and org_id and user_id:
+        node_ref_mapper = state.get("node_ref_mapper")
+        if node_ref_mapper is None:
+            from app.utils.record_tool_helpers import NodeRefMapper
+            node_ref_mapper = NodeRefMapper()
+            state["node_ref_mapper"] = node_ref_mapper
+
+        try:
+            from app.utils.lookup_record import create_lookup_record_tool
+            lookup_tool = create_lookup_record_tool(
+                graph_provider=graph_provider,
+                org_id=org_id,
+                user_id=user_id,
+                blob_store=state.get("blob_store"),
+                virtual_record_id_to_result=virtual_record_map,
+                node_ref_mapper=node_ref_mapper,
+            )
+            tools.append(lookup_tool)
+            if state_logger:
+                state_logger.info("[TOOL-REG] agent: added lookup_record tool (name=%s)", lookup_tool.name)
+        except Exception as e:
+            if state_logger:
+                state_logger.warning(f"[TOOL-REG] agent: Failed to add lookup_record tool: {e}", exc_info=True)
+
+        try:
+            from app.utils.navigate_tool import create_navigate_tool
+            nav_tool = create_navigate_tool(
+                graph_provider=graph_provider,
+                org_id=org_id,
+                user_id=user_id,
+                node_ref_mapper=node_ref_mapper,
+            )
+            tools.append(nav_tool)
+            if state_logger:
+                state_logger.info("[TOOL-REG] agent: added navigate tool (name=%s)", nav_tool.name)
+        except Exception as e:
+            if state_logger:
+                state_logger.warning(f"[TOOL-REG] agent: Failed to add navigate tool: {e}", exc_info=True)
+    else:
+        if state_logger:
+            state_logger.warning(
+                "[TOOL-REG] agent: SKIPPING lookup_record/navigate — missing deps: "
+                "graph_provider=%s org_id=%r user_id=%r",
+                bool(graph_provider), org_id, user_id,
+            )
+
+    if state_logger:
+        state_logger.info("[TOOL-REG] agent: build_dynamic_record_tools returning %d tools: %s",
+                         len(tools), [t.name for t in tools])
+    return tools
+
+
+# ============================================================================
 # Public API
 # ============================================================================
 
@@ -655,30 +746,7 @@ def get_agent_tools(state: ChatState) -> list[RegistryToolWrapper]:
     Returns internal tools + user's configured toolset tools.
     """
     tools = ToolLoader.load_tools(state)
-
-    # Add dynamic agent fetch_full_record tool
-    virtual_record_map = state.get("virtual_record_id_to_result", {})
-    if virtual_record_map:
-        try:
-            from app.utils.fetch_full_record import (
-                create_fetch_full_record_tool,
-            )
-            fetch_tool = create_fetch_full_record_tool(
-                virtual_record_map,
-                org_id=state.get("org_id", ""),
-                graph_provider=state.get("graph_provider"),
-                user_id=state.get("user_id", ""),
-            )
-            tools.append(fetch_tool)
-
-            state_logger = state.get("logger")
-            if state_logger:
-                state_logger.debug(f"Added agent fetch_full_record tool ({len(virtual_record_map)} records)")
-        except Exception as e:
-            state_logger = state.get("logger")
-            if state_logger:
-                state_logger.warning(f"Failed to add agent fetch_full_record tool: {e}")
-
+    tools.extend(build_dynamic_record_tools(state))
     return tools
 
 
@@ -867,28 +935,13 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
             tool_names = [getattr(t, 'name', str(t)) for t in structured_tools]
             state_logger.debug(f"Structured tool names: {tool_names[:12]}")
 
-        # Add dynamic agent fetch_full_record tool
-        virtual_record_map = state.get("virtual_record_id_to_result", {})
-        if virtual_record_map:
-            try:
-                from app.utils.fetch_full_record import (
-                    create_fetch_full_record_tool,
-                )
-                fetch_tool = create_fetch_full_record_tool(
-                    virtual_record_map,
-                    org_id=state.get("org_id", ""),
-                    graph_provider=state.get("graph_provider"),
-                    user_id=state.get("user_id", ""),
-                )
-                structured_tools.append(fetch_tool)
-
-                state_logger = state.get("logger")
-                if state_logger:
-                    state_logger.debug(f"Added agent fetch_full_record tool ({len(virtual_record_map)} records)")
-            except Exception as e:
-                state_logger = state.get("logger")
-                if state_logger:
-                    state_logger.warning(f"Failed to add agent fetch_full_record tool: {e}")
+        # Add dynamic agent record tools (fetch_full_record, lookup_record, navigate).
+        # These are plain LangChain tools (no args_schema wrapper needed — they
+        # already carry their own Pydantic args_schema from @tool), so they're
+        # appended directly to structured_tools rather than going through the
+        # RegistryToolWrapper conversion above.
+        virtual_record_map = state.setdefault("virtual_record_id_to_result", {})
+        structured_tools.extend(build_dynamic_record_tools(state))
 
         config_service = state.get("config_service")
         if config_service and state.get("has_sql_connector") and state.get("has_sql_knowledge"):

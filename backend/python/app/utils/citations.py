@@ -88,6 +88,50 @@ def extract_tiny_ref(target: str) -> str | None:
     return m.group(1) if m else None
 
 
+# Markdown links whose target is still a tiny ref (refN or https://refN.xyz) AFTER
+# renumbering — i.e. refs the resolver could not map. Left in place they render as
+# broken relative links (<base_url>/chat/refN) and, once stored in the conversation,
+# get replayed as history and copied by the LLM into future answers forever.
+_UNRESOLVED_REF_LINK_RE = re.compile(
+    r'\[([^\]]*)\]\((ref\d+|https?://ref\d+\.xyz/?)\)'
+)
+
+_GENERIC_CITE_LABELS = frozenset(
+    {"source", "sources", "link", "links", "ref", "refs", "reference", "citation", "cite", "see"}
+)
+
+
+def strip_unresolved_ref_links(text: str) -> str:
+    """Remove markdown links whose target is an unresolved tiny ref.
+
+    Keeps descriptive link text ("Bug Bash Notes"), drops generic labels
+    ("source", "3") entirely. Call after _renumber_citation_links — any refN
+    target still present at that point is unresolvable by definition.
+    """
+    if not text:
+        return text
+
+    stripped_refs: list[str] = []
+
+    def _replacer(m: re.Match) -> str:
+        label = (m.group(1) or "").strip()
+        stripped_refs.append(m.group(2))
+        if not label or label.lower() in _GENERIC_CITE_LABELS or label.isdigit():
+            return ""
+        return label
+
+    new_text = _UNRESOLVED_REF_LINK_RE.sub(_replacer, text)
+    if stripped_refs:
+        logger.warning(
+            "🔎 [KB-CITE] stripped %d unresolved ref link(s) from answer: %s",
+            len(stripped_refs), stripped_refs,
+        )
+        # Collapse whitespace artifacts left where a link was removed.
+        new_text = re.sub(r'[ \t]{2,}', ' ', new_text)
+        new_text = re.sub(r' +([.,;:!?)])', r'\1', new_text)
+    return new_text
+
+
 def build_tiny_web_ref_url(ref: str) -> str:
     """Wrap a refN token into its LLM-facing tiny URL form (https://refN.xyz)."""
     return f"https://{ref}.xyz"
@@ -561,7 +605,11 @@ def _normalize_markdown_link_citations(
             return False
 
         if block_type == BlockType.TABLE_ROW.value:
-            data = data.get("row_natural_language_text", "")
+            data = (
+                data.get("row_natural_language_text")
+                or (", ".join(data["cells"]) if isinstance(data.get("cells"), list) and data.get("cells") else "")
+                or data.get("row", "")
+            )
         elif block_type == BlockType.IMAGE.value:
             data = data.get("uri", "")
         if not data:
@@ -685,6 +733,7 @@ def _normalize_markdown_link_citations(
 
 
     answer_text = _renumber_citation_links(answer_text, md_matches, url_to_citation_num, ref_to_url=ref_to_url)
+    answer_text = strip_unresolved_ref_links(answer_text)
 
     return answer_text, new_citations
 
@@ -873,7 +922,11 @@ def _normalize_markdown_link_citations_for_agent(
                             bt = block.get("type")
                             data = block.get("data")
                             if bt == BlockType.TABLE_ROW.value:
-                                data = data.get("row_natural_language_text", "")
+                                data = (
+                                    data.get("row_natural_language_text")
+                                    or (", ".join(data["cells"]) if isinstance(data.get("cells"), list) and data.get("cells") else "")
+                                    or data.get("row", "")
+                                )
                             elif bt == BlockType.IMAGE.value:
                                 data = data.get("uri", "")
                             if not data:
@@ -914,7 +967,11 @@ def _normalize_markdown_link_citations_for_agent(
                                     )
                                     continue
                                 if bt == BlockType.TABLE_ROW.value:
-                                    data = data.get("row_natural_language_text", "")
+                                    data = (
+                                        data.get("row_natural_language_text")
+                                        or (", ".join(data["cells"]) if isinstance(data.get("cells"), list) and data.get("cells") else "")
+                                        or data.get("row", "")
+                                    )
                                 elif bt == BlockType.IMAGE.value:
                                     data = data.get("uri", "")
                                 if not data:
@@ -944,5 +1001,6 @@ def _normalize_markdown_link_citations_for_agent(
 
 
     answer_text = _renumber_citation_links(answer_text, md_matches, url_to_citation_num, ref_to_url=ref_to_url)
+    answer_text = strip_unresolved_ref_links(answer_text)
 
     return answer_text, new_citations

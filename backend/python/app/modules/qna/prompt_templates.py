@@ -127,6 +127,48 @@ def render_fetch_full_record_tool_block(
     )
 
 
+qna_navigation_tools_block = """
+  <tool>
+  You also have access to two tools for exploring the knowledge graph directly, the same
+  way a person would browse a connected app's UI — use them when the query references
+  something not already in the provided blocks, or when you need to find related records.
+
+  **Graph model**: every connector (Jira, Drive, Confluence, Slack, ...) is an **app**,
+  which contains **record groups** (a Jira project, a Drive folder, a Confluence space,
+  a Slack channel), which contain **records** (a ticket, a file, a page, a message).
+  Records can nest (a comment/attachment/sub-task under a ticket) and cross-reference
+  each other (a Jira ticket linked from a Confluence page) — the tools below surface both.
+
+  **"lookup_record"** — the search bar. Paste anything you find referenced in a document,
+  ticket, or message and get back the matching record(s). Pass ALL identifiers in a SINGLE
+  call as `identifiers=["PA-1095", "PA-1151", "PA-1143"]` — never call once per identifier.
+  Accepted formats:
+  - Any web URL: https://pipeshub.atlassian.net/browse/PA-1787,
+    https://pipeshub.atlassian.net/wiki/spaces/SD/pages/450625553/Agent+Loop+Implementation
+  - An issue key: PA-1787
+  - A bare external system ID: 450625553
+  If more than one record matches a single identifier, it returns a candidate list instead of
+  guessing — pick the right one from the list rather than assuming the first.
+
+  **"navigate"** — the file explorer. Omit `node_id` to see the root view (connected apps);
+  pass a `node_id` (a short ref like `n3` from a previous navigate/lookup_record result, or
+  a raw Record/RecordGroup/App ID) to descend into it. Typical trajectory:
+  navigate() -> navigate(node_id=<app>) -> navigate(node_id=<group>) -> navigate(node_id=<record>) -> fetch_full_record.
+  Use `name_filter` instead of paging through a large listing when you're looking for
+  something specific. Use `depth=2` or `3` to get a compact tree survey of structure in one call.
+
+  **Rule of thumb**: `lookup_record` when you have an identifier (URL/key/ID) to resolve;
+  `navigate` when you need to browse structure or don't have a direct identifier;
+  `fetch_full_record` once you have a record's ID and need its actual content.
+
+  **Do not mix ref systems**: node refs (`n1`, `n2`, ...) are navigation handles for
+  `navigate`/`fetch_full_record` arguments ONLY — never use them as citations. Citations
+  use block Citation IDs (`ref1`, `ref2`, ...) and ONLY ones literally present in your
+  current context — never invent, interpolate, or reuse Citation IDs from earlier turns.
+  </tool>
+"""
+
+
 qna_prompt_instructions_1 = """
 <task>
   You are an expert AI assistant within an enterprise who can answer any query based on the company's knowledge sources and user information.
@@ -142,6 +184,7 @@ qna_prompt_instructions_1 = """
 
 <tools>
 {{ fetch_full_record_tool_block }}
+{{ navigation_tools_block }}
 {% if has_sql_connector %}
   <tool>
     You also have access to a tool called "execute_sql_query" that allows you to execute SQL queries against external data sources.
@@ -286,6 +329,8 @@ qna_prompt_with_retrieval_tool = """
 
   These tools become available only after you call search_internal_knowledge and retrieve records.
   </tool>
+
+  {{ navigation_tools_block }}
 </tools>
 
 <context>

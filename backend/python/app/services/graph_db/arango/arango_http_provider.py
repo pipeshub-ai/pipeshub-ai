@@ -667,6 +667,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ["md5Checksum"],
         )
 
+        # COMPOSITE: webUrl + orgId (lookup_record tool: URL-based record resolution)
+        # Pattern: FOR record IN records FILTER record.webUrl == @url AND record.orgId == @orgId
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["webUrl", "orgId"],
+        )
+
         # ==================== USER INDEXES (High Priority) ====================
 
         # SINGLE: email (authentication, lookups)

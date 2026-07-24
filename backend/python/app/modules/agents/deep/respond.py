@@ -163,7 +163,7 @@ async def _deep_respond_impl(
     query = state.get("query", "")
     all_tool_results = state.get("all_tool_results") or state.get("tool_results") or []
     final_results = state.get("final_results", [])
-    virtual_record_map = state.get("virtual_record_id_to_result", {})
+    virtual_record_map = state.setdefault("virtual_record_id_to_result", {})
 
     # ================================================================
     # FAST PATH: API-only results with sub-agent analyses
@@ -353,28 +353,22 @@ async def _deep_respond_impl(
                 messages.append(HumanMessage(content=context))
 
     # ================================================================
-    # Setup tools (fetch_full_record for retrieval)
+    # Setup tools: fetch_full_record, lookup_record, navigate — shared helper
+    # keeps this in sync with tool_system.py / qna/nodes.py.
     # ================================================================
-    tools: list = []
+    from app.modules.agents.qna.tool_system import build_dynamic_record_tools
+    tools: list = build_dynamic_record_tools(state)
+    log.info(
+        "[TOOL-REG] deep/respond: build_dynamic_record_tools returned %d tools: %s",
+        len(tools), [t.name for t in tools],
+    )
     if virtual_record_map:
-        from app.utils.fetch_full_record import (
-            create_fetch_full_record_tool,
-        )
-        fetch_tool = create_fetch_full_record_tool(
-            virtual_record_map,
-            org_id=state.get("org_id", ""),
-            graph_provider=state.get("graph_provider"),
-            user_id=state.get("user_id", ""),
-        )
-        tools = [fetch_tool]
         log.debug(
-            "Added agent fetch_full_record tool (%d records, %d labels)",
+            "Dynamic record tools ready (%d records, %d labels)",
             len(virtual_record_map),
             len(final_results),
         )
-    
-   
-    
+
 
     web_search_provider_config = state.get("web_search_config")
     has_web_search_tool = False

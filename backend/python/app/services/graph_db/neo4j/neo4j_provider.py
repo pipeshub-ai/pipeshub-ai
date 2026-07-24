@@ -453,6 +453,12 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Record) ON (n.md5Checksum)"
         )
 
+        # SINGLE: webUrl (lookup_record tool: URL-based record resolution)
+        indexes.append(
+            "CREATE INDEX record_web_url IF NOT EXISTS "
+            "FOR (n:Record) ON (n.webUrl)"
+        )
+
         # ==================== USER INDEXES (High Priority) ====================
 
         # SINGLE: email (authentication, lookups)
@@ -12284,20 +12290,27 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def get_record_by_weburl(
         self,
-        connector_id: str,
-        web_url: str,
+        weburl: str,
+        org_id: str | None = None,
         transaction: str | None = None
     ) -> Record | None:
-        """Get record by web URL."""
+        """Get record by web URL (exact match), optionally scoped to an org.
+
+        Matches the IGraphDBProvider interface signature (weburl, org_id, transaction).
+        """
         try:
-            query = """
-            MATCH (r:Record {connectorId: $connector_id, webUrl: $web_url})
+            match_props = "{webUrl: $web_url}" if not org_id else "{webUrl: $web_url, orgId: $org_id}"
+            query = f"""
+            MATCH (r:Record {match_props})
             RETURN r
             LIMIT 1
             """
+            parameters: dict[str, Any] = {"web_url": weburl}
+            if org_id:
+                parameters["org_id"] = org_id
             results = await self.client.execute_query(
                 query,
-                parameters={"connector_id": connector_id, "web_url": web_url},
+                parameters=parameters,
                 txn_id=transaction
             )
             if results:

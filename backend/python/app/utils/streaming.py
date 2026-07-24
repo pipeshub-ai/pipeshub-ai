@@ -51,6 +51,7 @@ from app.utils.citations import (
 )
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.logger import create_logger
+from app.utils.record_tool_helpers import describe_tool_call
 from app.utils.tool_handlers import ContentHandler, ToolHandlerRegistry
 
 CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
@@ -537,10 +538,16 @@ async def execute_tool_calls(
                 web_records=web_records,
             ):
                 if event.get("event") == "complete" or event.get("event") == "error":
+                    logger.info(
+                        "[TOOL-BIND] LLM responded with event=%r at hop %d — no tool_calls produced (tools were: %s)",
+                        event.get("event"), hops, [t.name for t in tools],
+                    )
                     yield event
                     return
                 elif event.get("event") == "tool_calls":
                     ai = event.get("data").get("ai")
+                    logger.info("[TOOL-BIND] LLM produced tool_calls at hop %d: %s",
+                                hops, [c.get("name") for c in getattr(ai, "tool_calls", [])])
                 else:
                     yield event
 
@@ -560,14 +567,19 @@ async def execute_tool_calls(
 
         tools_executed = True
 
-        # Yield tool call events
+        # Yield tool call events. `description` is a human-readable activity
+        # string (e.g. "Looking up PA-1787 in Jira…") computed from args alone,
+        # via a per-tool describer registered in record_tool_helpers — tools
+        # that don't register one get a generic fallback.
         for call in ai.tool_calls:
+            call_args = call.get("args", {})
             yield {
                 "event": "tool_call",
                 "data": {
                     "tool_name": call["name"],
-                    "tool_args": call.get("args", {}),
-                    "call_id": call.get("id")
+                    "tool_args": call_args,
+                    "call_id": call.get("id"),
+                    "description": describe_tool_call(call["name"], call_args),
                 }
             }
 
@@ -602,14 +614,23 @@ async def execute_tool_calls(
 
             if tool_result.get("ok", False):
                 tool_results.append(tool_result)
+                # Tools may set their own "summary" (progress-aware, e.g. "20 of 47
+                # items") and/or a "navigation" payload ({breadcrumbs, node, page,
+                # totalItems}) so the frontend can render a live breadcrumb trail /
+                # mini-explorer of where the agent is. Both are additive/optional —
+                # tools that don't set them keep the generic behavior.
+                success_data: dict[str, Any] = {
+                    "tool_name": tool_name,
+                    "summary": tool_result.get("summary") or f"Successfully executed {tool_name}",
+                    "call_id": call_id,
+                    "record_info": tool_result.get("record_info", {})
+                }
+                navigation_payload = tool_result.get("navigation")
+                if navigation_payload:
+                    success_data["navigation"] = navigation_payload
                 yield {
                     "event": "tool_success",
-                    "data": {
-                        "tool_name": tool_name,
-                        "summary": f"Successfully executed {tool_name}",
-                        "call_id": call_id,
-                        "record_info": tool_result.get("record_info", {})
-                    }
+                    "data": success_data
                 }
                 # Use handler to extract records and check token management needs
                 handler = ToolHandlerRegistry.get_handler(tool_result)
@@ -1962,10 +1983,14 @@ def bind_tools_for_llm(llm, tools: list[object]) -> BaseChatModel|bool:
     """
     Bind tools to the LLM.
     """
+    tool_names = [getattr(t, "name", str(t)) for t in tools]
+    logger.info("[TOOL-BIND] bind_tools_for_llm: binding %d tools to LLM: %s", len(tools), tool_names)
     try:
-        return llm.bind_tools(tools)
-    except Exception:
-        logger.warning("Tool binding failed, using llm without tools.")
+        bound = llm.bind_tools(tools)
+        logger.info("[TOOL-BIND] bind_tools_for_llm: success — %d tools bound", len(tools))
+        return bound
+    except Exception as e:
+        logger.warning("[TOOL-BIND] bind_tools_for_llm: FAILED for tools=%s error=%s", tool_names, e, exc_info=True)
         return False
 
 def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:

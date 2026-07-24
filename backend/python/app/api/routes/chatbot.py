@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 import base64
 import logging
 from pathlib import Path
@@ -28,6 +28,7 @@ from app.events.processor import convert_record_dict_to_record
 from app.models.blocks import Block, BlockType, BlocksContainer, CitationMetadata, DataFormat
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.qna.prompt_templates import (
+    qna_navigation_tools_block,
     qna_prompt_with_retrieval_tool,
     qna_prompt_instructions_2,
     qna_prompt_with_retrieval_tool_second_part,
@@ -54,6 +55,7 @@ from app.utils.chat_helpers import (
     get_message_content,
     record_to_message_content,
 )
+from app.utils.citations import strip_unresolved_ref_links
 from app.utils.fetch_full_record import create_fetch_full_record_tool
 from app.utils.execute_query import create_execute_query_tool, has_sql_connector_configured
 from app.utils.fetch_slack_nearby_messages import create_fetch_slack_nearby_messages_tool
@@ -61,7 +63,10 @@ from app.utils.fetch_slack_thread import (
     create_fetch_slack_thread_tool,
     has_slack_connector_configured,
 )
+from app.utils.lookup_record import create_lookup_record_tool
+from app.utils.navigate_tool import create_navigate_tool
 from app.utils.query_decompose import QueryDecompositionExpansionService
+from app.utils.record_tool_helpers import NodeRefMapper
 from app.utils.fetch_url_tool import create_fetch_url_tool
 from app.utils.streaming import (
     create_sse_event,
@@ -199,6 +204,56 @@ def create_internal_search_tool(
             return {"ok": False, "error": f"Internal search failed: {str(e)}", "result_type": "internal_search"}
 
     return search_internal_knowledge_tool
+
+
+def _build_dynamic_record_tools(
+    *,
+    virtual_record_id_to_result: dict[str, Any],
+    org_id: str,
+    user_id: str,
+    graph_provider: IGraphDBProvider,
+    blob_store: "BlobStorage",
+    node_ref_mapper: NodeRefMapper,
+) -> tuple[Callable, Callable, Callable]:
+    """Build ``(fetch_full_record, lookup_record, navigate)`` — the record tool set
+    shared by both chatbot tool-registration sites (standard + deferred/tool paths).
+
+    Returned as a tuple rather than a flat list because the two call sites place
+    ``fetch_full_record`` differently: the tool-retrieval path defers it until
+    ``search_internal_knowledge`` runs, while ``lookup_record``/``navigate`` are
+    always registered immediately — they're useful even before retrieval (e.g.
+    resolving a URL pasted into the first message).
+
+    ``node_ref_mapper`` must be the same instance across all three tools for a given
+    request so refs minted by ``navigate``/``lookup_record`` resolve correctly when
+    passed into a later ``fetch_full_record`` call.
+    """
+    logger.info(
+        "[TOOL-REG] _build_dynamic_record_tools: creating tools | org_id=%s user_id=%s graph_provider=%s",
+        org_id, user_id, bool(graph_provider),
+    )
+    fetch_tool = create_fetch_full_record_tool(
+        virtual_record_id_to_result, org_id, graph_provider, user_id=user_id,
+    )
+    lookup_tool = create_lookup_record_tool(
+        graph_provider=graph_provider,
+        org_id=org_id,
+        user_id=user_id,
+        blob_store=blob_store,
+        virtual_record_id_to_result=virtual_record_id_to_result,
+        node_ref_mapper=node_ref_mapper,
+    )
+    navigate_tool = create_navigate_tool(
+        graph_provider=graph_provider,
+        org_id=org_id,
+        user_id=user_id,
+        node_ref_mapper=node_ref_mapper,
+    )
+    logger.info(
+        "[TOOL-REG] _build_dynamic_record_tools: created tools=[%s, %s, %s]",
+        fetch_tool.name, lookup_tool.name, navigate_tool.name,
+    )
+    return fetch_tool, lookup_tool, navigate_tool
 
 
 def _pdf_has_any_ocr_page(file_content: bytes) -> bool:
@@ -464,8 +519,14 @@ async def _append_conversation_history(
 
             messages.append({"role": "user", "content": content})
         elif conversation.get("role") == "bot_response":
-            messages.append({"role": "assistant", "content": conversation.get("content")})
-    
+            bot_content = conversation.get("content")
+            # Tiny refs are per-request; any refN in a stored answer is stale.
+            # Replaying it teaches the LLM to cite refs the current request's
+            # mapper can never resolve, so citations break in every follow-up.
+            if isinstance(bot_content, str):
+                bot_content = strip_unresolved_ref_links(bot_content)
+            messages.append({"role": "assistant", "content": bot_content})
+
     return has_previous_attachments
 
 def _build_system_prompt(
@@ -596,6 +657,7 @@ async def _build_attachment_llm_messages(
         query=query_info.query,
         has_attachments=has_attachments,
         has_previous_attachments=has_previous_attachments,
+        navigation_tools_block=qna_navigation_tools_block,
     )
     content.append({"type": "text", "text": rendered_prompt})
 
@@ -828,6 +890,9 @@ async def _generate_internal_search_stream(
 
             blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider)
             virtual_record_id_to_result: dict[str, Any] = {}
+            # Shared across fetch_full_record/lookup_record/navigate for this request so
+            # refs minted by navigate/lookup_record resolve when passed back into fetch_full_record.
+            node_ref_mapper = NodeRefMapper()
 
             send_user_info = request.query_params.get("sendUserInfo", True)
             user_data = await _build_llm_user_context_string(
@@ -870,11 +935,20 @@ async def _generate_internal_search_stream(
                     final_results=final_results,
                 )
 
-                tools = [search_tool]
+                fetch_tool, lookup_tool, navigate_tool = _build_dynamic_record_tools(
+                    virtual_record_id_to_result=virtual_record_id_to_result,
+                    org_id=org_id,
+                    user_id=user_id,
+                    graph_provider=graph_provider,
+                    blob_store=blob_store,
+                    node_ref_mapper=node_ref_mapper,
+                )
+                # lookup_record/navigate are useful before retrieval too (e.g. a URL
+                # pasted into the first message), so they're not deferred like fetch_tool.
+                tools = [search_tool, lookup_tool, navigate_tool]
 
                 has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
                 has_slack_connector = await has_slack_connector_configured(graph_provider, user_id, org_id)
-                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider, user_id=user_id)
                 deferred_tools = [fetch_tool]
                 if has_sql_connector:
                     deferred_tools.append(create_execute_query_tool(
@@ -973,8 +1047,15 @@ async def _generate_internal_search_stream(
                     has_slack_connector=has_slack_connector,
                 )
 
-                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider, user_id=user_id)
-                tools.append(fetch_tool)
+                fetch_tool, lookup_tool, navigate_tool = _build_dynamic_record_tools(
+                    virtual_record_id_to_result=virtual_record_id_to_result,
+                    org_id=org_id,
+                    user_id=user_id,
+                    graph_provider=graph_provider,
+                    blob_store=blob_store,
+                    node_ref_mapper=node_ref_mapper,
+                )
+                tools.extend([fetch_tool, lookup_tool, navigate_tool])
                 tool_runtime_kwargs = {
                     "blob_store": blob_store,
                     "graph_provider": graph_provider,
@@ -1617,6 +1698,14 @@ async def askAIStream(
 
 
     _chat_user = getattr(request.state, "user", {}) or {}
+    # org_id/user_id are closed over by every dynamic tool (fetch_full_record,
+    # lookup_record, navigate) built further down this request's stream — an
+    # empty org_id must never reach those factories, so fail closed here
+    # rather than relying on each tool's own defensive check.
+    if not _chat_user.get("orgId"):
+        raise HTTPException(status_code=400, detail="Missing org context")
+    if not _chat_user.get("userId"):
+        raise HTTPException(status_code=400, detail="Missing user context")
     _chat_email = _chat_user.get("email")
     _search_type = "web_search" if query_info.chatMode == "web_search" else "internal_search"
     record_event("chat_session_started", {

@@ -131,12 +131,18 @@ class ContentHandler(ToolResultHandler):
     def build_tool_instructions(
         has_sql_connector: bool = False,
         has_jira_tickets_in_context: bool = False,
+        has_navigation_tools: bool = True,
     ) -> str:
-        from app.modules.qna.prompt_templates import render_fetch_full_record_tool_block
+        from app.modules.qna.prompt_templates import (
+            qna_navigation_tools_block,
+            render_fetch_full_record_tool_block,
+        )
 
         fetch_block = render_fetch_full_record_tool_block(has_jira_tickets_in_context)
+        nav_block = qna_navigation_tools_block if has_navigation_tools else ""
         instructions = f"""<tools>
 {fetch_block}
+{nav_block}
 """
 
         if has_sql_connector:
