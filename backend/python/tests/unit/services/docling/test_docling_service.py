@@ -66,7 +66,6 @@ try:
     from app.services.docling.docling_service import (
         CreateBlocksRequest,
         CreateBlocksResponse,
-        ParseRequest,
         ParseResponse,
         ProcessRequest,
         ProcessResponse,
@@ -74,6 +73,13 @@ try:
     HAS_PYDANTIC_MODELS = True
 except Exception:
     HAS_PYDANTIC_MODELS = False
+
+
+def _make_upload_file(content: bytes = b"data"):
+    """Create a mock UploadFile with async read()."""
+    mock_file = MagicMock()
+    mock_file.read = AsyncMock(return_value=content)
+    return mock_file
 
 
 # ---------------------------------------------------------------------------
@@ -354,10 +360,6 @@ class TestRequestResponseModels:
         assert resp.success is False
         assert resp.error == "failed"
 
-    def test_parse_request(self):
-        req = ParseRequest(record_name="doc.pdf", pdf_binary="abc")
-        assert req.record_name == "doc.pdf"
-
     def test_parse_response(self):
         resp = ParseResponse(success=True, parse_result='{"doc": true}')
         assert resp.parse_result == '{"doc": true}'
@@ -506,41 +508,27 @@ class TestProcessPdfEndpoint:
 
 
 class TestParsePdfEndpoint:
-    """Tests for the /parse-pdf endpoint."""
-
-    @pytest.mark.asyncio
-    async def test_parse_pdf_endpoint_invalid_base64(self):
-        import app.services.docling.docling_service as mod
-        original = mod.docling_service
-        mod.docling_service = DoclingService()
-        try:
-            from app.services.docling.docling_service import parse_pdf_endpoint
-            req = ParseRequest(record_name="test.pdf", pdf_binary="!!invalid!!")
-            from fastapi import HTTPException
-            with pytest.raises(HTTPException):
-                await parse_pdf_endpoint(req)
-        finally:
-            mod.docling_service = original
+    """Tests for the /parse-pdf endpoint (multipart file upload)."""
 
     @pytest.mark.asyncio
     async def test_parse_pdf_endpoint_service_not_available(self):
         import app.services.docling.docling_service as mod
-        import base64
         original = mod.docling_service
         mod.docling_service = None
         try:
             from app.services.docling.docling_service import parse_pdf_endpoint
-            req = ParseRequest(record_name="test.pdf", pdf_binary=base64.b64encode(b"data").decode())
             from fastapi import HTTPException
             with pytest.raises(HTTPException):
-                await parse_pdf_endpoint(req)
+                await parse_pdf_endpoint(
+                    file=_make_upload_file(b"data"),
+                    record_name="test.pdf",
+                )
         finally:
             mod.docling_service = original
 
     @pytest.mark.asyncio
     async def test_parse_pdf_endpoint_success(self):
         import app.services.docling.docling_service as mod
-        import base64
         original = mod.docling_service
         svc = DoclingService()
         mock_doc = MagicMock()
@@ -549,24 +537,28 @@ class TestParsePdfEndpoint:
         mod.docling_service = svc
         try:
             from app.services.docling.docling_service import parse_pdf_endpoint
-            req = ParseRequest(record_name="test.pdf", pdf_binary=base64.b64encode(b"data").decode())
-            resp = await parse_pdf_endpoint(req)
+            resp = await parse_pdf_endpoint(
+                file=_make_upload_file(b"data"),
+                record_name="test.pdf",
+            )
             assert resp.success is True
+            svc.parse_pdf_only.assert_awaited_once_with("test.pdf", b"data")
         finally:
             mod.docling_service = original
 
     @pytest.mark.asyncio
     async def test_parse_pdf_endpoint_error(self):
         import app.services.docling.docling_service as mod
-        import base64
         original = mod.docling_service
         svc = DoclingService()
         svc.parse_pdf_only = AsyncMock(side_effect=RuntimeError("parse fail"))
         mod.docling_service = svc
         try:
             from app.services.docling.docling_service import parse_pdf_endpoint
-            req = ParseRequest(record_name="test.pdf", pdf_binary=base64.b64encode(b"data").decode())
-            resp = await parse_pdf_endpoint(req)
+            resp = await parse_pdf_endpoint(
+                file=_make_upload_file(b"data"),
+                record_name="test.pdf",
+            )
             assert resp.success is False
             assert "parse fail" in resp.error
         finally:
