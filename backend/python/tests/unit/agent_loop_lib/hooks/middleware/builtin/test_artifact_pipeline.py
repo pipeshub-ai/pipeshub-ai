@@ -147,38 +147,38 @@ class TestInMemoryArtifactStore:
     async def test_store_and_get(self):
         store = InMemoryArtifactStore()
         aid = await store.store("hello world", tool_name="test")
-        assert aid == "artifact_1"
-        assert await store.get("artifact_1") == "hello world"
+        assert "-" in aid and len(aid) == 36  # UUID4 format
+        assert await store.get(aid) == "hello world"
 
     @pytest.mark.asyncio
-    async def test_sequential_ids(self):
+    async def test_unique_ids(self):
         store = InMemoryArtifactStore()
         a1 = await store.store("one", tool_name="t")
         a2 = await store.store("two", tool_name="t")
         a3 = await store.store("three", tool_name="t")
-        assert (a1, a2, a3) == ("artifact_1", "artifact_2", "artifact_3")
+        assert len({a1, a2, a3}) == 3  # all unique
 
     @pytest.mark.asyncio
     async def test_get_nonexistent_returns_none(self):
         store = InMemoryArtifactStore()
-        assert await store.get("artifact_999") is None
+        assert await store.get("00000000-0000-0000-0000-000000000000") is None
 
     @pytest.mark.asyncio
     async def test_lru_eviction(self):
         store = InMemoryArtifactStore(maxsize=2)
-        await store.store("a", tool_name="t")
-        await store.store("b", tool_name="t")
-        await store.store("c", tool_name="t")
-        assert await store.get("artifact_1") is None
-        assert await store.get("artifact_2") == "b"
-        assert await store.get("artifact_3") == "c"
+        a1 = await store.store("a", tool_name="t")
+        a2 = await store.store("b", tool_name="t")
+        a3 = await store.store("c", tool_name="t")
+        assert await store.get(a1) is None
+        assert await store.get(a2) == "b"
+        assert await store.get(a3) == "c"
 
     @pytest.mark.asyncio
     async def test_ttl_expiry(self):
         store = InMemoryArtifactStore(ttl_seconds=0.01)
-        await store.store("data", tool_name="t")
+        aid = await store.store("data", tool_name="t")
         time.sleep(0.02)
-        assert await store.get("artifact_1") is None
+        assert await store.get(aid) is None
 
     @pytest.mark.asyncio
     async def test_schema_storage_and_retrieval(self):
@@ -191,26 +191,26 @@ class TestInMemoryArtifactStore:
     @pytest.mark.asyncio
     async def test_schema_none_when_not_stored(self):
         store = InMemoryArtifactStore()
-        await store.store("data", tool_name="t")
-        assert store.get_schema("artifact_1") is None
+        aid = await store.store("data", tool_name="t")
+        assert store.get_schema(aid) is None
 
     @pytest.mark.asyncio
     async def test_schema_evicted_with_data(self):
         store = InMemoryArtifactStore(maxsize=1)
-        await store.store("a", tool_name="t", result_schema={"type": "string"})
+        a1 = await store.store("a", tool_name="t", result_schema={"type": "string"})
         await store.store("b", tool_name="t2")
-        assert store.get_schema("artifact_1") is None
-        assert store.get_tool_name("artifact_1") is None
+        assert store.get_schema(a1) is None
+        assert store.get_tool_name(a1) is None
 
     @pytest.mark.asyncio
     async def test_get_refreshes_lru(self):
         store = InMemoryArtifactStore(maxsize=2)
-        await store.store("a", tool_name="t")
-        await store.store("b", tool_name="t")
-        await store.get("artifact_1")
+        a1 = await store.store("a", tool_name="t")
+        a2 = await store.store("b", tool_name="t")
+        await store.get(a1)
         await store.store("c", tool_name="t")
-        assert await store.get("artifact_1") == "a"
-        assert await store.get("artifact_2") is None
+        assert await store.get(a1) == "a"
+        assert await store.get(a2) is None
 
 
 # ═══════════════════════════════════════════════════════
@@ -244,8 +244,8 @@ class TestArtifactRegistration:
         await middleware(ctx, noop)
         assert "artifact_meta" in ctx.metadata
         meta = ctx.metadata["artifact_meta"]
-        assert meta.artifact_id == "artifact_1"
-        assert await store.get("artifact_1") == large_content
+        assert "-" in meta.artifact_id and len(meta.artifact_id) == 36
+        assert await store.get(meta.artifact_id) == large_content
 
     @pytest.mark.asyncio
     async def test_metadata_includes_tool_name(self):
@@ -456,7 +456,7 @@ class TestSandboxBridgeResolution:
         from app.agents.agent_loop.sandbox_bridge import _resolve_input_artifacts
 
         store = InMemoryArtifactStore()
-        await store.store('{"results": [1, 2, 3]}', tool_name="search")
+        aid = await store.store('{"results": [1, 2, 3]}', tool_name="search")
 
         @dataclass
         class FakeContext:
@@ -466,13 +466,13 @@ class TestSandboxBridgeResolution:
 
         ctx = FakeContext()
         files, resolved, missing = await _resolve_input_artifacts(
-            ctx, None, ["artifact_1"], inmemory_store=store,
+            ctx, None, [aid], inmemory_store=store,
         )
         assert len(resolved) == 1
-        assert resolved[0]["ref"] == "artifact_1"
-        assert resolved[0]["artifact_id"] == "artifact_1"
-        assert "input/artifacts/artifact_1.json" in files
-        content = files["input/artifacts/artifact_1.json"]
+        assert resolved[0]["ref"] == aid
+        assert resolved[0]["artifact_id"] == aid
+        assert f"input/artifacts/{aid}.json" in files
+        content = files[f"input/artifacts/{aid}.json"]
         assert json.loads(content.decode("utf-8")) == {"results": [1, 2, 3]}
         assert len(missing) == 0
 
@@ -489,18 +489,19 @@ class TestSandboxBridgeResolution:
             conversation_id: str = "conv1"
 
         ctx = FakeContext()
+        fake_id = "00000000-0000-0000-0000-000000000099"
         files, resolved, missing = await _resolve_input_artifacts(
-            ctx, None, ["artifact_99"], inmemory_store=store,
+            ctx, None, [fake_id], inmemory_store=store,
         )
         assert len(resolved) == 0
-        assert missing == ["artifact_99"]
+        assert missing == [fake_id]
 
     @pytest.mark.asyncio
     async def test_mixed_resolution(self):
         from app.agents.agent_loop.sandbox_bridge import _resolve_input_artifacts
 
         store = InMemoryArtifactStore()
-        await store.store("found data", tool_name="search")
+        aid = await store.store("found data", tool_name="search")
 
         @dataclass
         class FakeContext:
@@ -508,13 +509,14 @@ class TestSandboxBridgeResolution:
             user_id: str = "user1"
             conversation_id: str = "conv1"
 
+        fake_missing = "00000000-0000-0000-0000-missing00000"
         ctx = FakeContext()
         files, resolved, missing = await _resolve_input_artifacts(
-            ctx, None, ["artifact_1", "artifact_not_exist"], inmemory_store=store,
+            ctx, None, [aid, fake_missing], inmemory_store=store,
         )
         assert len(resolved) == 1
-        assert resolved[0]["ref"] == "artifact_1"
-        assert missing == ["artifact_not_exist"]
+        assert resolved[0]["ref"] == aid
+        assert missing == [fake_missing]
 
     @pytest.mark.asyncio
     async def test_empty_refs_skipped(self):
@@ -541,7 +543,7 @@ class TestSandboxBridgeResolution:
 
         store = InMemoryArtifactStore()
         schema = {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}}}}
-        await store.store('{"results": []}', tool_name="search", result_schema=schema)
+        aid = await store.store('{"results": []}', tool_name="search", result_schema=schema)
 
         @dataclass
         class FakeContext:
@@ -551,20 +553,20 @@ class TestSandboxBridgeResolution:
 
         ctx = FakeContext()
         files, resolved, missing = await _resolve_input_artifacts(
-            ctx, None, ["artifact_1"], inmemory_store=store,
+            ctx, None, [aid], inmemory_store=store,
         )
-        assert "input/artifacts/artifact_1.json" in files
-        assert "input/artifacts/artifact_1.schema.json" in files
-        schema_content = json.loads(files["input/artifacts/artifact_1.schema.json"].decode("utf-8"))
+        assert f"input/artifacts/{aid}.json" in files
+        assert f"input/artifacts/{aid}.schema.json" in files
+        schema_content = json.loads(files[f"input/artifacts/{aid}.schema.json"].decode("utf-8"))
         assert schema_content["schema"] == schema
-        assert resolved[0].get("schema_path") == "input/artifacts/artifact_1.schema.json"
+        assert resolved[0].get("schema_path") == f"input/artifacts/{aid}.schema.json"
 
     @pytest.mark.asyncio
     async def test_content_staged_as_utf8_bytes(self):
         from app.agents.agent_loop.sandbox_bridge import _resolve_input_artifacts
 
         store = InMemoryArtifactStore()
-        await store.store("unicode: café ñ 日本語", tool_name="search")
+        aid = await store.store("unicode: café ñ 日本語", tool_name="search")
 
         @dataclass
         class FakeContext:
@@ -574,9 +576,9 @@ class TestSandboxBridgeResolution:
 
         ctx = FakeContext()
         files, resolved, missing = await _resolve_input_artifacts(
-            ctx, None, ["artifact_1"], inmemory_store=store,
+            ctx, None, [aid], inmemory_store=store,
         )
-        content = files["input/artifacts/artifact_1.json"]
+        content = files[f"input/artifacts/{aid}.json"]
         assert isinstance(content, bytes)
         assert content.decode("utf-8") == "unicode: café ñ 日本語"
 
@@ -721,10 +723,10 @@ class TestRetrieveArtifactContentTool:
     @pytest.mark.asyncio
     async def test_retrieve_existing_artifact(self):
         store = InMemoryArtifactStore()
-        await store.store("full data content here", tool_name="search")
+        aid = await store.store("full data content here", tool_name="search")
 
         tool = RetrieveArtifactContentTool(store=store)
-        output = await tool.execute(artifact_id="artifact_1")
+        output = await tool.execute(artifact_id=aid)
         assert output.success is True
         assert output.data == "full data content here"
 
@@ -732,27 +734,27 @@ class TestRetrieveArtifactContentTool:
     async def test_retrieve_nonexistent_artifact(self):
         store = InMemoryArtifactStore()
         tool = RetrieveArtifactContentTool(store=store)
-        output = await tool.execute(artifact_id="artifact_999")
+        output = await tool.execute(artifact_id="00000000-0000-0000-0000-000000000000")
         assert output.success is False
         assert "not found" in output.error.lower()
 
     @pytest.mark.asyncio
     async def test_max_lines_limit(self):
         store = InMemoryArtifactStore()
-        await store.store("line1\nline2\nline3\nline4\nline5", tool_name="t")
+        aid = await store.store("line1\nline2\nline3\nline4\nline5", tool_name="t")
 
         tool = RetrieveArtifactContentTool(store=store)
-        output = await tool.execute(artifact_id="artifact_1", max_lines=2)
+        output = await tool.execute(artifact_id=aid, max_lines=2)
         assert output.success is True
         assert output.data.count("\n") <= 2
 
     @pytest.mark.asyncio
     async def test_truncation_hint(self):
         store = InMemoryArtifactStore()
-        await store.store("x" * 200_000, tool_name="t")
+        aid = await store.store("x" * 200_000, tool_name="t")
 
         tool = RetrieveArtifactContentTool(store=store, max_content_tokens=100)
-        output = await tool.execute(artifact_id="artifact_1")
+        output = await tool.execute(artifact_id=aid)
         assert output.success is True
         assert "truncated" in output.data
         assert "Filter and curate" in output.data
@@ -871,4 +873,4 @@ class TestEndToEndArtifactFlow:
         ref = _compact_reference(msg)
         assert "tool: jira__search_issues" in ref
         assert "PIPE" in ref
-        assert "artifact_1" in ref
+        assert meta.artifact_id in ref

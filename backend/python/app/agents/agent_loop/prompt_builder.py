@@ -5,8 +5,8 @@ assembles today (Phase 4 of the agent-loop migration).
 Reuses every prompt fragment Phase 0 already extracted into standalone
 modules — `REACT_BASE_PROMPT`, `GUIDANCE_MAP`, `_build_knowledge_context`,
 `_format_user_context`, `_build_workflow_patterns`, `build_capability_summary`,
-`build_llm_time_context` — plus Phase 3's `ToolGuidanceProvider`, so none of
-that prompt text is duplicated here. The sections `nodes.py` has never
+`build_llm_time_context` — so none of that prompt text is duplicated here.
+The sections `nodes.py` has never
 extracted (tool reference, citation rules, web-search rules,
 hybrid-search-strategy guidance) are small, static, state-gated blocks kept
 local to this file since it is the only agent-loop-side consumer; `nodes.py`
@@ -33,7 +33,6 @@ from typing import TYPE_CHECKING, Any
 from app.agent_loop_lib.agent.prompt import render_skills_overview
 from app.agent_loop_lib.tools.errors import ToolNotFoundError
 from app.agents.agent_loop.sandbox_bridge import sandbox_network_enabled
-from app.agents.agent_loop.tool_guidance import ToolGuidanceProvider
 from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.context.connector_detection import (
     _has_clickup_tools,
@@ -128,26 +127,18 @@ def _web_reference(tool_names: list[str]) -> str:
     return "`web_agent`" if "web_agent" in tool_names else "`web_search`/`fetch_url`"
 
 
-def _active_connector_guidance(context: AgentContext, tool_names: list[str]) -> list[str]:
-    """`ToolGuidanceProvider.get_active_guidance()` returns guidance for
-    every connector CONFIGURED on this agent (`context.agent_toolsets`) —
-    broader than what THIS spec was actually granted (e.g. a domain child
-    with a narrower claim, or a toolset that failed to load — see
-    `AgentContext.toolset_load_failures`). Re-filtered here to only the
-    connectors with at least one tool name actually in `tool_names` (the
-    resolved grant/ceiling — see `AgentSpec.tool_names`), using the same
-    `{group_name}__{tool_name}` convention every adapter in this layer
-    registers under (`tool_loader.py`, `PipesHubStructuredToolAdapter`),
-    so e.g. MariaDB/Redshift SQL guidance never appears for a spec that
-    was never actually given those tools."""
-    guidance_map = ToolGuidanceProvider().get_active_guidance(context)
-    if not guidance_map:
-        return []
-    granted_prefixes = {name.split("__", 1)[0] for name in tool_names if "__" in name}
-    return [
-        guidance for connector_name, guidance in guidance_map.items()
-        if connector_name in granted_prefixes
-    ]
+
+def _collect_leaf_toolsets(registry) -> list[str]:
+    """Renders leaf toolsets (the ones with actual tools, not category
+    parents) as compact one-liners for the system prompt. These are the
+    names a model should pass to `fetch_tools`."""
+    lines: list[str] = []
+    for group in registry.toolsets():
+        tool_count = len(group.tool_names)
+        if tool_count == 0:
+            continue
+        lines.append(f"- `{group.name}` ({tool_count} tools): {group.description}")
+    return lines
 
 
 def _internal_knowledge_reference(tool_names: list[str]) -> str:
@@ -527,7 +518,10 @@ class PipesHubPromptBuilder:
             parts.append("## Additional Context\n" + "\n".join(f"- {c}" for c in goal.constraints))
 
         tool_names = spec.tool_names or []
-        parts.append(self._build_tool_reference_section(tool_names, runtime))
+        if spec.tool_disclosure == "lazy" and runtime.tool_registry is not None:
+            parts.append(self._build_lazy_tool_reference_section(tool_names, runtime))
+        else:
+            parts.append(self._build_tool_reference_section(tool_names, runtime))
 
         has_retrieval = bool(state.get("final_results"))
         has_attachments = bool(state.get("attachments"))
@@ -544,8 +538,6 @@ class PipesHubPromptBuilder:
 
         parts.append(self._build_hybrid_strategy_section(state, tool_names, has_web_search=has_web_search))
 
-        for guidance in _active_connector_guidance(self._context, tool_names):
-            parts.append(guidance)
 
         code_tool = _composed_code_tool(tool_names)
         sandbox_networked = code_tool is not None and sandbox_network_enabled()
@@ -635,6 +627,51 @@ class PipesHubPromptBuilder:
         if not lines:
             return ""
         return _TOOL_REFERENCE_HEADER + "\n".join(lines)
+
+    @staticmethod
+    def _build_lazy_tool_reference_section(tool_names: list[str], runtime: AgentRuntime) -> str:
+        """Under lazy disclosure: lists only the tools whose schemas are
+        currently bound (essentials + pinned), then renders a compact
+        'Toolsets' block for grouped toolsets the model must fetch first.
+
+        Only the toolset NAMES + one-line descriptions appear here — never
+        individual tool names from grouped toolsets (those would bloat the
+        prompt and mislead the model into thinking they're already callable).
+        """
+        registry = runtime.tool_registry
+        grouped = registry.grouped_tool_names()
+        visible_names = [n for n in tool_names if n not in grouped]
+
+        lines: list[str] = []
+        for name in visible_names:
+            try:
+                tool = registry.resolve_by_name(name)
+            except ToolNotFoundError:
+                continue
+            summary = tool.short_description or ""
+            lines.append(f"- **{name}**: {summary}" if summary else f"- **{name}**")
+
+        section = _TOOL_REFERENCE_HEADER + "\n".join(lines) if lines else ""
+
+        toolset_lines = _collect_leaf_toolsets(registry)
+        if toolset_lines:
+            section += (
+                "\n\n## Toolsets (require loading)\n\n"
+                "Additional tools are grouped into the toolsets below. "
+                "Their schemas are NOT loaded yet — you CANNOT call them directly.\n\n"
+                "**How to use toolsets:**\n"
+                "- If you know which toolset(s) you need from the list below, "
+                "call `fetch_tools(\"<toolset_name>\")` to load them.\n"
+                "- If you're unsure which toolset has the tool you need, "
+                "call `search_tools(\"<description of what you need>\")` to find it.\n"
+                "- Only load toolsets relevant to the current task — "
+                "do NOT load all toolsets at once.\n"
+                "- You can only call a toolset's tools AFTER `fetch_tools` returns.\n\n"
+                "Available toolsets:\n"
+                + "\n".join(toolset_lines)
+            )
+
+        return section
 
     @staticmethod
     def _build_internal_knowledge_first_section(tool_names: list[str]) -> str:

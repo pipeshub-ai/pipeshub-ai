@@ -4,7 +4,7 @@ every adapter-layer piece built in Phases 2-6:
 
 - `LangChainTransport` (Phase 2) registered under the `"langchain"` provider
 - `PipesHubToolLoader` (Phase 3) for the per-request `ToolRegistry`
-- `PipesHubPromptBuilder` + `ToolGuidanceProvider` (Phase 3/4) for the system prompt
+- `PipesHubPromptBuilder` (Phase 4) for the system prompt
 - Phase 5's hook middleware (tool blocking, citation tracking, conversation
   memory, result accumulation, `ask_user_question` SSE)
 - `SSEEventEmitter` (this phase) for real-time tool-orchestration events

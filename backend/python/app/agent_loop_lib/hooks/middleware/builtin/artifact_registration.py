@@ -18,6 +18,7 @@ import json
 import logging
 import time
 from typing import Any, Protocol
+from uuid import uuid4
 
 from app.agent_loop_lib.core.messages import ToolMessageMeta
 from app.agent_loop_lib.core.tokens import count_text_tokens
@@ -64,7 +65,6 @@ class InMemoryArtifactStore:
         self._data: dict[str, tuple[float, str]] = {}
         self._schemas: dict[str, dict[str, Any]] = {}
         self._tool_names: dict[str, str] = {}
-        self._counter = 0
         self._maxsize = maxsize
         self._ttl = ttl_seconds
 
@@ -101,8 +101,7 @@ class InMemoryArtifactStore:
         session_id: str | None = None,
     ) -> str:
         self._evict_expired()
-        self._counter += 1
-        artifact_id = f"artifact_{self._counter}"
+        artifact_id = str(uuid4())
         self._data[artifact_id] = (self._now(), content)
         if result_schema is not None:
             self._schemas[artifact_id] = result_schema

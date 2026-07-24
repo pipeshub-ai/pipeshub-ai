@@ -169,7 +169,14 @@ def render_skills_overview(runtime: "AgentRuntime") -> str:
 
     limit = manager.config.catalog_render_limit
     if len(catalog) <= limit:
-        lines = ["Skills available via load_skill(name) — read the matching one before starting a task it covers:"]
+        lines = [
+            "Skills available via load_skill(name). IMPORTANT: do NOT load skills "
+            "upfront or at the start of a conversation. Only call load_skill immediately "
+            "before you execute the specific step the skill covers — after all prerequisite "
+            "work (data gathering, tool calls, analysis) is complete. Think about what "
+            "the task requires, do all the preparatory steps first, then load the skill "
+            "right before the step that needs it. "
+        ]
         for m in sorted(catalog, key=lambda m: m.name):
             lines.append(f"- {m.name}: {m.description}")
         return "\n".join(lines)
@@ -179,7 +186,9 @@ def render_skills_overview(runtime: "AgentRuntime") -> str:
         categories[m.category or "uncategorized"] = categories.get(m.category or "uncategorized", 0) + 1
     lines = [
         f"{len(catalog)} skills are available, grouped by category — use skill_search(query) or "
-        "skills_list(category=...) to find one, then load_skill(name):",
+        "skills_list(category=...) to find one. Do NOT load skills upfront or at the start of a "
+        "conversation; call load_skill(name) only immediately before the step that needs it, "
+        "after all prerequisite work is done:",
     ]
     for category, count in sorted(categories.items()):
         lines.append(f"- {category} ({count})")

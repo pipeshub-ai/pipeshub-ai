@@ -111,6 +111,7 @@ _PIPESHUB_PYTHON_EXTRAS: frozenset[str] = frozenset({
     "plotly",
     "kaleido",
     "tzdata",
+    "pymupdf",
 })
 
 #: Default Python allowlist (before operator env extension).
@@ -131,6 +132,7 @@ NPM_PACKAGE_ALLOWLIST: frozenset[str] = frozenset({
     "exceljs",
     "pdfkit",
     "pdf-lib",
+    "pdf-parse",
     "jsdom",
     "xlsx",
     "papaparse",

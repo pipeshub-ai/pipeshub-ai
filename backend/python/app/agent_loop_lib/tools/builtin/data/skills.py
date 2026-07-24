@@ -203,7 +203,9 @@ class LoadSkillTool(Tool):
         return (
             "Load the full instructions for a skill by exact name (see the "
             "skills list in your system prompt, or skills_list/skill_search). "
-            "Call this before starting a task that matches a skill's description."
+            "Call this ONLY immediately before you execute the step the skill "
+            "covers — NOT at the beginning of a multi-step task. Complete all "
+            "prerequisite work first, then load the skill right before you need it."
         )
 
     @property

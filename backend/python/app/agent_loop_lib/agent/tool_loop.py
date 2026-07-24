@@ -15,6 +15,11 @@ from app.agent_loop_lib.events.base import EventType, ToolCallStatus
 from app.agent_loop_lib.tools.special_route import RouteContext, SpecialRouteRegistry
 from app.agent_loop_lib.tools.tags import TAG_DEDUP_EXACT, TAG_LIFECYCLE_TERMINAL
 
+# Internal tools whose execution should not produce frontend-visible events.
+# The tool still runs and its result enters the conversation; only the
+# TOOL_CALL / TOOL_RESULT emissions are skipped.
+_NO_EMIT_TOOLS: frozenset[str] = frozenset({"retrieve_artifact_content"})
+
 if TYPE_CHECKING:
     from app.agent_loop_lib.agent.spec import AgentSpec
     from app.agent_loop_lib.core.scope import TurnScope
@@ -245,10 +250,12 @@ async def execute_tool_call(
     synchronous pre-pass over the whole wave, BEFORE any call in the wave
     starts running — see that function's docstring for why the check can't
     safely live in here, after this coroutine's own `await` points."""
-    await agent.emit(EventType.TOOL_CALL, {
-        "tool": call.name, "args": call.arguments, "tool_call_id": call.id,
-        "args_summary": _args_summary(agent, runtime, call),
-    })
+    _silent = call.name in _NO_EMIT_TOOLS
+    if not _silent:
+        await agent.emit(EventType.TOOL_CALL, {
+            "tool": call.name, "args": call.arguments, "tool_call_id": call.id,
+            "args_summary": _args_summary(agent, runtime, call),
+        })
 
     # A call whose argument JSON couldn't be parsed (or repaired) by the
     # transport's message converter arrives here carrying these sentinel
@@ -268,11 +275,12 @@ async def execute_tool_call(
             f"Arguments received (truncated): {str(raw_args)[:300]!r}"
         )
         tr = ToolResult(tool_call_id=call.id, name=call.name, content=content, is_error=True)
-        await agent.emit(EventType.TOOL_RESULT, {
-            "tool": tr.name, "is_error": True, "content": content[:200], "tool_call_id": call.id,
-            "result_summary": _result_summary(agent, runtime, call, tr),
-            "status": ToolCallStatus.ERROR,
-        })
+        if not _silent:
+            await agent.emit(EventType.TOOL_RESULT, {
+                "tool": tr.name, "is_error": True, "content": content[:200], "tool_call_id": call.id,
+                "result_summary": _result_summary(agent, runtime, call, tr),
+                "status": ToolCallStatus.ERROR,
+            })
         return ToolCallOutcome(result=tr)
 
     # Repeated tool calls (same tool + same key argument) were already
@@ -289,12 +297,13 @@ async def execute_tool_call(
             ),
             is_error=False,
         )
-        await agent.emit(EventType.TOOL_RESULT, {
-            "tool": tr.name, "is_error": tr.is_error,
-            "content": str(tr.content)[:200], "tool_call_id": call.id,
-            "result_summary": _result_summary(agent, runtime, call, tr),
-            "status": ToolCallStatus.ERROR if tr.is_error else ToolCallStatus.SUCCESS,
-        })
+        if not _silent:
+            await agent.emit(EventType.TOOL_RESULT, {
+                "tool": tr.name, "is_error": tr.is_error,
+                "content": str(tr.content)[:200], "tool_call_id": call.id,
+                "result_summary": _result_summary(agent, runtime, call, tr),
+                "status": ToolCallStatus.ERROR if tr.is_error else ToolCallStatus.SUCCESS,
+            })
         return ToolCallOutcome(result=tr)
 
     # --- Checkpoint: PRE_TOOL ---
@@ -348,15 +357,16 @@ async def execute_tool_call(
     if blocked_reason is not None:
         return ToolCallOutcome(result=tr)
 
-    result_event: dict[str, Any] = {
-        "tool": tr.name, "is_error": tr.is_error,
-        "content": str(tr.content)[:200], "tool_call_id": call.id,
-        "result_summary": _result_summary(agent, runtime, call, tr),
-        "status": ToolCallStatus.ERROR if tr.is_error else ToolCallStatus.SUCCESS,
-    }
-    if tr.artifact_meta is not None:
-        result_event["artifact_id"] = tr.artifact_meta.artifact_id
-    await agent.emit(EventType.TOOL_RESULT, result_event)
+    if not _silent:
+        result_event: dict[str, Any] = {
+            "tool": tr.name, "is_error": tr.is_error,
+            "content": str(tr.content)[:200], "tool_call_id": call.id,
+            "result_summary": _result_summary(agent, runtime, call, tr),
+            "status": ToolCallStatus.ERROR if tr.is_error else ToolCallStatus.SUCCESS,
+        }
+        if tr.artifact_meta is not None:
+            result_event["artifact_id"] = tr.artifact_meta.artifact_id
+        await agent.emit(EventType.TOOL_RESULT, result_event)
 
     if tr.sources:
         await obs.append_timeline(
