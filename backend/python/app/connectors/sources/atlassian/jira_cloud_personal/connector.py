@@ -20,7 +20,7 @@ from uuid import uuid4
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AppGroups, Connectors
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -55,10 +55,10 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     AUTHORIZE_URL,
     TOKEN_URL,
     JiraConnector,
-    adf_to_text,
 )
 from app.models.entities import AppUser, RecordGroup, RecordGroupType
 from app.models.permission import Permission
+from app.services.notification.types import NotificationSeverity, NotificationType
 
 
 @(
@@ -76,16 +76,6 @@ from app.models.permission import Permission
                 authorize_url=AUTHORIZE_URL,
                 token_url=TOKEN_URL,
                 redirect_uri="connectors/oauth/callback/JiraCloudPersonal",
-                # ``personal_sync`` uses a deliberately narrower scope set
-                # than the workspace connector — see
-                # ``AtlassianScope.get_jira_personal_read_access`` for which
-                # workspace-only scopes (groups, roles, audit log, app roles)
-                # are dropped. ``team_sync`` mirrors ``personal_sync`` so the
-                # OAuth-flow scope resolver in ``_build_oauth_flow_config``
-                # still emits a non-empty ``scope=`` parameter even if the
-                # per-instance ``connectorScope`` somehow defaults to ``team``
-                # — an empty ``scope`` is what ``auth.atlassian.com`` rejects
-                # with ``error=server_error``.
                 scopes=OAuthScopeConfig(
                     personal_sync=AtlassianScope.get_jira_personal_read_access(),
                     team_sync=AtlassianScope.get_jira_personal_read_access(),
@@ -105,16 +95,6 @@ from app.models.permission import Permission
                         description="The Client Secret from Atlassian Developer Console",
                         field_type="PASSWORD",
                         is_secret=True,
-                    ),
-                    AuthField(
-                        name="baseUrl",
-                        display_name="Atlassian site URL",
-                        placeholder="https://yourcompany.atlassian.net",
-                        description="Atlassian site URL to use. Must match the Jira site you want to sync.",
-                        field_type="URL",
-                        required=True,
-                        max_length=2000,
-                        is_secret=False,
                     ),
                 ],
                 icon_path=IconPaths.connector_icon(Connectors.JIRA_PERSONAL.value),
@@ -265,12 +245,26 @@ class JiraCloudPersonalConnector(JiraConnector):
                 # ``init()`` returns False on missing/invalid auth config; check
                 # the return so a misconfigured connector raises here instead of
                 # surfacing ``ValueError("DataSource not initialized")`` from
-                # the first datasource call several layers down.
+                # the first datasource call several layers down. Init does not
+                # notify (FE covers setup); notify here for background sync.
                 if not await self.init():
-                    raise RuntimeError(
+                    await self.notify(
+                        type=NotificationType.CONNECTOR_AUTH_ERROR,
+                        severity=NotificationSeverity.ERROR,
+                        title=self._notification_title("connection failed"),
+                        message=(
+                            "PipesHub couldn't connect to Jira during sync. "
+                            "Verify the connector's credentials and configuration, "
+                            "re-authenticate if needed, then sync again."
+                        ),
+                        recipient_user_ids=[self.created_by],
+                    )
+                    init_error = RuntimeError(
                         f"Jira Cloud Personal connector {self.connector_id} init failed; "
                         "check auth configuration"
                     )
+                    init_error._notification_sent = True
+                    raise init_error
 
             # Force a fresh ConnectorGroup upsert each run so re-runs after the
             # creator email is rotated pick up the new identity instead of
@@ -349,6 +343,27 @@ class JiraCloudPersonalConnector(JiraConnector):
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
 
+            # Notify the creator when any project failed issue sync (include keys).
+            failed_keys = sync_stats.get("failed_project_keys") or []
+            if failed_keys:
+                preview = ", ".join(failed_keys[:10])
+                if len(failed_keys) > 10:
+                    preview = f"{preview}, and {len(failed_keys) - 10} more"
+                self.logger.error(
+                    "❌ Jira Cloud Personal sync: %s/%s project(s) failed to sync issues: %s",
+                    len(failed_keys), len(projects), preview,
+                )
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("couldn't sync some projects"),
+                    message=(
+                        f"Couldn't sync issues for {len(failed_keys)} project(s): {preview}. "
+                        "Retry sync; check Jira access if it keeps failing."
+                    ),
+                    recipient_user_ids=[self.created_by],
+                )
+
             self.logger.info(
                 "Jira Cloud Personal sync completed. Total: %s issues "
                 "(New: %s, Updated: %s)",
@@ -361,6 +376,19 @@ class JiraCloudPersonalConnector(JiraConnector):
             self.logger.error(
                 "Error during Jira Cloud Personal sync: %s", e, exc_info=True
             )
+            # Skip if init/multi-site already notified for this failure.
+            if not isinstance(e, ConnectorInitError) and not getattr(e, "_notification_sent", False):
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("sync failed"),
+                    message=(
+                        f"The sync stopped due to an error: {str(e)[:200]}. Recent Jira changes "
+                        "may not be reflected yet. Run the sync again; if it keeps failing, "
+                        "check the connector's configuration."
+                    ),
+                    recipient_user_ids=[self.created_by],
+                )
             raise
 
     async def _fetch_projects(
@@ -397,12 +425,6 @@ class JiraCloudPersonalConnector(JiraConnector):
             project_name = project.get("name")
             project_key = project.get("key")
 
-            description = project.get("description")
-            if description and isinstance(description, dict):
-                description = adf_to_text(description)
-            elif not description:
-                description = None
-
             record_group = RecordGroup(
                 id=str(uuid4()),
                 org_id=self.data_entities_processor.org_id,
@@ -412,7 +434,6 @@ class JiraCloudPersonalConnector(JiraConnector):
                 name=project_name,
                 short_name=project_key,
                 group_type=RecordGroupType.PROJECT,
-                description=description,
                 web_url=project.get("url"),
             )
 

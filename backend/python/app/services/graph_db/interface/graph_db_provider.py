@@ -2977,15 +2977,18 @@ class IGraphDBProvider(ABC):
         record_ids: list[str],
         connector_id: str,
         transaction: str | None = None,
+        cascade_children: bool = True,
     ) -> dict:
-        """Delete records (files, folders, or any type) and all their containment
-        descendants — the single generic recursive delete for KB and connectors.
+        """Delete records and their owned descendants, scoped by connector_id.
 
-        A folder is just a record with children, so there is no folder/file special-casing:
-        each root id is deleted with its whole containment subtree (PARENT_CHILD + ATTACHMENT;
-        reference edges are cleaned but not traversed), scoped by ``connectorId == connector_id``
-        (kb_id for a KB). All edges touching the deleted records are swept, type docs removed
-        from any collection, and a deleteRecord event emitted per record with a virtualRecordId.
+        When *cascade_children* is True (default), traverses both PARENT_CHILD and
+        ATTACHMENT edges — deleting an entire containment subtree (folders, nested
+        files, etc.).  When False, only ATTACHMENT edges are traversed so child
+        records linked via PARENT_CHILD survive (e.g. stories under a deleted epic).
+
+        All edges touching the deleted nodes are swept regardless of
+        *cascade_children*, type docs removed, and a deleteRecord event emitted per
+        record that carries a virtualRecordId (Qdrant cleanup).
         """
         raise NotImplementedError
 

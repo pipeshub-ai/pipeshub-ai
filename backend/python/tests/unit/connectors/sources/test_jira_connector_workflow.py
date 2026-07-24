@@ -27,9 +27,6 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     DEFAULT_MAX_RESULTS,
     ISSUE_SEARCH_FIELDS,
     JiraConnector,
-    adf_to_text,
-    adf_to_text_with_images,
-    extract_media_from_adf,
 )
 from app.models.entities import (
     AppRole,
@@ -96,398 +93,6 @@ def _make_mock_response(status=200, data=None, text_val=""):
     resp.json = MagicMock(return_value=data or {})
     resp.text = MagicMock(return_value=text_val)
     return resp
-
-
-# ===========================================================================
-# ADF Parsing Tests — covers extract_media_from_adf and adf_to_text
-# ===========================================================================
-
-
-class TestADFParsing:
-
-    def test_extract_media_empty(self):
-        assert extract_media_from_adf(None) == []
-        assert extract_media_from_adf({}) == []
-        assert extract_media_from_adf("string") == []
-
-    def test_extract_media_with_nodes(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "mediaSingle",
-                "content": [{
-                    "type": "media",
-                    "attrs": {
-                        "id": "media-1",
-                        "alt": "screenshot.png",
-                        "type": "file",
-                        "width": 800,
-                        "height": 600,
-                        "collection": "col-1",
-                        "__fileName": "screenshot.png",
-                    }
-                }]
-            }]
-        }
-        result = extract_media_from_adf(adf)
-        assert len(result) == 1
-        assert result[0]["id"] == "media-1"
-        assert result[0]["filename"] == "screenshot.png"
-
-    def test_extract_media_no_id_skipped(self):
-        adf = {
-            "type": "doc",
-            "content": [{"type": "media", "attrs": {"id": "", "alt": "no-id"}}]
-        }
-        result = extract_media_from_adf(adf)
-        assert len(result) == 0
-
-    def test_adf_to_text_empty(self):
-        assert adf_to_text(None) == ""
-        assert adf_to_text({}) == ""
-
-    def test_adf_to_text_paragraph(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{"type": "text", "text": "Hello World"}]
-            }]
-        }
-        result = adf_to_text(adf)
-        assert "Hello World" in result
-
-    def test_adf_to_text_heading(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "heading",
-                "attrs": {"level": 2},
-                "content": [{"type": "text", "text": "Title"}]
-            }]
-        }
-        result = adf_to_text(adf)
-        assert "## Title" in result
-
-    def test_adf_to_text_marks(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{
-                    "type": "text",
-                    "text": "bold",
-                    "marks": [{"type": "strong"}]
-                }, {
-                    "type": "text",
-                    "text": "italic",
-                    "marks": [{"type": "em"}]
-                }, {
-                    "type": "text",
-                    "text": "code",
-                    "marks": [{"type": "code"}]
-                }, {
-                    "type": "text",
-                    "text": "strike",
-                    "marks": [{"type": "strike"}]
-                }, {
-                    "type": "text",
-                    "text": "link",
-                    "marks": [{"type": "link", "attrs": {"href": "https://example.com"}}]
-                }, {
-                    "type": "text",
-                    "text": "underline",
-                    "marks": [{"type": "underline"}]
-                }]
-            }]
-        }
-        result = adf_to_text(adf)
-        assert "**bold**" in result
-        assert "*italic*" in result
-        assert "`code`" in result
-        assert "~~strike~~" in result
-        assert "[link](https://example.com)" in result
-
-    def test_adf_to_text_bullet_list(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "bulletList",
-                "content": [
-                    {"type": "listItem", "content": [
-                        {"type": "paragraph", "content": [{"type": "text", "text": "Item 1"}]}
-                    ]},
-                    {"type": "listItem", "content": [
-                        {"type": "paragraph", "content": [{"type": "text", "text": "Item 2"}]}
-                    ]},
-                ]
-            }]
-        }
-        result = adf_to_text(adf)
-        assert "- Item 1" in result
-        assert "- Item 2" in result
-
-    def test_adf_to_text_ordered_list(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "orderedList",
-                "content": [
-                    {"type": "listItem", "content": [
-                        {"type": "paragraph", "content": [{"type": "text", "text": "First"}]}
-                    ]},
-                ]
-            }]
-        }
-        result = adf_to_text(adf)
-        assert "1. First" in result
-
-    def test_adf_to_text_code_block(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "codeBlock",
-                "attrs": {"language": "python"},
-                "content": [{"type": "text", "text": "print('hello')"}]
-            }]
-        }
-        result = adf_to_text(adf)
-        assert "```python" in result
-        assert "print('hello')" in result
-
-    def test_adf_to_text_blockquote(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "blockquote",
-                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Quote"}]}]
-            }]
-        }
-        result = adf_to_text(adf)
-        assert "> Quote" in result
-
-    def test_adf_to_text_table(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "table",
-                "content": [{
-                    "type": "tableRow",
-                    "content": [
-                        {"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Name"}]}]},
-                        {"type": "tableHeader", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Value"}]}]},
-                    ]
-                }, {
-                    "type": "tableRow",
-                    "content": [
-                        {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "A"}]}]},
-                        {"type": "tableCell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "1"}]}]},
-                    ]
-                }]
-            }]
-        }
-        result = adf_to_text(adf)
-        assert "| Name | Value |" in result
-        assert "| --- | --- |" in result
-        assert "| A | 1 |" in result
-
-    def test_adf_to_text_mention(self):
-        adf = {"type": "doc", "content": [{"type": "paragraph", "content": [
-            {"type": "mention", "attrs": {"text": "John"}}
-        ]}]}
-        assert "@John" in adf_to_text(adf)
-
-    def test_adf_to_text_emoji(self):
-        adf = {"type": "doc", "content": [{"type": "paragraph", "content": [
-            {"type": "emoji", "attrs": {"shortName": "thumbsup"}}
-        ]}]}
-        assert ":thumbsup:" in adf_to_text(adf)
-
-    def test_adf_to_text_rule(self):
-        adf = {"type": "doc", "content": [{"type": "rule"}]}
-        assert "---" in adf_to_text(adf)
-
-    def test_adf_to_text_hard_break(self):
-        adf = {"type": "doc", "content": [{"type": "paragraph", "content": [
-            {"type": "text", "text": "before"},
-            {"type": "hardBreak"},
-            {"type": "text", "text": "after"},
-        ]}]}
-        result = adf_to_text(adf)
-        assert "before" in result
-        assert "after" in result
-
-    def test_adf_to_text_inline_card(self):
-        adf = {"type": "doc", "content": [{"type": "paragraph", "content": [
-            {"type": "inlineCard", "attrs": {"url": "https://jira.example.com/browse/PROJ-1"}}
-        ]}]}
-        assert "https://jira.example.com" in adf_to_text(adf)
-
-    def test_adf_to_text_task_list(self):
-        adf = {"type": "doc", "content": [{
-            "type": "taskList",
-            "content": [{
-                "type": "taskItem",
-                "attrs": {"state": "DONE"},
-                "content": [{"type": "text", "text": "Done task"}]
-            }, {
-                "type": "taskItem",
-                "attrs": {"state": "TODO"},
-                "content": [{"type": "text", "text": "Todo task"}]
-            }]
-        }]}
-        result = adf_to_text(adf)
-        assert "[x]" in result
-        assert "[ ]" in result
-
-    def test_adf_to_text_decision_list(self):
-        adf = {"type": "doc", "content": [{
-            "type": "decisionList",
-            "content": [{
-                "type": "decisionItem",
-                "attrs": {"state": "DECIDED"},
-                "content": [{"type": "text", "text": "Decision made"}]
-            }]
-        }]}
-        assert "Decision made" in adf_to_text(adf)
-
-    def test_adf_to_text_status(self):
-        adf = {"type": "doc", "content": [{"type": "paragraph", "content": [
-            {"type": "status", "attrs": {"text": "In Progress"}}
-        ]}]}
-        assert "[In Progress]" in adf_to_text(adf)
-
-    def test_adf_to_text_date(self):
-        adf = {"type": "doc", "content": [{"type": "paragraph", "content": [
-            {"type": "date", "attrs": {"timestamp": "1704067200000"}}
-        ]}]}
-        result = adf_to_text(adf)
-        assert "2024-01-01" in result
-
-    def test_adf_to_text_expand(self):
-        adf = {"type": "doc", "content": [{
-            "type": "expand",
-            "attrs": {"title": "More Details"},
-            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Details here"}]}]
-        }]}
-        result = adf_to_text(adf)
-        assert "More Details" in result
-        assert "Details here" in result
-
-    def test_adf_to_text_panel(self):
-        adf = {"type": "doc", "content": [{
-            "type": "panel",
-            "attrs": {"panelType": "info"},
-            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Notice"}]}]
-        }]}
-        result = adf_to_text(adf)
-        assert "INFO" in result
-        assert "Notice" in result
-
-    def test_adf_to_text_media_with_cache(self):
-        adf = {"type": "doc", "content": [
-            {"type": "media", "attrs": {"id": "m1", "alt": "image.png"}}
-        ]}
-        cache = {"m1": "data:image/png;base64,abc"}
-        result = adf_to_text(adf, media_cache=cache)
-        assert "data:image/png;base64,abc" in result
-
-    def test_adf_to_text_media_without_cache(self):
-        adf = {"type": "doc", "content": [
-            {"type": "media", "attrs": {"id": "m1", "alt": "image.png"}}
-        ]}
-        result = adf_to_text(adf)
-        assert "![image.png]" in result
-
-    def test_adf_to_text_layout_section(self):
-        adf = {"type": "doc", "content": [{
-            "type": "layoutSection",
-            "content": [{
-                "type": "layoutColumn",
-                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Column 1"}]}]
-            }, {
-                "type": "layoutColumn",
-                "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Column 2"}]}]
-            }]
-        }]}
-        result = adf_to_text(adf)
-        assert "Column 1" in result
-        assert "Column 2" in result
-
-    def test_adf_to_text_placeholder(self):
-        adf = {"type": "doc", "content": [
-            {"type": "placeholder", "attrs": {"text": "Enter text..."}}
-        ]}
-        assert "Enter text..." in adf_to_text(adf)
-
-    def test_adf_to_text_nested_list(self):
-        adf = {"type": "doc", "content": [{
-            "type": "bulletList",
-            "content": [{
-                "type": "listItem",
-                "content": [
-                    {"type": "paragraph", "content": [{"type": "text", "text": "Parent"}]},
-                    {"type": "bulletList", "content": [{
-                        "type": "listItem",
-                        "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Child"}]}]
-                    }]}
-                ]
-            }]
-        }]}
-        result = adf_to_text(adf)
-        assert "Parent" in result
-        assert "Child" in result
-
-    def test_adf_to_text_single_node_no_content_key(self):
-        # adf_content without "content" at root level
-        adf = {"type": "paragraph", "content": [{"type": "text", "text": "Direct"}]}
-        result = adf_to_text(adf)
-        assert "Direct" in result
-
-
-class TestADFToTextWithImages:
-
-    @pytest.mark.asyncio
-    async def test_with_media_fetcher(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "mediaSingle",
-                "content": [{
-                    "type": "media",
-                    "attrs": {"id": "m1", "alt": "screen.png", "type": "file"}
-                }]
-            }]
-        }
-
-        async def fetcher(media_id, alt):
-            return "data:image/png;base64,encoded"
-
-        result = await adf_to_text_with_images(adf, fetcher)
-        assert "data:image/png;base64,encoded" in result
-
-    @pytest.mark.asyncio
-    async def test_with_media_fetcher_failure(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "media",
-                "attrs": {"id": "m1", "alt": "fail.png", "type": "file"}
-            }]
-        }
-
-        async def fetcher(media_id, alt):
-            raise Exception("fetch failed")
-
-        result = await adf_to_text_with_images(adf, fetcher)
-        assert "fail.png" in result
-
-    @pytest.mark.asyncio
-    async def test_empty_adf(self):
-        async def fetcher(media_id, alt):
-            return None
-        assert await adf_to_text_with_images(None, fetcher) == ""
-        assert await adf_to_text_with_images({}, fetcher) == ""
 
 
 # ===========================================================================
@@ -631,14 +236,16 @@ class TestJiraGroupSync:
             full_name="Alice", is_active=True
         )]
 
-        connector._fetch_groups = AsyncMock(return_value=[
+        connector._fetch_groups = AsyncMock(return_value=([
             {"groupId": "g1", "name": "jira-software-users"},
-        ])
-        connector._fetch_group_members = AsyncMock(return_value=["alice@test.com"])
+        ], False))
+        # _fetch_group_members now returns (account_ids, ok); "a1" matches the user's source_user_id.
+        connector._fetch_group_members = AsyncMock(return_value=(["a1"], True))
 
         result = await connector._sync_user_groups(users)
         assert "g1" in result
         assert "jira-software-users" in result
+        assert result["g1"] == users  # membership resolved from accountId
         dep.on_new_user_groups.assert_called_once()
 
     @pytest.mark.asyncio
@@ -653,8 +260,9 @@ class TestJiraGroupSync:
         }))
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            result = await connector._fetch_groups()
+            result, fetch_failed = await connector._fetch_groups()
             assert len(result) == 1
+            assert fetch_failed is False
 
     @pytest.mark.asyncio
     async def test_fetch_group_members(self):
@@ -668,8 +276,11 @@ class TestJiraGroupSync:
         }))
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            result = await connector._fetch_group_members("g1", "group1")
+            # Now returns (account_ids, ok); ok=False lets the caller skip rather than persist
+            # a truncated membership.
+            result, ok = await connector._fetch_group_members("g1", "group1")
             assert "acc-1" in result
+            assert ok is True
 
 
 # ===========================================================================
@@ -719,31 +330,6 @@ class TestJiraProjectFetching:
 
         record_groups, raw = await connector._fetch_projects(project_keys=["PRJ"])
         assert len(record_groups) == 1
-
-    @pytest.mark.asyncio
-    async def test_fetch_projects_description_as_adf(self):
-        connector, *_ = _make_connector()
-        connector.data_source = MagicMock()
-
-        projects = [{
-            "id": "p1", "name": "Proj", "key": "PRJ", "url": None,
-            "description": {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "ADF content"}]}]}
-        }]
-
-        mock_ds = MagicMock()
-        mock_ds.search_projects = AsyncMock(return_value=_make_mock_response(data={
-            "values": projects, "isLast": True, "total": 1,
-        }))
-
-        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        connector._safe_json_parse = MagicMock(return_value={"values": projects, "isLast": True, "total": 1})
-        connector._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={})
-        connector._fetch_project_permission_scheme = AsyncMock(return_value=[])
-
-        record_groups, raw = await connector._fetch_projects()
-        rg, _ = record_groups[0]
-        assert "ADF content" in (rg.description or "")
-
 
 # ===========================================================================
 # Permission Scheme
@@ -839,83 +425,67 @@ class TestDeletionHandling:
             # Issue still exists, should not delete
 
     @pytest.mark.asyncio
-    async def test_handle_deleted_epic(self):
+    async def test_handle_deleted_issue_cascade_deletes(self):
         connector, dep, dsp, cs, tx = _make_connector()
         connector.data_source = MagicMock()
+        dep.on_records_deleted_cascade = AsyncMock(return_value={
+            "success": True, "deleted_records": [], "failed_records": [],
+            "total_requested": 1, "successfully_deleted": 3, "failed_count": 0,
+        })
 
         mock_ds = MagicMock()
-        mock_ds.get_issue = AsyncMock(side_effect=Exception("not found"))
+        mock_ds.get_issue = AsyncMock(return_value=_make_mock_response(404))
 
         issue_record = MagicMock()
         issue_record.id = "internal-1"
         issue_record.external_record_id = "ext-1"
-        issue_record.type = MagicMock()
-        issue_record.type.value = "EPIC"
         tx.get_record_by_issue_key = AsyncMock(return_value=issue_record)
-
-        connector._delete_issue_children = AsyncMock(return_value=2)
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             await connector._handle_deleted_issue("PROJ-1")
-            # Epics don't cascade delete children, but do delete attachments
-            assert connector._delete_issue_children.call_count == 1  # only FILE, not TICKET
+
+        # cascade_children=False: the cascade traverses ATTACHMENT edges (deleting
+        # the issue's own files) but leaves PARENT_CHILD children alive.
+        dep.on_records_deleted_cascade.assert_called_once_with(
+            ["internal-1"], connector.connector_id, cascade_children=False,
+        )
 
     @pytest.mark.asyncio
-    async def test_handle_deleted_task(self):
+    async def test_handle_deleted_issue_not_found_in_db(self):
         connector, dep, dsp, cs, tx = _make_connector()
         connector.data_source = MagicMock()
+        dep.on_records_deleted_cascade = AsyncMock()
 
         mock_ds = MagicMock()
-        mock_ds.get_issue = AsyncMock(side_effect=Exception("not found"))
+        mock_ds.get_issue = AsyncMock(return_value=_make_mock_response(404))
 
-        issue_record = MagicMock()
-        issue_record.id = "internal-1"
-        issue_record.external_record_id = "ext-1"
-        issue_record.type = "TASK"
-        tx.get_record_by_issue_key = AsyncMock(return_value=issue_record)
-
-        connector._delete_issue_children = AsyncMock(return_value=0)
+        tx.get_record_by_issue_key = AsyncMock(return_value=None)
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             await connector._handle_deleted_issue("PROJ-2")
-            # Tasks cascade to subtasks AND attachments
-            assert connector._delete_issue_children.call_count == 2
 
-    @pytest.mark.asyncio
-    async def test_delete_issue_children_recursive(self):
-        connector, dep, dsp, cs, tx = _make_connector()
-
-        # Child record
-        child = MagicMock()
-        child.id = "child-1"
-        child.external_record_id = "child-ext-1"
-        tx.get_records_by_parent = AsyncMock(side_effect=[
-            [child],  # first call for subtasks
-            [],  # nested subtasks of child
-            [],  # attachments of child
-        ])
-
-        result = await connector._delete_issue_children("parent-ext-1", RecordType.TICKET, tx)
-        assert result == 1
+        dep.on_records_deleted_cascade.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_detect_and_handle_deletions(self):
         connector, *_ = _make_connector()
         connector.data_source = MagicMock()
 
-        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=["PROJ-1"])
+        # _fetch_deleted_issues_from_audit now returns (keys, ok).
+        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=(["PROJ-1"], True))
         connector._handle_deleted_issue = AsyncMock()
 
-        result = await connector._detect_and_handle_deletions(1000)
-        assert result == 1
+        # _detect_and_handle_deletions returns (checkpoint_ms, success).
+        _checkpoint_ms, success = await connector._detect_and_handle_deletions(1000)
+        assert success is True
         connector._handle_deleted_issue.assert_called_once_with("PROJ-1")
 
     @pytest.mark.asyncio
     async def test_detect_no_deletions(self):
         connector, *_ = _make_connector()
-        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=[])
-        result = await connector._detect_and_handle_deletions(1000)
-        assert result == 0
+        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=([], True))
+        _checkpoint_ms, success = await connector._detect_and_handle_deletions(1000)
+        assert success is True
 
     @pytest.mark.asyncio
     async def test_fetch_deleted_issues_from_audit(self):
@@ -932,8 +502,10 @@ class TestDeletionHandling:
         }))
 
         with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            result = await connector._fetch_deleted_issues_from_audit("2024-01-01T00:00:00Z", "2024-06-01T00:00:00Z")
+            # Now returns (issue_keys, ok); ok is False only when a page failed to read.
+            result, ok = await connector._fetch_deleted_issues_from_audit("2024-01-01T00:00:00Z", "2024-06-01T00:00:00Z")
             assert result == ["PROJ-1"]
+            assert ok is True
 
 
 # ===========================================================================

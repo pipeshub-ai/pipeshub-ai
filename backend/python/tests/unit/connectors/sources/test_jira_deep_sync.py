@@ -29,6 +29,7 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
+    ItemType,
     RecordGroup,
     RecordGroupType,
     RecordType,
@@ -52,6 +53,7 @@ def _make_mock_deps():
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_app_roles = AsyncMock()
     dep.on_record_deleted = AsyncMock()
+    dep.on_record_content_update = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[
         MagicMock(email="user@example.com"),
     ])
@@ -280,12 +282,20 @@ class TestSyncAllProjectIssues:
 
         assert call_count == 2
         assert result["total_synced"] == 1
+        assert result["failed_count"] == 1
+        assert result["failed_project_keys"] == ["P1"]
 
     @pytest.mark.asyncio
     async def test_empty_projects_returns_zeros(self):
         connector = _make_connector()
         result = await connector._sync_all_project_issues([], [], None)
-        assert result == {"total_synced": 0, "new_count": 0, "updated_count": 0}
+        assert result == {
+            "total_synced": 0,
+            "new_count": 0,
+            "updated_count": 0,
+            "failed_count": 0,
+            "failed_project_keys": [],
+        }
 
 
 # ===========================================================================
@@ -368,7 +378,7 @@ class TestFetchIssuesBatched:
         mock_tx.__aenter__ = AsyncMock(return_value=mock_tx_store)
         mock_tx.__aexit__ = AsyncMock(return_value=False)
         connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
-        connector._build_issue_records = AsyncMock(return_value=[])
+        connector._build_issue_records = AsyncMock(return_value=([], []))
         connector._safe_json_parse = MagicMock(return_value={
             "issues": [issue],
             "nextPageToken": None,
@@ -415,7 +425,7 @@ class TestFetchIssuesBatched:
         mock_tx.__aenter__ = AsyncMock(return_value=mock_tx_store)
         mock_tx.__aexit__ = AsyncMock(return_value=False)
         connector.data_store_provider.transaction = MagicMock(return_value=mock_tx)
-        connector._build_issue_records = AsyncMock(return_value=[])
+        connector._build_issue_records = AsyncMock(return_value=([], []))
         connector._safe_json_parse = MagicMock(side_effect=[
             {"issues": [issue1], "nextPageToken": "token-page2"},
             {"issues": [issue2], "nextPageToken": None},
@@ -465,7 +475,7 @@ class TestBuildIssueRecords:
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
-        records = await connector._build_issue_records(
+        records, _ = await connector._build_issue_records(
             [issue], "p-1", [_app_user()], tx_store
         )
 
@@ -492,7 +502,7 @@ class TestBuildIssueRecords:
         tx_store.get_record_by_external_id = AsyncMock(return_value=existing)
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
 
-        records = await connector._build_issue_records(
+        records, _ = await connector._build_issue_records(
             [issue], "p-1", [], tx_store
         )
 
@@ -515,7 +525,7 @@ class TestBuildIssueRecords:
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
-        records = await connector._build_issue_records(
+        records, _ = await connector._build_issue_records(
             [issue], "p-1", [], tx_store
         )
 
@@ -537,7 +547,7 @@ class TestBuildIssueRecords:
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
-        records = await connector._build_issue_records(
+        records, _ = await connector._build_issue_records(
             [issue], "p-1", [], tx_store
         )
 
@@ -560,7 +570,7 @@ class TestBuildIssueRecords:
         connector._handle_attachment_deletions_from_changelog = AsyncMock()
         connector._fetch_issue_attachments = AsyncMock(return_value=[])
 
-        records = await connector._build_issue_records(
+        records, _ = await connector._build_issue_records(
             [issue], "p-1", [], tx_store
         )
 
@@ -585,7 +595,7 @@ class TestBuildIssueRecords:
         mock_file.version = 0
         connector._fetch_issue_attachments = AsyncMock(return_value=[(mock_file, [])])
 
-        records = await connector._build_issue_records(
+        records, _ = await connector._build_issue_records(
             [issue], "p-1", [], tx_store
         )
 
@@ -669,36 +679,41 @@ class TestHandleIssueDeletions:
         connector.issues_sync_point = MagicMock()
         connector.issues_sync_point.read_sync_point = AsyncMock(return_value=None)
         connector.issues_sync_point.update_sync_point = AsyncMock()
-        connector._detect_and_handle_deletions = AsyncMock()
+        connector._detect_and_handle_deletions = AsyncMock(return_value=(1700000000000, True))
 
         await connector._handle_issue_deletions(1700000000000)
         connector._detect_and_handle_deletions.assert_awaited_once()
+        # success=True → checkpoint is advanced
+        connector.issues_sync_point.update_sync_point.assert_awaited_once()
 
 
 class TestDetectAndHandleDeletions:
 
     @pytest.mark.asyncio
-    async def test_no_deleted_issues_returns_zero(self):
+    async def test_no_deleted_issues_succeeds(self):
         connector = _make_connector()
-        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=[])
+        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=([], True))
+        connector._handle_deleted_issue = AsyncMock()
 
-        count = await connector._detect_and_handle_deletions(1700000000000)
-        assert count == 0
+        checkpoint_ms, success = await connector._detect_and_handle_deletions(1700000000000)
+        assert success is True
+        assert isinstance(checkpoint_ms, int)
+        connector._handle_deleted_issue.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_handles_each_deleted_issue(self):
         connector = _make_connector()
-        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=["PROJ-1", "PROJ-2"])
+        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=(["PROJ-1", "PROJ-2"], True))
         connector._handle_deleted_issue = AsyncMock()
 
-        count = await connector._detect_and_handle_deletions(1700000000000)
-        assert count == 2
+        _checkpoint_ms, success = await connector._detect_and_handle_deletions(1700000000000)
+        assert success is True
         assert connector._handle_deleted_issue.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_continues_on_individual_deletion_error(self):
+    async def test_partial_failure_reports_unsuccessful(self):
         connector = _make_connector()
-        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=["PROJ-1", "PROJ-2"])
+        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=(["PROJ-1", "PROJ-2"], True))
 
         call_count = 0
 
@@ -710,17 +725,28 @@ class TestDetectAndHandleDeletions:
 
         connector._handle_deleted_issue = AsyncMock(side_effect=mock_delete)
 
-        count = await connector._detect_and_handle_deletions(1700000000000)
-        assert call_count == 2
-        assert count == 1  # Only PROJ-2 succeeded
+        _checkpoint_ms, success = await connector._detect_and_handle_deletions(1700000000000)
+        assert call_count == 2  # both attempted despite PROJ-1 failing
+        assert success is False  # a per-issue failure holds the checkpoint for retry
 
     @pytest.mark.asyncio
-    async def test_returns_zero_on_exception(self):
+    async def test_fetch_incomplete_reports_unsuccessful(self):
+        connector = _make_connector()
+        # audit fetch reported not-ok (a page failed) -> don't advance past unread deletions
+        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=([], False))
+        connector._handle_deleted_issue = AsyncMock()
+
+        _checkpoint_ms, success = await connector._detect_and_handle_deletions(1700000000000)
+        assert success is False
+        connector._handle_deleted_issue.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_returns_unsuccessful_on_exception(self):
         connector = _make_connector()
         connector._fetch_deleted_issues_from_audit = AsyncMock(side_effect=RuntimeError("API fail"))
 
-        count = await connector._detect_and_handle_deletions(1700000000000)
-        assert count == 0
+        _checkpoint_ms, success = await connector._detect_and_handle_deletions(1700000000000)
+        assert success is False
 
 
 # ===========================================================================
@@ -744,8 +770,9 @@ class TestFetchDeletedIssuesFromAudit:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        result = await connector._fetch_deleted_issues_from_audit("2024-01-01T00:00:00.000Z", "2024-01-31T00:00:00.000Z")
-        assert result == ["PROJ-1", "PROJ-2"]
+        keys, ok = await connector._fetch_deleted_issues_from_audit("2024-01-01T00:00:00.000Z", "2024-01-31T00:00:00.000Z")
+        assert keys == ["PROJ-1", "PROJ-2"]
+        assert ok is True
 
     @pytest.mark.asyncio
     async def test_pagination_loop(self):
@@ -774,9 +801,10 @@ class TestFetchDeletedIssuesFromAudit:
         ds.get_audit_records = AsyncMock(side_effect=mock_audit)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        result = await connector._fetch_deleted_issues_from_audit("2024-01-01T00:00:00.000Z", "2024-01-31T00:00:00.000Z")
-        assert "PROJ-1" in result
-        assert "PROJ-2" in result
+        keys, ok = await connector._fetch_deleted_issues_from_audit("2024-01-01T00:00:00.000Z", "2024-01-31T00:00:00.000Z")
+        assert "PROJ-1" in keys
+        assert "PROJ-2" in keys
+        assert ok is True
 
     @pytest.mark.asyncio
     async def test_api_failure_stops_paging(self):
@@ -784,9 +812,12 @@ class TestFetchDeletedIssuesFromAudit:
         ds = MagicMock()
         ds.get_audit_records = AsyncMock(return_value=_resp(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        # A non-OK audit page notifies (missing admin permission) and reports ok=False.
+        connector.notify = AsyncMock()
 
-        result = await connector._fetch_deleted_issues_from_audit("2024-01-01T00:00:00.000Z", "2024-01-31T00:00:00.000Z")
-        assert result == []
+        keys, ok = await connector._fetch_deleted_issues_from_audit("2024-01-01T00:00:00.000Z", "2024-01-31T00:00:00.000Z")
+        assert keys == []
+        assert ok is False
 
     @pytest.mark.asyncio
     async def test_empty_records_returns_empty(self):
@@ -795,8 +826,9 @@ class TestFetchDeletedIssuesFromAudit:
         ds.get_audit_records = AsyncMock(return_value=_resp(200, {"records": [], "total": 0}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        result = await connector._fetch_deleted_issues_from_audit("2024-01-01T00:00:00.000Z", "2024-01-31T00:00:00.000Z")
-        assert result == []
+        keys, ok = await connector._fetch_deleted_issues_from_audit("2024-01-01T00:00:00.000Z", "2024-01-31T00:00:00.000Z")
+        assert keys == []
+        assert ok is True
 
 
 # ===========================================================================
@@ -809,7 +841,7 @@ class TestSyncUserGroups:
     @pytest.mark.asyncio
     async def test_no_groups_returns_empty_map(self):
         connector = _make_connector()
-        connector._fetch_groups = AsyncMock(return_value=[])
+        connector._fetch_groups = AsyncMock(return_value=([], False))
 
         result = await connector._sync_user_groups([])
         assert result == {}
@@ -818,10 +850,11 @@ class TestSyncUserGroups:
     async def test_groups_with_members(self):
         connector = _make_connector()
         user = _app_user("dev@x.com")
-        connector._fetch_groups = AsyncMock(return_value=[
+        connector._fetch_groups = AsyncMock(return_value=([
             {"groupId": "g1", "name": "devs"},
-        ])
-        connector._fetch_group_members = AsyncMock(return_value=["dev@x.com"])
+        ], False))
+        # _fetch_group_members now returns (account_ids, ok); members resolve by accountId.
+        connector._fetch_group_members = AsyncMock(return_value=(["acc-1"], True))
 
         result = await connector._sync_user_groups([user])
 
@@ -832,9 +865,9 @@ class TestSyncUserGroups:
     @pytest.mark.asyncio
     async def test_skips_group_without_id(self):
         connector = _make_connector()
-        connector._fetch_groups = AsyncMock(return_value=[
+        connector._fetch_groups = AsyncMock(return_value=([
             {"name": "no-id-group"},
-        ])
+        ], False))
 
         result = await connector._sync_user_groups([])
         assert result == {}
@@ -842,10 +875,10 @@ class TestSyncUserGroups:
     @pytest.mark.asyncio
     async def test_continues_on_group_error(self):
         connector = _make_connector()
-        connector._fetch_groups = AsyncMock(return_value=[
+        connector._fetch_groups = AsyncMock(return_value=([
             {"groupId": "g1", "name": "devs"},
             {"groupId": "g2", "name": "admins"},
-        ])
+        ], False))
 
         call_count = 0
 
@@ -854,7 +887,7 @@ class TestSyncUserGroups:
             call_count += 1
             if gname == "devs":
                 raise RuntimeError("API error")
-            return ["admin@x.com"]
+            return (["acc-1"], True)
 
         connector._fetch_group_members = AsyncMock(side_effect=mock_members)
 
@@ -881,8 +914,9 @@ class TestFetchGroups:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        groups = await connector._fetch_groups()
+        groups, fetch_failed = await connector._fetch_groups()
         assert len(groups) == 1
+        assert fetch_failed is False
 
     @pytest.mark.asyncio
     async def test_multi_page(self):
@@ -908,9 +942,10 @@ class TestFetchGroups:
         ds.bulk_get_groups = AsyncMock(side_effect=mock_groups)
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        groups = await connector._fetch_groups()
+        groups, fetch_failed = await connector._fetch_groups()
         assert len(groups) == 51
         assert call_count == 2
+        assert fetch_failed is False
 
 
 # ===========================================================================
@@ -931,8 +966,9 @@ class TestFetchGroupMembers:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        result = await connector._fetch_group_members("g1", "devs")
+        result, ok = await connector._fetch_group_members("g1", "devs")
         assert result == ["a1", "a2"]
+        assert ok is True
 
     @pytest.mark.asyncio
     async def test_skips_members_without_account_id(self):
@@ -945,8 +981,9 @@ class TestFetchGroupMembers:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        result = await connector._fetch_group_members("g1", "devs")
+        result, ok = await connector._fetch_group_members("g1", "devs")
         assert result == ["a1"]
+        assert ok is True
 
 
 # ===========================================================================
@@ -966,8 +1003,8 @@ class TestExtractIssueData:
         assert data["issue_id"] == "1001"
         assert data["issue_key"] == "PROJ-1"
         assert "[PROJ-1]" in data["issue_name"]
-        assert data["is_epic"] is False
-        assert data["is_subtask"] is False
+        assert data["issue_type"] == ItemType.TASK
+        assert data["parent_external_id"] is None
 
     def test_epic_detection(self):
         connector = _make_connector()
@@ -975,7 +1012,7 @@ class TestExtractIssueData:
         issue["fields"]["issuetype"] = {"name": "Epic", "hierarchyLevel": 1}
 
         data = connector._extract_issue_data(issue, {})
-        assert data["is_epic"] is True
+        assert data["issue_type"] == ItemType.EPIC
 
     def test_subtask_detection(self):
         connector = _make_connector()
@@ -984,7 +1021,7 @@ class TestExtractIssueData:
         issue["fields"]["parent"] = {"id": "parent-1", "key": "PROJ-0"}
 
         data = connector._extract_issue_data(issue, {})
-        assert data["is_subtask"] is True
+        assert data["issue_type"] == ItemType.SUBTASK
         assert data["parent_external_id"] == "parent-1"
 
     def test_user_email_resolution(self):
@@ -1095,6 +1132,8 @@ class TestProcessNewRecords:
 
         assert stats["new_count"] == 1
         assert stats["updated_count"] == 1
+        connector.data_entities_processor.on_new_records.assert_awaited()
+        connector.data_entities_processor.on_record_content_update.assert_awaited_once()
 
 
 # ===========================================================================
@@ -1248,11 +1287,13 @@ class TestFetchProjectPermissionScheme:
         assert perms[0].entity_type == EntityType.ORG
 
     @pytest.mark.asyncio
-    async def test_scheme_fetch_failure_returns_empty(self):
+    async def test_scheme_fetch_failure_returns_none(self):
         connector = _make_connector()
         ds = MagicMock()
         ds.get_assigned_permission_scheme = AsyncMock(return_value=_resp(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)
 
+        # Transient 5xx -> None so the caller skips this project and preserves its existing ACL
+        # (returning [] would overwrite the ACL and hide the project from everyone).
         perms = await connector._fetch_project_permission_scheme("PROJ")
-        assert perms == []
+        assert perms is None

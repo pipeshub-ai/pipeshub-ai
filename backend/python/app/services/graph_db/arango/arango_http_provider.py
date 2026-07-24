@@ -11598,19 +11598,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_ids: list[str],
         connector_id: str,
         transaction: str | None = None,
+        cascade_children: bool = True,
     ) -> dict:
-        """Delete records (files, folders, or any type) and ALL their containment
-        descendants — the single generic recursive delete for KB and connectors.
+        """Delete records and their owned descendants, scoped by connector_id.
 
-        A folder is just a record with PARENT_CHILD children, so there is no folder/file
-        special-casing: each root id is deleted together with its whole containment subtree
-        (reached via PARENT_CHILD + ATTACHMENT edges; reference edges like BLOCKS/RELATED
-        are cleaned but never traversed). Roots are scoped by ``connectorId == @connector_id``
-        (for a KB, connector_id == kb_id). All edges touching the deleted records are swept
-        dynamically (so inheritPermissions/permissions/entityRelations go too), the isOfType
-        type docs are removed from whatever collection they live in, and a ``deleteRecord``
-        event is emitted per record that carries a ``virtualRecordId`` (Qdrant cleanup),
-        with connectorName/origin taken from the record.
+        When *cascade_children* is True (default), traverses both PARENT_CHILD and
+        ATTACHMENT edges — deleting an entire containment subtree.  When False, only
+        ATTACHMENT edges are traversed so child records linked via PARENT_CHILD
+        survive (e.g. stories under a deleted epic).
+
+        All edges touching the deleted nodes are swept regardless of
+        *cascade_children*, type docs removed, and a deleteRecord event emitted per
+        record that carries a virtualRecordId (Qdrant cleanup).
         """
         try:
             if not record_ids:
@@ -11628,6 +11627,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     write=edge_collections + node_collections,
                 )
             try:
+                traversal_types = "['PARENT_CHILD', 'ATTACHMENT']" if cascade_children else "['ATTACHMENT']"
                 inventory_query = """
                 LET valid_roots = (
                     FOR rid IN @record_ids
@@ -11639,7 +11639,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 LET all_records = (
                     FOR root IN valid_roots
                         FOR v, e, p IN 0..20 OUTBOUND root._id @@record_relations
-                            FILTER LENGTH(p.edges) == 0 OR p.edges[-1].relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+                            FILTER LENGTH(p.edges) == 0 OR p.edges[-1].relationshipType IN """ + traversal_types + """
                             RETURN DISTINCT v
                 )
                 LET records_with_type = (

@@ -28,6 +28,7 @@ from app.connectors.sources.atlassian.jira_cloud_personal.connector import (
 )
 from app.models.entities import AppUser, AppUserGroup, RecordGroupType
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import NotificationType
 
 
 def _make_logger() -> logging.Logger:
@@ -382,9 +383,15 @@ class TestPersonalRunSyncEdgeCases:
         conn = _make_connector()
         conn.data_source = None
         conn.init = AsyncMock(return_value=False)
+        conn.notify = AsyncMock()
 
-        with pytest.raises(RuntimeError, match="init failed"):
+        with pytest.raises(RuntimeError, match="init failed") as exc_info:
             await conn.run_sync()
+
+        # Background sync notifies AUTH_ERROR once; except must not send a second alert.
+        assert getattr(exc_info.value, "_notification_sent", False) is True
+        conn.notify.assert_awaited_once()
+        assert conn.notify.await_args.kwargs["type"] == NotificationType.CONNECTOR_AUTH_ERROR
 
     async def test_run_sync_calls_init_when_data_source_missing(self) -> None:
         conn = _make_connector()
@@ -589,7 +596,7 @@ class TestFetchProjectsDescriptionParsing:
 
         record_groups, _ = await conn._fetch_projects()
 
-        assert record_groups[0][0].description == "Project summary"
+        assert record_groups[0][0].description is None
 
     async def test_empty_description_becomes_none(self) -> None:
         conn = _make_connector()
@@ -623,7 +630,7 @@ class TestFetchProjectsDescriptionParsing:
 
         record_groups, _ = await conn._fetch_projects()
 
-        assert record_groups[0][0].description == "Plain text summary"
+        assert record_groups[0][0].description is None
 
     async def test_logs_debug_when_project_permissions_present(self) -> None:
         conn = _make_connector()

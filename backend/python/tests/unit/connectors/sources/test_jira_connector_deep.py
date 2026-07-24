@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from contextlib import asynccontextmanager
 
+import httpx
 import pytest
 from fastapi import HTTPException
 
@@ -37,12 +38,11 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     DEFAULT_MAX_RESULTS,
     ISSUE_SEARCH_FIELDS,
     JiraConnector,
-    adf_to_text,
-    extract_media_from_adf,
 )
 from app.models.entities import (
     AppUser,
     FileRecord,
+    ItemType,
     MimeTypes,
     OriginTypes,
     Record,
@@ -144,8 +144,10 @@ class TestExtractIssueData:
         assert result["issue_id"] == "10001"
         assert result["issue_key"] == "PROJ-1"
         assert result["issue_name"] == "[PROJ-1] Fix bug"
-        assert result["is_epic"] is False
-        assert result["is_subtask"] is False
+        # `_extract_issue_data` now exposes the mapped issue_type + parent link;
+        # epic/subtask classification is derived downstream from these.
+        assert result["issue_type"] == ItemType.BUG
+        assert result["parent_external_id"] is None
 
     def test_epic_detection(self):
         c, *_ = _make_connector()
@@ -167,8 +169,7 @@ class TestExtractIssueData:
             }
         }
         result = c._extract_issue_data(issue, {})
-        assert result["is_epic"] is True
-        assert result["is_subtask"] is False
+        assert result["issue_type"] == ItemType.EPIC
 
     def test_subtask_with_parent(self):
         c, *_ = _make_connector()
@@ -190,9 +191,8 @@ class TestExtractIssueData:
             }
         }
         result = c._extract_issue_data(issue, {})
-        assert result["is_subtask"] is True
+        assert result["issue_type"] == ItemType.SUBTASK
         assert result["parent_external_id"] == "10001"
-        assert result["parent_key"] == "PROJ-1"
 
     def test_user_resolution(self):
         c, *_ = _make_connector()
@@ -221,32 +221,6 @@ class TestExtractIssueData:
         assert result["creator_email"] == "creator@test.com"
         assert result["reporter_email"] == "reporter@test.com"
         assert result["assignee_email"] is None
-
-    def test_with_adf_description(self):
-        c, *_ = _make_connector()
-        issue = {
-            "id": "10001",
-            "key": "PROJ-1",
-            "fields": {
-                "summary": "Test",
-                "description": {
-                    "type": "doc",
-                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Hello world"}]}]
-                },
-                "issuetype": {"name": "Task", "hierarchyLevel": 0},
-                "status": {"name": "Open"},
-                "priority": None,
-                "creator": None,
-                "reporter": None,
-                "assignee": None,
-                "parent": None,
-                "created": "2024-01-15T10:30:45.000+0000",
-                "updated": "2024-01-15T10:30:45.000+0000",
-            }
-        }
-        result = c._extract_issue_data(issue, {})
-        assert "Hello world" in result["description"]
-        assert "Issue Type:" in result["description"]
 
 
 # ===========================================================================
@@ -406,35 +380,28 @@ class TestOrganizeIssueCommentsToThreads:
         result = c._organize_issue_comments_to_threads([])
         assert result == []
 
-    def test_single_top_level_comment(self):
+    def test_single_comment(self):
         c, *_ = _make_connector()
         comments = [
-            {"id": "c1", "created": "2024-01-15T10:00:00.000+0000", "parent": {}}
+            {"id": "c1", "created": "2024-01-15T10:00:00.000+0000"}
         ]
         result = c._organize_issue_comments_to_threads(comments)
         assert len(result) == 1
         assert len(result[0]) == 1
 
-    def test_threaded_comments(self):
+    def test_all_comments_in_single_thread_sorted(self):
         c, *_ = _make_connector()
         comments = [
-            {"id": "c1", "created": "2024-01-15T10:00:00.000+0000", "parent": {}},
-            {"id": "c2", "created": "2024-01-15T11:00:00.000+0000", "parent": {"id": "c1"}},
-            {"id": "c3", "created": "2024-01-16T10:00:00.000+0000", "parent": {}},
+            {"id": "c3", "created": "2024-01-16T10:00:00.000+0000"},
+            {"id": "c1", "created": "2024-01-15T10:00:00.000+0000"},
+            {"id": "c2", "created": "2024-01-15T11:00:00.000+0000"},
         ]
         result = c._organize_issue_comments_to_threads(comments)
-        assert len(result) == 2  # Two threads: c1+c2, c3
-
-    def test_sorting_by_created(self):
-        c, *_ = _make_connector()
-        comments = [
-            {"id": "c2", "created": "2024-01-16T10:00:00.000+0000", "parent": {}},
-            {"id": "c1", "created": "2024-01-15T10:00:00.000+0000", "parent": {}},
-        ]
-        result = c._organize_issue_comments_to_threads(comments)
-        assert len(result) == 2
-        # First thread should be the earlier one
+        assert len(result) == 1
+        assert len(result[0]) == 3
         assert result[0][0]["id"] == "c1"
+        assert result[0][1]["id"] == "c2"
+        assert result[0][2]["id"] == "c3"
 
 
 # ===========================================================================
@@ -462,27 +429,6 @@ class TestExtractAttachmentFilenamesFromWiki:
         text = "No attachments here"
         result = c._extract_attachment_filenames_from_wiki(text)
         assert result == set()
-
-
-# ===========================================================================
-# _delete_attachment_record
-# ===========================================================================
-
-
-class TestDeleteAttachmentRecord:
-
-    @pytest.mark.asyncio
-    async def test_deletes_record(self):
-        c, dep, dsp, cs, tx = _make_connector()
-        record = MagicMock()
-        record.id = "r1"
-        record.external_record_id = "att_123"
-        record.record_name = "file.pdf"
-
-        await c._delete_attachment_record(record, "PROJ-1", tx, "test reason")
-        tx.delete_records_and_relations.assert_called_once_with(
-            record_key="r1", hard_delete=True
-        )
 
 
 # ===========================================================================
@@ -559,8 +505,12 @@ class TestHandleAttachmentDeletionsFromChangelog:
                 }]
             }
         }
-        await c._handle_attachment_deletions_from_changelog(issue, tx)
-        tx.delete_records_and_relations.assert_called()
+        # The method returns the internal ids for the caller to hard-delete.
+        result = await c._handle_attachment_deletions_from_changelog(issue, tx)
+        assert result == ["r1"]
+        tx.get_record_by_external_id.assert_awaited_with(
+            connector_id=c.connector_id, external_id="attachment_555"
+        )
 
 
 # ===========================================================================
@@ -695,16 +645,19 @@ class TestStreamRecord:
         record.record_name = "report.pdf"
         record.mime_type = "application/pdf"
 
-        resp = _make_jira_response(200)
+        # Attachment bytes now stream via an async iterator (download_attachment_content).
+        async def _chunks(*args, **kwargs):
+            yield b"chunk-1"
+            yield b"chunk-2"
         ds = AsyncMock()
-        ds.get_attachment_content = AsyncMock(return_value=resp)
+        ds.download_attachment_content = MagicMock(side_effect=_chunks)
         c._get_fresh_datasource = AsyncMock(return_value=ds)
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.create_stream_record_response") as mock_stream, \
              patch("app.connectors.sources.atlassian.jira_cloud.connector.sanitize_filename_for_content_disposition", return_value="report.pdf"), \
              patch("app.connectors.sources.atlassian.jira_cloud.connector.quote", return_value="report.pdf"):
             mock_stream.return_value = MagicMock()
-            result = await c.stream_record(record)
+            await c.stream_record(record)
             mock_stream.assert_called_once()
 
     @pytest.mark.asyncio
@@ -726,12 +679,20 @@ class TestStreamRecord:
         record.external_record_id = "attachment_12345"
         record.record_name = "report.pdf"
 
-        resp = _make_jira_response(404)
+        # A source failure surfaces as httpx.HTTPStatusError on the first streamed chunk,
+        # which _stream_attachment_content converts to a clean HTTPException.
+        req = httpx.Request("GET", "https://test.atlassian.net/attachment/12345")
+        resp404 = httpx.Response(404, request=req)
+
+        async def _failing(*args, **kwargs):
+            raise httpx.HTTPStatusError("Not Found", request=req, response=resp404)
+            yield b""  # unreachable; makes this an async generator
+
         ds = AsyncMock()
-        ds.get_attachment_content = AsyncMock(return_value=resp)
+        ds.download_attachment_content = MagicMock(side_effect=_failing)
         c._get_fresh_datasource = AsyncMock(return_value=ds)
 
-        with pytest.raises(Exception, match="Failed to fetch attachment"):
+        with pytest.raises(HTTPException, match="Failed to fetch attachment"):
             await c.stream_record(record)
 
 

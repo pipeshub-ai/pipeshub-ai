@@ -11,11 +11,7 @@ import pytest
 
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.constants import OAuthConfigKeys
-from app.connectors.sources.atlassian.jira_cloud.connector import (
-    JiraConnector,
-    adf_to_text,
-    adf_to_text_with_images,
-)
+from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
     _application_role_groups_from_dc_role,
@@ -60,128 +56,6 @@ def _make_dc_connector() -> JiraDataCenterConnector:
     cs = MagicMock()
     cs.get_config = AsyncMock()
     return JiraDataCenterConnector(logger, dep, dsp, cs, "conn-dc-gap", "team", "u1")
-
-
-class TestAdfCoverageGaps:
-    def test_paragraph_containing_list_avoids_extra_spacing(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [
-                    {"type": "text", "text": "Before"},
-                    {
-                        "type": "bulletList",
-                        "content": [{
-                            "type": "listItem",
-                            "content": [{
-                                "type": "paragraph",
-                                "content": [{"type": "text", "text": "nested"}],
-                            }],
-                        }],
-                    },
-                ],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "Before" in result
-        assert "nested" in result
-
-    def test_heading_outside_table_uses_markdown_prefix(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "heading",
-                "attrs": {"level": 3},
-                "content": [{"type": "text", "text": "Section"}],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "### Section" in result
-
-    def test_numbered_list_with_nested_content(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "orderedList",
-                "content": [{
-                    "type": "listItem",
-                    "content": [
-                        {"type": "paragraph", "content": [{"type": "text", "text": "Parent"}]},
-                        {
-                            "type": "bulletList",
-                            "content": [{
-                                "type": "listItem",
-                                "content": [{
-                                    "type": "paragraph",
-                                    "content": [{"type": "text", "text": "Child"}],
-                                }],
-                            }],
-                        },
-                    ],
-                }],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "1. Parent" in result
-        assert "Child" in result
-
-    def test_inline_code_and_hard_break(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [
-                    {"type": "inlineCode", "text": "code"},
-                    {"type": "hardBreak"},
-                    {"type": "text", "text": "after"},
-                ],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "`code`" in result
-        assert "after" in result
-
-    def test_single_node_without_doc_content_wrapper(self):
-        adf = {
-            "type": "paragraph",
-            "content": [{"type": "text", "text": "standalone paragraph"}],
-        }
-        result = adf_to_text(adf)
-        assert "standalone paragraph" in result
-
-    @pytest.mark.asyncio
-    async def test_adf_to_text_with_images_fetch_failure_uses_alt(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "media",
-                "attrs": {"id": "m1", "alt": "fallback.png"},
-            }],
-        }
-
-        async def failing_fetcher(_media_id: str, _alt: str) -> None:
-            raise RuntimeError("fetch failed")
-
-        result = await adf_to_text_with_images(adf, failing_fetcher)
-        assert "fallback.png" in result
-
-    def test_media_in_list_without_cache(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "bulletList",
-                "content": [{
-                    "type": "listItem",
-                    "content": [{
-                        "type": "media",
-                        "attrs": {"id": "missing", "alt": "in-list.png"},
-                    }],
-                }],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "in-list.png" in result
 
 
 class TestCloudInitCoverageGaps:
@@ -267,15 +141,22 @@ class TestCloudInitCoverageGaps:
 
 class TestCloudHandleDeletedIssueGaps:
     @pytest.mark.asyncio
-    async def test_handle_deleted_issue_logs_exception(self):
+    async def test_handle_deleted_issue_logs_and_reraises(self):
+        # _handle_deleted_issue logs the failure with a traceback and re-raises; the sync loop
+        # catches it per-issue (see the caller) rather than aborting the whole run. Confirm the
+        # error propagates rather than being silently swallowed.
         connector = _make_cloud_connector()
+        # Confirm-GET returns 404 (issue really gone) so we reach the DB transaction — which then
+        # fails; the point of this test is that the tx failure propagates rather than being swallowed.
+        connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=404))
         connector.data_store_provider.transaction = MagicMock()
         connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
             side_effect=RuntimeError("tx failed"),
         )
         connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock(return_value=None)
 
-        await connector._handle_deleted_issue("PROJ-1")
+        with pytest.raises(RuntimeError, match="tx failed"):
+            await connector._handle_deleted_issue("PROJ-1")
 
     @pytest.mark.asyncio
     async def test_sync_project_lead_roles_skips_lead_processing_errors(self):

@@ -14,10 +14,8 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     BATCH_PROCESSING_SIZE,
     DEFAULT_MAX_RESULTS,
     ISSUE_SEARCH_FIELDS,
+    MAX_INLINE_IMAGE_BYTES,
     JiraConnector,
-    adf_to_text,
-    adf_to_text_with_images,
-    extract_media_from_adf,
 )
 from app.models.entities import (
     AppRole,
@@ -40,6 +38,7 @@ def _make_mock_deps():
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_record_deleted = AsyncMock()
+    data_entities_processor.on_record_content_update = AsyncMock()
     data_entities_processor.on_new_app_roles = AsyncMock()
     data_entities_processor.reindex_existing_records = AsyncMock()
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[
@@ -127,423 +126,6 @@ def _make_file_record(attachment_id="99", issue_id="12345", version=0, **kwargs)
     return FileRecord(**defaults)
 
 
-class TestAdfToTextAdvanced:
-
-    def test_non_dict_input(self):
-        assert adf_to_text("not a dict") == ""
-        assert adf_to_text(42) == ""
-
-    def test_italic_text(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{"type": "text", "text": "italic", "marks": [{"type": "em"}]}],
-            }],
-        }
-        assert "*italic*" in adf_to_text(adf)
-
-    def test_strikethrough_text(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{"type": "text", "text": "deleted", "marks": [{"type": "strike"}]}],
-            }],
-        }
-        assert "~~deleted~~" in adf_to_text(adf)
-
-    def test_code_mark(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{"type": "text", "text": "code", "marks": [{"type": "code"}]}],
-            }],
-        }
-        assert "`code`" in adf_to_text(adf)
-
-    def test_link_mark(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{
-                    "type": "text",
-                    "text": "click",
-                    "marks": [{"type": "link", "attrs": {"href": "https://example.com"}}],
-                }],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "[click](https://example.com)" in result
-
-    def test_underline_mark(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{"type": "text", "text": "underline", "marks": [{"type": "underline"}]}],
-            }],
-        }
-        assert "*underline*" in adf_to_text(adf)
-
-    def test_ordered_list(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "orderedList",
-                "content": [
-                    {"type": "listItem", "content": [
-                        {"type": "paragraph", "content": [{"type": "text", "text": "First"}]}
-                    ]},
-                    {"type": "listItem", "content": [
-                        {"type": "paragraph", "content": [{"type": "text", "text": "Second"}]}
-                    ]},
-                ],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "1. First" in result
-        assert "2. Second" in result
-
-    def test_blockquote(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "blockquote",
-                "content": [{
-                    "type": "paragraph",
-                    "content": [{"type": "text", "text": "quoted text"}],
-                }],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "> quoted text" in result
-
-    def test_hard_break(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [
-                    {"type": "text", "text": "before"},
-                    {"type": "hardBreak"},
-                    {"type": "text", "text": "after"},
-                ],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "before" in result
-        assert "after" in result
-
-    def test_media_with_cache(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "media",
-                "attrs": {"id": "m1", "alt": "img.png"},
-            }],
-        }
-        cache = {"m1": "data:image/png;base64,AAAA"}
-        result = adf_to_text(adf, media_cache=cache)
-        assert "![img.png](data:image/png;base64,AAAA)" in result
-
-    def test_media_without_cache(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "media",
-                "attrs": {"id": "m1", "alt": "img.png"},
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "![img.png]" in result
-
-    def test_emoji(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{"type": "emoji", "attrs": {"shortName": "smile"}}],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert ":smile:" in result
-
-    def test_table(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "table",
-                "content": [{
-                    "type": "tableRow",
-                    "content": [
-                        {"type": "tableHeader", "content": [
-                            {"type": "paragraph", "content": [{"type": "text", "text": "Header"}]}
-                        ]},
-                    ],
-                }, {
-                    "type": "tableRow",
-                    "content": [
-                        {"type": "tableCell", "content": [
-                            {"type": "paragraph", "content": [{"type": "text", "text": "Cell"}]}
-                        ]},
-                    ],
-                }],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "Header" in result
-        assert "Cell" in result
-
-    def test_status_node(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{"type": "status", "attrs": {"text": "IN PROGRESS"}}],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "[IN PROGRESS]" in result
-
-    def test_date_node(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{"type": "date", "attrs": {"timestamp": "1700000000000"}}],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "2023-11-14" in result
-
-    def test_date_node_invalid_timestamp(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{"type": "date", "attrs": {"timestamp": "not-a-number"}}],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "not-a-number" in result
-
-    def test_expand_node(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "expand",
-                "attrs": {"title": "Details"},
-                "content": [{
-                    "type": "paragraph",
-                    "content": [{"type": "text", "text": "hidden text"}],
-                }],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "**Details**" in result
-        assert "hidden text" in result
-
-    def test_panel_node(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "panel",
-                "attrs": {"panelType": "warning"},
-                "content": [{
-                    "type": "paragraph",
-                    "content": [{"type": "text", "text": "warning text"}],
-                }],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "WARNING" in result
-        assert "warning text" in result
-
-    def test_task_list(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "taskList",
-                "content": [{
-                    "type": "taskItem",
-                    "attrs": {"state": "DONE"},
-                    "content": [{"type": "text", "text": "done task"}],
-                }, {
-                    "type": "taskItem",
-                    "attrs": {"state": "TODO"},
-                    "content": [{"type": "text", "text": "todo task"}],
-                }],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "[x] done task" in result
-        assert "[ ] todo task" in result
-
-    def test_decision_list(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "decisionList",
-                "content": [{
-                    "type": "decisionItem",
-                    "attrs": {"state": "DECIDED"},
-                    "content": [{"type": "text", "text": "decided"}],
-                }],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "✓ decided" in result
-
-    def test_layout_section(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "layoutSection",
-                "content": [{
-                    "type": "layoutColumn",
-                    "content": [{
-                        "type": "paragraph",
-                        "content": [{"type": "text", "text": "col1"}],
-                    }],
-                }],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "col1" in result
-
-    def test_placeholder(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{"type": "placeholder", "attrs": {"text": "Type here..."}}],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "Type here..." in result
-
-    def test_media_single_wrapper(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "mediaSingle",
-                "content": [{"type": "media", "attrs": {"id": "x", "alt": "file.png"}}],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "![file.png]" in result
-
-    def test_inline_code(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{"type": "inlineCode", "text": "var x"}],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "`var x`" in result
-
-    def test_fallback_content_node(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "unknownType",
-                "content": [{
-                    "type": "paragraph",
-                    "content": [{"type": "text", "text": "fallback"}],
-                }],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "fallback" in result
-
-    def test_non_dict_node(self):
-        adf = {
-            "type": "doc",
-            "content": [42, None, "string"],
-        }
-        result = adf_to_text(adf)
-        assert result == ""
-
-    def test_nested_bullet_list(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "bulletList",
-                "content": [{
-                    "type": "listItem",
-                    "content": [
-                        {"type": "paragraph", "content": [{"type": "text", "text": "Parent"}]},
-                        {"type": "bulletList", "content": [{
-                            "type": "listItem",
-                            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Child"}]}],
-                        }]},
-                    ],
-                }],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "Parent" in result
-        assert "Child" in result
-
-    def test_doc_without_content_key(self):
-        adf = {"type": "paragraph", "content": [{"type": "text", "text": "no doc wrapper"}]}
-        result = adf_to_text(adf)
-        assert "no doc wrapper" in result
-
-
-class TestAdfToTextWithImages:
-
-    @pytest.mark.asyncio
-    async def test_empty_input(self):
-        async def fetcher(mid, alt):
-            return None
-        result = await adf_to_text_with_images(None, fetcher)
-        assert result == ""
-
-    @pytest.mark.asyncio
-    async def test_fetches_media_and_embeds(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "mediaSingle",
-                "content": [{
-                    "type": "media",
-                    "attrs": {"id": "m1", "alt": "img.png", "type": "file"},
-                }],
-            }],
-        }
-
-        async def fetcher(mid, alt):
-            return "data:image/png;base64,AAAA"
-
-        result = await adf_to_text_with_images(adf, fetcher)
-        assert "data:image/png;base64,AAAA" in result
-
-    @pytest.mark.asyncio
-    async def test_handles_fetch_failure(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "mediaSingle",
-                "content": [{
-                    "type": "media",
-                    "attrs": {"id": "m1", "alt": "img.png", "type": "file"},
-                }],
-            }],
-        }
-
-        async def fetcher(mid, alt):
-            raise Exception("network error")
-
-        result = await adf_to_text_with_images(adf, fetcher)
-        assert "![img.png]" in result
-
-
 class TestFetchApplicationRolesToGroupsMapping:
 
     @pytest.mark.asyncio
@@ -595,7 +177,7 @@ class TestSyncUserGroups:
     @pytest.mark.asyncio
     async def test_no_groups(self):
         connector = _make_connector()
-        connector._fetch_groups = AsyncMock(return_value=[])
+        connector._fetch_groups = AsyncMock(return_value=([], False))
         jira_users = [_make_app_user()]
 
         result = await connector._sync_user_groups(jira_users)
@@ -604,10 +186,10 @@ class TestSyncUserGroups:
     @pytest.mark.asyncio
     async def test_groups_with_members(self):
         connector = _make_connector()
-        connector._fetch_groups = AsyncMock(return_value=[
+        connector._fetch_groups = AsyncMock(return_value=([
             {"groupId": "g1", "name": "developers"},
-        ])
-        connector._fetch_group_members = AsyncMock(return_value=["acc-1"])
+        ], False))
+        connector._fetch_group_members = AsyncMock(return_value=(["acc-1"], True))
         user = _make_app_user(email="user@example.com", account_id="acc-1")
 
         result = await connector._sync_user_groups([user])
@@ -619,10 +201,10 @@ class TestSyncUserGroups:
     @pytest.mark.asyncio
     async def test_group_without_id_skipped(self):
         connector = _make_connector()
-        connector._fetch_groups = AsyncMock(return_value=[
+        connector._fetch_groups = AsyncMock(return_value=([
             {"groupId": None, "name": "bad-group"},
             {"groupId": "g1", "name": None},
-        ])
+        ], False))
         connector._fetch_group_members = AsyncMock(return_value=[])
 
         result = await connector._sync_user_groups([])
@@ -631,9 +213,9 @@ class TestSyncUserGroups:
     @pytest.mark.asyncio
     async def test_group_error_continues(self):
         connector = _make_connector()
-        connector._fetch_groups = AsyncMock(return_value=[
+        connector._fetch_groups = AsyncMock(return_value=([
             {"groupId": "g1", "name": "devs"},
-        ])
+        ], False))
         connector._fetch_group_members = AsyncMock(side_effect=Exception("API error"))
 
         result = await connector._sync_user_groups([])
@@ -643,9 +225,11 @@ class TestSyncUserGroups:
     async def test_returns_empty_on_exception(self):
         connector = _make_connector()
         connector._fetch_groups = AsyncMock(side_effect=Exception("total failure"))
+        connector.notify = AsyncMock()
 
         result = await connector._sync_user_groups([])
         assert result == {}
+        connector.notify.assert_awaited_once()
 
 
 class TestSyncProjectRoles:
@@ -722,6 +306,7 @@ class TestSyncProjectRoles:
     async def test_handles_role_fetch_failure(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
+        connector.notify = AsyncMock()
 
         mock_ds = MagicMock()
         mock_ds.get_project_roles = AsyncMock(return_value=_make_mock_response(403))
@@ -729,11 +314,14 @@ class TestSyncProjectRoles:
 
         await connector._sync_project_roles(["PROJ"], [], {})
         connector.data_entities_processor.on_new_app_roles.assert_not_awaited()
+        connector.notify.assert_awaited_once()
+        assert "PROJ" in connector.notify.await_args.kwargs["message"]
 
     @pytest.mark.asyncio
     async def test_handles_project_error(self):
         connector = _make_connector()
         connector.data_source = MagicMock()
+        connector.notify = AsyncMock()
 
         mock_ds = MagicMock()
         mock_ds.get_project_roles = AsyncMock(side_effect=Exception("network"))
@@ -741,6 +329,8 @@ class TestSyncProjectRoles:
 
         await connector._sync_project_roles(["PROJ"], [], {})
         connector.data_entities_processor.on_new_app_roles.assert_not_awaited()
+        connector.notify.assert_awaited_once()
+        assert "PROJ" in connector.notify.await_args.kwargs["message"]
 
 
 class TestParseIssueLinks:
@@ -868,8 +458,9 @@ class TestExtractIssueData:
             },
         }
         result = connector._extract_issue_data(issue, {})
-        assert result["is_epic"] is True
-        assert result["is_subtask"] is False
+        # Epic/subtask are now captured by the mapped issue_type, not is_epic/is_subtask flags.
+        assert result["issue_type"].value == "EPIC"
+        assert result["parent_external_id"] is None
 
     def test_subtask_detection(self):
         connector = _make_connector()
@@ -891,33 +482,8 @@ class TestExtractIssueData:
             },
         }
         result = connector._extract_issue_data(issue, {})
-        assert result["is_subtask"] is True
+        assert result["issue_type"].value == "SUBTASK"
         assert result["parent_external_id"] == "1"
-
-    def test_description_with_adf(self):
-        connector = _make_connector()
-        issue = {
-            "id": "3",
-            "key": "D-1",
-            "fields": {
-                "summary": "Desc",
-                "description": {
-                    "type": "doc",
-                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Hello"}]}],
-                },
-                "issuetype": {"name": "Task", "hierarchyLevel": 0},
-                "status": None,
-                "priority": None,
-                "creator": None,
-                "reporter": None,
-                "assignee": None,
-                "created": None,
-                "updated": None,
-                "parent": None,
-            },
-        }
-        result = connector._extract_issue_data(issue, {})
-        assert "Hello" in result["description"]
 
 
 class TestParseJiraTimestamp:
@@ -1099,24 +665,18 @@ class TestOrganizeIssueCommentsToThreads:
         connector = _make_connector()
         assert connector._organize_issue_comments_to_threads([]) == []
 
-    def test_single_thread(self):
+    def test_all_comments_in_single_thread(self):
         connector = _make_connector()
         comments = [
             {"id": "c1", "created": "2024-01-01T00:00:00.000Z"},
-            {"id": "c2", "parent": {"id": "c1"}, "created": "2024-01-01T01:00:00.000Z"},
+            {"id": "c2", "created": "2024-01-01T01:00:00.000Z"},
+            {"id": "c3", "created": "2024-01-02T00:00:00.000Z"},
         ]
         threads = connector._organize_issue_comments_to_threads(comments)
         assert len(threads) == 1
-        assert len(threads[0]) == 2
-
-    def test_multiple_threads(self):
-        connector = _make_connector()
-        comments = [
-            {"id": "c1", "created": "2024-01-01T00:00:00.000Z"},
-            {"id": "c2", "created": "2024-01-02T00:00:00.000Z"},
-        ]
-        threads = connector._organize_issue_comments_to_threads(comments)
-        assert len(threads) == 2
+        assert len(threads[0]) == 3
+        assert threads[0][0]["id"] == "c1"
+        assert threads[0][2]["id"] == "c3"
 
     def test_comment_without_id_skipped(self):
         connector = _make_connector()
@@ -1616,11 +1176,11 @@ class TestHandleAttachmentDeletionsFromChangelog:
         mock_record.record_name = "file.txt"
 
         tx_store = AsyncMock()
-        tx_store.delete_records_and_relations = AsyncMock()
         connector._find_attachment_record_by_id = AsyncMock(return_value=mock_record)
 
-        await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
-        tx_store.delete_records_and_relations.assert_awaited_once()
+        # Method returns internal ids for the caller to hard-delete.
+        delete_ids = await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
+        assert delete_ids == ["rec-1"]
 
     @pytest.mark.asyncio
     async def test_description_change_with_removed_attachment(self):
@@ -1647,12 +1207,11 @@ class TestHandleAttachmentDeletionsFromChangelog:
         mock_record.record_name = "removed.png"
 
         tx_store = AsyncMock()
-        tx_store.delete_records_and_relations = AsyncMock()
         tx_store.get_records_by_parent = AsyncMock(return_value=[mock_record])
         connector._find_attachment_record_by_id = AsyncMock(return_value=None)
 
-        await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
-        tx_store.delete_records_and_relations.assert_awaited()
+        delete_ids = await connector._handle_attachment_deletions_from_changelog(issue, tx_store)
+        assert delete_ids == ["rec-1"]
 
     @pytest.mark.asyncio
     async def test_error_is_caught(self):
@@ -1681,7 +1240,9 @@ class TestHandleIssueDeletions:
         connector = _make_connector()
         connector.issues_sync_point.read_sync_point = AsyncMock(return_value=None)
         connector.issues_sync_point.update_sync_point = AsyncMock()
-        connector._detect_and_handle_deletions = AsyncMock(return_value=0)
+        # _detect_and_handle_deletions now returns (checkpoint_ms, success); the checkpoint is
+        # advanced only when success is True.
+        connector._detect_and_handle_deletions = AsyncMock(return_value=(1700000000001, True))
 
         await connector._handle_issue_deletions(1700000000000)
         connector._detect_and_handle_deletions.assert_awaited_once()
@@ -1743,12 +1304,10 @@ class TestCleanup:
         mock_client.get_client.return_value = mock_internal
         connector.external_client = mock_client
         connector.data_source = MagicMock()
-        connector._issue_attachments_cache = {"k": "v"}
 
         await connector.cleanup()
         assert connector.external_client is None
         assert connector.data_source is None
-        assert connector._issue_attachments_cache == {}
 
     @pytest.mark.asyncio
     async def test_cleanup_error_handled(self):
@@ -1825,140 +1384,82 @@ class TestSyncProjectLeadRoles:
         connector.data_entities_processor.on_new_app_roles.assert_awaited_once()
 
 
-class TestGetIssueAttachmentsCached:
+class TestFetchAttachmentAsBase64:
 
     @pytest.mark.asyncio
-    async def test_cache_hit(self):
+    async def test_image_returns_data_uri(self):
         connector = _make_connector()
-        connector._issue_attachments_cache = {"issue-1": [{"id": "a1"}]}
-
-        result = await connector._get_issue_attachments_cached("issue-1")
-        assert len(result) == 1
-
-    @pytest.mark.asyncio
-    async def test_cache_miss_fetches(self):
-        connector = _make_connector()
-        connector._issue_attachments_cache = {}
-
-        mock_ds = MagicMock()
-        mock_ds.get_issue = AsyncMock(return_value=_make_mock_response(200, {
-            "fields": {"attachment": [{"id": "a1"}]},
-        }))
-        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-
-        result = await connector._get_issue_attachments_cached("issue-1")
-        assert len(result) == 1
-        assert "issue-1" in connector._issue_attachments_cache
-
-    @pytest.mark.asyncio
-    async def test_cache_miss_api_failure(self):
-        connector = _make_connector()
-        connector._issue_attachments_cache = {}
-
-        mock_ds = MagicMock()
-        mock_ds.get_issue = AsyncMock(return_value=_make_mock_response(500))
-        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-
-        result = await connector._get_issue_attachments_cached("issue-1")
-        assert result == []
-
-
-class TestCreateMediaFetcher:
-
-    @pytest.mark.asyncio
-    async def test_creates_bound_fetcher(self):
-        connector = _make_connector()
-        connector._fetch_media_as_base64 = AsyncMock(return_value="data:image/png;base64,AAAA")
-
-        fetcher = connector._create_media_fetcher("issue-1")
-        result = await fetcher("m1", "alt")
-        assert result == "data:image/png;base64,AAAA"
-        connector._fetch_media_as_base64.assert_awaited_once_with("issue-1", "m1", "alt")
-
-
-class TestFetchMediaAsBase64:
-
-    @pytest.mark.asyncio
-    async def test_by_media_id(self):
-        connector = _make_connector()
-        connector._get_issue_attachments_cached = AsyncMock(return_value=[
-            {"id": "42", "filename": "img.png", "mimeType": "image/png"},
-        ])
-
         mock_ds = MagicMock()
         mock_ds.get_attachment_content = AsyncMock(return_value=_make_mock_response(200))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await connector._fetch_media_as_base64("issue-1", "42", "")
+        cache: dict = {}
+        result = await connector._fetch_attachment_as_base64(
+            {"id": "42", "mimeType": "image/png", "size": 10}, cache
+        )
         assert result.startswith("data:image/png;base64,")
+        assert cache["42"] == result
 
     @pytest.mark.asyncio
-    async def test_fallback_by_filename(self):
+    async def test_non_image_returns_none_without_fetch(self):
         connector = _make_connector()
-        connector._get_issue_attachments_cached = AsyncMock(return_value=[
-            {"id": "42", "filename": "img.png", "mimeType": "image/png"},
-        ])
+        connector._get_fresh_datasource = AsyncMock(side_effect=AssertionError("must not fetch"))
 
-        mock_ds = MagicMock()
-        mock_ds.get_attachment_content = AsyncMock(return_value=_make_mock_response(200))
-        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-
-        result = await connector._fetch_media_as_base64("issue-1", "no-match", "img.png")
-        assert result is not None
-
-    @pytest.mark.asyncio
-    async def test_fallback_partial_filename(self):
-        connector = _make_connector()
-        connector._get_issue_attachments_cached = AsyncMock(return_value=[
-            {"id": "42", "filename": "screenshot-2024.png", "mimeType": "image/png"},
-        ])
-
-        mock_ds = MagicMock()
-        mock_ds.get_attachment_content = AsyncMock(return_value=_make_mock_response(200))
-        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-
-        result = await connector._fetch_media_as_base64("issue-1", "no-match", "screenshot-2024")
-        assert result is not None
-
-    @pytest.mark.asyncio
-    async def test_no_matching_attachment(self):
-        connector = _make_connector()
-        connector._get_issue_attachments_cached = AsyncMock(return_value=[
-            {"id": "42", "filename": "other.png", "mimeType": "image/png"},
-        ])
-
-        result = await connector._fetch_media_as_base64("issue-1", "no-match", "no-match-alt")
+        cache: dict = {}
+        result = await connector._fetch_attachment_as_base64(
+            {"id": "7", "mimeType": "application/pdf", "size": 10}, cache
+        )
         assert result is None
+        assert cache["7"] is None
 
     @pytest.mark.asyncio
-    async def test_no_attachments(self):
+    async def test_cache_hit_short_circuits(self):
         connector = _make_connector()
-        connector._get_issue_attachments_cached = AsyncMock(return_value=[])
+        connector._get_fresh_datasource = AsyncMock(side_effect=AssertionError("must not fetch"))
 
-        result = await connector._fetch_media_as_base64("issue-1", "m1", "alt")
+        cache = {"42": "data:image/png;base64,CACHED"}
+        result = await connector._fetch_attachment_as_base64(
+            {"id": "42", "mimeType": "image/png"}, cache
+        )
+        assert result == "data:image/png;base64,CACHED"
+
+    @pytest.mark.asyncio
+    async def test_oversized_returns_none(self):
+        connector = _make_connector()
+        connector._get_fresh_datasource = AsyncMock(side_effect=AssertionError("must not fetch"))
+
+        cache: dict = {}
+        result = await connector._fetch_attachment_as_base64(
+            {"id": "42", "mimeType": "image/png", "size": MAX_INLINE_IMAGE_BYTES + 1}, cache
+        )
         assert result is None
+        assert cache["42"] is None
 
     @pytest.mark.asyncio
-    async def test_fetch_content_failure(self):
+    async def test_fetch_failure_returns_none(self):
         connector = _make_connector()
-        connector._get_issue_attachments_cached = AsyncMock(return_value=[
-            {"id": "42", "filename": "img.png", "mimeType": "image/png"},
-        ])
-
         mock_ds = MagicMock()
         mock_ds.get_attachment_content = AsyncMock(return_value=_make_mock_response(500))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await connector._fetch_media_as_base64("issue-1", "42", "")
+        cache: dict = {}
+        result = await connector._fetch_attachment_as_base64(
+            {"id": "42", "mimeType": "image/png", "size": 10}, cache
+        )
         assert result is None
+        assert cache["42"] is None
 
     @pytest.mark.asyncio
     async def test_exception_returns_none(self):
         connector = _make_connector()
-        connector._get_issue_attachments_cached = AsyncMock(side_effect=Exception("err"))
+        connector._get_fresh_datasource = AsyncMock(side_effect=Exception("boom"))
 
-        result = await connector._fetch_media_as_base64("issue-1", "m1", "alt")
+        cache: dict = {}
+        result = await connector._fetch_attachment_as_base64(
+            {"id": "42", "mimeType": "image/png", "size": 10}, cache
+        )
         assert result is None
+        assert cache["42"] is None
 
 
 class TestProcessNewRecords:
@@ -1974,6 +1475,7 @@ class TestProcessNewRecords:
         await connector._process_new_records([r2, r1], "PROJ", stats)
 
         connector.data_entities_processor.on_new_records.assert_awaited()
+        connector.data_entities_processor.on_record_content_update.assert_awaited_once()
         assert stats["new_count"] == 1
         assert stats["updated_count"] == 1
 
@@ -1994,8 +1496,10 @@ class TestFetchDeletedIssuesFromAudit:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await connector._fetch_deleted_issues_from_audit("2024-01-01", "2024-01-02")
-        assert "PROJ-99" in result
+        # Now returns (issue_keys, ok).
+        keys, ok = await connector._fetch_deleted_issues_from_audit("2024-01-01", "2024-01-02")
+        assert "PROJ-99" in keys
+        assert ok is True
 
     @pytest.mark.asyncio
     async def test_empty_audit(self):
@@ -2008,19 +1512,23 @@ class TestFetchDeletedIssuesFromAudit:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await connector._fetch_deleted_issues_from_audit("2024-01-01", "2024-01-02")
-        assert result == []
+        keys, ok = await connector._fetch_deleted_issues_from_audit("2024-01-01", "2024-01-02")
+        assert keys == []
+        assert ok is True
 
     @pytest.mark.asyncio
     async def test_audit_api_failure(self):
         connector = _make_connector()
+        connector.notify = AsyncMock()
 
         mock_ds = MagicMock()
         mock_ds.get_audit_records = AsyncMock(return_value=_make_mock_response(403))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await connector._fetch_deleted_issues_from_audit("2024-01-01", "2024-01-02")
-        assert result == []
+        # A failed page returns ok=False so the caller won't advance past unread deletions.
+        keys, ok = await connector._fetch_deleted_issues_from_audit("2024-01-01", "2024-01-02")
+        assert keys == []
+        assert ok is False
 
 
 class TestDetectAndHandleDeletions:
@@ -2028,60 +1536,42 @@ class TestDetectAndHandleDeletions:
     @pytest.mark.asyncio
     async def test_no_deletions(self):
         connector = _make_connector()
-        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=[])
+        # _fetch_deleted_issues_from_audit returns (keys, ok); _detect returns (checkpoint_ms, success).
+        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=([], True))
 
-        count = await connector._detect_and_handle_deletions(1700000000000)
-        assert count == 0
+        _checkpoint, success = await connector._detect_and_handle_deletions(1700000000000)
+        assert success is True
 
     @pytest.mark.asyncio
     async def test_with_deletions(self):
         connector = _make_connector()
-        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=["PROJ-1"])
+        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=(["PROJ-1"], True))
         connector._handle_deleted_issue = AsyncMock()
 
-        count = await connector._detect_and_handle_deletions(1700000000000)
-        assert count == 1
+        _checkpoint, success = await connector._detect_and_handle_deletions(1700000000000)
+        assert success is True
+        connector._handle_deleted_issue.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_deletion_error_continues(self):
         connector = _make_connector()
-        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=["PROJ-1", "PROJ-2"])
+        connector._fetch_deleted_issues_from_audit = AsyncMock(return_value=(["PROJ-1", "PROJ-2"], True))
         connector._handle_deleted_issue = AsyncMock(
             side_effect=[Exception("err"), None]
         )
 
-        count = await connector._detect_and_handle_deletions(1700000000000)
-        assert count == 1
+        # One deletion failed -> success is False so the caller retries the window.
+        _checkpoint, success = await connector._detect_and_handle_deletions(1700000000000)
+        assert success is False
+        assert connector._handle_deleted_issue.await_count == 2
 
     @pytest.mark.asyncio
     async def test_overall_exception(self):
         connector = _make_connector()
         connector._fetch_deleted_issues_from_audit = AsyncMock(side_effect=Exception("total fail"))
 
-        count = await connector._detect_and_handle_deletions(1700000000000)
-        assert count == 0
-
-
-class TestDeleteIssueChildrenRecursive:
-
-    @pytest.mark.asyncio
-    async def test_deletes_ticket_children_recursively(self):
-        connector = _make_connector()
-        tx_store = AsyncMock()
-
-        child = MagicMock()
-        child.id = "child-1"
-        child.external_record_id = "ext-child-1"
-
-        tx_store.get_records_by_parent = AsyncMock(side_effect=[
-            [child],
-            [],
-            [],
-        ])
-        tx_store.delete_records_and_relations = AsyncMock()
-
-        count = await connector._delete_issue_children("parent-1", RecordType.TICKET, tx_store)
-        assert count == 1
+        _checkpoint, success = await connector._detect_and_handle_deletions(1700000000000)
+        assert success is False
 
 
 class TestGetProjectSyncCheckpoint:
@@ -2281,16 +1771,18 @@ class TestFetchProjectPermissionScheme:
         mock_ds.get_permission_scheme_grants = AsyncMock(return_value=_make_mock_response(500))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
+        # A transient (non-401/403) failure returns None -> caller skips the project and
+        # preserves its existing ACL, rather than wiping it to an empty list.
         permissions = await connector._fetch_project_permission_scheme("PROJ")
-        assert permissions == []
+        assert permissions is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_none(self):
         connector = _make_connector()
         connector._get_fresh_datasource = AsyncMock(side_effect=Exception("err"))
 
         permissions = await connector._fetch_project_permission_scheme("PROJ")
-        assert permissions == []
+        assert permissions is None
 
     @pytest.mark.asyncio
     async def test_skips_sd_customer_and_custom_fields(self):
@@ -2354,23 +1846,6 @@ class TestFindAttachmentRecordById:
             connector_id="conn-jira-1",
             external_id="attachment_100",
         )
-
-
-class TestDeleteAttachmentRecord:
-
-    @pytest.mark.asyncio
-    async def test_deletes_and_logs(self):
-        connector = _make_connector()
-        tx_store = AsyncMock()
-        tx_store.delete_records_and_relations = AsyncMock()
-
-        record = MagicMock()
-        record.id = "r1"
-        record.external_record_id = "attachment_100"
-        record.record_name = "file.txt"
-
-        await connector._delete_attachment_record(record, "PROJ-1", tx_store)
-        tx_store.delete_records_and_relations.assert_awaited_once_with(record_key="r1", hard_delete=True)
 
 
 class TestGetFreshDatasourceOAuth:
