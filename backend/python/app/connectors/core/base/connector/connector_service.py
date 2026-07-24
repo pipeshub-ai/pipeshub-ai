@@ -80,6 +80,39 @@ class BaseConnector(ABC):
         self._connector_group_permission: Optional[Permission] = None
         self._notification_service = None
         self._background_tasks: set[asyncio.Task] = set()
+        # The user's name for *this* connection, from the App node. Several
+        # connector types are multi-instance — most importantly Collections,
+        # where one instance exists per knowledge base — so the type name alone
+        # cannot identify which one failed. Populated by the caller that holds
+        # the App document; see display_name.
+        self.instance_name: Optional[str] = None
+
+    @property
+    def display_name(self) -> str:
+        """The connector's name as shown to the user.
+
+        User-facing errors must use this: they tell the user to go to Connector
+        Settings, so the name has to match what they will find there. Prefers
+        the specific instance name ("Engineering Docs") over the connector type
+        ("Collections"), falling back to the ``@ConnectorBuilder`` metadata —
+        which also makes shared base classes (e.g. S3 vs MinIO) report their
+        own concrete name.
+
+        Every lookup is defensive: this feeds error messages, so it must never
+        raise and mask the failure it is describing.
+        """
+        instance_name = getattr(self, "instance_name", None)
+        if instance_name:
+            return str(instance_name)
+        metadata = getattr(type(self), "_connector_metadata", None)
+        if metadata and metadata.get("name"):
+            return str(metadata["name"])
+        # Fallback for classes registered without the decorator. `Connectors`
+        # is not a str-Enum, so str() on a member yields "Connectors.S3".
+        connector_name = getattr(self, "connector_name", None)
+        if connector_name is None:
+            return "the source"
+        return getattr(connector_name, "value", None) or str(connector_name)
 
     @abstractmethod
     async def init(self) -> bool:

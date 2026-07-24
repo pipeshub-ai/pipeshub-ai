@@ -79,6 +79,10 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.utils.oauth_config import fetch_oauth_config_by_id
+from app.connectors.core.base.error.stream_errors import (
+    map_source_status,
+    not_downloadable,
+)
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
@@ -1019,10 +1023,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     _, done = downloader.next_chunk()
                 except HttpError as http_error:
                     self.logger.error(f"HTTP error during {error_context}: {str(http_error)}")
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=f"Error during {error_context}: {str(http_error)}",
-                    )
+                    # HttpError carries Drive's own status on .resp.status —
+                    # mapping it is what tells a revoked token from a deleted file.
+                    raise map_source_status(
+                        http_error.resp.status, connector=self.display_name
+                    ) from http_error
                 except Exception as chunk_error:
                     self.logger.error(f"Error during {error_context}: {str(chunk_error)}")
                     raise HTTPException(
@@ -1247,9 +1252,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
                                     self.logger.error(
                                         f"Google Workspace file cannot be downloaded for PDF conversion: {str(http_error)}"
                                     )
-                                    raise HTTPException(
-                                        status_code=HttpStatusCode.BAD_REQUEST.value,
-                                        detail="Google Workspace files (Sheets, Docs, Slides) cannot be converted to PDF using direct download. Please use the file's native export functionality.",
+                                    raise not_downloadable(
+                                        "Google Workspace files (Sheets, Docs, Slides) cannot be "
+                                        "converted to PDF using direct download. Please use the "
+                                        "file's native export functionality.",
+                                        connector=self.display_name,
                                     )
                         raise
 

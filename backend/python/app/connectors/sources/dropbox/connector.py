@@ -33,7 +33,6 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
-from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -93,6 +92,10 @@ from app.sources.client.dropbox.dropbox_ import (
 )
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
 from app.utils.oauth_config import fetch_oauth_config_by_id
+from app.connectors.core.base.error.stream_errors import (
+    not_found_at_source,
+    to_stream_error,
+)
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -2933,18 +2936,27 @@ class DropboxConnector(BaseConnector):
 
             response = await self.data_source.files_get_temporary_link(path=file_record.path, team_folder_id=team_folder_id, team_member_id=team_member_id)
             return response.data.link
+        except HTTPException:
+            raise
         except Exception as e:
-            self.logger.error(f"Error creating signed URL for record {record.id}: {e}")
-            return None
+            self.logger.error(
+                f"Error creating signed URL for record {record.id}: {e}", exc_info=True
+            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         signed_url = await self.get_signed_url(record)
         if not signed_url:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
+            raise not_found_at_source(self.display_name)
 
         return create_stream_record_response(
-            stream_content(signed_url),
+            stream_content(
+                signed_url,
+                record_id=record.id,
+                file_name=record.record_name,
+                connector=self.display_name,
+            ),
             filename=record.record_name,
             mime_type=record.mime_type,
             fallback_filename=f"record_{record.id}"

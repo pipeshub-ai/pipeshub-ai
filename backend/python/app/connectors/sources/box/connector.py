@@ -18,7 +18,6 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
-from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -73,6 +72,11 @@ from app.sources.client.box.box import (
     BoxClient,
 )
 from app.sources.external.box.box import BoxDataSource
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.utils.streaming import create_stream_record_response, stream_content
 
 
@@ -2047,7 +2051,7 @@ class BoxConnector(BaseConnector):
         links expire automatically and are visible in Box UI with expiration badge.
         """
         if not self.data_source:
-            return None
+            raise connector_not_ready(self.display_name)
 
         # Determine the user context for As-User impersonation
         context_user_id = record.external_record_group_id
@@ -2065,18 +2069,25 @@ class BoxConnector(BaseConnector):
             if response.success and response.data:
                 # Response.data is the download URL (shared link or existing link)
                 return str(response.data)
-            else:
-                self.logger.warning(
-                    f"Failed to get download URL for {record.record_name}: {response.error}"
-                )
-                return None
 
+            # An unsuccessful response with no exception carries no status; the
+            # likely cause is the file being gone. Auth failures arrive as SDK
+            # exceptions and are mapped below.
+            self.logger.warning(
+                f"Failed to get download URL for {record.record_name}: {response.error}"
+            )
+            raise not_found_at_source(self.display_name)
+
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(
                 f"Error getting temporary download URL for record {record.id}: {e}",
                 exc_info=True
             )
-            return None
+            # Propagate the real reason: collapsing this into None made an
+            # expired token indistinguishable from a deleted file.
+            raise to_stream_error(e, connector=self.display_name) from e
         finally:
             # Always clear As-User context to avoid polluting other requests
             if context_user_id:
@@ -2086,13 +2097,15 @@ class BoxConnector(BaseConnector):
         """Stream a Box file."""
         signed_url = await self.get_signed_url(record)
         if not signed_url:
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail="File not found or access denied"
-            )
+            raise not_found_at_source(self.display_name)
 
         return create_stream_record_response(
-            stream_content(signed_url),
+            stream_content(
+                signed_url,
+                record_id=record.id,
+                file_name=record.record_name,
+                connector=self.display_name,
+            ),
             filename=record.record_name,
             mime_type=record.mime_type,
             fallback_filename=f"record_{record.id}"

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.connectors.core.registry.connector_builder import ConnectorScope
@@ -640,8 +641,9 @@ class TestGetSignedUrl:
         record.external_record_id = "mybucket/path/file.txt"
         record.id = "rec-1"
         record.record_name = "file.txt"
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_no_such_key(self, s3_connector):
@@ -655,8 +657,9 @@ class TestGetSignedUrl:
         record.external_record_id = "mybucket/path/file.txt"
         record.id = "rec-1"
         record.record_name = "file.txt"
-        result = await s3_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await s3_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_key_without_bucket_prefix(self, s3_connector):

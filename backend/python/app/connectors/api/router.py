@@ -47,6 +47,7 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.error.stream_errors import to_stream_error
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
     OAuthToken,
@@ -86,7 +87,7 @@ from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import extract_oauth_error_message, fetch_oauth_config_by_id, get_oauth_config
-from app.utils.streaming import create_stream_record_response
+from app.utils.streaming import create_stream_record_response, start_streaming_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = create_logger("connector_service")
@@ -202,7 +203,16 @@ async def _stream_artifact_from_storage(
         "scopes": ["storage:token"],
     }
     storage_token = await generate_jwt(config_service, jwt_payload)
-    response = await make_api_call(route=buffer_url, token=storage_token)
+    try:
+        response = await make_api_call(route=buffer_url, token=storage_token)
+    except Exception as e:
+        # make_api_call raises ApiCallError carrying the storage service's own
+        # status; without this it falls through to a blanket 500.
+        logger.error(
+            "Failed to fetch artifact buffer for record %s: %s",
+            record.id, str(e), exc_info=True,
+        )
+        raise to_stream_error(e) from e
 
     if isinstance(response["data"], dict):
         data = response["data"].get("data")
@@ -234,6 +244,43 @@ async def _stream_artifact_from_storage(
                 ) from e
 
     return Response(content=buffer or b"", media_type=mime)
+
+
+async def _invoke_connector_stream(
+    connector_obj: BaseConnector,
+    record: Record,
+    user_id: str | None = None,
+) -> Response | StreamingResponse | None:
+    """Call the connector's stream_record and resolve the source call eagerly.
+
+    Mapping happens here so every source failure — whether raised while
+    building the response or on the stream's first chunk — becomes a real
+    status before Starlette commits one.
+    """
+    # Same source the connectors use, so a failure names one connector
+    # regardless of whether it surfaced here or inside stream_record.
+    connector_display = connector_obj.display_name
+    try:
+        app_name = connector_obj.get_app_name()
+        if app_name in (
+            Connectors.GOOGLE_DRIVE_WORKSPACE,
+            Connectors.GOOGLE_MAIL_WORKSPACE,
+        ):
+            buffer = await connector_obj.stream_record(record, user_id)
+        else:
+            buffer = await connector_obj.stream_record(record)
+
+        if isinstance(buffer, StreamingResponse):
+            buffer = await start_streaming_response(buffer)
+        return buffer
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Error streaming record %s from %s: %s",
+            record.id, connector_display, str(e), exc_info=True,
+        )
+        raise to_stream_error(e, connector=connector_display) from e
 
 
 class ReindexFailedRequest(BaseModel):
@@ -665,10 +712,9 @@ async def stream_record_internal(
             logger=logger,
         )
 
-        if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
-            return await connector_obj.stream_record(record, payload.get("userId"))
-        else:
-            return await connector_obj.stream_record(record)
+        return await _invoke_connector_stream(
+            connector_obj, record, payload.get("userId")
+        )
 
     except JWTError as e:
         logger.error("JWT validation error: %s", str(e))
@@ -679,14 +725,15 @@ async def stream_record_internal(
     except HTTPException:
         raise
     except Exception as e:
-        # exc_info preserves the full traceback in the connector logs;
-        # the message is also echoed into the response detail so the
-        # calling service (e.g. the indexing consumer) does not see a
-        # constant "Error streaming record" with no actionable cause.
-        # This endpoint is JWT-protected and internal-only, so surfacing
-        # the underlying error message is consistent with how the other
-        # internal handlers in this router (e.g. delete_record) behave.
         logger.error("Unexpected error in stream_record_internal: %s", str(e), exc_info=True)
+        mapped = to_stream_error(e)
+        if mapped.status_code != HttpStatusCode.INTERNAL_SERVER_ERROR.value:
+            # A classified failure keeps its status so the indexing consumer
+            # can tell "retry later" from "permanently failed".
+            raise mapped from e
+        # Unclassified: this endpoint is JWT-protected and internal-only, so
+        # echo the underlying message rather than leaving the consumer with a
+        # constant string that has no actionable cause.
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Error streaming record: {e}",
@@ -758,27 +805,20 @@ async def download_file(
                 logger=logger,
             )
 
-            if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
-                buffer = await connector_obj.stream_record(record, user_id)
-            else:
-                buffer = await connector_obj.stream_record(record)
-
-            return buffer
+            return await _invoke_connector_stream(connector_obj, record, user_id)
 
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Error downloading file: {str(e)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Error downloading file: {str(e)}"
-            ) from e
+            logger.error(f"Error downloading file: {str(e)}", exc_info=True)
+            raise to_stream_error(e) from e
 
     except HTTPException as e:
         logger.error("HTTPException: %s", str(e))
         raise e
     except Exception as e:
-        logger.error("Error downloading file: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error downloading file") from e
+        logger.error("Error downloading file: %s", str(e), exc_info=True)
+        raise to_stream_error(e) from e
 
 
 @router.get("/api/v1/stream/record/{record_id}", response_model=None, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
@@ -868,10 +908,7 @@ async def stream_record(
             )
 
             # Get the buffer from connector (without passing convertTo)
-            if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
-                buffer = await connector_obj.stream_record(record, user_id)
-            else:
-                buffer = await connector_obj.stream_record(record)
+            buffer = await _invoke_connector_stream(connector_obj, record, user_id)
 
             # Handle conversion after getting the buffer
             if convertTo == MimeTypes.PDF.value:
@@ -898,15 +935,13 @@ async def stream_record(
             raise
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Error downloading file: {str(e)}"
-            ) from e
+            raise to_stream_error(e) from e
 
     except HTTPException as e:
         raise e
     except Exception as e:
-        logger.error("Error downloading file: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error downloading file") from e
+        logger.error("Error downloading file: %s", str(e), exc_info=True)
+        raise to_stream_error(e) from e
 
 
 @router.post("/api/v1/record/buffer/convert", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
@@ -6005,6 +6040,7 @@ async def _get_streaming_connector(
     if hasattr(container, "connectors_map"):
         connector_obj = container.connectors_map.get(connector_id)
     if connector_obj:
+        _tag_instance_name(connector_obj, connector_display_name)
         return connector_obj
 
     if not connector_instance.get("isActive", False):
@@ -6049,7 +6085,20 @@ async def _get_streaming_connector(
                 "Enable it from Connector Settings and try again."
             ),
         )
+    _tag_instance_name(connector_obj, connector_display_name)
     return connector_obj
+
+
+def _tag_instance_name(connector_obj: BaseConnector, name: str | None) -> None:
+    """Give the connector the user's name for *this* connection.
+
+    Connector objects are cached per connector_id in ``connectors_map``, so
+    several instances of one type share a class but not an identity — a
+    Collections error has to say "Engineering Docs", not "Collections".
+    Assignment is idempotent and picks up renames on the next request.
+    """
+    if name and name != "connector":
+        connector_obj.instance_name = name
 
 
 async def _ensure_connector_initialized(

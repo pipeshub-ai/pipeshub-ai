@@ -23,6 +23,7 @@ from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from pydantic import BaseModel, ValidationError
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import map_source_status
 from app.modules.agents.qna.reference_data import normalize_reference_data_items
 from app.modules.agents.qna.schemas import (
     AgentAnswerWithMetadataDict,
@@ -141,7 +142,12 @@ def get_parser(schema: type[BaseModel] = AnswerWithMetadataJSON) -> tuple[Pydant
     format_instructions = parser.get_format_instructions()
     return parser, format_instructions
 
-async def stream_content(signed_url: str, record_id: str | None = None, file_name: str | None = None) -> AsyncGenerator[bytes, None]:
+async def stream_content(
+    signed_url: str,
+    record_id: str | None = None,
+    file_name: str | None = None,
+    connector: str | None = None,
+) -> AsyncGenerator[bytes, None]:
     # Validate that signed_url is actually a string, not a coroutine
     if not isinstance(signed_url, str):
         error_msg = f"Expected signed_url to be a string, but got {type(signed_url).__name__}"
@@ -216,20 +222,59 @@ async def stream_content(signed_url: str, record_id: str | None = None, file_nam
                         logger.error(
                             f"❌ HTTP {response.status}: Failed to fetch file content. {log_prefix}{error_details}"
                         )
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=f"Failed to fetch file content: {response.status}{error_details}"
+                    # error_details stays in the log: it can contain presigned
+                    # URL internals and bucket names.
+                    raise map_source_status(
+                        response.status,
+                        connector=connector,
+                        retry_after=response.headers.get("Retry-After")
+                        if response.status == HttpStatusCode.TOO_MANY_REQUESTS.value
+                        else None,
                     )
                 async for chunk in response.content.iter_chunked(8192):
                     yield chunk
+    except asyncio.TimeoutError as e:
+        logger.error(f"❌ TIMEOUT: Fetching file content timed out | {log_prefix}")
+        raise map_source_status(
+            HttpStatusCode.GATEWAY_TIMEOUT.value, connector=connector
+        ) from e
     except aiohttp.ClientError as e:
         logger.error(
             f"❌ NETWORK ERROR: Failed to fetch file content from signed URL: {str(e)} | {log_prefix}"
         )
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=f"Failed to fetch file content from signed URL {str(e)}"
-        )
+        raise map_source_status(
+            HttpStatusCode.BAD_GATEWAY.value, connector=connector
+        ) from e
+
+
+async def start_streaming_response(response: StreamingResponse) -> StreamingResponse:
+    """Pull the first chunk before the response starts.
+
+    Starlette sends ``http.response.start`` — committing the status code —
+    before it asks the body iterator for anything. Connectors that call the
+    source API lazily inside that iterator (Slack file downloads, Confluence
+    attachments) would otherwise fail after a 200 was already on the wire,
+    leaving the client with a truncated body that looks like success.
+
+    Draining one chunk here moves that call ahead of the status commit. A
+    failure *after* the first chunk still cannot change the status; those
+    abort the response instead.
+    """
+    iterator = response.body_iterator.__aiter__()
+    try:
+        first_chunk = await iterator.__anext__()
+    except StopAsyncIteration:
+        first_chunk = None
+
+    # Chunks may be str as well as bytes — Starlette encodes either.
+    async def replay() -> AsyncGenerator[bytes | str, None]:
+        if first_chunk is not None:
+            yield first_chunk
+        async for chunk in iterator:
+            yield chunk
+
+    response.body_iterator = replay()
+    return response
 
 
 def create_stream_record_response(

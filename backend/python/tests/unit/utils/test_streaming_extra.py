@@ -1455,7 +1455,7 @@ class TestStreamContentEmptyErrorBody:
                 async for _ in stream_content("https://example.com/signed?token=xyz"):
                     pass
 
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_400_empty_body_raises_http_exception(self) -> None:
@@ -1470,7 +1470,7 @@ class TestStreamContentEmptyErrorBody:
                 async for _ in stream_content("https://example.com/signed?token=xyz"):
                     pass
 
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_404_empty_body_raises_http_exception(self) -> None:
@@ -1486,8 +1486,9 @@ class TestStreamContentEmptyErrorBody:
                     pass
 
     @pytest.mark.asyncio
-    async def test_403_with_body_includes_error_details(self) -> None:
-        """403 with non-empty body → error_details are populated (positive coverage)."""
+    async def test_403_body_is_logged_but_not_returned(self) -> None:
+        """The source's error body can carry presigned-URL internals and bucket
+        names, so it must stay in the log and out of the response detail."""
         from app.utils.streaming import stream_content
         from fastapi import HTTPException
 
@@ -1498,8 +1499,8 @@ class TestStreamContentEmptyErrorBody:
                 async for _ in stream_content("https://example.com/file"):
                     pass
 
-        assert exc_info.value.status_code == 500
-        assert "Access denied by policy" in str(exc_info.value.detail)
+        assert exc_info.value.status_code == 403
+        assert "Access denied by policy" not in str(exc_info.value.detail)
 
     @pytest.mark.asyncio
     async def test_non_string_signed_url_raises_type_error(self) -> None:
