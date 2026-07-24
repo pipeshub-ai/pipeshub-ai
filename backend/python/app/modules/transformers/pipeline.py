@@ -147,21 +147,16 @@ class IndexingPipeline:
                             f"⚠️ Failed to clean up old vectors for empty document: {str(e)}"
                         )
 
-                record_dict = await self.document_extraction.graph_provider.get_document(
-                    record_id, CollectionNames.RECORDS.value
-                )
-
-                record_dict.update(
-                    {
-                        "indexingStatus": ProgressStatus.EMPTY.value,
-                        "isDirty": False,
-                        "extractionStatus": ProgressStatus.NOT_STARTED.value,
-                    }
-                )
-
-                docs = [record_dict]
-                success = await self.document_extraction.graph_provider.batch_update_nodes(
-                    docs, CollectionNames.RECORDS.value
+                status_fields = {
+                    "indexingStatus": ProgressStatus.EMPTY.value,
+                    "processingStartedAt": None,
+                    "isDirty": False,
+                    "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                }
+                success = await self.document_extraction.graph_provider.update_node(
+                    record_id,
+                    CollectionNames.RECORDS.value,
+                    status_fields,
                 )
                 if not success:
                     self.logger.warning(

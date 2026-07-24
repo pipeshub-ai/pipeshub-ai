@@ -37,6 +37,8 @@ REQUIRED_TOPICS: list[str] = [t.value for t in Topic]
 class IndexingEvent(str, Enum):
     """Events emitted during the indexing pipeline."""
 
+    # Handler has written IN_PROGRESS and needs the nested parse slot.
+    START_PARSING = "start_parsing"
     PARSING_COMPLETE = "parsing_complete"
     INDEXING_COMPLETE = "indexing_complete"
     DOCLING_FAILED = "docling_failed"
@@ -117,6 +119,47 @@ class MessagingEnvConfig:
         return int(os.getenv("MAX_CONCURRENT_INDEXING", "10"))
 
     @property
+    def distributed_concurrency_enabled(self) -> bool:
+        return os.getenv("DISTRIBUTED_INDEXING_CONCURRENCY", "true").lower() == "true"
+
+    @property
+    def concurrency_key_prefix(self) -> str:
+        return os.getenv(
+            "INDEXING_CONCURRENCY_KEY_PREFIX",
+            "pipeshub:indexing:concurrency",
+        )
+
+    @property
+    def concurrency_lease_seconds(self) -> float:
+        return float(os.getenv("INDEXING_CONCURRENCY_LEASE_SECONDS", "120"))
+
+    @property
+    def concurrency_renew_interval_seconds(self) -> float:
+        return float(os.getenv("INDEXING_CONCURRENCY_RENEW_INTERVAL_SECONDS", "30"))
+
+    @property
+    def concurrency_acquire_poll_seconds(self) -> float:
+        return float(os.getenv("INDEXING_CONCURRENCY_ACQUIRE_POLL_SECONDS", "0.5"))
+
+    @property
+    def record_lease_wait_seconds(self) -> float:
+        """Bounded wait for the per-record lease before giving up.
+
+        This lease is only contended by *duplicate* in-flight deliveries of
+        the same record (a different, unrelated record never competes for
+        it), and the task already holds an outer indexing slot/semaphore
+        while waiting. An unbounded wait here convoys the whole pipeline if
+        several duplicates of one record arrive together; a short bounded
+        wait is enough since whoever already holds the lease is actively
+        processing that same record.
+        """
+        return float(os.getenv("INDEXING_RECORD_LEASE_WAIT_SECONDS", "10"))
+
+    @property
+    def concurrency_redis_timeout_seconds(self) -> float:
+        return float(os.getenv("INDEXING_CONCURRENCY_REDIS_TIMEOUT_SECONDS", "5"))
+
+    @property
     def shutdown_task_timeout(self) -> float:
         return float(os.getenv("SHUTDOWN_TASK_TIMEOUT", "240.0"))
 
@@ -154,6 +197,29 @@ class MessagingEnvConfig:
             )
         )
 
+    @property
+    def stale_recovery_interval_seconds(self) -> float:
+        return float(os.getenv("STALE_INDEXING_RECOVERY_INTERVAL_SECONDS", "60"))
+
+    @property
+    def stale_recovery_startup_grace_seconds(self) -> float:
+        default = self.shutdown_task_timeout + 90
+        return float(
+            os.getenv(
+                "STALE_INDEXING_RECOVERY_STARTUP_GRACE_SECONDS",
+                str(default),
+            )
+        )
+
+    @property
+    def stale_recovery_after_seconds(self) -> float:
+        default = self.record_processing_timeout + self.concurrency_lease_seconds
+        return float(os.getenv("STALE_INDEXING_RECOVERY_AFTER_SECONDS", str(default)))
+
+    @property
+    def stale_recovery_page_size(self) -> int:
+        return int(os.getenv("STALE_INDEXING_RECOVERY_PAGE_SIZE", "100"))
+
 
 messaging_env = MessagingEnvConfig()
 
@@ -161,6 +227,24 @@ messaging_env = MessagingEnvConfig()
 def get_message_broker_type() -> MessageBrokerType:
     """Convenience wrapper around ``messaging_env.message_broker_type``."""
     return messaging_env.message_broker_type
+
+
+# ---------------------------------------------------------------------------
+# Retry backoff (shared by the Kafka and Redis Streams indexing consumers)
+# ---------------------------------------------------------------------------
+
+# Backoff applied to a re-queued (retried) message, stamped as an absolute
+# "not before" timestamp so the delay can be honored on the consume side
+# (before any semaphore is acquired) instead of held during re-queue.
+RETRY_BACKOFF_BASE_SECONDS = 15.0
+RETRY_BACKOFF_FACTOR = 4.0
+RETRY_BACKOFF_MAX_SECONDS = 300.0
+
+
+def compute_retry_backoff_seconds(retry_count: int) -> float:
+    """Exponential backoff for a re-queued message: ~15s, 60s, 240s (capped at 300s)."""
+    delay = RETRY_BACKOFF_BASE_SECONDS * (RETRY_BACKOFF_FACTOR ** max(retry_count - 1, 0))
+    return min(delay, RETRY_BACKOFF_MAX_SECONDS)
 
 
 # ---------------------------------------------------------------------------

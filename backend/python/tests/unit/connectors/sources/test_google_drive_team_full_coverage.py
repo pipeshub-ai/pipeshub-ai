@@ -117,6 +117,7 @@ def _make_record(record_id="rec-1", external_id="file-1", record_name="test.txt"
     r.version = version
     r.external_revision_id = external_revision_id
     r.parent_external_record_id = parent_external_record_id
+    r.parsing_status = None
     r.indexing_status = indexing_status
     r.extraction_status = extraction_status
     r.record_type = RecordType.FILE

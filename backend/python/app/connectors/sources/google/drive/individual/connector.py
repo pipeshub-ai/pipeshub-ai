@@ -453,6 +453,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             if existing_record and not content_changed:
                 self.logger.debug(f"No content change for file {file_record.record_name} setting indexing status as prev value")
+                file_record.parsing_status = existing_record.parsing_status
                 file_record.indexing_status = existing_record.indexing_status
                 file_record.extraction_status = existing_record.extraction_status
 

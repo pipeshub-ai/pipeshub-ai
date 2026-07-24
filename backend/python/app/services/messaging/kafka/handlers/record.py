@@ -24,11 +24,13 @@ from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
     PipelineEventData,
+    Topic,
 )
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
 )
+from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.handlers.entity import BaseEventService
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
@@ -76,12 +78,14 @@ class RecordEventHandler(BaseEventService):
     def __init__(self, logger: Logger,
                 config_service: ConfigurationService,
                 event_processor: EventProcessor,
+                producer: IMessagingProducer | None = None,
                 ) -> None:
 
         self.logger = logger
         self.config_service = config_service
 
         self.event_processor : EventProcessor = event_processor
+        self.producer = producer
 
     async def _propagate_primary_failure_to_queued_duplicates(
         self,
@@ -152,7 +156,14 @@ class RecordEventHandler(BaseEventService):
             )
 
             # Publish the event to trigger indexing
-            await self.event_processor.graph_provider._publish_record_event("newRecord", payload)
+            if not self.producer:
+                raise IndexingError("No messaging producer configured; cannot publish newRecord event")
+            await self.producer.send_event(
+                topic=Topic.RECORD_EVENTS.value,
+                event_type="newRecord",
+                payload=payload,
+                key=str(next_record_id),
+            )
 
             self.logger.info(f"✅ Successfully triggered indexing for queued duplicate: {next_record_id}")
 
@@ -370,20 +381,12 @@ class RecordEventHandler(BaseEventService):
                     f"🔴 CODE_FILE with unsupported language extension '{code_file_extension}' "
                     f"for record {record_id} — marking FILE_TYPE_NOT_SUPPORTED"
                 )
-                doc.update(
-                    {
-                        "indexingStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                        "extractionStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    }
+                await self.__update_document_status(
+                    record_id=record_id,
+                    indexing_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+                    extraction_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+                    reason=f"Unsupported code file extension: {code_file_extension}",
                 )
-                success = await self.event_processor.graph_provider.batch_update_nodes(
-                    [doc], CollectionNames.RECORDS.value
-                )
-                if not success:
-                    self.logger.warning(
-                        "⚠️ Failed to update CODE_FILE record %s status - record may not exist",
-                        record_id,
-                    )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
@@ -504,21 +507,12 @@ class RecordEventHandler(BaseEventService):
                     f"🔴🔴🔴 Unsupported file: Mime Type: {mime_type}, Extension: {extension} 🔴🔴🔴"
                 )
 
-                doc.update(
-                    {
-                        "indexingStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                        "extractionStatus": ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-                    }
+                await self.__update_document_status(
+                    record_id=record_id,
+                    indexing_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+                    extraction_status=ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
+                    reason=f"Unsupported file type: {mime_type} ({extension})",
                 )
-                docs = [doc]
-                success = await self.event_processor.graph_provider.batch_update_nodes(
-                    docs, CollectionNames.RECORDS.value
-                )
-                if not success:
-                    self.logger.warning(
-                        "⚠️ Failed to update unsupported file record %s status - record may not exist",
-                        record_id,
-                    )
 
                 # Yield both events for unsupported file types
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -536,15 +530,17 @@ class RecordEventHandler(BaseEventService):
                     response = await self._download_from_signed_url(signed_url=payload["signedUrl"], record_id=record_id, doc=doc)
                     if not response:
                         raise Exception("Failed to download file from signed URL")
-
+                except Exception as e:
+                    self.logger.warning(
+                        f"⚠️ Failed to download from signed URL for record {record_id}: {str(e)}. "
+                        f"Falling back to connector streaming..."
+                    )
+                else:
                     payload["buffer"] = response
                     event_data_for_processor = {
                         "eventType": event_type,
-                        "payload": payload # The original payload
+                        "payload": payload
                     }
-                    # Yield events from the event processor.
-                    # Explicitly aclose() the generator so its frame (which holds the large
-                    # file bytes) is released immediately — not deferred to async-GC.
                     on_event_gen = self.event_processor.on_event(event_data_for_processor)
                     try:
                         async for event in on_event_gen:
@@ -552,9 +548,6 @@ class RecordEventHandler(BaseEventService):
                     finally:
                         await on_event_gen.aclose()
                         payload.pop("buffer", None)
-                        # Drop the local reference too: process_event is itself an
-                        # async generator, so its frame outlives this block until
-                        # the caller closes it.
                         response = None
 
                     processing_time = (datetime.now() - start_time).total_seconds()
@@ -564,12 +557,6 @@ class RecordEventHandler(BaseEventService):
                     )
                     signed_url_success = True
                     return
-                except Exception as e:
-                    self.logger.warning(
-                        f"⚠️ Failed to download from signed URL for record {record_id}: {str(e)}. "
-                        f"Falling back to connector streaming..."
-                    )
-                    # Don't raise - fall through to connector streaming fallback
 
             if not signed_url_success:
                 self.logger.debug(f"🔍 No signed URL received for record {record_id}")
@@ -623,11 +610,36 @@ class RecordEventHandler(BaseEventService):
                     error_occurred = True
                     error_msg = str(e)
                     raise Exception(error_msg) from e  # unknown errors only
+        except GeneratorExit:
+            # The consumer closes this generator (via aclose()) when a
+            # timeout/shutdown cancels the task that was iterating it —
+            # e.g. while parked waiting for the parsing semaphore. That
+            # cancellation is delivered to the consumer's loop, not here, so
+            # without this handler error_occurred would stay False and the
+            # record would be left IN_PROGRESS forever. is_final_failure
+            # (set by the consumer before we started) still governs whether
+            # this becomes a terminal FAILED or a QUEUED retry below.
+            error_occurred = True
+            error_msg = "Record processing was cancelled (handler closed)"
+            raise
+        except asyncio.CancelledError as ce:
+            error_occurred = True
+            error_msg = "Record processing was cancelled"
+            last_exception = ce
+            raise
+        except IndexingError as ie:
+            error_occurred = True
+            error_msg = str(ie)
+            last_exception = ie
+            raise  # preserve DocumentProcessingError and other IndexingError subtypes
         except Exception as e:
             error_occurred = True
             error_msg = str(e)
             last_exception = e
-            self.logger.error(error_msg, exc_info=True)
+            # No traceback here: the Kafka consumer already logs the full
+            # exception chain on every attempt. A traceback is logged below
+            # only once, when this turns out to be the final attempt.
+            self.logger.warning(f"Record {message_id} processing failed: {error_msg}")
             raise  # bare re-raise — preserves IndexingError / DocumentProcessingError
         finally:
             processing_time = (datetime.now() - start_time).total_seconds()
@@ -659,12 +671,31 @@ class RecordEventHandler(BaseEventService):
                     is_final = True
                     
                 if is_final:
-                    record = await self.__update_document_status(
-                        record_id=record_id,
-                        indexing_status=ProgressStatus.FAILED.value,
-                        extraction_status=ProgressStatus.FAILED.value,
-                        reason=error_msg,
+                    # Traceback logged once here (not on every transient retry attempt)
+                    # so final, unrecoverable failures remain fully debuggable.
+                    self.logger.error(
+                        f"Final failure for record {record_id}: {error_msg}",
+                        exc_info=last_exception,
                     )
+                    try:
+                        record = await self.__update_document_status(
+                            record_id=record_id,
+                            indexing_status=ProgressStatus.FAILED.value,
+                            extraction_status=ProgressStatus.FAILED.value,
+                            reason=error_msg,
+                        )
+                    except Exception as status_exc:
+                        # A status-write failure here must not replace the
+                        # exception already propagating (e.g. a terminal
+                        # DocumentProcessingError or a CancelledError) with a
+                        # new one that the consumer would reclassify/mishandle.
+                        self.logger.error(
+                            f"Failed to persist FAILED status for record {record_id} "
+                            f"(original error preserved): {status_exc}"
+                        )
+                        if last_exception is not None:
+                            raise last_exception from status_exc
+                        raise
                     if record is not None:
                         virtual_record_id = record.get("virtualRecordId")
                         
@@ -690,7 +721,58 @@ class RecordEventHandler(BaseEventService):
                     else:
                         self.logger.warning(f"Record {record_id} not found, skipping duplicate handling")
                 else:
-                    self.logger.info(f"🔄 Record {record_id} failed but will retry, not updating status to FAILED yet")
+                    # Clear IN_PROGRESS so the record stops counting against
+                    # concurrency limits while it waits in the broker re-queue.
+                    # indexingStatus becomes QUEUED (same as a newly published
+                    # record); phase statuses that were mid-flight reset to
+                    # NOT_STARTED. Never downgrade a status that already
+                    # advanced past IN_PROGRESS (e.g. COMPLETED/EMPTY).
+                    reverted = False
+                    try:
+                        current = await self.event_processor.graph_provider.get_document(
+                            record_id, CollectionNames.RECORDS.value
+                        )
+                        updates: dict = {}
+                        if current:
+                            if current.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
+                                updates["parsingStatus"] = ProgressStatus.NOT_STARTED.value
+                            if current.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value:
+                                updates["indexingStatus"] = ProgressStatus.QUEUED.value
+                                if current.get("extractionStatus") != ProgressStatus.COMPLETED.value:
+                                    updates["extractionStatus"] = ProgressStatus.NOT_STARTED.value
+                        if updates:
+                            updates["reason"] = f"Transient failure, retry scheduled: {error_msg}"
+                            updates["processingStartedAt"] = None
+                            updated = await self.event_processor.graph_provider.update_node(
+                                record_id, CollectionNames.RECORDS.value, updates
+                            )
+                            if not updated:
+                                raise RuntimeError(
+                                    f"Failed to persist transient status reset for {record_id}"
+                                )
+                            reverted = True
+                    except Exception as revert_exc:
+                        self.logger.error(
+                            f"Failed to re-queue record {record_id} after transient failure: {revert_exc}"
+                        )
+                        # Preserve the exception already propagating (e.g. a
+                        # CancelledError during shutdown) instead of masking
+                        # it with a new one raised from this cleanup step.
+                        if last_exception is not None:
+                            raise last_exception from revert_exc
+                        raise RuntimeError(
+                            f"Failed to clear transient IN_PROGRESS status for {record_id}"
+                        ) from revert_exc
+
+                    if reverted:
+                        self.logger.info(
+                            f"🔄 Record {record_id} failed but will retry, "
+                            f"reverted IN_PROGRESS -> QUEUED"
+                        )
+                    else:
+                        self.logger.info(
+                            f"🔄 Record {record_id} failed but will retry, not updating status to FAILED yet"
+                        )
             elif record is not None and event_type != EventTypes.DELETE_RECORD.value:
                 # Update queued duplicates for ALL record types (not just FILE)
                 record = await self.event_processor.graph_provider.get_document(
@@ -724,22 +806,25 @@ class RecordEventHandler(BaseEventService):
                 self.logger.error(f"❌ Record {record_id} not found for status update")
                 return None
 
-            doc = dict(record)
-            if doc.get("extractionStatus") == ProgressStatus.COMPLETED.value:
+            if record.get("extractionStatus") == ProgressStatus.COMPLETED.value:
                 extraction_status = ProgressStatus.COMPLETED.value
-            doc.update(
-                {
-                    "indexingStatus": indexing_status,
-                    "extractionStatus": extraction_status,
-                }
-            )
+            updates = {
+                "indexingStatus": indexing_status,
+                "extractionStatus": extraction_status,
+                "processingStartedAt": None,
+            }
+            # Mirror the terminal status onto parsingStatus, but never
+            # downgrade a parse that already completed in this attempt.
+            if record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
+                updates["parsingStatus"] = indexing_status
 
             if reason:
-                doc["reason"] = reason
+                updates["reason"] = reason
 
-            docs = [doc]
-            success = await self.event_processor.graph_provider.batch_update_nodes(
-                docs, CollectionNames.RECORDS.value
+            success = await self.event_processor.graph_provider.update_node(
+                record_id,
+                CollectionNames.RECORDS.value,
+                updates,
             )
             if not success:
                 self.logger.warning(
@@ -751,7 +836,7 @@ class RecordEventHandler(BaseEventService):
             return record
         except Exception as e:
             self.logger.error(f"❌ Failed to update document status: {str(e)}")
-            return None
+            raise
 
     async def _download_from_signed_url(
         self, signed_url: str, record_id: str, doc: dict,from_route: bool = False

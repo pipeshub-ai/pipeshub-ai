@@ -21,6 +21,21 @@ class DocumentProcessingError(IndexingError):
         self.doc_id = doc_id
 
 
+class RecordStatusUpdateError(IndexingError):
+    """Raised when persisting a record's status fields to the graph DB fails.
+
+    Deliberately not a DocumentProcessingError: a failed DB write is an
+    infra blip (retry may succeed), not a content-processing failure (which
+    will fail the same way every time) — see
+    MessageErrorClassifier.classify_by_exception, which treats IndexingError
+    subtypes other than the terminal ones (DocumentProcessingError,
+    ChunkingError, ExtractionError, ProcessingError,
+    BlockContainerValidationError) as transient/retryable.
+    """
+
+    pass
+
+
 class EmbeddingError(IndexingError):
     """Raised when there's an error creating embeddings"""
 

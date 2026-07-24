@@ -836,6 +836,7 @@ class Neo4jProvider(IGraphDBProvider):
         filters: dict | None = None,
         sort_field: str | None = None,
         transaction: str | None = None,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Fetch a page of documents using Cypher SKIP/LIMIT so that only the
@@ -856,7 +857,12 @@ class Neo4jProvider(IGraphDBProvider):
             where_cypher = (
                 "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
             )
-            order_cypher = f"ORDER BY n.{sort_field} ASC" if sort_field else ""
+            neo4j_sort_field = "id" if sort_field == "_key" else sort_field
+            order_cypher = (
+                f"ORDER BY n.{neo4j_sort_field} ASC"
+                if neo4j_sort_field
+                else ""
+            )
 
             query = f"""
             MATCH (n:{label})
@@ -887,6 +893,8 @@ class Neo4jProvider(IGraphDBProvider):
                 collection,
                 str(e),
             )
+            if raise_on_error:
+                raise
             return []
 
     async def batch_upsert_nodes(

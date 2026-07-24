@@ -3012,9 +3012,7 @@ export const streamEmbeddingDownloadProgress =
           break;
         }
       } catch (error: any) {
-        logger.error('Error streaming embedding download progress', { error });
-        // The client may have disconnected while the request above was in
-        // flight — writing to an already-closed response throws.
+        logger.error('Lost connection to embedding server', { error });
         if (!closed) {
           res.write(
             `event: progress\ndata: ${JSON.stringify({
@@ -3031,7 +3029,7 @@ export const streamEmbeddingDownloadProgress =
         break;
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 3000));
     }
 
     if (!closed) {

@@ -141,6 +141,15 @@ class TestNeo4jGetDocumentsPaginatedSort:
         assert "ORDER BY n.createdAt ASC" in query
 
     @pytest.mark.asyncio
+    async def test_arango_key_sort_uses_neo4j_id(self, provider):
+        provider.client.execute_query = AsyncMock(return_value=[])
+
+        await provider.get_documents_paginated("Apps", sort_field="_key")
+
+        query: str = provider.client.execute_query.call_args[0][0]
+        assert "ORDER BY n.id ASC" in query
+
+    @pytest.mark.asyncio
     async def test_no_sort_field_omits_order_clause(self, provider):
         provider.client.execute_query = AsyncMock(return_value=[])
 

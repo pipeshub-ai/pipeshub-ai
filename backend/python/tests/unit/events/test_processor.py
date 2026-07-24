@@ -393,9 +393,8 @@ class TestProcessImage:
                 events = await _collect(proc.process_image("rec-1", b"img", "vr-1"))
 
         assert len(events) == 2
-        # Record should have been updated with ENABLE_MULTIMODAL_MODELS status
-        upserted_doc = gp.batch_update_nodes.call_args[0][0][0]
-        assert upserted_doc["indexingStatus"] == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value
+        fields = gp.update_node.await_args.args[2]
+        assert fields["indexingStatus"] == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value
 
 
 # ===========================================================================
@@ -811,26 +810,27 @@ class TestMarkRecord:
             await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
     @pytest.mark.asyncio
-    async def test_upsert_failure_logs_warning(self):
-        """Logs warning when batch_update_nodes returns False."""
+    async def test_update_failure_raises(self):
+        # RecordStatusUpdateError (not DocumentProcessingError): a transient
+        # DB write failure must stay retryable, not become a terminal error.
+        from app.exceptions.indexing_exceptions import RecordStatusUpdateError
         proc, _, gp, _ = _make_processor()
         gp.get_document.return_value = {"_key": "rec-1"}
-        gp.batch_update_nodes.return_value = False
+        gp.update_node.return_value = False
 
-        await proc._mark_record("rec-1", ProgressStatus.EMPTY)
-
-        proc.logger.warning.assert_called()
+        with pytest.raises(RecordStatusUpdateError, match="Failed to persist"):
+            await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
     @pytest.mark.asyncio
     async def test_successful_mark(self):
         """Successfully marks record status."""
         proc, _, gp, _ = _make_processor()
         gp.get_document.return_value = {"_key": "rec-1"}
-        gp.batch_update_nodes.return_value = True
+        gp.update_node.return_value = True
 
         await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
-        gp.batch_update_nodes.assert_awaited_once()
+        gp.update_node.assert_awaited_once()
 
 
 # ===========================================================================
@@ -1467,7 +1467,7 @@ class TestProcessImageAdditional:
         """When neither embedding nor LLM is multimodal, should set ENABLE_MULTIMODAL_MODELS."""
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict(mimeType="image/png")
-        gp.batch_update_nodes.return_value = True
+        gp.update_node.return_value = True
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
@@ -1479,20 +1479,22 @@ class TestProcessImageAdditional:
         assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
-    async def test_no_multimodal_batch_update_failure_yields_events(self):
-        """When batch_update_nodes fails, log warning and still complete the phase."""
+    async def test_no_multimodal_update_failure_raises(self):
+        # RecordStatusUpdateError (not DocumentProcessingError): a transient
+        # DB write failure must stay retryable, not become a terminal error.
+        from app.exceptions.indexing_exceptions import RecordStatusUpdateError
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict(mimeType="image/png")
-        gp.batch_update_nodes.return_value = False
+        gp.update_node.return_value = False
 
         with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
             mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
             with patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
                 mock_emb.return_value = {"isMultimodal": False}
-                events = await _collect(proc.process_image("rec-1", b"imgdata", "vr-1"))
-
-        assert len(events) == 2
-        proc.logger.warning.assert_called()
+                with pytest.raises(
+                    RecordStatusUpdateError, match="Failed to persist multimodal status"
+                ):
+                    await _collect(proc.process_image("rec-1", b"imgdata", "vr-1"))
 
     @pytest.mark.asyncio
     async def test_no_mime_type_raises(self):
@@ -1802,28 +1804,29 @@ class TestMarkRecord:
             await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
     @pytest.mark.asyncio
-    async def test_batch_update_failure_logs_warning(self):
-        """Should log warning when batch_update_nodes returns False."""
+    async def test_update_failure_raises(self):
+        # RecordStatusUpdateError (not DocumentProcessingError): a transient
+        # DB write failure must stay retryable, not become a terminal error.
+        from app.exceptions.indexing_exceptions import RecordStatusUpdateError
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict()
-        gp.batch_update_nodes.return_value = False
+        gp.update_node.return_value = False
 
         with patch("app.events.processor.get_epoch_timestamp_in_ms", return_value=12345):
-            await proc._mark_record("rec-1", ProgressStatus.EMPTY)
-
-        proc.logger.warning.assert_called()
+            with pytest.raises(RecordStatusUpdateError, match="Failed to persist"):
+                await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
     @pytest.mark.asyncio
     async def test_success(self):
         """Should update record status successfully."""
         proc, _, gp, config = _make_processor()
         gp.get_document.return_value = _base_record_dict()
-        gp.batch_update_nodes.return_value = True
+        gp.update_node.return_value = True
 
         with patch("app.events.processor.get_epoch_timestamp_in_ms", return_value=12345):
             await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
-        gp.batch_update_nodes.assert_awaited_once()
+        gp.update_node.assert_awaited_once()
 
 
 # ===========================================================================
