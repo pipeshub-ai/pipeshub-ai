@@ -79,13 +79,107 @@ export function maskAiModelsStoredConfig<T extends Record<string, unknown>>(
  * Mask sensitive fields in an SMTP config object.
  * Only `password` is considered secret; all other fields are returned as-is.
  */
+
+export const SMTP_SECRET_KEYS = ['host', 'username', 'fromEmail', 'password'] as const;
+
+
 export function maskSmtpConfig<T extends Record<string, unknown>>(config: T): T {
   if (!config || typeof config !== 'object') {
     return config;
   }
   const out = { ...config } as Record<string, unknown>;
-  if (typeof out['password'] === 'string' && out['password'].length > 0) {
-    out['password'] = CONFIG_SECRET_PLACEHOLDER;
+  for (const key of SMTP_SECRET_KEYS) {
+    if (typeof out[key] === 'string' && (out[key] as string).length > 0) {
+      out[key] = CONFIG_SECRET_PLACEHOLDER;
+    }
+  }
+  return out as T;
+}
+
+/**
+ * When a client re-submits masked placeholders, restore values from the stored config.
+ */
+
+export function mergeSmtpConfigPlaceholders<T extends Record<string, unknown>>(
+  incoming: T,
+  existing: Record<string, unknown> | null | undefined,
+): T {
+  if (!existing || typeof existing !== 'object') {
+    return incoming;
+  }
+  const out = { ...incoming } as Record<string, unknown>;
+  for (const key of SMTP_SECRET_KEYS) {
+    if (out[key] === CONFIG_SECRET_PLACEHOLDER && typeof existing[key] === 'string') {
+      out[key] = existing[key];
+    }
+  }
+  return out as T;
+}
+
+/**
+ * Mask sensitive fields in a Google auth config object.
+ * `clientId` is the only credential; `enableJit` is left as-is.
+ */
+export function maskGoogleAuthConfig<T extends Record<string, unknown>>(config: T): T {
+  if (!config || typeof config !== 'object') {
+    return config;
+  }
+  const out = { ...config } as Record<string, unknown>;
+  if (typeof out['clientId'] === 'string' && out['clientId'].length > 0) {
+    out['clientId'] = CONFIG_SECRET_PLACEHOLDER;
+  }
+  return out as T;
+}
+
+/**
+ * Mask sensitive fields in a Microsoft / Azure AD auth config object.
+ * `clientId`, `tenantId`, and `authority` (which embeds the tenantId) are
+ * considered secrets; `enableJit` is left as-is.
+ */
+export function maskMicrosoftAuthConfig<T extends Record<string, unknown>>(config: T): T {
+  if (!config || typeof config !== 'object') {
+    return config;
+  }
+  const out = { ...config } as Record<string, unknown>;
+  for (const key of ['clientId', 'tenantId', 'authority'] as const) {
+    if (typeof out[key] === 'string' && (out[key] as string).length > 0) {
+      out[key] = CONFIG_SECRET_PLACEHOLDER;
+    }
+  }
+  return out as T;
+}
+
+/**
+ * Mask sensitive fields in a generic OAuth 2.0 config object.
+ * `clientId` and `clientSecret` are secrets; all other fields
+ * (providerName, authorizationUrl, tokenEndpoint, etc.) are left as-is.
+ */
+export function maskOAuthConfig<T extends Record<string, unknown>>(config: T): T {
+  if (!config || typeof config !== 'object') {
+    return config;
+  }
+  const out = { ...config } as Record<string, unknown>;
+  for (const key of ['clientId', 'clientSecret'] as const) {
+    if (typeof out[key] === 'string' && (out[key] as string).length > 0) {
+      out[key] = CONFIG_SECRET_PLACEHOLDER;
+    }
+  }
+  return out as T;
+}
+
+/**
+ * Mask sensitive fields in a GitHub OAuth config object.
+ * Both `clientId` and `clientSecret` are considered secrets.
+ */
+export function maskGithubAuthConfig<T extends Record<string, unknown>>(config: T): T {
+  if (!config || typeof config !== 'object') {
+    return config;
+  }
+  const out = { ...config } as Record<string, unknown>;
+  for (const key of ['clientId', 'clientSecret'] as const) {
+    if (typeof out[key] === 'string' && (out[key] as string).length > 0) {
+      out[key] = CONFIG_SECRET_PLACEHOLDER;
+    }
   }
   return out as T;
 }
