@@ -1158,6 +1158,87 @@ class TestProcessEventErrors:
             assert doc.get("indexingStatus") != ProgressStatus.FAILED.value
 
     @pytest.mark.asyncio
+    async def test_cancellation_marks_failed_on_final_attempt(self):
+        """A processing-timeout cancellation on the final delivery attempt must
+        mark the record FAILED instead of stranding it in IN_PROGRESS."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+            "mimeType": "application/pdf",
+        }
+        gp.get_document = AsyncMock(return_value=record)
+        gp.batch_update_nodes = AsyncMock(return_value=True)
+        handler._trigger_next_queued_duplicate = AsyncMock()
+
+        payload = {
+            "recordId": "r1",
+            "virtualRecordId": "vr1",
+            "orgId": "org-1",
+            "mimeType": "application/pdf",
+            "extension": "pdf",
+            "is_final_failure": True,
+        }
+
+        with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt:
+            mock_jwt.return_value = "token"
+            with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as mock_api:
+                # asyncio.timeout in the consumer cancels the handler mid-await
+                mock_api.side_effect = asyncio.CancelledError()
+                handler.config_service.get_config = AsyncMock(
+                    return_value={"connectors": {"endpoint": "http://localhost:8088"}}
+                )
+                with pytest.raises(asyncio.CancelledError):
+                    await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        failed_updates = [
+            call[0][0][0]
+            for call in gp.batch_update_nodes.call_args_list
+            if call[0][0][0].get("indexingStatus") == ProgressStatus.FAILED.value
+        ]
+        assert failed_updates, "record should be marked FAILED after final-attempt cancellation"
+        handler._trigger_next_queued_duplicate.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_skips_failed_when_retries_remain(self):
+        """Cancellation on a non-final attempt should leave status untouched so the retry can run."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.IN_PROGRESS.value,
+            "mimeType": "application/pdf",
+        }
+        gp.get_document = AsyncMock(return_value=record)
+        gp.batch_update_nodes = AsyncMock(return_value=True)
+
+        payload = {
+            "recordId": "r1",
+            "virtualRecordId": "vr1",
+            "orgId": "org-1",
+            "mimeType": "application/pdf",
+            "extension": "pdf",
+            "is_final_failure": False,
+        }
+
+        with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt:
+            mock_jwt.return_value = "token"
+            with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as mock_api:
+                mock_api.side_effect = asyncio.CancelledError()
+                handler.config_service.get_config = AsyncMock(
+                    return_value={"connectors": {"endpoint": "http://localhost:8088"}}
+                )
+                with pytest.raises(asyncio.CancelledError):
+                    await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        for call in gp.batch_update_nodes.call_args_list:
+            doc = call[0][0][0]
+            assert doc.get("indexingStatus") != ProgressStatus.FAILED.value
+
+    @pytest.mark.asyncio
     async def test_error_updates_document_status_to_failed(self):
         handler = _make_handler()
         gp = handler.event_processor.graph_provider

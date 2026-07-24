@@ -631,6 +631,18 @@ class RecordEventHandler(BaseEventService):
             last_exception = e
             self.logger.error(error_msg, exc_info=True)
             raise  # bare re-raise — preserves IndexingError / DocumentProcessingError
+        except (asyncio.CancelledError, GeneratorExit):
+            # CancelledError/GeneratorExit are BaseException, so the block above
+            # misses them. The consumer's per-message asyncio.timeout() cancels
+            # this generator on timeout — without this branch the record would be
+            # stranded in IN_PROGRESS forever (and the log would claim success).
+            error_occurred = True
+            error_msg = (
+                f"Record processing was cancelled before completion "
+                f"(processing timeout exceeded or service shutdown) for {message_id}"
+            )
+            self.logger.error(error_msg)
+            raise
         finally:
             if heartbeat_task:
                 heartbeat_task.cancel()
