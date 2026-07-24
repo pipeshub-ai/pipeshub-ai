@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from docling_core.types.doc.document import DoclingDocument
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app.config.constants.http_status_code import HttpStatusCode
@@ -26,11 +26,6 @@ class ProcessResponse(BaseModel):
     success: bool
     block_containers: dict[str, Any] | None = None
     error: str | None = None
-
-
-class ParseRequest(BaseModel):
-    record_name: str
-    pdf_binary: str  # base64 encoded PDF binary data
 
 
 class ParseResponse(BaseModel):
@@ -268,32 +263,22 @@ def deserialize_docling_doc(serialized: str) -> DoclingDocument:
 
 
 @app.post("/parse-pdf", response_model=ParseResponse)
-async def parse_pdf_endpoint(request: ParseRequest) -> ParseResponse:
+async def parse_pdf_endpoint(
+    file: UploadFile = File(...),
+    record_name: str = Form(...),
+) -> ParseResponse:
     """Parse PDF document (phase 1 - no block creation, no LLM calls)"""
     try:
-        # Decode base64 PDF binary data
-        try:
-            pdf_binary = base64.b64decode(request.pdf_binary)
-        except Exception as e:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Invalid base64 PDF data: {str(e)}"
-            ) from e
+        pdf_binary = await file.read()
 
-        # Ensure service is wired
         if docling_service is None:
             raise HTTPException(status_code=500, detail="Docling service not available")
 
-        # Parse the PDF with timeout
         doc = await asyncio.wait_for(
-            docling_service.parse_pdf_only(
-                request.record_name,
-                pdf_binary
-            ),
+            docling_service.parse_pdf_only(record_name, pdf_binary),
             timeout=PDF_PARSING_TIMEOUT_SECONDS
         )
 
-        # Serialize ConversionResult document to JSON
         serialized_result = await asyncio.to_thread(serialize_docling_doc, doc)
 
         return ParseResponse(
@@ -348,7 +333,6 @@ async def create_blocks_endpoint(request: CreateBlocksRequest) -> CreateBlocksRe
             success=True,
             block_containers=block_containers_dict
         )
-
     except asyncio.TimeoutError:
         return CreateBlocksResponse(
             success=False,
