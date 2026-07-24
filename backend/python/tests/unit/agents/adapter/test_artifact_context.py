@@ -58,6 +58,44 @@ class TestArtifactContextReminder:
         assert "chart.png" in goal.constraints[0]
         assert "art-1" in goal.constraints[0]
 
+    async def test_includes_args_and_summary_from_conversation(self, monkeypatch) -> None:
+        previous_conversations = [
+            {
+                "role": "bot_response",
+                "content": "Found issues.",
+                "tool_results": [
+                    {
+                        "tool_id": "c1",
+                        "tool_name": "jira__search_issues",
+                        "args": {"jql": "assignee = currentUser()", "maxResults": 50},
+                        "result": "Found 47 issues",
+                        "result_summary": "Found 47 issues",
+                        "status": "success",
+                        "artifact_id": "art-1",
+                    },
+                ],
+            },
+        ]
+        context = _make_context(
+            graph_provider=MagicMock(), blob_store=MagicMock(),
+            previous_conversations=previous_conversations,
+        )
+        metadata = _make_metadata(
+            artifact_id="art-1", name="tool_result_jira__search_issues.json",
+            artifact_type=ArtifactType.OTHER, source_tool="jira__search_issues",
+        )
+        registry = MagicMock()
+        registry.list_for_conversation = AsyncMock(return_value=[metadata])
+        monkeypatch.setattr(AgentContext, "artifact_registry", property(lambda self: registry))
+        ctx, goal = _make_turn_ctx()
+
+        await artifact_context_reminder(context)(ctx, _noop_next)
+
+        reminder = goal.constraints[0]
+        assert "assignee = currentUser()" in reminder
+        assert "maxResults" in reminder
+        assert "Found 47 issues" in reminder
+
     async def test_includes_lineage_when_present(self, monkeypatch) -> None:
         context = _make_context(graph_provider=MagicMock(), blob_store=MagicMock())
         metadata = _make_metadata(derived_from_code_artifact_id="code-1")

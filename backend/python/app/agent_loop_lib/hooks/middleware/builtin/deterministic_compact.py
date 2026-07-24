@@ -173,7 +173,7 @@ def shape_deterministic_compact(
                 compacted_middle.append(msg)
 
         ctx.messages = [*head, *compacted_middle, *tail]
-        logger.debug(
+        logger.info(
             "deterministic_compact: compacted %d middle messages "
             "(head=%d, tail=%d)", len(middle), len(head), len(tail),
         )

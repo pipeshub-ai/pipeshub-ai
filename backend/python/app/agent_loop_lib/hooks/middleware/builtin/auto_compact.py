@@ -228,7 +228,7 @@ def shape_auto_compact(
         )
 
         ctx.messages = [*head, summary_msg, *tail]
-        logger.debug(
+        logger.info(
             "auto_compact: summarized %d middle messages (%d groups), "
             "tail=%d messages, budget_used=%.0f%%",
             len(middle),

@@ -318,21 +318,25 @@ class ArtifactManager:
         return _result(True, {
             "success": True,
             "count": len(artifacts),
-            "artifacts": [
-                {
-                    "artifact_id": a.artifact_id,
-                    "name": a.name,
-                    "artifact_type": a.artifact_type.value,
-                    "version": a.version,
-                    "mime_type": a.mime_type,
-                    "source_tool": a.source_tool,
-                    "description": a.description,
-                    "derived_from_code_artifact_id": a.derived_from_code_artifact_id,
-                    "derived_from_code_version": a.derived_from_code_version,
-                }
-                for a in artifacts
-            ],
+            "artifacts": [self._serialize_artifact(a) for a in artifacts],
         })
+
+    @staticmethod
+    def _serialize_artifact(a: "ArtifactMetadata") -> dict:
+        entry: dict = {
+            "artifact_id": a.artifact_id,
+            "name": a.name,
+            "artifact_type": a.artifact_type.value,
+            "version": a.version,
+            "mime_type": a.mime_type,
+            "source_tool": a.source_tool,
+        }
+        if a.description:
+            entry["description"] = a.description
+        if a.derived_from_code_artifact_id:
+            entry["derived_from_code_artifact_id"] = a.derived_from_code_artifact_id
+            entry["derived_from_code_version"] = a.derived_from_code_version
+        return entry
 
     # ------------------------------------------------------------------
     # Delivery — same `::artifact` marker mechanism image_generator.py's

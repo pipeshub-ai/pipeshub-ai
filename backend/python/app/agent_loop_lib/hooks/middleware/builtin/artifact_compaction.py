@@ -126,9 +126,11 @@ def shape_artifact_compaction(
 
         if total <= budget:
             if compacted_count:
-                logger.debug(
-                    "artifact_compaction: compacted %d prev-turn artifacts, "
-                    "%d→%d tokens", compacted_count, initial_total, total,
+                logger.info(
+                    "artifact_compaction: compacted %d prev-turn artifact(s), "
+                    "%d→%d tokens (turn=%d, budget=%d)",
+                    compacted_count, initial_total, total,
+                    current_turn, budget,
                 )
             ctx.messages = messages
             await next_fn()
@@ -156,9 +158,11 @@ def shape_artifact_compaction(
             if total <= budget:
                 break
 
-        logger.debug(
-            "artifact_compaction: compacted %d artifacts total, %d→%d tokens",
+        logger.info(
+            "artifact_compaction: compacted %d artifact(s) total (incl. recent-turn overflow), "
+            "%d→%d tokens (turn=%d, budget=%d)",
             compacted_count, initial_total, total,
+            current_turn, budget,
         )
         ctx.messages = messages
         await next_fn()

@@ -60,6 +60,11 @@ def shape_synthesis_guard(
             await next_fn()
             return
 
+        logger.warning(
+            "synthesis_guard: context (%d tokens) exceeds budget (%d) after all "
+            "prior shapers — applying last-resort compaction",
+            total, budget,
+        )
         messages = list(ctx.messages)
 
         messages = _strip_thinking(messages)

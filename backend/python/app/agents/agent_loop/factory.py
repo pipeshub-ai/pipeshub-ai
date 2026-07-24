@@ -668,7 +668,9 @@ class PipesHubAgentFactory:
         # after all shapers ran — catches any orphans from shaper
         # interactions or future shapers that don't use safe_tail_boundary.
         hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction())           # L1
-        hooks.on(HookEvent.PRE_MODEL).use(shape_artifact_compaction())        # L2
+        hooks.on(HookEvent.PRE_MODEL).use(shape_artifact_compaction(          # L2
+            keep_last_n_turns=2,
+        ))
         hooks.on(HookEvent.PRE_MODEL).use(shape_tool_result_clearing(         # L3
             protected_tool_names=frozenset({"create_plan", "critique_plan"}),
         ))
@@ -876,6 +878,11 @@ def _convert_conversation_turn(turn: dict[str, Any]) -> list[Message]:
                 f"[artifact:{artifact_id}]",
                 f"tool: {tool_name}",
             ]
+            if isinstance(args, dict) and args:
+                args_str = json.dumps(args, default=str)
+                if len(args_str) > 200:
+                    args_str = args_str[:200] + "..."
+                compact_lines.append(f"args: {args_str}")
             if display_summary:
                 compact_lines.append(f"summary: {display_summary}")
             compact_lines.append(
