@@ -1,6 +1,6 @@
 """Tests for thread-safe PDF rasterization helpers."""
 
-from concurrent.futures.process import BrokenProcessPool
+import os
 from io import BytesIO
 from unittest.mock import MagicMock, patch
 
@@ -8,6 +8,14 @@ import numpy as np
 import pytest
 
 from app.modules.parsers.pdf import pdf_rasterizer as rasterizer
+
+
+def _crash_once(flag_path: str) -> str:
+    if not os.path.exists(flag_path):
+        with open(flag_path, "w") as f:
+            f.write("crashed")
+        os._exit(1)
+    return "recovered"
 
 
 @pytest.fixture(autouse=True)
@@ -106,17 +114,21 @@ def test_render_batch_from_path_sync_uses_process_pool():
     assert result == fake_pages
 
 
-def test_broken_process_pool_clears_cache_and_reraises():
-    """BrokenProcessPool should clear the cached pool and re-raise."""
-    mock_pool = MagicMock()
-    mock_future = MagicMock()
-    mock_future.result.side_effect = BrokenProcessPool("worker killed")
-    mock_pool.submit.return_value = mock_future
-
+def test_run_in_pool_delegates_to_recoverable_pool() -> None:
     with patch.object(
-        rasterizer, "_get_pdf_raster_pool", return_value=mock_pool
-    ) as mock_get_pool:
-        with pytest.raises(BrokenProcessPool):
-            rasterizer._run_in_pool(lambda: None)
+        rasterizer._pdf_raster_pool, "submit_and_wait", return_value="rendered"
+    ) as mock_submit:
+        result = rasterizer._run_in_pool(
+            rasterizer._worker_render_all_from_bytes, b"%PDF", 72
+        )
 
-        mock_get_pool.cache_clear.assert_called_once()
+    assert result == "rendered"
+    mock_submit.assert_called_once_with(
+        rasterizer._worker_render_all_from_bytes, b"%PDF", 72
+    )
+
+
+def test_run_in_pool_recovers_after_worker_crash(tmp_path) -> None:
+    """A crashed worker must not permanently break the rasterizer pool."""
+    flag = str(tmp_path / "crash_flag")
+    assert rasterizer._run_in_pool(_crash_once, flag) == "recovered"

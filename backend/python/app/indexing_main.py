@@ -436,6 +436,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
 
+    try:
+        from app.modules.parsers.pdf.docling_processor import (
+            shutdown_docling_parse_pool,
+        )
+        if shutdown_docling_parse_pool():
+            logger.info("Docling local parse process pool shut down")
+    except Exception as e:
+        logger.error(f"Error shutting down Docling local parse pool: {e}")
+
 
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.utils.request_context import set_service_suffix
