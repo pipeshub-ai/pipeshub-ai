@@ -64,7 +64,10 @@ import { AIModelConfiguration, AIModelsConfig } from '../types/ai-models.types';
 import { WebSearchConfig } from '../types/web-search.types';
 import { WebSearchProviderConfiguration } from '../types/web-search.types';
 import {
+  CONFIG_SECRET_PLACEHOLDER,
+  SMTP_SECRET_KEYS,
   maskSmtpConfig,
+  mergeSmtpConfigPlaceholders,
   maskAiModelsStoredConfig,
   maskAiModelEntry,
 } from '../utils/maskConfigSecrets';
@@ -427,12 +430,31 @@ export const createSmtpConfig =
       if (!req.user) {
         throw new UnauthorizedError('User not Found');
       }
-      const smtpConfig = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedSmtpConfig = EncryptionService.getInstance(
+      const encryptionService = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(smtpConfig));
+      );
+
+      let smtpConfig = req.body as Record<string, unknown>;
+      const hasPlaceholder = SMTP_SECRET_KEYS.some(
+        (key) => smtpConfig[key] === CONFIG_SECRET_PLACEHOLDER,
+      );
+      if (hasPlaceholder) {
+        const encryptedExisting = await keyValueStoreService.get<string>(
+          configPaths.smtp,
+        );
+        if (encryptedExisting) {
+          const existing = JSON.parse(
+            encryptionService.decrypt(encryptedExisting),
+          );
+          smtpConfig = mergeSmtpConfigPlaceholders(smtpConfig, existing);
+        }
+      }
+
+      const encryptedSmtpConfig = encryptionService.encrypt(
+        JSON.stringify(smtpConfig),
+      );
       await keyValueStoreService.set<string>(
         configPaths.smtp,
         encryptedSmtpConfig,
