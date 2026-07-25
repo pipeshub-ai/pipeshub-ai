@@ -28,9 +28,17 @@ import {
   getActiveAgentInstances,
   submitConnectorFileEvents,
   submitConnectorFileEventUploads,
+  getConnectorSyncProgress,
+  resyncConnectorRecords,
 } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema'
 import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
+import {
+  ConnectorSyncInProgressError,
+  ConnectorSyncLockedError,
+  ForbiddenError,
+  NotFoundError,
+} from '../../../../src/libs/errors/http.errors'
 
 describe('tokens_manager/controllers/connector.controllers', () => {
   let mockAppConfig: any
@@ -2093,6 +2101,279 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+    })
+  })
+
+  // =========================================================================
+  // getConnectorSyncProgress
+  // =========================================================================
+  describe('getConnectorSyncProgress', () => {
+    it('returns sync progress for a valid request', async () => {
+      const handler = getConnectorSyncProgress(mockAppConfig)
+      req.params = { connectorId: 'c1' }
+      const progress = { data: { isActive: true, phase: 'INDEXING' } }
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: progress,
+      })
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.calledWith(progress)).to.be.true
+      expect(execStub.firstCall.args[0]).to.include('/api/v1/sync-progress?')
+      expect(execStub.firstCall.args[0]).to.include('connector_id=c1')
+      expect(execStub.firstCall.args[1]).to.equal(HttpMethod.GET)
+      expect(execStub.firstCall.args[4]).to.equal(5000)
+    })
+
+    it('calls next with UnauthorizedError when user is missing', async () => {
+      const handler = getConnectorSyncProgress(mockAppConfig)
+      req.user = {}
+      req.params = { connectorId: 'c1' }
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].code).to.equal('HTTP_UNAUTHORIZED')
+    })
+
+    it('calls next with BadRequestError when connectorId is missing', async () => {
+      const handler = getConnectorSyncProgress(mockAppConfig)
+      req.params = {}
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].code).to.equal('HTTP_BAD_REQUEST')
+    })
+
+    it('maps 403 to ForbiddenError', async () => {
+      const handler = getConnectorSyncProgress(mockAppConfig)
+      req.params = { connectorId: 'c1' }
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 403,
+        data: {},
+      })
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(ForbiddenError)
+    })
+
+    it('maps 404 to NotFoundError', async () => {
+      const handler = getConnectorSyncProgress(mockAppConfig)
+      req.params = { connectorId: 'c1' }
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 404,
+        data: {},
+      })
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError)
+    })
+
+    it('maps other non-200 status to InternalServerError', async () => {
+      const handler = getConnectorSyncProgress(mockAppConfig)
+      req.params = { connectorId: 'c1' }
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 500,
+        data: {},
+      })
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].code).to.equal('HTTP_INTERNAL_SERVER_ERROR')
+    })
+
+    it('wraps unknown reject errors as InternalServerError', async () => {
+      const handler = getConnectorSyncProgress(mockAppConfig)
+      req.params = { connectorId: 'c1' }
+      sinon.stub(connectorUtils, 'executeConnectorCommand').rejects(new Error('boom'))
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].code).to.equal('HTTP_INTERNAL_SERVER_ERROR')
+      expect(next.firstCall.args[0].message).to.include('boom')
+    })
+  })
+
+  // =========================================================================
+  // resyncConnectorRecords (sync availability gate)
+  // =========================================================================
+  describe('resyncConnectorRecords', () => {
+    const mockRecordRelation = {
+      resyncConnectorRecords: sinon.stub().resolves({ success: true }),
+    }
+
+    beforeEach(() => {
+      mockRecordRelation.resyncConnectorRecords.resetHistory()
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'admin' }]),
+      } as any)
+    })
+
+    it('resyncs when connector is active, unlocked, and idle', async () => {
+      const handler = resyncConnectorRecords(mockRecordRelation as any, mockAppConfig)
+      req.params = { connectorId: 'c1' }
+      req.body = { connectorName: 'Google Drive', fullSync: false }
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
+      execStub.onCall(0).resolves({
+        statusCode: 200,
+        data: { connectors: [{ _key: 'c1' }] },
+      })
+      execStub.onCall(1).resolves({
+        statusCode: 200,
+        data: { connector: { isLocked: false, status: 'IDLE' } },
+      })
+      execStub.onCall(2).resolves({
+        statusCode: 200,
+        data: { data: { isActive: false } },
+      })
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(mockRecordRelation.resyncConnectorRecords.calledOnce).to.be.true
+      expect(mockRecordRelation.resyncConnectorRecords.firstCall.args[0]).to.deep.include({
+        connectorId: 'c1',
+        connectorName: 'googledrive',
+        fullSync: false,
+      })
+      expect(execStub.getCall(2).args[0]).to.include('include_coverage=false')
+    })
+
+    it('rejects with ConnectorSyncLockedError when connector is locked', async () => {
+      const handler = resyncConnectorRecords(mockRecordRelation as any, mockAppConfig)
+      req.params = { connectorId: 'c1' }
+      req.body = { connectorName: 'Google Drive', fullSync: true, force: true }
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
+      execStub.onCall(0).resolves({
+        statusCode: 200,
+        data: { connectors: [{ _key: 'c1' }] },
+      })
+      execStub.onCall(1).resolves({
+        statusCode: 200,
+        data: { connector: { isLocked: true, status: 'FULL_SYNCING' } },
+      })
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.be.instanceOf(ConnectorSyncLockedError)
+      expect(err.code).to.equal('HTTP_CONNECTOR_SYNC_LOCKED')
+      expect(err.message).to.include('full sync')
+      expect(mockRecordRelation.resyncConnectorRecords.called).to.be.false
+    })
+
+    it('rejects with ConnectorSyncInProgressError when status is SYNCING', async () => {
+      const handler = resyncConnectorRecords(mockRecordRelation as any, mockAppConfig)
+      req.params = { connectorId: 'c1' }
+      req.body = { connectorName: 'Google Drive' }
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
+      execStub.onCall(0).resolves({
+        statusCode: 200,
+        data: { connectors: [{ _key: 'c1' }] },
+      })
+      execStub.onCall(1).resolves({
+        statusCode: 200,
+        data: { connector: { isLocked: false, status: 'SYNCING' } },
+      })
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const err = next.firstCall.args[0]
+      expect(err).to.be.instanceOf(ConnectorSyncInProgressError)
+      expect(err.code).to.equal('HTTP_CONNECTOR_SYNC_IN_PROGRESS')
+      expect(execStub.callCount).to.equal(2)
+    })
+
+    it('rejects when run-scoped progress is still active after discovery', async () => {
+      const handler = resyncConnectorRecords(mockRecordRelation as any, mockAppConfig)
+      req.params = { connectorId: 'c1' }
+      req.body = { connectorName: 'Google Drive' }
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
+      execStub.onCall(0).resolves({
+        statusCode: 200,
+        data: { connectors: [{ _key: 'c1' }] },
+      })
+      execStub.onCall(1).resolves({
+        statusCode: 200,
+        data: { connector: { isLocked: false, status: 'IDLE' } },
+      })
+      execStub.onCall(2).resolves({
+        statusCode: 200,
+        data: { data: { isActive: true } },
+      })
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(ConnectorSyncInProgressError)
+    })
+
+    it('allows restart when force is true and connector is not locked', async () => {
+      const handler = resyncConnectorRecords(mockRecordRelation as any, mockAppConfig)
+      req.params = { connectorId: 'c1' }
+      req.body = { connectorName: 'Google Drive', force: true }
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
+      execStub.onCall(0).resolves({
+        statusCode: 200,
+        data: { connectors: [{ _key: 'c1' }] },
+      })
+      execStub.onCall(1).resolves({
+        statusCode: 200,
+        data: { connector: { isLocked: false, status: 'SYNCING' } },
+      })
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(mockRecordRelation.resyncConnectorRecords.calledOnce).to.be.true
+      // force skips the sync-progress lookup
+      expect(execStub.callCount).to.equal(2)
+    })
+
+    it('fails open when sync-progress lookup errors', async () => {
+      const handler = resyncConnectorRecords(mockRecordRelation as any, mockAppConfig)
+      req.params = { connectorId: 'c1' }
+      req.body = { connectorName: 'Google Drive' }
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
+      execStub.onCall(0).resolves({
+        statusCode: 200,
+        data: { connectors: [{ _key: 'c1' }] },
+      })
+      execStub.onCall(1).resolves({
+        statusCode: 200,
+        data: { connector: { isLocked: false, status: 'IDLE' } },
+      })
+      execStub.onCall(2).rejects(new Error('redis down'))
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('calls next with BadRequestError when connectorId is missing', async () => {
+      const handler = resyncConnectorRecords(mockRecordRelation as any, mockAppConfig)
+      req.params = {}
+      req.body = { connectorName: 'Google Drive' }
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].code).to.equal('HTTP_BAD_REQUEST')
     })
   })
 })

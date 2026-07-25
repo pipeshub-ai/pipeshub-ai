@@ -1965,14 +1965,21 @@ describe('Knowledge Base Controller', () => {
   describe('resyncConnectorRecords (happy path)', () => {
     it('should resync connector records successfully', async () => {
       const mockRecordRelation = createMockRecordRelationService()
-      const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute')
-      executeStub.onFirstCall().resolves({
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'admin' }]),
+      } as any)
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
+      execStub.onCall(0).resolves({
         statusCode: 200,
         data: { connectors: [{ _key: 'c1' }] },
       })
-      executeStub.onSecondCall().resolves({
+      execStub.onCall(1).resolves({
         statusCode: 200,
-        data: { connector: { isLocked: false } },
+        data: { connector: { isLocked: false, status: 'IDLE' } },
+      })
+      execStub.onCall(2).resolves({
+        statusCode: 200,
+        data: { data: { isActive: false } },
       })
 
       const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
@@ -1985,15 +1992,17 @@ describe('Knowledge Base Controller', () => {
 
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-        expect(mockRecordRelation.resyncConnectorRecords.calledOnce).to.be.true
-      }
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(mockRecordRelation.resyncConnectorRecords.calledOnce).to.be.true
     })
 
     it('should call next when connector is not active', async () => {
       const mockRecordRelation = createMockRecordRelationService()
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'admin' }]),
+      } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { connectors: [{ _key: 'other-connector' }] },
       })
@@ -3445,14 +3454,17 @@ describe('Knowledge Base Controller', () => {
   describe('resyncConnectorRecords (connector locked)', () => {
     it('should call next when connector is locked', async () => {
       const mockRecordRelation = createMockRecordRelationService()
-      const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute')
-      executeStub.onFirstCall().resolves({
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'admin' }]),
+      } as any)
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
+      execStub.onCall(0).resolves({
         statusCode: 200,
         data: { connectors: [{ _key: 'c1' }] },
       })
-      executeStub.onSecondCall().resolves({
+      execStub.onCall(1).resolves({
         statusCode: 200,
-        data: { connector: { isLocked: true } },
+        data: { connector: { isLocked: true, status: 'FULL_SYNCING' } },
       })
 
       const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
@@ -3466,6 +3478,8 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].code).to.equal('HTTP_CONNECTOR_SYNC_LOCKED')
+      expect(mockRecordRelation.resyncConnectorRecords.called).to.be.false
     })
   })
 })
