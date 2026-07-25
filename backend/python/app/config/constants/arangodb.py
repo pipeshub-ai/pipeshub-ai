@@ -74,6 +74,7 @@ class Connectors(Enum):
     AZURE_FILES = "AZURE FILES"
     LINEAR = "LINEAR"
     ZAMMAD = "ZAMMAD"
+    ZENDESK = "ZENDESK"
     ZOOM = "ZOOM"
 
     GITLAB = "GITLAB"
@@ -129,6 +130,7 @@ class AppGroups(Enum):
     LINEAR = "Linear"
     SLACK = "Slack"
     ZAMMAD = "Zammad"
+    ZENDESK = "Zendesk"
     ZOOM = "Zoom"
     LOCAL_STORAGE = "Local Storage"
     RSS = "RSS"
