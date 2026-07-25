@@ -2144,6 +2144,15 @@ function KnowledgeBasePageContent() {
       const isKnowledgeHubNode = 'nodeType' in item && 'origin' in item;
 
       if (isKnowledgeHubNode) {
+        if (
+          item.nodeType === 'recordGroup' &&
+          item.recordGroupType?.toUpperCase() === 'SLACK_CHANNEL' &&
+          item.webUrl
+        ) {
+          window.open(item.webUrl, '_blank', 'noopener,noreferrer');
+          return;
+        }
+
         const containerTypes: NodeType[] = ['app', 'folder', 'recordGroup'];
         const isNavigableContainer =
           containerTypes.includes(item.nodeType) ||

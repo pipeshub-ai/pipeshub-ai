@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import HTTPException
@@ -518,6 +519,23 @@ class SlackConnector(BaseConnector):
                 self.workspace_domain = team.get("domain")
                 self.team_id = team.get("id")
                 self.logger.info(f"Workspace: {self.workspace_domain} ({self.team_id})")
+
+            # Fallback: extract workspace_domain from auth.test if team.info failed
+            if not self.workspace_domain:
+                try:
+                    auth_resp = await ds.auth_test()
+                    if auth_resp and auth_resp.success:
+                        auth_url = auth_resp.data.get("url", "")
+                        if auth_url:
+                            host = urlparse(auth_url).hostname or ""
+                            if host.endswith(".slack.com"):
+                                self.workspace_domain = host.replace(".slack.com", "")
+                                self.logger.info(
+                                    f"Resolved workspace_domain from auth.test: "
+                                    f"{self.workspace_domain}"
+                                )
+                except Exception as exc:
+                    self.logger.warning(f"auth.test fallback failed: {exc}")
 
             self.logger.info("✅ Slack connector initialised")
             return True
