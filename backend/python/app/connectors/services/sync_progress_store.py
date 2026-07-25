@@ -92,6 +92,9 @@ def summarize_run(run: Optional[dict[str, Any]]) -> dict[str, Any]:
         else:
             settled = processed >= total
             percent = min(100, round(100 * min(processed, total) / total))
+            # Rounding can hit 100 before the last record finishes (e.g. 629/630).
+            if not settled and percent >= 100:
+                percent = 99
     else:  # DONE / IDLE
         settled = True
         percent = 100

@@ -295,9 +295,14 @@ export function getRollupProgressView(rollup: IndexingRollup): RollupProgressVie
   const hasErrors = !rollup.isActive && hasNonIndexedResults;
 
   const showProgressLabel = rollup.isActive || hasNonIndexedResults;
+  // Never show 100% while descendants are still queued/in progress — rounding
+  // of near-complete rollups otherwise implies "done" when work remains.
+  const percent = rollup.isActive
+    ? Math.max(0, Math.min(99, rollup.percent))
+    : Math.max(0, Math.min(100, rollup.percent));
   return {
     isActive: rollup.isActive,
-    percent: Math.max(0, Math.min(100, rollup.percent)),
+    percent,
     label: showProgressLabel
       ? `${rollup.completed} of ${rollup.total} indexed`
       : `${rollup.total} indexed`,

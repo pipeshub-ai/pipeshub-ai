@@ -92,6 +92,22 @@ describe('getRollupProgressView', () => {
     expect(view.hasErrors).toBe(false);
   });
 
+  it('caps active progress below 100 so near-complete rollups do not look done', () => {
+    const view = getRollupProgressView(
+      makeRollup({
+        total: 630,
+        completed: 626,
+        inProgress: 4,
+        percent: 100,
+        status: 'IN_PROGRESS',
+        isActive: true,
+      }),
+    );
+    expect(view.isActive).toBe(true);
+    expect(view.percent).toBe(99);
+    expect(view.label).toBe('626 of 630 indexed');
+  });
+
   it('summarizes a clean completed container without error styling', () => {
     const view = getRollupProgressView(
       makeRollup({ total: 12, completed: 12, percent: 100, status: 'COMPLETED', isActive: false }),

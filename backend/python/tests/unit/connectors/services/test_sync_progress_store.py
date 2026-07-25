@@ -381,6 +381,21 @@ class TestSummarizeRun:
         assert view["processed"] == 18
         assert view["percent"] == 43
 
+    def test_indexing_near_complete_never_reports_100(self) -> None:
+        now = int(time.time() * 1000)
+        view = summarize_run(
+            {
+                "phase": SyncPhase.INDEXING,
+                "total": 630,
+                "indexed": 629,
+                "failed": 0,
+                "skipped": 0,
+                "heartbeatAt": now,
+            }
+        )
+        assert view["isActive"] is True
+        assert view["percent"] == 99
+
     def test_indexing_complete_is_settled(self) -> None:
         now = int(time.time() * 1000)
         view = summarize_run(

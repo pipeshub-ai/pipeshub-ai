@@ -73,12 +73,17 @@ export function describeSyncProgress(
     if (run && run.phase === 'INDEXING') {
       const total = run.total || 0;
       const processed = total > 0 ? Math.min(run.processed || 0, total) : run.processed || 0;
-      const percent =
+      let percent =
         run.percent != null
           ? run.percent
           : total > 0
             ? Math.min(100, Math.round((processed / total) * 100))
             : 0;
+      // While still indexing, never show 100% — rounding of near-complete
+      // totals otherwise implies "done" with records still left.
+      if (total > 0 && processed < total && percent >= 100) {
+        percent = 99;
+      }
       return {
         mode: 'indexing',
         label: `Indexing ${processed} of ${total}`,

@@ -150,6 +150,21 @@ describe('describeSyncProgress', () => {
     expect(view.mode === 'indexing' && view.percent).toBe(25);
   });
 
+  it('caps active indexing below 100 so near-complete runs do not look done', () => {
+    const view = describeSyncProgress(
+      makeProgress({
+        isActive: true,
+        phase: 'INDEXING',
+        run: { total: 630, processed: 629, percent: 100 },
+      })
+    );
+    expect(view.mode).toBe('indexing');
+    if (view.mode === 'indexing') {
+      expect(view.percent).toBe(99);
+      expect(view.label).toBe('Indexing 629 of 630');
+    }
+  });
+
   it('treats an active status with no run yet as discovering', () => {
     const view = describeSyncProgress(null, 'SYNCING');
     expect(view.mode).toBe('discovering');

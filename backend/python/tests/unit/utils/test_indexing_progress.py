@@ -4,6 +4,7 @@ import json
 
 from app.config.constants.arangodb import IndexingStage, ProgressStatus
 from app.utils.indexing_progress import (
+    build_container_rollup,
     build_indexing_progress,
     build_indexing_substage_progress,
     format_indexing_progress_message,
@@ -95,6 +96,36 @@ class TestFormatIndexingProgressMessage:
         assert format_indexing_progress_message(
             phase="extracting", current=2, total=8, unit="pages"
         ) == "Extracting page 2 of 8"
+
+
+class TestBuildContainerRollup:
+    def test_active_near_complete_never_reports_100(self):
+        # 626 completed + 4 still indexing rounds to 100 without the active cap.
+        rollup = build_container_rollup(
+            [
+                {"status": ProgressStatus.COMPLETED.value, "stage": None, "cnt": 626},
+                {
+                    "status": ProgressStatus.IN_PROGRESS.value,
+                    "stage": IndexingStage.INDEXING.value,
+                    "cnt": 4,
+                },
+            ]
+        )
+        assert rollup is not None
+        assert rollup["isActive"] is True
+        assert rollup["completed"] == 626
+        assert rollup["total"] == 630
+        assert rollup["percent"] == 99
+
+    def test_settled_complete_reports_100(self):
+        rollup = build_container_rollup(
+            [
+                {"status": ProgressStatus.COMPLETED.value, "stage": None, "cnt": 630},
+            ]
+        )
+        assert rollup is not None
+        assert rollup["isActive"] is False
+        assert rollup["percent"] == 100
 
 
 class TestNormalizeIndexingProgress:

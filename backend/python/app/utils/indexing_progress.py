@@ -179,6 +179,11 @@ def build_container_rollup(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 
     percent = max(0, min(100, round(100.0 * weighted / total)))
     is_active = in_progress > 0 or queued > 0
+    # Rounding + partial credit for in-flight records can land on 100 while
+    # work remains (e.g. 626/630). Cap active rollups at 99 so 100% only means
+    # nothing left to process.
+    if is_active and percent >= 100:
+        percent = 99
     if is_active:
         status_label = "IN_PROGRESS" if in_progress > 0 else "QUEUED"
     else:
