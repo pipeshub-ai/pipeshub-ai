@@ -1,3 +1,5 @@
+import asyncio
+import time
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
@@ -76,6 +78,14 @@ class UserGroupWithMembers:
     user_group: AppUserGroup
     users: list[tuple[AppUser, Permission]]
 
+
+# Coalesce buffered "unchanged" counts before writing to Redis: flush once this
+# many accumulate (memory cap), or at least this often (so the panel climbs in
+# near real time instead of jumping at discovery close). Whichever comes first.
+_UNCHANGED_FLUSH_THRESHOLD = 50
+_UNCHANGED_FLUSH_INTERVAL_SECONDS = 1.0
+
+
 class DataSourceEntitiesProcessor:
     ATTACHMENT_CONTAINER_TYPES = [
         RecordType.MAIL,
@@ -113,6 +123,13 @@ class DataSourceEntitiesProcessor:
         self.data_store_provider: DataStoreProvider = data_store_provider
         self.config_service: ConfigurationService = config_service
         self.org_id = ""
+        # Coalesce "unchanged" run counts so per-record relink/metadata updates
+        # don't each hit Redis (counters sit on the sync hot path). Keyed by
+        # (org_id, connector_id, run_id); flushed on a size threshold, on a time
+        # interval so the count climbs live, and unconditionally at close.
+        self._unchanged_buffer: dict[tuple[str, str, str], int] = {}
+        self._unchanged_last_flush: dict[tuple[str, str, str], float] = {}
+        self._unchanged_buffer_lock = asyncio.Lock()
 
     async def initialize(self, org_id: Optional[str] = None) -> None:
         config = await MessagingUtils.create_producer_config_from_service(
@@ -936,6 +953,9 @@ class DataSourceEntitiesProcessor:
 
                 self.logger.debug(f"Successfully updated permissions for record: {record.id}")
 
+            # Relink/permissions-only update: examined this run, no re-indexing.
+            await self._track_unchanged(record)
+
         except Exception as e:
             self.logger.error(f"Failed to update permissions for record {record.id}: {e}", exc_info=True)
             raise
@@ -1172,6 +1192,64 @@ class DataSourceEntitiesProcessor:
             payload["syncRunId"] = run_id
         return payload
 
+    async def _track_unchanged(self, record: Record) -> None:
+        """Count a record examined this run that needed no re-indexing (relink or
+        metadata-only update). Buffered per run and flushed at a threshold /at
+        discovery close, so per-record updates stay off the Redis hot path.
+        No-op outside a connector sync run (manual/webhook updates)."""
+        from app.connectors.services.sync_run_context import get_sync_run_id
+
+        run_id = get_sync_run_id()
+        if not run_id:
+            return
+        org_id = getattr(record, "org_id", "") or self.org_id
+        connector_id = getattr(record, "connector_id", "")
+        if not org_id or not connector_id:
+            return
+
+        to_flush: dict[tuple[str, str, str], int] | None = None
+        async with self._unchanged_buffer_lock:
+            key = (org_id, connector_id, run_id)
+            self._unchanged_buffer[key] = self._unchanged_buffer.get(key, 0) + 1
+            now = time.monotonic()
+            last = self._unchanged_last_flush.setdefault(key, now)
+            due = (
+                self._unchanged_buffer[key] >= _UNCHANGED_FLUSH_THRESHOLD
+                or (now - last) >= _UNCHANGED_FLUSH_INTERVAL_SECONDS
+            )
+            if due:
+                to_flush = {key: self._unchanged_buffer.pop(key)}
+                self._unchanged_last_flush[key] = now
+        if to_flush:
+            await self._flush_unchanged_counts(to_flush)
+
+    async def flush_unchanged(self) -> None:
+        """Flush any buffered unchanged counts. Called at discovery close so the
+        final count lands before the panel switches to the INDEXING phase."""
+        async with self._unchanged_buffer_lock:
+            self._unchanged_last_flush.clear()
+            if not self._unchanged_buffer:
+                return
+            to_flush = dict(self._unchanged_buffer)
+            self._unchanged_buffer.clear()
+        await self._flush_unchanged_counts(to_flush)
+
+    async def _flush_unchanged_counts(
+        self, counts: dict[tuple[str, str, str], int]
+    ) -> None:
+        try:
+            from app.connectors.services.sync_progress_store import (
+                get_connector_sync_progress_store,
+            )
+            store = await get_connector_sync_progress_store(self.logger, self.config_service)
+            if not store:
+                return
+            for (org_id, connector_id, run_id), count in counts.items():
+                if count > 0:
+                    await store.add_unchanged(org_id, connector_id, count, run_id=run_id)
+        except Exception as e:
+            self.logger.debug(f"Failed to flush unchanged sync counts: {e}")
+
 
     @retry_on_deadlock()
     async def on_record_content_update(self, record: Record) -> None:
@@ -1205,6 +1283,8 @@ class DataSourceEntitiesProcessor:
             processed_record = await self._process_record(record, [], tx_store)
             if processed_record:
                 await self._handle_updated_record(processed_record, existing_record, tx_store)
+        # Metadata-only update: examined this run, no content re-indexing needed.
+        await self._track_unchanged(record)
 
     @retry_on_deadlock()
     async def on_records_moved(

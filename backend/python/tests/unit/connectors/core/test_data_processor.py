@@ -2602,3 +2602,84 @@ class TestOnNewRecordGroupsAdditional:
 
         # Should have created multiple edges including parent BELONGS_TO
         assert tx_store.batch_create_edges.call_count >= 2
+
+
+class TestUnchangedTracking:
+    """Run-scoped 'unchanged' counter: gated on an active run, batched to keep
+    per-record relink/metadata updates off the Redis hot path."""
+
+    RUN_CTX = "app.connectors.services.sync_run_context.get_sync_run_id"
+    STORE_GETTER = (
+        "app.connectors.services.sync_progress_store."
+        "get_connector_sync_progress_store"
+    )
+
+    MODULE = "app.connectors.core.base.data_processor.data_source_entities_processor"
+
+    async def test_noop_without_active_run(self):
+        proc = _make_processor()
+        record = _make_record()
+        with patch(self.RUN_CTX, return_value=None):
+            await proc._track_unchanged(record)
+        assert proc._unchanged_buffer == {}
+
+    async def test_buffers_below_threshold_until_final_flush(self):
+        # A slow, low-volume run: neither the size threshold nor (with a very long
+        # interval) the time trigger fires, so the count only lands at close.
+        proc = _make_processor()
+        record = _make_record()
+        store = AsyncMock()
+        with patch(self.RUN_CTX, return_value="run-1"), patch(
+            self.STORE_GETTER, AsyncMock(return_value=store)
+        ), patch(f"{self.MODULE}._UNCHANGED_FLUSH_INTERVAL_SECONDS", 1e9):
+            await proc._track_unchanged(record)
+            store.add_unchanged.assert_not_awaited()
+            assert proc._unchanged_buffer[("org-1", "conn-1", "run-1")] == 1
+            await proc.flush_unchanged()
+        store.add_unchanged.assert_awaited_once_with(
+            "org-1", "conn-1", 1, run_id="run-1"
+        )
+        assert proc._unchanged_buffer == {}
+        assert proc._unchanged_last_flush == {}
+
+    async def test_flush_at_threshold(self):
+        from app.connectors.core.base.data_processor import (
+            data_source_entities_processor as mod,
+        )
+
+        proc = _make_processor()
+        record = _make_record()
+        store = AsyncMock()
+        # Long interval so only the size threshold can trigger the flush.
+        with patch(self.RUN_CTX, return_value="run-1"), patch(
+            self.STORE_GETTER, AsyncMock(return_value=store)
+        ), patch(f"{self.MODULE}._UNCHANGED_FLUSH_INTERVAL_SECONDS", 1e9):
+            for _ in range(mod._UNCHANGED_FLUSH_THRESHOLD):
+                await proc._track_unchanged(record)
+        store.add_unchanged.assert_awaited_once_with(
+            "org-1", "conn-1", mod._UNCHANGED_FLUSH_THRESHOLD, run_id="run-1"
+        )
+        assert ("org-1", "conn-1", "run-1") not in proc._unchanged_buffer
+
+    async def test_flushes_incrementally_on_interval(self):
+        # With a zero interval every observation flushes, so the panel climbs live
+        # rather than jumping at close.
+        proc = _make_processor()
+        record = _make_record()
+        store = AsyncMock()
+        with patch(self.RUN_CTX, return_value="run-1"), patch(
+            self.STORE_GETTER, AsyncMock(return_value=store)
+        ), patch(f"{self.MODULE}._UNCHANGED_FLUSH_INTERVAL_SECONDS", 0.0):
+            await proc._track_unchanged(record)
+            await proc._track_unchanged(record)
+        assert store.add_unchanged.await_count == 2
+        for call in store.add_unchanged.await_args_list:
+            assert call == (("org-1", "conn-1", 1), {"run_id": "run-1"})
+        assert proc._unchanged_buffer == {}
+
+    async def test_flush_noop_when_empty(self):
+        proc = _make_processor()
+        store = AsyncMock()
+        with patch(self.STORE_GETTER, AsyncMock(return_value=store)):
+            await proc.flush_unchanged()
+        store.add_unchanged.assert_not_awaited()

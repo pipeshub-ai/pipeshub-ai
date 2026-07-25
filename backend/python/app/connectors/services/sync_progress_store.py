@@ -39,7 +39,7 @@ class SyncPhase:
     IDLE = "IDLE"
 
 
-_NUMERIC_FIELDS = ("discovered", "indexed", "failed", "skipped", "total")
+_NUMERIC_FIELDS = ("discovered", "indexed", "failed", "skipped", "unchanged", "total")
 
 # A run whose heartbeat is older than this is treated as stalled (crashed
 # indexer, dropped Kafka messages) so the UI does not spin forever. Indexers
@@ -58,6 +58,7 @@ def summarize_run(run: Optional[dict[str, Any]]) -> dict[str, Any]:
             "indexed": 0,
             "failed": 0,
             "skipped": 0,
+            "unchanged": 0,
             "total": 0,
             "processed": 0,
             "percent": None,
@@ -76,6 +77,7 @@ def summarize_run(run: Optional[dict[str, Any]]) -> dict[str, Any]:
     indexed = int(run.get("indexed", 0) or 0)
     failed = int(run.get("failed", 0) or 0)
     skipped = int(run.get("skipped", 0) or 0)
+    unchanged = int(run.get("unchanged", 0) or 0)
     total = int(run.get("total", 0) or 0)
     processed = indexed + failed + skipped
 
@@ -106,6 +108,7 @@ def summarize_run(run: Optional[dict[str, Any]]) -> dict[str, Any]:
         "indexed": indexed,
         "failed": failed,
         "skipped": skipped,
+        "unchanged": unchanged,
         "total": total,
         "processed": processed,
         "percent": percent,
@@ -179,6 +182,7 @@ class ConnectorSyncProgressStore:
             'indexed', 0,
             'failed', 0,
             'skipped', 0,
+            'unchanged', 0,
             'total', 0,
             'fullSync', ARGV[3],
             'startedAt', ARGV[4],
@@ -334,6 +338,21 @@ class ConnectorSyncProgressStore:
             await self._increment_if_present(key, "discovered", count, expected_run_id=run_id)
         except Exception as e:
             self._log_redis_failure("add_discovered", connector_id, e)
+
+    async def add_unchanged(
+        self, org_id: str, connector_id: str, count: int = 1, *, run_id: str | None = None
+    ) -> None:
+        """Count records examined this run that needed no re-indexing (relink /
+        metadata-only updates). Not part of ``total`` (which is frozen to
+        ``discovered`` at ``close_discovery``), so it never affects the
+        INDEXING -> DONE transition."""
+        if not self._redis or count <= 0 or not org_id or not connector_id:
+            return
+        key = self._key(org_id, connector_id)
+        try:
+            await self._increment_if_present(key, "unchanged", count, expected_run_id=run_id)
+        except Exception as e:
+            self._log_redis_failure("add_unchanged", connector_id, e)
 
     async def close_discovery(
         self,

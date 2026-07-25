@@ -355,10 +355,23 @@ export function OverviewTab({
             status={instance.status}
             variant="detail"
           />
+          {syncProgressView.mode === 'discovering' && syncProgressView.subtitle && (
+            <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px' }}>
+              {t(syncProgressView.subtitleKey ?? '', { defaultValue: syncProgressView.subtitle })}
+            </Text>
+          )}
           {showRunBreakdown && runData && (
             <Flex gap="4" wrap="wrap">
               <SyncBreakdownItem
-                label={t('workspace.connectors.syncProgress.breakdownQueued', { defaultValue: 'Queued this sync' })}
+                label={t('workspace.connectors.syncProgress.breakdownScanned', { defaultValue: 'Scanned' })}
+                value={runData.discovered + runData.unchanged + runData.failed}
+              />
+              <SyncBreakdownItem
+                label={t('workspace.connectors.syncProgress.breakdownUnchanged', { defaultValue: 'Unchanged' })}
+                value={runData.unchanged}
+              />
+              <SyncBreakdownItem
+                label={t('workspace.connectors.syncProgress.breakdownQueued', { defaultValue: 'New/changed queued' })}
                 value={runData.discovered}
               />
               <SyncBreakdownItem

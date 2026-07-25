@@ -21,7 +21,7 @@ interface Translatable {
 }
 
 export type SyncProgressView =
-  | ({ mode: 'discovering'; label: string; detail: string | null; detailKey?: string; detailParams?: Record<string, number> } & Translatable)
+  | ({ mode: 'discovering'; label: string; detail: string | null; detailKey?: string; detailParams?: Record<string, number>; subtitle?: string | null; subtitleKey?: string } & Translatable)
   | ({ mode: 'indexing'; label: string; percent: number } & Translatable)
   | ({ mode: 'settled'; label: string; failed: number; hasErrors: boolean } & Translatable)
   | ({
@@ -90,6 +90,10 @@ export function describeSyncProgress(
     const isFullSync =
       normalizedStatus === CONNECTOR_INSTANCE_STATUS.FULL_SYNCING || Boolean(run?.fullSync);
     const discovered = run?.discovered ?? 0;
+    // A full sync of mostly-unchanged content shows no queued/indexed records
+    // (only new or changed pages are re-indexed) while lifetime coverage still
+    // climbs. Explain that 0/0 so the panel doesn't read as "stuck".
+    const showCheckingChanges = isFullSync && discovered === 0;
     return {
       mode: 'discovering',
       label: isFullSync ? 'Full sync - syncing source…' : 'Syncing source…',
@@ -97,6 +101,10 @@ export function describeSyncProgress(
       detail: discovered > 0 ? `${discovered} queued` : null,
       detailKey: discovered > 0 ? `${KEY_PREFIX}.queuedCount` : undefined,
       detailParams: discovered > 0 ? { count: discovered } : undefined,
+      subtitle: showCheckingChanges
+        ? 'Checking source for changes - only new or updated pages are re-indexed.'
+        : null,
+      subtitleKey: showCheckingChanges ? `${KEY_PREFIX}.fullSyncCheckingChanges` : undefined,
     };
   }
 

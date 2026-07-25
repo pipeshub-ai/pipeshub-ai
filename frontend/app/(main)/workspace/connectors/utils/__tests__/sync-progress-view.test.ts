@@ -25,6 +25,7 @@ function makeProgress(
       indexed: 0,
       failed: 0,
       skipped: 0,
+      unchanged: 0,
       total: 0,
       processed: 0,
       percent: null,
@@ -85,6 +86,31 @@ describe('describeSyncProgress', () => {
       makeProgress({ isActive: true, phase: 'DISCOVERING', run: { fullSync: true } })
     );
     expect(view.mode === 'discovering' && view.label).toBe('Full sync - syncing source…');
+  });
+
+  it('explains the 0-queued full sync with a "checking for changes" subtitle', () => {
+    const view = describeSyncProgress(
+      makeProgress({ isActive: true, phase: 'DISCOVERING', run: { fullSync: true, discovered: 0 } })
+    );
+    expect(view.mode).toBe('discovering');
+    if (view.mode === 'discovering') {
+      expect(view.subtitle).toContain('only new or updated pages');
+      expect(view.subtitleKey).toBe('workspace.connectors.syncProgress.fullSyncCheckingChanges');
+    }
+  });
+
+  it('omits the checking-for-changes subtitle once records are queued', () => {
+    const view = describeSyncProgress(
+      makeProgress({ isActive: true, phase: 'DISCOVERING', run: { fullSync: true, discovered: 3 } })
+    );
+    expect(view.mode === 'discovering' && (view.subtitle ?? null)).toBe(null);
+  });
+
+  it('omits the checking-for-changes subtitle for a quick (non-full) sync', () => {
+    const view = describeSyncProgress(
+      makeProgress({ isActive: true, phase: 'DISCOVERING', run: { fullSync: false, discovered: 0 } })
+    );
+    expect(view.mode === 'discovering' && (view.subtitle ?? null)).toBe(null);
   });
 
   it('reports the deleting state regardless of run/coverage', () => {

@@ -489,6 +489,8 @@ export interface SyncProgressRun {
   indexed: number;
   failed: number;
   skipped: number;
+  /** Records examined this run that needed no re-indexing (relink/metadata-only). */
+  unchanged: number;
   total: number;
   processed: number;
   /** null while discovery is still open (total unknown) -> indeterminate. */

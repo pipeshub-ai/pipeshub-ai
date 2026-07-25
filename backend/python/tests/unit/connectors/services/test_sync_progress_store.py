@@ -74,6 +74,7 @@ class FakeRedis:
                 "indexed": "0",
                 "failed": "0",
                 "skipped": "0",
+                "unchanged": "0",
                 "total": "0",
                 "fullSync": str(full_sync),
                 "startedAt": str(now),
@@ -200,6 +201,38 @@ class TestStoreLifecycle:
         assert data["phase"] == SyncPhase.INDEXING
         assert data["total"] == 42
 
+    async def test_add_unchanged_only_when_run_exists(self) -> None:
+        store, _ = make_store()
+        # No run yet -> no-op (must not create the key).
+        await store.add_unchanged(ORG, CONN, 5)
+        assert await store.get(ORG, CONN) is None
+
+        await store.start_run(ORG, CONN, run_id="r1")
+        await store.add_unchanged(ORG, CONN, 5)
+        await store.add_unchanged(ORG, CONN, 3)
+        data = await store.get(ORG, CONN)
+        assert data["unchanged"] == 8
+
+    async def test_add_unchanged_is_run_scoped(self) -> None:
+        store, _ = make_store()
+        await store.start_run(ORG, CONN, run_id="r1")
+        await store.add_unchanged(ORG, CONN, 4, run_id="obsolete")
+        assert (await store.get(ORG, CONN))["unchanged"] == 0
+        await store.add_unchanged(ORG, CONN, 4, run_id="r1")
+        assert (await store.get(ORG, CONN))["unchanged"] == 4
+
+    async def test_unchanged_excluded_from_frozen_total(self) -> None:
+        # Unchanged records are examined-but-not-indexed and must not inflate the
+        # total that drives "Indexing X of Y".
+        store, _ = make_store()
+        await store.start_run(ORG, CONN, run_id="r1")
+        await store.add_discovered(ORG, CONN, 2)
+        await store.add_unchanged(ORG, CONN, 40)
+        await store.close_discovery(ORG, CONN, expected_run_id="r1")
+        data = await store.get(ORG, CONN)
+        assert data["total"] == 2
+        assert data["unchanged"] == 40
+
     async def test_record_result_buckets_and_gating(self) -> None:
         store, _ = make_store()
         # No run -> ignored.
@@ -312,6 +345,17 @@ class TestSummarizeRun:
         assert view["phase"] == SyncPhase.IDLE
         assert view["isActive"] is False
         assert view["percent"] is None
+        assert view["unchanged"] == 0
+
+    def test_unchanged_defaults_to_zero_and_passes_through(self) -> None:
+        now = int(time.time() * 1000)
+        assert summarize_run({"phase": SyncPhase.DISCOVERING, "heartbeatAt": now})[
+            "unchanged"
+        ] == 0
+        view = summarize_run(
+            {"phase": SyncPhase.DISCOVERING, "unchanged": 37, "heartbeatAt": now}
+        )
+        assert view["unchanged"] == 37
 
     def test_discovering_is_active_and_indeterminate(self) -> None:
         now = int(time.time() * 1000)

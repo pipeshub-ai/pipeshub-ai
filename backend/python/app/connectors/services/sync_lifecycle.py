@@ -100,6 +100,19 @@ async def run_sync_with_lifecycle(
                 "leaving status and progress to the newer run"
             )
         else:
+            # Flush any buffered "unchanged" counts before freezing the run so the
+            # final tally lands while the panel is still on this run.
+            processor = getattr(connector, "data_entities_processor", None)
+            flush = getattr(processor, "flush_unchanged", None) if processor else None
+            if flush is not None:
+                try:
+                    await flush()
+                except Exception as flush_err:
+                    logger.debug(
+                        "Failed to flush unchanged sync counts for %s: %s",
+                        connector_id,
+                        flush_err,
+                    )
             # Discovery is complete once run_sync() returns; freeze the run total so
             # the indexing phase can drive "Indexing X of Y" while apps.status is IDLE.
             if org_id and store and failed:
