@@ -6,6 +6,7 @@ import {
   maskAiModelEntry,
   maskAiModelsStoredConfig,
   maskSmtpConfig,
+  mergeSmtpConfigPlaceholders,
 } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets';
 
 function makeAiEntry(
@@ -26,7 +27,7 @@ function makeAiEntry(
 
 describe('configuration_manager/utils/maskConfigSecrets', () => {
   describe('maskSmtpConfig', () => {
-    it('replaces non-empty password with placeholder and keeps other fields', () => {
+    it('replaces non-empty host, username, password, and fromEmail with placeholder', () => {
       const input = {
         host: 'smtp.example.com',
         port: 587,
@@ -35,28 +36,86 @@ describe('configuration_manager/utils/maskConfigSecrets', () => {
         fromEmail: 'noreply@example.com',
       };
       const out = maskSmtpConfig(input);
+      expect(out.host).to.equal(CONFIG_SECRET_PLACEHOLDER);
+      expect(out.username).to.equal(CONFIG_SECRET_PLACEHOLDER);
       expect(out.password).to.equal(CONFIG_SECRET_PLACEHOLDER);
-      expect(out.host).to.equal('smtp.example.com');
+      expect(out.fromEmail).to.equal(CONFIG_SECRET_PLACEHOLDER);
       expect(out.port).to.equal(587);
-      expect(out.username).to.equal('user');
-      expect(out.fromEmail).to.equal('noreply@example.com');
     });
 
-    it('does not replace empty password string', () => {
-      const input = { host: 'h', port: 1, password: '', fromEmail: 'a@b.c' };
+    it('does not replace empty string fields', () => {
+      const input = { host: '', port: 1, username: '', password: '', fromEmail: '' };
       const out = maskSmtpConfig(input);
+      expect(out.host).to.equal('');
+      expect(out.username).to.equal('');
       expect(out.password).to.equal('');
+      expect(out.fromEmail).to.equal('');
     });
 
-    it('returns input unchanged when password is missing', () => {
+    it('masks host and fromEmail even when password is missing', () => {
       const input = { host: 'h', port: 25, fromEmail: 'a@b.c' };
       const out = maskSmtpConfig(input);
-      expect(out).to.deep.equal(input);
+      expect(out.host).to.equal(CONFIG_SECRET_PLACEHOLDER);
+      expect(out.fromEmail).to.equal(CONFIG_SECRET_PLACEHOLDER);
+      expect(out.port).to.equal(25);
     });
 
     it('returns nullish config as-is', () => {
       expect(maskSmtpConfig(null as unknown as Record<string, unknown>)).to.equal(null);
       expect(maskSmtpConfig(undefined as unknown as Record<string, unknown>)).to.equal(undefined);
+    });
+  });
+
+  describe('mergeSmtpConfigPlaceholders', () => {
+    const existing = {
+      host: 'smtp.real.com',
+      port: 587,
+      username: 'real-user',
+      password: 'real-pass',
+      fromEmail: 'real@example.com',
+    };
+
+    it('restores every masked field from the existing stored config', () => {
+      const incoming = {
+        host: CONFIG_SECRET_PLACEHOLDER,
+        port: 25,
+        username: CONFIG_SECRET_PLACEHOLDER,
+        password: CONFIG_SECRET_PLACEHOLDER,
+        fromEmail: CONFIG_SECRET_PLACEHOLDER,
+      };
+      const out = mergeSmtpConfigPlaceholders(incoming, existing);
+      expect(out.host).to.equal('smtp.real.com');
+      expect(out.username).to.equal('real-user');
+      expect(out.password).to.equal('real-pass');
+      expect(out.fromEmail).to.equal('real@example.com');
+      expect(out.port).to.equal(25);
+    });
+
+    it('keeps client-supplied real values when the field is not a placeholder', () => {
+      const incoming = {
+        host: 'smtp.new.com',
+        port: 587,
+        username: CONFIG_SECRET_PLACEHOLDER,
+        password: 'new-pass',
+        fromEmail: CONFIG_SECRET_PLACEHOLDER,
+      };
+      const out = mergeSmtpConfigPlaceholders(incoming, existing);
+      expect(out.host).to.equal('smtp.new.com');
+      expect(out.username).to.equal('real-user');
+      expect(out.password).to.equal('new-pass');
+      expect(out.fromEmail).to.equal('real@example.com');
+    });
+
+    it('returns incoming unchanged when there is no existing stored config', () => {
+      const incoming = { host: CONFIG_SECRET_PLACEHOLDER, port: 587 };
+      expect(mergeSmtpConfigPlaceholders(incoming, null)).to.equal(incoming);
+      expect(mergeSmtpConfigPlaceholders(incoming, undefined)).to.equal(incoming);
+    });
+
+    it('leaves placeholder as-is when existing config has no value for that key', () => {
+      const incoming = { host: CONFIG_SECRET_PLACEHOLDER, port: 587 };
+      const out = mergeSmtpConfigPlaceholders(incoming, { port: 587 });
+      expect(out.host).to.equal(CONFIG_SECRET_PLACEHOLDER);
     });
   });
 

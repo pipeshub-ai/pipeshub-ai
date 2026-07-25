@@ -231,6 +231,7 @@ class Record(BaseModel):
     shared_with_me_record_group_ids: list[str] = Field(default_factory=list)
     hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
     is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
+    is_placeholder: bool = Field(default=False, description="Stub parent created for a not-yet-synced or out-of-scope ancestor; reconciled when the real record syncs")
 
     # Processing flags
     is_vlm_ocr_processed: bool | None = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
@@ -325,6 +326,7 @@ class Record(BaseModel):
             "parentNodeId": self.parent_node_id,
             "hideWeburl": self.hide_weburl,
             "isInternal": self.is_internal,
+            "isPlaceholder": self.is_placeholder,
             "storageDocumentId": self.storage_document_id,
         }
 
@@ -372,6 +374,7 @@ class Record(BaseModel):
             parent_node_id=arango_base_record.get("parentNodeId"),
             hide_weburl=arango_base_record.get("hideWeburl", False),
             is_internal=arango_base_record.get("isInternal", False),
+            is_placeholder=arango_base_record.get("isPlaceholder", False),
             md5_hash=arango_base_record.get("md5Checksum"),
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),
@@ -582,6 +585,7 @@ class FileRecord(Record):
             is_dependent_node=arango_base_record.get("isDependentNode", False),
             parent_node_id=arango_base_record.get("parentNodeId"),
             is_internal=arango_base_record.get("isInternal", False),
+            is_placeholder=arango_base_record.get("isPlaceholder", False),
             is_file=arango_base_file_record.get("isFile", True),
             size_in_bytes=size if (size := arango_base_record.get("sizeInBytes")) is not None else arango_base_file_record.get("sizeInBytes"),
             extension=arango_base_file_record.get("extension"),
@@ -935,6 +939,7 @@ class WebpageRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
+            is_placeholder=record_doc.get("isPlaceholder", False),
         )
 
 class LinkRecord(Record):
@@ -2462,6 +2467,7 @@ class CodeFileRecord(Record):
             parent_node_id=arango_base_record.get("parentNodeId"),
             hide_weburl=arango_base_record.get("hideWeburl", False),
             is_internal=arango_base_record.get("isInternal", False),
+            is_placeholder=arango_base_record.get("isPlaceholder", False),
             md5_hash=arango_base_record.get("md5Checksum"),
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),

@@ -53,6 +53,9 @@ fields:
   is_internal:
     required: false
     type: boolean
+  is_placeholder:
+    required: false
+    type: boolean
   is_shared:
     required: false
     type: boolean

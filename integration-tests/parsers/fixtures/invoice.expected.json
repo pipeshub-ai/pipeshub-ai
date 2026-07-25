@@ -54,7 +54,7 @@
           "Amount"
         ]
       },
-      "format": null,
+      "format": "json",
       "weburl": null,
       "comments": [],
       "source_modified_date": null
@@ -137,7 +137,7 @@
         "table_summary": "",
         "column_headers": []
       },
-      "format": null,
+      "format": "json",
       "weburl": null,
       "comments": [],
       "source_modified_date": null

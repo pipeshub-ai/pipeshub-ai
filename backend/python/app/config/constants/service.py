@@ -12,6 +12,7 @@ class config_node_constants(Enum):
     REDIS_VECTOR = "/services/redis-vector"
     OPENSEARCH = "/services/opensearch"
     AI_MODELS = "/services/aiModels"
+    AI_MODELS_EMBEDDING = "/services/aiModels/embedding"
     WEB_SEARCH = "/services/webSearch"
     KAFKA = "/services/kafka"
     REDIS_STREAMS = "/services/redis-streams"
@@ -21,6 +22,8 @@ class config_node_constants(Enum):
     STORAGE = "/services/storage"
     MIGRATIONS = "/services/migrations"
     DEPLOYMENT = "/services/deployment"
+    INHERITANCE = "/services/inheritance"
+
 
     # Non-service paths
     # LOG_LEVEL = "/logLevel"

@@ -457,6 +457,7 @@ function TableRow({
           legacyFileType={!isKnowledgeHubNode(item) ? item.fileType : undefined}
           name={item.name}
           size={20}
+          isPlaceholder={isKnowledgeHubNode(item) ? item.isPlaceholder : undefined}
         />
         {isEditing ? (
           <>

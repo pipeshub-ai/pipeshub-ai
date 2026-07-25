@@ -264,6 +264,7 @@ export interface KnowledgeHubNode {
   subType?: string;
   sourceType?: string;
   isInternal?: boolean;
+  isPlaceholder?: boolean;
 }
 
 /**

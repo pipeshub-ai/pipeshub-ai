@@ -342,11 +342,14 @@ class MimeTypes(Enum):
     ZIP = "application/zip"
     GIF = "image/gif"
     PYTHON = "text/x-python"
+    PYTHON_SCRIPT = "text/x-python-script"
+    PYTHON_SCRIPT_X = "text/x-script.python"
     JAVA_SOURCE = "text/x-java-source"
     C_SOURCE = "text/x-c"
     CPP = "text/x-c++"
     PHP = "text/x-php"
     JAVASCRIPT = "application/javascript"
+    JAVASCRIPT_TEXT = "text/javascript"
     TYPESCRIPT = "application/typescript"
     CSHARP = "text/x-csharp"
     GO = "text/x-go"
@@ -356,16 +359,21 @@ class MimeTypes(Enum):
     KOTLIN = "text/x-kotlin"
     DART = "application/dart"
     SHELL = "application/x-sh"
+    SHELL_TEXT = "text/x-sh"
+    SHELLSCRIPT = "text/x-shellscript"
     SQL_TABLE = "application/vnd.sql.table"  
     SQL_VIEW = "application/vnd.sql.view"  
 
 CODE_FILE_MIME_TYPE_VALUES = frozenset({
     MimeTypes.PYTHON.value,
+    MimeTypes.PYTHON_SCRIPT.value,
+    MimeTypes.PYTHON_SCRIPT_X.value,
     MimeTypes.JAVA_SOURCE.value,
     MimeTypes.C_SOURCE.value,
     MimeTypes.CPP.value,
     MimeTypes.PHP.value,
     MimeTypes.JAVASCRIPT.value,
+    MimeTypes.JAVASCRIPT_TEXT.value,
     MimeTypes.TYPESCRIPT.value,
     MimeTypes.CSHARP.value,
     MimeTypes.GO.value,
@@ -375,6 +383,8 @@ CODE_FILE_MIME_TYPE_VALUES = frozenset({
     MimeTypes.KOTLIN.value,
     MimeTypes.DART.value,
     MimeTypes.SHELL.value,
+    MimeTypes.SHELL_TEXT.value,
+    MimeTypes.SHELLSCRIPT.value,
 })
 
 CODE_FILE_EXTENSION_VALUES = frozenset({

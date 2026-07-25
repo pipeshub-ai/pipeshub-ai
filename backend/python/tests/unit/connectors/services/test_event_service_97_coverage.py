@@ -326,9 +326,9 @@ class TestReindexBatchPaging:
         mock_conn.reindex_records = AsyncMock()
 
         # First batch: 100 records (full batch => continue looping)
-        batch1 = [MagicMock() for _ in range(100)]
+        batch1 = [MagicMock(is_placeholder=False) for _ in range(100)]
         # Second batch: 50 records (< batch_size => stop)
-        batch2 = [MagicMock() for _ in range(50)]
+        batch2 = [MagicMock(is_placeholder=False) for _ in range(50)]
 
         service.graph_provider.get_records_by_status = AsyncMock(
             side_effect=[batch1, batch2]
@@ -353,8 +353,8 @@ class TestReindexBatchPaging:
         mock_conn.app.get_app_name.return_value = mock_app_name
         mock_conn.reindex_records = AsyncMock()
 
-        batch1 = [MagicMock() for _ in range(100)]
-        batch2 = [MagicMock() for _ in range(30)]
+        batch1 = [MagicMock(is_placeholder=False) for _ in range(100)]
+        batch2 = [MagicMock(is_placeholder=False) for _ in range(30)]
 
         service.graph_provider.get_records_by_parent_record = AsyncMock(
             side_effect=[batch1, batch2]
@@ -380,7 +380,7 @@ class TestReindexBatchPaging:
         mock_conn.app.get_app_name.return_value = mock_app_name
         mock_conn.reindex_records = AsyncMock()
 
-        batch1 = [MagicMock() for _ in range(100)]
+        batch1 = [MagicMock(is_placeholder=False) for _ in range(100)]
         batch2 = []  # Empty batch ends loop
 
         service.graph_provider.get_records_by_record_group = AsyncMock(
@@ -408,7 +408,7 @@ class TestReindexBatchPaging:
         mock_conn.reindex_records = AsyncMock(side_effect=Exception("reindex boom"))
 
         service.graph_provider.get_records_by_status = AsyncMock(
-            return_value=[MagicMock()]
+            return_value=[MagicMock(is_placeholder=False)]
         )
 
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \

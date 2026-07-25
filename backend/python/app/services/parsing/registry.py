@@ -24,7 +24,9 @@ from app.services.parsing.interface import (
 
 logger = logging.getLogger(__name__)
 
-# Canonical mime-type / extension strings mapped to a short format key
+# Canonical mime-type / extension strings mapped to a short format key.
+# Keep aligned with MimeTypes / ExtensionTypes / CODE_FILE_* in arangodb.py.
+# Code sources map to "txt" (registered MarkdownIt parser).
 _MIME_TO_FORMAT: dict[str, str] = {
     "application/pdf": "pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
@@ -45,8 +47,11 @@ _MIME_TO_FORMAT: dict[str, str] = {
     "application/x-yaml": "yaml",
     "image/png": "png",
     "image/jpeg": "jpg",
+    "image/jpg": "jpg",
     "image/webp": "webp",
     "image/svg+xml": "svg",
+    "image/heic": "heic",
+    "image/heif": "heif",
     # Google workspace export types
     "application/vnd.google-apps.document": "docx",
     "application/vnd.google-apps.presentation": "pptx",
@@ -60,6 +65,27 @@ _MIME_TO_FORMAT: dict[str, str] = {
     # Canonical MIME types used by MimeTypes enum in arangodb.py
     "application/vnd.sql.table": "sql_table",
     "application/vnd.sql.view": "sql_view",
+    # Source / code files (MimeTypes.PYTHON … SHELL) → txt parser
+    "text/x-python": "txt",
+    "text/x-java-source": "txt",
+    "text/x-c": "txt",
+    "text/x-c++": "txt",
+    "text/x-php": "txt",
+    "application/javascript": "txt",
+    "text/javascript": "txt",
+    "application/typescript": "txt",
+    "text/x-csharp": "txt",
+    "text/x-go": "txt",
+    "text/x-rust": "txt",
+    "text/x-ruby": "txt",
+    "text/x-swift": "txt",
+    "text/x-kotlin": "txt",
+    "application/dart": "txt",
+    "application/x-sh": "txt",
+    "text/x-sh": "txt",
+    "text/x-shellscript": "txt",
+    "text/x-python-script": "txt",
+    "text/x-script.python": "txt",
 }
 
 _EXT_TO_FORMAT: dict[str, str] = {
@@ -89,6 +115,34 @@ _EXT_TO_FORMAT: dict[str, str] = {
     "heif": "heif",
     "sql_table": "sql_table",
     "sql_view": "sql_view",
+    "blocks": "blocks",
+    # Source / code extensions (ExtensionTypes / CODE_FILE_EXTENSION_VALUES)
+    "py": "txt",
+    "js": "txt",
+    "jsx": "txt",
+    "mjs": "txt",
+    "cjs": "txt",
+    "ts": "txt",
+    "tsx": "txt",
+    "java": "txt",
+    "c": "txt",
+    "h": "txt",
+    "cpp": "txt",
+    "cc": "txt",
+    "cxx": "txt",
+    "hpp": "txt",
+    "hxx": "txt",
+    "cs": "txt",
+    "go": "txt",
+    "rs": "txt",
+    "rb": "txt",
+    "php": "txt",
+    "swift": "txt",
+    "kt": "txt",
+    "kts": "txt",
+    "dart": "txt",
+    "sh": "txt",
+    "bash": "txt",
 }
 
 

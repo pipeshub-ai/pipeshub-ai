@@ -2466,6 +2466,64 @@ class TestProcessBlockgroupImages:
 
 
 # ===========================================================================
+# Processor._process_single_blockgroup_html
+# ===========================================================================
+
+
+class TestProcessSingleBlockgroupHtml:
+    """Tests for Processor._process_single_blockgroup_html."""
+
+    @pytest.mark.asyncio
+    async def test_no_html_data_raises(self):
+        """Block group with no data raises ValueError."""
+        proc, _, _, _ = _make_processor()
+        bg = MagicMock(data=None, index=0)
+
+        with pytest.raises(ValueError, match="no valid HTML data"):
+            await proc._process_single_blockgroup_html(bg, "test.html")
+
+    @pytest.mark.asyncio
+    async def test_missing_html_parser_raises(self):
+        """Missing HTML parser configuration raises ValueError."""
+        proc, _, _, _ = _make_processor()
+        proc.parsers = {}
+        bg = MagicMock(data="<p>hi</p>", index=0)
+
+        with pytest.raises(ValueError, match="HTML parser is not configured"):
+            await proc._process_single_blockgroup_html(bg, "test.html")
+
+    @pytest.mark.asyncio
+    async def test_success_delegates_to_html_parser(self):
+        """Successful processing cleans HTML and delegates to parse_to_blocks."""
+        from app.config.constants.arangodb import ExtensionTypes
+
+        proc, _, _, _ = _make_processor()
+        bg = MagicMock(data="<p>Hello</p>", index=0)
+        bg.configure_mock(name="page.html")
+
+        html_parser = MagicMock()
+        html_parser.clean_html.return_value = "<p>Hello</p>"
+        html_parser.extract_and_replace_images.return_value = ("<p>Hello</p>", [])
+        result_container = MagicMock()
+        result_container.blocks = [MagicMock()]
+        result_container.block_groups = []
+        html_parser.parse_to_blocks = AsyncMock(return_value=result_container)
+        proc.parsers = {ExtensionTypes.HTML.value: html_parser}
+
+        new_bgs, new_blocks = await proc._process_single_blockgroup_html(
+            bg, "fallback"
+        )
+
+        assert len(new_blocks) == 1
+        assert new_bgs == []
+        html_parser.parse_to_blocks.assert_awaited_once_with(
+            "<p>Hello</p>",
+            caption_map=None,
+            name="page.html",
+        )
+
+
+# ===========================================================================
 # Processor._process_single_blockgroup
 # ===========================================================================
 
@@ -2773,6 +2831,40 @@ class TestProcessBlockgroups:
 
         assert len(result.blocks) >= 1
         assert len(result.block_groups) >= 1
+
+    @pytest.mark.asyncio
+    async def test_routes_html_format_to_html_processor(self):
+        """BlockGroups with DataFormat.HTML use the HTML further-processing path."""
+        from app.models.blocks import Block, BlockGroup, BlocksContainer, GroupType, DataFormat
+        from app.config.constants.arangodb import ExtensionTypes
+
+        proc, _, _, _ = _make_processor()
+        bg = BlockGroup(
+            index=0,
+            type=GroupType.TEXT_SECTION,
+            requires_processing=True,
+            data="<p>hi</p>",
+            format=DataFormat.HTML,
+        )
+        container = BlocksContainer(blocks=[], block_groups=[bg])
+        proc.parsers = {
+            ExtensionTypes.MD.value: MagicMock(),
+            ExtensionTypes.HTML.value: MagicMock(),
+        }
+
+        new_block = Block(
+            index=0, type="text", format=DataFormat.TXT, data="hi", parent_index=None
+        )
+        proc._process_single_blockgroup_html = AsyncMock(
+            return_value=([], [new_block])
+        )
+        proc._process_single_blockgroup = AsyncMock()
+
+        result = await proc._process_blockgroups(container, "test")
+
+        proc._process_single_blockgroup_html.assert_awaited_once()
+        proc._process_single_blockgroup.assert_not_awaited()
+        assert len(result.blocks) >= 1
 
 
 # ===========================================================================

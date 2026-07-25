@@ -43,8 +43,21 @@ export function shouldHideIndexingStatusForHubRecord(item: KbTableItem): boolean
   return (
     isKnowledgeHubTableItem(item) &&
     item.nodeType === 'record' &&
-    item.isInternal === true &&
-    !isWebPathPlaceholder(item)
+    (item.isPlaceholder === true ||
+      (item.isInternal === true && !isWebPathPlaceholder(item)))
+  );
+}
+
+/**
+ * Placeholder stub records (out-of-scope ancestors backfilled during sync) are
+ * metadata-only: they have no content, so content actions must be suppressed.
+ * They stay navigable so their in-scope descendants remain reachable.
+ */
+export function isPlaceholderHubRecord(item: KbTableItem): boolean {
+  return (
+    isKnowledgeHubTableItem(item) &&
+    item.nodeType === 'record' &&
+    item.isPlaceholder === true
   );
 }
 
@@ -52,6 +65,9 @@ export function shouldHideIndexingStatusForHubRecord(item: KbTableItem): boolean
  * Row ⋮ menu Download: collection file records only (not connector-sourced records).
  */
 export function shouldShowDownloadForTableItem(item: KbTableItem): boolean {
+  if (isPlaceholderHubRecord(item)) {
+    return false;
+  }
   if (!isKnowledgeHubTableItem(item)) {
     return item.type === 'file';
   }
@@ -68,8 +84,11 @@ export function runItemMenuOpenFromMenu(
   onPreview?: (item: KbTableItem) => void,
 ): void {
   const usePreview =
-    (isKnowledgeHubTableItem(item) && item.nodeType === 'record' && !isWebPathPlaceholder(item)) ||
-    (!isKnowledgeHubTableItem(item) && item.type === 'file');
+    !isPlaceholderHubRecord(item) &&
+    ((isKnowledgeHubTableItem(item) &&
+      item.nodeType === 'record' &&
+      !isWebPathPlaceholder(item)) ||
+      (!isKnowledgeHubTableItem(item) && item.type === 'file'));
   if (usePreview && onPreview) onPreview(item);
   else onItemClick(item);
 }

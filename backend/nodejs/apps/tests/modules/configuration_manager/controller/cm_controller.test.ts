@@ -3737,6 +3737,103 @@ describe('ConfigurationManager Controller', () => {
   })
 
   // -----------------------------------------------------------------------
+  // createSmtpConfig - placeholder merge behavior
+  // -----------------------------------------------------------------------
+  describe('createSmtpConfig (placeholder merge)', () => {
+    afterEach(() => {
+      nock.cleanAll()
+    })
+
+    beforeEach(() => {
+      sinon.stub(generateAuthTokenModule, 'generateFetchConfigAuthToken').resolves('test-token')
+    })
+
+    it('restores masked placeholder fields from the previously stored config', async () => {
+      const existing = {
+        host: 'smtp.real.com',
+        port: 25,
+        username: 'real-user',
+        password: 'real-pass',
+        fromEmail: 'real@example.com',
+      }
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(`encrypted:${JSON.stringify(existing)}`),
+      })
+      nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
+
+      const handler = createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
+      const req = createMockRequest({
+        body: {
+          host: '****************',
+          port: 587,
+          username: '****************',
+          password: '****************',
+          fromEmail: '****************',
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(kvs.get.calledOnce).to.be.true
+      const stored = JSON.parse(mockEncService.encrypt.firstCall.args[0])
+      expect(stored).to.deep.equal({
+        host: 'smtp.real.com',
+        port: 587,
+        username: 'real-user',
+        password: 'real-pass',
+        fromEmail: 'real@example.com',
+      })
+    })
+
+    it('does not look up the existing config when the body has no placeholders', async () => {
+      const kvs = createMockKeyValueStore()
+      nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
+
+      const handler = createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
+      const req = createMockRequest({
+        body: { host: 'smtp.new.com', port: 587, fromEmail: 'new@example.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(kvs.get.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      const stored = JSON.parse(mockEncService.encrypt.firstCall.args[0])
+      expect(stored).to.deep.equal({
+        host: 'smtp.new.com',
+        port: 587,
+        fromEmail: 'new@example.com',
+      })
+    })
+
+    it('leaves placeholder fields untouched when no prior config exists to restore from', async () => {
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(null),
+      })
+      nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
+
+      const handler = createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
+      const req = createMockRequest({
+        body: { host: '****************', port: 587, fromEmail: 'new@example.com' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(kvs.get.calledOnce).to.be.true
+      const stored = JSON.parse(mockEncService.encrypt.firstCall.args[0])
+      expect(stored.host).to.equal('****************')
+    })
+  })
+
+  // -----------------------------------------------------------------------
   // createSlackBotConfig - happy path
   // -----------------------------------------------------------------------
   describe('createSlackBotConfig (happy path)', () => {
