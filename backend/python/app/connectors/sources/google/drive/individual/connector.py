@@ -476,9 +476,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 file_record.extraction_status = existing_record.extraction_status
             
             folder_ids_filter = self.sync_filters.get_value(SyncFilterKey.FOLDER_IDS)
-            if file_id in folder_ids_filter:
-                file_record.parent_external_record_id = None
-                file_record.parent_record_type = None
+            if folder_ids_filter and file_id in folder_ids_filter:
+                if file_record.parent_external_record_id not in self._tracked_folder_ids:
+                    file_record.parent_external_record_id = None
+                    file_record.parent_record_type = None
 
             # Handle Permissions
             new_permissions = [
@@ -610,6 +611,27 @@ class GoogleDriveIndividualConnector(BaseConnector):
             return True
 
         return existing_record.parent_external_record_id not in self._tracked_folder_ids
+
+    async def _check_exited_scope(self, file_id: str) -> tuple[bool, Record | None]:
+        """
+        Checks whether an item that just failed `_pass_folder_filter` was
+        previously inside the tracked folder scope (i.e. it moved out, rather
+        than never having been in scope under the current filter). If so, its
+        previously-synced record is now stale and must be deleted.
+
+        Only meaningful when `_tracked_folder_ids` is set; callers should not
+        invoke this otherwise.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            existing_record = await tx_store.get_record_by_external_id(
+                connector_id=self.connector_id,
+                external_id=file_id
+            )
+
+        if existing_record is None:
+            return False, None
+
+        return existing_record.parent_external_record_id in self._tracked_folder_ids, existing_record
 
     def _pass_extension_filter(self, metadata: dict) -> bool:
         """
@@ -751,8 +773,19 @@ class GoogleDriveIndividualConnector(BaseConnector):
         """Handle different types of record updates (new, updated, deleted)."""
         try:
             if record_update.is_deleted:
+                async with self.data_store_provider.transaction() as tx_store:
+                    existing_record = await tx_store.get_record_by_external_id(
+                        connector_id=self.connector_id,
+                        external_id=record_update.external_record_id
+                    )
+                if existing_record is None:
+                    self.logger.debug(
+                        f"Received delete for untracked external id {record_update.external_record_id}; nothing to delete"
+                    )
+                    return
+                self.logger.info("Deleting record: %s", existing_record.record_name)
                 await self.data_entities_processor.on_record_deleted(
-                    record_id=record_update.external_record_id
+                    record_id=existing_record.id
                 )
             elif record_update.is_new:
                 self.logger.info(f"New record detected: {record_update.record.record_name}")
@@ -774,6 +807,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
+            raise
 
     async def _build_tracked_folder_ids(self, seed_folder_ids: List[str]) -> set:
         """
@@ -956,6 +990,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 # Using fields that match the working example from drive_user_service.py
                 # Note: etag, ctag, quickXorHash, crc32Hash are not available in files.list() - they require files.get()
                 list_params = {
+                    "q": "trashed=false",
                     "fields": DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS,
                 }
 
@@ -1047,15 +1082,13 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     "supportsAllDrives": True,
                     "includeItemsFromAllDrives": True,
                     # Specify fields to retrieve
-                    "fields": "nextPageToken, newStartPageToken, changes(fileId, removed, file(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, fileExtension, headRevisionId, version, shared, md5Checksum, sha1Checksum, sha256Checksum, parents, owners, permissions))",
+                    "fields": "nextPageToken, newStartPageToken, changes(fileId, removed, file(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, fileExtension, headRevisionId, version, shared, trashed, md5Checksum, sha1Checksum, sha256Checksum, parents, owners, permissions))",
                 }
 
                 # Fetch changes
                 self.logger.info(f"📥 Fetching changes page (token: {current_page_token[:20]}...)")
                 await self._get_fresh_datasource()
                 changes_response = await self.drive_data_source.changes_list(**changes_params)
-
-                self.logger.debug(f"\n\n\n changes_response: {changes_response}")
 
                 self.logger.info(f"changes_response keys: {changes_response.keys()}")
 
@@ -1078,12 +1111,19 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 for change in changes:
                     is_removed = change.get("removed", False)
                     file_metadata = change.get("file")
+                    file_name = (file_metadata or {}).get("name")
+                    is_trashed = bool(file_metadata and file_metadata.get("trashed"))
 
-                    if is_removed:
-                        # Handle deleted files
-                        self.logger.debug(f"\n\n\n Deleted file: {change}")
-                        file_id = change.get("fileId")
+                    if is_removed or is_trashed:
+                        # Trashing is treated the same as a permanent delete: Drive
+                        # reports moves to Trash as a normal (removed=False) change
+                        # carrying trashed=true on the file, not as a `removed` change.
+                        file_id = change.get("fileId") or (file_metadata or {}).get("id")
                         if file_id:
+                            if is_trashed and not is_removed:
+                                self.logger.info("🗑️ Item (%s) is trashed", file_name if file_name else file_id)
+                            if is_removed:
+                                self.logger.info("🗑️ Item (%s) is deleted", file_id)
                             deleted_update = RecordUpdate(
                                 record=None,
                                 is_new=False,
@@ -1098,22 +1138,48 @@ class GoogleDriveIndividualConnector(BaseConnector):
                         continue
 
                     if file_metadata:
-                        if not self._pass_folder_filter(file_metadata):
+                        file_id = file_metadata.get("id")
+                        if not file_id:
+                            self.logger.warning(
+                                "Skipping Drive change whose file metadata has no id"
+                            )
                             continue
+
+                        if not self._pass_folder_filter(file_metadata):
+                            exited_scope, existing_record = await self._check_exited_scope(file_id)
+                            if file_id and exited_scope:
+                                if existing_record.mime_type == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
+                                    self.logger.info("📁 Folder %s exited folder-filter scope; deleting folder and descendants", existing_record.record_name)
+                                    result = await self.data_entities_processor.on_records_deleted_cascade(
+                                        [existing_record.id], self.connector_id
+                                    )
+                                    total_deleted = len((result or {}).get("deleted_records") or [])
+                                    self.logger.info(
+                                        "Deleted folder %s and %d descendant(s)",
+                                        existing_record.record_name,
+                                        max(total_deleted - 1, 0),
+                                    )
+                                else:
+                                    self.logger.info("File %s exited folder-filter scope; deleting record", existing_record.record_name)
+                                    await self.data_entities_processor.on_record_deleted(
+                                        record_id=existing_record.id
+                                    )
+                            elif file_id:
+                                self.logger.debug(
+                                    f"Item {file_name} outside folder filter and has no tracked record; nothing to do"
+                                )
+                            continue
+
                         files.append(file_metadata)
 
-                        file_id = file_metadata.get("id")
                         is_folder = file_metadata.get("mimeType") == MimeTypes.GOOGLE_DRIVE_FOLDER.value
-                        # Seed folders are excluded: their subtree is already tracked
-                        # from the last full rebuild, and a seed folder's stored
-                        # parent_external_record_id is always None (never in
-                        # _tracked_folder_ids), so it would otherwise look
-                        # entered_scoped on every unrelated metadata change.
+                        # Check if a folder has moved into a tracked folder from an untracked folder
+                        # If so, sync the descendants of the new folder
                         if self._tracked_folder_ids and is_folder and file_id not in folder_ids_filter:
                             entered_scoped = await self._check_entered_scope(file_id)
                             if entered_scoped:
                                 self.logger.info(
-                                    f"📁 Folder {file_id} entered folder-filter scope; fetching descendants"
+                                    f"📁 Folder {file_name} entered folder-filter scope; fetching descendants"
                                 )
                                 async for child_batch in self._fetch_folder_children(file_id, changes_ids):
                                     files.extend(child_batch)

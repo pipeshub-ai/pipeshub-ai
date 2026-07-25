@@ -1000,6 +1000,21 @@ class TestProcessDriveItem:
         assert result.record.indexing_status == ProgressStatus.COMPLETED.value
         assert result.record.extraction_status == ProgressStatus.COMPLETED.value
 
+    @pytest.mark.asyncio
+    async def test_no_folder_filter_configured_does_not_raise(self, connector):
+        """Regression: FOLDER_IDS unset makes `get_value` return None, and
+        `file_id in folder_ids_filter` must not raise TypeError for every item."""
+        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+
+        connector._pass_date_filters = MagicMock(return_value=True)
+        connector._pass_extension_filter = MagicMock(return_value=True)
+        assert connector.sync_filters.get_value(SyncFilterKey.FOLDER_IDS) is None
+
+        meta = _make_file_metadata(parents=["parent-1"])
+        result = await connector._process_drive_item(meta, "u1", "u@t.com", "d1")
+        assert isinstance(result, RecordUpdate)
+        assert result.record is not None
+
 
 # ===================================================================
 # _process_drive_items_generator()
@@ -1108,14 +1123,31 @@ class TestProcessDriveItemsGenerator:
 class TestHandleRecordUpdates:
     @pytest.mark.asyncio
     async def test_deleted_record(self, connector):
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        """Delete resolves the connector's external_record_id to the record's
+        internal graph key before deleting -- the two IDs differ."""
+        existing = _make_existing_file_record(
+            id="internal-key-1",
+            record_name="test.txt",
+            mime_type="text/plain",
+        )
+        connector.data_store_provider = _make_mock_data_store_provider(existing)
         update = MagicMock()
         update.is_deleted = True
         update.external_record_id = "file-1"
         await connector._handle_record_updates(update)
         connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(
-            record_id="file-1"
+            record_id="internal-key-1"
         )
+
+    @pytest.mark.asyncio
+    async def test_deleted_record_untracked_is_noop(self, connector):
+        """No matching record for the external id -- nothing to delete."""
+        update = MagicMock()
+        update.is_deleted = True
+        update.external_record_id = "file-1"
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_deleted.assert_not_awaited()
+        connector.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_new_record(self, connector):
@@ -1190,15 +1222,59 @@ class TestHandleRecordUpdates:
         connector.data_entities_processor.on_record_content_update.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_exception_swallowed(self, connector):
+    async def test_deleted_folder_uses_record_delete(self, connector):
+        existing = _make_existing_file_record(
+            id="folder-rec-1",
+            record_name="Folder A",
+            mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+        )
+        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        update = MagicMock()
+        update.is_deleted = True
+        update.external_record_id = "folder-ext-1"
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(
+            record_id="folder-rec-1"
+        )
+        connector.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deleted_file_uses_shallow_delete(self, connector):
+        """A non-folder record must go through the shallow single-record delete,
+        not the recursive cascade."""
+        existing = _make_existing_file_record(
+            id="file-rec-1",
+            record_name="test.txt",
+            mime_type="text/plain",
+        )
+        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        update = MagicMock()
+        update.is_deleted = True
+        update.external_record_id = "file-1"
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(
+            record_id="file-rec-1"
+        )
+        connector.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_exception_reraised(self, connector):
+        """A failure must propagate so the caller aborts before the sync point
+        advances, rather than being silently swallowed."""
+        existing = _make_existing_file_record(
+            id="file-rec-1",
+            record_name="test.txt",
+            mime_type="text/plain",
+        )
+        connector.data_store_provider = _make_mock_data_store_provider(existing)
         update = MagicMock()
         update.is_deleted = True
         update.external_record_id = "file-1"
         connector.data_entities_processor.on_record_deleted = AsyncMock(
             side_effect=RuntimeError("fail")
         )
-        # Should not raise
-        await connector._handle_record_updates(update)
+        with pytest.raises(RuntimeError, match="fail"):
+            await connector._handle_record_updates(update)
 
 
 # ===================================================================
@@ -2223,10 +2299,12 @@ class TestRunSync:
 
 class TestRunIncrementalSync:
     @pytest.mark.asyncio
-    async def test_calls_sync_user_personal_drive(self, connector):
+    async def test_is_noop(self, connector):
+        connector.run_sync = AsyncMock()
         connector._sync_user_personal_drive = AsyncMock()
         await connector.run_incremental_sync()
-        connector._sync_user_personal_drive.assert_awaited_once()
+        connector.run_sync.assert_not_awaited()
+        connector._sync_user_personal_drive.assert_not_awaited()
 
 
 # ===================================================================
