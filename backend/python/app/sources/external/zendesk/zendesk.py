@@ -868,14 +868,19 @@ class ZendeskDataSource:
         ticket_id: int,
         sort_order: Optional[Literal["asc", "desc"]] = None,
         include: Optional[str] = None,
+        page: Optional[int] = None,
+        per_page: Optional[int] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
+        # Ponytail: generated datasource patch; regenerating zendesk.py will drop pagination.
         """List comments for a ticket
 
         Args:
             ticket_id (int, required): ID of the ticket
             sort_order (Optional[Literal["asc", "desc"]], optional): Sort direction
             include (Optional[str], optional): Sideload related data (users)
+            page (Optional[int], optional): Page number for pagination
+            per_page (Optional[int], optional): Number of results per page (max 100)
 
         Returns:
             ZendeskResponse: Standardized response object
@@ -890,6 +895,10 @@ class ZendeskDataSource:
                 _params["sort_order"] = sort_order
             if include is not None:
                 _params["include"] = include
+            if page is not None:
+                _params["page"] = page
+            if per_page is not None:
+                _params["per_page"] = per_page
 
             request = HTTPRequest(
                 method="GET",
@@ -3012,12 +3021,17 @@ class ZendeskDataSource:
     async def list_groups(
         self,
         exclude_deleted: Optional[bool] = None,
+        page: Optional[int] = None,
+        per_page: Optional[int] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
+        # Ponytail: generated datasource patch; regenerating zendesk.py will drop pagination.
         """List all groups
 
         Args:
             exclude_deleted (Optional[bool], optional): Exclude deleted groups
+            page (Optional[int], optional): Page number for pagination
+            per_page (Optional[int], optional): Number of results per page (max 100)
 
         Returns:
             ZendeskResponse: Standardized response object
@@ -3030,6 +3044,10 @@ class ZendeskDataSource:
 
             if exclude_deleted is not None:
                 _params["exclude_deleted"] = exclude_deleted
+            if page is not None:
+                _params["page"] = page
+            if per_page is not None:
+                _params["per_page"] = per_page
 
             request = HTTPRequest(
                 method="GET",
@@ -3268,9 +3286,16 @@ class ZendeskDataSource:
 
     async def list_group_memberships(
         self,
+        page: Optional[int] = None,
+        per_page: Optional[int] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
+        # Ponytail: generated datasource patch; regenerating zendesk.py will drop pagination.
         """List all group memberships
+
+        Args:
+            page (Optional[int], optional): Page number for pagination
+            per_page (Optional[int], optional): Number of results per page (max 100)
 
         Returns:
             ZendeskResponse: Standardized response object
@@ -3280,6 +3305,11 @@ class ZendeskDataSource:
             _params = {}
             _data = {}
             url = f"{self.base_url}/group_memberships.json"
+
+            if page is not None:
+                _params["page"] = page
+            if per_page is not None:
+                _params["per_page"] = per_page
 
             request = HTTPRequest(
                 method="GET",
@@ -7775,8 +7805,11 @@ class ZendeskDataSource:
         sort_by: Optional[Literal["created_at", "updated_at", "position", "title", "vote_sum", "vote_count"]] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
         include: Optional[str] = None,
+        page: Optional[int] = None,
+        per_page: Optional[int] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
+        # Ponytail: generated datasource patch; regenerating zendesk.py will drop pagination.
         """List all articles
 
         Args:
@@ -7789,6 +7822,8 @@ class ZendeskDataSource:
             sort_by (Optional[Literal["created_at", "updated_at", "position", "title", "vote_sum", "vote_count"]], optional): Sort field
             sort_order (Optional[Literal["asc", "desc"]], optional): Sort direction
             include (Optional[str], optional): Sideload related data (sections,categories,users,translations)
+            page (Optional[int], optional): Page number for pagination
+            per_page (Optional[int], optional): Number of results per page (max 100)
 
         Returns:
             ZendeskResponse: Standardized response object
@@ -7817,6 +7852,10 @@ class ZendeskDataSource:
                 _params["sort_order"] = sort_order
             if include is not None:
                 _params["include"] = include
+            if page is not None:
+                _params["page"] = page
+            if per_page is not None:
+                _params["per_page"] = per_page
 
             request = HTTPRequest(
                 method="GET",
