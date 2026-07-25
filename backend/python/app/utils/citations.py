@@ -4,6 +4,7 @@ from typing import Any
 
 from app.models.blocks import BlockType, GroupType
 from app.utils.chat_helpers import (
+    generate_text_fragment_url,
     get_enhanced_metadata,
     is_base64_image,
     valid_group_labels,
@@ -402,6 +403,64 @@ def _safe_stringify_content(value: Any) -> str:
         return ""
 
 
+def _resolve_fragment_content(
+    blocks: list[dict[str, Any]], container_index: int
+) -> tuple[str, str]:
+    """Assemble citation content from child fragment blocks of a container.
+
+    When a block (table row, list item, etc.) contains inline images, the parser
+    splits it into an empty container plus TEXT/IMAGE children linked via
+    parent_block_index.
+
+    Returns:
+        (display_content, fragment_text) — display may include "Image" placeholders;
+        fragment_text is text-only for #:~:text= URL highlighting on the source page.
+    """
+    children = [b for b in blocks if b.get("parent_block_index") == container_index]
+    if not children:
+        return "", ""
+    children.sort(key=lambda b: b.get("index", 0))
+    display_parts: list[str] = []
+    text_parts: list[str] = []
+    for child in children:
+        child_type = child.get("type")
+        child_data = child.get("data")
+        if child_type == BlockType.IMAGE.value:
+            display_parts.append("Image")
+        elif isinstance(child_data, str) and child_data.strip():
+            text = child_data.strip()
+            display_parts.append(text)
+            text_parts.append(text)
+    if not display_parts:
+        return "", ""
+    if not text_parts:
+        return "Image", ""
+    return " ".join(display_parts), " ".join(text_parts)
+
+
+def _enrich_metadata_from_fragment(
+    metadata: dict[str, Any],
+    record: dict[str, Any],
+    display_content: str,
+    fragment_text: str,
+) -> None:
+    """Fill blockText/webUrl when primary block data was empty (image-split container).
+
+    No-op when blockText is already set, so the normal (non-fragment) path is unchanged.
+    """
+    if metadata.get("blockText"):
+        return
+    metadata["blockText"] = display_content
+    if not fragment_text or metadata.get("hideWeburl"):
+        return
+    origin = metadata.get("origin") or record.get("origin") or ""
+    record_type = metadata.get("recordType") or record.get("record_type") or ""
+    if origin == "UPLOAD" or record_type == "MAIL":
+        return
+    base_url = record.get("weburl") or ""
+    if not base_url:
+        return
+    metadata["webUrl"] = generate_text_fragment_url(base_url, fragment_text)
 
 
 def detect_hallucinated_citation_urls(
@@ -564,13 +623,19 @@ def _normalize_markdown_link_citations(
             data = data.get("row_natural_language_text", "")
         elif block_type == BlockType.IMAGE.value:
             data = data.get("uri", "")
-        if not data:
-            logger.warning(
-                "🔎 [KB-CITE] normalize(chat): %s | record_id=%s block_index=%s block_type=%s",
-                empty_data_log_prefix, record_id, block_index, block_type,
-            )
-            return False
 
+        if not data:
+            display, fragment_text = _resolve_fragment_content(blocks, block_index)
+            if not display:
+                logger.warning(
+                    "🔎 [KB-CITE] normalize(chat): %s | record_id=%s block_index=%s block_type=%s",
+                    empty_data_log_prefix, record_id, block_index, block_type,
+                )
+                return False
+            _enrich_metadata_from_fragment(
+                enhanced_metadata, record, display, fragment_text
+            )
+            data = display
         citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
         if not citation_content:
             return False
@@ -877,7 +942,15 @@ def _normalize_markdown_link_citations_for_agent(
                             elif bt == BlockType.IMAGE.value:
                                 data = data.get("uri", "")
                             if not data:
-                                continue
+                                display, fragment_text = _resolve_fragment_content(
+                                    blocks, block_index
+                                )
+                                if not display:
+                                    continue
+                                _enrich_metadata_from_fragment(
+                                    enhanced_metadata, r, display, fragment_text
+                                )
+                                data = display
                             citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
                             if not citation_content:
                                 continue
@@ -918,7 +991,15 @@ def _normalize_markdown_link_citations_for_agent(
                                 elif bt == BlockType.IMAGE.value:
                                     data = data.get("uri", "")
                                 if not data:
-                                    continue
+                                    display, fragment_text = _resolve_fragment_content(
+                                        blocks, block_index
+                                    )
+                                    if not display:
+                                        continue
+                                    _enrich_metadata_from_fragment(
+                                        enhanced_metadata, rec, display, fragment_text
+                                    )
+                                    data = display
                                 citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
                                 if not citation_content:
                                     continue

@@ -272,6 +272,7 @@ GRAPH_CONTEXT_ENRICHMENT_CONNECTORS: frozenset[Connectors] = frozenset({
     Connectors.JIRA_DATA_CENTER,
     Connectors.JIRA_DATA_CENTER_PERSONAL,
     Connectors.LINEAR,
+    Connectors.CONFLUENCE,
 })
 
 RECORD_RELATION_ENRICHMENT_TYPES: frozenset[RecordRelations] = frozenset({
