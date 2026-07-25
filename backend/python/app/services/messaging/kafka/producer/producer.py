@@ -141,6 +141,74 @@ class KafkaMessagingProducer(IMessagingProducer):
             self.logger.error(f"❌ Failed to send message to Kafka: {str(e)}")
             raise
 
+    async def send_messages(
+        self,
+        topic: str,
+        messages: List[tuple[Optional[str], Dict[str, Any]]],
+    ) -> List[bool]:
+        """Publish many messages, returning per-message success in input order.
+
+        Enqueues everything first and awaits the acks together. send_and_wait() blocks
+        on the broker ack before the next record is enqueued, and aiokafka only keeps
+        one batch per partition in flight at a time, so awaiting per record means
+        nothing ever accumulates and each batch carries a single record. Handing the
+        accumulator the whole set first is what lets it coalesce them.
+        """
+        if not messages:
+            return []
+
+        if self.producer is None:
+            await self.initialize()
+
+        # Enqueue everything before awaiting any ack, so the accumulator has the
+        # whole set to coalesce. One record failing to enqueue must not sink the
+        # rest, so each slot is tracked independently.
+        futures: List[Optional[Any]] = []
+        first_error: Optional[BaseException] = None
+        for key, message in messages:
+            try:
+                envelope = inject_envelope(message)
+                message_value = json.dumps(envelope).encode('utf-8')
+                message_key = key.encode('utf-8') if key else None
+                # send() returns a future once the record is buffered; it only blocks
+                # when the accumulator is full, which is the backpressure we want.
+                futures.append(
+                    await self.producer.send(  # type: ignore
+                        topic=topic,
+                        key=message_key,
+                        value=message_value,
+                    )
+                )
+            except Exception as e:
+                futures.append(None)
+                first_error = first_error or e
+
+        settled = iter(
+            await asyncio.gather(*(f for f in futures if f is not None), return_exceptions=True)
+        )
+
+        acked: List[bool] = []
+        for future in futures:
+            if future is None:
+                acked.append(False)
+                continue
+            result = next(settled)
+            if isinstance(result, BaseException):
+                acked.append(False)
+                first_error = first_error or result
+            else:
+                acked.append(True)
+
+        failed = len(acked) - sum(acked)
+        if failed:
+            self.logger.error(
+                "❌ %s/%s messages failed to produce to %s; first error: %s",
+                failed, len(acked), topic, first_error,
+            )
+        else:
+            self.logger.info("✅ Produced %s messages to %s", len(acked), topic)
+        return acked
+
     # implementing abstract methods from IMessagingProducer
     async def send_event(
         self,

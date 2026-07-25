@@ -753,7 +753,7 @@ class TestReindexSingleRecord:
         ])
         connected_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
         connected_provider._check_record_permissions = AsyncMock(return_value={"permission": "OWNER"})
-        connected_provider.reset_indexing_status_to_queued_for_record_ids = AsyncMock()
+        connected_provider.update_indexing_status_for_record_ids = AsyncMock()
         result = await connected_provider.reindex_single_record("r1", "u1", "org1", depth=-1)
         assert result["success"] is True
 

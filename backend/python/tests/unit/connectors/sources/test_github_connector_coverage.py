@@ -643,7 +643,7 @@ class TestSyncIssuesFull:
 class TestMiscMethods:
     @pytest.mark.asyncio
     async def test_reindex_records(self, github_connector):
-        await github_connector.reindex_records()
+        await github_connector.reindex_records([])
 
     @pytest.mark.asyncio
     async def test_run_incremental_sync(self, github_connector):

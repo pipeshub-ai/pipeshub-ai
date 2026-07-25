@@ -995,6 +995,8 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         record_group_id: str | None = None,
         is_placeholder: bool | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
     ) -> list['Record']:
         """
         Get records by their indexing status.
@@ -1007,9 +1009,17 @@ class IGraphDBProvider(ABC):
             limit (Optional[int]): Maximum number of records to return
             offset (int): Number of records to skip
             transaction (Optional[Any]): Optional transaction context
+            record_group_id (Optional[str]): Scope results to a specific record group
+            is_placeholder (Optional[bool]): Filter on placeholder flag - True returns only 
+                        stubs, False excludes them, None ignores the flag
+            after_key (Optional[str]): Keyset cursor - return only records whose key
+                        sorts strictly after this value. Prefer this over offset when
+                        paginating a result set that mutates while being iterated.
+            exclude_statuses (Optional[List[str]]): Status values to exclude, applied
+                        on top of status_filters.
 
         Returns:
-            List[Dict]: List of records matching the status filters
+            list[Record]: Typed records matching the filters, sorted by key.
         """
         pass
 
@@ -1109,14 +1119,68 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def reset_indexing_status_to_queued_for_record_ids(
-        self, record_ids: list[str]
+    async def update_indexing_status_for_record_ids(
+        self, record_ids: list[str], status: str
     ) -> None:
         """
-        Set indexingStatus to QUEUED for each id (deduplicated) if not already QUEUED.
+        Set indexingStatus to the specified status for each id (deduplicated).
         Skips records with isInternal true. Non-string ids are ignored. Pass a one-element list
-        for a single record. Used before reindex (API and batched sync). Skips missing records;
-        logs errors without raising.
+        for a single record. Generic method for updating record status during reindex operations.
+        Skips missing records; logs errors without raising.
+        
+        Args:
+            record_ids: List of record IDs to update
+            status: Target status (e.g., ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value)
+        """
+        pass
+
+    @abstractmethod
+    async def compare_and_set_indexing_status(
+        self,
+        record_ids: list[str],
+        expected: str,
+        new_status: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """
+        Atomically set indexingStatus to `new_status` on each id, but only while that
+        id still holds `expected`. One round-trip regardless of how many ids.
+
+        Publishing to the message broker and updating the record are two writes to
+        two systems, so they cannot be made atomic. The indexing service may consume
+        the event and advance the record (IN_PROGRESS, COMPLETED) before the producer
+        gets to mark it QUEUED. An unconditional write would clobber that and strand
+        the record at QUEUED forever, so the write has to be conditional rather than
+        merely ordered.
+
+        Args:
+            record_ids: Record keys to attempt the swap on. Pass a one-element list
+                        for a single record.
+            expected: Status a record must currently hold for its write to apply
+            new_status: Status to write
+            transaction: Optional transaction context
+
+        Returns:
+            list[str]: The ids actually updated. Ids absent from the result held some
+                       other status and were left alone - a normal outcome, not an error.
+        """
+        pass
+
+    @abstractmethod
+    async def get_existing_record_keys(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> set[str]:
+        """
+        Return the subset of record_ids that exist, in one round-trip.
+
+        Args:
+            record_ids: Record keys to check
+            transaction: Optional transaction context
+
+        Returns:
+            set[str]: Keys that exist. Missing ids are simply absent.
         """
         pass
 
@@ -1241,6 +1305,8 @@ class IGraphDBProvider(ABC):
         offset: int = 0,
         transaction: str | None = None,
         status_filters: list[str] | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
     ) -> list['Record']:
         """
         Get all records belonging to a record group up to a specified depth.
@@ -1265,6 +1331,11 @@ class IGraphDBProvider(ABC):
             transaction (Optional[str]): Optional transaction ID
             status_filters (Optional[List[str]]): When set, only records with
                         indexingStatus in this list are returned.
+            after_key (Optional[str]): Keyset cursor - return only records whose key
+                        sorts strictly after this value. Prefer this over offset when
+                        paginating a result set that mutates while being iterated.
+            exclude_statuses (Optional[List[str]]): Status values to exclude, applied
+                        on top of status_filters.
 
         Returns:
             List[Record]: List of properly typed Record instances. Origin is not
@@ -1285,6 +1356,8 @@ class IGraphDBProvider(ABC):
         offset: int = 0,
         transaction: str | None = None,
         status_filters: list[str] | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
     ) -> list['Record']:
         """
         Get all child records of a parent record (folder) up to a specified depth.
@@ -1305,9 +1378,14 @@ class IGraphDBProvider(ABC):
             transaction (Optional[str]): Optional transaction ID
             status_filters (Optional[List[str]]): When set, only records with
                         indexingStatus in this list are returned.
+            after_key (Optional[str]): Keyset cursor - return only records whose key
+                        sorts strictly after this value. Prefer this over offset when
+                        paginating a result set that mutates while being iterated.
+            exclude_statuses (Optional[List[str]]): Status values to exclude, applied
+                        on top of status_filters.
 
         Returns:
-            List[Record]: List of properly typed Record instances
+            List[Record]: List of properly typed Record instances, sorted by key.
         """
         pass
 

@@ -715,6 +715,7 @@ class TestFolderUploadRouteGaps:
             },
         })
         kafka_svc = AsyncMock()
+        kafka_svc.publish_events = AsyncMock(return_value=[True, True])
         request = MagicMock()
         request.state.user = {"userId": "user1", "orgId": "org1"}
         request.json = AsyncMock(return_value={"files": [{"filePath": "a.pdf", "record": {}, "fileRecord": {}}]})
@@ -725,7 +726,9 @@ class TestFolderUploadRouteGaps:
             "kb1", "folder1", request, kb_service=kb_svc, kafka_service=kafka_svc
         )
         assert result["success"] is True
-        assert kafka_svc.publish_event.await_count == 2
+        kafka_svc.publish_events.assert_awaited_once()
+        _topic, events = kafka_svc.publish_events.await_args.args
+        assert len(events) == 2
 
     @pytest.mark.asyncio
     async def test_folder_upload_kafka_partial_failure_logged(self):
@@ -741,7 +744,7 @@ class TestFolderUploadRouteGaps:
             },
         })
         kafka_svc = AsyncMock()
-        kafka_svc.publish_event = AsyncMock(side_effect=[RuntimeError("kafka down"), None])
+        kafka_svc.publish_events = AsyncMock(side_effect=Exception("kafka down"))
         request = MagicMock()
         request.state.user = {"userId": "user1", "orgId": "org1"}
         request.json = AsyncMock(return_value={"files": [{"filePath": "a.pdf", "record": {}, "fileRecord": {}}]})

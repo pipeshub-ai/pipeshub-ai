@@ -2234,12 +2234,19 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: str | None = None,
         record_group_id: str | None = None,
         is_placeholder: bool | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
     ) -> list[Record]:
         """Get records by indexing status. A None or empty status_filters returns records regardless of status.
         Optionally scope to a record group and/or filter on the placeholder flag
-        (is_placeholder=True only stubs, False excludes them, None ignores it)."""
+        (is_placeholder=True only stubs, False excludes them, None ignores it).
+        Pass after_key for keyset pagination instead of offset."""
         try:
             limit_clause = f"SKIP {offset} LIMIT {limit}" if limit else ""
+            after_key_clause = "AND r.id > $after_key" if after_key else ""
+            exclude_clause = (
+                "AND NOT r.indexingStatus IN $exclude_statuses" if exclude_statuses else ""
+            )
 
             record_group_clause = "AND r.recordGroupId = $record_group_id" if record_group_id else ""
             if is_placeholder is True:
@@ -2256,10 +2263,13 @@ class Neo4jProvider(IGraphDBProvider):
               AND ($status_filters IS NULL OR size($status_filters) = 0 OR r.indexingStatus IN $status_filters)
               {record_group_clause}
               {placeholder_clause}
-            OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(typeDoc)
-            RETURN r, typeDoc
+              {exclude_clause}
+              {after_key_clause}
+            MATCH (r)-[:IS_OF_TYPE]->(typeDoc)
+            WITH r, head(collect(typeDoc)) AS typeDoc
             ORDER BY r.id
             {limit_clause}
+            RETURN r, typeDoc
             """
 
             results = await self.client.execute_query(
@@ -2269,6 +2279,8 @@ class Neo4jProvider(IGraphDBProvider):
                     "connector_id": connector_id,
                     "status_filters": status_filters,
                     "record_group_id": record_group_id,
+                    "after_key": after_key,
+                    "exclude_statuses": exclude_statuses,
                 },
                 txn_id=transaction
             )
@@ -2416,6 +2428,8 @@ class Neo4jProvider(IGraphDBProvider):
         offset: int = 0,
         transaction: str | None = None,
         status_filters: list[str] | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
     ) -> list[Record]:
         """
         Get all records belonging to a record group up to a specified depth.
@@ -2459,6 +2473,10 @@ class Neo4jProvider(IGraphDBProvider):
             status_clause = ""
             if status_filters:
                 status_clause = "AND record.indexingStatus IN $status_filters"
+            if exclude_statuses:
+                status_clause += "\nAND NOT record.indexingStatus IN $exclude_statuses"
+            if after_key:
+                status_clause += "\nAND record.id > $after_key"
 
             # Build permission check fragments conditionally
             if user_key:
@@ -2574,6 +2592,12 @@ class Neo4jProvider(IGraphDBProvider):
             if status_filters:
                 parameters["status_filters"] = status_filters
 
+            if exclude_statuses:
+                parameters["exclude_statuses"] = exclude_statuses
+
+            if after_key:
+                parameters["after_key"] = after_key
+
             if limit is not None:
                 parameters["limit"] = limit
                 parameters["offset"] = offset
@@ -2622,6 +2646,8 @@ class Neo4jProvider(IGraphDBProvider):
         offset: int = 0,
         transaction: str | None = None,
         status_filters: list[str] | None = None,
+        after_key: str | None = None,
+        exclude_statuses: list[str] | None = None,
     ) -> list[Record]:
         """
         Get all child records of a parent record (folder) up to a specified depth.
@@ -2661,6 +2687,10 @@ class Neo4jProvider(IGraphDBProvider):
             status_clause = ""
             if status_filters:
                 status_clause = "AND record.indexingStatus IN $status_filters"
+            if exclude_statuses:
+                status_clause += "\nAND NOT record.indexingStatus IN $exclude_statuses"
+            if after_key:
+                status_clause += "\nAND record.id > $after_key"
 
             # Build permission check fragments conditionally
             if user_key:
@@ -2704,7 +2734,10 @@ class Neo4jProvider(IGraphDBProvider):
                 {permission_block}
 
                 WITH record, typeDoc, recordDepth
-                ORDER BY recordDepth, record.id
+                // Sort on id alone so it matches the $after_key cursor. A
+                // (depth, id) order would let a deep record with a low id sort
+                // ahead of the cursor and be skipped for the rest of the run.
+                ORDER BY record.id
                 """
 
             # Add pagination
@@ -2728,6 +2761,12 @@ class Neo4jProvider(IGraphDBProvider):
 
             if status_filters:
                 parameters["status_filters"] = status_filters
+
+            if exclude_statuses:
+                parameters["exclude_statuses"] = exclude_statuses
+
+            if after_key:
+                parameters["after_key"] = after_key
 
             if limit is not None:
                 parameters["limit"] = limit
@@ -8106,7 +8145,11 @@ class Neo4jProvider(IGraphDBProvider):
                         "topic": "record-events",
                         "payload": payload
                     }
-                    await self.reset_indexing_status_to_queued_for_record_ids([record_id])
+                    # Clear any terminal status so the consumer's COMPLETED gate does not
+                    # skip the event. The router promotes this to QUEUED once it publishes.
+                    await self.update_indexing_status_for_record_ids(
+                        [record_id], ProgressStatus.NOT_STARTED.value
+                    )
                 else:
                     # For connector records, use sync-events with connector reindex event
                     connector_for_event = connector_name.replace(" ", "").lower() if connector_name else "unknown"
@@ -10157,16 +10200,19 @@ class Neo4jProvider(IGraphDBProvider):
 
 
 
-    async def reset_indexing_status_to_queued_for_record_ids(self, record_ids: list[str]) -> None:
+    async def update_indexing_status_for_record_ids(self, record_ids: list[str], status: str) -> None:
         """
-        Bulk-fetch records, then batch upsert indexingStatus=QUEUED where appropriate.
-        Skips missing ids, isInternal records, and docs already QUEUED.
+        Update indexingStatus to the specified status for each id (deduplicated).
+        Skips missing ids and isInternal records.
+        
+        Args:
+            record_ids: List of record IDs to update
+            status: Target status (e.g., ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value)
         """
         unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
         if not unique_ids:
             return
         coll = CollectionNames.RECORDS.value
-        skip_status = frozenset({ProgressStatus.QUEUED.value})
         try:
             label = collection_to_label(coll)
             query = f"""
@@ -10193,17 +10239,88 @@ class Neo4jProvider(IGraphDBProvider):
                     continue
                 if record.get("isPlaceholder"):
                     continue
-                if record.get("indexingStatus") in skip_status:
-                    continue
-                to_upsert.append({"id": rid, "indexingStatus": ProgressStatus.QUEUED.value})
+                to_upsert.append({"id": rid, "indexingStatus": status})
 
             if to_upsert:
                 await self.batch_upsert_nodes(to_upsert, coll)
                 self.logger.debug(
-                    "✅ Reset %s record(s) indexing status to QUEUED", len(to_upsert)
+                    "✅ Updated %s record(s) indexing status to %s", len(to_upsert), status
                 )
         except Exception as e:
-            self.logger.error(f"❌ Failed bulk reset records to QUEUED: {str(e)}")
+            self.logger.error(f"❌ Failed to update records to {status}: {str(e)}")
+
+    async def compare_and_set_indexing_status(
+        self,
+        record_ids: list[str],
+        expected: str,
+        new_status: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """
+        Set indexingStatus to new_status on each id, but only while that id still
+        holds expected. One round-trip. Returns the ids actually updated; ids that
+        held some other status were left alone, which is a normal outcome.
+        """
+        unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
+        if not unique_ids:
+            return []
+        try:
+            label = collection_to_label(CollectionNames.RECORDS.value)
+            # MATCH + SET in one statement; a read-then-write would let the
+            # indexing service advance a record in between and get clobbered.
+            query = f"""
+            MATCH (n:{label})
+            WHERE n.id IN $keys AND n.indexingStatus = $expected
+            SET n.indexingStatus = $new_status
+            RETURN n.id AS id
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "keys": unique_ids,
+                    "expected": expected,
+                    "new_status": new_status,
+                },
+                txn_id=transaction,
+            )
+            updated_keys = [row["id"] for row in (results or []) if row.get("id")]
+            self.logger.debug(
+                "✅ %s/%s record(s) swapped %s -> %s",
+                len(updated_keys), len(unique_ids), expected, new_status,
+            )
+            return updated_keys
+        except Exception as e:
+            self.logger.error(
+                "❌ Failed compare-and-set (%s -> %s): %s",
+                expected, new_status, str(e),
+            )
+            return []
+
+    async def get_existing_record_keys(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> set[str]:
+        """Return the subset of record_ids that exist, in one round-trip."""
+        unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
+        if not unique_ids:
+            return set()
+        try:
+            label = collection_to_label(CollectionNames.RECORDS.value)
+            query = f"""
+            MATCH (n:{label})
+            WHERE n.id IN $keys
+            RETURN n.id AS id
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"keys": unique_ids},
+                txn_id=transaction,
+            )
+            return {row["id"] for row in (results or []) if row.get("id")}
+        except Exception as e:
+            self.logger.error("❌ Failed to check record existence: %s", str(e))
+            return set()
 
     async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None = None, request: Optional[Request] = None, record_id: str | None = None) -> dict:
         """Create reindex event payload"""
