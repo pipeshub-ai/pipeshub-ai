@@ -251,6 +251,11 @@ class ZendeskConnector(BaseConnector):
             await self.data_entities_processor.on_new_app_users(users)
         self.logger.info(f"Zendesk: synced {len(users)} users")
 
+        # Must run after on_new_app_users so the creator's USER_APP_RELATION edge is
+        # written alongside the Zendesk-sourced ones, and before any record is
+        # emitted so the group permission can be stamped onto them.
+        await self._ensure_creator_access()
+
         group_record_groups, group_user_groups = await self._fetch_groups(datasource, user_email_map)
         if group_user_groups:
             await self.data_entities_processor.on_new_user_groups(group_user_groups)
@@ -265,6 +270,38 @@ class ZendeskConnector(BaseConnector):
             f"{len(users)} users, {len(group_record_groups)} groups, "
             f"{ticket_count} tickets, {article_count} articles"
         )
+
+    async def _ensure_creator_access(self) -> Optional[Permission]:
+        """Grant the person who configured this connector access to what it syncs.
+
+        Zendesk ACLs are matched by email, so a PipesHub admin who is not also a
+        Zendesk user ends up with no path to any record — and the connector does not
+        even appear in their knowledge base, because that view walks
+        ``user -USER_APP_RELATION-> App``. ``_load_creator_email`` on the base class
+        only resolves the email for PERSONAL scope, so the lookup is repeated here.
+
+        This deliberately widens access: the creator can read every synced ticket,
+        including ones restricted to a Zendesk group they are not in. That is
+        consistent with them holding the admin API token this connector authenticates
+        with, but it is a widening — not a mirror of Zendesk's own ACLs.
+        """
+        if self._connector_group_permission is not None:
+            return self._connector_group_permission
+        if not self.creator_email and self.created_by:
+            try:
+                async with self.data_store_provider.transaction() as tx_store:
+                    user = await tx_store.get_user_by_user_id(self.created_by)
+                    if user and user.get("email"):
+                        self.creator_email = user.get("email")
+            except Exception as e:
+                self.logger.warning(f"Zendesk: could not resolve creator email: {e}")
+        permission = await self.ensure_connector_group_permission()
+        if permission is None:
+            self.logger.warning(
+                "Zendesk: no ConnectorGroup created — synced records will only be "
+                "visible to PipesHub users whose email matches a Zendesk user"
+            )
+        return permission
 
     async def _fetch_users(self, datasource: ZendeskDataSource) -> Tuple[List[AppUser], Dict[str, AppUser]]:
         # Group membership upserts need a complete user map, not only users changed
@@ -595,6 +632,8 @@ class ZendeskConnector(BaseConnector):
                 external_id=self.data_entities_processor.org_id,
             )
         ]
+        if self._connector_group_permission is not None:
+            permissions.append(self._connector_group_permission)
         return record, permissions
 
     async def stream_record(
@@ -913,6 +952,8 @@ class ZendeskConnector(BaseConnector):
 
     def _record_permissions(self, group_id: Any, requester: Dict[str, Any]) -> List[Permission]:
         permissions: List[Permission] = []
+        if self._connector_group_permission is not None:
+            permissions.append(self._connector_group_permission)
         if group_id:
             permissions.append(Permission(
                 external_id=f"group_{group_id}",
