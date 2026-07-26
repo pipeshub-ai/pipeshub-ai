@@ -1,13 +1,9 @@
 import asyncio
-import atexit
 import hashlib
 import logging
 import math
-import multiprocessing
 import os
 from collections.abc import AsyncGenerator
-from concurrent.futures import ProcessPoolExecutor
-from functools import lru_cache
 from typing import Any
 import json
 from uuid import uuid4
@@ -35,6 +31,7 @@ from app.events.processor import Processor
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.recoverable_process_pool import RecoverableProcessPool
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -50,18 +47,9 @@ def _get_pdf_ocr_detection_worker_count() -> int:
 
 PDF_OCR_DETECTION_WORKERS = _get_pdf_ocr_detection_worker_count()
 
-
-@lru_cache(maxsize=1)
-def _get_pdf_ocr_detection_pool() -> ProcessPoolExecutor:
-    pool = ProcessPoolExecutor(
-        max_workers=PDF_OCR_DETECTION_WORKERS,
-        mp_context=multiprocessing.get_context("spawn"),
-    )
-    # Ensure spawned processes are reaped when the interpreter exits.
-    # The explicit shutdown_pdf_ocr_pool() call in indexing_main.lifespan is
-    # the primary cleanup path; atexit is the safety net for unclean exits.
-    atexit.register(pool.shutdown, wait=False, cancel_futures=True)
-    return pool
+_pdf_ocr_detection_pool = RecoverableProcessPool(
+    max_workers=PDF_OCR_DETECTION_WORKERS, name="pdf-ocr-detection"
+)
 
 
 def _record_key(doc: dict[str, Any] | None) -> str | None:
@@ -76,11 +64,7 @@ def shutdown_pdf_ocr_pool() -> bool:
     been created during this process's lifetime (so there was nothing to
     clean up). Safe to call multiple times.
     """
-    if _get_pdf_ocr_detection_pool.cache_info().currsize == 0:
-        return False
-    _get_pdf_ocr_detection_pool().shutdown(wait=False, cancel_futures=True)
-    _get_pdf_ocr_detection_pool.cache_clear()
-    return True
+    return _pdf_ocr_detection_pool.shutdown()
 
 
 def _detect_pdf_needs_ocr(file_content: bytes) -> bool:
@@ -131,12 +115,7 @@ class EventProcessor:
         if PDF_OCR_DETECTION_WORKERS <= 1:
             return await asyncio.to_thread(_detect_pdf_needs_ocr, file_content)
 
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            _get_pdf_ocr_detection_pool(),
-            _detect_pdf_needs_ocr,
-            file_content,
-        )
+        return await _pdf_ocr_detection_pool.run(_detect_pdf_needs_ocr, file_content)
 
 
 

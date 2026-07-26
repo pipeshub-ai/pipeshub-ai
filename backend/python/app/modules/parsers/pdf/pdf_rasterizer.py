@@ -7,15 +7,7 @@ concurrent requests never share pdfium state in the same interpreter.
 
 from __future__ import annotations
 
-import asyncio
-import atexit
-import logging
-import multiprocessing
 import os
-import threading
-from concurrent.futures import ProcessPoolExecutor
-from concurrent.futures.process import BrokenProcessPool
-from functools import lru_cache
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 
@@ -23,8 +15,7 @@ import numpy as np
 import pdfplumber
 from PIL import Image
 
-_logger = logging.getLogger(__name__)
-_pool_lock = threading.Lock()
+from app.utils.recoverable_process_pool import RecoverableProcessPool
 
 
 def _get_pdf_raster_worker_count() -> int:
@@ -42,26 +33,14 @@ def _get_pdf_raster_worker_count() -> int:
 PDF_RASTER_WORKERS = _get_pdf_raster_worker_count()
 
 
-@lru_cache(maxsize=1)
-def _get_pdf_raster_pool() -> ProcessPoolExecutor:
-    return ProcessPoolExecutor(
-        max_workers=PDF_RASTER_WORKERS,
-        mp_context=multiprocessing.get_context("spawn"),
-    )
+_pdf_raster_pool = RecoverableProcessPool(
+    max_workers=PDF_RASTER_WORKERS, name="pdf-raster"
+)
 
 
 def shutdown_pdf_raster_pool() -> bool:
     """Shut down the PDF rasterization process pool if it was initialised."""
-    if _get_pdf_raster_pool.cache_info().currsize == 0:
-        return False
-    _get_pdf_raster_pool().shutdown(wait=False, cancel_futures=True)
-    _get_pdf_raster_pool.cache_clear()
-    return True
-
-
-@atexit.register
-def _shutdown_pdf_raster_pool_on_exit() -> None:
-    shutdown_pdf_raster_pool()
+    return _pdf_raster_pool.shutdown()
 
 
 def _page_to_rgb_array(page, resolution: float) -> Tuple[np.ndarray, float]:
@@ -156,16 +135,7 @@ def _worker_render_page_from_bytes(
 
 
 def _run_in_pool(fn, *args):
-    try:
-        return _get_pdf_raster_pool().submit(fn, *args).result()
-    except BrokenProcessPool:
-        _logger.warning(
-            "PDF rasterization process pool broke (worker likely OOM-killed); "
-            "recreating pool"
-        )
-        with _pool_lock:
-            _get_pdf_raster_pool.cache_clear()
-        raise
+    return _pdf_raster_pool.submit_and_wait(fn, *args)
 
 
 def render_all_pages_from_path_sync(
@@ -242,12 +212,8 @@ async def render_all_pages_from_path(
     pdf_path: str,
     resolution: float = 72,
 ) -> Dict[int, Tuple[np.ndarray, float]]:
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        _get_pdf_raster_pool(),
-        _worker_render_all_from_path,
-        pdf_path,
-        resolution,
+    return await _pdf_raster_pool.run(
+        _worker_render_all_from_path, pdf_path, resolution
     )
 
 
@@ -255,12 +221,8 @@ async def render_all_pages_from_bytes(
     pdf_bytes: bytes,
     resolution: float = 72,
 ) -> Dict[int, Tuple[np.ndarray, float]]:
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        _get_pdf_raster_pool(),
-        _worker_render_all_from_bytes,
-        pdf_bytes,
-        resolution,
+    return await _pdf_raster_pool.run(
+        _worker_render_all_from_bytes, pdf_bytes, resolution
     )
 
 
