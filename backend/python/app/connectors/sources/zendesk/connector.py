@@ -202,6 +202,7 @@ class ZendeskConnector(BaseConnector):
         self.indexing_filters: Any = None
         self._user_id_to_data: Dict[str, Dict[str, Any]] = {}
         self._group_id_to_data: Dict[str, Dict[str, Any]] = {}
+        self._section_id_to_data: Dict[str, Dict[str, Any]] = {}
         self.records_sync_point = SyncPoint(
             connector_id=self.connector_id,
             org_id=self.data_entities_processor.org_id,
@@ -248,16 +249,22 @@ class ZendeskConnector(BaseConnector):
         users, user_email_map = await self._fetch_users(datasource)
         if users:
             await self.data_entities_processor.on_new_app_users(users)
+        self.logger.info(f"Zendesk: synced {len(users)} users")
 
         group_record_groups, group_user_groups = await self._fetch_groups(datasource, user_email_map)
         if group_user_groups:
             await self.data_entities_processor.on_new_user_groups(group_user_groups)
         if group_record_groups:
             await self.data_entities_processor.on_new_record_groups(group_record_groups)
+        self.logger.info(f"Zendesk: synced {len(group_record_groups)} groups")
 
-        await self._sync_tickets(datasource)
-        await self._sync_help_center_articles(datasource)
-        self.logger.info(f"Zendesk sync completed for connector {self.connector_id}")
+        ticket_count = await self._sync_tickets(datasource)
+        article_count = await self._sync_help_center_articles(datasource)
+        self.logger.info(
+            f"Zendesk sync completed for connector {self.connector_id}: "
+            f"{len(users)} users, {len(group_record_groups)} groups, "
+            f"{ticket_count} tickets, {article_count} articles"
+        )
 
     async def _fetch_users(self, datasource: ZendeskDataSource) -> Tuple[List[AppUser], Dict[str, AppUser]]:
         # Group membership upserts need a complete user map, not only users changed
@@ -268,7 +275,10 @@ class ZendeskConnector(BaseConnector):
 
         while True:
             response = await datasource.incremental_users(start_time=start_time, cursor=cursor)
-            if not response.success or not response.data:
+            if not response.success:
+                self.logger.error(f"Zendesk incremental_users failed: {response.error}")
+                break
+            if not response.data:
                 break
             payload = response.data
             users_data.extend(self._extract_list(payload, "users"))
@@ -369,10 +379,11 @@ class ZendeskConnector(BaseConnector):
 
         return record_groups, user_groups
 
-    async def _sync_tickets(self, datasource: ZendeskDataSource) -> None:
+    async def _sync_tickets(self, datasource: ZendeskDataSource) -> int:
         if not self._is_indexing_enabled(IndexingFilterKey.TICKETS.value):
-            return
+            return 0
 
+        synced = 0
         start_time = await self._get_start_time()
         cursor: Optional[str] = None
         max_end_time = start_time
@@ -382,7 +393,10 @@ class ZendeskConnector(BaseConnector):
                 cursor=cursor,
                 include="users,groups,organizations",
             )
-            if not response.success or not response.data:
+            if not response.success:
+                self.logger.error(f"Zendesk incremental_tickets failed: {response.error}")
+                break
+            if not response.data:
                 break
             payload = response.data
             self._cache_sideloads(payload)
@@ -394,6 +408,7 @@ class ZendeskConnector(BaseConnector):
                     records_with_permissions.append(record_tuple)
             if records_with_permissions:
                 await self.data_entities_processor.on_new_records(records_with_permissions)
+                synced += len(records_with_permissions)
 
             max_end_time = max(max_end_time, int(payload.get("end_time") or start_time))
             next_cursor = payload.get("after_cursor") or payload.get("cursor")
@@ -405,6 +420,7 @@ class ZendeskConnector(BaseConnector):
             SYNC_POINT_KEY,
             {"lastEndTime": max_end_time, "updatedAt": get_epoch_timestamp_in_ms()},
         )
+        return synced
 
     async def _ticket_to_record(self, ticket_data: Dict[str, Any]) -> Optional[Tuple[Record, List[Permission]]]:
         ticket_id = ticket_data.get("id")
@@ -472,9 +488,15 @@ class ZendeskConnector(BaseConnector):
         permissions = self._record_permissions(group_id, requester)
         return record, permissions
 
-    async def _sync_help_center_articles(self, datasource: ZendeskDataSource) -> None:
+    async def _sync_help_center_articles(self, datasource: ZendeskDataSource) -> int:
         if not self._is_indexing_enabled(IndexingFilterKey.KNOWLEDGE_BASE.value):
-            return
+            return 0
+
+        # Sections must exist as RecordGroups before the articles that reference them:
+        # a record with no record group is unreachable from the App in the graph and
+        # is not counted by the connector stats traversal.
+        await self._sync_help_center_sections(datasource)
+
         articles = await self._fetch_paginated_list(
             datasource.list_articles,
             "articles",
@@ -489,6 +511,38 @@ class ZendeskConnector(BaseConnector):
                 records_with_permissions.append(record_tuple)
         if records_with_permissions:
             await self.data_entities_processor.on_new_records(records_with_permissions)
+        return len(records_with_permissions)
+
+    async def _sync_help_center_sections(self, datasource: ZendeskDataSource) -> None:
+        sections = await self._fetch_paginated_list(datasource.list_sections, "sections")
+        record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
+        for section_data in sections:
+            section_id = section_data.get("id")
+            if not section_id:
+                continue
+            self._section_id_to_data[str(section_id)] = section_data
+            record_groups.append((
+                RecordGroup(
+                    org_id=self.data_entities_processor.org_id,
+                    name=section_data.get("name") or f"Section {section_id}",
+                    external_group_id=f"section_{section_id}",
+                    connector_name=Connectors.ZENDESK,
+                    connector_id=self.connector_id,
+                    group_type=RecordGroupType.KB,
+                    description=section_data.get("description") or None,
+                    source_created_at=self._parse_datetime(section_data.get("created_at")),
+                    source_updated_at=self._parse_datetime(section_data.get("updated_at")),
+                    web_url=section_data.get("html_url"),
+                ),
+                [Permission(
+                    type=PermissionType.READ,
+                    entity_type=EntityType.ORG,
+                    external_id=self.data_entities_processor.org_id,
+                )],
+            ))
+        if record_groups:
+            await self.data_entities_processor.on_new_record_groups(record_groups)
+        self.logger.info(f"Zendesk: synced {len(record_groups)} Help Center sections")
 
     async def _article_to_record(self, article_data: Dict[str, Any]) -> Optional[Tuple[Record, List[Permission]]]:
         article_id = article_data.get("id")
@@ -511,6 +565,8 @@ class ZendeskConnector(BaseConnector):
 
         record_id = existing_record.id if existing_record else str(uuid4())
         version = 0 if existing_record is None else existing_record.version + 1
+        section_id = article_data.get("section_id")
+        external_group_id = f"section_{section_id}" if section_id else None
         record = WebpageRecord(
             id=record_id,
             org_id=self.data_entities_processor.org_id,
@@ -518,6 +574,8 @@ class ZendeskConnector(BaseConnector):
             record_type=RecordType.WEBPAGE,
             external_record_id=f"article_{article_id}",
             external_revision_id=str(updated_at) if updated_at else None,
+            external_record_group_id=external_group_id,
+            record_group_type=RecordGroupType.KB if external_group_id else None,
             version=version,
             origin=OriginTypes.CONNECTOR,
             connector_name=Connectors.ZENDESK,
@@ -800,7 +858,12 @@ class ZendeskConnector(BaseConnector):
         results: List[Dict[str, Any]] = []
         while True:
             response = await api_method(page=page, per_page=PAGE_SIZE, **kwargs)
-            if not response.success or not response.data:
+            if not response.success:
+                self.logger.error(
+                    f"Zendesk {getattr(api_method, '__name__', key)} page {page} failed: {response.error}"
+                )
+                break
+            if not response.data:
                 break
             items = self._extract_list(response.data, key)
             if not items:
