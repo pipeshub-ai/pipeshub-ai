@@ -272,9 +272,12 @@ class ZendeskConnector(BaseConnector):
                 break
             payload = response.data
             users_data.extend(self._extract_list(payload, "users"))
-            cursor = payload.get("after_cursor") or payload.get("cursor")
-            if payload.get("end_of_stream", True) or not cursor:
+            next_cursor = payload.get("after_cursor") or payload.get("cursor")
+            # A repeated cursor means the export is not advancing; without this the
+            # loop spins forever and users_data grows unbounded.
+            if payload.get("end_of_stream", True) or not next_cursor or next_cursor == cursor:
                 break
+            cursor = next_cursor
 
         users: List[AppUser] = []
         user_email_map: Dict[str, AppUser] = {}
@@ -393,9 +396,10 @@ class ZendeskConnector(BaseConnector):
                 await self.data_entities_processor.on_new_records(records_with_permissions)
 
             max_end_time = max(max_end_time, int(payload.get("end_time") or start_time))
-            cursor = payload.get("after_cursor") or payload.get("cursor")
-            if payload.get("end_of_stream", True) or not cursor:
+            next_cursor = payload.get("after_cursor") or payload.get("cursor")
+            if payload.get("end_of_stream", True) or not next_cursor or next_cursor == cursor:
                 break
+            cursor = next_cursor
 
         await self.records_sync_point.update_sync_point(
             SYNC_POINT_KEY,
@@ -425,13 +429,8 @@ class ZendeskConnector(BaseConnector):
         if existing_record and existing_record.source_updated_at == updated_at:
             return None
 
-        is_new = existing_record is None
         record_id = existing_record.id if existing_record else str(uuid4())
-        version = 0 if is_new else (
-            existing_record.version + 1
-            if existing_record.source_updated_at != updated_at
-            else existing_record.version
-        )
+        version = 0 if existing_record is None else existing_record.version + 1
         requester = self._user_id_to_data.get(str(ticket_data.get("requester_id")), {})
         assignee = self._user_id_to_data.get(str(ticket_data.get("assignee_id")), {})
         status = self.value_mapper.map_status(ticket_data.get("status")) or Status.UNKNOWN
@@ -474,7 +473,7 @@ class ZendeskConnector(BaseConnector):
         return record, permissions
 
     async def _sync_help_center_articles(self, datasource: ZendeskDataSource) -> None:
-        if not self._is_indexing_enabled("knowledge_base"):
+        if not self._is_indexing_enabled(IndexingFilterKey.KNOWLEDGE_BASE.value):
             return
         articles = await self._fetch_paginated_list(
             datasource.list_articles,
@@ -511,11 +510,7 @@ class ZendeskConnector(BaseConnector):
             return None
 
         record_id = existing_record.id if existing_record else str(uuid4())
-        version = 0 if existing_record is None else (
-            existing_record.version + 1
-            if existing_record.source_updated_at != updated_at
-            else existing_record.version
-        )
+        version = 0 if existing_record is None else existing_record.version + 1
         record = WebpageRecord(
             id=record_id,
             org_id=self.data_entities_processor.org_id,
@@ -558,7 +553,7 @@ class ZendeskConnector(BaseConnector):
             content = await self._process_file_for_streaming(record)
         else:
             raise ValueError(f"Unsupported Zendesk record type: {record.record_type}")
-        return StreamingResponse(iter([content]), media_type="application/json")
+        return StreamingResponse(iter([content]), media_type=MimeTypes.BLOCKS.value)
 
     async def _process_ticket_blockgroups_for_streaming(self, record: Record) -> bytes:
         datasource = await self._get_fresh_datasource()
@@ -636,7 +631,7 @@ class ZendeskConnector(BaseConnector):
         comment: Dict[str, Any],
         parent_record: Record,
     ) -> List[ChildRecord]:
-        if not self._is_indexing_enabled("issue_attachments"):
+        if not self._is_indexing_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS.value):
             return []
         attachments = comment.get("attachments") or []
         child_records: List[ChildRecord] = []
@@ -697,9 +692,11 @@ class ZendeskConnector(BaseConnector):
         content_url = record.weburl
         if not content_url:
             raise ValueError("Zendesk attachment missing content URL")
-        headers: Dict[str, str] = {"Authorization": ""}
-        if self._is_safe_zendesk_asset_url(content_url):
-            headers = datasource.http.headers.copy()
+        if not self._is_safe_zendesk_asset_url(content_url):
+            raise ValueError(
+                f"Refusing to fetch Zendesk attachment from untrusted host: {urlparse(content_url).hostname}"
+            )
+        headers = datasource.http.headers.copy()
         response = await datasource.http.execute(HTTPRequest(url=content_url, method="GET", headers=headers))
         if response.status >= 400:
             raise Exception(f"Failed to download Zendesk attachment {record.external_record_id}: {response.status}")
@@ -759,12 +756,12 @@ class ZendeskConnector(BaseConnector):
         pass
 
     async def reindex_records(self, record_results: List[Record]) -> None:
-        records_with_permissions = [
-            (record, self._record_permissions(None, {}))
-            for record in record_results
-        ]
-        if records_with_permissions:
-            await self.data_entities_processor.on_new_records(records_with_permissions)
+        # Republish index events only. Routing these through on_new_records would
+        # re-run permission handling and append an org-wide READ edge to records
+        # that are scoped to a single group.
+        if not record_results:
+            return
+        await self.data_entities_processor.reindex_existing_records(record_results)
 
     async def cleanup(self) -> None:
         if self.external_client:
