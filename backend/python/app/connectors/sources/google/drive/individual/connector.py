@@ -339,7 +339,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
         metadata: dict,
         user_id: str,
         user_email: str,
-        drive_id: str
+        drive_id: str,
+        *,
+        bypass_folder_filter: bool = False,
     ) -> Optional[RecordUpdate]:
         """
         Process a single Google Drive file and detect changes.
@@ -349,6 +351,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
             user_id: The user's account ID
             user_email: The user's email
             drive_id: The drive ID
+            bypass_folder_filter: Skip the folder-scope check. Only the placeholder
+                sweep sets this: the ancestors it backfills are by definition
+                outside the tracked subtree and would otherwise be rejected.
 
         Returns:
             RecordUpdate object or None if entry should be skipped
@@ -360,7 +365,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 return None
 
             # Apply Folder Filter
-            if not self._pass_folder_filter(metadata):
+            if not bypass_folder_filter and not self._pass_folder_filter(metadata):
                 self.logger.debug(f"Skipping item {metadata.get('name', 'unknown')} (ID: {file_id}) due to folder filter.")
                 return None  # Skip this item
 
@@ -474,12 +479,6 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 file_record.parsing_status = existing_record.parsing_status
                 file_record.indexing_status = existing_record.indexing_status
                 file_record.extraction_status = existing_record.extraction_status
-            
-            folder_ids_filter = self.sync_filters.get_value(SyncFilterKey.FOLDER_IDS)
-            if folder_ids_filter and file_id in folder_ids_filter:
-                if file_record.parent_external_record_id not in self._tracked_folder_ids:
-                    file_record.parent_external_record_id = None
-                    file_record.parent_record_type = None
 
             # Handle Permissions
             new_permissions = [
@@ -735,7 +734,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
         files: List[dict],
         user_id: str,
         user_email: str,
-        drive_id: str
+        drive_id: str,
+        *,
+        bypass_folder_filter: bool = False,
     ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
         """
         Process Google Drive files and yield records with their permissions.
@@ -746,6 +747,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
             user_id: The user's account ID
             user_email: The user's email
             drive_id: The drive ID
+            bypass_folder_filter: Forwarded to `_process_drive_item`; set only by
+                the placeholder sweep.
         """
         import asyncio
 
@@ -755,7 +758,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     file_metadata,
                     user_id,
                     user_email,
-                    drive_id
+                    drive_id,
+                    bypass_folder_filter=bypass_folder_filter,
                 )
                 if record_update and record_update.record:
                     files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
@@ -908,6 +912,139 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 if not page_token:
                     break
 
+    # Bound the per-level source fanout; Drive quota is per-user.
+    _PLACEHOLDER_SWEEP_CONCURRENCY = 5
+    # Runaway backstop only — `visited` already guarantees termination (even on cyclic
+    # source data). If we ever exceed this many distinct ancestors, something is wrong.
+    _PLACEHOLDER_SWEEP_SAFETY_MAX = 10000
+
+    async def _fetch_ancestor_metadata(self, frontier: List[Record]) -> Dict[str, dict]:
+        """Fetch one frontier level from source with bounded concurrency.
+
+        Returns metadata keyed by external record id. An id missing from the result
+        could not be read: the folder was deleted, or it is the parent of a
+        shared-with-me item that the user has no access to.
+        """
+        semaphore = asyncio.Semaphore(self._PLACEHOLDER_SWEEP_CONCURRENCY)
+
+        async def fetch_one(stub: Record) -> Optional[Tuple[str, dict]]:
+            async with semaphore:
+                file_id = stub.external_record_id
+                try:
+                    await self._get_fresh_datasource()
+                    metadata = await self.drive_data_source.files_get(
+                        fileId=file_id,
+                        supportsAllDrives=True,
+                        fields=DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
+                    )
+                    if not metadata:
+                        self.logger.warning(
+                            f"Placeholder sweep: no metadata returned for {file_id}"
+                        )
+                        return None
+                    return (file_id, metadata)
+                except HttpError as e:
+                    self.logger.warning(
+                        f"Placeholder sweep: cannot read ancestor {file_id} "
+                        f"(HTTP {e.resp.status}); keeping it as a stub"
+                    )
+                    return None
+                except Exception as e:
+                    self.logger.warning(
+                        f"Placeholder sweep: failed to fetch ancestor {file_id}: {e}"
+                    )
+                    return None
+
+        results = await asyncio.gather(*[fetch_one(stub) for stub in frontier])
+        return dict(r for r in results if r)
+
+    async def _sweep_placeholder_records(
+        self, user_id: str, user_email: str, drive_id: str
+    ) -> None:
+        """Backfill the ancestor breadcrumb for placeholder stubs left unreconciled.
+
+        The folder_ids filter doesn't respect hierarchy: a selected folder is synced
+        while its Drive ancestors are filtered out, leaving stubs keyed by the
+        ancestors' file ids with no real name, url or permissions.
+
+        This is an ancestor-closure walk over child->parent pointers, implemented as a
+        frontier BFS with a ``visited`` set (dedup + cycle guard) and a boundary that
+        stops at ancestors already materialized as real records or at My Drive root:
+
+          - seed the frontier from the stubs this sync left behind (one DB query);
+          - fetch each frontier level from source (bounded concurrency) and sync it as
+            a normal folder record — only folders can be parents in Drive, and folders
+            carry no content, so nothing out-of-scope becomes indexable;
+          - expand to each fetched record's parent, skipping ones already visited or
+            already real in the graph, until the frontier drains.
+
+        Reconciliation is keyed by external id and idempotent, so an interrupted sweep
+        is completed by the next sync's sweep.
+        """
+        visited: set = set()
+        seeds = await self.data_entities_processor.get_placeholder_records(self.connector_id)
+        frontier: List[Record] = []
+        for stub in seeds:
+            if stub.external_record_id not in visited:
+                visited.add(stub.external_record_id)
+                frontier.append(stub)
+
+        total = 0
+        while frontier:
+            self.logger.info(f"📁 Placeholder sweep: backfilling {len(frontier)} ancestor(s)")
+            metadata_by_id = await self._fetch_ancestor_metadata(frontier)
+
+            backfills: List[Tuple[Record, List[Permission]]] = []
+            async for record, permissions, _update in self._process_drive_items_generator(
+                list(metadata_by_id.values()),
+                user_id,
+                user_email,
+                drive_id,
+                bypass_folder_filter=True,
+            ):
+                record.is_placeholder = False
+                backfills.append((record, permissions))
+
+            for stub in frontier:
+                if stub.external_record_id in metadata_by_id:
+                    continue
+                # Source fetch failed (inaccessible/deleted). Re-submit the persisted
+                # stub anyway so its structural edges — record group (BELONGS_TO) and
+                # parent (PARENT_CHILD) — which a full sync deletes are still restored.
+                # Keeps it a stub; access fails closed (inherits the record group's perms).
+                stub.is_placeholder = True
+                backfills.append((stub, []))
+
+            if backfills:
+                # Creates/updates the ancestors and, via _handle_parent_record, materializes
+                # the next level's parent stubs so we can pick them up below.
+                await self.data_entities_processor.on_new_records(backfills)
+
+            next_frontier: List[Record] = []
+            for record, _permissions in backfills:
+                parent_ext_id = record.parent_external_record_id
+                if not parent_ext_id or not record.parent_record_type:
+                    continue  # boundary: My Drive root
+                if parent_ext_id in visited:
+                    continue
+                visited.add(parent_ext_id)
+                parent_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, parent_ext_id
+                )
+                if parent_record is None:
+                    continue  # stub should exist after on_new_records; skip defensively
+                if not parent_record.is_placeholder:
+                    continue  # boundary: parent already synced in scope — nothing to backfill
+                next_frontier.append(parent_record)
+
+            total += len(frontier)
+            if total > self._PLACEHOLDER_SWEEP_SAFETY_MAX:
+                self.logger.error(
+                    f"Placeholder sweep exceeded safety bound ({self._PLACEHOLDER_SWEEP_SAFETY_MAX}); aborting"
+                )
+                break
+            frontier = next_frontier
+
     async def _sync_user_personal_drive(self, drive_id: str) -> None:
         """
         Sync user's personal Google Drive.
@@ -955,6 +1092,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
             # Incremental sync: sync point exists
             self.logger.info("🔄 Starting incremental sync for Google Drive")
             await self._perform_incremental_sync(sync_point_key, org_id, user_id, user_email, page_token, drive_id)
+
+        # Backfill placeholder ancestors that out-of-scope sync filters left unreconciled.
+        await self._sweep_placeholder_records(user_id, user_email, drive_id)
 
     async def _perform_full_sync(self, sync_point_key: str, org_id: str, user_id: str, user_email: str, drive_id: str) -> None:
         """
