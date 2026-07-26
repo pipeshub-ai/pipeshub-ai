@@ -8247,8 +8247,11 @@ class ZendeskDataSource:
         sort_by: Optional[Literal["position", "created_at", "updated_at", "name"]] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
         include: Optional[str] = None,
+        page: Optional[int] = None,
+        per_page: Optional[int] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> ZendeskResponse:
+        # Ponytail: generated datasource patch; regenerating zendesk.py will drop pagination.
         """List all sections
 
         Args:
@@ -8277,6 +8280,10 @@ class ZendeskDataSource:
                 _params["sort_order"] = sort_order
             if include is not None:
                 _params["include"] = include
+            if page is not None:
+                _params["page"] = page
+            if per_page is not None:
+                _params["per_page"] = per_page
 
             request = HTTPRequest(
                 method="GET",
