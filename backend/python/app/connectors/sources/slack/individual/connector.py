@@ -131,11 +131,11 @@ if TYPE_CHECKING:
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 BURST_WINDOW_SECONDS        = 300           # 5-minute conversational burst window
-PAGE_SIZE_MESSAGES          = 999
-PAGE_SIZE_THREADS           = 999
-PAGE_SIZE_USERS             = 999
-PAGE_SIZE_CHANNELS          = 999
-PAGE_SIZE_MEMBERS           = 999
+PAGE_SIZE_MESSAGES          = 200
+PAGE_SIZE_THREADS           = 200
+PAGE_SIZE_USERS             = 500
+PAGE_SIZE_CHANNELS          = 500
+PAGE_SIZE_MEMBERS           = 200
 
 CHANNEL_TYPE_LABEL_TO_API = {
     "public channel": "public_channel",
@@ -143,6 +143,7 @@ CHANNEL_TYPE_LABEL_TO_API = {
     "Direct Messages": "im",
     "Group Direct Messages": "mpim",
 }
+ALL_CHANNEL_API_TYPES = set(CHANNEL_TYPE_LABEL_TO_API.values())
 
 SLACK_TIER_LIMITS_PER_MINUTE: dict[int, int] = {
     2: 20,
@@ -457,6 +458,8 @@ class SlackIndividualConnector(BaseConnector):
         # Key: Slack user_id  Value: user full_name
         # Used to replace @mentions in message content with display names.
         self.user_id_to_name_cache:        dict[str, str] = {}
+        # Slack user IDs marked deleted/deactivated in users.list.
+        self.deactivated_user_ids:         set[str] = set()
         # Populated during _sync_channels(); extended lazily.
         self.channel_groups_cache:         dict[str, str] = {}
         # Populated during _sync_channels().
@@ -672,6 +675,9 @@ class SlackIndividualConnector(BaseConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "slack", self.connector_id, self.logger
             )
+            self.logger.info(
+                "sync_filters: %s", self.sync_filters
+            )
 
             # Phase 1 — Users (warms all user caches as a side-effect)
             # Only the authenticated user gets an AppUser node + User-App edge.
@@ -845,6 +851,7 @@ class SlackIndividualConnector(BaseConnector):
         self.logger.info("🔄 Warming user caches from Slack API…")
         count = 0
         cursor: Optional[str] = None
+        self.deactivated_user_ids.clear()
 
         try:
             while True:
@@ -861,6 +868,8 @@ class SlackIndividualConnector(BaseConnector):
                     uid = m.get("id")
                     if not uid:
                         continue
+                    if m.get("deleted"):
+                        self.deactivated_user_ids.add(uid)
                     # Include bots and deactivated users so their DM labels
                     # and @mentions resolve to names rather than raw IDs.
                     profile = m.get("profile", {})
@@ -890,6 +899,45 @@ class SlackIndividualConnector(BaseConnector):
         except Exception as exc:
             self.logger.error(f"❌ Failed to warm user caches: {exc}", exc_info=True)
 
+    async def _sync_deactivated_user_ids(self) -> None:
+        """Refresh deactivated Slack user IDs used to hide stale DM filter options."""
+        self.deactivated_user_ids.clear()
+        cursor: Optional[str] = None
+
+        try:
+            while True:
+                await self.rate_limiter.acquire(Tier.T2)
+                ds = await self._fresh_datasource()
+                resp = await ds.users_list(limit=PAGE_SIZE_USERS, cursor=cursor)
+                if not resp or not resp.success:
+                    self.logger.warning(
+                        "users.list failed while loading deactivated users: %s",
+                        getattr(resp, "error", "no response"),
+                    )
+                    break
+
+                for member in (resp.data or {}).get("members", []):
+                    uid = member.get("id")
+                    if uid and member.get("deleted"):
+                        self.deactivated_user_ids.add(uid)
+
+                cursor = (resp.data or {}).get(
+                    "response_metadata", {}
+                ).get("next_cursor", "")
+                if not cursor:
+                    break
+        except Exception as exc:
+            self.logger.warning(
+                "Failed to refresh deactivated user IDs for channel filter: %s",
+                exc,
+            )
+
+    def _should_include_channel_in_filter(self, ch: dict[str, Any]) -> bool:
+        if not ch.get("is_im"):
+            return True
+        peer_id = ch.get("user", "")
+        return not peer_id or peer_id not in self.deactivated_user_ids
+
     # =========================================================================
     # 3.  Channel sync → RecordGroups + HAS_PERMISSION edges
     # =========================================================================
@@ -915,14 +963,24 @@ class SlackIndividualConnector(BaseConnector):
             elif op == FilterOperator.NOT_IN:
                 exclude_ids = set(ch_filter.get_value() or [])
 
-        # Apply channel_types filter (public, private, im, mpim)
+        # Apply channel_types filter (public, private, im, mpim).
+        # NOT_IN is inverted to IN against the fixed 4-type universe.
+        # Empty value = no explicit selection → default to all types.
         ch_types_filter = self.sync_filters.get(SyncFilterKey.CHANNEL_TYPES)
-        allowed_types: Optional[set[str]] = None
+        allowed_types: set[str] | None = None
         if ch_types_filter is not None:
-            allowed_types = {
+            raw = {
                 CHANNEL_TYPE_LABEL_TO_API.get(value, value)
                 for value in ch_types_filter.get_value() or []
             }
+            if raw:
+                if ch_types_filter.get_operator() == FilterOperator.NOT_IN:
+                    allowed_types = ALL_CHANNEL_API_TYPES - raw
+                else:
+                    allowed_types = raw
+                if not allowed_types:
+                    self.logger.info("channel_types filter excludes all types — nothing to sync")
+                    return []
         types_param = ",".join(allowed_types) if allowed_types else "public_channel,private_channel,im,mpim"
 
         self.channel_groups_cache.clear()
@@ -963,6 +1021,8 @@ class SlackIndividualConnector(BaseConnector):
             for cd in channels:
                 cid = cd.get("id")
                 if not cid:
+                    continue
+                if not self._should_include_channel_in_filter(cd):
                     continue
                 if (
                     not cd.get("is_im")
@@ -4083,7 +4143,8 @@ class SlackIndividualConnector(BaseConnector):
         await self._refresh_user_caches()
 
         if self.user_id_to_name_cache:
-            return  # DB or prior warm-up had enough data
+            await self._sync_deactivated_user_ids()
+            return
 
         # Fallback: warm from the Slack API
         self.logger.debug("User name cache empty after DB refresh — warming via API")
@@ -4146,6 +4207,8 @@ class SlackIndividualConnector(BaseConnector):
                         and not ch.get("is_mpim")
                         and not ch.get("is_member")
                     ):
+                        continue
+                    if not self._should_include_channel_in_filter(ch):
                         continue
                     tmp[cid] = {
                         "id": cid,

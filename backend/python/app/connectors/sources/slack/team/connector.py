@@ -141,6 +141,8 @@ SLACK_TIER_LIMITS_PER_MINUTE: dict[int, int] = {
 # Leave ~10% headroom so transient bursts don't trip Slack's 429.
 RATE_LIMIT_HEADROOM = 0.9
 
+ALL_CHANNEL_API_TYPES = {"public_channel", "private_channel"}
+
 _SLACK_MAX_TIMESTAMP_LENGTH = 13
 
 
@@ -947,13 +949,21 @@ class SlackConnector(BaseConnector):
             elif op == FilterOperator.NOT_IN:
                 exclude_ids = set(ch_filter.get_value() or [])
 
-        # Apply channel_types filter (DMs not supported — only public, private channels)
+        # Apply channel_types filter (DMs not supported — only public, private channels).
+        # NOT_IN is inverted to IN against the fixed 2-type universe.
+        # Empty value = no explicit selection → default to all types.
         ch_types_filter = self.sync_filters.get(SyncFilterKey.CHANNEL_TYPES)
-        allowed_types: Optional[set[str]] = None
+        allowed_types: set[str] | None = None
         if ch_types_filter is not None:
-            allowed_types = set(ch_types_filter.get_value() or [])
-        if allowed_types:
-            allowed_types = allowed_types - {"im", "mpim"}
+            raw = set(ch_types_filter.get_value() or []) - {"im", "mpim"}
+            if raw:
+                if ch_types_filter.get_operator() == FilterOperator.NOT_IN:
+                    allowed_types = ALL_CHANNEL_API_TYPES - raw
+                else:
+                    allowed_types = raw
+                if not allowed_types:
+                    self.logger.info("channel_types filter excludes all types — nothing to sync")
+                    return []
         types_param = ",".join(allowed_types) if allowed_types else "public_channel,private_channel"
 
         # Clear channel caches so stale entries from a previous sync (with different

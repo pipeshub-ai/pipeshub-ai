@@ -86,6 +86,7 @@ def _make_connector() -> Any:
     c.authenticated_user_name = "Test User"
     c.user_id_to_email_cache = {}
     c.user_id_to_name_cache = {}
+    c.deactivated_user_ids = set()
     c.user_id_to_internal_id_cache = {}
     c.channel_groups_cache = {}
     c.channel_id_to_name_cache = {}
@@ -1540,6 +1541,27 @@ class TestSyncChannels:
         c.sync_filters = FilterCollection(
             filters=[
                 Filter(
+                    key=SyncFilterKey.CHANNEL_TYPES,
+                    value=["Direct Messages", "Group Direct Messages"],
+                    type=FilterType.MULTISELECT,
+                    operator=MultiselectOperator.NOT_IN,
+                ),
+            ]
+        )
+        ds.conversations_list = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                data={"channels": [], "response_metadata": {"next_cursor": ""}},
+            )
+        )
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)):
+            await c._sync_channels()
+        types_arg = set(ds.conversations_list.await_args.kwargs["types"].split(","))
+        assert types_arg == {"public_channel", "private_channel"}
+
+        c.sync_filters = FilterCollection(
+            filters=[
+                Filter(
                     key=SyncFilterKey.CHANNEL_IDS,
                     value=["C9"],
                     type=FilterType.LIST,
@@ -1556,6 +1578,113 @@ class TestSyncChannels:
         )
         with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)):
             assert await c._sync_channels() == []
+
+    @pytest.mark.asyncio
+    async def test_sync_channels_empty_channel_types_uses_defaults(self):
+        """Empty channel_types value means no explicit selection — sync all types."""
+        c = _make_connector()
+        c.sync_filters = FilterCollection(
+            filters=[
+                Filter(
+                    key=SyncFilterKey.CHANNEL_TYPES,
+                    value=[],
+                    type=FilterType.MULTISELECT,
+                    operator=MultiselectOperator.IN,
+                ),
+                Filter(
+                    key=SyncFilterKey.CHANNEL_IDS,
+                    value=["C9"],
+                    type=FilterType.LIST,
+                    operator=ListOperator.NOT_IN,
+                ),
+            ]
+        )
+        ds = MagicMock()
+        ds.conversations_list = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                data={
+                    "channels": [
+                        {
+                            "id": "C1",
+                            "name": "general",
+                            "is_member": True,
+                            "created": "1.0",
+                        },
+                        {
+                            "id": "C9",
+                            "name": "skip",
+                            "is_member": True,
+                            "created": "1.0",
+                        },
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                },
+            )
+        )
+        rg = MagicMock()
+        rg.external_group_id = "C1"
+        rg.name = "general"
+        rg.id = "rg-1"
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_to_channel_record_group", return_value=rg),
+            patch.object(type(c), "_channel_permissions", new=AsyncMock(return_value=[])),
+            patch.object(
+                c.data_entities_processor, "on_new_record_groups", new=AsyncMock()
+            ),
+        ):
+            rgs = await c._sync_channels()
+        assert len(rgs) == 1
+        assert rgs[0].external_group_id == "C1"
+        assert ds.conversations_list.await_args.kwargs["types"] == (
+            "public_channel,private_channel,im,mpim"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sync_channels_excludes_deactivated_dm(self):
+        c = _make_connector()
+        c.deactivated_user_ids = {"Udead"}
+        ds = MagicMock()
+        ds.conversations_list = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                data={
+                    "channels": [
+                        {"id": "D-live", "is_im": True, "user": "Ulive"},
+                        {"id": "D-dead", "is_im": True, "user": "Udead"},
+                        {
+                            "id": "C1",
+                            "name": "general",
+                            "is_member": True,
+                            "created": "1.0",
+                        },
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                },
+            )
+        )
+
+        def _to_rg(cd: dict[str, Any]) -> MagicMock:
+            rg = MagicMock()
+            rg.external_group_id = cd["id"]
+            rg.name = cd.get("name") or cd["id"]
+            rg.id = f"rg-{cd['id']}"
+            return rg
+
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_to_channel_record_group", side_effect=_to_rg),
+            patch.object(type(c), "_channel_permissions", new=AsyncMock(return_value=[])),
+            patch.object(
+                c.data_entities_processor, "on_new_record_groups", new=AsyncMock()
+            ),
+        ):
+            rgs = await c._sync_channels()
+
+        synced_ids = {rg.external_group_id for rg in rgs}
+        assert synced_ids == {"D-live", "C1"}
+        assert "D-dead" not in c.channel_type_cache
 
 
 class TestThreadGrowthAndChangeDetection:
@@ -2141,6 +2270,18 @@ class TestChannelDisplayName:
         assert c._channel_display_name({"id": "G1", "is_mpim": True}) == "MPIM"
         assert c._channel_display_name({"id": "C9"}) == "Channel: C9"
 
+    def test_should_include_channel_in_filter(self):
+        c = _make_connector()
+        c.deactivated_user_ids = {"Udead"}
+        assert c._should_include_channel_in_filter(
+            {"id": "C1", "name": "general", "is_member": True}
+        )
+        assert c._should_include_channel_in_filter(
+            {"id": "D1", "is_im": True, "user": "Ulive"}
+        )
+        assert not c._should_include_channel_in_filter(
+            {"id": "D2", "is_im": True, "user": "Udead"}
+        )
 
 class TestIsEdited:
     def test_is_edited(self):
@@ -3031,6 +3172,34 @@ class TestSlackIndividualAdditionalCoverage:
         with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)):
             out = await c._build_message_blocks_for_streaming(mr)
         assert isinstance(out, bytes)
+
+    @pytest.mark.asyncio
+    async def test_get_filter_options_excludes_deactivated_dm(self) -> None:
+        c = _make_connector()
+        c.user_id_to_name_cache["Ulive"] = "Active User"
+        c.user_id_to_name_cache["Udead"] = "Deactivated User"
+        c.deactivated_user_ids = {"Udead"}
+        ds = MagicMock()
+        ds.conversations_list = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                data={
+                    "channels": [
+                        {"id": "D-live", "is_im": True, "user": "Ulive"},
+                        {"id": "D-dead", "is_im": True, "user": "Udead"},
+                        {"id": "C1", "name": "general", "is_member": True},
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                },
+            )
+        )
+        with (
+            patch.object(c, "_ensure_user_caches_for_filters", new=AsyncMock()),
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+        ):
+            resp = await c.get_filter_options("channel_ids")
+        assert resp.success
+        assert {option.id for option in resp.options} == {"C1", "D-live"}
 
     @pytest.mark.asyncio
     async def test_get_filter_options_dm_label_and_warm_fallback(self) -> None:
