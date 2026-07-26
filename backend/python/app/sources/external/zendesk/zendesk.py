@@ -5,6 +5,24 @@ from app.sources.client.zendesk.zendesk import ZendeskClient, ZendeskResponse
 
 SUCCESS_CODE_IS_LESS_THAN = 400
 
+
+def _to_query(params: Dict[str, Any]) -> Dict[str, str]:
+    """Render query values as strings for ``HTTPRequest.query`` (typed ``dict[str, str]``).
+
+    Booleans must be lowercased — Zendesk does not accept Python's ``"True"``.
+    """
+    rendered: Dict[str, str] = {}
+    for key, value in params.items():
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            rendered[key] = "true" if value else "false"
+        elif isinstance(value, (list, tuple)):
+            rendered[key] = ",".join(str(item) for item in value)
+        else:
+            rendered[key] = str(value)
+    return rendered
+
 class ZendeskDataSource:
     """Comprehensive Zendesk API client wrapper.
     Provides async methods for ALL Zendesk API endpoints across:
@@ -104,7 +122,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -113,7 +131,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -152,7 +170,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -161,7 +179,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -306,7 +324,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -317,7 +335,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -438,7 +456,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -449,7 +467,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -483,7 +501,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -492,7 +510,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -530,7 +548,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -541,7 +559,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -584,7 +602,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -595,7 +613,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -631,7 +649,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -640,7 +658,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -680,7 +698,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -689,7 +707,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -737,7 +755,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -748,7 +766,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -841,7 +859,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -852,7 +870,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -904,7 +922,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -913,7 +931,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -955,7 +973,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -966,7 +984,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1019,7 +1037,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -1028,7 +1046,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1067,7 +1085,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -1076,7 +1094,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1218,7 +1236,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -1229,7 +1247,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1366,7 +1384,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -1377,7 +1395,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1411,7 +1429,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -1420,7 +1438,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1460,7 +1478,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -1469,7 +1487,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1505,7 +1523,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -1514,7 +1532,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1544,7 +1562,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -1553,7 +1571,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1591,7 +1609,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -1602,7 +1620,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1649,7 +1667,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -1660,7 +1678,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1698,7 +1716,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -1709,7 +1727,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1749,7 +1767,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -1758,7 +1776,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1802,7 +1820,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -1811,7 +1829,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1845,7 +1863,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -1854,7 +1872,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1894,7 +1912,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -1905,7 +1923,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1948,7 +1966,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -1959,7 +1977,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -1993,7 +2011,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -2002,7 +2020,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2038,7 +2056,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -2047,7 +2065,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2094,7 +2112,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -2105,7 +2123,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2148,7 +2166,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -2159,7 +2177,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2195,7 +2213,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -2206,7 +2224,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2242,7 +2260,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -2253,7 +2271,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2289,7 +2307,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -2300,7 +2318,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2336,7 +2354,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -2345,7 +2363,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2382,7 +2400,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -2391,7 +2409,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2425,7 +2443,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -2434,7 +2452,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2508,7 +2526,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -2519,7 +2537,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2596,7 +2614,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -2607,7 +2625,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2641,7 +2659,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -2650,7 +2668,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2691,7 +2709,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -2700,7 +2718,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2744,7 +2762,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -2753,7 +2771,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2791,7 +2809,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -2802,7 +2820,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2849,7 +2867,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -2860,7 +2878,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2898,7 +2916,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -2909,7 +2927,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2949,7 +2967,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -2958,7 +2976,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -2998,7 +3016,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -3007,7 +3025,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3053,7 +3071,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -3062,7 +3080,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3096,7 +3114,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -3105,7 +3123,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3155,7 +3173,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -3166,7 +3184,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3219,7 +3237,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -3230,7 +3248,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3264,7 +3282,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -3273,7 +3291,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3315,7 +3333,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -3324,7 +3342,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3358,7 +3376,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -3367,7 +3385,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3401,7 +3419,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -3410,7 +3428,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3444,7 +3462,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -3453,7 +3471,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3498,7 +3516,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -3509,7 +3527,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3543,7 +3561,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -3552,7 +3570,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3588,7 +3606,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -3597,7 +3615,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3635,7 +3653,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -3646,7 +3664,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3694,7 +3712,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -3703,7 +3721,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3743,7 +3761,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -3752,7 +3770,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3788,7 +3806,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -3797,7 +3815,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3838,7 +3856,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -3847,7 +3865,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3881,7 +3899,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -3890,7 +3908,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -3959,7 +3977,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -3970,7 +3988,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4019,7 +4037,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -4030,7 +4048,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4069,7 +4087,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -4078,7 +4096,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4114,7 +4132,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -4123,7 +4141,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4172,7 +4190,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -4181,7 +4199,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4211,7 +4229,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -4220,7 +4238,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4254,7 +4272,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -4263,7 +4281,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4315,7 +4333,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -4326,7 +4344,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4383,7 +4401,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -4394,7 +4412,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4428,7 +4446,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -4437,7 +4455,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4475,7 +4493,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -4486,7 +4504,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4539,7 +4557,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -4548,7 +4566,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4578,7 +4596,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -4587,7 +4605,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4621,7 +4639,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -4630,7 +4648,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4690,7 +4708,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -4701,7 +4719,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4766,7 +4784,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -4777,7 +4795,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4811,7 +4829,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -4820,7 +4838,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4858,7 +4876,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -4869,7 +4887,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4907,7 +4925,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -4918,7 +4936,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -4954,7 +4972,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -4963,7 +4981,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5028,7 +5046,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -5037,7 +5055,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5067,7 +5085,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -5076,7 +5094,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5110,7 +5128,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -5119,7 +5137,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5172,7 +5190,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -5183,7 +5201,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5240,7 +5258,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -5251,7 +5269,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5285,7 +5303,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -5294,7 +5312,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5330,7 +5348,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -5341,7 +5359,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5375,7 +5393,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -5384,7 +5402,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5420,7 +5438,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -5429,7 +5447,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5467,7 +5485,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -5478,7 +5496,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5514,7 +5532,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -5523,7 +5541,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5560,7 +5578,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -5569,7 +5587,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5603,7 +5621,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -5612,7 +5630,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5677,7 +5695,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -5688,7 +5706,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5761,7 +5779,7 @@ class ZendeskDataSource:
                 method="PATCH",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -5772,7 +5790,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5806,7 +5824,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -5815,7 +5833,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5858,7 +5876,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -5869,7 +5887,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5911,7 +5929,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -5922,7 +5940,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5956,7 +5974,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -5965,7 +5983,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -5999,7 +6017,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -6010,7 +6028,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -6056,7 +6074,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -6067,7 +6085,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -6101,7 +6119,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -6110,7 +6128,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -6144,7 +6162,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -6153,7 +6171,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -6194,7 +6212,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -6203,7 +6221,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -6237,7 +6255,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -6246,7 +6264,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -6351,7 +6369,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -6362,7 +6380,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -6467,7 +6485,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -6478,7 +6496,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -6512,7 +6530,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -6521,7 +6539,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -6551,7 +6569,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -6560,7 +6578,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -6594,7 +6612,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -6603,7 +6621,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -6679,7 +6697,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -6690,7 +6708,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -6763,7 +6781,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -6774,7 +6792,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -6808,7 +6826,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -6817,7 +6835,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -6847,7 +6865,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -6856,7 +6874,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -6890,7 +6908,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -6899,7 +6917,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -6975,7 +6993,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -6986,7 +7004,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7059,7 +7077,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -7070,7 +7088,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7104,7 +7122,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -7113,7 +7131,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7143,7 +7161,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -7152,7 +7170,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7182,7 +7200,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -7191,7 +7209,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7227,7 +7245,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -7236,7 +7254,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7289,7 +7307,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -7298,7 +7316,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7328,7 +7346,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -7337,7 +7355,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7367,7 +7385,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -7376,7 +7394,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7410,7 +7428,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -7419,7 +7437,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7471,7 +7489,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -7482,7 +7500,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7539,7 +7557,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -7550,7 +7568,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7584,7 +7602,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -7593,7 +7611,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7640,7 +7658,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -7649,7 +7667,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7688,7 +7706,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -7697,7 +7715,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7731,7 +7749,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -7740,7 +7758,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7774,7 +7792,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -7783,7 +7801,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7861,7 +7879,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -7870,7 +7888,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7909,7 +7927,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -7918,7 +7936,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -7996,7 +8014,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -8007,7 +8025,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8088,7 +8106,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -8099,7 +8117,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8133,7 +8151,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -8142,7 +8160,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8202,7 +8220,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -8211,7 +8229,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8264,7 +8282,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -8273,7 +8291,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8307,7 +8325,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -8316,7 +8334,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8379,7 +8397,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -8390,7 +8408,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8455,7 +8473,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -8466,7 +8484,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8500,7 +8518,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -8509,7 +8527,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8558,7 +8576,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -8567,7 +8585,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8606,7 +8624,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -8615,7 +8633,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8664,7 +8682,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -8675,7 +8693,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8724,7 +8742,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -8735,7 +8753,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8769,7 +8787,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -8778,7 +8796,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8808,7 +8826,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -8817,7 +8835,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8851,7 +8869,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -8860,7 +8878,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8912,7 +8930,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -8923,7 +8941,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -8976,7 +8994,7 @@ class ZendeskDataSource:
                 method="PATCH",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -8987,7 +9005,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9021,7 +9039,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -9030,7 +9048,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9077,7 +9095,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -9086,7 +9104,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9122,7 +9140,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -9131,7 +9149,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9178,7 +9196,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -9189,7 +9207,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9240,7 +9258,7 @@ class ZendeskDataSource:
                 method="PATCH",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -9251,7 +9269,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9287,7 +9305,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -9296,7 +9314,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9330,7 +9348,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -9339,7 +9357,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9369,7 +9387,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -9378,7 +9396,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9422,7 +9440,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -9431,7 +9449,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9471,7 +9489,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -9480,7 +9498,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9520,7 +9538,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -9529,7 +9547,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9569,7 +9587,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -9578,7 +9596,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9608,7 +9626,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -9617,7 +9635,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9651,7 +9669,7 @@ class ZendeskDataSource:
                 method="GET",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -9660,7 +9678,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9712,7 +9730,7 @@ class ZendeskDataSource:
                 method="POST",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -9723,7 +9741,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9780,7 +9798,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -9791,7 +9809,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9825,7 +9843,7 @@ class ZendeskDataSource:
                 method="DELETE",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
             )
             response = await self.http.execute(
                 request=request
@@ -9834,7 +9852,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
@@ -9872,7 +9890,7 @@ class ZendeskDataSource:
                 method="PUT",
                 url=url,
                 headers=_headers,
-                query_params=_params
+                query=_to_query(_params)
 ,
                 json=_data if _data else None
             )
@@ -9883,7 +9901,7 @@ class ZendeskDataSource:
             return ZendeskResponse(
                 success=response.status < SUCCESS_CODE_IS_LESS_THAN,
                 data=response.json() if response.is_json else None,
-                error=response.text if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
                 status_code=response.status
             )
 
