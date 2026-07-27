@@ -5101,10 +5101,12 @@ class TestEnrichRecordsWithGraphContext:
         docs_by_id=None,
         outgoing_by_type=None,
         incoming_by_type=None,
+        access_denied_ids=None,
     ):
         outgoing_by_type = outgoing_by_type or {}
         incoming_by_type = incoming_by_type or {}
         docs_by_id = docs_by_id or {}
+        access_denied_ids = set(access_denied_ids or [])
         gp = AsyncMock()
 
         async def _parent(record_id, relation_type):
@@ -5131,6 +5133,16 @@ class TestEnrichRecordsWithGraphContext:
 
         gp.get_document = AsyncMock(side_effect=_get_document)
         gp.get_virtual_record_ids_for_record_ids = AsyncMock(return_value=vrid_map or {})
+
+        async def _check_access(user_id, org_id, record_id, *args, **kwargs):
+            if record_id in access_denied_ids:
+                return None
+            doc = await gp.get_document(record_id, "records")
+            if not doc:
+                return None
+            return {"record": doc}
+
+        gp.check_record_access_with_details = AsyncMock(side_effect=_check_access)
         return gp
 
     def _dependent_file_record(self, vrid="vr-attach", record_id="rec-attach", **overrides):
@@ -5175,6 +5187,7 @@ class TestEnrichRecordsWithGraphContext:
         flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
         await enrich_records_with_graph_context(
             vr_map, graph_provider=None, flattened_results=flattened,
+            user_id="user-1",
         )
         assert "parent_node_relation" not in flattened[0]
 
@@ -5188,6 +5201,7 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         gp.get_document.assert_not_called()
 
@@ -5201,6 +5215,7 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         # Not dependent and has no record_id on main result -> no edge queries
         assert "parent_node_relation" not in flattened[0]
@@ -5215,6 +5230,7 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         assert "parent_node_relation" not in flattened[0]
 
@@ -5257,6 +5273,7 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         rel = flattened[0]["parent_node_relation"]
         assert rel["record_id"] == "rec-issue-1"
@@ -5290,6 +5307,7 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         assert "context_metadata" in flattened[0]["parent_node_relation"]
 
@@ -5323,6 +5341,7 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         assert flattened[0]["parent_node_relation"]["record_id"] == "rec-issue-1"
         assert flattened[1]["parent_node_relation"]["record_id"] == "rec-issue-1"
@@ -5356,6 +5375,7 @@ class TestEnrichRecordsWithGraphContext:
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
             blob_store=blob_store, org_id="org-1",
+            user_id="user-1",
         )
         rel = flattened[0]["parent_node_relation"]
         assert rel["record_id"] == "rec-issue-1"
@@ -5385,6 +5405,7 @@ class TestEnrichRecordsWithGraphContext:
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
             blob_store=blob_store, org_id="org-1",
+            user_id="user-1",
         )
         rel = flattened[0]["parent_node_relation"]
         assert rel["record_id"] == "rec-issue-1"
@@ -5413,6 +5434,7 @@ class TestEnrichRecordsWithGraphContext:
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
             blob_store=blob_store, org_id="org-1", doc_index=doc_index,
+            user_id="user-1",
         )
         rel = flattened[0]["parent_node_relation"]
         assert rel["record_id"] == "rec-issue-1"
@@ -5436,6 +5458,7 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         assert "parent_node_relation" not in flattened[0]
 
@@ -5457,6 +5480,7 @@ class TestEnrichRecordsWithGraphContext:
             vr_map, graph_provider=gp,
             flattened_results=[{"virtual_record_id": "vr-ticket", "block_index": 0}],
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         assert "record_relations" not in rec
 
@@ -5467,6 +5491,7 @@ class TestEnrichRecordsWithGraphContext:
         gp = self._make_graph_provider()
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
+            user_id="user-1",
         )
         assert gp.get_parent_record_ids_by_relation_type.await_count == 2
         assert gp.get_child_record_ids_by_relation_type.await_count == 2
@@ -5483,6 +5508,7 @@ class TestEnrichRecordsWithGraphContext:
         )
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
+            user_id="user-1",
         )
         relations = rec["record_relations"]
         assert len(relations) == 2
@@ -5503,6 +5529,7 @@ class TestEnrichRecordsWithGraphContext:
         )
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
+            user_id="user-1",
         )
         relations = rec["record_relations"]
         assert len(relations) == 1
@@ -5527,6 +5554,7 @@ class TestEnrichRecordsWithGraphContext:
         )
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
+            user_id="user-1",
         )
         assert "record_relations" not in rec
 
@@ -5540,6 +5568,7 @@ class TestEnrichRecordsWithGraphContext:
         )
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
+            user_id="user-1",
         )
         assert len(rec["record_relations"]) == 25
 
@@ -5568,6 +5597,7 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
             blob_store=None, org_id="org-1",
+            user_id="user-1",
         )
         relations = rec["record_relations"]
         assert len(relations) == 1
@@ -5604,6 +5634,7 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
             blob_store=blob_store, org_id="org-1",
+            user_id="user-1",
         )
         relations = rec["record_relations"]
         assert len(relations) == 1
@@ -5635,6 +5666,7 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
             blob_store=None, org_id="org-1",
+            user_id="user-1",
         )
         relations = rec["record_relations"]
         assert len(relations) == 1
@@ -5687,12 +5719,115 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         # Dependent parent was annotated
         assert flattened[0]["parent_node_relation"]["record_id"] == "rec-issue-1"
         # Relation-eligible got relations
         assert len(ticket_rec["record_relations"]) == 1
         assert ticket_rec["record_relations"][0]["record_id"] == "rec-related"
+
+    @pytest.mark.asyncio
+    async def test_fail_closed_without_user_id(self):
+        ticket = self._ticket_record()
+        vr_map = {"vr-ticket": ticket}
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-child"}],
+            },
+        )
+        flattened = [{"virtual_record_id": "vr-ticket", "block_index": 0}]
+        vtr_map = {"vr-ticket": {"isDependentNode": False, "connectorName": "JIRA"}}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map, org_id="org-1",
+        )
+        assert "record_relations" not in ticket
+        gp.check_record_access_with_details.assert_not_called()
+        gp.get_parent_record_ids_by_relation_type.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_omits_permission_denied_related_records(self):
+        ticket = self._ticket_record()
+        vr_map = {"vr-ticket": ticket}
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.ATTACHMENT.value: [
+                    {"record_id": "rec-allowed"},
+                    {"record_id": "rec-denied"},
+                ],
+            },
+            access_denied_ids=["rec-denied"],
+        )
+        flattened = [{"virtual_record_id": "vr-ticket", "block_index": 0}]
+        vtr_map = {"vr-ticket": {"isDependentNode": False, "connectorName": "JIRA"}}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map, org_id="org-1", user_id="user-1",
+        )
+        relations = ticket["record_relations"]
+        assert len(relations) == 1
+        assert relations[0]["record_id"] == "rec-allowed"
+        assert gp.check_record_access_with_details.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_omits_permission_denied_dependent_parent(self):
+        attach = self._dependent_file_record()
+        vr_map = {"vr-attach": attach}
+        gp = self._make_graph_provider(access_denied_ids=["rec-issue-1"])
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map, org_id="org-1", user_id="user-1",
+        )
+        assert "parent_node_relation" not in flattened[0]
+        gp.check_record_access_with_details.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_caps_permission_checks_per_label(self):
+        from app.utils.chat_helpers import MAX_RELATED_RECORDS
+
+        ticket = self._ticket_record()
+        vr_map = {"vr-ticket": ticket}
+        many = [{"record_id": f"rec-{i:03d}"} for i in range(MAX_RELATED_RECORDS + 20)]
+        gp = self._make_graph_provider(
+            outgoing_by_type={RecordRelations.ATTACHMENT.value: many},
+        )
+        flattened = [{"virtual_record_id": "vr-ticket", "block_index": 0}]
+        vtr_map = {"vr-ticket": {"isDependentNode": False, "connectorName": "JIRA"}}
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map, org_id="org-1", user_id="user-1",
+        )
+        assert gp.check_record_access_with_details.await_count == MAX_RELATED_RECORDS
+        assert len(ticket["record_relations"]) == MAX_RELATED_RECORDS
+
+    @pytest.mark.asyncio
+    async def test_skips_access_check_for_in_context_related(self):
+        related = self._ticket_record(vrid="vr-rel", record_id="rec-related")
+        ticket = self._ticket_record()
+        vr_map = {"vr-ticket": ticket, "vr-rel": related}
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-related"}],
+            },
+        )
+        flattened = [
+            {"virtual_record_id": "vr-ticket", "block_index": 0},
+            {"virtual_record_id": "vr-rel", "block_index": 0},
+        ]
+        vtr_map = {
+            "vr-ticket": {"isDependentNode": False, "connectorName": "JIRA"},
+            "vr-rel": {"isDependentNode": False, "connectorName": "JIRA"},
+        }
+        await enrich_records_with_graph_context(
+            vr_map, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map=vtr_map, org_id="org-1", user_id="user-1",
+        )
+        gp.check_record_access_with_details.assert_not_called()
+        assert ticket["record_relations"][0]["record_id"] == "rec-related"
+
 
 class TestBuildParentInfo:
     def test_returns_empty_when_no_relation(self):
