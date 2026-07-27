@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import logging
 from typing import Any
 
@@ -14,12 +13,6 @@ from app.utils.logger import create_logger
 
 PDF_PROCESSING_TIMEOUT_SECONDS = 40 * 60
 PDF_PARSING_TIMEOUT_SECONDS = 40 * 60
-
-
-class ProcessRequest(BaseModel):
-    record_name: str
-    pdf_binary: str  # base64 encoded PDF binary data
-    org_id: str | None = None
 
 
 class ProcessResponse(BaseModel):
@@ -71,12 +64,12 @@ class DoclingService:
             raise
 
     async def process_pdf(self, record_name: str, pdf_binary: bytes) -> BlocksContainer:
-        """Process PDF using DoclingProcessor (legacy method - does both parse and create blocks)"""
+        """Parse a PDF in page batches and convert the concatenated document into blocks."""
         try:
             self.logger.info(f"🚀 Processing PDF: {record_name}")
             if self.processor is None:
                 raise RuntimeError("DoclingService not initialized: processor is None")
-            result = await self.processor.load_document(record_name, pdf_binary)
+            result = await self.processor.process_in_batches(record_name, pdf_binary)
 
             if result is False:
                 raise ValueError("DoclingProcessor returned False - processing failed")
@@ -88,17 +81,25 @@ class DoclingService:
             self.logger.error(f"❌ Error processing PDF {record_name}: {str(e)}")
             raise
 
-    async def parse_pdf_only(self, record_name: str, pdf_binary: bytes) -> DoclingDocument:
-        """Parse PDF and return ConversionResult (no block creation, no LLM calls).
+    async def parse_pdf_only(
+        self,
+        record_name: str,
+        pdf_binary: bytes,
+        page_range: tuple[int, int] | None = None,
+    ) -> DoclingDocument:
+        """Parse PDF and return DoclingDocument (no block creation, no LLM calls).
 
-        This is phase 1 of two-phase processing.
+        Args:
+            page_range: Optional 1-based inclusive (start, end) page range.
         """
         try:
             self.logger.info(f"🚀 Parsing PDF (phase 1): {record_name}")
             if self.processor is None:
                 raise RuntimeError("DoclingService not initialized: processor is None")
 
-            doc = await self.processor.parse_document(record_name, pdf_binary)
+            doc = await self.processor.parse_document(
+                record_name, pdf_binary, page_range=page_range
+            )
             self.logger.info(f"✅ Successfully parsed PDF: {record_name}")
             return doc
 
@@ -182,39 +183,25 @@ async def health_check() -> dict[str, Any]:
 
 
 @app.post("/process-pdf", response_model=ProcessResponse)
-async def process_pdf_endpoint(request: ProcessRequest) -> ProcessResponse:
-    """Process PDF document using Docling"""
+async def process_pdf_endpoint(
+    file: UploadFile = File(...),
+    record_name: str = Form(...),
+) -> ProcessResponse:
+    """Parse a PDF in page batches and return its blocks in a single round trip."""
     try:
-        # Decode base64 PDF binary data
-        try:
-            pdf_binary = base64.b64decode(request.pdf_binary)
-        except Exception as e:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value,
-                detail=f"Invalid base64 PDF data: {str(e)}"
-            ) from e
+        pdf_binary = await file.read()
 
-        # Ensure service is wired
         if docling_service is None:
             raise HTTPException(status_code=500, detail="Docling service not available")
 
-        # Process the PDF with 40 minute timeout
         block_containers = await asyncio.wait_for(
-            docling_service.process_pdf(
-                request.record_name,
-                pdf_binary
-            ),
-            timeout=PDF_PROCESSING_TIMEOUT_SECONDS  # 40 minutes in seconds
+            docling_service.process_pdf(record_name, pdf_binary),
+            timeout=PDF_PROCESSING_TIMEOUT_SECONDS
         )
-
-        # Convert BlocksContainer to dict for JSON serialization
-        # We'll need to implement a proper serialization method
-        block_containers_dict = serialize_blocks_container(block_containers)
-
 
         return ProcessResponse(
             success=True,
-            block_containers=block_containers_dict
+            block_containers=serialize_blocks_container(block_containers)
         )
 
     except asyncio.TimeoutError:
@@ -266,6 +253,8 @@ def deserialize_docling_doc(serialized: str) -> DoclingDocument:
 async def parse_pdf_endpoint(
     file: UploadFile = File(...),
     record_name: str = Form(...),
+    start_page: int | None = Form(default=None),
+    end_page: int | None = Form(default=None),
 ) -> ParseResponse:
     """Parse PDF document (phase 1 - no block creation, no LLM calls)"""
     try:
@@ -274,8 +263,14 @@ async def parse_pdf_endpoint(
         if docling_service is None:
             raise HTTPException(status_code=500, detail="Docling service not available")
 
+        page_range = None
+        if start_page is not None and end_page is not None:
+            page_range = (start_page, end_page)
+
         doc = await asyncio.wait_for(
-            docling_service.parse_pdf_only(record_name, pdf_binary),
+            docling_service.parse_pdf_only(
+                record_name, pdf_binary, page_range=page_range
+            ),
             timeout=PDF_PARSING_TIMEOUT_SECONDS
         )
 
