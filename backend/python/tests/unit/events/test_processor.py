@@ -445,7 +445,7 @@ class TestProcessPdfWithDocling:
         """When Docling returns None, yields docling_failed event."""
         proc, _, gp, _ = _make_processor()
         proc.docling_client = AsyncMock()
-        proc.docling_client.parse_pdf.return_value = None
+        proc.docling_client.process_pdf.return_value = None
 
         events = await _collect(
             proc.process_pdf_with_docling(
@@ -464,27 +464,22 @@ class TestProcessPdfWithDocling:
         """When Docling succeeds, yields parsing_complete first."""
         proc, _, gp, _ = _make_processor()
         proc.docling_client = AsyncMock()
-        proc.docling_client.parse_pdf.return_value = {"pages": []}
+        proc.docling_client.process_pdf.return_value = MagicMock()
         gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
 
-        with patch("app.events.processor.DoclingProcessor") as mock_dp:
-            mock_dp_instance = MagicMock()
-            mock_dp_instance.process_pdf.return_value = []
-            mock_dp.return_value = mock_dp_instance
+        with patch("app.events.processor.IndexingPipeline") as mock_pipeline, \
+             patch.object(proc, "_create_transform_context", return_value=MagicMock()):
+            mock_pipeline_instance = AsyncMock()
+            mock_pipeline.return_value = mock_pipeline_instance
 
-            with patch("app.events.processor.IndexingPipeline") as mock_pipeline, \
-                 patch.object(proc, "_create_transform_context", return_value=MagicMock()):
-                mock_pipeline_instance = AsyncMock()
-                mock_pipeline.return_value = mock_pipeline_instance
-
-                events = await _collect(
-                    proc.process_pdf_with_docling(
-                        recordName="test.pdf",
-                        recordId="rec-1",
-                        pdf_binary=b"pdf-content",
-                        virtual_record_id="vr-1",
-                    )
+            events = await _collect(
+                proc.process_pdf_with_docling(
+                    recordName="test.pdf",
+                    recordId="rec-1",
+                    pdf_binary=b"pdf-content",
+                    virtual_record_id="vr-1",
                 )
+            )
 
         assert events[0].event == "parsing_complete"
         assert events[1].event == "indexing_complete"
@@ -1621,9 +1616,9 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_docling_parse_fails(self):
-        """Should yield docling_failed when parse returns None."""
+        """Should yield docling_failed when process_pdf returns None."""
         proc, _, gp, config = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=None)
+        proc.docling_client.process_pdf = AsyncMock(return_value=None)
 
         events = await _collect(proc.process_pdf_with_docling(
             "test.pdf", "rec-1", b"pdfdata", "vr-1"
@@ -1632,23 +1627,20 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_block_creation_fails(self):
-        """Should yield docling_failed when create_blocks returns None."""
+        """Should yield docling_failed when process_pdf returns None."""
         proc, _, gp, config = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value={"parsed": True})
-        proc.docling_client.create_blocks = AsyncMock(return_value=None)
+        proc.docling_client.process_pdf = AsyncMock(return_value=None)
 
         events = await _collect(proc.process_pdf_with_docling(
             "test.pdf", "rec-1", b"pdfdata", "vr-1"
         ))
-        assert events[0].event == "parsing_complete"
-        assert events[1].event == "docling_failed"
+        assert events[0].event == "docling_failed"
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
         """Should yield indexing_complete when record not found."""
         proc, _, gp, config = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value={"parsed": True})
-        proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
         gp.get_document.return_value = None
 
         events = await _collect(proc.process_pdf_with_docling(
@@ -1661,8 +1653,7 @@ class TestProcessPdfWithDocling:
     async def test_success_path(self):
         """Should yield both events on success."""
         proc, _, gp, config = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value={"parsed": True})
-        proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
         gp.get_document.return_value = _base_record_dict()
 
         with patch("app.events.processor.IndexingPipeline") as mock_pipeline, \
@@ -3323,7 +3314,7 @@ class TestProcessPdfWithDoclingCoverage:
     async def test_parse_failure(self):
         proc = _make_processor_cov()
         proc.docling_client = AsyncMock()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=None)
+        proc.docling_client.process_pdf = AsyncMock(return_value=None)
 
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"pdf", "vr1")
@@ -3332,23 +3323,21 @@ class TestProcessPdfWithDoclingCoverage:
 
     @pytest.mark.asyncio
     async def test_blocks_failure(self):
+        """process_pdf returning None covers parse/block failure in one shot."""
         proc = _make_processor_cov()
         proc.docling_client = AsyncMock()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
-        proc.docling_client.create_blocks = AsyncMock(return_value=None)
+        proc.docling_client.process_pdf = AsyncMock(return_value=None)
 
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"pdf", "vr1")
         )
-        assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "docling_failed" for e in events)
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
         proc = _make_processor_cov()
         proc.docling_client = AsyncMock()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
-        proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
         events = await _collect_events(

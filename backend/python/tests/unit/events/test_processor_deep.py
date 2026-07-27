@@ -711,11 +711,10 @@ class TestProcessPdfWithPymupdf:
 class TestProcessPdfWithDocling:
     @pytest.mark.asyncio
     async def test_success(self):
-        """Docling PDF processing: parse, create blocks, index."""
+        """Docling PDF processing: process_pdf then index."""
         proc = _make_processor()
 
-        proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
-        proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(recordName="test.pdf"))
 
         with patch("app.events.processor.IndexingPipeline") as MockPipeline, \
@@ -731,9 +730,9 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_parse_returns_none(self):
-        """When docling parse_pdf returns None, yields docling_failed."""
+        """When docling process_pdf returns None, yields docling_failed."""
         proc = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=None)
+        proc.docling_client.process_pdf = AsyncMock(return_value=None)
 
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"pdfdata", "vr1")
@@ -743,23 +742,20 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_create_blocks_returns_none_yields_docling_failed(self):
-        """When docling create_blocks returns None, yields docling_failed."""
+        """When docling process_pdf returns None, yields docling_failed."""
         proc = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
-        proc.docling_client.create_blocks = AsyncMock(return_value=None)
+        proc.docling_client.process_pdf = AsyncMock(return_value=None)
 
         events = await _collect_events(
             proc.process_pdf_with_docling("test.pdf", "r1", b"data", "vr1")
         )
-        assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "docling_failed" for e in events)
 
     @pytest.mark.asyncio
     async def test_record_not_found(self):
         """Missing record yields indexing_complete."""
         proc = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
-        proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
         events = await _collect_events(
@@ -1407,8 +1403,7 @@ class TestProcessPdfWithDoclingAdditional:
     async def test_exception_in_pipeline(self):
         """Exception during pipeline processing yields docling_failed."""
         proc = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
-        proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="test.pdf")
         )
@@ -1429,8 +1424,7 @@ class TestProcessPdfWithDoclingAdditional:
     async def test_appends_pdf_extension(self):
         """If record name doesn't end in .pdf, it gets appended."""
         proc = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(return_value=MagicMock())
-        proc.docling_client.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_client.process_pdf = AsyncMock(return_value=MagicMock())
         proc.graph_provider.get_document = AsyncMock(
             return_value=_mock_record_dict(recordName="report")
         )
@@ -1443,7 +1437,7 @@ class TestProcessPdfWithDoclingAdditional:
                 proc.process_pdf_with_docling("report", "r1", b"data", "vr1")
             )
 
-        call_args = proc.docling_client.parse_pdf.call_args[0]
+        call_args = proc.docling_client.process_pdf.call_args[0]
         assert call_args[0] == "report.pdf"
 
 

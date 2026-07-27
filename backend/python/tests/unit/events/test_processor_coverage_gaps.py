@@ -123,7 +123,7 @@ class TestIndexingErrorReraise:
     @pytest.mark.asyncio
     async def test_process_pdf_with_docling_indexing_error(self):
         proc = _make_processor()
-        proc.docling_client.parse_pdf = AsyncMock(
+        proc.docling_client.process_pdf = AsyncMock(
             side_effect=IndexingError("docling fail", record_id="r1")
         )
 
