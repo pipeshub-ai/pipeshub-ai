@@ -26,5 +26,18 @@ DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS = (
     f"nextPageToken, files({DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS})"
 )
 
+DRIVE_WORKSPACE_SYNC_CHANGES_LIST_FIELDS = (
+    "nextPageToken, newStartPageToken, "
+    f"changes(fileId, removed, file({DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS}))"
+)
+
 # files.get for workspace reindex: same as list item fields plus driveId for shared-drive detection.
 DRIVE_WORKSPACE_FILE_GET_FIELDS = f"{DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS}, driveId"
+
+# Folder-filter subtree expansion: only folder identity plus whether this user may
+# enumerate the folder's children, which decides if the walk can descend into it.
+DRIVE_FOLDER_EXPANSION_LIST_FIELDS = (
+    "nextPageToken, files(id, capabilities/canListChildren)"
+)
+
+DRIVE_FOLDER_EXPANSION_GET_FIELDS = "id, capabilities/canListChildren"
