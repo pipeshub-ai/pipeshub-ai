@@ -5101,12 +5101,10 @@ class TestEnrichRecordsWithGraphContext:
         docs_by_id=None,
         outgoing_by_type=None,
         incoming_by_type=None,
-        access_denied_ids=None,
     ):
         outgoing_by_type = outgoing_by_type or {}
         incoming_by_type = incoming_by_type or {}
         docs_by_id = docs_by_id or {}
-        access_denied_ids = set(access_denied_ids or [])
         gp = AsyncMock()
 
         async def _parent(record_id, relation_type):
@@ -5133,17 +5131,6 @@ class TestEnrichRecordsWithGraphContext:
 
         gp.get_document = AsyncMock(side_effect=_get_document)
         gp.get_virtual_record_ids_for_record_ids = AsyncMock(return_value=vrid_map or {})
-
-        async def _check_access(user_id, org_id, record_id, *args, **kwargs):
-            if record_id in access_denied_ids:
-                return None
-            # Call through gp.get_document so tests that override it still apply.
-            doc = await gp.get_document(record_id, "records")
-            if not doc:
-                return None
-            return {"record": doc}
-
-        gp.check_record_access_with_details = AsyncMock(side_effect=_check_access)
         return gp
 
     def _dependent_file_record(self, vrid="vr-attach", record_id="rec-attach", **overrides):
@@ -5188,7 +5175,6 @@ class TestEnrichRecordsWithGraphContext:
         flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
         await enrich_records_with_graph_context(
             vr_map, graph_provider=None, flattened_results=flattened,
-            user_id='user-1',
         )
         assert "parent_node_relation" not in flattened[0]
 
@@ -5202,7 +5188,6 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
-            user_id='user-1',
         )
         gp.get_document.assert_not_called()
 
@@ -5216,7 +5201,6 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
-            user_id='user-1',
         )
         # Not dependent and has no record_id on main result -> no edge queries
         assert "parent_node_relation" not in flattened[0]
@@ -5231,7 +5215,6 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
-            user_id='user-1',
         )
         assert "parent_node_relation" not in flattened[0]
 
@@ -5274,7 +5257,6 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
-            user_id='user-1',
         )
         rel = flattened[0]["parent_node_relation"]
         assert rel["record_id"] == "rec-issue-1"
@@ -5308,7 +5290,6 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
-            user_id='user-1',
         )
         assert "context_metadata" in flattened[0]["parent_node_relation"]
 
@@ -5342,7 +5323,6 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
-            user_id='user-1',
         )
         assert flattened[0]["parent_node_relation"]["record_id"] == "rec-issue-1"
         assert flattened[1]["parent_node_relation"]["record_id"] == "rec-issue-1"
@@ -5376,7 +5356,6 @@ class TestEnrichRecordsWithGraphContext:
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
             blob_store=blob_store, org_id="org-1",
-            user_id='user-1',
         )
         rel = flattened[0]["parent_node_relation"]
         assert rel["record_id"] == "rec-issue-1"
@@ -5406,7 +5385,6 @@ class TestEnrichRecordsWithGraphContext:
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
             blob_store=blob_store, org_id="org-1",
-            user_id='user-1',
         )
         rel = flattened[0]["parent_node_relation"]
         assert rel["record_id"] == "rec-issue-1"
@@ -5435,7 +5413,6 @@ class TestEnrichRecordsWithGraphContext:
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
             blob_store=blob_store, org_id="org-1", doc_index=doc_index,
-            user_id='user-1',
         )
         rel = flattened[0]["parent_node_relation"]
         assert rel["record_id"] == "rec-issue-1"
@@ -5445,47 +5422,22 @@ class TestEnrichRecordsWithGraphContext:
 
     @pytest.mark.asyncio
     async def test_unresolvable_parent_not_annotated(self):
-        """If parent access check denies / returns nothing, no annotation is added."""
+        """If parent record can't be resolved (deleted), no annotation is added."""
         rec = self._dependent_file_record()
         vr_map = {"vr-attach": rec}
-        gp = self._make_graph_provider(access_denied_ids=["rec-issue-1"])
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value=None)
+        gp.get_virtual_record_ids_for_record_ids = AsyncMock(return_value={})
+        gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
+        gp.get_child_record_ids_by_relation_type = AsyncMock(return_value=[])
 
         flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
         vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
-            user_id='user-1',
         )
         assert "parent_node_relation" not in flattened[0]
-
-    @pytest.mark.asyncio
-    async def test_skips_all_enrichment_without_user_id(self):
-        """Fail-closed: missing user_id skips relations and dependent parents."""
-        attach = self._dependent_file_record()
-        ticket = self._ticket_record()
-        vr_map = {"vr-attach": attach, "vr-ticket": ticket}
-        gp = self._make_graph_provider(
-            outgoing_by_type={
-                RecordRelations.ATTACHMENT.value: [{"record_id": "rec-file-1"}],
-            },
-        )
-        flattened = [
-            {"virtual_record_id": "vr-attach", "block_index": 0},
-            {"virtual_record_id": "vr-ticket", "block_index": 0},
-        ]
-        vtr_map = {
-            "vr-attach": self._virtual_to_record_map_entry(),
-            "vr-ticket": {"isDependentNode": False, "connectorName": "JIRA"},
-        }
-        await enrich_records_with_graph_context(
-            vr_map, graph_provider=gp, flattened_results=flattened,
-            virtual_to_record_map=vtr_map,
-        )
-        assert "parent_node_relation" not in flattened[0]
-        assert "record_relations" not in ticket
-        gp.check_record_access_with_details.assert_not_called()
-        gp.get_parent_record_ids_by_relation_type.assert_not_called()
 
     # --- Record relation tests ---
 
@@ -5505,7 +5457,6 @@ class TestEnrichRecordsWithGraphContext:
             vr_map, graph_provider=gp,
             flattened_results=[{"virtual_record_id": "vr-ticket", "block_index": 0}],
             virtual_to_record_map=vtr_map,
-            user_id='user-1',
         )
         assert "record_relations" not in rec
 
@@ -5516,7 +5467,6 @@ class TestEnrichRecordsWithGraphContext:
         gp = self._make_graph_provider()
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
-            user_id='user-1',
         )
         assert gp.get_parent_record_ids_by_relation_type.await_count == 2
         assert gp.get_child_record_ids_by_relation_type.await_count == 2
@@ -5533,7 +5483,6 @@ class TestEnrichRecordsWithGraphContext:
         )
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
-            user_id='user-1',
         )
         relations = rec["record_relations"]
         assert len(relations) == 2
@@ -5554,7 +5503,6 @@ class TestEnrichRecordsWithGraphContext:
         )
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
-            user_id='user-1',
         )
         relations = rec["record_relations"]
         assert len(relations) == 1
@@ -5579,228 +5527,21 @@ class TestEnrichRecordsWithGraphContext:
         )
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
-            user_id='user-1',
         )
         assert "record_relations" not in rec
 
     @pytest.mark.asyncio
-    async def test_returns_relations_under_candidate_cap(self):
+    async def test_returns_all_relations_without_cap(self):
         rec = self._ticket_record()
         vr_map = {"vr-ticket": rec}
-        many = [{"record_id": f"rec-{i:02d}"} for i in range(25)]
+        many = [{"record_id": f"rec-{i}"} for i in range(25)]
         gp = self._make_graph_provider(
             outgoing_by_type={RecordRelations.ATTACHMENT.value: many},
         )
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
-            user_id='user-1',
         )
         assert len(rec["record_relations"]) == 25
-
-    @pytest.mark.asyncio
-    async def test_caps_permission_checks_at_max_related_records(self):
-        from app.utils.chat_helpers import MAX_RELATED_RECORDS
-
-        rec = self._ticket_record()
-        vr_map = {"vr-ticket": rec}
-        many = [{"record_id": f"rec-{i:03d}"} for i in range(MAX_RELATED_RECORDS + 20)]
-        gp = self._make_graph_provider(
-            outgoing_by_type={RecordRelations.ATTACHMENT.value: many},
-        )
-        await enrich_records_with_graph_context(
-            vr_map, graph_provider=gp, flattened_results=[],
-            user_id='user-1',
-        )
-        assert gp.check_record_access_with_details.await_count == MAX_RELATED_RECORDS
-        assert len(rec["record_relations"]) == MAX_RELATED_RECORDS
-        assert rec["record_relation_counts"]["ATTACHMENT"] == MAX_RELATED_RECORDS + 20
-
-    @pytest.mark.asyncio
-    async def test_dependent_parent_never_capped_out_by_related_records(self):
-        """A parent id sorting after a full cap's worth of related ids is still enriched."""
-        from app.utils.chat_helpers import MAX_RELATED_RECORDS
-
-        attach_rec = self._dependent_file_record(vrid="vr-attach", record_id="rec-attach")
-        ticket_rec = self._ticket_record(vrid="vr-ticket", record_id="rec-ticket")
-        vr_map = {"vr-attach": attach_rec, "vr-ticket": ticket_rec}
-
-        # Parent key sorts after every "rec-NNN" child, so a shared pool would drop it.
-        parent_id = "zzz-parent"
-        parent_doc = {
-            "id": parent_id,
-            "_key": parent_id,
-            "recordName": "PROJ-PARENT",
-            "recordType": "TICKET",
-            "connectorName": "JIRA",
-            "connectorId": "conn-1",
-            "externalRecordId": "ext-parent",
-        }
-        many = [{"record_id": f"rec-{i:03d}"} for i in range(MAX_RELATED_RECORDS + 20)]
-        gp = self._make_graph_provider(
-            docs_by_id={parent_id: parent_doc},
-            outgoing_by_type={RecordRelations.ATTACHMENT.value: many},
-        )
-        flattened = [
-            {"virtual_record_id": "vr-attach", "block_index": 0},
-            {"virtual_record_id": "vr-ticket", "block_index": 0},
-        ]
-        vtr_map = {
-            "vr-attach": self._virtual_to_record_map_entry(parentNodeId=parent_id),
-            "vr-ticket": {"isDependentNode": False, "connectorName": "JIRA"},
-        }
-        await enrich_records_with_graph_context(
-            vr_map, graph_provider=gp, flattened_results=flattened,
-            virtual_to_record_map=vtr_map,
-            user_id="user-1",
-        )
-
-        parent_rel = flattened[0].get("parent_node_relation")
-        assert parent_rel is not None, "dependent parent was capped out by related records"
-        assert parent_rel["record_id"] == parent_id
-        # Parents bypass the recency cap on full context too.
-        assert "context_metadata" in parent_rel
-        # Related records are still capped, and the parent is checked on top of them.
-        assert len(ticket_rec["record_relations"]) == MAX_RELATED_RECORDS
-        assert gp.check_record_access_with_details.await_count == MAX_RELATED_RECORDS + 1
-
-    @pytest.mark.asyncio
-    async def test_denied_related_record_excluded(self):
-        rec = self._ticket_record()
-        vr_map = {"vr-ticket": rec}
-        gp = self._make_graph_provider(
-            outgoing_by_type={
-                RecordRelations.ATTACHMENT.value: [
-                    {"record_id": "rec-allowed"},
-                    {"record_id": "rec-denied"},
-                ],
-            },
-            access_denied_ids=["rec-denied"],
-        )
-        await enrich_records_with_graph_context(
-            vr_map, graph_provider=gp, flattened_results=[],
-            user_id='user-1',
-        )
-        relations = rec["record_relations"]
-        assert len(relations) == 1
-        assert relations[0]["record_id"] == "rec-allowed"
-        # Denied id must not inflate disclosable truncation totals
-        assert rec["record_relation_counts"]["ATTACHMENT"] == 1
-
-    @pytest.mark.asyncio
-    async def test_full_context_limited_to_most_recent_out_of_context(self):
-        from app.utils.chat_helpers import MAX_RELATED_RECORDS_FULL_CONTEXT
-
-        rec = self._ticket_record()
-        vr_map = {"vr-ticket": rec}
-        related = []
-        docs = {}
-        for i in range(MAX_RELATED_RECORDS_FULL_CONTEXT + 5):
-            rid = f"rec-child-{i:02d}"
-            related.append({"record_id": rid})
-            docs[rid] = {
-                "id": rid,
-                "_key": rid,
-                "recordName": f"Child {i}",
-                "recordType": "TICKET",
-                "connectorName": "JIRA",
-                "connectorId": "conn-1",
-                "externalRecordId": f"ext-{i}",
-                "sourceLastModifiedTimestamp": i * 1000,
-            }
-        gp = self._make_graph_provider(
-            outgoing_by_type={RecordRelations.PARENT_CHILD.value: related},
-            docs_by_id=docs,
-            vrid_map={},
-        )
-        await enrich_records_with_graph_context(
-            vr_map, graph_provider=gp, flattened_results=[],
-            user_id='user-1', org_id="org-1",
-        )
-        with_ctx = [r for r in rec["record_relations"] if r.get("context_metadata")]
-        without_ctx = [r for r in rec["record_relations"] if not r.get("context_metadata")]
-        assert len(with_ctx) == MAX_RELATED_RECORDS_FULL_CONTEXT
-        assert len(without_ctx) == 5
-        # Most recent timestamps should get full context
-        full_ids = {r["record_id"] for r in with_ctx}
-        for i in range(5, MAX_RELATED_RECORDS_FULL_CONTEXT + 5):
-            assert f"rec-child-{i:02d}" in full_ids
-
-    @pytest.mark.asyncio
-    async def test_relation_parent_never_trimmed_by_related_cap(self):
-        """PARENT-labeled relations always enter the permission pool and stay if allowed."""
-        from app.utils.chat_helpers import MAX_RELATED_RECORDS
-
-        rec = self._ticket_record()
-        vr_map = {"vr-ticket": rec}
-        # Lex-sort puts "rec-parent" after many "rec-att-*" ids; without uncapping
-        # PARENT it would be cut by MAX_RELATED_RECORDS.
-        many_attachments = [
-            {"record_id": f"rec-att-{i:03d}"} for i in range(MAX_RELATED_RECORDS + 5)
-        ]
-        gp = self._make_graph_provider(
-            outgoing_by_type={
-                RecordRelations.ATTACHMENT.value: many_attachments,
-            },
-            incoming_by_type={
-                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-parent"}],
-            },
-            docs_by_id={
-                "rec-parent": {
-                    "id": "rec-parent",
-                    "recordName": "Parent Epic",
-                    "recordType": "TICKET",
-                    "connectorName": "JIRA",
-                    "connectorId": "conn-1",
-                    "externalRecordId": "ext-parent",
-                },
-            },
-        )
-        await enrich_records_with_graph_context(
-            vr_map, graph_provider=gp, flattened_results=[],
-            user_id='user-1', org_id="org-1",
-        )
-        by_id = {r["record_id"]: r for r in rec["record_relations"]}
-        assert "rec-parent" in by_id
-        assert "PARENT" in by_id["rec-parent"]["labels"]
-        assert "context_metadata" in by_id["rec-parent"]
-        # Parent is extra on top of the capped attachment budget
-        assert gp.check_record_access_with_details.await_count == MAX_RELATED_RECORDS + 1
-
-    @pytest.mark.asyncio
-    async def test_in_context_related_skips_blob_and_access_check(self):
-        hit = self._ticket_record(vrid="vr-ticket", record_id="rec-ticket")
-        related_hit = self._ticket_record(vrid="vr-child", record_id="rec-child-1")
-        vr_map = {"vr-ticket": hit, "vr-child": related_hit}
-        gp = self._make_graph_provider(
-            outgoing_by_type={
-                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-child-1"}],
-            },
-            docs_by_id={
-                "rec-child-1": {
-                    "id": "rec-child-1",
-                    "recordName": "In-context child",
-                    "recordType": "TICKET",
-                },
-            },
-        )
-        blob_store = AsyncMock()
-        blob_store.get_record_from_storage = AsyncMock(return_value=None)
-        await enrich_records_with_graph_context(
-            vr_map, graph_provider=gp, flattened_results=[],
-            user_id='user-1', org_id="org-1", blob_store=blob_store,
-            doc_index={
-                "rec-child-1": {
-                    "id": "rec-child-1",
-                    "recordName": "In-context child",
-                },
-            },
-        )
-        relations = hit["record_relations"]
-        assert len(relations) == 1
-        assert "context_metadata" not in relations[0]
-        assert relations[0]["record_name"] == "In-context child"
-        gp.check_record_access_with_details.assert_not_called()
-        blob_store.get_record_from_storage.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_related_record_gets_context_metadata(self):
@@ -5827,7 +5568,6 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
             blob_store=None, org_id="org-1",
-            user_id='user-1',
         )
         relations = rec["record_relations"]
         assert len(relations) == 1
@@ -5864,7 +5604,6 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
             blob_store=blob_store, org_id="org-1",
-            user_id='user-1',
         )
         relations = rec["record_relations"]
         assert len(relations) == 1
@@ -5896,7 +5635,6 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=[],
             blob_store=None, org_id="org-1",
-            user_id='user-1',
         )
         relations = rec["record_relations"]
         assert len(relations) == 1
@@ -5949,7 +5687,6 @@ class TestEnrichRecordsWithGraphContext:
         await enrich_records_with_graph_context(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
-            user_id='user-1',
         )
         # Dependent parent was annotated
         assert flattened[0]["parent_node_relation"]["record_id"] == "rec-issue-1"
@@ -6122,16 +5859,151 @@ class TestBuildRecordRelationsInfo:
         assert "- Record ID: rec-2 | Name: Sub 2" in text
         assert "- Record ID: rec-3 | Name: Sub 3" in text
 
-    def test_renders_truncation_counts_when_total_exceeds_shown(self):
+    def test_caps_attachment_and_child_but_not_parent(self):
+        from app.utils.chat_helpers import MAX_RELATED_RECORDS
+
+        children = [
+            {"record_id": f"rec-c-{i:03d}", "record_name": f"Child {i}", "labels": ["CHILD"]}
+            for i in range(MAX_RELATED_RECORDS + 10)
+        ]
+        attachments = [
+            {"record_id": f"rec-a-{i:03d}", "record_name": f"Att {i}", "labels": ["ATTACHMENT"]}
+            for i in range(MAX_RELATED_RECORDS + 3)
+        ]
+        parents = [
+            {"record_id": f"rec-p-{i:03d}", "record_name": f"Parent {i}", "labels": ["PARENT"]}
+            for i in range(MAX_RELATED_RECORDS + 2)
+        ]
+        text = build_record_relations_info({
+            "record_relations": children + attachments + parents,
+        })
+        assert f"CHILD (showing {MAX_RELATED_RECORDS} of {MAX_RELATED_RECORDS + 10}):" in text
+        assert f"ATTACHMENT (showing {MAX_RELATED_RECORDS} of {MAX_RELATED_RECORDS + 3}):" in text
+        assert "PARENT:" in text
+        assert "showing" not in text.split("PARENT:")[1].split("\n")[0]
+        assert f"- Record ID: rec-c-{MAX_RELATED_RECORDS - 1:03d}" in text
+        assert f"- Record ID: rec-c-{MAX_RELATED_RECORDS:03d}" not in text
+        assert f"- Record ID: rec-p-{MAX_RELATED_RECORDS + 1:03d}" in text
+
+    def test_full_context_budget_shared_across_attachment_and_child(self):
+        from app.utils.chat_helpers import MAX_RELATED_RECORDS_FULL_CONTEXT
+
+        # ATTACHMENT sorts before CHILD; first 2 attachments consume budget, then
+        # remaining slots go to children. Excess children fall back to id|name.
+        attachments = [
+            {
+                "record_id": f"rec-a-{i}",
+                "record_name": f"Att {i}",
+                "labels": ["ATTACHMENT"],
+                "context_metadata": f"Record ID       : rec-a-{i}\nName            : Att {i}\nSummary         : att-summary-{i}",
+            }
+            for i in range(2)
+        ]
+        children = [
+            {
+                "record_id": f"rec-c-{i}",
+                "record_name": f"Child {i}",
+                "labels": ["CHILD"],
+                "context_metadata": f"Record ID       : rec-c-{i}\nName            : Child {i}\nSummary         : child-summary-{i}",
+            }
+            for i in range(MAX_RELATED_RECORDS_FULL_CONTEXT + 5)
+        ]
+        text = build_record_relations_info({
+            "record_relations": attachments + children,
+        })
+
+        assert text.count("Summary         :") == MAX_RELATED_RECORDS_FULL_CONTEXT
+        assert "Summary         : att-summary-0" in text
+        assert "Summary         : att-summary-1" in text
+        # Remaining full-context slots after 2 attachments: 13 children.
+        assert "Summary         : child-summary-0" in text
+        assert f"Summary         : child-summary-{MAX_RELATED_RECORDS_FULL_CONTEXT - 3}" in text
+        assert f"Summary         : child-summary-{MAX_RELATED_RECORDS_FULL_CONTEXT - 2}" not in text
+        # Overslot children still listed, but id|name only.
+        assert (
+            f"- Record ID: rec-c-{MAX_RELATED_RECORDS_FULL_CONTEXT - 2} | Name: Child {MAX_RELATED_RECORDS_FULL_CONTEXT - 2}"
+            in text
+        )
+        assert f"- Record ID: rec-c-{MAX_RELATED_RECORDS_FULL_CONTEXT + 4} | Name: Child {MAX_RELATED_RECORDS_FULL_CONTEXT + 4}" in text
+
+    def test_single_related_with_metadata_keeps_full_context(self):
+        """Per-record budget: one related child is not demoted to id|name."""
         text = build_record_relations_info({
             "record_relations": [
-                {"record_id": "rec-1", "record_name": "A1", "labels": ["ATTACHMENT"]},
-                {"record_id": "rec-2", "record_name": "A2", "labels": ["ATTACHMENT"]},
+                {
+                    "record_id": "rec-only",
+                    "record_name": "Only child",
+                    "labels": ["CHILD"],
+                    "context_metadata": (
+                        "Record ID       : rec-only\n"
+                        "Name            : Only child\n"
+                        "Summary         : keep-me"
+                    ),
+                },
             ],
-            "record_relation_counts": {"ATTACHMENT": 10},
         })
-        assert "ATTACHMENT (showing 2 of 10):" in text
-        assert "- Record ID: rec-1 | Name: A1" in text
+        assert "Summary         : keep-me" in text
+        assert "- Record ID: rec-only | Name: Only child" not in text
+
+    def test_parent_full_context_does_not_consume_budget(self):
+        from app.utils.chat_helpers import MAX_RELATED_RECORDS_FULL_CONTEXT
+
+        parents = [
+            {
+                "record_id": f"rec-p-{i}",
+                "record_name": f"Parent {i}",
+                "labels": ["PARENT"],
+                "context_metadata": f"Record ID       : rec-p-{i}\nName            : Parent {i}\nSummary         : parent-{i}",
+            }
+            for i in range(3)
+        ]
+        children = [
+            {
+                "record_id": f"rec-c-{i}",
+                "record_name": f"Child {i}",
+                "labels": ["CHILD"],
+                "context_metadata": f"Record ID       : rec-c-{i}\nName            : Child {i}\nSummary         : child-{i}",
+            }
+            for i in range(MAX_RELATED_RECORDS_FULL_CONTEXT + 2)
+        ]
+        text = build_record_relations_info({
+            "record_relations": parents + children,
+        })
+        # All parents keep summary; full child budget still available.
+        assert "Summary         : parent-0" in text
+        assert "Summary         : parent-2" in text
+        assert text.count("Summary         : child-") == MAX_RELATED_RECORDS_FULL_CONTEXT
+        assert f"Summary         : child-{MAX_RELATED_RECORDS_FULL_CONTEXT - 1}" in text
+        assert f"Summary         : child-{MAX_RELATED_RECORDS_FULL_CONTEXT}" not in text
+        assert (
+            f"- Record ID: rec-c-{MAX_RELATED_RECORDS_FULL_CONTEXT} | Name: Child {MAX_RELATED_RECORDS_FULL_CONTEXT}"
+            in text
+        )
+
+    def test_list_cap_applies_before_full_context_budget(self):
+        """Only the first 50 listed children compete for the 15 rich slots."""
+        from app.utils.chat_helpers import (
+            MAX_RELATED_RECORDS,
+            MAX_RELATED_RECORDS_FULL_CONTEXT,
+        )
+
+        children = [
+            {
+                "record_id": f"rec-c-{i:03d}",
+                "record_name": f"Child {i}",
+                "labels": ["CHILD"],
+                "context_metadata": f"Record ID       : rec-c-{i:03d}\nName            : Child {i}\nSummary         : child-{i:03d}",
+            }
+            for i in range(MAX_RELATED_RECORDS + 20)
+        ]
+        text = build_record_relations_info({"record_relations": children})
+        assert f"CHILD (showing {MAX_RELATED_RECORDS} of {MAX_RELATED_RECORDS + 20}):" in text
+        assert text.count("Summary         :") == MAX_RELATED_RECORDS_FULL_CONTEXT
+        assert "Summary         : child-000" in text
+        assert f"Summary         : child-{MAX_RELATED_RECORDS_FULL_CONTEXT - 1:03d}" in text
+        assert f"Summary         : child-{MAX_RELATED_RECORDS_FULL_CONTEXT:03d}" not in text
+        # Truncated-off children never appear at all.
+        assert f"rec-c-{MAX_RELATED_RECORDS:03d}" not in text
 
 
 class TestToLlmLinkedContext:
