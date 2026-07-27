@@ -189,7 +189,7 @@ class TestRateLimiterIndividual:
             @classmethod
             def now(cls, tz=None):
                 cls._calls += 1
-                if cls._calls <= 2:
+                if cls._calls <= 3:
                     return t0
                 return t0 + timedelta(seconds=61)
 
