@@ -203,6 +203,8 @@ class ZendeskConnector(BaseConnector):
         self._user_id_to_data: Dict[str, Dict[str, Any]] = {}
         self._group_id_to_data: Dict[str, Dict[str, Any]] = {}
         self._section_id_to_data: Dict[str, Dict[str, Any]] = {}
+        self._org_id_to_data: Dict[str, Dict[str, Any]] = {}
+        self._user_id_to_app_user: Dict[str, AppUser] = {}
         self.records_sync_point = SyncPoint(
             connector_id=self.connector_id,
             org_id=self.data_entities_processor.org_id,
@@ -263,11 +265,19 @@ class ZendeskConnector(BaseConnector):
             await self.data_entities_processor.on_new_record_groups(group_record_groups)
         self.logger.info(f"Zendesk: synced {len(group_record_groups)} groups")
 
+        org_record_groups, org_user_groups = await self._fetch_organizations(datasource)
+        if org_user_groups:
+            await self.data_entities_processor.on_new_user_groups(org_user_groups)
+        if org_record_groups:
+            await self.data_entities_processor.on_new_record_groups(org_record_groups)
+        self.logger.info(f"Zendesk: synced {len(org_record_groups)} organizations")
+
         ticket_count = await self._sync_tickets(datasource)
         article_count = await self._sync_help_center_articles(datasource)
         self.logger.info(
             f"Zendesk sync completed for connector {self.connector_id}: "
             f"{len(users)} users, {len(group_record_groups)} groups, "
+            f"{len(org_record_groups)} organizations, "
             f"{ticket_count} tickets, {article_count} articles"
         )
 
@@ -347,6 +357,7 @@ class ZendeskConnector(BaseConnector):
             user_email_map[str(user_id)] = app_user
             user_email_map[email] = app_user
             self._user_id_to_data[str(user_id)] = user_data
+            self._user_id_to_app_user[str(user_id)] = app_user
 
         return users, user_email_map
 
@@ -413,6 +424,90 @@ class ZendeskConnector(BaseConnector):
                 )
             ]
             record_groups.append((record_group, permissions))
+
+        return record_groups, user_groups
+
+    async def _fetch_organizations(
+        self,
+        datasource: ZendeskDataSource,
+    ) -> Tuple[List[Tuple[RecordGroup, List[Permission]]], List[Tuple[AppUserGroup, List[AppUser]]]]:
+        """Sync Zendesk organizations as user groups (membership) and record groups.
+
+        Membership is derived from the ``organization_id`` already present on the users
+        fetched by ``_fetch_users`` — Zendesk has no bulk organization-membership
+        endpoint, and a per-organization call would be an N+1.
+        """
+        orgs_data: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        while True:
+            response = await datasource.incremental_organizations(
+                start_time=DEFAULT_INCREMENTAL_START_TIME, cursor=cursor
+            )
+            if not response.success:
+                self.logger.error(f"Zendesk incremental_organizations failed: {response.error}")
+                break
+            if not response.data:
+                break
+            payload = response.data
+            orgs_data.extend(self._extract_list(payload, "organizations"))
+            next_cursor = payload.get("after_cursor") or payload.get("cursor")
+            if payload.get("end_of_stream", True) or not next_cursor or next_cursor == cursor:
+                break
+            cursor = next_cursor
+
+        members_by_org: Dict[str, List[AppUser]] = defaultdict(list)
+        for user_id, user_data in self._user_id_to_data.items():
+            org_id = user_data.get("organization_id")
+            app_user = self._user_id_to_app_user.get(user_id)
+            if org_id and app_user:
+                members_by_org[str(org_id)].append(app_user)
+
+        record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
+        user_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
+        for org_data in orgs_data:
+            org_id = org_data.get("id")
+            if not org_id:
+                continue
+            org_id = str(org_id)
+            name = org_data.get("name") or f"Organization {org_id}"
+            self._org_id_to_data[org_id] = org_data
+            source_created_at = self._parse_datetime(org_data.get("created_at"))
+            source_updated_at = self._parse_datetime(org_data.get("updated_at"))
+
+            user_groups.append((
+                AppUserGroup(
+                    app_name=Connectors.ZENDESK,
+                    connector_id=self.connector_id,
+                    source_user_group_id=f"org_{org_id}",
+                    name=name,
+                    org_id=self.data_entities_processor.org_id,
+                    source_created_at=source_created_at,
+                    source_updated_at=source_updated_at,
+                ),
+                members_by_org.get(org_id, []),
+            ))
+
+            permissions = [Permission(
+                external_id=f"org_{org_id}",
+                type=PermissionType.READ,
+                entity_type=EntityType.GROUP,
+            )]
+            if self._connector_group_permission is not None:
+                permissions.append(self._connector_group_permission)
+            record_groups.append((
+                RecordGroup(
+                    org_id=self.data_entities_processor.org_id,
+                    name=name,
+                    external_group_id=f"org_{org_id}",
+                    connector_name=Connectors.ZENDESK,
+                    connector_id=self.connector_id,
+                    group_type=RecordGroupType.USER_GROUP,
+                    description=org_data.get("details") or org_data.get("notes") or None,
+                    source_created_at=source_created_at,
+                    source_updated_at=source_updated_at,
+                ),
+                permissions,
+            ))
 
         return record_groups, user_groups
 
