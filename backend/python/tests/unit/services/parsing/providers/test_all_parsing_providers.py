@@ -70,7 +70,8 @@ class TestLocalDoclingParser:
     @pytest.mark.asyncio
     async def test_parse_success_pdf(self):
         mock_processor = MagicMock()
-        mock_processor.process_in_batches = AsyncMock(return_value=_make_block_container())
+        mock_processor.parse_document = AsyncMock(return_value={"conversion": "result"})
+        mock_processor.create_blocks = AsyncMock(return_value=_make_block_container())
 
         parser = LocalDoclingParser(mock_processor)
         result = await parser.parse(b"pdf content", "document.pdf")
@@ -78,7 +79,7 @@ class TestLocalDoclingParser:
         assert isinstance(result, ParseResult)
         assert result.provider_used == ParserProvider.DOCLING
         assert result.metadata["record_name"] == "document.pdf"
-        mock_processor.process_in_batches.assert_awaited_once_with("document.pdf", b"pdf content")
+        mock_processor.parse_document.assert_called_once_with("document.pdf", b"pdf content")
 
     @pytest.mark.asyncio
     async def test_parse_success_docx(self):
@@ -115,9 +116,10 @@ class TestLocalDoclingParser:
         mock_processor.parse_document.assert_called_once_with("presentation.pptx", b"ppt content")
 
     @pytest.mark.asyncio
-    async def test_parse_fails_when_process_in_batches_returns_none(self):
+    async def test_parse_fails_when_create_blocks_returns_none(self):
         mock_processor = MagicMock()
-        mock_processor.process_in_batches = AsyncMock(return_value=None)
+        mock_processor.parse_document = AsyncMock(return_value={"data": "value"})
+        mock_processor.create_blocks = AsyncMock(return_value=None)
 
         parser = LocalDoclingParser(mock_processor)
         with pytest.raises(ParseError) as exc_info:
@@ -127,25 +129,14 @@ class TestLocalDoclingParser:
         assert "empty result" in exc_info.value.message.lower()
 
     @pytest.mark.asyncio
-    async def test_parse_fails_when_process_in_batches_returns_false(self):
+    async def test_parse_fails_when_create_blocks_returns_false(self):
         mock_processor = MagicMock()
-        mock_processor.process_in_batches = AsyncMock(return_value=False)
+        mock_processor.parse_document = AsyncMock(return_value={"data": "value"})
+        mock_processor.create_blocks = AsyncMock(return_value=False)
 
         parser = LocalDoclingParser(mock_processor)
         with pytest.raises(ParseError) as exc_info:
             await parser.parse(b"content", "test.pdf")
-
-        assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
-
-    @pytest.mark.asyncio
-    async def test_parse_non_pdf_fails_when_create_blocks_returns_none(self):
-        mock_processor = MagicMock()
-        mock_processor.parse_document = AsyncMock(return_value={"data": "value"})
-        mock_processor.create_blocks = AsyncMock(return_value=None)
-
-        parser = LocalDoclingParser(mock_processor)
-        with pytest.raises(ParseError) as exc_info:
-            await parser.parse(b"content", "test.docx")
 
         assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
 

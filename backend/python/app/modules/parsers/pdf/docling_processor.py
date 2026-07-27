@@ -158,6 +158,7 @@ class DoclingProcessor():
         conv_res: ConversionResult = await asyncio.to_thread(
             self.converter.convert, source, **kwargs
         )
+        conv_res.input._backend.unload()
         if conv_res.status.value != SUCCESS_STATUS:
             raise DocumentProcessingError(
                 f"Failed to parse document: {conv_res.status}",
