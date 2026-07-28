@@ -13,6 +13,7 @@ from app.connectors.sources.web.connector import (
     IMAGE_MIME_TYPES,
     MAX_RETRIES,
     RETRYABLE_STATUS_CODES,
+    CrawlFetchResult,
     RecordUpdate,
     RetryUrl,
     Status,
@@ -167,9 +168,12 @@ class TestWebConnectorConfig:
     async def test_init_success(self):
         connector = _make_connector()
         connector.config_service.get_config = AsyncMock(return_value=_mock_config())
-        result = await connector.init()
+        with patch.object(connector, "_detect_csr", new_callable=AsyncMock, return_value=False):
+            result = await connector.init()
         assert result is True
         assert connector.url == "https://example.com"
+        if connector.session is not None:
+            await connector.session.close()
 
     @pytest.mark.asyncio
     async def test_init_missing_config(self):
@@ -927,7 +931,18 @@ class TestWebConnectorCrawlRecursiveDeep:
         )
 
         async def mock_generator(start_url, depth):
-            yield mock_update
+            yield CrawlFetchResult(
+                url="https://example.com",
+                depth=0,
+                referer=None,
+                fetch_response=FetchResponse(
+                    status_code=200, content_bytes=b"<html></html>",
+                    headers={"Content-Type": "text/html"},
+                    final_url="https://example.com", strategy="aiohttp",
+                ),
+            )
+
+        connector._fetch_and_process_url = AsyncMock(return_value=mock_update)
 
         with patch.object(connector, "_crawl_recursive_generator", side_effect=mock_generator), \
              patch.object(connector, "_check_index_filter", return_value=False), \
@@ -958,7 +973,18 @@ class TestWebConnectorCrawlRecursiveDeep:
         )
 
         async def mock_generator(start_url, depth):
-            yield mock_update
+            yield CrawlFetchResult(
+                url="https://example.com",
+                depth=0,
+                referer=None,
+                fetch_response=FetchResponse(
+                    status_code=200, content_bytes=b"<html></html>",
+                    headers={"Content-Type": "text/html"},
+                    final_url="https://example.com", strategy="aiohttp",
+                ),
+            )
+
+        connector._fetch_and_process_url = AsyncMock(return_value=mock_update)
 
         with patch.object(connector, "_crawl_recursive_generator", side_effect=mock_generator), \
              patch.object(connector, "_handle_record_updates", new_callable=AsyncMock) as mock_handle, \
@@ -2117,7 +2143,8 @@ class TestInitSession:
     async def test_init_creates_session(self):
         connector = _make_connector_fullcov()
         connector.config_service.get_config = AsyncMock(return_value=_mock_config())
-        result = await connector.init()
+        with patch.object(connector, "_detect_csr", new_callable=AsyncMock, return_value=False):
+            result = await connector.init()
         assert result is True
         assert connector.session is not None
         await connector.session.close()
@@ -2558,6 +2585,8 @@ class TestFetchAndProcessUrl:
         connector.visited_urls = set()
         connector.url_should_contain = []
         connector._ensure_parent_records_exist = AsyncMock()
+        connector._process_html_content = AsyncMock(return_value="<html>processed</html>")
+        connector._store_crawled_content = AsyncMock(return_value="storage-doc-id")
 
         html_content = b"<html><head><title>Test</title></head><body>content</body></html>"
         content_hash = hashlib.md5(BeautifulSoup(html_content, "html.parser").get_text(separator="\n", strip=True).encode("utf-8")).hexdigest()
@@ -2569,6 +2598,7 @@ class TestFetchAndProcessUrl:
         existing.parent_external_record_id = None
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = "COMPLETED"
+        existing.storage_document_id = "existing-storage-doc-id"
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 
         with patch("app.connectors.sources.web.connector.fetch_url_with_fallback",

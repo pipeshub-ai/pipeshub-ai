@@ -412,14 +412,24 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.PPT.value,
                 MimeTypes.MDX.value,
                 MimeTypes.TSV.value,
+                MimeTypes.JSON.value,
+                MimeTypes.YAML.value,
+                # Node's storage layer (backend/nodejs/.../mimetypes.ts) maps
+                # .yaml/.yml to "application/x-yaml", not MimeTypes.YAML's
+                # "application/yaml" — accept both so records created from
+                # KB uploads aren't gated on this mismatch.
+                "application/x-yaml",
                 MimeTypes.SQL_TABLE.value,
                 MimeTypes.SQL_VIEW.value,
                 MimeTypes.PYTHON.value,
+                MimeTypes.PYTHON_SCRIPT.value,
+                MimeTypes.PYTHON_SCRIPT_X.value,
                 MimeTypes.JAVA_SOURCE.value,
                 MimeTypes.C_SOURCE.value,
                 MimeTypes.CPP.value,
                 MimeTypes.PHP.value,
                 MimeTypes.JAVASCRIPT.value,
+                MimeTypes.JAVASCRIPT_TEXT.value,
                 MimeTypes.TYPESCRIPT.value,
                 MimeTypes.CSHARP.value,
                 MimeTypes.GO.value,
@@ -429,6 +439,8 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.KOTLIN.value,
                 MimeTypes.DART.value,
                 MimeTypes.SHELL.value,
+                MimeTypes.SHELL_TEXT.value,
+                MimeTypes.SHELLSCRIPT.value,
             ]
 
             supported_extensions = [
@@ -450,6 +462,9 @@ class RecordEventHandler(BaseEventService):
                 ExtensionTypes.WEBP.value,
                 ExtensionTypes.SVG.value,
                 ExtensionTypes.TSV.value,
+                ExtensionTypes.JSON.value,
+                ExtensionTypes.YAML.value,
+                ExtensionTypes.YML.value,
                 ExtensionTypes.SQL_TABLE.value,
                 ExtensionTypes.SQL_VIEW.value,
                 ExtensionTypes.PY.value,

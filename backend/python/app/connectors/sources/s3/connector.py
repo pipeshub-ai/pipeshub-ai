@@ -158,7 +158,6 @@ class S3Connector(S3CompatibleBaseConnector):
                 title="Configuration not found", 
                 message="S3 configuration not found for this connector.", 
                 payload=payload,
-                recipient_roles=[NotificationRecipientRole.ADMIN],
             )
             return False
 

@@ -4,6 +4,7 @@ import tempfile
 
 from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.utils.libreoffice_convert import convert_with_libreoffice
 
 
 class PPTParser:
@@ -18,8 +19,15 @@ class PPTParser:
                 ParseErrorCode.PROVIDER_UNAVAILABLE,
                 "PPT parsing requires a pptx_parser; none was configured",
             )
-        pptx_result = self.convert_ppt_to_pptx(content)
+        pptx_result = await self.convert_ppt_to_pptx_async(content)
         return await self.pptx_parser.parse(pptx_result, record_name, config)
+
+    async def convert_ppt_to_pptx_async(self, binary: bytes) -> bytes:
+        """Async .ppt -> .pptx conversion for use on an event loop (e.g. the
+        parsing service). See :func:`DocParser.convert_doc_to_docx_async` for
+        rationale.
+        """
+        return await convert_with_libreoffice(binary, "ppt", "pptx")
 
     def convert_ppt_to_pptx(self, binary: bytes) -> bytes:
         """Convert .ppt file to .pptx using LibreOffice

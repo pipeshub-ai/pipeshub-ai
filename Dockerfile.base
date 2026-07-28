@@ -11,7 +11,7 @@
 # Incremental rebuild (when only a few packages change in pyproject.toml):
 #   Pass the currently-published image as PYTHON_DEPS_BASE so uv skips already-satisfied
 #   packages (fast no-op) and only downloads/compiles the delta.  ML model downloads
-#   (spaCy, NLTK, HuggingFace, fastembed) are also no-ops when already present.
+#   (NLTK, HuggingFace, fastembed) are also no-ops when already present.
 #
 #   docker buildx build -f Dockerfile.base --target python-deps \
 #     --build-arg PYTHON_DEPS_BASE=pipeshubai/pipeshub-ai-base:python-deps \
@@ -151,7 +151,6 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     # Download ML models so the runtime image doesn't have to pull them over
     # the network on first use (which previously stalled query service
     # startup by minutes on cold caches).
-    python -m spacy download en_core_web_sm && \
     python -c "import nltk; nltk.download('punkt', quiet=True)" && \
     if [ "${BUNDLE_BGE_EMBEDDING}" != "0" ]; then \
         # Default dense embedding model (app/config/constants/ai_models.py).

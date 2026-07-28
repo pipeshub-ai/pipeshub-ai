@@ -106,13 +106,19 @@ async def wait_for_sync_completion(
     timeout: int = 300,
     poll_interval: int = 5,
     min_records: int | None = None,
+    sync_start_timeout: int = 30,
 ) -> int:
     """
     Wait for sync to complete by polling connector status until IDLE, then read record count.
 
-    1. Poll connector.status until it becomes IDLE (not SYNCING/FULL_SYNCING).
-    2. Query graph record count once (sync is awaited before IDLE; no extra settle wait).
-    3. Optionally assert min_records threshold.
+    Uses a two-phase approach to avoid a race where the first poll sees the
+    pre-sync IDLE state before the backend has transitioned to SYNCING/FULL_SYNCING:
+
+    1. **Phase 1** — wait up to *sync_start_timeout* seconds for status to leave IDLE.
+       If it never leaves, assume the sync was fast enough to complete between the
+       enable call and the first poll.
+    2. **Phase 2** — wait for status to return to IDLE (the real post-sync IDLE).
+    3. Query graph record count and optionally assert *min_records*.
 
     Args:
         pipeshub_client: Client for accessing connector API
@@ -121,6 +127,7 @@ async def wait_for_sync_completion(
         timeout: Maximum seconds to wait for completion (default 300)
         poll_interval: Seconds between status polls (default 5)
         min_records: Minimum record count threshold (optional)
+        sync_start_timeout: Max seconds to wait for sync to start (default 30)
 
     Returns:
         Record count after connector reports IDLE
@@ -128,16 +135,29 @@ async def wait_for_sync_completion(
     Raises:
         TimeoutError: If sync doesn't complete within timeout
         AssertionError: If min_records threshold not met
-
-    Example:
-        final_count = await wait_for_sync_completion(
-            pipeshub_client, graph_provider, connector_id,
-            min_records=10, timeout=180
-        )
     """
     deadline = time.time() + timeout
     logger.info("⏳ Waiting for sync completion...")
 
+    # Phase 1: wait for sync to actually start (leave IDLE).
+    start_deadline = min(time.time() + sync_start_timeout, deadline)
+    sync_observed = False
+    while time.time() < start_deadline:
+        connector = pipeshub_client.get_connector(connector_id)
+        status = connector.get("status", "IDLE")
+        if status != AppStatus.IDLE.value:
+            logger.info("🔄 Sync started: status=%s", status)
+            sync_observed = True
+            break
+        await asyncio.sleep(2)
+
+    if not sync_observed:
+        logger.info(
+            "ℹ️ Connector remained IDLE for %ds — sync may have completed instantly",
+            sync_start_timeout,
+        )
+
+    # Phase 2: wait for sync to finish (return to IDLE).
     while time.time() < deadline:
         connector = pipeshub_client.get_connector(connector_id)
         status = connector.get("status", "IDLE")

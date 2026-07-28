@@ -20122,7 +20122,7 @@ class JiraDataSource:
     #   search_issues_post_v2, get_issue_v2, get_fields_v2,
     #   list_projects_get_v2, get_project_v2,
     #   get_myself_v2, get_current_user_v2,
-    #   get_user_search_v2, get_all_application_roles_v2,
+    #   get_user_search_v2, get_user_list_v2, get_all_application_roles_v2,
     #   get_auditing_events_v1,
     #   get_assigned_permission_scheme_v2, get_permission_scheme_grants_v2,
     #   get_project_roles_v2, get_project_role_v2,
@@ -20814,6 +20814,49 @@ class JiraDataSource:
             _query['maxResults'] = maxResults
         _body = None
         rel_path = '/rest/api/2/user/search'
+        url = self.base_url + _safe_format_url(rel_path, _path)
+        req = HTTPRequest(
+            method='GET',
+            url=url,
+            headers=_as_str_dict(_headers),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
+            body=_body,
+        )
+        resp = await self._client.execute(req)
+        return resp
+
+    async def get_user_list_v2(
+        self,
+        cursor: Optional[str] = None,
+        maxResults: Optional[int] = None,
+        includeInactive: Optional[bool] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> HTTPResponse:
+        """GET /rest/api/2/user/list (Data Center / Server, Jira 10.13.3+ / 11+).
+
+        Cursor-paginated directory listing that replaces ``/user/search`` for full
+        enumeration. On Jira 10+, ``/user/search`` is hard-capped at the first 100
+        results (``startAt`` cannot page beyond that). Prefer this endpoint for
+        bulk user sync; callers should fall back to ``get_user_search_v2`` when
+        the server returns 404.
+
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-user/#api-api-2-user-list-get
+        https://jira.atlassian.com/browse/JRASERVER-78660
+        """
+        if self._client is None:
+            raise ValueError('HTTP client is not initialized')
+        _headers: Dict[str, Any] = dict(headers or {})
+        _path: Dict[str, Any] = {}
+        _query: Dict[str, Any] = {}
+        if cursor is not None:
+            _query['cursor'] = cursor
+        if maxResults is not None:
+            _query['maxResults'] = maxResults
+        if includeInactive is not None:
+            _query['includeInactive'] = includeInactive
+        _body = None
+        rel_path = '/rest/api/2/user/list'
         url = self.base_url + _safe_format_url(rel_path, _path)
         req = HTTPRequest(
             method='GET',

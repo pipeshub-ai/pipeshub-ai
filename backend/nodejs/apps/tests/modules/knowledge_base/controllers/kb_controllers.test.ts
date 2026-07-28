@@ -36,6 +36,8 @@ import {
   reindexConnector,
   resyncConnectorRecords,
 } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
+import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema'
+import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1911,7 +1913,10 @@ describe('Knowledge Base Controller', () => {
   describe('reindexConnector (happy path)', () => {
     it('should reindex connector successfully', async () => {
       const handler = reindexConnector(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'admin' }]),
+      } as any)
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { message: 'Connector reindexed' },
       })
@@ -1928,11 +1933,15 @@ describe('Knowledge Base Controller', () => {
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
       }
+      expect(execStub.firstCall.args[2]['X-Is-Admin']).to.equal('true')
     })
 
     it('should reindex connector with no statusFilters (reindex all)', async () => {
       const handler = reindexConnector(createMockAppConfig())
-      sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'member' }]),
+      } as any)
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
         statusCode: 200,
         data: { message: 'Connector reindexed' },
       })
@@ -1949,6 +1958,7 @@ describe('Knowledge Base Controller', () => {
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
       }
+      expect(execStub.firstCall.args[2]['X-Is-Admin']).to.equal('false')
     })
   })
 
@@ -3286,6 +3296,9 @@ describe('Knowledge Base Controller', () => {
     })
 
     it('should call next when reindexConnector connector throws', async () => {
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').rejects(new Error('Service down'))
 
       const handler = reindexConnector(createMockAppConfig())
@@ -3303,6 +3316,9 @@ describe('Knowledge Base Controller', () => {
 
     it('should call next when resyncConnectorRecords connector throws', async () => {
       const mockRecordRelation = createMockRecordRelationService()
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([]),
+      } as any)
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').rejects(new Error('Resync error'))
 
       const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())

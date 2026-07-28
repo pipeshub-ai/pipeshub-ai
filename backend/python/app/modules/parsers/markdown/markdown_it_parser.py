@@ -10,6 +10,7 @@ parsing), use :class:`DoclingMarkdownParser` instead.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Tuple
 
 from app.models.blocks import BlocksContainer
@@ -58,7 +59,11 @@ class MarkdownItParser:
 
         markdown = md_content.strip()
 
-        modified_markdown, images = self.extract_and_replace_images(markdown)
+        # Regex-based image extraction is synchronous CPU work; keep it off
+        # the event loop.
+        modified_markdown, images = await asyncio.to_thread(
+            self.extract_and_replace_images, markdown
+        )
         caption_map: Dict[str, str] = {}
 
         urls_to_convert = [image["url"] for image in images]
@@ -105,7 +110,8 @@ class MarkdownItParser:
             Populated ``BlocksContainer``.
         """
         del name  # structural parity with :class:`DoclingMarkdownParser`
-        return self._converter.convert(
+        return await asyncio.to_thread(
+            self._converter.convert,
             md_content,
             caption_map=caption_map,
             page_number=page_number,

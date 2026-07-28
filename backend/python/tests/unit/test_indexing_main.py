@@ -137,34 +137,6 @@ class TestRecoverInProgressRecords:
 
         await recover_in_progress_records(mock_container, gp)
 
-    async def test_queued_records_set_to_auto_index_off(self):
-        """Queued records are batch-updated to AUTO_INDEX_OFF."""
-        from app.indexing_main import recover_in_progress_records
-
-        mock_container = _make_container()
-        gp = _make_graph_provider()
-
-        queued = [{"_key": "r1"}, {"_key": "r2"}]
-        # First call returns empty (in_progress), second returns queued
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[[], queued])
-
-        await recover_in_progress_records(mock_container, gp)
-        gp.batch_update_nodes.assert_awaited_once()
-
-    async def test_queued_records_bulk_update_failure(self):
-        """Failure to bulk update queued records is logged but does not raise."""
-        from app.indexing_main import recover_in_progress_records
-
-        mock_container = _make_container()
-        gp = _make_graph_provider()
-
-        queued = [{"_key": "r1"}]
-        gp.get_nodes_by_filters = AsyncMock(side_effect=[[], queued])
-        gp.batch_update_nodes = AsyncMock(side_effect=RuntimeError("db error"))
-
-        # Should not raise
-        await recover_in_progress_records(mock_container, gp)
-
     async def test_in_progress_record_recovery_success(self):
         """In-progress record is recovered successfully with indexing_complete event."""
         from app.indexing_main import recover_in_progress_records

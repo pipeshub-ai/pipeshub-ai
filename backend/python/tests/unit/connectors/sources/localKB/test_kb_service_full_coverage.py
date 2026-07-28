@@ -5,24 +5,7 @@ import pytest
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 
 
-@pytest.fixture
-def mock_logger():
-    return MagicMock()
-
-
-@pytest.fixture
-def mock_graph_provider():
-    return AsyncMock()
-
-
-@pytest.fixture
-def mock_kafka_service():
-    return AsyncMock()
-
-
-@pytest.fixture
-def service(mock_logger, mock_graph_provider, mock_kafka_service):
-    return KnowledgeBaseService(mock_logger, mock_graph_provider, mock_kafka_service)
+# Fixtures live in conftest.py
 
 
 @pytest.fixture
@@ -158,7 +141,7 @@ class TestGetKnowledgeBase:
 
         result = await service.get_knowledge_base("kb1", "user1")
         assert result["success"] is False
-        assert result["code"] == 403
+        assert result["code"] == 404
 
     @pytest.mark.asyncio
     async def test_kb_not_found(self, service):
@@ -274,7 +257,7 @@ class TestListUserKnowledgeBases:
 class TestUpdateKnowledgeBase:
     @pytest.mark.asyncio
     async def test_success_with_all_allowed_roles(self, service):
-        for role in ["OWNER", "WRITER", "ORGANIZER", "FILEORGANIZER"]:
+        for role in ["OWNER", "WRITER", "ORGANIZER"]:
             service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
             service.graph_provider.get_user_kb_permission = AsyncMock(return_value=role)
             service.graph_provider.update_knowledge_base = AsyncMock(return_value=True)
@@ -339,19 +322,18 @@ class TestDeleteKnowledgeBase:
     async def test_success_with_event_data(self, service, user_data):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value=user_data)
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        service.graph_provider.delete_knowledge_base = AsyncMock(return_value={
-            "success": True, "eventData": {"records": ["r1"]}
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": True, "virtual_record_ids": ["vr1"]
         })
 
-        result = await service.delete_knowledge_base("kb1", "user1")
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is True
         assert result["code"] == 200
-        assert result["eventData"] == {"records": ["r1"]}
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
-        result = await service.delete_knowledge_base("kb1", "user1")
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is False
         assert result["code"] == 404
 
@@ -360,7 +342,7 @@ class TestDeleteKnowledgeBase:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value=user_data)
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
 
-        result = await service.delete_knowledge_base("kb1", "user1")
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is False
         assert result["code"] == 403
 
@@ -369,7 +351,7 @@ class TestDeleteKnowledgeBase:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value=user_data)
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
 
-        result = await service.delete_knowledge_base("kb1", "user1")
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is False
         assert result["code"] == 403
 
@@ -377,9 +359,9 @@ class TestDeleteKnowledgeBase:
     async def test_delete_returns_failure(self, service, user_data):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value=user_data)
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        service.graph_provider.delete_knowledge_base = AsyncMock(return_value={"success": False})
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": False})
 
-        result = await service.delete_knowledge_base("kb1", "user1")
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is False
         assert result["code"] == 500
 
@@ -387,9 +369,9 @@ class TestDeleteKnowledgeBase:
     async def test_exception_value_error(self, service, user_data):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value=user_data)
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        service.graph_provider.delete_knowledge_base = AsyncMock(side_effect=ValueError("bad value"))
+        service.graph_provider.delete_connector_instance = AsyncMock(side_effect=ValueError("bad value"))
 
-        result = await service.delete_knowledge_base("kb1", "user1")
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is False
         assert result["code"] == 500
 
@@ -397,9 +379,9 @@ class TestDeleteKnowledgeBase:
     async def test_exception_runtime_error_logs_traceback(self, service, user_data):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value=user_data)
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        service.graph_provider.delete_knowledge_base = AsyncMock(side_effect=RuntimeError("runtime"))
+        service.graph_provider.delete_connector_instance = AsyncMock(side_effect=RuntimeError("runtime"))
 
-        result = await service.delete_knowledge_base("kb1", "user1")
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is False
 
     @pytest.mark.asyncio
@@ -408,9 +390,9 @@ class TestDeleteKnowledgeBase:
             return_value={"_key": "uk2", "firstName": "Jane", "lastName": "Doe"}
         )
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        service.graph_provider.delete_knowledge_base = AsyncMock(return_value={"success": True, "eventData": None})
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True, "virtual_record_ids": []})
 
-        result = await service.delete_knowledge_base("kb1", "user1")
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is True
 
 
@@ -419,10 +401,10 @@ class TestCreateFolderInKb:
     async def test_success(self, service):
         service.graph_provider._validate_folder_creation = AsyncMock(return_value={"valid": True})
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.create_folder = AsyncMock(return_value={"success": True, "id": "f1"})
 
         result = await service.create_folder_in_kb("kb1", "Folder", "user1", "org1")
         assert result["success"] is True
+        service.processor.on_new_records.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_validation_fails(self, service):
@@ -446,7 +428,7 @@ class TestCreateFolderInKb:
     async def test_create_folder_returns_failure(self, service):
         service.graph_provider._validate_folder_creation = AsyncMock(return_value={"valid": True})
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.create_folder = AsyncMock(return_value={"success": False})
+        service.processor.on_new_records = AsyncMock(side_effect=Exception("create failed"))
 
         result = await service.create_folder_in_kb("kb1", "Folder", "user1", "org1")
         assert result["success"] is False
@@ -456,7 +438,7 @@ class TestCreateFolderInKb:
     async def test_create_folder_returns_none(self, service):
         service.graph_provider._validate_folder_creation = AsyncMock(return_value={"valid": True})
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.create_folder = AsyncMock(return_value=None)
+        service.processor.on_new_records = AsyncMock(side_effect=Exception("create failed"))
 
         result = await service.create_folder_in_kb("kb1", "Folder", "user1", "org1")
         assert result["success"] is False
@@ -476,7 +458,6 @@ class TestCreateNestedFolder:
         service.graph_provider._validate_folder_creation = AsyncMock(return_value={"valid": True})
         service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.create_folder = AsyncMock(return_value={"success": True, "id": "f2"})
 
         result = await service.create_nested_folder("kb1", "parent1", "Sub", "user1", "org1")
         assert result["success"] is True
@@ -514,7 +495,7 @@ class TestCreateNestedFolder:
         service.graph_provider._validate_folder_creation = AsyncMock(return_value={"valid": True})
         service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.create_folder = AsyncMock(return_value={"success": False})
+        service.processor.on_new_records = AsyncMock(side_effect=Exception("create failed"))
 
         result = await service.create_nested_folder("kb1", "parent1", "Sub", "user1", "org1")
         assert result["success"] is False
@@ -553,17 +534,17 @@ class TestGetFolderContents:
 
         result = await service.get_folder_contents("kb1", "f1", "user1")
         assert result["success"] is False
-        assert result["code"] == 403
+        assert result["code"] == 404
 
     @pytest.mark.asyncio
     async def test_folder_not_found(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
-        service.graph_provider.get_folder_contents = AsyncMock(return_value=None)
+        service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=False)
 
         result = await service.get_folder_contents("kb1", "f1", "user1")
         assert result["success"] is False
-        assert result["code"] == 400
+        assert result["code"] == 404
 
     @pytest.mark.asyncio
     async def test_exception(self, service):
@@ -582,7 +563,9 @@ class TestUpdateFolder:
         service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Old Name"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.update_folder = AsyncMock(return_value={"success": True, "updatedCount": 1})
+        mock_folder = MagicMock()
+        mock_folder.record_name = "Old Name"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_folder)
 
         result = await service.updateFolder("f1", "kb1", "user1", "New Name")
         assert result["success"] is True
@@ -612,7 +595,9 @@ class TestUpdateFolder:
         service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Old Name"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.update_folder = AsyncMock(return_value={"success": True, "updatedCount": 1})
+        mock_folder = MagicMock()
+        mock_folder.record_name = "Old Name"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_folder)
 
         result = await service.updateFolder("f1", "kb1", "user1", "Name")
         assert result["success"] is True
@@ -648,7 +633,10 @@ class TestUpdateFolder:
         service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Old Name"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.update_folder = AsyncMock(return_value={"success": False, "reason": "DB error"})
+        mock_folder = MagicMock()
+        mock_folder.record_name = "Old Name"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_folder)
+        service.processor.on_record_metadata_update = AsyncMock(side_effect=Exception("DB error"))
 
         result = await service.updateFolder("f1", "kb1", "user1", "Name")
         assert result["success"] is False
@@ -668,7 +656,6 @@ class TestDeleteFolder:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
-        service.graph_provider.delete_folder = AsyncMock(return_value={"success": True, "eventData": {"records": []}})
 
         result = await service.delete_folder("kb1", "f1", "user1")
         assert result["success"] is True
@@ -705,7 +692,7 @@ class TestDeleteFolder:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
-        service.graph_provider.delete_folder = AsyncMock(return_value={"success": False})
+        service.processor.on_records_deleted_cascade = AsyncMock(side_effect=Exception("delete failed"))
 
         result = await service.delete_folder("kb1", "f1", "user1")
         assert result["success"] is False
@@ -725,19 +712,25 @@ class TestUpdateRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
-        service.graph_provider.update_record = AsyncMock(return_value={"success": True})
+        mock_record = MagicMock()
+        mock_record.record_name = "old"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_record)
+        service.graph_provider.get_document = AsyncMock(return_value={"recordName": "new"})
 
-        result = await service.update_record("user1", "rec1", {"name": "new"})
+        result = await service.update_record("user1", "rec1", {"recordName": "new"})
         assert result["success"] is True
 
     @pytest.mark.asyncio
     async def test_success_with_file_metadata(self, service):
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="FILEORGANIZER")
-        service.graph_provider.update_record = AsyncMock(return_value={"success": True})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="WRITER")
+        mock_record = MagicMock()
+        mock_record.record_name = "old"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_record)
+        service.graph_provider.get_document = AsyncMock(return_value={"recordName": "new"})
 
-        result = await service.update_record("user1", "rec1", {"name": "new"}, file_metadata={"size": 100})
+        result = await service.update_record("user1", "rec1", {"recordName": "new"}, file_metadata={"size": 100})
         assert result["success"] is True
 
     @pytest.mark.asyncio
@@ -781,21 +774,29 @@ class TestUpdateRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        service.graph_provider.update_record = AsyncMock(return_value={"success": False, "reason": "fail"})
+        mock_record = MagicMock()
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_record)
+        service.processor.on_record_metadata_update = AsyncMock(side_effect=Exception("fail"))
 
-        result = await service.update_record("user1", "rec1", {})
+        result = await service.update_record("user1", "rec1", {"recordName": "new"})
         assert result["success"] is False
+        assert result["code"] == 500
 
     @pytest.mark.asyncio
     async def test_update_returns_none(self, service):
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        service.graph_provider.update_record = AsyncMock(return_value=None)
+        service.graph_provider.get_document = AsyncMock(side_effect=[
+            {"recordName": "old"},
+            {"isFile": True, "mimeType": "text/plain"},
+        ])
+        service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=None)
 
-        result = await service.update_record("user1", "rec1", {})
+        result = await service.update_record("user1", "rec1", {"recordName": "new"})
         assert result["success"] is False
-        assert result["code"] == 500
+        assert result["code"] == 404
 
     @pytest.mark.asyncio
     async def test_exception(self, service):
@@ -810,13 +811,10 @@ class TestDeleteRecordsInKb:
     async def test_success(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        service.graph_provider.delete_records = AsyncMock(return_value={"success": True})
 
         result = await service.delete_records_in_kb("kb1", ["r1", "r2"], "user1")
         assert result["success"] is True
-        service.graph_provider.delete_records.assert_called_once_with(
-            record_ids=["r1", "r2"], kb_id="kb1", folder_id=None
-        )
+        service.processor.on_records_deleted_cascade.assert_awaited_once_with(["r1", "r2"], "kb1")
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, service):
@@ -846,7 +844,7 @@ class TestDeleteRecordsInKb:
     async def test_delete_returns_failure(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        service.graph_provider.delete_records = AsyncMock(return_value={"success": False, "reason": "err"})
+        service.processor.on_records_deleted_cascade = AsyncMock(return_value={"success": False, "reason": "err"})
 
         result = await service.delete_records_in_kb("kb1", ["r1"], "user1")
         assert result["success"] is False
@@ -855,7 +853,7 @@ class TestDeleteRecordsInKb:
     async def test_delete_returns_none(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        service.graph_provider.delete_records = AsyncMock(return_value=None)
+        service.processor.on_records_deleted_cascade = AsyncMock(return_value=None)
 
         result = await service.delete_records_in_kb("kb1", ["r1"], "user1")
         assert result["success"] is False
@@ -875,7 +873,6 @@ class TestDeleteRecordsInFolder:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
-        service.graph_provider.delete_records = AsyncMock(return_value={"success": True})
 
         result = await service.delete_records_in_folder("kb1", "f1", ["r1"], "user1")
         assert result["success"] is True
@@ -911,7 +908,7 @@ class TestDeleteRecordsInFolder:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.validate_folder_exists_in_kb = AsyncMock(return_value=True)
-        service.graph_provider.delete_records = AsyncMock(return_value=None)
+        service.processor.on_records_deleted_cascade = AsyncMock(return_value=None)
 
         result = await service.delete_records_in_folder("kb1", "f1", ["r1"], "user1")
         assert result["success"] is False
@@ -1390,7 +1387,7 @@ class TestListKbPermissions:
 
         result = await service.list_kb_permissions("kb1", "req1")
         assert result["success"] is False
-        assert result["code"] == 403
+        assert result["code"] == 404
 
     @pytest.mark.asyncio
     async def test_exception(self, service):
@@ -1531,7 +1528,7 @@ class TestGetKbChildren:
 
         result = await service.get_kb_children("kb1", "user1")
         assert result["success"] is False
-        assert result["code"] == 403
+        assert result["code"] == 404
 
     @pytest.mark.asyncio
     async def test_kb_not_found(self, service):
@@ -1612,7 +1609,7 @@ class TestGetFolderChildren:
 
         result = await service.get_folder_children("kb1", "f1", "user1")
         assert result["success"] is False
-        assert result["code"] == 403
+        assert result["code"] == 404
 
     @pytest.mark.asyncio
     async def test_folder_not_found(self, service):
@@ -1649,19 +1646,19 @@ class TestErrorResponse:
 class TestUploadRecords:
     @pytest.mark.asyncio
     async def test_upload_to_kb(self, service):
-        service.graph_provider.upload_records = AsyncMock(return_value={"success": True})
+        service._upload_records = AsyncMock(return_value={"success": True, "totalCreated": 1})
         result = await service.upload_records_to_kb("kb1", "user1", "org1", [{"name": "f.txt"}])
         assert result["success"] is True
-        service.graph_provider.upload_records.assert_awaited_once_with(
+        service._upload_records.assert_awaited_once_with(
             "kb1", "user1", "org1", [{"name": "f.txt"}], parent_folder_id=None
         )
 
     @pytest.mark.asyncio
     async def test_upload_to_folder(self, service):
-        service.graph_provider.upload_records = AsyncMock(return_value={"success": True})
+        service._upload_records = AsyncMock(return_value={"success": True, "totalCreated": 1})
         result = await service.upload_records_to_folder("kb1", "f1", "user1", "org1", [{"name": "f.txt"}])
         assert result["success"] is True
-        service.graph_provider.upload_records.assert_awaited_once_with(
+        service._upload_records.assert_awaited_once_with(
             "kb1", "user1", "org1", [{"name": "f.txt"}], parent_folder_id="f1"
         )
 
@@ -1680,11 +1677,9 @@ class TestMoveRecord:
         ])
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
         service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
-        service.graph_provider.delete_parent_child_edge_to_record = AsyncMock(return_value=True)
-        service.graph_provider.create_parent_child_edge = AsyncMock(return_value=True)
-        service.graph_provider.update_record_external_parent_id = AsyncMock(return_value=True)
-        service.graph_provider.commit_transaction = AsyncMock()
+        mock_record = MagicMock()
+        mock_record.external_record_id = "ext-rec1"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_record)
 
         result = await service.move_record("kb1", "rec1", "new_folder", "user1")
         assert result["success"] is True
@@ -1702,10 +1697,9 @@ class TestMoveRecord:
         ])
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
         service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
-        service.graph_provider.delete_parent_child_edge_to_record = AsyncMock(return_value=True)
-        service.graph_provider.update_record_external_parent_id = AsyncMock(return_value=True)
-        service.graph_provider.commit_transaction = AsyncMock()
+        mock_record = MagicMock()
+        mock_record.external_record_id = "ext-rec1"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_record)
 
         result = await service.move_record("kb1", "rec1", None, "user1")
         assert result["success"] is True
@@ -1723,10 +1717,9 @@ class TestMoveRecord:
         ])
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
         service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
-        service.graph_provider.delete_parent_child_edge_to_record = AsyncMock(return_value=True)
-        service.graph_provider.update_record_external_parent_id = AsyncMock(return_value=True)
-        service.graph_provider.commit_transaction = AsyncMock()
+        mock_record = MagicMock()
+        mock_record.external_record_id = "ext-rec1"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_record)
 
         result = await service.move_record("kb1", "rec1", "", "user1")
         assert result["success"] is True
@@ -1840,14 +1833,14 @@ class TestMoveRecord:
         ])
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
         service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
-        service.graph_provider.delete_parent_child_edge_to_record = AsyncMock(return_value=False)
-        service.graph_provider.rollback_transaction = AsyncMock()
+        mock_record = MagicMock()
+        mock_record.external_record_id = "ext-rec1"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_record)
+        service.processor.on_records_moved = AsyncMock(side_effect=Exception("move failed"))
 
         result = await service.move_record("kb1", "rec1", "new_folder", "user1")
         assert result["success"] is False
         assert result["code"] == 500
-        service.graph_provider.rollback_transaction.assert_called_once_with("txn1")
 
     @pytest.mark.asyncio
     async def test_create_edge_failure_rollback(self, service):
@@ -1862,14 +1855,14 @@ class TestMoveRecord:
         ])
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
         service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
-        service.graph_provider.delete_parent_child_edge_to_record = AsyncMock(return_value=True)
-        service.graph_provider.create_parent_child_edge = AsyncMock(return_value=False)
-        service.graph_provider.rollback_transaction = AsyncMock()
+        mock_record = MagicMock()
+        mock_record.external_record_id = "ext-rec1"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_record)
+        service.processor.on_records_moved = AsyncMock(side_effect=Exception("edge failed"))
 
         result = await service.move_record("kb1", "rec1", "new_folder", "user1")
         assert result["success"] is False
-        service.graph_provider.rollback_transaction.assert_called_once()
+        assert result["code"] == 500
 
     @pytest.mark.asyncio
     async def test_update_external_parent_failure_rollback(self, service):
@@ -1884,14 +1877,14 @@ class TestMoveRecord:
         ])
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
         service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
-        service.graph_provider.create_parent_child_edge = AsyncMock(return_value=True)
-        service.graph_provider.update_record_external_parent_id = AsyncMock(return_value=False)
-        service.graph_provider.rollback_transaction = AsyncMock()
+        mock_record = MagicMock()
+        mock_record.external_record_id = "ext-rec1"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_record)
+        service.processor.on_records_moved = AsyncMock(side_effect=Exception("parent update failed"))
 
         result = await service.move_record("kb1", "rec1", "new_folder", "user1")
         assert result["success"] is False
-        service.graph_provider.rollback_transaction.assert_called_once()
+        assert result["code"] == 500
 
     @pytest.mark.asyncio
     async def test_rollback_failure_handled(self, service):
@@ -1906,10 +1899,10 @@ class TestMoveRecord:
         ])
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
         service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
-        service.graph_provider.create_parent_child_edge = AsyncMock(return_value=True)
-        service.graph_provider.update_record_external_parent_id = AsyncMock(side_effect=Exception("boom"))
-        service.graph_provider.rollback_transaction = AsyncMock(side_effect=Exception("rb fail"))
+        mock_record = MagicMock()
+        mock_record.external_record_id = "ext-rec1"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_record)
+        service.processor.on_records_moved = AsyncMock(side_effect=Exception("boom"))
 
         result = await service.move_record("kb1", "rec1", "new_folder", "user1")
         assert result["success"] is False
@@ -1928,14 +1921,13 @@ class TestMoveRecord:
         ])
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
         service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
-        service.graph_provider.create_parent_child_edge = AsyncMock(return_value=True)
-        service.graph_provider.update_record_external_parent_id = AsyncMock(return_value=True)
-        service.graph_provider.commit_transaction = AsyncMock()
+        mock_record = MagicMock()
+        mock_record.external_record_id = "ext-rec1"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_record)
 
         result = await service.move_record("kb1", "rec1", "new_folder", "user1")
         assert result["success"] is True
-        service.graph_provider.delete_parent_child_edge_to_record.assert_not_awaited()
+        service.processor.on_records_moved.assert_awaited_once()
 
 
 class TestDuplicateNameValidation:
@@ -2001,7 +1993,9 @@ class TestDuplicateNameValidation:
         service.graph_provider.get_document = AsyncMock(return_value={"recordName": "OldName"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.update_folder = AsyncMock(return_value={"success": True, "updatedCount": 1})
+        mock_folder = MagicMock()
+        mock_folder.record_name = "OldName"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_folder)
         
         result = await service.updateFolder("folder1", "kb1", "user1", "Reports")
         assert result["success"] is True
@@ -2045,7 +2039,10 @@ class TestDuplicateNameValidation:
         ])
         service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.update_record = AsyncMock(return_value={"success": True})
+        mock_record = MagicMock()
+        mock_record.record_name = "old.txt"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_record)
+        service.graph_provider.get_document = AsyncMock(return_value={"recordName": "report"})
         
         result = await service.update_record("user1", "rec1", {"recordName": "report"})
         assert result["success"] is True
@@ -2064,7 +2061,10 @@ class TestDuplicateNameValidation:
         ])
         service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.update_record = AsyncMock(return_value={"success": True})
+        mock_record = MagicMock()
+        mock_record.record_name = "old.pdf"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_record)
+        service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Reports"})
         
         result = await service.update_record("user1", "rec1", {"recordName": "Reports"})
         assert result["success"] is True
@@ -2147,10 +2147,9 @@ class TestDuplicateNameValidation:
         service.graph_provider.is_record_descendant_of = AsyncMock(return_value=False)
         service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Reports"})
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
-        service.graph_provider.create_parent_child_edge = AsyncMock(return_value=True)
-        service.graph_provider.update_record_external_parent_id = AsyncMock(return_value=True)
-        service.graph_provider.commit_transaction = AsyncMock()
+        mock_record = MagicMock()
+        mock_record.external_record_id = "ext-folder1"
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=mock_record)
         
         result = await service.move_record("kb1", "folder1", "new_parent", "user1")
         assert result["success"] is True

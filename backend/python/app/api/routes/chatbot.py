@@ -48,6 +48,7 @@ from app.utils.chat_helpers import (
     CitationRefMapper,
     build_message_content_array,
     context_includes_jira_tickets,
+    enrich_records_with_graph_context,
     enrich_virtual_record_id_to_result_with_fk_children,
     flattened_result_sort_key,
     get_flattened_results,
@@ -169,6 +170,15 @@ def create_internal_search_tool(
             )
             await enrich_virtual_record_id_to_result_with_fk_children(
                 virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
+            )
+            await enrich_records_with_graph_context(
+                virtual_record_id_to_result,
+                graph_provider,
+                flattened_results,
+                virtual_to_record_map,
+                blob_store=blob_store,
+                org_id=org_id,
+                config_service=blob_store.config_service,
             )
 
             existing_keys = {
@@ -874,7 +884,7 @@ async def _generate_internal_search_stream(
 
                 has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
                 has_slack_connector = await has_slack_connector_configured(graph_provider, user_id, org_id)
-                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
+                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider, user_id=user_id)
                 deferred_tools = [fetch_tool]
                 if has_sql_connector:
                     deferred_tools.append(create_execute_query_tool(
@@ -934,6 +944,15 @@ async def _generate_internal_search_stream(
                 await enrich_virtual_record_id_to_result_with_fk_children(
                     virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
                 )
+                await enrich_records_with_graph_context(
+                    virtual_record_id_to_result,
+                    graph_provider,
+                    flattened_results,
+                    virtual_to_record_map,
+                    blob_store=blob_store,
+                    org_id=org_id,
+                    config_service=blob_store.config_service,
+                )
 
                 final_results = sorted(flattened_results, key=flattened_result_sort_key)
 
@@ -973,7 +992,7 @@ async def _generate_internal_search_stream(
                     has_slack_connector=has_slack_connector,
                 )
 
-                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
+                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider, user_id=user_id)
                 tools.append(fetch_tool)
                 tool_runtime_kwargs = {
                     "blob_store": blob_store,

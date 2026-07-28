@@ -212,7 +212,7 @@ class Record(BaseModel):
     size_in_bytes: int | None = Field(default=None, description="Size of the record content in bytes")
     mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
-    indexing_status: str = Field(default=ProgressStatus.QUEUED.value, description="Indexing status for the record")
+    indexing_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Indexing status for the record")
     extraction_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Extraction status for the record")
     reason: str | None = Field(default=None, description="Reason for the record status")
     # Epoch Timestamps
@@ -225,12 +225,13 @@ class Record(BaseModel):
     weburl: str | None = None
     signed_url: str | None = None
     fetch_signed_url: str | None = None
+    storage_document_id: str | None = Field(default=None, description="Storage service document ID for stored content (e.g. web crawl HTML)")
     preview_renderable: bool | None = True
     is_shared: bool | None = False
-    is_shared_with_me: bool | None = False
-    shared_with_me_record_group_id: str | None = None
+    shared_with_me_record_group_ids: list[str] = Field(default_factory=list)
     hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
     is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
+    is_placeholder: bool = Field(default=False, description="Stub parent created for a not-yet-synced or out-of-scope ancestor; reconciled when the real record syncs")
 
     # Processing flags
     is_vlm_ocr_processed: bool | None = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
@@ -260,7 +261,7 @@ class Record(BaseModel):
             return f"{name} ({email})"
         return name or email or "N/A"
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         lines = [
             f"Record ID       : {self.id}",
             f"Name            : {self.record_name}",
@@ -278,16 +279,23 @@ class Record(BaseModel):
         if self.weburl:
             if not self.weburl.startswith("http"):
                 base_url = frontend_url or "http://localhost:3000"
-                weburl = f"{base_url.rstrip('/')}{self.weburl}"
+                weburl = f"{base_url.rstrip('/')}/{self.weburl.lstrip('/')}"
             else:
                 weburl = self.weburl
 
             lines.append(f"Web URL         : {weburl}")
 
         if self.semantic_metadata:
-            lines.extend(self.semantic_metadata.to_llm_context())
+            if include_full_semantic:
+                lines.extend(self.semantic_metadata.to_llm_context())
+            elif self.semantic_metadata.summary:
+                lines.append(f"Summary         : {self.semantic_metadata.summary}")
 
         return "\n".join(lines)
+
+    def to_llm_linked_context(self, frontend_url: str | None = None) -> str:
+        """Returns metadata + type-specific fields + Summary only (no Topics/Category)."""
+        return self.to_llm_context(frontend_url, include_full_semantic=False)
 
     def to_arango_base_record(self) -> dict:
         return {
@@ -325,6 +333,8 @@ class Record(BaseModel):
             "parentNodeId": self.parent_node_id,
             "hideWeburl": self.hide_weburl,
             "isInternal": self.is_internal,
+            "isPlaceholder": self.is_placeholder,
+            "storageDocumentId": self.storage_document_id,
         }
 
     @staticmethod
@@ -362,7 +372,7 @@ class Record(BaseModel):
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp"),
             virtual_record_id=arango_base_record.get("virtualRecordId"),
-            indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.QUEUED.value),
+            indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.NOT_STARTED.value),
             extraction_status=arango_base_record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
             preview_renderable=arango_base_record.get("previewRenderable", True),
             is_shared=arango_base_record.get("isShared", False),
@@ -371,9 +381,11 @@ class Record(BaseModel):
             parent_node_id=arango_base_record.get("parentNodeId"),
             hide_weburl=arango_base_record.get("hideWeburl", False),
             is_internal=arango_base_record.get("isInternal", False),
+            is_placeholder=arango_base_record.get("isPlaceholder", False),
             md5_hash=arango_base_record.get("md5Checksum"),
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),
+            storage_document_id=arango_base_record.get("storageDocumentId"),
         )
 
     def to_kafka_record(self) -> dict:
@@ -391,9 +403,9 @@ class FileRecord(Record):
     sha1_hash: str | None = None
     sha256_hash: str | None = None
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted file-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -580,6 +592,7 @@ class FileRecord(Record):
             is_dependent_node=arango_base_record.get("isDependentNode", False),
             parent_node_id=arango_base_record.get("parentNodeId"),
             is_internal=arango_base_record.get("isInternal", False),
+            is_placeholder=arango_base_record.get("isPlaceholder", False),
             is_file=arango_base_file_record.get("isFile", True),
             size_in_bytes=size if (size := arango_base_record.get("sizeInBytes")) is not None else arango_base_file_record.get("sizeInBytes"),
             extension=arango_base_file_record.get("extension"),
@@ -591,6 +604,7 @@ class FileRecord(Record):
             crc32_hash=arango_base_file_record.get("crc32Hash"),
             sha1_hash=arango_base_file_record.get("sha1Hash"),
             sha256_hash=arango_base_file_record.get("sha256Hash"),
+            storage_document_id=arango_base_record.get("storageDocumentId"),
         )
 
     def to_kafka_record(self) -> dict:
@@ -618,6 +632,7 @@ class FileRecord(Record):
             "externalGroupId": self.external_record_group_id,
             "parentExternalRecordId": self.parent_external_record_id,
             "isFile": self.is_file,
+            "storageDocumentId": self.storage_document_id,
         }
 
 class MessageRecord(Record):
@@ -650,9 +665,9 @@ class MessageRecord(Record):
     # Used by the processor to create INVOLVED_IN entity relations
     involved_user_source_ids: list[str] = Field(default_factory=list)
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted message-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -776,9 +791,9 @@ class MailRecord(Record):
     conversation_index: str | None = None
     label_ids: list[str] | None = None
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted email-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -931,6 +946,7 @@ class WebpageRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
+            is_placeholder=record_doc.get("isPlaceholder", False),
         )
 
 class LinkRecord(Record):
@@ -948,9 +964,9 @@ class LinkRecord(Record):
     is_public: LinkPublicStatus = Field(description="Link public accessibility status")
     linked_record_id: str | None = Field(default=None, description="Internal record ID of linked record with same weburl")
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted link-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -1052,9 +1068,9 @@ class CommentRecord(Record):
     resolution_status: str | None = None
     comment_selection: str | None = None
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted comment-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -1148,9 +1164,9 @@ class TicketRecord(Record):
     assignee_source_id: list[str] | None = Field(default_factory=list) # this means reporters  source ids in the connector system
     reporter_source_id:str | None=None
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted ticket-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -1332,9 +1348,9 @@ class ProjectRecord(Record):
     lead_name: str | None = None
     lead_email: str | None = None
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Returns formatted project-specific metadata for LLM context"""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -1504,9 +1520,11 @@ class ProductRecord(Record):
     def to_llm_context(
         self,
         frontend_url: str | None = None,
+        *,
+        include_full_semantic: bool = True,
     ) -> str:
         """Returns formatted product-specific metadata for LLM context."""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -1670,9 +1688,11 @@ class DealRecord(Record):
     def to_llm_context(
         self,
         frontend_url: str | None = None,
+        *,
+        include_full_semantic: bool = True,
     ) -> str:
         """Returns formatted deal/opportunity-specific metadata for LLM context."""
-        base = super().to_llm_context(frontend_url=frontend_url)
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
 
         specific_lines = []
@@ -2449,7 +2469,7 @@ class CodeFileRecord(Record):
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp"),
             virtual_record_id=arango_base_record.get("virtualRecordId"),
-            indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.QUEUED.value),
+            indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.NOT_STARTED.value),
             extraction_status=arango_base_record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
             preview_renderable=arango_base_record.get("previewRenderable", True),
             is_shared=arango_base_record.get("isShared", False),
@@ -2458,6 +2478,7 @@ class CodeFileRecord(Record):
             parent_node_id=arango_base_record.get("parentNodeId"),
             hide_weburl=arango_base_record.get("hideWeburl", False),
             is_internal=arango_base_record.get("isInternal", False),
+            is_placeholder=arango_base_record.get("isPlaceholder", False),
             md5_hash=arango_base_record.get("md5Checksum"),
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),
@@ -2882,8 +2903,8 @@ class MeetingRecord(Record):
                     "Available only when cloud recording exists for the meeting.",
     )
 
-    def to_llm_context(self, frontend_url: str | None = None) -> str:
-        base = super().to_llm_context(frontend_url=frontend_url)
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
         lines = [base]
         specific_lines = []
         if self.host_email:

@@ -53,6 +53,7 @@ import {
   getConnectorSchema,
   getActiveAgentInstances,
   getConnectorStats,
+  getRecordContent,
   reindexConnector,
   resyncConnectorRecords,
 } from '../controllers/connector.controllers';
@@ -355,6 +356,13 @@ const getConnectorStatsSchema = z.object({
   params: z.object({ connectorId: z.string().min(1) }),
 });
 
+/**
+ * Schema for getting a record's full parsed content
+ */
+const getRecordContentSchema = z.object({
+  params: z.object({ recordId: z.string().min(1) }),
+});
+
 // ============================================================================
 // Router Factory
 // ============================================================================
@@ -531,6 +539,18 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_READ, OAuthScopeNames.KB_READ),
     ValidationMiddleware.validate(getConnectorStatsSchema),
     getConnectorStats(config),
+  );
+
+  /**
+   * GET /record/:recordId/content
+   * Get full parsed content + metadata for a record
+   */
+  router.get(
+    '/record/:recordId/content',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    ValidationMiddleware.validate(getRecordContentSchema),
+    getRecordContent(config),
   );
 
   /**

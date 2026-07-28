@@ -149,6 +149,18 @@ class TestArangoRecordGroupChildrenSubquery:
             rg_id="rg1", org_id="org1", parent_type=parent_type, user_key="user1"
         )
         _assert_arango_kb_conditional(aql, var="node")
+        assert 'LET record_parent_app = DOCUMENT(CONCAT("apps/", record.connectorId))' in aql
+
+
+class TestArangoRecordChildrenSubquery:
+    """_get_record_children_subquery must bind record_parent_app before timestamp projection."""
+
+    def test_binds_record_parent_app(self, arango_provider):
+        aql, _bind = arango_provider._get_record_children_subquery(
+            record_id="r1", org_id="org1", user_key="user1"
+        )
+        assert 'LET record_parent_app = DOCUMENT(CONCAT("apps/", record.connectorId))' in aql
+        assert "record_parent_app.type" in aql
 
 
 # ---------------------------------------------------------------------------

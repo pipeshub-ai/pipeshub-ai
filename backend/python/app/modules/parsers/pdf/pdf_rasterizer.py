@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import logging
 import multiprocessing
 import os
+import threading
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from functools import lru_cache
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
@@ -19,6 +22,9 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pdfplumber
 from PIL import Image
+
+_logger = logging.getLogger(__name__)
+_pool_lock = threading.Lock()
 
 
 def _get_pdf_raster_worker_count() -> int:
@@ -80,6 +86,27 @@ def _render_all_pages_impl(
     return result
 
 
+def _render_batch_impl(
+    pdf_bytes: Optional[bytes],
+    pdf_path: Optional[str],
+    page_numbers: List[int],
+    resolution: float,
+) -> Dict[int, Tuple[np.ndarray, float]]:
+    """Render only the requested 1-based *page_numbers* from a PDF."""
+    if pdf_path is not None:
+        ctx = pdfplumber.open(pdf_path)
+    else:
+        ctx = pdfplumber.open(BytesIO(pdf_bytes))
+
+    result: Dict[int, Tuple[np.ndarray, float]] = {}
+    with ctx as pdf:
+        for page_number in page_numbers:
+            result[page_number] = _page_to_rgb_array(
+                pdf.pages[page_number - 1], resolution
+            )
+    return result
+
+
 def _worker_render_all_from_path(
     pdf_path: str,
     resolution: float,
@@ -92,6 +119,22 @@ def _worker_render_all_from_bytes(
     resolution: float,
 ) -> Dict[int, Tuple[np.ndarray, float]]:
     return _render_all_pages_impl(pdf_bytes, None, resolution)
+
+
+def _worker_render_batch_from_path(
+    pdf_path: str,
+    page_numbers: List[int],
+    resolution: float,
+) -> Dict[int, Tuple[np.ndarray, float]]:
+    return _render_batch_impl(None, pdf_path, page_numbers, resolution)
+
+
+def _worker_render_batch_from_bytes(
+    pdf_bytes: bytes,
+    page_numbers: List[int],
+    resolution: float,
+) -> Dict[int, Tuple[np.ndarray, float]]:
+    return _render_batch_impl(pdf_bytes, None, page_numbers, resolution)
 
 
 def _worker_render_page_from_path(
@@ -113,7 +156,16 @@ def _worker_render_page_from_bytes(
 
 
 def _run_in_pool(fn, *args):
-    return _get_pdf_raster_pool().submit(fn, *args).result()
+    try:
+        return _get_pdf_raster_pool().submit(fn, *args).result()
+    except BrokenProcessPool:
+        _logger.warning(
+            "PDF rasterization process pool broke (worker likely OOM-killed); "
+            "recreating pool"
+        )
+        with _pool_lock:
+            _get_pdf_raster_pool.cache_clear()
+        raise
 
 
 def render_all_pages_from_path_sync(
@@ -153,6 +205,28 @@ def render_page_from_bytes_sync(
         pdf_bytes,
         page_number,
         resolution,
+    )
+
+
+def render_batch_from_path_sync(
+    pdf_path: str,
+    page_numbers: List[int],
+    resolution: float = 72,
+) -> Dict[int, Tuple[np.ndarray, float]]:
+    """Render a subset of pages (1-based) from a PDF on disk."""
+    return _run_in_pool(
+        _worker_render_batch_from_path, pdf_path, page_numbers, resolution
+    )
+
+
+def render_batch_from_bytes_sync(
+    pdf_bytes: bytes,
+    page_numbers: List[int],
+    resolution: float = 72,
+) -> Dict[int, Tuple[np.ndarray, float]]:
+    """Render a subset of pages (1-based) from in-memory PDF bytes."""
+    return _run_in_pool(
+        _worker_render_batch_from_bytes, pdf_bytes, page_numbers, resolution
     )
 
 

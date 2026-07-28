@@ -364,6 +364,7 @@ async def _deep_respond_impl(
             virtual_record_map,
             org_id=state.get("org_id", ""),
             graph_provider=state.get("graph_provider"),
+            user_id=state.get("user_id", ""),
         )
         tools = [fetch_tool]
         log.debug(

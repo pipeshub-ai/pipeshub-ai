@@ -11,11 +11,20 @@ from urllib.parse import urlparse
 import aiohttp
 import feedparser
 import trafilatura
+from bs4 import BeautifulSoup
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AppGroups, Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import (
+    AppGroups,
+    Connectors,
+    ExtensionTypes,
+    MimeTypes,
+    OriginTypes,
+)
 from app.connectors.core.constants import IconPaths
+from app.connectors.sources.web.fetch_strategy import fetch_url_with_fallback
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -467,23 +476,23 @@ class RSSConnector(BaseConnector):
     ) -> Optional[feedparser.FeedParserDict]:
         """Fetch and parse an RSS/Atom feed URL."""
         try:
-            async with self.session.get(feed_url, allow_redirects=True) as response:
-                if response.status >= HttpStatusCode.BAD_REQUEST.value:
-                    self.logger.warning(
-                        f"⚠️ HTTP {response.status} fetching feed: {feed_url}"
-                    )
-                    return None
+            result = await fetch_url_with_fallback(
+                url=feed_url, session=self.session, logger=self.logger
+            )
+            if result is None or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
+                status = result.status_code if result else "no response"
+                self.logger.warning(f"⚠️ HTTP {status} fetching feed: {feed_url}")
+                return None
 
-                content = await response.read()
-                feed = feedparser.parse(content)
+            feed = feedparser.parse(result.content_bytes)
 
-                if feed.bozo and not feed.entries:
-                    self.logger.warning(
-                        f"⚠️ Feed parse warning for {feed_url}: {feed.bozo_exception}"
-                    )
-                    return None
+            if feed.bozo and not feed.entries:
+                self.logger.warning(
+                    f"⚠️ Feed parse warning for {feed_url}: {feed.bozo_exception}"
+                )
+                return None
 
-                return feed
+            return feed
 
         except asyncio.TimeoutError:
             self.logger.warning(f"⚠️ Timeout fetching feed: {feed_url}")
@@ -525,38 +534,7 @@ class RSSConnector(BaseConnector):
         source_created_at = self._parse_feed_timestamp(published)
         timestamp = get_epoch_timestamp_in_ms()
 
-        # Resolve content using a priority chain:
-        content_text = ""
-
-        # 1. entry.content[0].value contains structured semantic HTML from the feed
-        #    author (headings, lists, emphasis, code blocks, etc.). Running it through
-        #    trafilatura would strip this meaningful markup. We preserve it as-is so
-        #    downstream indexing/rendering retains the author's intended structure.
-        entry_content = entry.get("content")
-        if entry_content and isinstance(entry_content, list) and len(entry_content) > 0:
-            value = entry_content[0].get("value", "")
-            if value:
-                content_text = value
-
-        # 2. If entry.content.value is NOT present, try other sources
-        if not content_text:
-            # 2a. If fetch_full_content is enabled, crawl the full article page
-            if self.fetch_full_content:
-                content_text = await self._fetch_article_content(article_url)
-
-            # 2b. Try entry summary (feedparser normalizes <description> into summary)
-            if not content_text:
-                summary = entry.get("summary", "")
-                if summary:
-                    summary_type = entry.get("summary_detail", {}).get("type", "")
-                    if summary_type in ("text/html", "application/xhtml+xml"):
-                        content_text = self._extract_text_content(summary)
-                    else:
-                        content_text = summary
-
-        # 3. Final fallback → use title
-        if not content_text:
-            content_text = title
+        content_text = await self._resolve_entry_text(entry, article_url)
 
         content_bytes = content_text.encode("utf-8")
         content_md5_hash = hashlib.md5(content_bytes).hexdigest()
@@ -582,9 +560,9 @@ class RSSConnector(BaseConnector):
             weburl=article_url,
             size_in_bytes=len(content_bytes),
             is_file=True,
-            extension="html",
+            extension=ExtensionTypes.TXT.value,
             path=urlparse(article_url).path or "/",
-            mime_type=MimeTypes.HTML.value,
+            mime_type=MimeTypes.PLAIN_TEXT.value,
             md5_hash=content_md5_hash,
             preview_renderable=False,
         )
@@ -604,20 +582,28 @@ class RSSConnector(BaseConnector):
             Cleaned text content or empty string on failure
         """
         try:
-            async with self.session.get(url, allow_redirects=True) as response:
-                if response.status >= HttpStatusCode.BAD_REQUEST.value:
-                    self.logger.debug(f"⚠️ HTTP {response.status} for article: {url}")
-                    return ""
+            result = await fetch_url_with_fallback(
+                url=url, session=self.session, logger=self.logger
+            )
+            if result is None or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
+                status = result.status_code if result else "no response"
+                self.logger.debug(f"⚠️ HTTP {status} for article: {url}")
+                return ""
 
-                content_type = response.headers.get("Content-Type", "").lower()
-                if "html" not in content_type and "xml" not in content_type:
-                    self.logger.debug(
-                        f"⚠️ Non-HTML content type for {url}: {content_type}"
-                    )
-                    return ""
+            # Header casing varies across fetch strategies (aiohttp preserves case,
+            # curl_cffi/cloudscraper do dict(resp.headers)) — look up case-insensitively.
+            content_type = ""
+            for key, value in result.headers.items():
+                if key.lower() == "content-type":
+                    content_type = value.lower()
+                    break
+            if "html" not in content_type and "xml" not in content_type:
+                self.logger.debug(
+                    f"⚠️ Non-HTML content type for {url}: {content_type}"
+                )
+                return ""
 
-                content_bytes = await response.read()
-                return self._extract_text_content(content_bytes)
+            return self._extract_text_content(result.content_bytes)
 
         except asyncio.TimeoutError:
             self.logger.debug(f"⚠️ Timeout fetching article: {url}")
@@ -670,46 +656,117 @@ class RSSConnector(BaseConnector):
         except Exception:
             return ""
 
+    def _html_to_text(self, html: Union[str, bytes]) -> str:
+        """Convert author-provided feed HTML to plain text with a light tag-strip.
+        Feed content is already clean, so it does not need trafilatura's page
+        boilerplate extraction — only tag removal."""
+        if not html:
+            return ""
+        try:
+            if isinstance(html, bytes):
+                html = html.decode("utf-8", errors="replace")
+            return BeautifulSoup(html, "html.parser").get_text(separator="\n").strip()
+        except Exception:
+            return ""
+
+    async def _resolve_entry_text(self, entry: Dict, article_url: str) -> str:
+        """Resolve a feed entry's content as plain text.
+
+        Shared by sync (_process_entry) and index (stream_record) so both produce
+        identical content. Crawls the article page only when fetch_full_content is
+        enabled, or as a last resort when the feed carries no usable content.
+        """
+        content_text = ""
+
+        # 1. Full-content crawl only when explicitly enabled
+        if self.fetch_full_content:
+            content_text = await self._fetch_article_content(article_url)
+
+        # 2. Feed-provided content (no crawl): entry.content, then summary
+        if not content_text:
+            entry_content = entry.get("content")
+            if entry_content and isinstance(entry_content, list) and len(entry_content) > 0:
+                value = entry_content[0].get("value", "")
+                if value:
+                    content_text = self._html_to_text(value)
+
+        if not content_text:
+            summary = entry.get("summary", "")
+            if summary:
+                summary_type = entry.get("summary_detail", {}).get("type", "")
+                if summary_type in ("text/html", "application/xhtml+xml"):
+                    content_text = self._html_to_text(summary)
+                else:
+                    content_text = summary
+
+        # 3. Last-resort crawl only if the feed carried nothing and we didn't already
+        if not content_text and not self.fetch_full_content and article_url:
+            content_text = await self._fetch_article_content(article_url)
+
+        # 4. Final fallback → title
+        if not content_text:
+            content_text = entry.get("title") or self._extract_title_from_url(article_url)
+
+        return content_text
+
     async def stream_record(self, record: Record) -> Optional[StreamingResponse]:
-        """
-        Stream the article content. Fetches the article page and returns
-        cleaned HTML content as a streaming response.
+        """Serve the record content as plain text.
 
-        Args:
-            record: Record object containing the article URL
-
-        Returns:
-            StreamingResponse with the processed content, or None on failure
+        Reproduces the sync-time resolution: re-fetch the feed, locate this entry by
+        guid, and run the shared resolver. Falls back to a direct page crawl only if
+        the entry has aged out of the feed. No article-page crawl is needed for the
+        default (feed-content) path.
         """
-        if not record.weburl:
-            return None
+        article_url = record.weburl
+        feed_url = record.external_record_group_id
+        guid = record.external_record_id
 
         try:
-            async with self.session.get(
-                record.weburl, allow_redirects=True
-            ) as response:
-                if response.status >= HttpStatusCode.BAD_REQUEST.value:
-                    return None
+            content_text = ""
 
-                content_bytes = await response.read()
-                mime_type = record.mime_type or "text/html"
+            # Preferred path: reproduce sync from the feed entry
+            if feed_url:
+                feed = await self._fetch_and_parse_feed(feed_url)
+                if feed and feed.entries:
+                    entry = None
+                    for candidate in feed.entries:
+                        candidate_guid = candidate.get("id", candidate.get("link"))
+                        if (guid and candidate_guid == guid) or (
+                            article_url and candidate.get("link") == article_url
+                        ):
+                            entry = candidate
+                            break
+                    if entry is not None:
+                        content_text = await self._resolve_entry_text(
+                            entry, article_url or entry.get("link", "")
+                        )
 
-                # Clean HTML content
-                if "html" in mime_type.lower():
-                    cleaned_text = self._extract_text_content(content_bytes)
-                    if cleaned_text:
-                        content_bytes = cleaned_text.encode("utf-8")
+            # Fallback: entry aged out of the feed → crawl the article page directly
+            if not content_text and article_url:
+                content_text = await self._fetch_article_content(article_url)
 
-                return create_stream_record_response(
-                    BytesIO(content_bytes),
-                    filename=record.record_name,
-                    mime_type=mime_type,
-                    fallback_filename=f"record_{record.id}",
+            # Every feed entry carries at least a title, so empty content here means
+            # both the feed fetch and the article crawl failed. Fail loud so indexing
+            # retries (FAILED) instead of marking the record terminally EMPTY.
+            if not content_text:
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_GATEWAY.value,
+                    detail=f"Failed to resolve content for {article_url}",
                 )
 
+            content_bytes = content_text.encode("utf-8")
+            return create_stream_record_response(
+                BytesIO(content_bytes),
+                filename=record.record_name,
+                mime_type=record.mime_type or MimeTypes.PLAIN_TEXT.value,
+                fallback_filename=f"record_{record.id}",
+            )
+
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error streaming record {record.id}: {e}")
-            return None
+            raise
 
     async def run_incremental_sync(self) -> None:
         """Run incremental sync (same as full sync for RSS feeds)."""

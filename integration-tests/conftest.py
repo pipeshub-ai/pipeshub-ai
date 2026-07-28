@@ -623,7 +623,10 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if start is not None:
         session_wall_s = time.monotonic() - start
 
-    report_path_html = _REPORTS_DIR / f"INTEGRATION_TEST_REPORT_{timestamp_file}.html"
+    graph_db = os.getenv("TEST_GRAPH_DB_TYPE", "neo4j").lower()
+    report_path_html = (
+        _REPORTS_DIR / f"INTEGRATION_TEST_REPORT_{graph_db}_{timestamp_file}.html"
+    )
     write_html_report(
         reports,
         report_path_html,
@@ -633,5 +636,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         base_url=base_url or "(not set)",
         exitstatus=exitstatus,
         session_wall_s=session_wall_s,
+        graph_db=graph_db,
     )
 

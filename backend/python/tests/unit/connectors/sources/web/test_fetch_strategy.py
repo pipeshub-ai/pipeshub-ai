@@ -1010,13 +1010,12 @@ class TestFetchUrlWithFallback:
                     "https://example.com",
                     mock_session,
                     log,
-                    max_429_retries=3,
                     max_retries_per_strategy=1,
                 )
                 assert result is not None
                 assert result.status_code == 200
                 # Verify sleep was called with delay=1 (from Retry-After header)
-                mock_sleep.assert_called_once_with(1)
+                mock_sleep.assert_called_once_with(1.0)
 
     @pytest.mark.asyncio
     async def test_429_retry_with_invalid_retry_after(self, log):
@@ -1047,7 +1046,6 @@ class TestFetchUrlWithFallback:
                     "https://example.com",
                     mock_session,
                     log,
-                    max_429_retries=3,
                     max_retries_per_strategy=1,
                 )
                 assert result is not None
@@ -1084,7 +1082,6 @@ class TestFetchUrlWithFallback:
                     "https://example.com",
                     mock_session,
                     log,
-                    max_429_retries=3,
                     max_retries_per_strategy=1,
                 )
                 assert result is not None
@@ -1121,15 +1118,14 @@ class TestFetchUrlWithFallback:
                     "https://example.com",
                     mock_session,
                     log,
-                    max_429_retries=3,
                     max_retries_per_strategy=1,
                 )
                 assert result.status_code == 200
-                mock_sleep.assert_called_once_with(3)
+                mock_sleep.assert_called_once_with(3.0)
 
     @pytest.mark.asyncio
     async def test_429_exhausted_moves_to_next_strategy(self, log):
-        """When 429 persists beyond max retries, move to next strategy."""
+        """When 429 persists beyond max backoff, move to next strategy."""
         mock_session = AsyncMock()
         rate_limited_resp = FetchResponse(
             429, b"", {}, "https://example.com", "curl_cffi"
@@ -1139,23 +1135,26 @@ class TestFetchUrlWithFallback:
         )
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
-            return_value=rate_limited_resp,
+            "app.connectors.sources.web.fetch_strategy.MAX_RATE_LIMIT_BACKOFF",
+            4,
         ):
             with patch(
-                "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
-                return_value=success_resp,
+                "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
+                return_value=rate_limited_resp,
             ):
-                with patch("asyncio.sleep", new_callable=AsyncMock):
-                    result = await fetch_url_with_fallback(
-                        "https://example.com",
-                        mock_session,
-                        log,
-                        max_429_retries=1,
-                        max_retries_per_strategy=1,
-                    )
-                    assert result is not None
-                    assert result.status_code == 200
+                with patch(
+                    "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
+                    return_value=success_resp,
+                ):
+                    with patch("asyncio.sleep", new_callable=AsyncMock):
+                        result = await fetch_url_with_fallback(
+                            "https://example.com",
+                            mock_session,
+                            log,
+                            max_retries_per_strategy=1,
+                        )
+                        assert result is not None
+                        assert result.status_code == 200
 
     @pytest.mark.asyncio
     async def test_429_exhausted_all_strategies_returns_last(self, log):
@@ -1166,27 +1165,30 @@ class TestFetchUrlWithFallback:
         )
 
         with patch(
-            "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
-            return_value=rate_limited_resp,
+            "app.connectors.sources.web.fetch_strategy.MAX_RATE_LIMIT_BACKOFF",
+            4,
         ):
             with patch(
-                "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
+                "app.connectors.sources.web.fetch_strategy._try_curl_cffi",
                 return_value=rate_limited_resp,
             ):
                 with patch(
-                    "app.connectors.sources.web.fetch_strategy._try_aiohttp",
+                    "app.connectors.sources.web.fetch_strategy._try_cloudscraper",
                     return_value=rate_limited_resp,
                 ):
-                    with patch("asyncio.sleep", new_callable=AsyncMock):
-                        result = await fetch_url_with_fallback(
-                            "https://example.com",
-                            mock_session,
-                            log,
-                            max_429_retries=0,
-                            max_retries_per_strategy=1,
-                        )
-                        assert result is not None
-                        assert result.status_code == 429
+                    with patch(
+                        "app.connectors.sources.web.fetch_strategy._try_aiohttp",
+                        return_value=rate_limited_resp,
+                    ):
+                        with patch("asyncio.sleep", new_callable=AsyncMock):
+                            result = await fetch_url_with_fallback(
+                                "https://example.com",
+                                mock_session,
+                                log,
+                                max_retries_per_strategy=1,
+                            )
+                            assert result is not None
+                            assert result.status_code == 429
 
     @pytest.mark.asyncio
     async def test_bot_detection_retries_then_next_strategy(self, log):
@@ -1293,8 +1295,11 @@ class TestFetchUrlWithFallback:
                         )
                         assert result is not None
                         assert result.status_code == 200
-                        # The second attempt (attempt=1) sleeps with 1 + random(0, 0.5) = 1.25
-                        mock_sleep.assert_called_once_with(1.25)
+                        # 403 is bot detection so each curl attempt also sleeps 2.0,
+                        # and the second attempt (attempt=1) sleeps 1 + random(0, 0.5) = 1.25
+                        assert mock_sleep.call_count == 3
+                        mock_sleep.assert_any_call(2.0)
+                        mock_sleep.assert_any_call(1.25)
 
     @pytest.mark.asyncio
     async def test_referer_and_extra_headers_passed(self, log):
@@ -1349,10 +1354,10 @@ class TestFetchUrlWithFallback:
 
     @pytest.mark.asyncio
     async def test_5xx_not_in_bot_detection_stops(self, log):
-        """Server error (e.g. 503) that is NOT in _BOT_DETECTION_CODES stops immediately."""
+        """Server error (e.g. 500) that is NOT in _BOT_DETECTION_CODES stops immediately."""
         mock_session = AsyncMock()
         error_resp = FetchResponse(
-            503, b"", {}, "https://example.com", "curl_cffi"
+            500, b"", {}, "https://example.com", "curl_cffi"
         )
 
         curl_call_count = 0
@@ -1373,7 +1378,7 @@ class TestFetchUrlWithFallback:
                 max_retries_per_strategy=3,
             )
             assert result is not None
-            assert result.status_code == 503
+            assert result.status_code == 500
             # Should stop on first attempt
             assert curl_call_count == 1
 
@@ -1493,7 +1498,6 @@ class TestFetchUrlWithFallback:
                     "https://example.com",
                     mock_session,
                     log,
-                    max_429_retries=3,
                     max_retries_per_strategy=1,
                 )
                 assert result is not None

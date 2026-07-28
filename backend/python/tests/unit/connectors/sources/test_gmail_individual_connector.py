@@ -13,7 +13,7 @@ Targets the remaining uncovered lines to achieve 95%+ coverage by testing:
 - _convert_to_pdf() asyncio.TimeoutError catch, terminate kill timeout
 - _stream_from_drive() file_stream() async generator (chunk streaming, HttpError,
   general chunk error, finally block), non-HTTPException outer catch
-- _stream_mail_record() empty raw_html, latest_reply empty
+- _stream_mail_record() empty raw_html, talon extract_from_html fallback to raw HTML
 - _stream_attachment_record() message not found (HttpError 404), part not found,
   attachment ID not found in part body, message or payload not found,
   general exception after attachment get, HttpError on message get re-raise
@@ -700,7 +700,7 @@ class TestStreamMailRecordEmptyContent:
 
     @pytest.mark.asyncio
     async def test_html_body_no_latest_reply(self):
-        """When EmailReplyParser returns empty latest_reply, falls back to clean_text."""
+        """When talon returns no extracted reply, falls back to raw HTML."""
         connector = _make_connector()
         gmail_service = MagicMock()
         html = "<html><body>Hello world, this is a test email</body></html>"
@@ -715,17 +715,21 @@ class TestStreamMailRecordEmptyContent:
         record.id = "rec-1"
         record.record_name = "Test Email"
 
+        streamed_chunks: list[bytes] = []
+
         with patch(
-            "app.connectors.sources.google.gmail.individual.connector.EmailReplyParser"
-        ) as MockParser, patch(
-            "app.connectors.sources.google.gmail.individual.connector.create_stream_record_response"
-        ) as mock_stream:
-            parsed = MagicMock()
-            parsed.latest_reply = ""
-            MockParser.return_value.read.return_value = parsed
-            mock_stream.return_value = MagicMock()
-            await connector._stream_mail_record(gmail_service, "msg-1", record)
-            mock_stream.assert_called_once()
+            "app.connectors.sources.google.gmail.individual.connector.quotations.extract_from_html",
+            return_value="",
+        ), patch(
+            "app.connectors.sources.google.gmail.individual.connector.create_stream_record_response",
+            side_effect=lambda gen, **kwargs: gen,
+        ):
+            stream_gen = await connector._stream_mail_record(gmail_service, "msg-1", record)
+            async for chunk in stream_gen:
+                streamed_chunks.append(chunk)
+
+        combined = b"".join(streamed_chunks).decode()
+        assert combined == html
 
 
 # ===========================================================================

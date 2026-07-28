@@ -633,7 +633,7 @@ class TestCleanupEmptiedFolders:
 
         await repos._cleanup_emptied_folders(_PROJECT_ID, _PROJECT_PATH, [])
         c.data_entities_processor.get_records_by_parent.assert_not_called()
-        c.data_entities_processor.on_folder_deleted.assert_not_called()
+        c.data_entities_processor.on_record_deleted.assert_not_called()
 
     async def test_root_file_deletion_no_parent_dirs(self) -> None:
         c, repos = _make_incremental_connector()
@@ -641,7 +641,7 @@ class TestCleanupEmptiedFolders:
 
         await repos._cleanup_emptied_folders(_PROJECT_ID, _PROJECT_PATH, ["root.py"])
         # root.py has no parent directories, so no folder candidates
-        c.data_entities_processor.on_folder_deleted.assert_not_called()
+        c.data_entities_processor.on_record_deleted.assert_not_called()
 
     async def test_emptied_folder_deleted(self) -> None:
         c, repos = _make_incremental_connector()
@@ -655,7 +655,7 @@ class TestCleanupEmptiedFolders:
         c.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
 
         await repos._cleanup_emptied_folders(_PROJECT_ID, _PROJECT_PATH, ["src/file.py"])
-        c.data_entities_processor.on_folder_deleted.assert_called()
+        c.data_entities_processor.on_record_deleted.assert_called()
 
     async def test_folder_with_remaining_children_kept(self) -> None:
         c, repos = _make_incremental_connector()
@@ -670,7 +670,7 @@ class TestCleanupEmptiedFolders:
         )
 
         await repos._cleanup_emptied_folders(_PROJECT_ID, _PROJECT_PATH, ["src/file.py"])
-        c.data_entities_processor.on_folder_deleted.assert_not_called()
+        c.data_entities_processor.on_record_deleted.assert_not_called()
 
     async def test_folder_never_stored_skipped(self) -> None:
         c, repos = _make_incremental_connector()
@@ -679,7 +679,7 @@ class TestCleanupEmptiedFolders:
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
 
         await repos._cleanup_emptied_folders(_PROJECT_ID, _PROJECT_PATH, ["src/file.py"])
-        c.data_entities_processor.on_folder_deleted.assert_not_called()
+        c.data_entities_processor.on_record_deleted.assert_not_called()
 
     async def test_nested_cascade_deepest_first(self) -> None:
         """Delete src/a/b/file.py → should try to clean b, then a, then src."""
@@ -704,7 +704,7 @@ class TestCleanupEmptiedFolders:
         async def _folder_deleted(folder_id: str) -> None:
             deleted_ids.append(folder_id)
 
-        c.data_entities_processor.on_folder_deleted = AsyncMock(side_effect=_folder_deleted)
+        c.data_entities_processor.on_record_deleted = AsyncMock(side_effect=_folder_deleted)
 
         await repos._cleanup_emptied_folders(
             _PROJECT_ID, _PROJECT_PATH, ["src/a/b/file.py"]
@@ -725,7 +725,7 @@ class TestCleanupEmptiedFolders:
         )
 
         await repos._cleanup_emptied_folders(_PROJECT_ID, _PROJECT_PATH, ["src/moved.py"])
-        c.data_entities_processor.on_folder_deleted.assert_not_called()
+        c.data_entities_processor.on_record_deleted.assert_not_called()
 
 
 # ===========================================================================

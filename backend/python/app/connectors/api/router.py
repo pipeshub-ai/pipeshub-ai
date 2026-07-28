@@ -39,6 +39,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
@@ -81,6 +82,8 @@ from app.models.entities import Record, RecordType
 from app.services.featureflag.config.config import CONFIG
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.api_call import make_api_call
+from app.utils.chat_helpers import record_to_text
+from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import extract_oauth_error_message, fetch_oauth_config_by_id, get_oauth_config
@@ -239,60 +242,6 @@ async def _stream_artifact_from_storage(
                 ) from e
 
     return Response(content=buffer or b"", media_type=mime)
-
-
-async def _stream_google_api_request(request: HttpRequest, error_context: str = "download") -> AsyncGenerator[bytes, None]:
-    """
-    Helper function to stream data from a Google API request using MediaIoBaseDownload.
-
-    Args:
-        request: Google API request object (from files().get_media() or files().export_media())
-        error_context: Context string for error messages (e.g., "PDF export", "file export")
-    Yields:
-        bytes: Chunks of data from the download
-    """
-    buffer = io.BytesIO()
-    try:
-        downloader = MediaIoBaseDownload(buffer, request)
-        done = False
-
-        while not done:
-            try:
-                _, done = downloader.next_chunk()
-
-                buffer.seek(0)
-                chunk = buffer.read()
-
-                if chunk:  # Only yield if we have data
-                    yield chunk
-
-                # Clear buffer for next chunk
-                buffer.seek(0)
-                buffer.truncate(0)
-
-                # Yield control back to event loop
-                await asyncio.sleep(0)
-
-            except HttpError as http_error:
-                logger.error(f"HTTP error during {error_context}: {str(http_error)}")
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail=f"Error during {error_context}: {str(http_error)}",
-                ) from http_error
-            except Exception as chunk_error:
-                logger.error(f"Error during {error_context} chunk: {str(chunk_error)}")
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail=f"Error during {error_context}",
-                ) from chunk_error
-    except Exception as stream_error:
-        logger.error(f"Error in {error_context} stream: {str(stream_error)}")
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=f"Error setting up {error_context} stream",
-        ) from stream_error
-    finally:
-        buffer.close()
 
 
 class ReindexFailedRequest(BaseModel):
@@ -1386,6 +1335,65 @@ async def get_record_by_id(
         logger.error(f"Error checking record access: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to check record access") from e
 
+@router.get(
+    "/api/v1/records/{record_id}/content",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))],
+)
+@inject
+async def get_record_content(
+    record_id: str,
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict:
+    """
+    Fetch the full parsed content and metadata of a record, with permission scoping.
+    """
+    container = request.app.container
+    logger = container.logger()
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+
+    try:
+        access_check = await graph_provider.check_record_access_with_details(
+            user_id=user_id,
+            org_id=org_id,
+            record_id=record_id,
+        )
+        if not access_check:
+            raise HTTPException(
+                status_code=HttpStatusCode.FORBIDDEN.value,
+                detail="You do not have permission to access this record",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking record access for {record_id}: {str(e)}")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to check record access") from e
+
+    try:
+        result = await _fetch_multiple_records_impl(
+            record_ids=[record_id],
+            virtual_record_id_to_result={},
+            graph_provider=graph_provider,
+            org_id=org_id,
+            user_id=user_id,
+        )
+    except Exception as e:
+        logger.error(f"Error fetching record content for {record_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to fetch record content") from e
+
+    if not result.get("ok") or not result.get("records"):
+        return {"content": "No record found"}
+
+    try:
+        content = record_to_text(result["records"][0])
+    except Exception as e:
+        logger.error(f"Error formatting record content for {record_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to format record content") from e
+
+    return {"content": content}
+
+
 @router.delete("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE, OAuthScopes.KB_DELETE))])
 @inject
 async def delete_record(
@@ -1570,6 +1578,14 @@ async def reindex_single_record(
                     }
                     await kafka_service.publish_event(event_data["topic"], event)
                     logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                    # Only the single-record path owns this record's status; the
+                    # sync-events paths hand off to the reindex handler instead.
+                    if event_data["topic"] == "record-events":
+                        await graph_provider.compare_and_set_indexing_status(
+                            [record_id],
+                            ProgressStatus.NOT_STARTED.value,
+                            ProgressStatus.QUEUED.value,
+                        )
                 except Exception as e:
                     logger.error(f"❌ Failed to publish event: {str(e)}")
 
@@ -1608,8 +1624,55 @@ async def get_connector_stats_endpoint(
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 )-> dict[str, Any]:
     try:
-        result = await graph_provider.get_connector_stats(org_id, connector_id)
         logger = request.app.container.logger()
+        connector_registry = request.app.state.connector_registry
+        user_id = request.state.user.get("userId")
+        user_org_id = request.state.user.get("orgId")
+        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
+        if not user_id or not user_org_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
+        # Verify org_id matches user's org (unless admin)
+        if not is_admin and org_id != user_org_id:
+            raise HTTPException(status_code=403, detail="Insufficient permissions to access stats for this organization")
+
+        # Resolve the target once, then gate access by what the user can already
+        # see — so anyone who can view a connector/collection can view its stats:
+        #  - KB collections: any OWNER/WRITER/READER role on the collection
+        #  - Connectors: same visibility rule as the connector listing
+        app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        if not app_doc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Connector instance {connector_id} not found",
+            )
+
+        if app_doc.get("type") == Connectors.KNOWLEDGE_BASE.value:
+            user = await graph_provider.get_user_by_user_id(user_id=user_id)
+            if not user:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"User not found for user_id: {user_id}",
+                )
+            user_role = await graph_provider.get_user_kb_permission(connector_id, user.get("_key"))
+            if user_role not in ("OWNER", "WRITER", "READER"):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Insufficient KB permissions for connector {connector_id}. Required: OWNER, WRITER, or READER",
+                )
+        else:
+            can_view = await connector_registry.can_user_view_connector(
+                connector_id, app_doc, user_id, is_admin=is_admin
+            )
+            if not can_view:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Insufficient permissions to access stats for connector {connector_id}",
+                )
+
+        # Fetch stats from graph provider
+        result = await graph_provider.get_connector_stats(org_id, connector_id)
         if result["success"]:
              return {"success": True, "data": result["data"]}
         else:
@@ -6136,6 +6199,7 @@ async def _ensure_connector_initialized(
             )
         scope = connector_doc.get(ConnectorRequestKeys.SCOPE, ConnectorScope.PERSONAL.value)
         created_by = connector_doc.get("createdBy", "")
+        org_id = connector_doc.get("orgId")
 
         # Create connector using factory
         connector = await ConnectorFactory.create_connector(
@@ -6146,6 +6210,7 @@ async def _ensure_connector_initialized(
             connector_id=connector_id,
             scope=scope,
             created_by=created_by,
+            org_id=org_id,
             notification_service=container.connector_notification_service(),
         )
 

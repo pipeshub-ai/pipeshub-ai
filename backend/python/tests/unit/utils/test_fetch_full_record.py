@@ -290,6 +290,7 @@ class TestFetchMultipleRecordsImpl:
 
         records_map = {}
         graph_provider = AsyncMock()
+        graph_provider.check_record_access_with_details = AsyncMock(return_value=True)
         graph_provider.get_document = AsyncMock(return_value={
             "indexingStatus": ProgressStatus.COMPLETED.value,
             "virtualRecordId": "vrid-1",
@@ -323,6 +324,7 @@ class TestFetchMultipleRecordsImpl:
                 records_map,
                 graph_provider=graph_provider,
                 org_id="org-1",
+                user_id="user-1",
             )
 
         assert result["ok"] is True
@@ -437,6 +439,7 @@ class TestFetchMultipleRecordsImpl:
 
         records_map = {}
         graph_provider = AsyncMock()
+        graph_provider.check_record_access_with_details = AsyncMock(return_value=True)
         graph_provider.get_document = AsyncMock(return_value={
             "indexingStatus": ProgressStatus.COMPLETED.value,
             "virtualRecordId": "vrid-1",
@@ -462,6 +465,7 @@ class TestFetchMultipleRecordsImpl:
                 ["r1"], records_map,
                 graph_provider=graph_provider,
                 org_id="org-1",
+                user_id="user-1",
             )
 
         assert result["ok"] is True
@@ -474,6 +478,7 @@ class TestFetchMultipleRecordsImpl:
 
         records_map = {}
         graph_provider = AsyncMock()
+        graph_provider.check_record_access_with_details = AsyncMock(return_value=True)
         graph_provider.get_document = AsyncMock(return_value={
             "indexingStatus": ProgressStatus.COMPLETED.value,
             "virtualRecordId": "vrid-1",
@@ -502,6 +507,7 @@ class TestFetchMultipleRecordsImpl:
                 ["r1"], records_map,
                 graph_provider=graph_provider,
                 org_id="org-1",
+                user_id="user-1",
             )
 
         assert result["ok"] is True
@@ -538,9 +544,10 @@ class TestFetchMultipleRecordsImpl:
 class TestFetchMultipleRecordsImplGraphFallback:
     """Covers the org_id + graph_provider fallback branch (lines 97-125 in source)."""
 
-    def _make_graph_provider(self, *, document=None, raises=None, endpoints=None):
+    def _make_graph_provider(self, *, document=None, raises=None, endpoints=None, has_access=True):
         gp = MagicMock()
         gp.config_service = MagicMock()
+        gp.check_record_access_with_details = AsyncMock(return_value=has_access)
         if raises is not None:
             gp.get_document = AsyncMock(side_effect=raises)
         else:
@@ -571,7 +578,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
             )
 
             result = await ffr._fetch_multiple_records_impl(
-                ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
             )
 
         assert result["ok"] is True
@@ -603,7 +610,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
             )
 
             result = await ffr._fetch_multiple_records_impl(
-                ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
             )
 
         assert result["ok"] is True
@@ -619,7 +626,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
         )
 
         result = await ffr._fetch_multiple_records_impl(
-            ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+            ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
         )
 
         assert result["ok"] is False
@@ -633,7 +640,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
         graph_provider = self._make_graph_provider(document=None)
 
         result = await ffr._fetch_multiple_records_impl(
-            ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+            ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
         )
 
         assert result["ok"] is False
@@ -646,7 +653,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
         graph_provider = self._make_graph_provider(raises=RuntimeError("arango down"))
 
         result = await ffr._fetch_multiple_records_impl(
-            ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+            ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
         )
 
         assert result["ok"] is False
@@ -671,7 +678,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
             )
 
             result = await ffr._fetch_multiple_records_impl(
-                ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
             )
 
         assert result["ok"] is False
@@ -697,7 +704,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
             )
 
             result = await ffr._fetch_multiple_records_impl(
-                ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
             )
 
         assert result["ok"] is True

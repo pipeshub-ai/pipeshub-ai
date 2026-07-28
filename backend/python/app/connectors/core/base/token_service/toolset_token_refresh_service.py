@@ -14,13 +14,17 @@ if TYPE_CHECKING:
     from app.connectors.core.base.token_service.oauth_service import OAuthConfig
 
 from app.config.configuration_service import ConfigurationService
-from app.connectors.core.base.token_service.oauth_service import OAuthToken
+from app.connectors.core.base.token_service.oauth_service import (
+    OAuthToken,
+    RefreshTokenInvalidError,
+)
 from app.utils.oauth_config import get_oauth_config
 from app.utils.request_context import (
     new_system_root,
     reset_context,
     set_context,
 )
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Constants
 MIN_PATH_PARTS_COUNT = 4  # Minimum path parts: services, toolsets, instance_id, user_id
@@ -32,6 +36,8 @@ MIN_IMMEDIATE_RECHECK_DELAY = 1  # Seconds; used when an already-expired token n
 PROACTIVE_REFRESH_WINDOW_SECONDS = 600  # Refresh 10 minutes before expiry for normal tokens
 MIN_SHORT_LIVED_REFRESH_WINDOW_SECONDS = 60  # Minimum proactive window for short-lived tokens
 SHORT_LIVED_TOKEN_BUFFER_RATIO = 0.2  # For short-lived tokens, refresh ~20% before expiry
+# Consecutive rejections before deactivating; guards against provider blips
+MAX_REFRESH_TOKEN_INVALID_FAILURES = 3
 
 
 class ToolsetTokenRefreshService:
@@ -47,6 +53,7 @@ class ToolsetTokenRefreshService:
         self._toolset_locks: Dict[str, asyncio.Lock] = {}  # Per-toolset locks to prevent concurrent refreshes
         self._schedule_locks: Dict[str, asyncio.Lock] = {}  # Per-toolset locks for atomic task scheduling
         self._last_refresh_time: Dict[str, float] = {}  # Track last successful refresh time (prevents duplicates)
+        self._invalid_refresh_failures: Dict[str, int] = {}  # Consecutive refresh-token rejections per toolset
 
     def _get_toolset_lock(self, config_path: str) -> asyncio.Lock:
         """
@@ -152,6 +159,10 @@ class ToolsetTokenRefreshService:
                 for path in list(self._last_refresh_time.keys()):
                     if path not in current_paths:
                         del self._last_refresh_time[path]
+
+                for path in list(self._invalid_refresh_failures.keys()):
+                    if path not in current_paths:
+                        del self._invalid_refresh_failures[path]
 
             except asyncio.CancelledError:
                 break
@@ -824,10 +835,59 @@ class ToolsetTokenRefreshService:
             self._last_refresh_time[config_path] = time.time()
             self.logger.debug(f"📝 Updated last refresh time for {config_path}")
 
+            self._invalid_refresh_failures.pop(config_path, None)
+
             return new_token
         finally:
             # Always clean up OAuth provider
             await oauth_provider.close()
+
+    async def _handle_refresh_token_invalid(self, config_path: str, error: Exception) -> None:
+        """Deactivate the toolset after MAX_REFRESH_TOKEN_INVALID_FAILURES consecutive rejections."""
+        failures = self._invalid_refresh_failures.get(config_path, 0) + 1
+        self._invalid_refresh_failures[config_path] = failures
+
+        if failures < MAX_REFRESH_TOKEN_INVALID_FAILURES:
+            self.logger.error(
+                f"Refresh token rejected for toolset {config_path} "
+                f"(failure {failures}/{MAX_REFRESH_TOKEN_INVALID_FAILURES}): {error}",
+                exc_info=False,
+            )
+            return
+
+        self.logger.error(
+            f"Refresh token rejected for toolset {config_path} "
+            f"{failures} consecutive times, deactivating: {error}",
+            exc_info=False,
+        )
+        self._invalid_refresh_failures.pop(config_path, None)
+        await self._mark_toolset_unauthenticated(config_path)
+
+    async def _mark_toolset_unauthenticated(self, config_path: str) -> None:
+        """Flip the toolset to unauthenticated so refresh scans stop until re-auth."""
+        try:
+            config = await self.configuration_service.get_config(config_path, default=None, use_cache=False)
+            if not config or not isinstance(config, dict):
+                return
+
+            now_ms = get_epoch_timestamp_in_ms()
+            config["isAuthenticated"] = False
+            config["deauthReason"] = "refresh_token_invalid"
+            config["deauthAt"] = now_ms
+            config["updatedAt"] = now_ms
+            await self.configuration_service.set_config(config_path, config)
+
+            self.logger.warning(
+                f"Marked toolset {config_path} as unauthenticated — "
+                f"refresh token is invalid, re-authentication required"
+            )
+        except Exception as e:
+            self.logger.error(f"Error marking toolset {config_path} as unauthenticated: {e}", exc_info=False)
+
+        # Cancelling our own task here would raise CancelledError on the caller's next await.
+        existing_task = self._refresh_tasks.get(config_path)
+        if existing_task is not None and existing_task is not asyncio.current_task():
+            self._cancel_existing_refresh_task(config_path)
 
     def _is_toolset_being_processed(self, config_path: str) -> bool:
         """Check if toolset is currently being processed."""
@@ -970,6 +1030,8 @@ class ToolsetTokenRefreshService:
 
             except RecursionError as e:
                 self.logger.error(f"RECURSION ERROR in toolset token refresh for {config_path}: {str(e)[:100]}")
+            except RefreshTokenInvalidError as e:
+                await self._handle_refresh_token_invalid(config_path, e)
             except Exception as e:
                 import traceback
                 error_details = traceback.format_exc()
@@ -1050,6 +1112,9 @@ class ToolsetTokenRefreshService:
             new_token = await self._perform_token_refresh(config_path, toolset_type, token.refresh_token)
             self.logger.info(f"🔄 Immediate refresh completed for toolset {config_path}")
             return new_token, True
+        except RefreshTokenInvalidError as e:
+            await self._handle_refresh_token_invalid(config_path, e)
+            return None, False
         except Exception as e:
             self.logger.error(f"❌ Failed to perform immediate refresh for toolset {config_path}: {e}", exc_info=False)
             return None, False

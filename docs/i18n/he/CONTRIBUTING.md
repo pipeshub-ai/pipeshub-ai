@@ -200,8 +200,11 @@ cp ../env.template .env
 python3.12 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
+# Install uv
+pip install uv
+
 # Install dependencies
-pip install -e .
+uv pip install -e .
 
 # Install additional language models
 python -m spacy download en_core_web_sm
