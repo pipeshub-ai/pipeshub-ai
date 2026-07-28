@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from logging import Logger
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, NamedTuple, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -63,12 +63,22 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.google.common.apps import GoogleDriveTeamApp
 from app.connectors.sources.google.common.drive_file_fields import (
-    DRIVE_FOLDER_EXPANSION_GET_FIELDS,
-    DRIVE_FOLDER_EXPANSION_LIST_FIELDS,
     DRIVE_WORKSPACE_FILE_GET_FIELDS,
     DRIVE_WORKSPACE_SYNC_CHANGES_LIST_FIELDS,
     DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
+)
+from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+    ANCESTOR_FETCH_CONCURRENCY,
+    PLACEHOLDER_SWEEP_SAFETY_MAX,
+    build_tracked_folder_ids,
+    fetch_ancestor_metadata,
+    fetch_folder_children,
+    has_entered_scope,
+    has_exited_scope,
+    pass_folder_filter,
+    probe_can_list_children,
+    static_data_source_provider,
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
@@ -86,14 +96,6 @@ from app.sources.external.google.admin.admin import GoogleAdminDataSource
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
-
-
-class FolderScopeExpansion(NamedTuple):
-    """Result of one downward walk of the folder filter's subtrees."""
-
-    tracked: set  # folders discovered in scope, blocked ones included
-    expanded: set  # folders whose children were listed on this walk
-    blocked: set  # folders in scope whose children this user could not list
 
 
 @ConnectorBuilder("Drive Workspace")\
@@ -1465,69 +1467,6 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Unknown operator, default to allowing the file
         return True
 
-    def _pass_folder_filter(self, metadata: dict, tracked_folder_ids: Optional[set]) -> bool:
-        """
-        Checks if the Google Drive item is inside the configured folder scope.
-
-        Unlike the date/extension filters, folders themselves are NOT always
-        allowed through: if a folder is outside the tracked subtree, it (and
-        everything under it) must be skipped so only the selected subtree syncs.
-        """
-        if not tracked_folder_ids:
-            return True
-
-        file_id = metadata.get("id")
-        if file_id and file_id in tracked_folder_ids:
-            return True
-
-        parents = metadata.get("parents") or []
-        return any(parent_id in tracked_folder_ids for parent_id in parents)
-
-    async def _check_entered_scope(self, file_id: str, tracked_folder_ids: set) -> bool:
-        """
-        Checks whether an item that already passed `_pass_folder_filter` just
-        moved from outside the tracked folder scope to inside it (or is brand
-        new inside scope). Such items need their descendants pulled in
-        recursively, since changes_list only reports the item itself, not its
-        children.
-
-        Only meaningful when `tracked_folder_ids` is set; callers should not
-        invoke this otherwise.
-        """
-        async with self.data_store_provider.transaction() as tx_store:
-            existing_record = await tx_store.get_record_by_external_id(
-                connector_id=self.connector_id,
-                external_id=file_id
-            )
-
-        if existing_record is None:
-            return True
-
-        return existing_record.parent_external_record_id not in tracked_folder_ids
-
-    async def _check_exited_scope(
-        self, file_id: str, tracked_folder_ids: set
-    ) -> Tuple[bool, Optional[Record]]:
-        """
-        Checks whether an item that just failed `_pass_folder_filter` was
-        previously inside the tracked folder scope (i.e. it moved out, rather
-        than never having been in scope under the current filter). If so, its
-        previously-synced record is now stale and must be deleted.
-
-        Only meaningful when `tracked_folder_ids` is set; callers should not
-        invoke this otherwise.
-        """
-        async with self.data_store_provider.transaction() as tx_store:
-            existing_record = await tx_store.get_record_by_external_id(
-                connector_id=self.connector_id,
-                external_id=file_id
-            )
-
-        if existing_record is None:
-            return False, None
-
-        return existing_record.parent_external_record_id in tracked_folder_ids, existing_record
-
     async def _apply_folder_scope_to_change(
         self,
         file_metadata: dict,
@@ -1546,7 +1485,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         file_id = file_metadata.get("id")
         file_name = file_metadata.get("name")
 
-        if not self._pass_folder_filter(file_metadata, tracked_folder_ids):
+        if not pass_folder_filter(file_metadata, tracked_folder_ids):
             await self._delete_on_scope_exit(file_id, file_name, tracked_folder_ids)
             return []
 
@@ -1557,13 +1496,18 @@ class GoogleDriveTeamConnector(BaseConnector):
             tracked_folder_ids
             and is_folder
             and file_id not in self._folder_seed_ids
-            and await self._check_entered_scope(file_id, tracked_folder_ids)
+            and await has_entered_scope(
+                self.data_store_provider, self.connector_id, file_id, tracked_folder_ids
+            )
         ):
             self.logger.info(
                 f"📁 Folder {file_name} entered folder-filter scope; fetching descendants"
             )
-            async for child_batch in self._fetch_folder_children(
-                file_id, changes_ids, drive_data_source
+            async for child_batch in fetch_folder_children(
+                file_id,
+                changes_ids,
+                static_data_source_provider(drive_data_source),
+                fields=DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
             ):
                 items.extend(child_batch)
 
@@ -1579,8 +1523,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         A scope exit is a source-side move, so it applies to every user; whichever
         user's changes feed reports it first performs the delete and the rest no-op.
         """
-        exited_scope, existing_record = await self._check_exited_scope(
-            file_id, tracked_folder_ids
+        exited_scope, existing_record = await has_exited_scope(
+            self.data_store_provider, self.connector_id, file_id, tracked_folder_ids
         )
         if not exited_scope:
             self.logger.debug(
@@ -1611,94 +1555,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                 record_id=existing_record.id
             )
 
-    async def _fetch_folder_children(
-        self,
-        folder_id: str,
-        changes_ids: set,
-        drive_data_source: GoogleDriveDataSource,
-    ) -> AsyncGenerator[List[dict], None]:
-        """
-        Recursively fetch all descendants (files and folders) of a folder that
-        just entered the tracked scope, yielding them in batches.
-
-        Unlike `_build_tracked_folder_ids`, this fetches every child item, not
-        just folders, but only recurses into children that are themselves
-        folders. Children already present in `changes_ids` (the current
-        changes_list page) are skipped so they aren't processed twice: they
-        are already flowing through the regular changes loop.
-        """
-        queue: List[str] = [folder_id]
-        batch_size = 15
-        folder_mime = MimeTypes.GOOGLE_DRIVE_FOLDER.value
-
-        while queue:
-            batch, queue = queue[:batch_size], queue[batch_size:]
-            parents_clause = " or ".join(f"'{fid}' in parents" for fid in batch)
-            query = f"trashed=false and ({parents_clause})"
-
-            page_token = None
-            while True:
-                list_params = {
-                    "q": query,
-                    "fields": DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
-                    "pageSize": 1000,
-                    "supportsAllDrives": True,
-                    "includeItemsFromAllDrives": True,
-                }
-                if page_token:
-                    list_params["pageToken"] = page_token
-
-                response = await drive_data_source.files_list(**list_params)
-
-                children_batch = []
-                for child in response.get("files", []):
-                    child_id = child.get("id")
-                    if not child_id or child_id in changes_ids:
-                        continue
-                    if child.get("mimeType") == folder_mime:
-                        queue.append(child_id)
-                    children_batch.append(child)
-
-                if children_batch:
-                    yield children_batch
-
-                page_token = response.get("nextPageToken")
-                if not page_token:
-                    break
-
     def _pending_folder_expansions(self) -> set:
         """
-        Folders in scope whose children nobody has listed yet: the seeds plus every
-        folder some user could see but not enumerate.
+        Folders in scope whose children nobody has successfully listed yet: seeds that
+        no user could expand, plus folders some user could see but not enumerate.
         """
         return (self._folder_seed_ids | self._blocked_folder_ids) - self._expanded_folder_ids
-
-    async def _probe_can_list_children(
-        self, folder_id: str, drive_data_source: GoogleDriveDataSource
-    ) -> Optional[bool]:
-        """
-        Ask whether the impersonated user may enumerate this folder's children.
-
-        Returns None when the folder is invisible to this user, which files_list
-        cannot distinguish from an empty folder — both come back with zero children.
-        """
-        try:
-            response = await drive_data_source.files_get(
-                fileId=folder_id,
-                fields=DRIVE_FOLDER_EXPANSION_GET_FIELDS,
-                supportsAllDrives=True,
-            )
-        except HttpError as e:
-            self.logger.debug(
-                f"Folder {folder_id} not visible to this user "
-                f"(HTTP {e.resp.status}); deferring to another user"
-            )
-            return None
-        except Exception as e:
-            self.logger.warning(f"Failed to probe folder {folder_id}: {e}")
-            return None
-
-        return bool((response.get("capabilities") or {}).get("canListChildren"))
 
     async def _expand_folder_scope(
         self, drive_data_source: GoogleDriveDataSource
@@ -1717,21 +1579,33 @@ class GoogleDriveTeamConnector(BaseConnector):
         if not self._folder_seed_ids:
             return
 
+        get_data_source = static_data_source_provider(drive_data_source)
+
         async with self._folder_scope_lock:
             frontier: List[str] = []
+            drive_id_by_folder: dict = {}
             for folder_id in self._pending_folder_expansions():
-                can_list = await self._probe_can_list_children(folder_id, drive_data_source)
-                if can_list is None:
+                probe = await probe_can_list_children(
+                    folder_id, get_data_source, self.logger
+                )
+                if probe is None:
                     continue
-                if not can_list:
+                if not probe.can_list_children:
                     self._blocked_folder_ids.add(folder_id)
                     continue
                 frontier.append(folder_id)
+                drive_id_by_folder[folder_id] = probe.drive_id
 
             if not frontier:
                 return
 
-            expansion = await self._build_tracked_folder_ids(frontier, drive_data_source)
+            expansion = await build_tracked_folder_ids(
+                frontier,
+                get_data_source,
+                self.logger,
+                already_expanded=self._expanded_folder_ids,
+                drive_id_by_folder=drive_id_by_folder,
+            )
 
             self._tracked_folder_ids |= expansion.tracked
             self._expanded_folder_ids |= expansion.expanded
@@ -1745,74 +1619,6 @@ class GoogleDriveTeamConnector(BaseConnector):
                 f"{len(self._tracked_folder_ids)} tracked in total, "
                 f"{len(self._blocked_folder_ids)} awaiting a user who can list them"
             )
-
-    async def _build_tracked_folder_ids(
-        self, frontier_folder_ids: List[str], drive_data_source: GoogleDriveDataSource
-    ) -> FolderScopeExpansion:
-        """
-        Walk down from the given folder IDs, collecting every descendant subfolder the
-        caller can reach.
-
-        Queries Drive in batches of folder IDs ('in parents' OR-clause) per recursion
-        level so a deep/wide tree doesn't require one API call per folder, and pages
-        through nextPageToken for large directories.
-
-        A subfolder the caller can see but not list is recorded in `blocked` instead of
-        being descended into: listing it would return zero children and wrongly bank the
-        subtree below it as empty.
-        """
-        tracked: set = set(frontier_folder_ids)
-        expanded: set = set()
-        blocked: set = set()
-        queue: List[str] = list(frontier_folder_ids)
-        batch_size = 15
-        folder_mime = MimeTypes.GOOGLE_DRIVE_FOLDER.value
-
-        while queue:
-            batch, queue = queue[:batch_size], queue[batch_size:]
-            parents_clause = " or ".join(f"'{folder_id}' in parents" for folder_id in batch)
-            query = f"mimeType='{folder_mime}' and trashed=false and ({parents_clause})"
-
-            page_token = None
-            while True:
-                list_params = {
-                    "q": query,
-                    "fields": DRIVE_FOLDER_EXPANSION_LIST_FIELDS,
-                    "pageSize": 1000,
-                    "supportsAllDrives": True,
-                    "includeItemsFromAllDrives": True,
-                }
-                if page_token:
-                    list_params["pageToken"] = page_token
-
-                response = await drive_data_source.files_list(**list_params)
-
-                for subfolder in response.get("files", []):
-                    subfolder_id = subfolder.get("id")
-                    if not subfolder_id or subfolder_id in tracked:
-                        continue
-
-                    tracked.add(subfolder_id)
-
-                    if subfolder_id in self._expanded_folder_ids:
-                        continue
-
-                    if (subfolder.get("capabilities") or {}).get("canListChildren"):
-                        queue.append(subfolder_id)
-                    else:
-                        blocked.add(subfolder_id)
-                        self.logger.debug(
-                            f"Folder {subfolder_id} cannot be listed by this user; "
-                            "deferring its subtree to another user"
-                        )
-
-                page_token = response.get("nextPageToken")
-                if not page_token:
-                    break
-
-            expanded |= set(batch)
-
-        return FolderScopeExpansion(tracked=tracked, expanded=expanded, blocked=blocked)
 
     async def _process_drive_item(
         self,
@@ -1850,7 +1656,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 return None
 
             # Apply Folder Filter
-            if not bypass_folder_filter and not self._pass_folder_filter(metadata, tracked_folder_ids):
+            if not bypass_folder_filter and not pass_folder_filter(metadata, tracked_folder_ids):
                 self.logger.debug(f"Skipping item {metadata.get('name', 'unknown')} (ID: {file_id}) due to folder filter.")
                 return None  # Skip this item
 
@@ -2128,53 +1934,6 @@ class GoogleDriveTeamConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
 
-    # Bound the per-level source fanout; Drive quota is per-user.
-    _PLACEHOLDER_SWEEP_CONCURRENCY = 5
-    # Runaway backstop only — `visited` already guarantees termination (even on cyclic
-    # source data). If we ever exceed this many distinct ancestors, something is wrong.
-    _PLACEHOLDER_SWEEP_SAFETY_MAX = 10000
-
-    async def _fetch_ancestor_metadata(
-        self, frontier: List[Record], drive_data_source: GoogleDriveDataSource
-    ) -> Dict[str, dict]:
-        """Fetch one frontier level from source with bounded concurrency.
-
-        Returns metadata keyed by external record id. An id missing from the result
-        could not be read: the folder was deleted, or it is the parent of a
-        shared-with-me item that this user has no access to.
-        """
-        semaphore = asyncio.Semaphore(self._PLACEHOLDER_SWEEP_CONCURRENCY)
-
-        async def fetch_one(stub: Record) -> Optional[Tuple[str, dict]]:
-            async with semaphore:
-                file_id = stub.external_record_id
-                try:
-                    metadata = await drive_data_source.files_get(
-                        fileId=file_id,
-                        supportsAllDrives=True,
-                        fields=DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS,
-                    )
-                    if not metadata:
-                        self.logger.warning(
-                            f"Placeholder sweep: no metadata returned for {file_id}"
-                        )
-                        return None
-                    return (file_id, metadata)
-                except HttpError as e:
-                    self.logger.warning(
-                        f"Placeholder sweep: cannot read ancestor {file_id} "
-                        f"(HTTP {e.resp.status}); keeping it as a stub"
-                    )
-                    return None
-                except Exception as e:
-                    self.logger.warning(
-                        f"Placeholder sweep: failed to fetch ancestor {file_id}: {e}"
-                    )
-                    return None
-
-        results = await asyncio.gather(*[fetch_one(stub) for stub in frontier])
-        return dict(r for r in results if r)
-
     async def _sweep_placeholder_records(
         self,
         user_id: str,
@@ -2256,7 +2015,13 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.info(
                 f"📁 Placeholder sweep: backfilling {len(frontier)} ancestor(s) in drive {drive_id}"
             )
-            metadata_by_id = await self._fetch_ancestor_metadata(frontier, drive_data_source)
+            metadata_by_id = await fetch_ancestor_metadata(
+                frontier,
+                static_data_source_provider(drive_data_source),
+                self.logger,
+                fields=DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS,
+                concurrency=ANCESTOR_FETCH_CONCURRENCY,
+            )
 
             backfills: List[Tuple[Record, List[Permission]]] = []
             async for record, permissions, _update in self._process_drive_items_generator(
@@ -2304,9 +2069,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                 next_frontier.append(parent_record)
 
             total += len(frontier)
-            if total > self._PLACEHOLDER_SWEEP_SAFETY_MAX:
+            if total > PLACEHOLDER_SWEEP_SAFETY_MAX:
                 self.logger.error(
-                    f"Placeholder sweep exceeded safety bound ({self._PLACEHOLDER_SWEEP_SAFETY_MAX}); aborting"
+                    f"Placeholder sweep exceeded safety bound ({PLACEHOLDER_SWEEP_SAFETY_MAX}); aborting"
                 )
                 break
             frontier = next_frontier

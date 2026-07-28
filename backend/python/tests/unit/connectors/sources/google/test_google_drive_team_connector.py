@@ -78,6 +78,7 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     SyncFilterKey,
 )
+from app.connectors.sources.google.drive.utils.folder_filter_utils import pass_folder_filter
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -3980,40 +3981,34 @@ def _make_http_error(status=404):
 class TestPassFolderFilter:
 
     def test_no_tracked_folders_passes_everything(self):
-        conn = _make_connector()
         meta = _make_file_metadata(file_id="f1", parents=["untracked"])
-        assert conn._pass_folder_filter(meta, None) is True
-        assert conn._pass_folder_filter(meta, set()) is True
+        assert pass_folder_filter(meta, None) is True
+        assert pass_folder_filter(meta, set()) is True
 
     def test_item_whose_own_id_is_tracked_passes(self):
-        conn = _make_connector()
         meta = _make_file_metadata(
             file_id="folder-a", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value, parents=["outside"]
         )
-        assert conn._pass_folder_filter(meta, {"folder-a"}) is True
+        assert pass_folder_filter(meta, {"folder-a"}) is True
 
     def test_item_whose_parent_is_tracked_passes(self):
-        conn = _make_connector()
         meta = _make_file_metadata(file_id="f1", parents=["folder-a"])
-        assert conn._pass_folder_filter(meta, {"folder-a"}) is True
+        assert pass_folder_filter(meta, {"folder-a"}) is True
 
     def test_item_outside_scope_is_filtered(self):
-        conn = _make_connector()
         meta = _make_file_metadata(file_id="f1", parents=["other-folder"])
-        assert conn._pass_folder_filter(meta, {"folder-a"}) is False
+        assert pass_folder_filter(meta, {"folder-a"}) is False
 
     def test_folder_outside_scope_is_filtered(self):
         """Unlike date/extension filters, folders get no free pass."""
-        conn = _make_connector()
         meta = _make_file_metadata(
             file_id="folder-b", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value, parents=["outside"]
         )
-        assert conn._pass_folder_filter(meta, {"folder-a"}) is False
+        assert pass_folder_filter(meta, {"folder-a"}) is False
 
     def test_item_without_parents_is_filtered(self):
-        conn = _make_connector()
         meta = _make_file_metadata(file_id="f1")
-        assert conn._pass_folder_filter(meta, {"folder-a"}) is False
+        assert pass_folder_filter(meta, {"folder-a"}) is False
 
 
 def _make_folder(folder_id, can_list_children=True):
@@ -4024,19 +4019,24 @@ def _make_folder(folder_id, can_list_children=True):
     }
 
 
-def _make_expanding_data_source(children_by_parent, listable=None):
+def _make_expanding_data_source(children_by_parent, listable=None, drive_ids=None):
     """
     Data source whose files_list answers an 'in parents' query from a
     {parent_id: [child folder ids]} map, and whose files_get probe reports
     canListChildren from `listable` (defaulting to True for anything visible).
+    `drive_ids` maps folder id → shared-drive id for corpora=drive listing.
     """
     listable = {} if listable is None else listable
+    drive_ids = {} if drive_ids is None else drive_ids
 
     async def files_get(fileId, **_kwargs):
-        return {
+        result = {
             "id": fileId,
             "capabilities": {"canListChildren": listable.get(fileId, True)},
         }
+        if fileId in drive_ids:
+            result["driveId"] = drive_ids[fileId]
+        return result
 
     async def files_list(**params):
         parents = re.findall(r"'([^']+)' in parents", params["q"])
@@ -4076,6 +4076,41 @@ class TestExpandFolderScope:
         assert conn._tracked_folder_ids == {"seed-1", "child-1"}
         assert conn._expanded_folder_ids == {"seed-1", "child-1"}
         assert conn._blocked_folder_ids == set()
+
+    @pytest.mark.asyncio
+    async def test_my_drive_seed_lists_without_corpora_all_drives(self):
+        """My Drive / shared-with-me seeds must use default corpora=user (880fb5c).
+        corpora=allDrives can incompleteSearch and drop restricted children."""
+        conn = _make_connector()
+        conn._folder_seed_ids = {"seed-1"}
+        conn._tracked_folder_ids = {"seed-1"}
+
+        ds = _make_expanding_data_source({"seed-1": ["hidden"]}, listable={"hidden": False})
+        await conn._expand_folder_scope(ds)
+
+        assert conn._tracked_folder_ids == {"seed-1", "hidden"}
+        assert conn._blocked_folder_ids == {"hidden"}
+        ds.files_list.assert_called()
+        assert "corpora" not in ds.files_list.await_args.kwargs
+        assert ds.files_list.await_args.kwargs["supportsAllDrives"] is True
+        assert ds.files_list.await_args.kwargs["includeItemsFromAllDrives"] is True
+
+    @pytest.mark.asyncio
+    async def test_shared_drive_seed_lists_with_corpora_drive(self):
+        """Shared-drive seeds need corpora=drive + driveId, not corpora=allDrives."""
+        conn = _make_connector()
+        conn._folder_seed_ids = {"shared-seed"}
+        conn._tracked_folder_ids = {"shared-seed"}
+
+        ds = _make_expanding_data_source(
+            {"shared-seed": ["nested"]}, drive_ids={"shared-seed": "drive-abc"}
+        )
+        await conn._expand_folder_scope(ds)
+
+        assert conn._tracked_folder_ids == {"shared-seed", "nested"}
+        ds.files_list.assert_called()
+        assert ds.files_list.await_args.kwargs["corpora"] == "drive"
+        assert ds.files_list.await_args.kwargs["driveId"] == "drive-abc"
 
     @pytest.mark.asyncio
     async def test_seed_invisible_to_user_is_deferred_then_expanded_by_next_user(self):

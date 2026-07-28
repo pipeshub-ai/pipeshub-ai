@@ -8,6 +8,7 @@ including success paths, error paths, and all conditional branches.
 import asyncio
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2864,3 +2865,209 @@ class TestProcessDriveItemFolderFilterBypass:
         assert result.record.external_record_id == "ancestor"
         assert result.record.parent_external_record_id == "higher"
         assert result.record.is_file is False
+
+
+# ===================================================================
+# _expand_folder_scope() -- resolving the folder_ids filter
+# ===================================================================
+
+
+def _make_expanding_data_source(children_by_parent, listable=None):
+    """
+    Data source whose files_list answers an 'in parents' query from a
+    {parent_id: [child folder ids]} map, and whose files_get probe reports
+    canListChildren from `listable` (defaulting to True for anything visible).
+    """
+    listable = {} if listable is None else listable
+
+    async def files_get(fileId, **_kwargs):
+        return {
+            "id": fileId,
+            "capabilities": {"canListChildren": listable.get(fileId, True)},
+        }
+
+    async def files_list(**params):
+        parents = re.findall(r"'([^']+)' in parents", params["q"])
+        return {
+            "files": [
+                {
+                    "id": child_id,
+                    "capabilities": {"canListChildren": listable.get(child_id, True)},
+                }
+                for parent_id in parents
+                for child_id in children_by_parent.get(parent_id, [])
+            ]
+        }
+
+    ds = AsyncMock()
+    ds.files_get = AsyncMock(side_effect=files_get)
+    ds.files_list = AsyncMock(side_effect=files_list)
+    return ds
+
+
+class TestExpandFolderScope:
+    @pytest.mark.asyncio
+    async def test_no_op_when_no_seeds_configured(self, connector):
+        connector._get_fresh_datasource = AsyncMock()
+        connector.drive_data_source = _make_expanding_data_source({})
+
+        await connector._expand_folder_scope()
+
+        assert connector._tracked_folder_ids == set()
+        connector.drive_data_source.files_get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_expands_seed_into_descendant_subfolders(self, connector):
+        connector._get_fresh_datasource = AsyncMock()
+        connector._folder_seed_ids = {"seed-1"}
+        connector._tracked_folder_ids = {"seed-1"}
+        connector.drive_data_source = _make_expanding_data_source(
+            {"seed-1": ["child-1"], "child-1": ["grandchild-1"]}
+        )
+
+        await connector._expand_folder_scope()
+
+        assert connector._tracked_folder_ids == {"seed-1", "child-1", "grandchild-1"}
+        assert connector._blocked_folder_ids == set()
+
+    @pytest.mark.asyncio
+    async def test_unlistable_subfolder_blocks_instead_of_banking_empty_subtree(
+        self, connector
+    ):
+        """A folder this account can see but not list returns zero children, so
+        descending into it would silently drop its subtree."""
+        connector._get_fresh_datasource = AsyncMock()
+        connector._folder_seed_ids = {"seed-1"}
+        connector._tracked_folder_ids = {"seed-1"}
+        connector.drive_data_source = _make_expanding_data_source(
+            {"seed-1": ["hidden"], "hidden": ["deep-1"]}, listable={"hidden": False}
+        )
+
+        await connector._expand_folder_scope()
+
+        assert connector._tracked_folder_ids == {"seed-1", "hidden"}
+        assert connector._blocked_folder_ids == {"hidden"}
+
+    @pytest.mark.asyncio
+    async def test_invisible_seed_is_not_listed(self, connector):
+        connector._get_fresh_datasource = AsyncMock()
+        connector._folder_seed_ids = {"seed-1"}
+        connector._tracked_folder_ids = {"seed-1"}
+        resp = MagicMock()
+        resp.status = 404
+        ds = AsyncMock()
+        ds.files_get = AsyncMock(side_effect=HttpError(resp, b"not found"))
+        ds.files_list = AsyncMock()
+        connector.drive_data_source = ds
+
+        await connector._expand_folder_scope()
+
+        assert connector._tracked_folder_ids == {"seed-1"}
+        ds.files_list.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_seed_visible_but_unlistable_is_blocked(self, connector):
+        connector._get_fresh_datasource = AsyncMock()
+        connector._folder_seed_ids = {"seed-1"}
+        connector._tracked_folder_ids = {"seed-1"}
+        connector.drive_data_source = _make_expanding_data_source(
+            {"seed-1": ["child-1"]}, listable={"seed-1": False}
+        )
+
+        await connector._expand_folder_scope()
+
+        assert connector._tracked_folder_ids == {"seed-1"}
+        assert connector._blocked_folder_ids == {"seed-1"}
+        connector.drive_data_source.files_list.assert_not_called()
+
+
+# ===================================================================
+# _apply_folder_scope_to_change() -- incremental scope transitions
+# ===================================================================
+
+
+class TestApplyFolderScopeToChange:
+    @pytest.mark.asyncio
+    async def test_in_scope_item_passes_through(self, connector):
+        connector._tracked_folder_ids = {"folder-a"}
+        meta = _make_file_metadata(file_id="f1", parents=["folder-a"])
+
+        assert await connector._apply_folder_scope_to_change(meta, set()) == [meta]
+
+    @pytest.mark.asyncio
+    async def test_folder_exiting_scope_deletes_folder_and_descendants(self, connector):
+        connector._tracked_folder_ids = {"folder-a"}
+        existing = _make_record(
+            id="rec-folder-b",
+            external_record_id="folder-b",
+            record_name="folder-b",
+            parent_external_record_id="folder-a",
+            mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+        )
+        connector.data_store_provider = _make_mock_data_store_provider(existing)
+        connector.data_entities_processor.on_records_deleted_cascade = AsyncMock(
+            return_value={"deleted_records": ["rec-folder-b", "rec-child"]}
+        )
+
+        # Was under folder-a (in scope), now under an untracked parent.
+        moved_out = _make_folder_metadata("folder-b", parents=["outside"])
+        assert await connector._apply_folder_scope_to_change(moved_out, set()) == []
+
+        connector.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["rec-folder-b"], "drive-conn-1"
+        )
+        connector.data_entities_processor.on_record_deleted.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_file_exiting_scope_deletes_single_record(self, connector):
+        connector._tracked_folder_ids = {"folder-a"}
+        existing = _make_record(
+            id="rec-f1",
+            external_record_id="f1",
+            parent_external_record_id="folder-a",
+            mime_type="text/plain",
+        )
+        connector.data_store_provider = _make_mock_data_store_provider(existing)
+
+        moved_out = _make_file_metadata(file_id="f1", parents=["outside"])
+        assert await connector._apply_folder_scope_to_change(moved_out, set()) == []
+
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(
+            record_id="rec-f1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_out_of_scope_item_with_no_record_is_a_noop(self, connector):
+        connector._tracked_folder_ids = {"folder-a"}
+        meta = _make_file_metadata(file_id="f1", parents=["outside"])
+
+        assert await connector._apply_folder_scope_to_change(meta, set()) == []
+        connector.data_entities_processor.on_record_deleted.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_folder_entering_scope_pulls_descendants(self, connector):
+        """changes_list reports the moved folder but nothing inside it."""
+        connector._get_fresh_datasource = AsyncMock()
+        connector._folder_seed_ids = {"folder-a"}
+        connector._tracked_folder_ids = {"folder-a", "folder-b"}
+        connector.drive_data_source.files_list = AsyncMock(
+            return_value={"files": [_make_file_metadata(file_id="child-1")]}
+        )
+
+        moved_in = _make_folder_metadata("folder-b", parents=["folder-a"])
+        items = await connector._apply_folder_scope_to_change(moved_in, set())
+
+        assert [item["id"] for item in items] == ["folder-b", "child-1"]
+
+    @pytest.mark.asyncio
+    async def test_seed_folder_does_not_trigger_descendant_fetch(self, connector):
+        """A seed's subtree is already in scope, so a change on it needs no recursion."""
+        connector._get_fresh_datasource = AsyncMock()
+        connector._folder_seed_ids = {"folder-a"}
+        connector._tracked_folder_ids = {"folder-a"}
+        connector.drive_data_source.files_list = AsyncMock()
+
+        seed = _make_folder_metadata("folder-a", parents=["outside"])
+        assert await connector._apply_folder_scope_to_change(seed, set()) == [seed]
+
+        connector.drive_data_source.files_list.assert_not_called()
