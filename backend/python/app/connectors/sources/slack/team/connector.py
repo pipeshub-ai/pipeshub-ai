@@ -3656,8 +3656,8 @@ class SlackConnector(BaseConnector):
 
     @staticmethod
     def _extract_user_mentions(text: str) -> list[str]:
-        """Extract Slack user IDs from <@U…> / <@W…> syntax."""
-        return re.findall(r"<@([UW]\w+)>", text)
+        """Extract Slack user IDs from <@U…> / <@W…> / <@U…|label> syntax."""
+        return re.findall(r"<@([UW]\w+)(?:\|[^>]+)?>", text)
 
     async def _warm_user_cache_for_messages(
         self,

@@ -464,12 +464,11 @@ class TestExtractUserMentions:
         from app.connectors.sources.slack.team.connector import SlackConnector
         assert SlackConnector._extract_user_mentions("") == []
 
-    def test_mention_with_display_name_not_matched(self):
-        """The simple pattern <@U123|name> is NOT matched by _extract_user_mentions."""
+    def test_mention_with_display_name(self):
+        """Labeled mentions <@U123|name> extract the user ID (label discarded)."""
         from app.connectors.sources.slack.team.connector import SlackConnector
-        # <@U123ABC|John> won't match because > doesn't immediately follow \w+
         ids = SlackConnector._extract_user_mentions("<@U123ABC|John>")
-        assert ids == []
+        assert ids == ["U123ABC"]
 
     def test_w_prefix_user(self):
         from app.connectors.sources.slack.team.connector import SlackConnector
@@ -7493,8 +7492,12 @@ class TestWarmUserCacheBranches:
 
         c = _connector_pipeline_ready()
         c.user_id_to_name_cache = {}
+        c.user_id_to_email_cache = {}
         rl = RateLimiter(limits={2: 10, 3: 10, 4: 10}, headroom=1.0)
-        ctx = ProcessingContext("C1", {}, {}, {"U444": "Known"}, {}, rl)
+        # Skip only when both name and email are already known (ctx or instance cache).
+        ctx = ProcessingContext(
+            "C1", {}, {"U444": "known@example.com"}, {"U444": "Known"}, {}, rl
+        )
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock) as fd:
             await c._warm_user_cache_for_messages([{"text": "<@U444>"}], ctx=ctx)
         fd.assert_not_called()
