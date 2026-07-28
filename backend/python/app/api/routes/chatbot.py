@@ -179,6 +179,7 @@ def create_internal_search_tool(
                 blob_store=blob_store,
                 org_id=org_id,
                 config_service=blob_store.config_service,
+                user_id=user_id,
             )
 
             existing_keys = {
@@ -952,6 +953,7 @@ async def _generate_internal_search_stream(
                     blob_store=blob_store,
                     org_id=org_id,
                     config_service=blob_store.config_service,
+                    user_id=user_id,
                 )
 
                 final_results = sorted(flattened_results, key=flattened_result_sort_key)
