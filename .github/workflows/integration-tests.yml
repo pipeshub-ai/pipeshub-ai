@@ -84,19 +84,25 @@ jobs:
       matrix:
         # Each matrix value is one job. "arango"/"neo4j" run that backend only;
         # "both" runs the two backends sequentially inside a single job.
-        # Sequential is the default; high-priority runs opt into parallel via
-        # the run_mode dispatch input or an `it-parallel` label on the PR. env
-        # context is not available in `strategy`, so this derives from
-        # inputs/labels directly.
-        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || '["both"]') }}
+        # Sequential "both" is the default. A run selects specific backends via
+        # the graph_db dispatch input, or on a PR via the `neo4j-test` /
+        # `arango-test` labels (one, or both for a two-job parallel run). Runs
+        # opt into the full parallel pair via run_mode=parallel or the
+        # `it-parallel` label. env context is not available in `strategy`, so
+        # this derives from inputs/labels directly.
+        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'neo4j-test') && contains(github.event.pull_request.labels.*.name, 'arango-test') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'neo4j-test') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'arango-test') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || '["both"]') }}
 
-    # Schedule uses a separate environment so daily runs are not blocked by
-    # deployment protection on `integration-test-dev`. Create
-    # `integration-test-daily` in repo Settings → Environments with the same
-    # environment secrets as `integration-test-dev`, but leave required
-    # reviewers / wait timer disabled.
+    # Per-backend jobs (arango/neo4j — from a single-backend selection, a
+    # per-backend label, or the parallel path) each use their own environment so a
+    # reviewer can approve one backend independently of the other:
+    # `integration-test-arango` and `integration-test-neo4j` each carry their own
+    # required reviewers. The sequential "both" job keeps the shared
+    # `integration-test-dev`. Schedule uses `integration-test-daily` so daily runs
+    # are not blocked by deployment protection. All four environments need the same
+    # environment secrets; on `integration-test-daily`, leave required reviewers /
+    # wait timer disabled.
     environment:
-      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
+      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || (matrix.graph_db == 'both' && 'integration-test-dev') || format('integration-test-{0}', matrix.graph_db) }}
 
     env:
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
@@ -137,8 +143,9 @@ jobs:
       LINEAR_TEST_TEAM_IDS: ${{ secrets.LINEAR_TEST_TEAM_IDS }}
       # Playwright runs once per workflow: on the job that has the neo4j stack
       # (the neo4j leg, or the sequential "both" job), or on the arango job when
-      # arango is the only backend selected.
-      RUN_PLAYWRIGHT: ${{ (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both' || github.event.inputs.graph_db == 'arango') && 'true' || 'false' }}
+      # arango is the only backend selected — via the arango dispatch input, or an
+      # `arango-test` label with no neo4j/it-parallel label alongside it.
+      RUN_PLAYWRIGHT: ${{ (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both' || (matrix.graph_db == 'arango' && (github.event.inputs.graph_db == 'arango' || (contains(github.event.pull_request.labels.*.name, 'arango-test') && !contains(github.event.pull_request.labels.*.name, 'neo4j-test') && !contains(github.event.pull_request.labels.*.name, 'it-parallel'))))) && 'true' || 'false' }}
 
     steps:
       - name: Checkout code
