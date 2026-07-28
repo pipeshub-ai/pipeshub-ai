@@ -181,6 +181,20 @@ def _dict_to_event(data: dict) -> Event:
     if "isOnlineMeeting" in data:
         event.is_online_meeting = data["isOnlineMeeting"]
 
+    if "onlineMeetingProvider" in data:
+        provider = data["onlineMeetingProvider"]
+        if isinstance(provider, str):
+            provider_map = {
+                "teamsforbusiness": OnlineMeetingProviderType.TeamsForBusiness,
+                "skypeforbusiness": OnlineMeetingProviderType.SkypeForBusiness,
+                "skypeforconsumer": OnlineMeetingProviderType.SkypeForConsumer,
+            }
+            event.online_meeting_provider = provider_map.get(
+                provider.lower(), OnlineMeetingProviderType.TeamsForBusiness
+            )
+        else:
+            event.online_meeting_provider = provider
+
     if "recurrence" in data:
         rec = data["recurrence"]
         if isinstance(rec, PatternedRecurrence):
@@ -530,17 +544,34 @@ class TeamsDataSource:
         if target is None:
             return None
 
+        dt_str: Optional[str] = None
+        tz_str: Optional[str] = None
+
         if isinstance(target, dict):
             for candidate in ("dateTime", "date_time"):
                 value = target.get(candidate)
                 if isinstance(value, str) and value:
-                    return value
+                    dt_str = value
+                    break
+            tz_str = target.get("timeZone") or target.get("time_zone")
+        else:
+            for candidate in ("date_time", "dateTime"):
+                value = getattr(target, candidate, None)
+                if isinstance(value, str) and value:
+                    dt_str = value
+                    break
+            tz_str = getattr(target, "time_zone", None) or getattr(target, "timeZone", None)
 
-        for candidate in ("date_time", "dateTime"):
-            value = getattr(target, candidate, None)
-            if isinstance(value, str) and value:
-                return value
-        return None
+        if not dt_str:
+            return None
+
+        # Include timezone in the string so the time is unambiguous.
+        # If the string already has tz info (Z or offset), return as-is.
+        has_tz = dt_str.endswith("Z") or "+" in dt_str[10:] or "-" in dt_str[10:]
+        if not has_tz and tz_str:
+            dt_str = f"{dt_str} ({tz_str})"
+
+        return dt_str
 
     @staticmethod
     def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -1800,6 +1831,7 @@ class TeamsDataSource:
         is_deleted: Optional[bool] = None,
         is_cancelled: Optional[bool] = None,
         meeting_type: Optional[str] = None,
+        timezone: Optional[str] = None,
         top: Optional[int] = 100,
     ) -> TeamsResponse:
         """Get meetings including recurring instances using calendarView."""
@@ -1867,11 +1899,39 @@ class TeamsDataSource:
                 query_parameters=query_params
             )
 
-            
+            # Ask Graph to return event start/end converted to the user's
+            # timezone instead of the default UTC. The API echoes the
+            # timezone back in the response payload so _extract_event_datetime
+            # can append it to the datetime string for unambiguous display.
+            if isinstance(timezone, str) and timezone.strip():
+                config.headers.try_add(
+                    "Prefer", f'outlook.timezone="{timezone.strip()}"'
+                )
 
             response = await self.client.me.calendar_view.get(request_configuration=config)
 
-            raw_events = self._extract_collection_items(response)
+            raw_events = list(getattr(response, "value", None) or [])
+
+            next_link = getattr(response, "odata_next_link", None)
+            # Build a headers-only config for paginated calls so the Prefer
+            # timezone header is preserved without re-appending query params
+            # that are already encoded in the next_link URL.
+            page_config = CalendarViewRequestBuilder.CalendarViewRequestBuilderGetRequestConfiguration()
+            if isinstance(timezone, str) and timezone.strip():
+                page_config.headers.try_add(
+                    "Prefer", f'outlook.timezone="{timezone.strip()}"'
+                )
+            while next_link:
+                try:
+                    next_response = await self.client.me.calendar_view.with_url(next_link).get(
+                        request_configuration=page_config
+                    )
+                    next_value = getattr(next_response, "value", None)
+                    if isinstance(next_value, list):
+                        raw_events.extend(next_value)
+                    next_link = getattr(next_response, "odata_next_link", None)
+                except Exception:
+                    break
 
             
 
@@ -2190,6 +2250,46 @@ class TeamsDataSource:
             )
 
 
+    async def me_get_online_meeting_transcript_content(
+        self,
+        onlineMeeting_id: str,
+        callTranscript_id: str,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs,
+    ) -> TeamsResponse:
+        """Get the VTT content of a specific transcript.
+        GET /me/onlineMeetings/{id}/transcripts/{id}/content
+        The Graph SDK returns bytes (VTT by default).
+        """
+        try:
+            config = RequestConfiguration()
+            if headers:
+                config.headers = headers
+
+            content_bytes = await self.client.me.online_meetings.by_online_meeting_id(
+                onlineMeeting_id
+            ).transcripts.by_call_transcript_id(
+                callTranscript_id
+            ).content.get(request_configuration=config)
+
+            if content_bytes is None:
+                return TeamsResponse(
+                    success=False,
+                    error="Transcript content is empty",
+                )
+
+            text = content_bytes.decode("utf-8") if isinstance(content_bytes, bytes) else str(content_bytes)
+            return TeamsResponse(
+                success=True,
+                data={"content": text, "format": "vtt"},
+            )
+        except Exception as e:
+            return TeamsResponse(
+                success=False,
+                error=f"Teams API call failed: {str(e)}",
+            )
+
+
     async def me_search_events_in_range(
         self,
         keyword: str,
@@ -2227,7 +2327,18 @@ class TeamsDataSource:
                     config.headers.try_add(key, value)
 
             response = await self.client.me.calendar.calendar_view.get(request_configuration=config)
-            raw_events = self._extract_collection_items(response)
+
+            raw_events = list(getattr(response, "value", None) or [])
+            next_link = getattr(response, "odata_next_link", None)
+            while next_link:
+                try:
+                    next_response = await self.client.me.calendar.calendar_view.with_url(next_link).get(request_configuration=config)
+                    next_value = getattr(next_response, "value", None)
+                    if isinstance(next_value, list):
+                        raw_events.extend(next_value)
+                    next_link = getattr(next_response, "odata_next_link", None)
+                except Exception:
+                    break
 
             keyword_clean = keyword.strip()
             keyword_lower = keyword_clean.lower()
