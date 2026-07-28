@@ -236,6 +236,36 @@ class TestMentionAndBotHandling:
         assert ctx.user_id_to_email["U999"] == "external@example.com"
 
     @pytest.mark.asyncio
+    async def test_warm_user_cache_fetches_author_without_mention(self):
+        c = _make_connector()
+        ctx = c._make_ctx("C1", "rg1")
+        ds = MagicMock()
+        ds.users_info = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                data={
+                    "user": {
+                        "profile": {
+                            "real_name": "Author User",
+                            "email": "author@example.com",
+                        },
+                        "name": "author",
+                    }
+                },
+            )
+        )
+
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)):
+            await c._warm_user_cache_for_messages(
+                [{"user": "U_AUTH", "text": "plain message"}],
+                ctx,
+            )
+
+        ds.users_info.assert_awaited_once_with(user="U_AUTH")
+        assert c.user_id_to_email_cache["U_AUTH"] == "author@example.com"
+        assert ctx.user_id_to_email["U_AUTH"] == "author@example.com"
+
+    @pytest.mark.asyncio
     async def test_stale_bot_filter_does_not_skip_single_bot_message(self):
         c = _make_connector()
         c.indexing_filters = FilterCollection(
@@ -2782,6 +2812,39 @@ class TestSlackIndividualAdditionalCoverage:
         msg2 = {"ts": "101.0", "user": "U1", "text": ""}
         block2 = c._build_message_block(msg2, 0, 0, ctx)
         assert block2.data.startswith("**Author**:")
+
+    def test_format_mentioned_users_line(self) -> None:
+        c = _make_connector()
+        ctx = _ctx(c)
+        ctx.user_id_to_name["U2"] = "Bob"
+        ctx.user_id_to_email["U2"] = "bob@corp.com"
+
+        assert c._format_mentioned_users_line("", ctx) is None
+
+        line = c._format_mentioned_users_line("cc <@U2>", ctx)
+        assert line == "Mentioned Users: Bob (ID: U2, Email: bob@corp.com)"
+
+    def test_build_message_block_includes_author_and_mentioned_metadata(self) -> None:
+        c = _make_connector()
+        ctx = _ctx(c)
+        ctx.user_id_to_name["U1"] = "Alice"
+        ctx.user_id_to_email["U1"] = "alice@corp.com"
+        ctx.user_id_to_name["U2"] = "Bob"
+        ctx.user_id_to_email["U2"] = "bob@corp.com"
+
+        block = c._build_message_block(
+            {
+                "ts": "100.0",
+                "user": "U1",
+                "text": "Hey <@U2>, what is the status?",
+            },
+            0,
+            0,
+            ctx,
+        )
+        assert "Author ID: U1" in block.data
+        assert "Author Email: alice@corp.com" in block.data
+        assert "Mentioned Users: Bob (ID: U2, Email: bob@corp.com)" in block.data
 
     def test_classify_url_github_and_gdrive(self) -> None:
         from app.connectors.sources.slack.individual.connector import SlackIndividualConnector as S

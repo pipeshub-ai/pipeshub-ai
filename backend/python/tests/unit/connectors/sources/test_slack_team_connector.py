@@ -1637,14 +1637,69 @@ class TestWarmUserCacheForMessages:
         fd.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_skips_users_already_in_instance_cache(self):
+    async def test_skips_users_when_name_and_email_cached(self):
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _make_connector()
         c.user_id_to_name_cache = {"U55": "Pat"}
+        c.user_id_to_email_cache = {"U55": "pat@corp.com"}
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock) as fd:
             await c._warm_user_cache_for_messages([{"text": "Hi <@U55>"}])
         fd.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fetches_author_when_email_missing(self):
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _make_connector()
+        c.user_id_to_name_cache = {"U77": "Pat"}
+        c.user_id_to_email_cache = {}
+        c.rate_limiter = MagicMock()
+        c.rate_limiter.acquire = AsyncMock()
+        ds = MagicMock()
+        ds.users_info = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                data={
+                    "user": {
+                        "profile": {"real_name": "Pat", "email": "pat@corp.com"},
+                        "name": "pat",
+                    }
+                },
+            )
+        )
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await c._warm_user_cache_for_messages(
+                [{"user": "U77", "text": "solo message without mentions"}],
+            )
+        ds.users_info.assert_awaited_once_with(user="U77")
+        assert c.user_id_to_email_cache["U77"] == "pat@corp.com"
+
+    @pytest.mark.asyncio
+    async def test_refetches_mention_when_name_cached_but_email_missing(self):
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _make_connector()
+        c.user_id_to_name_cache = {"U55": "Pat"}
+        c.user_id_to_email_cache = {}
+        c.rate_limiter = MagicMock()
+        c.rate_limiter.acquire = AsyncMock()
+        ds = MagicMock()
+        ds.users_info = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                data={
+                    "user": {
+                        "profile": {"real_name": "Pat", "email": "pat@corp.com"},
+                        "name": "pat",
+                    }
+                },
+            )
+        )
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await c._warm_user_cache_for_messages([{"text": "Hi <@U55>"}])
+        ds.users_info.assert_awaited_once_with(user="U55")
+        assert c.user_id_to_email_cache["U55"] == "pat@corp.com"
 
     @pytest.mark.asyncio
     async def test_users_info_updates_caches_and_ctx(self):
@@ -2684,6 +2739,66 @@ class TestBlockBuildersAndDetectBursts:
         }
         b3 = c._build_message_block(thread_parent, 0, 0, ctx)
         assert "Reply Count: 3" in b3.data
+
+    def test_format_mentioned_users_line(self):
+        from app.connectors.sources.slack.team.connector import (
+            ProcessingContext,
+            RateLimiter,
+        )
+
+        c = _make_connector()
+        rl = RateLimiter(limits={2: 10, 3: 10, 4: 10}, headroom=1.0)
+        ctx = ProcessingContext(
+            "C1",
+            {"C1": "rg"},
+            {"U2": "bob@corp.com", "U3": "carol@corp.com"},
+            {"U2": "Bob", "U3": "Carol"},
+            {"C1": "general"},
+            rl,
+        )
+        assert c._format_mentioned_users_line("", ctx) is None
+        assert c._format_mentioned_users_line("no mentions", ctx) is None
+
+        line = c._format_mentioned_users_line("ping <@U2> and <@U3>", ctx)
+        assert line is not None
+        assert line.startswith("Mentioned Users:")
+        assert "Bob (ID: U2, Email: bob@corp.com)" in line
+        assert "Carol (ID: U3, Email: carol@corp.com)" in line
+
+        line_id_only = c._format_mentioned_users_line("<@U9>", ctx)
+        assert "U9 (ID: U9)" in line_id_only
+        assert "Email:" not in line_id_only
+
+        deduped = c._format_mentioned_users_line("<@U2> again <@U2>", ctx)
+        assert deduped.count("U2") == 1
+
+    def test_build_message_block_includes_author_and_mentioned_metadata(self):
+        from app.connectors.sources.slack.team.connector import (
+            ProcessingContext,
+            RateLimiter,
+        )
+
+        c = _make_connector()
+        rl = RateLimiter(limits={2: 10, 3: 10, 4: 10}, headroom=1.0)
+        ctx = ProcessingContext(
+            "C1",
+            {"C1": "rg"},
+            {"U1": "alice@corp.com", "U2": "bob@corp.com"},
+            {"U1": "Alice", "U2": "Bob"},
+            {"C1": "tech"},
+            rl,
+        )
+        msg = {
+            "ts": "200.0",
+            "user": "U1",
+            "text": "Hey <@U2>, status update?",
+        }
+        block = c._build_message_block(msg, 0, 0, ctx)
+        assert "Author ID: U1" in block.data
+        assert "Author Email: alice@corp.com" in block.data
+        assert "Mentioned Users:" in block.data
+        assert "Bob (ID: U2, Email: bob@corp.com)" in block.data
+        assert "**Alice**:" in block.data
 
     def test_build_burst_single_containers_and_detect_bursts(self):
         from app.connectors.sources.slack.team.connector import (

@@ -682,10 +682,7 @@ class MessageRecord(Record):
         lines = [base]
 
         specific_lines = []
-        if self.author_email:
-            specific_lines.append(f"* Author Email: {self.author_email}")
-        if self.author_id:
-            specific_lines.append(f"* Author ID: {self.author_id}")
+
         if self.thread_id:
             specific_lines.append(f"* Thread ID: {self.thread_id}")
         if self.start_ts:
