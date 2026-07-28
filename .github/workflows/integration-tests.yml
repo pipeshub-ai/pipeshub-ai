@@ -443,35 +443,9 @@ jobs:
           cp -r frontend/playwright-report integration-tests/reports/playwright/html-report 2>/dev/null || true
           cp frontend/test-results/playwright-junit.xml integration-tests/reports/playwright/ 2>/dev/null || true
 
-      - name: Upload reports artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: reports-${{ matrix.graph_db }}
-          path: integration-tests/reports/
-          if-no-files-found: ignore
-
-  report:
-    name: Integration Tests Report
-    needs: integration-tests
-    # Report failed runs, but stay silent when the run was cancelled or skipped.
-    if: ${{ !cancelled() && needs.integration-tests.result != 'skipped' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Download reports from all jobs
-        uses: actions/download-artifact@v4
-        with:
-          pattern: reports-*
-          path: integration-tests/reports
-          merge-multiple: true
-
-      - name: Ensure reports directory exists
-        run: mkdir -p integration-tests/reports
-
-      - name: Collect test results and prepare email
+      - name: Collect test results and prepare Slack report
         id: test-results
+        if: ${{ !cancelled() }}
         working-directory: integration-tests
         env:
           # Route untrusted PR metadata through env vars so the shell script
@@ -482,6 +456,7 @@ jobs:
           PR_URL_IN: ${{ github.event.pull_request.html_url }}
           PR_LOGIN_IN: ${{ github.event.pull_request.user.login }}
           ACTOR_IN: ${{ github.actor }}
+          JOB_STATUS: ${{ job.status }}
         run: |
           TOTAL_PASSED=0
           TOTAL_FAILED=0
@@ -552,9 +527,14 @@ jobs:
             PW_PASS_RATE=0
           fi
 
-          # Overall health: green only when both suites are fully passing
+          # Green only when every suite is fully passing AND the job itself is
+          # healthy — a stack that never came up produces zero counts, which
+          # would otherwise read as success.
           OVERALL_OK=true
           if [ "$TOTAL_FAILED" -gt 0 ] || [ "$TOTAL_ERRORS" -gt 0 ] || [ "$PW_FAILED" -gt 0 ] || [ "$PW_ERRORS" -gt 0 ]; then
+            OVERALL_OK=false
+          fi
+          if [ "$JOB_STATUS" != "success" ] || [ "$TOTAL_TESTS" -eq 0 ]; then
             OVERALL_OK=false
           fi
 
@@ -584,8 +564,11 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Zip reports folder
+        if: ${{ !cancelled() }}
         working-directory: integration-tests
-        run: zip -r reports.zip reports/
+        run: |
+          mkdir -p reports
+          zip -r reports.zip reports/
 
       - name: Send Slack report
         if: ${{ !cancelled() }}
@@ -602,7 +585,7 @@ jobs:
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "${{ steps.test-results.outputs.OVERALL_OK == 'true' && ':large_green_circle:' || ':red_circle:' }} Integration Tests — ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
+                    "text": "${{ steps.test-results.outputs.OVERALL_OK == 'true' && ':large_green_circle:' || ':red_circle:' }} Integration Tests (${{ matrix.graph_db }}) — ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
                   }
                 },
                 {
@@ -670,7 +653,7 @@ jobs:
                 {
                   "type": "context",
                   "elements": [
-                    { "type": "mrkdwn", "text": "Commit: `${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha || github.sha }}`" }
+                    { "type": "mrkdwn", "text": "Commit: `${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha || github.sha }}` • Job: `${{ job.status }}`" }
                   ]
                 },
                 {
@@ -703,7 +686,7 @@ jobs:
 
           RESPONSE=$(curl -s -X POST "https://slack.com/api/files.getUploadURLExternal" \
             -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-            -d "filename=integration-test-reports.zip" \
+            -d "filename=integration-test-reports-${{ matrix.graph_db }}.zip" \
             -d "length=$FILE_SIZE")
           OK=$(echo "$RESPONSE" | jq -r '.ok')
           if [ "$OK" != "true" ]; then
@@ -715,7 +698,7 @@ jobs:
 
           curl -s -X POST "$UPLOAD_URL" -F "file=@reports.zip"
 
-          COMPLETE_PAYLOAD="{\"files\":[{\"id\":\"$FILE_ID\",\"title\":\"Integration Test Reports\"}],\"channel_id\":\"$CHANNEL_ID\""
+          COMPLETE_PAYLOAD="{\"files\":[{\"id\":\"$FILE_ID\",\"title\":\"Integration Test Reports (${{ matrix.graph_db }})\"}],\"channel_id\":\"$CHANNEL_ID\""
           if [ -n "$THREAD_TS" ]; then
             COMPLETE_PAYLOAD="$COMPLETE_PAYLOAD,\"thread_ts\":\"$THREAD_TS\""
           fi
@@ -731,6 +714,7 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
           MESSAGE_RESPONSE: ${{ steps.slack-message.outputs.response || '{}' }}
+          GRAPH_DB: ${{ matrix.graph_db }}
         working-directory: integration-tests
         run: |
           python3 - << 'PYEOF'
@@ -739,6 +723,7 @@ jobs:
           msg_response = os.environ.get('MESSAGE_RESPONSE', '{}')
           channel_id   = os.environ.get('CHANNEL_ID', '')
           bot_token    = os.environ.get('SLACK_BOT_TOKEN', '')
+          graph_db     = os.environ.get('GRAPH_DB', '')
 
           try:
               thread_ts = json.loads(msg_response).get('ts', '')
@@ -774,7 +759,7 @@ jobs:
               truncated = body[:BODY_LIMIT].rsplit("\n", 1)[0]
               omitted   = len(names) - truncated.count("\n") - 1
               body      = truncated + f"\n… ({omitted} more — see reports zip for full list)"
-          text    = "*Failed Tests:*\n```\n" + body + "\n```"
+          text    = f"*Failed Tests ({graph_db}):*\n```\n" + body + "\n```"
           payload = json.dumps({"channel": channel_id, "thread_ts": thread_ts, "text": text}).encode()
           req     = urllib.request.Request(
               "https://slack.com/api/chat.postMessage",
@@ -789,3 +774,11 @@ jobs:
               print(f"::warning::Slack postMessage failed: {e}", file=sys.stderr)
               sys.exit(1)
           PYEOF
+
+      - name: Upload reports artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ matrix.graph_db }}
+          path: integration-tests/reports/
+          if-no-files-found: ignore
