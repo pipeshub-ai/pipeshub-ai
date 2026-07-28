@@ -5395,6 +5395,156 @@ describe('Enterprise Search Controller', () => {
       mockStream.emit('end')
       await new Promise((resolve) => setTimeout(resolve, 50))
     })
+
+    // -----------------------------------------------------------------------
+    // AG-UI protocol negotiation (migration plan Phase 2b/2c) — same handler,
+    // `req.body.protocol: 'agui'` re-frames Node's own outbound events and
+    // propagates the negotiated protocol to Python's aiPayload.
+    // -----------------------------------------------------------------------
+    it('should send a CUSTOM conversation_created event and propagate protocol to Python when agui is negotiated', async () => {
+      const handler = streamAgentConversation(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        agentKey: 'agent-1',
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+
+      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+
+      const mockStream = createMockStream()
+      const executeStreamStub = sinon
+        .stub(AIServiceCommand.prototype, 'executeStream')
+        .resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1' },
+        body: { query: 'hello', protocol: 'agui' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const firstWrite = res.write.firstCall.args[0]
+      expect(firstWrite).to.include('event: CUSTOM')
+      const firstWriteData = JSON.parse(firstWrite.split('data: ')[1].trim())
+      expect(firstWriteData.name).to.equal('conversation_created')
+
+      const sentBody = JSON.parse((executeStreamStub.thisValues[0] as any).body)
+      expect(sentBody.protocol).to.equal('agui')
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    it('should not include a protocol field in aiPayload for legacy (default) requests', async () => {
+      const handler = streamAgentConversation(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        agentKey: 'agent-1',
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+
+      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+
+      const mockStream = createMockStream()
+      const executeStreamStub = sinon
+        .stub(AIServiceCommand.prototype, 'executeStream')
+        .resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1' },
+        body: { query: 'hello' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(res.write.firstCall.args[0]).to.include('event: connected')
+      const sentBody = JSON.parse((executeStreamStub.thisValues[0] as any).body)
+      expect(sentBody.protocol).to.be.undefined
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    it('should process a RUN_FINISHED frame from Python and re-emit RUN_FINISHED to the client', async () => {
+      const handler = streamAgentConversation(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        agentKey: 'agent-1',
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+
+      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+      stubMongooseFind(AgentConversation, 'findOne', mockDoc)
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1' },
+        body: { query: 'hello', protocol: 'agui' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const runFinishedPayload = JSON.stringify({
+        type: 'RUN_FINISHED',
+        result: { answer: 'agent answer', citations: [], followUpQuestions: [] },
+      })
+      mockStream.emit('data', Buffer.from(`event: RUN_FINISHED\ndata: ${runFinishedPayload}\n\n`))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      const forwarded = res.write.args.map((a: any) => a[0]).join('')
+      expect(forwarded).to.include('event: RUN_FINISHED')
+      expect(res.end.called).to.be.true
+    })
+
+    it('should surface a RUN_ERROR frame from Python as an SSE error to the client', async () => {
+      const handler = streamAgentConversation(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        agentKey: 'agent-1',
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+
+      sinon.stub(AgentConversation.prototype, 'save').resolves(mockDoc)
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { agentKey: 'agent-1' },
+        body: { query: 'hello', protocol: 'agui' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      mockStream.emit(
+        'data',
+        Buffer.from(`event: RUN_ERROR\ndata: ${JSON.stringify({ type: 'RUN_ERROR', message: 'Agent failed' })}\n\n`),
+      )
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const forwarded = res.write.args.map((a: any) => a[0]).join('')
+      expect(forwarded).to.include('event: RUN_ERROR')
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -11592,6 +11742,349 @@ describe('Enterprise Search Controller', () => {
 
         fetchStub.restore()
       })
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // AG-UI protocol negotiation for the plain (non-agent-key) chat endpoints.
+  // `streamAgentConversation` got this treatment in migration Phase 2b/2c;
+  // `streamChat`/`addMessageStream`/`addMessageStreamToAgentConversation`
+  // back the DEFAULT (no explicit agentId) and continuing-agent-conversation
+  // chat surfaces respectively and needed the identical fix, since the
+  // frontend now negotiates `protocol: 'agui'` on every stream request.
+  // -----------------------------------------------------------------------
+  describe('streamChat - AG-UI protocol', () => {
+    it('should send a CUSTOM conversation_created event and propagate protocol to Python when agui is negotiated', async () => {
+      const handler = streamChat(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      const mockStream = createMockStream()
+      const executeStreamStub = sinon
+        .stub(AIServiceCommand.prototype, 'executeStream')
+        .resolves(mockStream)
+
+      const req = createMockRequest({
+        body: { query: 'hello', protocol: 'agui' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const firstWrite = res.write.firstCall.args[0]
+      expect(firstWrite).to.include('event: CUSTOM')
+      const firstWriteData = JSON.parse(firstWrite.split('data: ')[1].trim())
+      expect(firstWriteData.name).to.equal('conversation_created')
+
+      const sentBody = JSON.parse((executeStreamStub.thisValues[0] as any).body)
+      expect(sentBody.protocol).to.equal('agui')
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    it('should not include a protocol field in aiPayload for legacy (default) requests', async () => {
+      const handler = streamChat(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      const mockStream = createMockStream()
+      const executeStreamStub = sinon
+        .stub(AIServiceCommand.prototype, 'executeStream')
+        .resolves(mockStream)
+
+      const req = createMockRequest({
+        body: { query: 'hello' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(res.write.firstCall.args[0]).to.include('event: connected')
+      const sentBody = JSON.parse((executeStreamStub.thisValues[0] as any).body)
+      expect(sentBody.protocol).to.be.undefined
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    it('should process a RUN_FINISHED frame from Python, persist it, and re-emit RUN_FINISHED to the client', async () => {
+      const handler = streamChat(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+      stubMongooseFind(Conversation, 'findOne', mockDoc)
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        body: { query: 'hello', protocol: 'agui' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const runFinishedPayload = JSON.stringify({
+        type: 'RUN_FINISHED',
+        result: { answer: 'the answer', citations: [], followUpQuestions: [] },
+      })
+      mockStream.emit('data', Buffer.from(`event: RUN_FINISHED\ndata: ${runFinishedPayload}\n\n`))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      const forwarded = res.write.args.map((a: any) => a[0]).join('')
+      expect(forwarded).to.include('event: RUN_FINISHED')
+      expect(res.end.called).to.be.true
+    })
+
+    it('should surface a RUN_ERROR frame from Python as an AG-UI RUN_ERROR to the client', async () => {
+      const handler = streamChat(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+      sinon.stub(Conversation.prototype, 'save').resolves(mockDoc)
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        body: { query: 'hello', protocol: 'agui' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      mockStream.emit(
+        'data',
+        Buffer.from(`event: RUN_ERROR\ndata: ${JSON.stringify({ type: 'RUN_ERROR', message: 'LLM unavailable' })}\n\n`),
+      )
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      const forwarded = res.write.args.map((a: any) => a[0]).join('')
+      expect(forwarded).to.include('event: RUN_ERROR')
+      expect(forwarded).to.include('LLM unavailable')
+    })
+  })
+
+  describe('addMessageStream - AG-UI protocol', () => {
+    it('should send a CUSTOM conversation_created event and propagate protocol to Python when agui is negotiated', async () => {
+      const handler = addMessageStream(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+      sinon.stub(Conversation, 'findOne').returns({
+        then: (resolve: any) => resolve(mockDoc),
+      } as any)
+      mockDoc.save.resolves(mockDoc)
+
+      const mockStream = createMockStream()
+      const executeStreamStub = sinon
+        .stub(AIServiceCommand.prototype, 'executeStream')
+        .resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { query: 'follow up', protocol: 'agui' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const firstWrite = res.write.firstCall.args[0]
+      expect(firstWrite).to.include('event: CUSTOM')
+      const firstWriteData = JSON.parse(firstWrite.split('data: ')[1].trim())
+      expect(firstWriteData.name).to.equal('conversation_created')
+
+      const sentBody = JSON.parse((executeStreamStub.thisValues[0] as any).body)
+      expect(sentBody.protocol).to.equal('agui')
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    it('should process a RUN_FINISHED frame from Python and re-emit RUN_FINISHED to the client', async () => {
+      const handler = addMessageStream(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+      mockDoc.messages = [...mockDoc.messages]
+      sinon.stub(Conversation, 'findOne').returns({
+        then: (resolve: any) => resolve(mockDoc),
+      } as any)
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { query: 'follow up', protocol: 'agui' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const runFinishedPayload = JSON.stringify({
+        type: 'RUN_FINISHED',
+        result: { answer: 'response to follow up', citations: [], followUpQuestions: [] },
+      })
+      mockStream.emit('data', Buffer.from(`event: RUN_FINISHED\ndata: ${runFinishedPayload}\n\n`))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      const forwarded = res.write.args.map((a: any) => a[0]).join('')
+      expect(forwarded).to.include('event: RUN_FINISHED')
+      expect(res.end.called).to.be.true
+    })
+  })
+
+  describe('addMessageStreamToAgentConversation - AG-UI protocol', () => {
+    it('should send a CUSTOM conversation_created event and propagate protocol to Python when agui is negotiated', async () => {
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        agentKey: 'agent-1',
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+      sinon.stub(AgentConversation, 'findOne').returns({
+        then: (resolve: any) => resolve(mockDoc),
+      } as any)
+      mockDoc.save.resolves(mockDoc)
+
+      const mockStream = createMockStream()
+      const executeStreamStub = sinon
+        .stub(AIServiceCommand.prototype, 'executeStream')
+        .resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { query: 'follow up', protocol: 'agui' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const firstWrite = res.write.firstCall.args[0]
+      expect(firstWrite).to.include('event: CUSTOM')
+      const firstWriteData = JSON.parse(firstWrite.split('data: ')[1].trim())
+      expect(firstWriteData.name).to.equal('conversation_created')
+
+      const sentBody = JSON.parse((executeStreamStub.thisValues[0] as any).body)
+      expect(sentBody.protocol).to.equal('agui')
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    })
+
+    it('should process a RUN_FINISHED frame from Python and re-emit RUN_FINISHED to the client', async () => {
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        agentKey: 'agent-1',
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+      mockDoc.messages = [...mockDoc.messages]
+      sinon.stub(AgentConversation, 'findOne').returns({
+        then: (resolve: any) => resolve(mockDoc),
+      } as any)
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { query: 'follow up', protocol: 'agui' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const runFinishedPayload = JSON.stringify({
+        type: 'RUN_FINISHED',
+        result: { answer: 'agent response', citations: [], followUpQuestions: [] },
+      })
+      mockStream.emit('data', Buffer.from(`event: RUN_FINISHED\ndata: ${runFinishedPayload}\n\n`))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      const forwarded = res.write.args.map((a: any) => a[0]).join('')
+      expect(forwarded).to.include('event: RUN_FINISHED')
+      expect(res.end.called).to.be.true
+    })
+
+    it('should persist an ask_user_question CUSTOM event as a tool_call message', async () => {
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        agentKey: 'agent-1',
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+      sinon.stub(AgentConversation, 'findOne').returns({
+        then: (resolve: any) => resolve(mockDoc),
+      } as any)
+      sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves(mockDoc)
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { query: 'hello', protocol: 'agui' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const customPayload = JSON.stringify({
+        type: 'CUSTOM',
+        name: 'ask_user_question',
+        value: { toolData: { question: 'Pick one' } },
+      })
+      mockStream.emit('data', Buffer.from(`event: CUSTOM\ndata: ${customPayload}\n\n`))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect((AgentConversation.findByIdAndUpdate as sinon.SinonStub).called).to.be.true
+
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 50))
     })
   })
 })

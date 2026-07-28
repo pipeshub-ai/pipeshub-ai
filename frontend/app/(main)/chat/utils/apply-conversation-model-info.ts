@@ -119,14 +119,14 @@ function mapApiSegmentToAgentStrategy(
   switch (seg) {
     case 'auto':
       return 'auto';
-    case 'quick':
-      return 'quick';
-    case 'verification':
-      return 'verify';
+    case 'planExecute':
+      return 'plan-execute';
     case 'deep':
       return 'deep';
+    case 'quick':
+    case 'verification':
     default:
-      return 'auto';
+      return 'quick';
   }
 }
 
@@ -160,6 +160,25 @@ function applyModeAndStrategy(
     store.setQueryMode('agent');
     store.setAgentStrategy(mapApiSegmentToAgentStrategy(agentSegment));
     store.setMode('chat');
+    return;
+  }
+
+  // Universal agent mode (main chat, no scoped agent): the frontend sends
+  // chatMode='agent' (no colon/strategy suffix), and that bare string is
+  // persisted on modelInfo. Restore agent mode without changing strategy.
+  if (mode === 'agent') {
+    store.setQueryMode('agent');
+    store.setMode('chat');
+    return;
+  }
+
+  // If the current mode is already 'agent' (universal agent) and the backend
+  // returned a known strategy name (e.g. 'quick'), preserve agent mode —
+  // the backend simply confirms which strategy was used, not that the user
+  // should be switched to Internal Search.
+  const KNOWN_STRATEGIES = ['auto', 'quick', 'planExecute', 'verification', 'deep'];
+  if (store.settings.queryMode === 'agent' && KNOWN_STRATEGIES.includes(mode)) {
+    store.setAgentStrategy(mapApiSegmentToAgentStrategy(mode));
     return;
   }
 
@@ -202,10 +221,11 @@ async function refreshSelectedModelFromCatalog(
  * `fetchModelsForContext` invalidation rules.
  *
  * Agent conversations (`ctxKey` !== {@link ASSISTANT_CTX}) return plain
- * `chatMode` segments from the API (`auto`, `quick`, `verification`, `deep`)
- * on conversation rows and in history — not `agent:<segment>`. Map those to
- * query mode Agent and the corresponding strategy. Main assistant chat keeps
- * using `agent:`-prefixed modes and `quick` for the default panel.
+ * `chatMode` segments from the API (`auto`, `quick`, `planExecute`, `deep`,
+ * or the legacy `verification` alias) on conversation rows and in history —
+ * not `agent:<segment>`. Map those to query mode Agent and the corresponding
+ * strategy. Main assistant chat keeps using `agent:`-prefixed modes and
+ * `quick` for the default panel.
  */
 export function applyConversationModelInfoToStore(
   modelInfo: ModelInfo | null | undefined,

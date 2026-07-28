@@ -11732,7 +11732,13 @@ components:
       properties:
         customSystemPrompt:
           type: string
-          description: Custom system prompt text for AI models
+          description: Custom system prompt text used for Internal Search chat mode
+        customSystemPromptWebSearch:
+          type: string
+          description: Custom system prompt text used for Web Search chat mode
+        customSystemPromptAgent:
+          type: string
+          description: Custom system prompt text used for Agent chat mode
 
     # AI Model Provider Management Schemas
     AIModelProviderConfiguration:

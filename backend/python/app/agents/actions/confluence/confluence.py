@@ -1,14 +1,22 @@
+import asyncio
 import html
 import json
 import logging
 import re
 from typing import Any, Optional
 
+from bs4 import BeautifulSoup
+from markdownify import markdownify
 from pydantic import BaseModel, Field
 
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import (
+    args_template,
+    entity_summary,
+    list_summary,
+)
+from app.config.constants.arangodb import Connectors
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -22,6 +30,12 @@ from app.connectors.core.registry.tool_builder import (
 )
 from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
+from app.models.entities import ArtifactType
+from app.services.artifact_registry import (
+    MAX_ARTIFACT_BYTES,
+    Actor,
+    ArtifactRegistryService,
+)
 from app.sources.client.confluence.confluence import ConfluenceClient
 from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_response import HTTPResponse
@@ -56,6 +70,49 @@ class CreatePageInput(BaseModel):
 class GetPageContentInput(BaseModel):
     """Schema for getting page content"""
     page_id: str = Field(description="Page ID")
+    body_format: str = Field(
+        default="markdown",
+        description=(
+            "Content format. 'markdown' (default) converts the page to readable markdown — best "
+            "for summarising, reading, and answering questions. Use 'storage' only when you intend "
+            "to call update_page with the result, as update_page requires storage format."
+        ),
+    )
+    include_comments: bool = Field(
+        default=True,
+        description="Include footer and inline comments in the response.",
+    )
+    include_attachments: bool = Field(
+        default=True,
+        description=(
+            "Include attachment metadata (id, title, mimeType, fileSize) in the response. "
+            "Use download_attachment to retrieve attachment content."
+        ),
+    )
+
+class ListPageAttachmentsInput(BaseModel):
+    """Schema for listing page attachments"""
+    page_id: str = Field(description="Page ID")
+    media_type: Optional[str] = Field(
+        default=None,
+        description="Filter by MIME type, e.g. 'application/pdf' or 'image/png'.",
+    )
+    limit: Optional[int] = Field(
+        default=25,
+        description="Max attachments to return (1-250). Default 25.",
+    )
+
+
+class GetAttachmentMetadataInput(BaseModel):
+    """Schema for getting attachment metadata"""
+    attachment_id: str = Field(description="Attachment ID (from list_page_attachments or get_page_content)")
+
+
+class DownloadAttachmentInput(BaseModel):
+    """Schema for downloading an attachment"""
+    page_id: str = Field(description="Page ID that owns the attachment")
+    attachment_id: str = Field(description="Attachment ID (from list_page_attachments)")
+
 
 class GetPagesInSpaceInput(BaseModel):
     """Schema for getting pages in space"""
@@ -317,6 +374,31 @@ class SearchUsersInput(BaseModel):
         description="Max users to return (1-50). Default 10.",
     )
 
+
+# ---------------------------------------------------------------------------
+# Agent-activity summary labels — see `jira.py`'s equivalent block. Most
+# success envelopes here are `{"message": ..., "data": ...}` (via
+# `Confluence._handle_response`), but `search_content` and `search_users`
+# build their own top-level `{"results": [...], ...}` body without a
+# `data` wrapper — each `list_summary(...)` call below passes the right
+# `path` for its own tool accordingly.
+# ---------------------------------------------------------------------------
+
+
+def _confluence_page_label(page: dict[str, Any]) -> str:
+    return page.get("title") or page.get("id") or "?"
+
+
+def _confluence_space_label(space: dict[str, Any]) -> str:
+    key = space.get("key") or "?"
+    name = space.get("name")
+    return f"{key}: {name}" if name else key
+
+
+def _confluence_user_label(user: dict[str, Any]) -> str:
+    return user.get("displayName") or user.get("accountId") or "?"
+
+
 # Register Confluence toolset
 @ToolsetBuilder("Confluence")\
     .in_group("Atlassian")\
@@ -399,14 +481,30 @@ class SearchUsersInput(BaseModel):
 class Confluence:
     """Confluence tool exposed to the agents using ConfluenceDataSource"""
 
-    def __init__(self, client: ConfluenceClient) -> None:
+    def __init__(self, client: ConfluenceClient, *, state: Any = None) -> None:
         """Initialize the Confluence tool
 
         Args:
             client: Confluence client object
+            state: Agent runtime state (ChatState). Required for attachment download.
         """
         self.client = ConfluenceDataSource(client)
         self._site_url = None  # Cache for site URL
+        self.chat_state = state
+
+    def _registry(self) -> Optional[ArtifactRegistryService]:
+        """Return the artifact registry, or None when dependencies are unavailable."""
+        if not self.chat_state:
+            return None
+        graph_provider = self.chat_state.get("graph_provider")
+        blob_store = self.chat_state.get("blob_store")
+        if graph_provider is None or blob_store is None:
+            return None
+        return ArtifactRegistryService(graph_provider, blob_store)
+
+    def _actor(self) -> Actor:
+        state = self.chat_state or {}
+        return Actor(org_id=state.get("org_id", ""), user_id=state.get("user_id", ""))
 
     def _handle_response(
         self,
@@ -599,31 +697,24 @@ class Confluence:
         return space_key, space_name
 
     @tool(
-        app_name="confluence",
-        tool_name="create_page",
-        description="Create a page in Confluence",
-        llm_description="Create a page in Confluence. Requires space_id (numeric ID or key), page_title, and page_content (HTML storage format). Call confluence.get_spaces first if the space is not yet resolved.",
-        args_schema=CreatePageInput,  # NEW: Pydantic schema
-        returns="JSON with success status and page details",
-        when_to_use=[
-            "User wants to create a Confluence page",
-            "User mentions 'Confluence' + wants to create page",
-            "User asks to create documentation/page"
+        path="/tools/confluence/create_page",
+        short_description="Create a page in Confluence",
+        description=(
+            "Create a page in Confluence. Requires space_id (numeric ID or key), page_title, "
+            "and page_content (HTML storage format). Call confluence.get_spaces first if the "
+            "space is not yet resolved.\n"
+            "\n"
+            "Use when the user wants to create a Confluence page, add documentation, or create "
+            "a wiki page. Do not use for searching or reading pages."
+        ),
+        parameters=[
+            ToolParameter(name="space_id", type=ParameterType.STRING, description="Space ID or key (e.g. '~abc123', 'SD', '12345'). IMPORTANT: Resolve via confluence.get_spaces if not already known from Reference Data or conversation history.", required=True),
+            ToolParameter(name="page_title", type=ParameterType.STRING, description="Page title", required=True),
+            ToolParameter(name="page_content", type=ParameterType.STRING, description="Page content in storage format", required=True),
         ],
-        when_not_to_use=[
-            "User wants to search pages (use search_pages)",
-            "User wants to read page (use get_page_content)",
-            "User wants info ABOUT Confluence (use retrieval)",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Create a Confluence page",
-            "Add a new page to Confluence",
-            "Create documentation page",
-            "Create a page in X space",
-            "Create a wiki page about X and add the Jira ticket link"
-        ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
+        args_summary=args_template('Creating Confluence page "{page_title}"', "page_title"),
+        result_summary=entity_summary(lambda e: f"Created page: {_confluence_page_label(e)}"),
     )
     async def create_page(
         self,
@@ -725,116 +816,556 @@ class Confluence:
             logger.error(f"Error creating page: {e}")
             return False, json.dumps({"error": str(e)})
 
-    @tool(
-        app_name="confluence",
-        tool_name="get_page_content",
-        description="Get the content of a page in Confluence",
-        args_schema=GetPageContentInput,  # NEW: Pydantic schema
-        returns="JSON with page content and metadata",
-        when_to_use=[
-            "User wants to read/view a Confluence page",
-            "User mentions 'Confluence' + wants page content",
-            "User asks to get/show a specific page"
-        ],
-        when_not_to_use=[
-            "User wants to create page (use create_page)",
-            "User wants to search pages (use search_pages)",
-            "User wants info ABOUT Confluence (use retrieval)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show me the Confluence page",
-            "Get page content from Confluence",
-            "Read the documentation page"
-        ],
-        category=ToolCategory.DOCUMENTATION
-    )
-    async def get_page_content(self, page_id: str) -> tuple[bool, str]:
-        """Get the content of a page in Confluence.
+    @staticmethod
+    def _harvest_mentions(html_content: str) -> dict[str, str]:
+        """Extract accountId → displayName pairs from export_view HTML.
 
-        Args:
-            page_id: The ID of the page
-
-        Returns:
-            Tuple of (success, json_response)
+        The export_view format renders @mentions as anchor tags:
+          <a ... class="confluence-userlink user-mention" data-account-id="XXXX">Full Name</a>
+        Harvesting these pairs at parse time gives us name resolution at zero
+        extra API cost.
         """
+        mapping: dict[str, str] = {}
         try:
-            # Convert page_id to int with proper error handling
+            soup = BeautifulSoup(html_content, "html.parser")
+            for tag in soup.find_all("a", attrs={"data-account-id": True}):
+                account_id = tag.get("data-account-id", "").strip()
+                name = tag.get_text(strip=True)
+                if account_id and name:
+                    mapping[account_id] = name
+        except Exception as exc:
+            logger.debug("Mention harvest failed: %s", exc)
+        return mapping
+
+    async def _bulk_resolve_users(self, account_ids: set[str]) -> dict[str, dict[str, str]]:
+        """Batch-resolve accountIds to user info via POST /users-bulk.
+
+        Confluence's POST /users-bulk accepts up to 25 accountIds per request.
+        Returns a mapping of {accountId: {displayName, email?}}.
+        """
+        if not account_ids:
+            return {}
+        resolved: dict[str, dict[str, str]] = {}
+        ids_list = list(account_ids)
+        for i in range(0, len(ids_list), 25):
+            chunk = ids_list[i : i + 25]
+            try:
+                response = await self.client.create_bulk_user_lookup(
+                    body={"accountIds": chunk}
+                )
+                if response.status == HttpStatusCode.SUCCESS.value:
+                    data = response.json()
+                    for user in data.get("results", []):
+                        aid = user.get("accountId", "")
+                        if aid:
+                            entry: dict[str, str] = {
+                                "displayName": user.get("displayName", aid)
+                            }
+                            email = user.get("email") or user.get("emailAddress")
+                            if email:
+                                entry["email"] = email
+                            resolved[aid] = entry
+            except Exception as exc:
+                logger.warning("users-bulk chunk failed: %s", exc)
+        return resolved
+
+    @tool(
+        path="/tools/confluence/get_page_content",
+        short_description="Get the content of a Confluence page",
+        description=(
+            "Retrieve the full content and metadata of a Confluence page by its ID. "
+            "Returns page content as markdown (default) or storage XML, along with comments, "
+            "attachment metadata, and resolved user display names for all @mentions and authors.\n"
+            "\n"
+            "body_format options:\n"
+            "  - 'markdown' (default): clean readable markdown, best for summarising, reading, "
+            "and answering questions. Token-efficient for the LLM.\n"
+            "  - 'storage': raw Confluence storage XML. Use ONLY when you intend to call "
+            "update_page with the result, since update_page requires storage format.\n"
+            "\n"
+            "Comments and attachments are fetched in parallel and are non-fatal — if they fail, "
+            "the page content is still returned. Use download_attachment to retrieve attachment bytes."
+        ),
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID", required=True),
+            ToolParameter(
+                name="body_format",
+                type=ParameterType.STRING,
+                description="'markdown' (default) for readable output; 'storage' only when calling update_page next.",
+                required=False,
+                default="markdown",
+            ),
+            ToolParameter(
+                name="include_comments",
+                type=ParameterType.BOOLEAN,
+                description="Include footer and inline comments (default true).",
+                required=False,
+                default=True,
+            ),
+            ToolParameter(
+                name="include_attachments",
+                type=ParameterType.BOOLEAN,
+                description="Include attachment metadata (default true). Use download_attachment to get file content.",
+                required=False,
+                default=True,
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching Confluence page {page_id}", "page_id"),
+        result_summary=entity_summary(lambda e: f"Fetched page: {_confluence_page_label(e)}"),
+    )
+    async def get_page_content(
+        self,
+        page_id: str,
+        body_format: str = "markdown",
+        include_comments: bool = True,
+        include_attachments: bool = True,
+    ) -> tuple[bool, str]:
+        """Get the content of a page in Confluence with resolved users, comments, and attachments."""
+        try:
             try:
                 page_id_int = int(page_id)
             except ValueError:
                 return False, json.dumps({"error": f"Invalid page_id format: '{page_id}' is not a valid integer"})
 
-            response = await self.client.get_page_by_id(
-                id=page_id_int,
-                body_format="storage"
-            )
-            result = self._handle_response(response, "Page content fetched successfully")
+            # Determine which body format to request from the API.
+            # For markdown output we fetch export_view (rendered HTML with resolved mentions).
+            # For storage output we fetch storage directly.
+            api_body_format = "export_view" if body_format == "markdown" else "storage"
 
-            # Add web URL if successful
-            if result[0] and response.status == HttpStatusCode.SUCCESS.value:
-                try:
-                    data = response.json()
-                    page_id_from_data = data.get("id")
-                    space_id = data.get("spaceId")
-                    if page_id_from_data and space_id:
-                        site_url = await self._get_site_url()
-                        if site_url:
-                            # Get space key from space ID
-                            space_key = space_id
-                            try:
-                                int(space_id)  # Check if it's numeric
-                                spaces_response = await self.client.get_spaces()
-                                if spaces_response.status == HttpStatusCode.SUCCESS.value:
-                                    spaces_data = spaces_response.json()
-                                    for space in spaces_data.get("results", []):
-                                        if str(space.get("id")) == str(space_id):
-                                            space_key = space.get("key", space_id)
-                                            break
-                            except ValueError:
-                                pass  # Already a key
+            # Build parallel tasks — comments/attachments are optional and non-fatal.
+            tasks: list[Any] = [
+                self.client.get_page_by_id(id=page_id_int, body_format=api_body_format),
+            ]
+            if include_comments:
+                tasks.append(self.client.get_page_footer_comments(id=page_id_int, body_format={"representation": "storage"}))
+                tasks.append(self.client.get_page_inline_comments(id=page_id_int, body_format={"representation": "storage"}))
+            if include_attachments:
+                tasks.append(self.client.get_page_attachments(id=page_id_int, limit=50))
 
-                            web_url = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id_from_data}"
-                            result_data = json.loads(result[1])
-                            if "data" in result_data and isinstance(result_data["data"], dict):
-                                result_data["data"]["url"] = web_url
-                            result = (result[0], json.dumps(result_data))
-                except Exception as e:
-                    logger.debug(f"Could not add URL to response: {e}")
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            return result
+            page_response = results[0]
+            if isinstance(page_response, Exception):
+                logger.error("get_page_content: page fetch failed: %s", page_response)
+                return False, json.dumps({"error": str(page_response)})
+            if page_response.status not in (
+                HttpStatusCode.SUCCESS.value,
+                HttpStatusCode.CREATED.value,
+            ):
+                err = page_response.text() if hasattr(page_response, "text") else str(page_response)
+                return False, json.dumps({"error": f"HTTP {page_response.status}", "details": err})
+
+            page_data = page_response.json()
+
+            # --- Extract and convert page body ---
+            raw_body = ""
+            body_node = page_data.get("body", {})
+            for fmt in ("export_view", "storage", "view"):
+                raw_body = (body_node.get(fmt) or {}).get("value", "")
+                if raw_body:
+                    break
+
+            mention_map: dict[str, str] = {}
+            if body_format == "markdown":
+                mention_map = self._harvest_mentions(raw_body)
+                content = markdownify(raw_body, heading_style="ATX").strip()
+            else:
+                content = raw_body
+
+            # --- Parse side-channel results ---
+            result_idx = 1
+            footer_comments: list[dict] = []
+            inline_comments: list[dict] = []
+            attachments_list: list[dict] = []
+
+            if include_comments:
+                footer_resp = results[result_idx]
+                inline_resp = results[result_idx + 1]
+                result_idx += 2
+
+                if not isinstance(footer_resp, Exception) and footer_resp.status == HttpStatusCode.SUCCESS.value:
+                    for c in footer_resp.json().get("results", []):
+                        comment_body_val = ((c.get("body") or {}).get("storage") or {}).get("value", "")
+                        footer_comments.append({
+                            "id": c.get("id"),
+                            "authorId": (c.get("version") or {}).get("authorId"),
+                            "createdAt": (c.get("version") or {}).get("createdAt"),
+                            "body": comment_body_val,
+                        })
+                else:
+                    logger.warning("get_page_content: footer comments unavailable: %s", footer_resp)
+
+                if not isinstance(inline_resp, Exception) and inline_resp.status == HttpStatusCode.SUCCESS.value:
+                    for c in inline_resp.json().get("results", []):
+                        comment_body_val = ((c.get("body") or {}).get("storage") or {}).get("value", "")
+                        inline_comments.append({
+                            "id": c.get("id"),
+                            "authorId": (c.get("version") or {}).get("authorId"),
+                            "createdAt": (c.get("version") or {}).get("createdAt"),
+                            "resolvedAt": c.get("resolvedAt"),
+                            "body": comment_body_val,
+                        })
+                else:
+                    logger.warning("get_page_content: inline comments unavailable: %s", inline_resp)
+
+            if include_attachments:
+                att_resp = results[result_idx]
+                result_idx += 1
+                if not isinstance(att_resp, Exception) and att_resp.status == HttpStatusCode.SUCCESS.value:
+                    for a in att_resp.json().get("results", []):
+                        attachments_list.append({
+                            "id": a.get("id"),
+                            "title": a.get("title"),
+                            "mimeType": a.get("mediaType"),
+                            "fileSize": a.get("fileSize"),
+                            "comment": a.get("comment"),
+                        })
+                else:
+                    logger.warning("get_page_content: attachments unavailable: %s", att_resp)
+
+            # --- Collect all accountIds that still need resolution ---
+            harvested_ids = set(mention_map.keys())
+            ids_to_resolve: set[str] = set()
+
+            author_id = (page_data.get("version") or {}).get("authorId")
+            # ownerId is already an accountId string in the v2 API; createdBy
+            # (v1 shape) is a dict with an accountId key — handle both.
+            owner_id = page_data.get("ownerId")
+            if not owner_id:
+                created_by = page_data.get("createdBy")
+                if isinstance(created_by, dict):
+                    owner_id = created_by.get("accountId")
+            for aid in filter(None, [author_id, owner_id]):
+                if aid not in harvested_ids:
+                    ids_to_resolve.add(aid)
+
+            for c in footer_comments + inline_comments:
+                aid = c.get("authorId")
+                if aid and aid not in harvested_ids:
+                    ids_to_resolve.add(aid)
+
+            bulk_resolved = await self._bulk_resolve_users(ids_to_resolve)
+
+            # Merge: export_view harvest wins over /users-bulk for parity.
+            resolved_users: dict[str, dict[str, str]] = {}
+            for aid, name in mention_map.items():
+                resolved_users[aid] = {"displayName": name}
+            for aid, info in bulk_resolved.items():
+                resolved_users.setdefault(aid, info)
+
+            # --- Build web URL ---
+            web_url = None
+            space_id = page_data.get("spaceId")
+            if space_id:
+                site_url = await self._get_site_url()
+                if site_url:
+                    space_key = space_id
+                    try:
+                        int(space_id)
+                        spaces_response = await self.client.get_spaces()
+                        if spaces_response.status == HttpStatusCode.SUCCESS.value:
+                            for space in spaces_response.json().get("results", []):
+                                if str(space.get("id")) == str(space_id):
+                                    space_key = space.get("key", space_id)
+                                    break
+                    except ValueError:
+                        pass
+                    web_url = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id}"
+
+            # --- Assemble response ---
+            response_body: dict[str, Any] = {
+                "message": "Page content fetched successfully",
+                "id": page_data.get("id"),
+                "title": page_data.get("title"),
+                "spaceId": space_id,
+                "status": page_data.get("status"),
+                "contentFormat": body_format,
+                "content": content,
+                "version": page_data.get("version"),
+                "resolvedUsers": resolved_users,
+            }
+            if web_url:
+                response_body["url"] = web_url
+            if include_comments:
+                response_body["footerComments"] = footer_comments
+                response_body["inlineComments"] = inline_comments
+            if include_attachments:
+                response_body["attachments"] = attachments_list
+                if attachments_list:
+                    response_body["attachmentsNote"] = (
+                        "Use download_attachment(page_id, attachment_id) to retrieve the file content "
+                        "of any attachment listed above."
+                    )
+
+            return True, json.dumps(response_body)
 
         except Exception as e:
-            logger.error(f"Error getting page content: {e}")
+            logger.error("Error getting page content: %s", e)
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="get_pages_in_space",
-        description="Get all pages in a Confluence space",
-        args_schema=GetPagesInSpaceInput,
-        returns="JSON with the list of pages, each with id, title, url",
-        when_to_use=[
-            "User wants to enumerate pages in a space without an authorship/date/label filter",
-            "User asks for 'recently updated pages in <space>' — set sort_by='-modified-date'",
-            "User asks for 'recently created pages in <space>' — set sort_by='-created-date'",
-            "User asks for an alphabetical listing of pages in a space — set sort_by='title'",
+        path="/tools/confluence/list_page_attachments",
+        short_description="List attachments on a Confluence page",
+        description=(
+            "List all file attachments on a Confluence page, with metadata (id, title, mimeType, "
+            "fileSize). Use when you need the full attachment list for a page, or when filtering "
+            "by media type (e.g. 'application/pdf'). The attachment id returned here is the input "
+            "for download_attachment and get_attachment_metadata."
+        ),
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID", required=True),
+            ToolParameter(
+                name="media_type",
+                type=ParameterType.STRING,
+                description="Optional MIME type filter, e.g. 'application/pdf' or 'image/png'.",
+                required=False,
+            ),
+            ToolParameter(
+                name="limit",
+                type=ParameterType.INTEGER,
+                description="Max attachments to return (1-250). Default 25.",
+                required=False,
+                default=25,
+            ),
         ],
-        when_not_to_use=[
-            "User wants pages they / someone else updated / created (use search_content with `space_id` + the corresponding contributor/creator slot — this v2 endpoint has no author filter)",
-            "User wants pages with a specific topic / keyword (use search_content)",
-            "User wants pages with a specific label (use search_content with `labels`)",
-            "User wants a specific page by name (use search_pages)",
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=args_template("Listing attachments on page {page_id}", "page_id"),
+        result_summary=list_summary("results", lambda a: a.get("title") or a.get("id") or "?", "attachment"),
+    )
+    async def list_page_attachments(
+        self,
+        page_id: str,
+        media_type: Optional[str] = None,
+        limit: Optional[int] = 25,
+    ) -> tuple[bool, str]:
+        """List file attachments on a Confluence page."""
+        try:
+            try:
+                page_id_int = int(page_id)
+            except ValueError:
+                return False, json.dumps({"error": f"Invalid page_id format: '{page_id}' is not a valid integer"})
+
+            response = await self.client.get_page_attachments(
+                id=page_id_int,
+                mediaType=media_type,
+                limit=limit,
+            )
+            if response.status != HttpStatusCode.SUCCESS.value:
+                err = response.text() if hasattr(response, "text") else str(response)
+                return False, json.dumps({"error": f"HTTP {response.status}", "details": err})
+
+            data = response.json()
+            attachments = []
+            for a in data.get("results", []):
+                attachments.append({
+                    "id": a.get("id"),
+                    "title": a.get("title"),
+                    "mimeType": a.get("mediaType"),
+                    "fileSize": a.get("fileSize"),
+                    "comment": a.get("comment"),
+                    "pageId": page_id,
+                })
+
+            return True, json.dumps({
+                "message": f"Found {len(attachments)} attachment(s)",
+                "pageId": page_id,
+                "total": len(attachments),
+                "results": attachments,
+                "note": "Use download_attachment(page_id, attachment_id) to retrieve file content.",
+            })
+
+        except Exception as e:
+            logger.error("Error listing page attachments: %s", e)
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        path="/tools/confluence/get_attachment_metadata",
+        short_description="Get metadata for a single Confluence attachment",
+        description=(
+            "Retrieve metadata for a specific attachment by its ID: title, mimeType, fileSize, "
+            "and version info. Use when you have an attachment ID but need its details before "
+            "deciding whether to download it. For listing all attachments on a page use "
+            "list_page_attachments."
+        ),
+        parameters=[
+            ToolParameter(
+                name="attachment_id",
+                type=ParameterType.STRING,
+                description="Attachment ID (from list_page_attachments or get_page_content).",
+                required=True,
+            ),
         ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "List pages in space X",
-            "Show all pages in Confluence space HR",
-            "Recently updated pages in space X",
-            "Newest pages in space ENG",
-            "Pages in space X alphabetically",
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching attachment metadata {attachment_id}", "attachment_id"),
+        result_summary=entity_summary(lambda e: f"Attachment: {e.get('title') or e.get('id') or '?'}"),
+    )
+    async def get_attachment_metadata(self, attachment_id: str) -> tuple[bool, str]:
+        """Get metadata for a single attachment."""
+        try:
+            response = await self.client.get_attachment_by_id(id=attachment_id)
+            if response.status != HttpStatusCode.SUCCESS.value:
+                err = response.text() if hasattr(response, "text") else str(response)
+                return False, json.dumps({"error": f"HTTP {response.status}", "details": err})
+
+            data = response.json()
+            return True, json.dumps({
+                "message": "Attachment metadata fetched successfully",
+                "id": data.get("id"),
+                "title": data.get("title"),
+                "mimeType": data.get("mediaType"),
+                "fileSize": data.get("fileSize"),
+                "comment": data.get("comment"),
+                "version": data.get("version"),
+            })
+
+        except Exception as e:
+            logger.error("Error fetching attachment metadata: %s", e)
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        path="/tools/confluence/download_attachment",
+        short_description="Download a Confluence attachment and register it as an artifact",
+        description=(
+            "Download an attachment from a Confluence page and save it as a versioned artifact. "
+            "Returns an artifact_id you can pass into run_code's input_artifacts, or into "
+            "get_artifact_download_url for a direct download link. Files larger than 25 MiB are "
+            "rejected before buffering. Use list_page_attachments or get_page_content to discover "
+            "attachment IDs first."
+        ),
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID that owns the attachment.", required=True),
+            ToolParameter(name="attachment_id", type=ParameterType.STRING, description="Attachment ID (from list_page_attachments).", required=True),
         ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=args_template("Downloading attachment {attachment_id}", "attachment_id"),
+        result_summary=entity_summary(lambda e: f"Attachment artifact: {e.get('name') or e.get('artifact_id') or '?'}"),
+    )
+    async def download_attachment(self, page_id: str, attachment_id: str) -> tuple[bool, str]:
+        """Download an attachment and register it as a tracked artifact."""
+        registry = self._registry()
+        if registry is None:
+            return False, json.dumps({
+                "error": "Artifact registry is unavailable — attachment downloads require the agent runtime context."
+            })
+
+        # Fetch metadata to get filename and MIME type before streaming.
+        meta_response = await self.client.get_attachment_by_id(id=attachment_id)
+        if meta_response.status != HttpStatusCode.SUCCESS.value:
+            err = meta_response.text() if hasattr(meta_response, "text") else str(meta_response)
+            return False, json.dumps({"error": f"Could not fetch attachment metadata: HTTP {meta_response.status}", "details": err})
+
+        meta = meta_response.json()
+        filename: str = meta.get("title") or attachment_id
+        mime_type: str = meta.get("mediaType") or "application/octet-stream"
+        reported_size: int = meta.get("fileSize") or 0
+
+        if reported_size > MAX_ARTIFACT_BYTES:
+            return False, json.dumps({
+                "error": (
+                    f"Attachment '{filename}' is {reported_size:,} bytes, which exceeds the "
+                    f"{MAX_ARTIFACT_BYTES // (1024 * 1024)} MiB limit."
+                )
+            })
+
+        # Stream and accumulate, enforcing the cap before full buffering.
+        chunks: list[bytes] = []
+        total_bytes = 0
+        try:
+            async for chunk in self.client.download_attachment(
+                parent_page_id=page_id,
+                attachment_id=attachment_id,
+            ):
+                total_bytes += len(chunk)
+                if total_bytes > MAX_ARTIFACT_BYTES:
+                    return False, json.dumps({
+                        "error": (
+                            f"Attachment '{filename}' exceeds the "
+                            f"{MAX_ARTIFACT_BYTES // (1024 * 1024)} MiB streaming limit."
+                        )
+                    })
+                chunks.append(chunk)
+        except Exception as e:
+            logger.error("download_attachment: streaming failed: %s", e)
+            return False, json.dumps({"error": f"Download failed: {e}"})
+
+        content_bytes = b"".join(chunks)
+
+        # Infer artifact type from MIME.
+        if mime_type.startswith("image/"):
+            artifact_type = ArtifactType.IMAGE
+        elif mime_type in ("application/pdf",):
+            artifact_type = ArtifactType.DOCUMENT
+        elif mime_type in (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/msword",
+        ):
+            artifact_type = ArtifactType.DOCUMENT
+        elif mime_type in (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+        ):
+            artifact_type = ArtifactType.SPREADSHEET
+        elif mime_type in (
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/vnd.ms-powerpoint",
+        ):
+            artifact_type = ArtifactType.PRESENTATION
+        else:
+            artifact_type = ArtifactType.DOCUMENT
+
+        conversation_id: Optional[str] = None
+        if self.chat_state:
+            conversation_id = self.chat_state.get("conversation_id") or self.chat_state.get("session_id")
+
+        try:
+            artifact = await registry.register(
+                actor=self._actor(),
+                name=filename,
+                artifact_type=artifact_type,
+                mime_type=mime_type,
+                content=content_bytes,
+                conversation_id=conversation_id,
+                is_temporary=True,
+                connector_name=Connectors.CONFLUENCE,
+                source_tool="confluence.download_attachment",
+            )
+        except Exception as e:
+            logger.error("download_attachment: registry.register failed: %s", e)
+            return False, json.dumps({"error": f"Failed to register artifact: {e}"})
+
+        return True, json.dumps({
+            "message": "Attachment downloaded and registered as artifact",
+            "artifact_id": artifact.artifact_id,
+            "name": artifact.name,
+            "mimeType": mime_type,
+            "sizeBytes": total_bytes,
+            "note": (
+                "Pass artifact_id into run_code's input_artifacts to process this file, "
+                "or call get_artifact_download_url for a direct download link."
+            ),
+        })
+
+    @tool(
+        path="/tools/confluence/get_pages_in_space",
+        short_description="List pages in a Confluence space",
+        description=(
+            "Enumerate pages in a Confluence space (v2 API). Supports sorting by id, title, "
+            "created-date, or modified-date (prefix with '-' for descending). Use '-modified-date' "
+            "for recently updated, '-created-date' for newest first, 'title' for A-Z.\n"
+            "\n"
+            "Use for simple space page listings without authorship/date/label filters. "
+            "For author-aware queries use search_content with space_id + contributor/creator slots. "
+            "For keyword/topic searches use search_content. For finding a specific page by name use search_pages."
+        ),
+        parameters=[
+            ToolParameter(name="space_id", type=ParameterType.STRING, description="Space ID or key", required=True),
+            ToolParameter(name="sort_by", type=ParameterType.STRING, description="Optional v2-API sort. Allowed: 'id', 'title', 'created-date', 'modified-date'. Prefix with '-' for descending.", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Max pages per page of results (Confluence v2 caps at 250).", required=False),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=args_template("Listing pages in Confluence space {space_id}", "space_id"),
+        result_summary=list_summary("results", _confluence_page_label, "page"),
     )
     async def get_pages_in_space(
         self,
@@ -914,28 +1445,18 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="update_page_title",
-        description="Update the title of a Confluence page",
-        args_schema=UpdatePageTitleInput,  # NEW: Pydantic schema
-        returns="JSON with success status",
-        when_to_use=[
-            "User wants to rename/update page title",
-            "User mentions 'Confluence' + wants to change title",
-            "User asks to rename page"
+        path="/tools/confluence/update_page_title",
+        short_description="Rename a Confluence page",
+        description=(
+            "Update the title of a Confluence page. Use when the user wants to rename "
+            "or change a page title. Do not use for creating pages (use create_page) "
+            "or updating page content (use update_page)."
+        ),
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID", required=True),
+            ToolParameter(name="new_title", type=ParameterType.STRING, description="New title", required=True),
         ],
-        when_not_to_use=[
-            "User wants to create page (use create_page)",
-            "User wants to read page (use get_page_content)",
-            "User wants info ABOUT Confluence (use retrieval)",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Rename Confluence page",
-            "Update page title",
-            "Change page name"
-        ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
     )
     async def update_page_title(self, page_id: str, new_title: str) -> tuple[bool, str]:
         """Update the title of a page.
@@ -965,30 +1486,22 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="get_child_pages",
-        description="Get child pages of a Confluence page",
-        args_schema=GetChildPagesInput,
-        returns="JSON with the list of child pages, each with id, title, url",
-        when_to_use=[
-            "User wants the direct sub-pages of a known page",
-            "User asks 'what pages are under <page>' (without an authorship filter)",
-            "User asks for child pages sorted by recency or alphabetically — set sort_by",
+        path="/tools/confluence/get_child_pages",
+        short_description="Get child pages of a Confluence page",
+        description=(
+            "Get direct child (sub) pages of a Confluence page (v2 API). Supports sorting by "
+            "id, title, created-date, or modified-date (prefix with '-' for descending).\n"
+            "\n"
+            "Use when the user wants sub-pages of a known page without authorship/date/label filters. "
+            "For author-filtered child pages use search_content with CQL. For all pages in a space "
+            "use get_pages_in_space. For reading page content use get_page_content."
+        ),
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="The parent page ID", required=True),
+            ToolParameter(name="sort_by", type=ParameterType.STRING, description="Optional v2-API sort. Allowed: 'id', 'title', 'created-date', 'modified-date'. Prefix with '-' for descending.", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Max child pages per page of results (Confluence v2 caps at 250).", required=False),
         ],
-        when_not_to_use=[
-            "User wants child pages filtered by author/date/label — that needs CQL, which this v2 endpoint can't do (use search_content)",
-            "User wants ALL pages in a space (use get_pages_in_space)",
-            "User wants to read a page's content (use get_page_content)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get child pages of page 12345",
-            "Show sub-pages of <page>",
-            "Recently updated child pages of <page>",
-            "Newest sub-pages of <page>",
-            "Child pages alphabetically",
-        ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
     )
     async def get_child_pages(
         self,
@@ -1078,31 +1591,35 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="search_pages",
-        description="Search pages by title in Confluence",
-        args_schema=SearchPagesInput,
-        returns="JSON with ranked pages (best title match first); a 'note' or 'warning' field flags ambiguity when multiple match",
-        when_to_use=[
-            "User wants to FIND a specific named page (resolve a name to a page_id)",
-            "User asks 'find page X', 'search for page named <name>', 'page called <name>'",
-            "User asks for a named page constrained by author/date/label — slot the constraints in (e.g. 'find the FAQ page I created last quarter')",
+        path="/tools/confluence/search_pages",
+        short_description="Search Confluence pages by title",
+        description=(
+            "Search for Confluence pages by title with optional authorship, date, label, and ordering "
+            "filters. Best for resolving a page name to a page_id (e.g. 'find page named X'). "
+            "Supports fuzzy title matching, space scoping, and constraints like author/date/label.\n"
+            "\n"
+            "Use when the user wants to find a specific named page or a named page constrained by "
+            "author/date/label (e.g. 'find the FAQ page I created last quarter'). "
+            "For topic/keyword searches without a page name use search_content. "
+            "For 'what did I update?' queries use search_content with authorship slots."
+        ),
+        parameters=[
+            ToolParameter(name="title", type=ParameterType.STRING, description="Page title fragment to search (fuzzy)", required=True),
+            ToolParameter(name="space_id", type=ParameterType.STRING, description="Space ID or key to limit search", required=False),
+            ToolParameter(name="contributor", type=ParameterType.STRING, description="Filter by anyone who EVER edited the page. Pass `currentUser()` (no quotes) for self, or `\"<accountId>\"` (with double quotes) for another user — call search_users first.", required=False),
+            ToolParameter(name="creator", type=ParameterType.STRING, description="Filter by original page author. Same value format as contributor.", required=False),
+            ToolParameter(name="mention", type=ParameterType.STRING, description="Filter to pages that @-mention this user. Same value format as contributor.", required=False),
+            ToolParameter(name="last_modifier", type=ParameterType.STRING, description="Filter by who made the most recent edit (latest version only). Same value format. Prefer `contributor` for 'pages I updated'.", required=False),
+            ToolParameter(name="last_modified_after", type=ParameterType.STRING, description="ISO date ('2026-05-01') or CQL function ('now(\"-7d\")', 'startOfMonth()'). Maps to `lastmodified >= ...`.", required=False),
+            ToolParameter(name="last_modified_before", type=ParameterType.STRING, description="Same value format as last_modified_after. Maps to `lastmodified <= ...`.", required=False),
+            ToolParameter(name="created_after", type=ParameterType.STRING, description="Same value format as last_modified_after. Maps to `created >= ...`.", required=False),
+            ToolParameter(name="created_before", type=ParameterType.STRING, description="Same value format as created_after. Maps to `created <= ...`.", required=False),
+            ToolParameter(name="labels", type=ParameterType.ARRAY, description="List of label names. Maps to CQL `label in (...)`.", required=False, items={"type": "string"}),
+            ToolParameter(name="order_by", type=ParameterType.STRING, description="CQL ORDER BY clause, e.g. `'lastmodified desc'`. Set when the user asks for explicit ordering. Direction defaults to asc when omitted.", required=False),
         ],
-        when_not_to_use=[
-            "User has a topic / keyword without a page name — use search_content (it ranks better for free-text body queries)",
-            "User asks for pages with no name in mind ('what did I update?') — use search_content with the authorship slot",
-            "User wants to create page (use create_page)",
-            "User wants ALL pages in a space (use get_pages_in_space)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Find Confluence page named 'Project Plan'",
-            "Search for the deployment runbook page",
-            "Find the FAQ page I created last quarter",
-            "Locate the onboarding page tagged 'hr'",
-            "Page named 'API Design' in the SD space",
-        ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=args_template('Searching Confluence pages: "{title}"', "title"),
+        result_summary=list_summary("results", _confluence_page_label, "page"),
     )
     async def search_pages(
         self,
@@ -1308,43 +1825,43 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="search_content",
-        description="Search Confluence pages and blog posts — full-text, by author, by date, by labels, or any combination",
-        args_schema=SearchContentInput,
-        returns="JSON with ranked search results including titles, excerpts, space, labels, last-modified, and URLs",
-        when_to_use=[
-            "User wants to find content by topic, keyword, or meaning",
-            "User asks for pages they (or someone else) updated / created / contributed to / were mentioned in",
-            "User asks for date-bounded results ('last week', 'since May', 'before Q2', 'today')",
-            "User asks for a specific ordering ('most recent', 'newest first', 'alphabetical')",
-            "User asks for pages with a specific label",
-            "User combines any of the above ('pages I updated about deployment', 'pages tagged onboarding I created last quarter')",
-            "Title-only search (search_pages) is too narrow",
-        ],
-        when_not_to_use=[
-            "User wants to create / update a page (use create_page / update_page)",
-            "User already has a page ID and wants its content (use get_page_content)",
-            "User wants to list ALL pages in a space without any filter (use get_pages_in_space)",
-            "User wants to find a USER by name (use search_users, then feed the accountId back here)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Find Confluence pages about deployment",
-            "Search Confluence for API guidelines",
-            "What pages did I update?",
-            "Pages I created last week",
-            "Pages mentioning me about API design",
-            "What did John Doe update in the last quarter?",
-            "Most recent pages tagged with onboarding",
-            "Pages I edited in the X space this month",
-        ],
-        category=ToolCategory.DOCUMENTATION,
-        llm_description=(
+        path="/tools/confluence/search_content",
+        short_description="Full-text search across Confluence content",
+        description=(
             "Full-text search across Confluence pages and blog posts using the platform search engine. "
             "Unlike search_pages (title-only), this searches the full body content, comments, and labels — "
-            "exactly like the Confluence search bar. Use this whenever you need to find content by topic or keyword."
-        )
+            "exactly like the Confluence search bar.\n"
+            "\n"
+            "Supports filtering by author (contributor/creator/mention/last_modifier), date ranges, "
+            "labels, content types, space, and custom ordering. At least one substantive filter "
+            "(query, authorship, date, or labels) is required.\n"
+            "\n"
+            "Use for topic/keyword searches, authorship queries ('pages I updated'), date-bounded "
+            "results, label filtering, or any combination. Do not use for creating/updating pages, "
+            "reading a known page by ID (use get_page_content), listing all pages without filters "
+            "(use get_pages_in_space), or finding users by name (use search_users first)."
+        ),
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="Free-text search across page/blogpost titles, body, comments, and labels. Leave None for authorship-only / label-only / date-only queries.", required=False),
+            ToolParameter(name="space_id", type=ParameterType.STRING, description="Optional space key or numeric ID to restrict search to one space.", required=False),
+            ToolParameter(name="content_types", type=ParameterType.ARRAY, description="Content types to include: 'page', 'blogpost', or both. Defaults to both.", required=False, items={"type": "string"}),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Max number of results (1-50). Default 25.", required=False, default=25),
+            ToolParameter(name="contributor", type=ParameterType.STRING, description="Filter by anyone who EVER edited the page. Pass `currentUser()` (no quotes) for self, or `\"<accountId>\"` (with double quotes) for another user — call search_users first.", required=False),
+            ToolParameter(name="creator", type=ParameterType.STRING, description="Filter by the original page author. Same value format as contributor.", required=False),
+            ToolParameter(name="mention", type=ParameterType.STRING, description="Filter to pages that @-mention this user. Same value format as contributor.", required=False),
+            ToolParameter(name="last_modifier", type=ParameterType.STRING, description="Filter by the user who made the most recent edit (latest version only). Prefer `contributor` for 'pages I updated'.", required=False),
+            ToolParameter(name="last_modified_after", type=ParameterType.STRING, description="Filter to pages modified on or after this point. Pass ISO date ('2026-05-01') or CQL function ('now(\"-7d\")', 'startOfMonth()').", required=False),
+            ToolParameter(name="last_modified_before", type=ParameterType.STRING, description="Same value format as last_modified_after. Maps to `lastmodified <= ...`.", required=False),
+            ToolParameter(name="created_after", type=ParameterType.STRING, description="Filter to pages created on or after this point. Same value format as last_modified_after.", required=False),
+            ToolParameter(name="created_before", type=ParameterType.STRING, description="Same value format as created_after. Maps to `created <= ...`.", required=False),
+            ToolParameter(name="labels", type=ParameterType.ARRAY, description="List of label names. Matches pages tagged with ANY of the given labels (CQL `label in (...)`).", required=False, items={"type": "string"}),
+            ToolParameter(name="order_by", type=ParameterType.STRING, description="CQL ORDER BY clause. Examples: 'lastmodified desc', 'created desc', 'title asc'. Direction defaults to asc when omitted.", required=False),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f'Searching Confluence: "{args["query"]}"' if args.get("query") else "Searching Confluence content"
+        ),
+        result_summary=list_summary(("results",), _confluence_page_label, "page"),
     )
     async def search_content(
         self,
@@ -1550,43 +2067,33 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="search_users",
-        description="Search Confluence users by name or email",
-        args_schema=SearchUsersInput,
-        returns="JSON list of matching users (accountId, displayName, email when available, accountStatus, rank); ranked by closeness; with disambiguation flags when multiple users match",
-        when_to_use=[
-            "User names another person and you need their accountId for an authorship-filtered Confluence search",
-            "User asks 'who is X in Confluence' / 'find user X'",
-            "User asks 'what did <Name> update / create / contribute to' — call this FIRST, then search_content with the resolved accountId",
-        ],
-        when_not_to_use=[
-            "User asks about themselves — pass `currentUser()` directly to search_content, no lookup needed",
-            "User wants pages, not users (use search_content)",
-            "No user is named in the query",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Find Confluence user John Doe",
-            "What's the accountId for vishwjeet",
-            "Get user info for someone@company.com",
-            "Look up user Megan in Confluence",
-        ],
-        category=ToolCategory.DOCUMENTATION,
-        llm_description=(
+        path="/tools/confluence/search_users",
+        short_description="Search Confluence users by name or email",
+        description=(
             "Search Confluence users by display name OR email — handles whichever the user gives, "
             "you don't need to detect the format. Returns each match's accountId, which is what you "
             "wrap in double quotes (`'\"<accountId>\"'`) and pass as search_content's `contributor`, "
             "`creator`, `mention`, or `last_modifier` slot when filtering another user's activity.\n"
+            "\n"
             "DO NOT call this for self-queries — pass the literal `currentUser()` to search_content "
             "directly; no lookup needed.\n"
+            "\n"
             "When 2+ users match and none is an exact name/email match, the response sets "
-            "`disambiguation_required: true` and a `warning` field — stop and ask the user which "
-            "person they meant before passing any accountId onward. When exactly one user matches "
-            "or one is an exact match, proceed with the top result.\n"
-            "Cloud privacy can suppress email matches; if 0 results come back for an email, ask the "
-            "user for the display name instead."
+            "`disambiguation_required: true` — stop and ask the user which person they meant.\n"
+            "\n"
+            "Confluence's user search only matches on display name. Atlassian Cloud privacy "
+            "settings often hide email matches entirely. If this tool returns 0 results, check "
+            "the guidance field in the response for next steps — it will direct you to Jira's "
+            "user-search tool if one is available, which matches on email as well as name and "
+            "returns the same accountId that Confluence uses."
         ),
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="User's display name (full or partial) OR an email address. Both lookups run for every input.", required=True),
+            ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Max users to return (1-50). Default 10.", required=False, default=10),
+        ],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=args_template('Searching Confluence users: "{query}"', "query"),
+        result_summary=list_summary(("results",), _confluence_user_label, "user"),
     )
     async def search_users(
         self,
@@ -1734,9 +2241,13 @@ class Confluence:
             if not users:
                 body["error"] = f"No Confluence users matched {query_clean!r}"
                 body["guidance"] = (
-                    "Confirm the spelling, try a shorter name fragment, or ask "
-                    "the user for the full display name. (Atlassian Cloud "
-                    "privacy settings can hide email matches.)"
+                    "No Confluence users matched. Confluence's user search only matches display "
+                    "names, and Atlassian Cloud privacy settings often hide email matches. "
+                    "If you have a Jira or Atlassian user-search tool available, search there "
+                    "instead — Jira's user picker matches on email as well as name, and the "
+                    "accountId it returns is the same accountId Confluence uses, so you can pass "
+                    "it straight into Confluence's contributor / creator / mention filters. "
+                    "Otherwise, ask the user for the person's full display name."
                 )
                 return False, json.dumps(body)
 
@@ -1770,33 +2281,21 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="get_spaces",
-        description="Get all spaces with permissions in Confluence",
-        llm_description="Get all spaces with permissions in Confluence. Also used to resolve space names/types (e.g., personal space) before creating pages.",
-        # No args_schema needed (no parameters)
-        returns="JSON with list of spaces including id, key, name, and type fields",
-        when_to_use=[
-            "User wants to list all Confluence spaces",
-            "User mentions 'Confluence' + wants spaces",
-            "User asks for available spaces",
-            "Need to resolve 'my personal space' or any named space to get its ID before creating/updating a page",
-            "User refers to a space by name and you need the space key or numeric ID"
-        ],
-        when_not_to_use=[
-            "Space ID is already known from conversation history",
-            "User wants pages (use get_pages_in_space)",
-            "User wants info ABOUT Confluence (use retrieval)"
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "List all Confluence spaces",
-            "Show me available spaces",
-            "What spaces are in Confluence?",
-            "Create a page in my personal space",
-            "Create a page in the Engineering space"
-        ],
-        category=ToolCategory.DOCUMENTATION
+        path="/tools/confluence/get_spaces",
+        short_description="List all accessible Confluence spaces",
+        description=(
+            "Get all Confluence spaces accessible to the current user, including id, key, name, "
+            "and type. Also used to resolve space names/types (e.g. personal space) to their "
+            "numeric ID or key before creating/updating pages.\n"
+            "\n"
+            "Use when the user wants to list spaces, needs to resolve a space by name, or before "
+            "creating a page when the space ID is unknown. Do not use when the space ID is already "
+            "known from conversation history."
+        ),
+        parameters=[],
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
+        args_summary=lambda _args: "Fetching Confluence spaces",
+        result_summary=list_summary("results", _confluence_space_label, "space"),
     )
     async def get_spaces(self) -> tuple[bool, str]:
         """Get all spaces accessible to the user.
@@ -1837,28 +2336,17 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="get_space",
-        description="Get details of a Confluence space by ID",
-        args_schema=GetSpaceInput,  # NEW: Pydantic schema
-        returns="JSON with space details",
-        when_to_use=[
-            "User wants details about a specific space",
-            "User mentions 'Confluence' + wants space info",
-            "User asks about a space"
+        path="/tools/confluence/get_space",
+        short_description="Get details of a Confluence space",
+        description=(
+            "Get details of a specific Confluence space by its numeric ID. "
+            "Use when the user wants info about a particular space. "
+            "For listing all spaces use get_spaces. For listing pages in a space use get_pages_in_space."
+        ),
+        parameters=[
+            ToolParameter(name="space_id", type=ParameterType.STRING, description="Space ID", required=True),
         ],
-        when_not_to_use=[
-            "User wants all spaces (use get_spaces)",
-            "User wants pages (use get_pages_in_space)",
-            "User wants info ABOUT Confluence (use retrieval)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get space X details",
-            "Show me Confluence space info",
-            "What is space X?"
-        ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
     )
     async def get_space(self, space_id: str) -> tuple[bool, str]:
         """Get details of a specific space.
@@ -1902,30 +2390,24 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="update_page",
-        description="Update a Confluence page (title and/or content)",
-        args_schema=UpdatePageInput,  # NEW: Pydantic schema
-        returns="JSON with success status and updated page details",
-        when_to_use=[
-            "User wants to update/edit a Confluence page",
-            "User mentions 'Confluence' + wants to modify page",
-            "User asks to edit/update page content or title"
+        path="/tools/confluence/update_page",
+        short_description="Update a Confluence page's title and/or content",
+        description=(
+            "Update a Confluence page (title and/or content). At least one of page_title or "
+            "page_content must be provided. Content must be in Confluence storage format (HTML-like tags).\n"
+            "\n"
+            "Use when the user wants to edit or modify a page. Do not use for creating pages "
+            "(use create_page), reading pages (use get_page_content), or title-only changes "
+            "(use update_page_title)."
+        ),
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID", required=True),
+            ToolParameter(name="page_title", type=ParameterType.STRING, description="New page title (optional)", required=False),
+            ToolParameter(name="page_content", type=ParameterType.STRING, description="New page content in storage format (optional)", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create page (use create_page)",
-            "User wants to read page (use get_page_content)",
-            "User only wants to change title (use update_page_title)",
-            "User wants info ABOUT Confluence (use retrieval)",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Update Confluence page content",
-            "Edit a page in Confluence",
-            "Modify page content",
-            "Update page with new information"
-        ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
+        args_summary=args_template("Updating Confluence page {page_id}", "page_id"),
+        result_summary=entity_summary(lambda e: f"Updated page: {_confluence_page_label(e)}"),
     )
     async def update_page(
         self,
@@ -2077,28 +2559,17 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="get_page_versions",
-        description="Get versions of a Confluence page",
-        args_schema=GetPageVersionsInput,
-        returns="JSON with page versions",
-        when_to_use=[
-            "User wants to see page version history",
-            "User mentions 'Confluence' + wants versions",
-            "User asks for page history"
+        path="/tools/confluence/get_page_versions",
+        short_description="Get version history of a Confluence page",
+        description=(
+            "Get the version history of a Confluence page. Use when the user wants to see "
+            "page revision history or past versions. For reading the current page content "
+            "use get_page_content."
+        ),
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="The page ID", required=True),
         ],
-        when_not_to_use=[
-            "User wants page content (use get_page_content)",
-            "User wants to create page (use create_page)",
-            "User wants info ABOUT Confluence (use retrieval)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get version history of page",
-            "Show page versions",
-            "What versions does this page have?"
-        ],
-        category=ToolCategory.DOCUMENTATION
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="read")],
     )
     async def get_page_versions(self, page_id: str) -> tuple[bool, str]:
         """Get version history of a page.
@@ -2124,29 +2595,22 @@ class Confluence:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="confluence",
-        tool_name="comment_on_page",
-        description="Add a comment to a Confluence page",
-        args_schema=CommentOnPageInput,
-        returns="JSON with success status and comment details",
-        when_to_use=[
-            "User wants to add a comment to a Confluence page",
-            "User mentions 'Confluence' + wants to comment",
-            "User asks to comment on a page"
+        path="/tools/confluence/comment_on_page",
+        short_description="Add a comment to a Confluence page",
+        description=(
+            "Add a comment to a Confluence page. The comment_text parameter accepts plain text — "
+            "it will be automatically formatted with HTML escaping and proper structure for Confluence. "
+            "Optionally reply to an existing comment by providing parent_comment_id.\n"
+            "\n"
+            "Use when the user wants to comment on a page. Do not use for creating pages "
+            "(use create_page) or reading pages (use get_page_content)."
+        ),
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID", required=True),
+            ToolParameter(name="comment_text", type=ParameterType.STRING, description="Comment text/content", required=True),
+            ToolParameter(name="parent_comment_id", type=ParameterType.STRING, description="Parent comment ID if replying to a comment (optional)", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create page (use create_page)",
-            "User wants to read page (use get_page_content)",
-            "User wants info ABOUT Confluence (use retrieval)",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Add a comment to the Confluence page",
-            "Comment on page X",
-            "Leave a comment on this page"
-        ],
-        category=ToolCategory.DOCUMENTATION,
-        llm_description="Add a comment to a Confluence page. The comment_text parameter accepts plain text - it will be automatically formatted with HTML escaping and proper structure for Confluence."
+        tags=[Tag(key="category", value="knowledge_management"), Tag(key="type", value="write")],
     )
     async def comment_on_page(
         self,

@@ -690,10 +690,19 @@ export const KnowledgeBaseApi = {
   },
 
   // Download a record file via stream endpoint
-  async streamDownloadRecord(recordId: string, fileName?: string): Promise<void> {
+  async streamDownloadRecord(
+    recordId: string,
+    fileName?: string,
+    options?: { version?: number }
+  ): Promise<void> {
+    const params: Record<string, number> = {};
+    if (options?.version !== undefined) {
+      params.version = options.version;
+    }
     const response = await apiClient.get(`${BASE_URL}/stream/record/${recordId}`, {
       responseType: 'blob',
       timeout: 300000,
+      params,
     });
 
     // response.data is already a Blob with the correct MIME type when responseType is 'blob'
@@ -729,11 +738,19 @@ export const KnowledgeBaseApi = {
    * @param recordId - The ID of the record to stream
    * @param options.convertTo - Optional format conversion (e.g. 'pdf').
    *   Used for PPT/PPTX files which need server-side conversion to PDF for preview.
+   * @param options.version - Optional artifact registry version to pin the
+   *   content to (ARTIFACT records only) — omit for the latest version.
    */
-  async streamRecord(recordId: string, options?: { convertTo?: string }): Promise<Blob> {
-    const params: Record<string, string> = {};
+  async streamRecord(
+    recordId: string,
+    options?: { convertTo?: string; version?: number }
+  ): Promise<Blob> {
+    const params: Record<string, string | number> = {};
     if (options?.convertTo) {
       params.convertTo = options.convertTo;
+    }
+    if (options?.version !== undefined) {
+      params.version = options.version;
     }
     const { data } = await apiClient.get(
       `${BASE_URL}/stream/record/${recordId}`,

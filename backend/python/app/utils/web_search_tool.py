@@ -231,7 +231,17 @@ def create_web_search_tool(
     @tool("web_search", args_schema=WebSearchArgs)
     async def web_search_tool(query: str) -> str:
         """
-        This tool searches the web for information.
+        Search the public web for information.
+
+        WHEN TO USE: prefer this over training data for anything that may
+        have changed since training — news, prices, weather, sports,
+        stocks, software versions, docs, regulations, current events — and
+        for any "latest"/"current"/"up-to-date" request. Also prefer it for
+        general/public knowledge with no single authoritative source:
+        product recommendations, comparisons, reviews, health/medical
+        info, consumer advice, market research, "best X" queries, travel,
+        recipes. Training data alone is fine only for timeless knowledge
+        (math, science, core concepts) — when in doubt, search.
 
         RESULT FORMAT:
         Returns search results with titles, URLs/citation_ids and snippets from web pages.

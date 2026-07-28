@@ -1490,7 +1490,11 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.firstCall.args[0]).to.deep.equal({ customSystemPrompt: '', customSystemPromptWebSearch: '' })
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        customSystemPrompt: '',
+        customSystemPromptWebSearch: '',
+        customSystemPromptAgent: '',
+      })
     })
 
     it('should return custom prompt when it exists', async () => {
@@ -1506,7 +1510,11 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.firstCall.args[0]).to.deep.equal({ customSystemPrompt: 'Be helpful', customSystemPromptWebSearch: '' })
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        customSystemPrompt: 'Be helpful',
+        customSystemPromptWebSearch: '',
+        customSystemPromptAgent: '',
+      })
     })
   })
 
@@ -1538,6 +1546,53 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0].customSystemPrompt).to.equal('Be concise')
+    })
+
+    it('should round-trip all three mode prompts including agent mode', async () => {
+      mockEncService.decrypt.returns(JSON.stringify({ llm: [] }))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:data'),
+        compareAndSet: sinon.stub().resolves(true),
+      })
+      const handler = setCustomSystemPrompt(kvs)
+      const req = createMockRequest({
+        body: {
+          customSystemPrompt: 'Internal prompt',
+          customSystemPromptWebSearch: 'Web prompt',
+          customSystemPromptAgent: 'Agent prompt',
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        message: 'Custom system prompts updated successfully',
+        customSystemPrompt: 'Internal prompt',
+        customSystemPromptWebSearch: 'Web prompt',
+        customSystemPromptAgent: 'Agent prompt',
+      })
+    })
+
+    it('should default customSystemPromptAgent to empty string when omitted', async () => {
+      mockEncService.decrypt.returns(JSON.stringify({ llm: [] }))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:data'),
+        compareAndSet: sinon.stub().resolves(true),
+      })
+      const handler = setCustomSystemPrompt(kvs)
+      const req = createMockRequest({
+        body: { customSystemPrompt: 'Be concise', customSystemPromptWebSearch: '' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0].customSystemPromptAgent).to.equal('')
     })
   })
 

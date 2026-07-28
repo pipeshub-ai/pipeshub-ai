@@ -8,6 +8,7 @@ from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.utils.aimodels import (
     MAX_OUTPUT_TOKENS,
     MAX_OUTPUT_TOKENS_CLAUDE_4_5,
+    MAX_OUTPUT_TOKENS_CLAUDE_MODERN,
     EmbeddingProvider,
     LLMProvider,
     _get_anthropic_max_tokens,
@@ -76,8 +77,25 @@ class TestGetAnthropicMaxTokens:
     def test_claude_4_5_in_name(self):
         assert _get_anthropic_max_tokens("anthropic.claude-4.5-haiku-20260301") == MAX_OUTPUT_TOKENS_CLAUDE_4_5
 
+    def test_claude_haiku_4_5(self):
+        assert _get_anthropic_max_tokens("claude-haiku-4-5") == MAX_OUTPUT_TOKENS_CLAUDE_4_5
+
+    def test_claude_haiku_4_5_dated(self):
+        assert _get_anthropic_max_tokens("claude-haiku-4-5-20251001") == MAX_OUTPUT_TOKENS_CLAUDE_4_5
+
+    def test_claude_sonnet_5(self):
+        assert _get_anthropic_max_tokens("claude-sonnet-5") == MAX_OUTPUT_TOKENS_CLAUDE_MODERN
+
+    def test_claude_opus_4_8(self):
+        assert _get_anthropic_max_tokens("claude-opus-4-8") == MAX_OUTPUT_TOKENS_CLAUDE_MODERN
+
+    def test_claude_sonnet_4_6(self):
+        assert _get_anthropic_max_tokens("claude-sonnet-4-6") == MAX_OUTPUT_TOKENS_CLAUDE_MODERN
+
+    def test_claude_opus_4_6(self):
+        assert _get_anthropic_max_tokens("claude-opus-4-6") == MAX_OUTPUT_TOKENS_CLAUDE_MODERN
+
     def test_claude_3_5_sonnet(self):
-        # Does NOT contain "4.5"
         assert _get_anthropic_max_tokens("claude-3.5-sonnet") == MAX_OUTPUT_TOKENS
 
     def test_claude_3_opus(self):
@@ -92,6 +110,7 @@ class TestGetAnthropicMaxTokens:
     def test_max_tokens_constant_values(self):
         assert MAX_OUTPUT_TOKENS == 4096
         assert MAX_OUTPUT_TOKENS_CLAUDE_4_5 == 64000
+        assert MAX_OUTPUT_TOKENS_CLAUDE_MODERN == 16384
 
 
 # ---------------------------------------------------------------------------

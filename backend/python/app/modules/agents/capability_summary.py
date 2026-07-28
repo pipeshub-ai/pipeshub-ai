@@ -117,14 +117,24 @@ def classify_knowledge_sources(
     agent_knowledge: list[dict[str, Any]],
     *,
     connector_configs: dict[str, Any] | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> list[dict[str, Any]]:
     """
-    Classify agent knowledge into KB document stores and indexed app connectors.
+    Classify agent knowledge into a single, uniform list of retrieval sources.
+
+    KB document stores and indexed app connectors are the SAME concept
+    downstream — both are searched via search_internal_knowledge's single
+    `connector_ids` parameter (there is no separate `collection_ids`) — so
+    they are returned as ONE flat list, discriminated by `source_type`,
+    instead of two parallel lists with two different shapes that every
+    caller had to destructure and re-combine. Callers that need to display
+    KB vs app sources differently (icons, headers, `type_key`/`filters`)
+    filter this list by `source_type` rather than receiving two lists.
 
     This is the single source of truth for knowledge classification used by:
-    - The deep-agent orchestrator (_build_knowledge_context in orchestrator.py)
-    - The qna/react planner (_build_knowledge_context in nodes.py)
-    - The sub-agent tool guidance (_build_sub_agent_tool_guidance in sub_agent.py)
+    - The deep-agent orchestrator (_build_orchestrator_knowledge_context)
+    - The qna/react planner (_build_knowledge_context)
+    - internal_exploration_agent's per-request playbook (domain_agents.py)
+    - The router's capability summary (qna/router.py)
 
     Args:
         agent_knowledge: Raw knowledge list from state["agent_knowledge"]
@@ -132,17 +142,17 @@ def classify_knowledge_sources(
             {"sync": {...}, "indexing": {...}} (from fetch_connector_configs / state).
 
     Returns:
-        (kb_sources, indexed_connectors) where:
-        - kb_sources: list of dicts {"label": str, "collection_ids": list[str]}
-          collection_ids is the KB's own app id (connectorId), passed as the
-          `collection_ids` parameter in search_internal_knowledge calls.
-        - indexed_connectors: list of dicts
-          {"label": str, "type_key": str, "connector_id": str, optional "filters": dict}
-          representing app connectors whose content is indexed and
-          searchable via search_internal_knowledge with the connector_ids filter.
+        list of dicts, each:
+        {"label": str, "connector_id": str, "source_type": "kb" | "app",
+         "type_key": str, optional "filters": dict}
+        - source_type == "kb": a KB document store. `connector_id` is ""
+          when the KB has no id of its own (search the full KB, no id
+          filter needed) — `type_key` is always "" for these.
+        - source_type == "app": an indexed app connector, searchable via
+          search_internal_knowledge's connector_ids filter. Always has a
+          non-empty connector_id — entries without one are skipped.
     """
-    kb_sources: list[dict[str, Any]] = []
-    indexed_connectors: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
 
     for k in (agent_knowledge or []):
         if not isinstance(k, dict):
@@ -153,10 +163,11 @@ def classify_knowledge_sources(
         connector_id = (k.get("connectorId") or "").strip()
 
         if ktype.upper() == "KB":
-            kb_sources.append({
+            sources.append({
                 "label": name or "Knowledge Base",
-                "type": "Collection",
-                "collection_ids": [connector_id] if connector_id else [],
+                "type_key": "",
+                "connector_id": connector_id,
+                "source_type": "kb",
             })
         elif connector_id:
             type_key = ktype.lower().split()[0] if ktype else ""
@@ -165,540 +176,80 @@ def classify_knowledge_sources(
                 "label": label,
                 "type_key": type_key,
                 "connector_id": connector_id,
+                "source_type": "app",
             }
             if connector_configs:
                 fc = connector_configs.get(connector_id)
                 if isinstance(fc, dict) and fc:
                     entry["filters"] = fc
-            indexed_connectors.append(entry)
+            sources.append(entry)
 
-    return kb_sources, indexed_connectors
-
-
-# ---------------------------------------------------------------------------
-# Helpers for unique slugs / task IDs when same-type connectors exist
-# ---------------------------------------------------------------------------
-
-def _label_slug(label: str) -> str:
-    """Convert a display label to a safe slug for task IDs."""
-    return "".join(c if c.isalnum() else "_" for c in label.lower()).strip("_")
-
-
-def _unique_connector_slug(connector: dict[str, Any], index: int) -> str:
-    """
-    Build a unique slug for a connector, using label first and falling back
-    to index suffix to guarantee uniqueness across same-type connectors.
-
-    E.g. two Confluence connectors named "Confluence" and "Confluence Engineering"
-    → "retrieval_confluence" and "retrieval_confluence_engineering"
-
-    Two both named "Confluence"
-    → "retrieval_confluence_1" and "retrieval_confluence_2"
-    """
-    label = connector.get("label", "")
-    type_key = connector.get("type_key", "")
-    slug = _label_slug(label) if label else type_key or f"connector_{index}"
-    return slug
-
-
-def _deduplicate_task_ids(
-    indexed_connectors: list[dict[str, Any]],
-) -> list[str]:
-    """
-    Generate a list of unique task_id suffixes for each connector,
-    appending _1, _2, etc. when slugs collide.
-    """
-    raw_slugs = [
-        _unique_connector_slug(c, i)
-        for i, c in enumerate(indexed_connectors)
-    ]
-    # Count occurrences
-    slug_counts: dict[str, int] = {}
-    for s in raw_slugs:
-        slug_counts[s] = slug_counts.get(s, 0) + 1
-
-    # Assign unique suffixes where needed
-    slug_next: dict[str, int] = {}
-    result: list[str] = []
-    for s in raw_slugs:
-        if slug_counts[s] > 1:
-            idx = slug_next.get(s, 1)
-            slug_next[s] = idx + 1
-            result.append(f"{s}_{idx}")
-        else:
-            result.append(s)
-
-    return result
-
-
-def build_connector_routing_rules(
-    indexed_connectors: list[dict[str, Any]],
-    kb_sources: list[dict[str, Any]] | None = None,
-    *,
-    call_format: str = "planner",
-    kb_only_note: str = "",
-) -> str:
-    """
-    Build the retrieval source routing decision rules as a natural-language block.
-
-    Covers TWO distinct parameter paths in search_internal_knowledge:
-      • App connectors → pass `connector_ids: ["<connector_id>"]`
-      • KB collections → pass `collection_ids: ["<record_group_id>"]`
-
-    Handles multiple connectors of the same type correctly by:
-      - Giving each a unique display identity (label + connector_id)
-      - Generating unique task_ids for orchestrator format
-      - Emphasizing that each connector is a separate source requiring
-        its own individual search call
-
-    Args:
-        indexed_connectors: list from classify_knowledge_sources
-            (app connectors with connector_id)
-        kb_sources: list from classify_knowledge_sources
-            (KB collections with optional collection_ids)
-        call_format: "planner" → tool-call JSON examples
-                     "orchestrator" → task-description examples
-        kb_only_note: fallback text returned when both lists are empty.
-
-    Returns:
-        Formatted routing rules string, or kb_only_note if nothing configured.
-    """
-    _kb: list[dict[str, Any]] = kb_sources or []
-
-    if not indexed_connectors and not _kb:
-        return kb_only_note
-
-    n_conn = len(indexed_connectors)
-    n_kb   = len(_kb)
-    n_total = n_conn + n_kb
-
-    # Pre-compute unique task_id slugs for connectors
-    connector_slugs = _deduplicate_task_ids(indexed_connectors)
-
-    # ── Detect same-type duplicates for extra guidance ──────────────────────
-    type_counts: dict[str, int] = {}
-    for c in indexed_connectors:
-        tk = c.get("type_key", "")
-        type_counts[tk] = type_counts.get(tk, 0) + 1
-    has_same_type_duplicates = any(v > 1 for v in type_counts.values())
-
-    # ── Identity block ──────────────────────────────────────────────────────
-    # Each source gets a unique identity line with its connector_id so the
-    # LLM can distinguish same-type connectors.
-    identity_lines: list[str] = []
-
-    if _kb:
-        identity_lines.append(
-            "  📚 **KB Collections** (search with `collection_ids` parameter):"
-        )
-        for k in _kb:
-            cids = k.get("collection_ids", [])
-            if cids:
-                cids_display = ", ".join(f'"{c}"' for c in cids)
-                identity_lines.append(
-                    f'    • **{k["label"]}** — `collection_ids=[{cids_display}]`'
-                )
-            else:
-                identity_lines.append(
-                    f'    • **{k["label"]}** — omit collection_ids (searches full KB)'
-                )
-
-    if indexed_connectors:
-        has_filters = any(c.get("filters") for c in indexed_connectors)
-        identity_lines.append(
-            "  🔗 **App Connectors** (search with `connector_ids` parameter):"
-        )
-        if has_filters:
-            identity_lines.append(
-                "    ⓘ Scope and content below describe what is indexed in each connector"
-                " — they do NOT restrict routing decisions."
-            )
-        for c in indexed_connectors:
-            identity_lines.append(
-                f'    • **{c["label"]}** (app: {c["type_key"]}) — connector_id: `{c["connector_id"]}`'
-            )
-            for fl in format_connector_filter_lines(c.get("filters")):
-                identity_lines.append(f"          {fl}")
-
-    identity_block = "\n".join(identity_lines)
-
-    # ── Routing decision text ────────────────────────────────────────────────
-    if n_conn > 0:
-        # Build the "search all sources" bullet list
-        all_src_lines: list[str] = []
-        for k in _kb:
-            cids = k.get("collection_ids", [])
-            if cids:
-                cids_str = ", ".join(f'"{c}"' for c in cids)
-                all_src_lines.append(
-                    f'     - {k["label"]} (KB): `collection_ids=[{cids_str}]`'
-                )
-            else:
-                all_src_lines.append(
-                    f'     - {k["label"]} (KB): omit collection_ids'
-                )
-        for c in indexed_connectors:
-            all_src_lines.append(
-                f'     - {c["label"]} (app: {c["type_key"]}): `connector_ids=["{c["connector_id"]}"]`'
-            )
-        all_src_str = "\n".join(all_src_lines)
-
-        if has_same_type_duplicates:
-            # List each duplicated app type with its connectors so the LLM
-            # knows exactly which groups need signal-based disambiguation.
-            dup_type_groups: dict[str, list[dict]] = {}
-            for c in indexed_connectors:
-                if type_counts[c["type_key"]] > 1:
-                    dup_type_groups.setdefault(c["type_key"], []).append(c)
-
-            dup_note_lines = [
-                "   ⚠️  The following app types have multiple connectors — you MUST",
-                "       apply the signals above to identify the correct one before routing:",
-            ]
-            for app_type, conns in dup_type_groups.items():
-                conn_entries = ", ".join(
-                    f'**{c["label"]}** (connector_id: `{c["connector_id"]}`)'
-                    for c in conns
-                )
-                dup_note_lines.append(f"       • app: {app_type} → {conn_entries}")
-            same_type_note = "\n" + "\n".join(dup_note_lines) + "\n"
-
-            rule3 = (
-                f"   3. **App type is named** but signals could not identify a specific connector\n"
-                f"      → Search **all connectors of that app type** in parallel. Do NOT include\n"
-                f"        other app types or KB sources.\n\n"
-            )
-            rule4_num = "4"
-        else:
-            same_type_note = ""
-            rule3 = ""
-            rule4_num = "3"
-
-        routing_decision = (
-            f"\n**How to route retrieval — follow these steps every time:**\n\n"
-            f"⚠️ **Scope signals tell you WHERE to search — they never mean 'skip retrieval'.**\n"
-            f"Even if a signal clearly identifies one connector, you MUST still plan a retrieval\n"
-            f"call to that connector. Identifying the target is step 1; executing retrieval is step 2.\n\n"
-            f"**Step 1 — Analyse the query and conversation context for targeting signals:**\n"
-            f"   • Scope identifiers — scope values, project keys, space names, labels, or\n"
-            f"     identifiers that appear in a connector's 'Scoped to' field above.\n"
-            f"     ⚠️ A scope name in the query (e.g. 'Software Development') means 'search that\n"
-            f"        connector for this topic' — NOT 'answer directly without searching'.\n"
-            f"   • Content type — specific content types requested that only some connectors index\n"
-            f"     (compare against each connector's 'Content indexed' field above).\n"
-            f"   • Connector label — exact or partial/fuzzy match against a connector's name.\n"
-            f"   • Domain or topic clues — business area, team, or subject that clearly aligns\n"
-            f"     with a specific connector's indexed scope.\n"
-            f"   • Conversation context — earlier messages that established which connector or\n"
-            f"     source was being discussed.\n"
-            f"{same_type_note}"
-            f"\n**Step 2 — Route based on what Step 1 found:**\n\n"
-            f"   1. Signals clearly identify **one specific connector**\n"
-            f"      → Search **that connector ONLY**. Do NOT add tasks for other sources.\n\n"
-            f"   2. Signals identify **multiple specific connectors**\n"
-            f"      → One parallel search task per identified connector.\n\n"
-            f"{rule3}"
-            f"   {rule4_num}. No signals found / truly ambiguous → search ALL {n_total} source(s) in parallel:\n"
-            f"{all_src_str}\n\n"
-            f"**Parameter rules (CRITICAL — never mix these up):**\n"
-            f"   • KB collection  → `collection_ids: [\"<record_group_id>\"]`"
-            f"  — NEVER use connector_ids for a KB\n"
-            f"   • App connector  → `connector_ids: [\"<connector_id>\"]`"
-            f"  — NEVER use collection_ids for a connector\n"
-            f"   • One call per source — never combine IDs in one call; all calls run in parallel\n"
-            f"   • **Default when truly uncertain: search ALL {n_total} source(s)**\n"
-        )
-    else:
-        # KB-only: no app connectors configured
-        routing_decision = (
-            f"\n**KB-only configuration** — no app connectors configured:\n\n"
-            f"1. Search every KB collection listed above for ALL substantive queries.\n"
-            f"2. **Parameter rules:**\n"
-            f"   • KB with collection_ids → set `collection_ids: [\"<record_group_id>\"]`\n"
-            f"   • KB without collection_ids → omit both collection_ids and connector_ids\n\n"
-        )
-
-    # ── Call-format examples ─────────────────────────────────────────────────
-    if call_format == "planner":
-        all_parts: list[str] = []
-        for k in _kb:
-            cids = k.get("collection_ids", [])
-            if cids:
-                cids_str = ", ".join(f'"{c}"' for c in cids)
-                all_parts.append(
-                    f'    {{"name": "retrieval.search_internal_knowledge",'
-                    f' "args": {{"query": "<your query>", "collection_ids": [{cids_str}]}}}}'
-                )
-            else:
-                all_parts.append(
-                    f'    {{"name": "retrieval.search_internal_knowledge",'
-                    f' "args": {{"query": "<your query>", "collection_ids": null}}}}'
-                )
-        for c in indexed_connectors:
-            all_parts.append(
-                f'    {{"name": "retrieval.search_internal_knowledge",'
-                f' "args": {{"query": "<your query>", "connector_ids": ["{c["connector_id"]}"]}}}}',
-            )
-        all_calls = ",\n".join(all_parts)
-
-        # Specific-source example: prefer first connector, fall back to first KB
-        if indexed_connectors:
-            c0 = indexed_connectors[0]
-            specific = (
-                f'    {{"name": "retrieval.search_internal_knowledge",'
-                f' "args": {{"query": "<your query>", "connector_ids": ["{c0["connector_id"]}"]}}}}',
-            )[0]
-        elif _kb and _kb[0].get("collection_ids"):
-            cids_str = ", ".join(f'"{c}"' for c in _kb[0]["collection_ids"])
-            specific = (
-                f'    {{"name": "retrieval.search_internal_knowledge",'
-                f' "args": {{"query": "<your query>", "collection_ids": [{cids_str}]}}}}'
-            )
-        else:
-            specific = (
-                f'    {{"name": "retrieval.search_internal_knowledge",'
-                f' "args": {{"query": "<your query>", "collection_ids": null}}}}'
-            )
-
-        if n_total > 1:
-            example_section = (
-                f"\n  **All sources (general / ambiguous query):**\n"
-                "  ```json\n  [\n"
-                f"{all_calls}\n"
-                "  ]\n  ```\n"
-                f"  **Specific source only (when intent is clear):**\n"
-                "  ```json\n  [\n"
-                f"{specific}\n"
-                "  ]\n  ```"
-            )
-        else:
-            example_section = (
-                f"\n  **Call format:**\n"
-                "  ```json\n  [\n"
-                f"{all_calls}\n"
-                "  ]\n  ```"
-            )
-
-    else:
-        # Orchestrator format — task description examples
-        # Uses deduplicated slugs so same-type connectors get unique task_ids
-        all_parts: list[str] = []
-        for k in _kb:
-            slug = _label_slug(k["label"])
-            cids = k.get("collection_ids", [])
-            if cids:
-                cids_esc = ", ".join(f'\\"{c}\\"' for c in cids)
-                all_parts.append(
-                    f'    {{"task_id": "retrieval_kb_{slug}",'
-                    f' "description": "Search the {k["label"]} knowledge base'
-                    f' (collection_ids: [{cids_esc}]) for <topic>.'
-                    f' Call search_internal_knowledge with collection_ids: [{cids_esc}].",'
-                    f' "domains": ["retrieval"], "depends_on": []}}'
-                )
-            else:
-                all_parts.append(
-                    f'    {{"task_id": "retrieval_kb_{slug}",'
-                    f' "description": "Search the {k["label"]} knowledge base for <topic>.'
-                    f' Call search_internal_knowledge (omit collection_ids and connector_ids).",'
-                    f' "domains": ["retrieval"], "depends_on": []}}'
-                )
-        for i, c in enumerate(indexed_connectors):
-            task_slug = connector_slugs[i]
-            fls = format_connector_filter_lines(c.get("filters"))
-            filt = (" Indexing scope: " + " ".join(fls).replace("\\", "\\\\").replace('"', '\\"') + ".") if fls else ""
-            all_parts.append(
-                f'    {{"task_id": "retrieval_{task_slug}",'
-                f' "description": "Search the {c["label"]} connector'
-                f' (connector_id: {c["connector_id"]}) for <topic>.{filt}'
-                f' Call search_internal_knowledge with connector_ids: [\\"{c["connector_id"]}\\"].",'
-                f' "domains": ["retrieval"], "depends_on": []}}'
-            )
-        all_tasks = ",\n".join(all_parts)
-
-        # Specific-source example
-        if indexed_connectors:
-            c0 = indexed_connectors[0]
-            slug0 = connector_slugs[0]
-            fls0 = format_connector_filter_lines(c0.get("filters"))
-            filt0 = (" Indexing scope: " + " ".join(fls0).replace("\\", "\\\\").replace('"', '\\"') + ".") if fls0 else ""
-            specific = (
-                f'    {{"task_id": "retrieval_{slug0}",'
-                f' "description": "Search the {c0["label"]} connector'
-                f' (connector_id: {c0["connector_id"]}) for <topic>.{filt0}'
-                f' Call search_internal_knowledge with connector_ids: [\\"{c0["connector_id"]}\\"].",'
-                f' "domains": ["retrieval"], "depends_on": []}}'
-            )
-        elif _kb:
-            k0   = _kb[0]
-            slug = _label_slug(k0["label"])
-            cids = k0.get("collection_ids", [])
-            if cids:
-                cids_esc = ", ".join(f'\\"{c}\\"' for c in cids)
-                specific = (
-                    f'    {{"task_id": "retrieval_kb_{slug}",'
-                    f' "description": "Search the {k0["label"]} knowledge base'
-                    f' (collection_ids: [{cids_esc}]) for <topic>.'
-                    f' Call search_internal_knowledge with collection_ids: [{cids_esc}].",'
-                    f' "domains": ["retrieval"], "depends_on": []}}'
-                )
-            else:
-                specific = (
-                    f'    {{"task_id": "retrieval_kb_{slug}",'
-                    f' "description": "Search the {k0["label"]} knowledge base for <topic>.'
-                    f' Call search_internal_knowledge without filters.",'
-                    f' "domains": ["retrieval"], "depends_on": []}}'
-                )
-        else:
-            specific = ""
-
-        if n_total > 1:
-            example_section = (
-                f"\n  **All sources (general / ambiguous query):**\n"
-                "  ```json\n  [\n"
-                f"{all_tasks}\n"
-                "  ]\n  ```\n"
-                f"  **Specific source only (when intent is clear):**\n"
-                "  ```json\n  [\n"
-                f"{specific}\n"
-                "  ]\n  ```"
-            )
-        else:
-            example_section = (
-                f"\n  **Task format:**\n"
-                "  ```json\n  [\n"
-                f"{all_tasks}\n"
-                "  ]\n  ```"
-            )
-
-    n_kb_label = f"{n_kb} KB collection{'s' if n_kb != 1 else ''}"
-    n_conn_label = f"{n_conn} connector{'s' if n_conn != 1 else ''}"
-    src_label = f"{n_kb_label} + {n_conn_label}" if n_kb and n_conn else (n_kb_label if n_kb else n_conn_label)
-    rules = (
-        f"\n**Retrieval Routing ({n_total} source(s): {src_label}):**\n\n"
-        f"Configured sources:\n{identity_block}\n"
-        f"{routing_decision}"
-        f"{example_section}"
-    )
-    return rules
-
+    return sources
 
 def build_capability_summary(state: dict[str, Any]) -> str:
     """
     Build a capability summary for the LLM to answer "what can you do?" questions.
 
-    Shows:
-    - Configured knowledge sources (from agent_knowledge)
-    - All tools the runtime loads, grouped by domain — service connectors AND
-      built-ins (calculator, date_calculator, coding_sandbox, etc.), deduped.
+    Shows available actions grouped by domain — service connectors AND
+    built-ins (calculator, date_calculator, coding_sandbox, etc.), deduped.
+    The Knowledge Sources content (record model, source table) is emitted
+    separately by ``_build_knowledge_context`` / ``SourceCatalog.render()``,
+    so it appears exactly once in the prompt.
+
+    Returns "" when the agent has no tools at all — a header followed by
+    "No tools configured" tells the model only what it already knows and
+    just burns prompt tokens.
     """
+    domains, domain_notes = _get_all_tool_domains(state)
+
+    if not domains:
+        return ""
+
     parts: list[str] = ["## Capability Summary", ""]
 
-    has_knowledge = state.get("has_knowledge", False)
-
-    _build_knowledge_section(state=state, has_knowledge=has_knowledge, parts=parts)
-    _build_actions_section(state=state, has_knowledge=has_knowledge, parts=parts)
-
-    parts.append(
-        "When users ask about capabilities, available tools, knowledge "
-        "sources, or what actions can be performed, determine if the "
-        "underlying intent of the query is to understand what this agent "
-        "can do. If so, use the Capability Summary section below to "
-        "answer directly — set can_answer_directly: true. "
-        "If the user's underlying intent is to get real information, "
-        "find something, or understand an external system or topic — "
-        "regardless of how the question is phrased — it is a task, "
-        "not a capability question."
-    )
+    _build_actions_section(domains=domains, domain_notes=domain_notes, parts=parts)
+    _build_auth_status_section(state=state, parts=parts)
 
     return "\n".join(parts)
 
 
-def _build_knowledge_section(
-    state: dict[str, Any],
-    *,
-    has_knowledge: bool,
-    parts: list[str],
-) -> None:
-    """Append knowledge sources section to parts."""
-    parts.append("### Knowledge Sources")
+def _build_auth_status_section(state: dict[str, Any], *, parts: list[str]) -> None:
+    """Append a "Needs Authentication" subsection listing toolsets this
+    request found CONFIGURED but couldn't load because `ToolInstanceCreator`
+    raised an auth error (`toolset_load_failures[name] == "not_authenticated"`
+    — see `AgentContext.toolset_load_failures`'s docstring and
+    `tool_loader.py`'s per-toolset try/except). Without this, a toolset that
+    fails auth silently vanishes from the agent's tool list with no signal
+    at all, so a query naming it gets a generic "I don't have that tool"
+    instead of "authenticate it in Settings".
 
-    if not has_knowledge:
-        parts.append("- No knowledge sources configured")
-        parts.append("")
+    Deliberately omitted when empty — most requests have zero auth
+    failures, and an empty header would just be noise on every prompt.
+    """
+    failures: dict[str, Any] = state.get("toolset_load_failures") or {}
+    unauthenticated = sorted(
+        name for name, reason in failures.items() if reason == "not_authenticated"
+    )
+    if not unauthenticated:
         return
 
-    knowledge_list = state.get("agent_knowledge", []) or []
-    connector_configs = state.get("connector_configs") or {}
-    if knowledge_list:
-        for kb in knowledge_list:
-            if not isinstance(kb, dict):
-                continue
-            kb_name = kb.get("name") or kb.get("displayName") or "Unnamed"
-            kb_type_raw = kb.get("type", "")
-            kb_type = kb_type_raw.strip()
-            connector_id = kb.get("connectorId", "")
-            is_kb = kb_type.upper() == "KB"
-            # Normalize to lowercase for display (raw data may be "Confluence", "JIRA", etc.)
-            kb_type_display = kb_type.lower().split()[0] if kb_type and not is_kb else kb_type
-
-            # Source header line
-            if is_kb:
-                parts.append(f"\n📄 **{kb_name}** (Collection)")
-            elif kb_type_display:
-                parts.append(f"\n🔗 **{kb_name}** (app: {kb_type_display})")
-            else:
-                parts.append(f"\n🔗 **{kb_name}**")
-
-            if is_kb and connector_id:
-                parts.append(
-                    f'  - Browse: `list_files(parent_id="{connector_id}", parent_type="recordGroup")`'
-                )
-                parts.append(f'  - Search: `record_group_ids=["{connector_id}"]`')
-            elif connector_id:
-                parts.append(
-                    f'  - Browse: `list_files(parent_id="{connector_id}", parent_type="app")`'
-                )
-                parts.append(f'  - Search: `connector_ids=["{connector_id}"]`')
-                if isinstance(connector_configs, dict) and connector_id:
-                    fc = connector_configs.get(connector_id)
-                    if isinstance(fc, dict) and fc:
-                        for fl in format_connector_filter_lines(fc):
-                            parts.append(f"  - {fl}")
-    else:
-        parts.append("- Internal knowledge sources configured")
-
-    parts.append("\n- Can search indexed documents, policies, and organizational information")
-
-    # If agent has BOTH knowledge sources and service tools for the same app,
-    # guide the LLM to use both for comprehensive results
-    service_tools = state.get("tools") or []
-    if knowledge_list and service_tools:
-        # Check if any knowledge source overlaps with a service tool domain
-        knowledge_types = {
-            (kb.get("type", "")).lower()
-            for kb in knowledge_list
-            if isinstance(kb, dict)
-        }
-        tool_domains = {
-            t.split(".", 1)[0].lower()
-            for t in service_tools
-            if isinstance(t, str) and "." in t
-        }
-        if knowledge_types & tool_domains or knowledge_types - {"kb", ""}:
-            parts.append(
-                "\n**IMPORTANT**: When listing or browsing files/documents, use BOTH:\n"
-                "  - `knowledgehub.list_files` for indexed files with metadata from the Knowledge Hub\n"
-                "  - Service search/list tools for live data directly from connectors\n"
-                "  This gives the most complete picture."
-            )
-
+    parts.append("### Needs Authentication")
+    parts.append(
+        "The following toolsets are configured for this agent but are NOT "
+        "authenticated yet — their tools are unavailable until the user "
+        "authenticates. If the user's query targets one of these, tell them "
+        "plainly that it needs authentication and to go to Settings > "
+        "Toolsets to connect it, instead of saying the toolset doesn't exist:"
+    )
+    for name in unauthenticated:
+        parts.append(f"- {name}")
     parts.append("")
 
 
 def _build_actions_section(
-    state: dict[str, Any],
     *,
-    has_knowledge: bool,
+    domains: dict[str, list[str]],
+    domain_notes: dict[str, str],
     parts: list[str],
 ) -> None:
     """Append available actions section to parts.
@@ -707,17 +258,12 @@ def _build_actions_section(
     (calculator, coding_sandbox, etc.), deduped by name.
     Notes for non-obvious built-in tools are derived from tool.description —
     no hardcoding required.
+
+    `domains`/`domain_notes` are computed once by the caller (including the
+    has_knowledge-driven retrieval/knowledgehub/knowledgegraph augmentation)
+    so that `build_capability_summary` can decide whether to emit the
+    section at all before rendering it.
     """
-    domains, domain_notes = _get_all_tool_domains(state)
-
-    if has_knowledge:
-        domains.setdefault("retrieval", []).append(
-            "retrieval.search_internal_knowledge",
-        )
-        domains.setdefault("knowledgehub", []).append(
-            "knowledgehub.list_files",
-        )
-
     parts.append("### Available Actions")
 
     if not domains:

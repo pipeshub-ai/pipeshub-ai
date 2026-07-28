@@ -158,9 +158,14 @@ async def _fetch_multiple_records_impl(
     For SQL_TABLE records, also enriches with FK parent/child record IDs.
 
     If a record_id is not found in the map, attempts to:
+    0. Verify the user may read it (the map itself is already ACL-filtered,
+       an arbitrary id is not), skipping the record when they may not
     1. Fetch the Record from graph_provider to get virtual_record_id
     2. Fetch the record content from blob_store
     3. Enrich with FK relations if SQL_TABLE
+
+    Without `user_id` the check cannot run, so the id-resolution path is
+    skipped entirely rather than served unchecked.
 
     Returns:
     {
@@ -207,13 +212,13 @@ async def _fetch_multiple_records_impl(
                 found_record = await _enrich_sql_table_with_fk_relations(found_record, graph_provider)
             found_records.append(found_record)
             continue
-        
+
         if org_id and graph_provider and user_id:
             access = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
             if not access:
                 not_available_ids.append(record_id)
                 continue
-        
+
             try:
                 graphDb_record = await graph_provider.get_document(
                                 document_key=record_id,
@@ -289,12 +294,39 @@ def create_fetch_full_record_tool(
                         with FK parent/child relations and resolving record IDs
         blob_store: Optional blob storage for fetching records not in the map
         org_id: Optional organization ID for blob storage lookups
+        user_id: Requesting user, required to resolve a record ID that is not
+                 already in the (ACL-filtered) map — see
+                 `_fetch_multiple_records_impl`
     """
     @tool("fetch_full_record", args_schema=FetchFullRecordArgs)
     async def fetch_full_record_tool(record_ids: list[str], reason: str = "Fetching full record content for comprehensive answer") -> dict[str, Any]:
-        """Fetch the complete content of one or more records when the provided blocks are insufficient to answer the query. Pass ALL record IDs in a SINGLE call using the record_ids parameter.
+        """Read one or more records end to end. Search gives you a few matching blocks per record; lookup_record/navigate/list_files give you an ID and metadata and no content at all; this gives you everything.
 
-        IMPORTANT: record_ids must be taken directly from the 'Record ID :' field shown in the context metadata for each record. Do NOT use invented IDs, example IDs that are not present in the current context.
+        Decide with one test: can this be answered by finding the right passage,
+        or does answering it correctly require knowing what the document contains
+        AS A WHOLE?
+
+        - You hold no passage at all — the record came from lookup, navigation or
+          listing, so you have its ID and metadata and nothing it says. Answer
+          from that metadata if it settles the question outright (a ticket's
+          status, its assignee); otherwise call this before answering, and never
+          infer content from a title.
+        - Finding a passage is enough (a date, a name, a number, a status, one
+          clause) AND you can see that passage — answer from the blocks you
+          already have. Do NOT call this.
+        - The answer is a property of the whole document — a summary or overview,
+          what its risks/gaps/obligations/key points are, a review or assessment,
+          a comparison of documents, whether it mentions something anywhere,
+          anything asking for all of something — then a handful of blocks CANNOT
+          support the answer, however relevant those blocks look, because the parts
+          you were not given are exactly what you would be implying are
+          unimportant. Call this first, then answer.
+
+        Those are illustrations of the test, not a checklist — apply the test to
+        whatever was actually asked.
+
+        Pass every record_id you need in ONE call, taken from a candidate list, a
+        'Record ID :' field or a record_id= shown by navigation — never invent IDs.
 
         For SQL_TABLE records, also returns fk_parent_record_ids and fk_child_record_ids
         which can be used to fetch related tables for nested FK relationships.

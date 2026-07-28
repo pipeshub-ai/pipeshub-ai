@@ -156,6 +156,18 @@ services:
       # Set to "true" to defer graph enrichment until after vectordb indexing completes
       - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
 
+      - PIPESHUB_USE_AGENT_LOOP=${PIPESHUB_USE_AGENT_LOOP:-true}
+
+      # Lazy tool loading: group connector tools into toolsets and disclose
+      # their schemas on demand (list_toolsets/fetch_tools/search_tools)
+      # instead of binding every attached tool eagerly. Gated by BOTH the
+      # flag and a tool-count threshold — see lazy_tools_wiring.py.
+      - PIPESHUB_ENABLE_LAZY_TOOLS=${PIPESHUB_ENABLE_LAZY_TOOLS:-true}
+      - PIPESHUB_LAZY_TOOLS_THRESHOLD=${PIPESHUB_LAZY_TOOLS_THRESHOLD:-20}
+      - PIPESHUB_LAZY_TOOLS_SCOPE=${PIPESHUB_LAZY_TOOLS_SCOPE:-top_level}
+      - PIPESHUB_LAZY_TOOLS_PRELOAD_THRESHOLD=${PIPESHUB_LAZY_TOOLS_PRELOAD_THRESHOLD:-0.75}
+      - PIPESHUB_LAZY_TOOLS_MENTION_THRESHOLD=${PIPESHUB_LAZY_TOOLS_MENTION_THRESHOLD:-0.4}
+
     depends_on:
       qdrant:
         condition: service_healthy

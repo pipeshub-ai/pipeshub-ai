@@ -304,43 +304,43 @@ class TestFilterKnowledgeByEnabledSources:
         assert len(result) == 1
 
     def test_kb_filter_matching(self) -> None:
-        """KB apps filtered by UUID"""
+        """KB entries are matched via filters["kb"], not filters["apps"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440060"
         knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
 
     def test_kb_filter_no_match(self) -> None:
-        """KB apps filtered out when not in apps list"""
+        """KB entries filtered out when not in the kb list"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440061"
         knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["other-kb"]})
         assert len(result) == 0
 
     def test_kb_filter_with_json_string(self) -> None:
-        """KB apps filtered by UUID"""
+        """KB entries filtered by UUID via filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440062"
         knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
 
     def test_kb_filter_invalid_json_string(self) -> None:
-        """KB apps filtered by UUID, not by invalid filters"""
+        """KB entries filtered by UUID, not by invalid filters"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440063"
         knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["other-kb"]})
         assert len(result) == 0
 
     def test_kb_filter_with_filtersParsed_key(self) -> None:
-        """KB apps filtered by UUID"""
+        """KB entries filtered by UUID via filters["kb"]."""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440064"
         knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": [kb_uuid]})
         assert len(result) == 1
 
     def test_non_dict_entries_skipped(self) -> None:
@@ -349,20 +349,43 @@ class TestFilterKnowledgeByEnabledSources:
         assert len(result) == 0
 
     def test_kb_connector_not_matching_no_kb_filter(self) -> None:
-        """KB apps must be in apps list to be included"""
+        """KB entries must be in the kb list to be included"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440065"
         knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other"]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["other"]})
         assert len(result) == 0
 
     def test_non_list_filters_data(self) -> None:
-        """KB apps filtered by UUID regardless of filters data type"""
+        """KB entries filtered by UUID regardless of filters data type"""
         from app.api.routes.agent import _filter_knowledge_by_enabled_sources
         kb_uuid = "550e8400-e29b-41d4-a716-446655440066"
         knowledge = [{"connectorId": kb_uuid, "type": "KB", "filters": 42}]
-        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": ["other-app"]})
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"kb": ["other-kb"]})
         assert len(result) == 0
+
+    def test_kb_entry_not_matched_by_apps_filter(self) -> None:
+        """Regression: a KB entry's id living in filters["apps"] must NOT
+        match it — KB entries are only ever enabled via filters["kb"]."""
+        from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440067"
+        knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
+        result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
+        assert len(result) == 0
+
+    def test_mixed_kb_and_app_both_kept(self) -> None:
+        """Regression: an app connector filter must not drop KB entries."""
+        from app.api.routes.agent import _filter_knowledge_by_enabled_sources
+        kb_uuid = "550e8400-e29b-41d4-a716-446655440068"
+        knowledge = [
+            {"connectorId": "app1", "type": "confluence"},
+            {"connectorId": kb_uuid, "type": "KB"},
+        ]
+        result = _filter_knowledge_by_enabled_sources(
+            knowledge, {"apps": ["app1"], "kb": [kb_uuid]},
+        )
+        ids = {k["connectorId"] for k in result}
+        assert ids == {"app1", kb_uuid}
 
 
 # =============================================================================
@@ -593,119 +616,6 @@ class TestEnrichAgentModels:
         }
         await _enrich_agent_models(agent, config_service, MagicMock())
         assert agent["models"][0]["modelName"] == "MyModel"
-
-
-# =============================================================================
-# _select_agent_graph_for_query
-# =============================================================================
-
-
-class TestSelectAgentGraphForQuery:
-    @pytest.mark.asyncio
-    async def test_deep_mode(self) -> None:
-        from app.api.routes.agent import _select_agent_graph_for_query, deep_agent_graph
-        result = await _select_agent_graph_for_query(
-            {"chatMode": "deep"}, MagicMock(), MagicMock()
-        )
-        assert result is deep_agent_graph
-
-    @pytest.mark.asyncio
-    async def test_verification_mode(self) -> None:
-        from app.api.routes.agent import (
-            _select_agent_graph_for_query,
-            modern_agent_graph,
-        )
-        result = await _select_agent_graph_for_query(
-            {"chatMode": "verification"}, MagicMock(), MagicMock()
-        )
-        assert result is modern_agent_graph
-
-    @pytest.mark.asyncio
-    async def test_explicit_quick_mode(self) -> None:
-        from app.api.routes.agent import _select_agent_graph_for_query, agent_graph
-        result = await _select_agent_graph_for_query(
-            {"chatMode": "quick"}, MagicMock(), MagicMock()
-        )
-        assert result is agent_graph
-
-    @pytest.mark.asyncio
-    async def test_auto_mode_calls_auto_select(self) -> None:
-        from app.api.routes.agent import (
-            _select_agent_graph_for_query,
-            modern_agent_graph,
-        )
-        with patch("app.api.routes.agent._auto_select_graph", new_callable=AsyncMock) as mock_auto:
-            mock_auto.return_value = modern_agent_graph
-            result = await _select_agent_graph_for_query(
-                {"chatMode": "auto"}, MagicMock(), MagicMock()
-            )
-            assert result is modern_agent_graph
-            mock_auto.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_none_mode_defaults_to_auto(self) -> None:
-        from app.api.routes.agent import (
-            _select_agent_graph_for_query,
-            modern_agent_graph,
-        )
-        with patch("app.api.routes.agent._auto_select_graph", new_callable=AsyncMock) as mock_auto:
-            mock_auto.return_value = modern_agent_graph
-            result = await _select_agent_graph_for_query(
-                {"chatMode": None}, MagicMock(), MagicMock()
-            )
-            assert result is modern_agent_graph
-
-
-# =============================================================================
-# _auto_select_graph
-# =============================================================================
-
-
-class TestAutoSelectGraph:
-    @pytest.mark.asyncio
-    async def test_empty_query_returns_modern(self) -> None:
-        from app.api.routes.agent import _auto_select_graph, modern_agent_graph
-        result = await _auto_select_graph({"query": ""}, MagicMock(), MagicMock())
-        assert result is modern_agent_graph
-
-    @pytest.mark.asyncio
-    async def test_llm_returns_quick(self) -> None:
-        from app.api.routes.agent import RouteDecision, _auto_select_graph, agent_graph
-        mock_llm = MagicMock()
-        mock_structured = AsyncMock()
-        decision = RouteDecision(reasoning="simple query", route="quick")
-        mock_structured.ainvoke.return_value = decision
-        mock_llm.with_structured_output.return_value = mock_structured
-
-        result = await _auto_select_graph({"query": "hello"}, MagicMock(), mock_llm)
-        assert result is agent_graph
-
-    @pytest.mark.asyncio
-    async def test_llm_returns_deep(self) -> None:
-        from app.api.routes.agent import (
-            RouteDecision,
-            _auto_select_graph,
-            deep_agent_graph,
-        )
-        mock_llm = MagicMock()
-        mock_structured = AsyncMock()
-        decision = RouteDecision(reasoning="complex", route="deep")
-        mock_structured.ainvoke.return_value = decision
-        mock_llm.with_structured_output.return_value = mock_structured
-
-        result = await _auto_select_graph({"query": "analyze everything"}, MagicMock(), mock_llm)
-        assert result is deep_agent_graph
-
-    @pytest.mark.asyncio
-    async def test_llm_exception_falls_back(self) -> None:
-        from app.api.routes.agent import _auto_select_graph, modern_agent_graph
-        mock_llm = MagicMock()
-        mock_structured = AsyncMock()
-        mock_structured.ainvoke.side_effect = Exception("LLM error")
-        mock_llm.with_structured_output.return_value = mock_structured
-
-        result = await _auto_select_graph({"query": "test"}, MagicMock(), mock_llm)
-        assert result is modern_agent_graph
 
 
 # =============================================================================

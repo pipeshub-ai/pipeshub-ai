@@ -2,11 +2,10 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Coroutine, Dict, List, Optional, Tuple
+from typing import Coroutine, Dict, Optional, Tuple
 
-from pydantic import BaseModel, Field
-
-from app.agents.tools.decorator import tool
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -22,72 +21,6 @@ from app.sources.client.notion.notion import NotionClient
 from app.sources.external.notion.notion import NotionDataSource
 
 logger = logging.getLogger(__name__)
-
-# Pydantic schemas for Notion tools
-class CreatePageInput(BaseModel):
-    """Schema for creating a Notion page"""
-    parent_id: str = Field(description="The ID of the parent page or database where this page will be created")
-    title: str = Field(description="The title/name of the page to create")
-    content: Optional[str] = Field(default=None, description="Optional markdown content to add to the page body")
-    parent_is_database: Optional[bool] = Field(default=False, description="Set to True if parent_id refers to a database")
-    title_property: Optional[str] = Field(default="title", description="The property name for the title in database pages")
-
-
-class GetPageInput(BaseModel):
-    """Schema for getting a Notion page"""
-    page_id: str = Field(description="The ID of the page to retrieve")
-
-
-class UpdatePageInput(BaseModel):
-    """Schema for updating a Notion page"""
-    page_id: str = Field(description="The ID of the page to update")
-    title: Optional[str] = Field(default=None, description="The new title of the page")
-
-
-class DeletePageInput(BaseModel):
-    """Schema for deleting a Notion page"""
-    page_id: str = Field(description="The ID of the page to delete")
-
-
-class SearchInput(BaseModel):
-    """Schema for searching in Notion"""
-    query: Optional[str] = Field(default=None, description="Search query text to find specific pages/databases by title or content")
-    sort: Optional[Dict[str, object]] = Field(default=None, description="Sort configuration")
-    filter: Optional[Dict[str, object]] = Field(default=None, description="Filter configuration to narrow results")
-    start_cursor: Optional[str] = Field(default=None, description="Pagination cursor for getting next page of results")
-    page_size: Optional[int] = Field(default=None, description="Number of results to return (max 100, default 100)")
-
-
-class ListUsersInput(BaseModel):
-    """Schema for listing Notion users"""
-    start_cursor: Optional[str] = Field(default=None, description="Pagination cursor")
-    page_size: Optional[int] = Field(default=None, description="Number of users to return (max 100)")
-
-
-class RetrieveUserInput(BaseModel):
-    """Schema for retrieving a Notion user"""
-    user_id: str = Field(description="The user ID to retrieve")
-
-
-class CreateDatabaseInput(BaseModel):
-    """Schema for creating a Notion database"""
-    parent_id: str = Field(description="The ID of the parent PAGE where this database will be created")
-    title: str = Field(description="The title/name of the database to create")
-    properties: Dict[str, object] = Field(description="Database properties schema defining columns")
-
-
-class QueryDatabaseInput(BaseModel):
-    """Schema for querying a Notion database"""
-    database_id: str = Field(description="The ID of the database to query")
-    filter: Optional[Dict[str, object]] = Field(default=None, description="Filter configuration")
-    sorts: Optional[List[object]] = Field(default=None, description="Sort configuration")
-    start_cursor: Optional[str] = Field(default=None, description="Pagination cursor")
-    page_size: Optional[int] = Field(default=None, description="Number of results (max 100)")
-
-
-class GetDatabaseInput(BaseModel):
-    """Schema for getting a Notion database"""
-    database_id: str = Field(description="The ID of the database to retrieve")
 
 
 # Register Notion toolset
@@ -242,16 +175,24 @@ class Notion:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="notion",
-        tool_name="create_page",
-        description="""Create a new page in Notion. **IMPORTANT**: You MUST have a valid parent_id before calling this tool.
-        If you don't have a parent_id, use notion.search to find existing pages/databases first, or ask the user to provide it.
-        Valid parent_id format: 32-character UUID with dashes (e.g., '12345678-1234-1234-1234-123456789012') or 32-character hex string.
-        **DO NOT** use placeholder IDs - always get a real ID first.""",
-        args_schema=CreatePageInput,
-        returns="JSON with success status and created page details, or error with explanation"
+        path="/tools/notion/create_page",
+        short_description="Create a new page in Notion",
+        description=(
+            "Create a new page in Notion. You MUST have a valid parent_id before calling this tool. "
+            "If you don't have a parent_id, use notion.search to find existing pages/databases first, or ask the user to provide it. "
+            "Valid parent_id format: 32-character UUID with dashes (e.g., '12345678-1234-1234-1234-123456789012') or 32-character hex string. "
+            "Do not use placeholder IDs - always get a real ID first."
+        ),
+        parameters=[
+            ToolParameter(name="parent_id", type=ParameterType.STRING, description="The ID of the parent page or database where this page will be created"),
+            ToolParameter(name="title", type=ParameterType.STRING, description="The title/name of the page to create"),
+            ToolParameter(name="content", type=ParameterType.STRING, description="Optional markdown content to add to the page body", required=False),
+            ToolParameter(name="parent_is_database", type=ParameterType.BOOLEAN, description="Set to True if parent_id refers to a database", required=False, default=False),
+            ToolParameter(name="title_property", type=ParameterType.STRING, description="The property name for the title in database pages", required=False, default="title"),
+        ],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="create")],
     )
-    def create_page(
+    async def create_page(
         self,
         parent_id: str,
         title: str,
@@ -323,13 +264,15 @@ class Notion:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="notion",
-        tool_name="get_page",
-        description="Get a page from Notion",
-        args_schema=GetPageInput,
-        returns="JSON with page details"
+        path="/tools/notion/get_page",
+        short_description="Get a page from Notion",
+        description="Retrieve a Notion page by its ID.",
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="The ID of the page to retrieve"),
+        ],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
     )
-    def get_page(self, page_id: str) -> Tuple[bool, str]:
+    async def get_page(self, page_id: str) -> Tuple[bool, str]:
         """Get a page from Notion.
 
         Args:
@@ -349,13 +292,16 @@ class Notion:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="notion",
-        tool_name="update_page",
-        description="Update a page in Notion",
-        args_schema=UpdatePageInput,
-        returns="JSON with success status and updated page details"
+        path="/tools/notion/update_page",
+        short_description="Update a page in Notion",
+        description="Update a Notion page's title by its ID.",
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="The ID of the page to update"),
+            ToolParameter(name="title", type=ParameterType.STRING, description="The new title of the page", required=False),
+        ],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="update")],
     )
-    def update_page(
+    async def update_page(
         self,
         page_id: str,
         title: Optional[str] = None,
@@ -403,13 +349,15 @@ class Notion:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="notion",
-        tool_name="delete_page",
-        description="Delete a page from Notion (archives the page)",
-        args_schema=DeletePageInput,
-        returns="JSON with success status"
+        path="/tools/notion/delete_page",
+        short_description="Delete a page from Notion (archives the page)",
+        description="Delete (archive) a page from Notion by its ID.",
+        parameters=[
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="The ID of the page to delete"),
+        ],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="delete")],
     )
-    def delete_page(self, page_id: str) -> Tuple[bool, str]:
+    async def delete_page(self, page_id: str) -> Tuple[bool, str]:
         """Delete (archive) a page from Notion.
 
         Args:
@@ -430,16 +378,24 @@ class Notion:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="notion",
-        tool_name="search",
-        description="""Search for pages and databases in Notion workspace.
-        **USE THIS FIRST** before calling notion.create_page or notion.create_database if you need to find existing resources or get valid parent IDs.
-        Returns list of pages/databases with their IDs which can be used as parent_id in create operations.
-        If no query provided, returns recent pages/databases.""",
-        args_schema=SearchInput,
-        returns="JSON with array of pages/databases including their IDs, titles, and metadata. Use the 'id' field from results as parent_id for creating new pages."
+        path="/tools/notion/search",
+        short_description="Search for pages and databases in Notion workspace",
+        description=(
+            "Search for pages and databases in the Notion workspace. "
+            "Use this first before calling create_page or create_database if you need to find existing resources or get valid parent IDs. "
+            "Returns list of pages/databases with their IDs which can be used as parent_id in create operations. "
+            "If no query provided, returns recent pages/databases."
+        ),
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="Search query text to find specific pages/databases by title or content", required=False),
+            ToolParameter(name="sort", type=ParameterType.OBJECT, description="Sort configuration", required=False),
+            ToolParameter(name="filter", type=ParameterType.OBJECT, description="Filter configuration to narrow results", required=False),
+            ToolParameter(name="start_cursor", type=ParameterType.STRING, description="Pagination cursor for getting next page of results", required=False),
+            ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Number of results to return (max 100, default 100)", required=False),
+        ],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
     )
-    def search(
+    async def search(
         self,
         query: Optional[str] = None,
         sort: Optional[Dict[str, object]] = None,
@@ -483,13 +439,16 @@ class Notion:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="notion",
-        tool_name="list_users",
-        description="List users in the Notion workspace",
-        args_schema=ListUsersInput,
-        returns="JSON with list of users"
+        path="/tools/notion/list_users",
+        short_description="List users in the Notion workspace",
+        description="List users in the Notion workspace with optional pagination.",
+        parameters=[
+            ToolParameter(name="start_cursor", type=ParameterType.STRING, description="Pagination cursor", required=False),
+            ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Number of users to return (max 100)", required=False),
+        ],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
     )
-    def list_users(
+    async def list_users(
         self,
         start_cursor: Optional[str] = None,
         page_size: Optional[int] = None,
@@ -516,13 +475,15 @@ class Notion:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="notion",
-        tool_name="retrieve_user",
-        description="Retrieve a Notion user by ID",
-        args_schema=RetrieveUserInput,
-        returns="JSON with user details"
+        path="/tools/notion/retrieve_user",
+        short_description="Retrieve a Notion user by ID",
+        description="Retrieve a specific Notion user by their user ID.",
+        parameters=[
+            ToolParameter(name="user_id", type=ParameterType.STRING, description="The user ID to retrieve"),
+        ],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
     )
-    def retrieve_user(self, user_id: str) -> Tuple[bool, str]:
+    async def retrieve_user(self, user_id: str) -> Tuple[bool, str]:
         """Retrieve a Notion user by ID.
 
         Args:
@@ -542,17 +503,23 @@ class Notion:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="notion",
-        tool_name="create_database",
-        description="""Create a new database in Notion. **IMPORTANT**: You MUST have a valid parent_id (page ID) before calling this tool.
-        Databases can only be created inside pages, not inside other databases.
-        If you don't have a parent page ID, use notion.search to find existing pages first, or ask the user to provide it.
-        Valid parent_id format: 32-character UUID with dashes or 32-character hex string.
-        **DO NOT** use placeholder IDs - always get a real page ID first.""",
-        args_schema=CreateDatabaseInput,
-        returns="JSON with success status and created database details, or error with explanation"
+        path="/tools/notion/create_database",
+        short_description="Create a new database in Notion",
+        description=(
+            "Create a new database in Notion. You MUST have a valid parent_id (page ID) before calling this tool. "
+            "Databases can only be created inside pages, not inside other databases. "
+            "If you don't have a parent page ID, use notion.search to find existing pages first, or ask the user to provide it. "
+            "Valid parent_id format: 32-character UUID with dashes or 32-character hex string. "
+            "Do not use placeholder IDs - always get a real page ID first."
+        ),
+        parameters=[
+            ToolParameter(name="parent_id", type=ParameterType.STRING, description="The ID of the parent PAGE where this database will be created"),
+            ToolParameter(name="title", type=ParameterType.STRING, description="The title/name of the database to create"),
+            ToolParameter(name="properties", type=ParameterType.OBJECT, description="Database properties schema defining columns"),
+        ],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="create")],
     )
-    def create_database(
+    async def create_database(
         self,
         parent_id: str,
         title: str,
@@ -592,13 +559,19 @@ class Notion:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="notion",
-        tool_name="query_database",
-        description="Query a Notion database",
-        args_schema=QueryDatabaseInput,
-        returns="JSON with query results"
+        path="/tools/notion/query_database",
+        short_description="Query a Notion database",
+        description="Query a Notion database with optional filter, sort, and pagination.",
+        parameters=[
+            ToolParameter(name="database_id", type=ParameterType.STRING, description="The ID of the database to query"),
+            ToolParameter(name="filter", type=ParameterType.OBJECT, description="Filter configuration", required=False),
+            ToolParameter(name="sorts", type=ParameterType.ARRAY, description="Sort configuration", required=False),
+            ToolParameter(name="start_cursor", type=ParameterType.STRING, description="Pagination cursor", required=False),
+            ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Number of results (max 100)", required=False),
+        ],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
     )
-    def query_database(
+    async def query_database(
         self,
         database_id: str,
         filter: Optional[Dict[str, object]] = None,
@@ -642,13 +615,15 @@ class Notion:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="notion",
-        tool_name="get_database",
-        description="Get a Notion database by ID",
-        args_schema=GetDatabaseInput,
-        returns="JSON with database details"
+        path="/tools/notion/get_database",
+        short_description="Get a Notion database by ID",
+        description="Retrieve a Notion database by its ID.",
+        parameters=[
+            ToolParameter(name="database_id", type=ParameterType.STRING, description="The ID of the database to retrieve"),
+        ],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
     )
-    def get_database(self, database_id: str) -> Tuple[bool, str]:
+    async def get_database(self, database_id: str) -> Tuple[bool, str]:
         """Get a Notion database by ID.
 
         Args:

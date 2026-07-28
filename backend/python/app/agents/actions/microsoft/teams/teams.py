@@ -5,9 +5,14 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 from app.connectors.core.constants import IconPaths
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import (
+    args_template,
+    confirmation,
+    entity_summary,
+    list_summary,
+)
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -29,6 +34,18 @@ from msgraph.generated.models.recurrence_range import RecurrenceRange
 from msgraph.generated.models.recurrence_range_type import RecurrenceRangeType
 
 logger = logging.getLogger(__name__)
+
+
+def _teams_team_label(team: dict) -> str:
+    return team.get("displayName") or team.get("id") or "?"
+
+
+def _teams_channel_label(channel: dict) -> str:
+    return channel.get("displayName") or channel.get("id") or "?"
+
+
+def _teams_meeting_label(meeting: dict) -> str:
+    return meeting.get("subject") or meeting.get("meeting_id") or "?"
 
 
 # ---------------------------------------------------------------------------
@@ -1008,27 +1025,13 @@ class Teams:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="teams",
-        tool_name="get_user_info",
-        description="Get information about a Teams/Entra user",
-        args_schema=GetUserInfoInput,
-        when_to_use=[
-            "User wants Teams user information",
-            "User asks about a Teams user",
-            "User provides a user email/name and needs details",
+        path="/tools/teams/get_user_info",
+        short_description="Get information about a Teams/Entra user",
+        description="Retrieve detailed profile information for a specific Microsoft Teams or Entra user by ID, email, UPN, or display name.",
+        parameters=[
+            ToolParameter(name="user", type=ParameterType.STRING, description="User ID, UPN/email, or display name", required=True),
         ],
-        when_not_to_use=[
-            "User wants list of all users (use get_users_list)",
-            "User wants Teams/channel message operations",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get info about user@company.com in Teams",
-            "Who is Alex in Teams?",
-            "Show Teams user details",
-        ],
-        category=ToolCategory.SEARCH,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_user_info(self, user: str) -> tuple[bool, str]:
         """Get Teams user details with transformed response for easy extraction."""
@@ -1089,26 +1092,13 @@ class Teams:
             return self._handle_error(e, "get user info")
 
     @tool(
-        app_name="teams",
-        tool_name="get_users_list",
-        description="Get list of users available in Microsoft Entra/Teams tenant",
-        args_schema=GetUsersListInput,
-        when_to_use=[
-            "User wants to list all Teams users",
-            "User asks for all users in tenant",
-            "User needs available users directory",
+        path="/tools/teams/get_users_list",
+        short_description="Get list of users available in Microsoft Entra/Teams tenant",
+        description="List all users in the Microsoft Entra/Teams tenant with optional pagination limit.",
+        parameters=[
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum users to return. If omitted, fetches all users with pagination.", required=False),
         ],
-        when_not_to_use=[
-            "User wants one specific user info (use get_user_info)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "List all Teams users",
-            "Show available users in my tenant",
-            "Get all Microsoft users",
-        ],
-        category=ToolCategory.SEARCH,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_users_list(self, limit: Optional[int] = None) -> tuple[bool, str]:
         """Get users list with pagination support."""
@@ -1194,27 +1184,17 @@ class Teams:
     #         return self._handle_error(e, "get user conversations")
 
     @tool(
-        app_name="teams",
-        tool_name="get_user_conversations",
-        description="Get conversation messages with a Teams user",
-        args_schema=GetUserConversationsInput,
-        when_to_use=[
-            "User wants to see conversation with someone in Teams",
-            "User asks for chat history with a person",
-            "User asks messages with someone within a time range",
+        path="/tools/teams/get_user_conversations",
+        short_description="Get conversation messages with a Teams user",
+        description="Retrieve direct chat messages with a specific Teams user, optionally filtered by time range (minutes/hours/days).",
+        parameters=[
+            ToolParameter(name="user_identifier", type=ParameterType.STRING, description="User display name, email, or user id whose conversation should be fetched", required=False),
+            ToolParameter(name="minutes", type=ParameterType.INTEGER, description="Fetch messages from last N minutes", required=False),
+            ToolParameter(name="hours", type=ParameterType.INTEGER, description="Fetch messages from last N hours", required=False),
+            ToolParameter(name="days", type=ParameterType.INTEGER, description="Fetch messages from last N days", required=False),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of messages to return", required=False),
         ],
-        when_not_to_use=[
-            "User wants team channels only",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show my conversation with Vansh",
-            "Show my conversation with Vansh in last 7 days",
-            "Show my messages with john@company.com",
-            "Get chat history with Alex in last 1 hour",
-        ],
-        category=ToolCategory.SEARCH,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_user_conversations(
         self,
@@ -1265,24 +1245,14 @@ class Teams:
             return self._handle_error(e, "get user conversations")
             
     @tool(
-        app_name="teams",
-        tool_name="get_user_channels",
-        description="Get channels accessible to the authenticated Teams user",
-        args_schema=GetUserChannelsInput,
-        when_to_use=[
-            "User wants channels they can access in Teams",
-            "User asks for their Teams channels",
+        path="/tools/teams/get_user_channels",
+        short_description="Get channels accessible to the authenticated Teams user",
+        description="List all channels the authenticated user can access, optionally scoped to a specific team.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="Optional Team ID to scope channels to one team", required=False),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of channels to return (default 200)", required=False),
         ],
-        when_not_to_use=[
-            "User wants messages from a specific channel (use get_channel_messages)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show my Teams channels",
-            "List user channels in Teams",
-        ],
-        category=ToolCategory.SEARCH,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_user_channels(self, team_id: Optional[str] = None, top: Optional[int] = 200) -> tuple[bool, str]:
         try:
@@ -1307,29 +1277,23 @@ class Teams:
             return self._handle_error(e, "get user channels")
 
     @tool(
-        app_name="teams",
-        tool_name="get_meetings",
+        path="/tools/teams/get_meetings",
+        short_description="Get meetings for the authenticated Teams user with optional filters",
         description=(
             "Get meetings for the authenticated Teams user with optional strict filters "
             "(date range, deleted, cancelled, recurring/one_time)."
         ),
-        args_schema=GetMeetingsInput,
-        when_to_use=[
-            "User wants meetings with strict filtering",
-            "User asks for meetings in a period with status/type filters",
-            "User wants one tool for all meetings and filtered meetings",
+        parameters=[
+            ToolParameter(name="start_datetime", type=ParameterType.STRING, description="Optional start datetime (ISO 8601). Must be provided together with end_datetime.", required=False),
+            ToolParameter(name="end_datetime", type=ParameterType.STRING, description="Optional end datetime (ISO 8601). Must be provided together with start_datetime.", required=False),
+            ToolParameter(name="is_deleted", type=ParameterType.BOOLEAN, description="Strict filter for deleted meetings. true=only deleted, false=only non-deleted, null=do not filter.", required=False),
+            ToolParameter(name="is_cancelled", type=ParameterType.BOOLEAN, description="Strict filter for cancelled meetings. true=only cancelled, false=only non-cancelled, null=do not filter.", required=False),
+            ToolParameter(name="meeting_type", type=ParameterType.STRING, description="Optional strict meeting type filter. Allowed values: 'recurring' or 'one_time'.", required=False),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of meetings to return (default 100, max 1000).", required=False),
         ],
-        when_not_to_use=[
-            "User wants meeting transcripts (use get_meeting_transcripts)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get my meetings from start to end with only recurring ones",
-            "List non-cancelled meetings",
-            "Show deleted meetings for this month",
-        ],
-        category=ToolCategory.SEARCH,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        args_summary=lambda _args: "Fetching Teams meetings",
+        result_summary=list_summary("results", _teams_meeting_label, "meeting"),
     )
     async def get_meetings(
         self,
@@ -1524,30 +1488,20 @@ class Teams:
     #         return self._handle_error(e, "get my meetings for given period")
 
     @tool(
-        app_name="teams",
-        tool_name="search_calendar_events_in_range",
+        path="/tools/teams/search_calendar_events_in_range",
+        short_description="Search calendar events by name within a time frame",
         description=(
             "Search calendar events by partial name (subject) within a time frame. "
             "Returns only events matching the keyword that fall within the given date range."
         ),
-        args_schema=SearchCalendarEventsInRangeInput,
-        when_to_use=[
-            "User wants to find a specific event by name within a time period",
-            "User asks for a named meeting in a date range",
-            "User wants to check if a specific recurring event occurs in a period",
+        parameters=[
+            ToolParameter(name="keyword", type=ParameterType.STRING, description="Partial or full name to search for in event subjects. Case-insensitive.", required=True),
+            ToolParameter(name="start_datetime", type=ParameterType.STRING, description="Start of time range (ISO 8601, e.g. '2026-03-01T00:00:00Z').", required=True),
+            ToolParameter(name="end_datetime", type=ParameterType.STRING, description="End of time range (ISO 8601, e.g. '2026-03-31T23:59:59Z').", required=True),
+            ToolParameter(name="timezone", type=ParameterType.STRING, description="Windows timezone name for returned datetimes. E.g. 'India Standard Time'.", required=False),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of results to return (1-50).", required=False),
         ],
-        when_not_to_use=[
-            "User wants all events in a range (use get_calendar_events)",
-            "User wants semantic/conceptual search (use semantic_search_calendar_events)",
-            "User wants to create or update an event",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Find standup meetings this week",
-            "Search for catchup events in March",
-            "Is there a sprint review next week?",
-        ],
-        category=ToolCategory.CALENDAR,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def search_calendar_events_in_range(
         self,
@@ -1607,24 +1561,15 @@ class Teams:
 
 
     @tool(
-        app_name="teams",
-        tool_name="get_my_meeting_transcripts",
-        description="Get transcript records, content, and metadata for one of the authenticated user's online meetings",
-        args_schema=GetMeetingTranscriptsInput,
-        when_to_use=[
-            "User wants transcript data for a meeting",
-            "User asks for meeting transcript records",
+        path="/tools/teams/get_my_meeting_transcripts",
+        short_description="Get transcript records for an online meeting",
+        description="Get transcript records, content, and metadata for one of the authenticated user's online meetings. Provide meeting_id directly, or pass join_url or event_id to resolve.",
+        parameters=[
+            ToolParameter(name="meeting_id", type=ParameterType.STRING, description="The online meeting ID. If provided, transcript APIs are called directly.", required=False),
+            ToolParameter(name="join_url", type=ParameterType.STRING, description="The Teams join URL. Preferred over event_id — skips one API call.", required=False),
+            ToolParameter(name="event_id", type=ParameterType.STRING, description="The calendar event ID. Used as fallback when join_url is not available.", required=False),
         ],
-        when_not_to_use=[
-            "User wants meeting list first (use get_my_meetings)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get transcript for meeting X",
-            "Show transcript records for this meeting",
-        ],
-        category=ToolCategory.SEARCH,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_my_meeting_transcripts(
         self,
@@ -1836,24 +1781,15 @@ class Teams:
 
 
     @tool(
-        app_name="teams",
-        tool_name="get_people_attended",
-        description="Get people attendance records for a Teams online meeting",
-        args_schema=GetPeopleAttendedInput,
-        when_to_use=[
-            "User wants attendees/attendance for a meeting",
-            "User asks who attended a Teams meeting",
+        path="/tools/teams/get_people_attended",
+        short_description="Get people attendance records for a Teams online meeting",
+        description="Get attendance records for a Teams online meeting. Provide meeting_id directly, or pass join_url or event_id to resolve.",
+        parameters=[
+            ToolParameter(name="meeting_id", type=ParameterType.STRING, description="The online meeting ID. If provided, attendance API is called directly.", required=False),
+            ToolParameter(name="join_url", type=ParameterType.STRING, description="The Teams join URL. Preferred over event_id because it skips one API call.", required=False),
+            ToolParameter(name="event_id", type=ParameterType.STRING, description="The calendar event ID. Used as fallback when join_url is unavailable.", required=False),
         ],
-        when_not_to_use=[
-            "User wants meeting list first (use get_my_meetings)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Who attended meeting X?",
-            "Get attendance list for this meeting",
-        ],
-        category=ToolCategory.SEARCH,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_people_attended(
         self,
@@ -1898,24 +1834,13 @@ class Teams:
             return self._handle_error(e, "get people attended")
 
     @tool(
-        app_name="teams",
-        tool_name="get_people_invited",
-        description="Get people invited to a Teams meeting",
-        args_schema=GetPeopleInvitedInput,
-        when_to_use=[
-            "User wants invited people for a meeting",
-            "User asks who was invited to a Teams meeting",
+        path="/tools/teams/get_people_invited",
+        short_description="Get people invited to a Teams meeting",
+        description="Get the list of people invited to a specific Teams online meeting by meeting ID.",
+        parameters=[
+            ToolParameter(name="meeting_id", type=ParameterType.STRING, description="ID of the meeting", required=True),
         ],
-        when_not_to_use=[
-            "User wants attendance records (use get_people_attended)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Who was invited to meeting X?",
-            "Get invitees for this Teams meeting",
-        ],
-        category=ToolCategory.SEARCH,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_people_invited(self, meeting_id: str) -> tuple[bool, str]:
         try:
@@ -1938,25 +1863,23 @@ class Teams:
             return self._handle_error(e, "get people invited")
 
     @tool(
-        app_name="teams",
-        tool_name="create_event",
-        description="Create a calendar event/meeting for the authenticated Teams user",
-        args_schema=CreateEventInput,
-        when_to_use=[
-            "User wants to schedule/create a meeting event",
-            "User asks to create a Teams event and it is not a channel meeting",
+        path="/tools/teams/create_event",
+        short_description="Create a calendar event/meeting for the authenticated Teams user",
+        description="Create a calendar event or meeting with optional attendees, location, recurrence, and online meeting link.",
+        parameters=[
+            ToolParameter(name="subject", type=ParameterType.STRING, description="Title/subject of the event", required=True),
+            ToolParameter(name="start_datetime", type=ParameterType.STRING, description="Start datetime in ISO 8601 format (e.g. 2024-01-15T10:00:00)", required=True),
+            ToolParameter(name="end_datetime", type=ParameterType.STRING, description="End datetime in ISO 8601 format (e.g. 2024-01-15T11:00:00)", required=True),
+            ToolParameter(name="timezone", type=ParameterType.STRING, description="Timezone for the event (e.g. 'UTC', 'America/New_York', 'India Standard Time')", required=False),
+            ToolParameter(name="body", type=ParameterType.STRING, description="Body/description of the event", required=False),
+            ToolParameter(name="location", type=ParameterType.STRING, description="Location of the event", required=False),
+            ToolParameter(name="attendees", type=ParameterType.STRING, description="List of attendee email addresses (JSON array)", required=False),
+            ToolParameter(name="is_online_meeting", type=ParameterType.BOOLEAN, description="Whether to create an online meeting link", required=False),
+            ToolParameter(name="recurrence", type=ParameterType.STRING, description="Optional recurrence dict (JSON) to make this a repeating event with 'pattern' and 'range' keys.", required=False),
         ],
-        when_not_to_use=[
-            "When user wants to create a meeting for a channel, use create_channel_meeting",
-            "User wants to list meetings (use get_my_meetings)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Create an event tomorrow at 10 AM",
-            "Schedule a Teams meeting for next week",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        args_summary=args_template('Creating Teams event "{subject}"', "subject"),
+        result_summary=entity_summary(lambda e: f"Event created: {e.get('subject') or '?'}", path=()),
     )
     async def create_event(
         # self,
@@ -2031,24 +1954,18 @@ class Teams:
             return self._handle_error(e, "create event")
 
     @tool(
-        app_name="teams",
-        tool_name="create_channel_meeting",
-        description="Schedule an online meeting for a Teams channel in a team",
-        args_schema=CreateChannelMeetingInput,
-        when_to_use=[
-            "User wants to schedule a meeting for a specific Teams channel",
-            "User asks to create a channel meeting in a team",
+        path="/tools/teams/create_channel_meeting",
+        short_description="Schedule an online meeting for a Teams channel",
+        description="Schedule an online meeting for a specific Teams channel in a team.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
+            ToolParameter(name="channel_name", type=ParameterType.STRING, description="Display name of the Teams channel", required=True),
+            ToolParameter(name="subject", type=ParameterType.STRING, description="Meeting title/subject", required=True),
+            ToolParameter(name="start_datetime", type=ParameterType.STRING, description="Start datetime in ISO 8601 format (e.g. 2024-01-15T10:00:00)", required=True),
+            ToolParameter(name="end_datetime", type=ParameterType.STRING, description="End datetime in ISO 8601 format (e.g. 2024-01-15T11:00:00)", required=True),
+            ToolParameter(name="timezone", type=ParameterType.STRING, description="Timezone for the meeting (e.g. 'Asia/Kolkata', 'UTC')", required=False),
         ],
-        when_not_to_use=[
-            "User wants a personal calendar event (use create_event)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Schedule a channel meeting tomorrow at 10 AM",
-            "Create a Teams meeting for the Engineering channel",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def create_channel_meeting(
         self,
@@ -2090,24 +2007,19 @@ class Teams:
             return self._handle_error(e, "create channel meeting")
 
     @tool(
-        app_name="teams",
-        tool_name="edit_event",
-        description="Edit/update an existing calendar event for the authenticated Teams user",
-        args_schema=EditEventInput,
-        when_to_use=[
-            "User wants to edit an existing meeting/event",
-            "User asks to update Teams event details",
+        path="/tools/teams/edit_event",
+        short_description="Edit/update an existing calendar event",
+        description="Edit/update an existing calendar event for the authenticated Teams user. Supports updating subject, time, description, and online meeting status.",
+        parameters=[
+            ToolParameter(name="event_id", type=ParameterType.STRING, description="ID of the event to update", required=True),
+            ToolParameter(name="subject", type=ParameterType.STRING, description="Updated event title", required=False),
+            ToolParameter(name="start_datetime", type=ParameterType.STRING, description="Updated start datetime in ISO 8601 format", required=False),
+            ToolParameter(name="end_datetime", type=ParameterType.STRING, description="Updated end datetime in ISO 8601 format", required=False),
+            ToolParameter(name="timezone", type=ParameterType.STRING, description="Timezone label (default UTC)", required=False),
+            ToolParameter(name="description", type=ParameterType.STRING, description="Updated event description", required=False),
+            ToolParameter(name="is_online_meeting", type=ParameterType.BOOLEAN, description="Whether event should be online", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a new event (use create_event)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Update event title and time",
-            "Edit my Teams meeting details",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def edit_event(
         self,
@@ -2144,26 +2056,15 @@ class Teams:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="teams",
-        tool_name="get_teams",
-        description="List Microsoft Teams that the authenticated user has joined",
-        args_schema=GetTeamsInput,
-        when_to_use=[
-            "User wants to list their Microsoft Teams",
-            "User asks what Teams they are in",
-            "User needs to find a team ID before performing another operation",
+        path="/tools/teams/get_teams",
+        short_description="List Microsoft Teams the authenticated user has joined",
+        description="List Microsoft Teams that the authenticated user has joined, with optional limit on results.",
+        parameters=[
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of teams to return (default 20, max 100)", required=False),
         ],
-        when_not_to_use=[
-            "User wants details of one team (use get_team)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show my teams",
-            "List Microsoft Teams I joined",
-            "What Teams am I part of?",
-        ],
-        category=ToolCategory.SEARCH,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        args_summary=lambda _args: "Fetching Microsoft Teams",
+        result_summary=list_summary("results", _teams_team_label, "team"),
     )
     async def get_teams(self, top: Optional[int] = 20) -> tuple[bool, str]:
         try:
@@ -2187,24 +2088,13 @@ class Teams:
             return self._handle_error(e, "get teams")
 
     @tool(
-        app_name="teams",
-        tool_name="get_team",
-        description="Get details for a specific Microsoft Team",
-        args_schema=GetTeamInput,
-        when_to_use=[
-            "User wants details for a specific team by ID",
-            "User provides a team ID and asks to fetch it",
+        path="/tools/teams/get_team",
+        short_description="Get details for a specific Microsoft Team",
+        description="Get details for a specific Microsoft Team by its ID.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
         ],
-        when_not_to_use=[
-            "User wants to list teams (use get_teams)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get details for team ID X",
-            "Show this Teams team details",
-        ],
-        category=ToolCategory.SEARCH,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_team(self, team_id: str) -> tuple[bool, str]:
         try:
@@ -2216,24 +2106,14 @@ class Teams:
             return self._handle_error(e, f"get team {team_id}")
 
     @tool(
-        app_name="teams",
-        tool_name="create_team",
-        description="Create a new Microsoft Team",
-        args_schema=CreateTeamInput,
-        when_to_use=[
-            "User wants to create a new Microsoft Team",
-            "User asks to create a team workspace",
+        path="/tools/teams/create_team",
+        short_description="Create a new Microsoft Team",
+        description="Create a new Microsoft Team with a display name and optional description.",
+        parameters=[
+            ToolParameter(name="display_name", type=ParameterType.STRING, description="Display name of the team", required=True),
+            ToolParameter(name="description", type=ParameterType.STRING, description="Description of the team", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a channel only (use create_channel)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Create a new team called Product Launch",
-            "Set up a Teams workspace for project alpha",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def create_team(self, display_name: str, description: Optional[str] = None) -> tuple[bool, str]:
         try:
@@ -2278,28 +2158,15 @@ class Teams:
    
 
     @tool(
-        app_name="teams",
-        tool_name="get_members",
-        description="List members in a Microsoft Team or channel",
-        args_schema=GetMembersInput,
-        when_to_use=[
-            "User wants to list members of a specific Microsoft Team",
-            "User wants members of a specific Teams channel",
-            "User needs member IDs before remove_member",
-            "User asks who is in a Teams team",
+        path="/tools/teams/get_members",
+        short_description="List members in a Microsoft Team or channel",
+        description="List members in a Microsoft Team, or in a specific channel within that team.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
+            ToolParameter(name="channel_id", type=ParameterType.STRING, description="Optional channel ID. If provided, returns members for that channel.", required=False),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of members to return (default 100, max 500)", required=False),
         ],
-        when_not_to_use=[
-            "User wants to list channels (use get_channels)",
-            "User wants one specific user profile (use get_user_info)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show members in team X",
-            "List members in channel Y of team X",
-            "List users in this Microsoft Team",
-        ],
-        category=ToolCategory.SEARCH,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_members(
         self,
@@ -2376,28 +2243,16 @@ class Teams:
 
 
     @tool(
-        app_name="teams",
-        tool_name="add_member",
-        description="Add a member to a Microsoft Team or channel (supports team, standard channel, and private channel)",
-        args_schema=AddMemberInput,
-        when_to_use=[
-            "User wants to add someone to a Microsoft Team",
-            "User wants to add a user to a specific private Teams channel",
-            "User asks to invite a member or owner to a team/channel",
+        path="/tools/teams/add_member",
+        short_description="Add a member to a Microsoft Team or channel",
+        description="Add a member to a Microsoft Team or channel (supports team, standard channel, and private channel).",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
+            ToolParameter(name="user_id", type=ParameterType.STRING, description="User ID or Azure AD object ID to add", required=True),
+            ToolParameter(name="role", type=ParameterType.STRING, description="Role for the new member: 'member' or 'owner'", required=False),
+            ToolParameter(name="channel_id", type=ParameterType.STRING, description="Optional channel ID. If omitted, adds user to team. For private channel, user is added directly to channel.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to remove a member (use remove_member)",
-            "User wants to list members (use get_members)",
-            "User wants to add members to a shared channel (not supported by this tool)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Add user 123 to team ABC",
-            "Invite jane@company.com as owner in this team",
-            "Add this user to the private channel in team X",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def add_member(
         self,
@@ -2503,25 +2358,16 @@ class Teams:
         
 
     @tool(
-        app_name="teams",
-        tool_name="get_channels",
-        description="List channels in a Microsoft Team",
-        args_schema=GetChannelsInput,
-        when_to_use=[
-            "User wants channels for a specific Microsoft Team",
-            "User asks to list team channels",
-            "User needs to find a channel ID before sending a message",
+        path="/tools/teams/get_channels",
+        short_description="List channels in a Microsoft Team",
+        description="List channels in a specific Microsoft Team by team ID.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of channels to return (default 50, max 200)", required=False),
         ],
-        when_not_to_use=[
-            "User wants messages from a channel (use get_channel_messages)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show channels in team X",
-            "List channels for this Microsoft Team",
-        ],
-        category=ToolCategory.SEARCH,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching channels for Teams team {team_id}", "team_id"),
+        result_summary=list_summary("results", _teams_channel_label, "channel"),
     )
     async def get_channels(self, team_id: str, top: Optional[int] = 50) -> tuple[bool, str]:
         try:
@@ -2541,26 +2387,16 @@ class Teams:
             return self._handle_error(e, f"get channels for team {team_id}")
 
     @tool(
-        app_name="teams",
-        tool_name="create_channel",
-        description="Create a new channel in a Microsoft Team",
-        args_schema=CreateChannelInput,
-        when_to_use=[
-            "User wants to create a new channel in a Microsoft Team",
-            "User asks to add a channel to an existing team",
+        path="/tools/teams/create_channel",
+        short_description="Create a new channel in a Microsoft Team",
+        description="Create a new standard or private channel in a Microsoft Team.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
+            ToolParameter(name="display_name", type=ParameterType.STRING, description="Display name of the channel", required=True),
+            ToolParameter(name="description", type=ParameterType.STRING, description="Description of the channel", required=False),
+            ToolParameter(name="channel_type", type=ParameterType.STRING, description="Type of channel: 'standard' or 'private'", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create an entirely new team (use create_team)",
-            "User wants to list existing channels (use get_channels)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Create a channel called 'announcements' in team X",
-            "Add a private channel to my team",
-            "Set up a new channel for the design team",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def create_channel(
         self,
@@ -2644,26 +2480,16 @@ class Teams:
     #         return self._handle_error(e, f"delete channel {channel_id} from team {team_id}")
 
     @tool(
-        app_name="teams",
-        tool_name="update_channel",
-        description="Update a Microsoft Teams channel's display name or description",
-        args_schema=UpdateChannelInput,
-        when_to_use=[
-            "User wants to rename or update description of a Teams channel",
-            "User asks to modify channel properties",
+        path="/tools/teams/update_channel",
+        short_description="Update a Microsoft Teams channel's name or description",
+        description="Update the display name or description of a Microsoft Teams channel.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
+            ToolParameter(name="channel_id", type=ParameterType.STRING, description="ID of the channel to update", required=True),
+            ToolParameter(name="display_name", type=ParameterType.STRING, description="New display name for the channel", required=False),
+            ToolParameter(name="description", type=ParameterType.STRING, description="New description for the channel", required=False),
         ],
-        when_not_to_use=[
-            "User wants to delete the channel (use delete_channel)",
-            "User wants to send a message to the channel (use send_message)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Rename channel X to 'general-updates'",
-            "Update the description of channel Y",
-            "Change the channel name",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def update_channel(
         self,
@@ -2702,28 +2528,17 @@ class Teams:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="teams",
-        tool_name="send_channel_message",
-        description="Send a message to a Microsoft Teams channel",
-        args_schema=SendChannelMessageInput,
-        when_to_use=[
-            "User wants to send a message in Microsoft Teams",
-            "User asks to post in a specific Teams channel",
-            "User mentions Teams and channel messaging",
+        path="/tools/teams/send_channel_message",
+        short_description="Send a message to a Microsoft Teams channel",
+        description="Send a message to a specific Microsoft Teams channel.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
+            ToolParameter(name="channel_id", type=ParameterType.STRING, description="ID of the Microsoft Teams channel", required=True),
+            ToolParameter(name="message", type=ParameterType.STRING, description="Message content to send", required=True),
         ],
-        when_not_to_use=[
-            "User wants to read channel history (use get_channel_messages)",
-            "User wants to list teams/channels",
-            "User wants to create a 1:1 chat (use create_chat)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Post this update to the engineering channel",
-            "Send a Teams message to team X channel Y",
-            "Notify the team in Microsoft Teams",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        args_summary=args_template("Sending Teams message to channel {channel_id}", "channel_id"),
+        result_summary=confirmation("Message sent to channel {channel_id}", "channel_id"),
     )
     async def send_channel_message(self, team_id: str, channel_id: str, message: str) -> tuple[bool, str]:
         try:
@@ -2745,27 +2560,14 @@ class Teams:
             return self._handle_error(e, "send Teams message")
 
     @tool(
-        app_name="teams",
-        tool_name="send_user_message",
-        description="Send a direct message to a Microsoft Teams user",
-        args_schema=SendUserMessageInput,
-        when_to_use=[
-            "User wants to send a Teams message to a specific person",
-            "User provides a user name/email/id and asks to send a message",
-            "User asks to send a direct message in Teams",
+        path="/tools/teams/send_user_message",
+        short_description="Send a direct message to a Microsoft Teams user",
+        description="Send a direct message to a specific Microsoft Teams user by name, email, UPN, or user ID.",
+        parameters=[
+            ToolParameter(name="user_identifier", type=ParameterType.STRING, description="User display name, email, user principal name, or user id to send message to", required=True),
+            ToolParameter(name="message", type=ParameterType.STRING, description="Message content to send", required=True),
         ],
-        when_not_to_use=[
-            "User wants to send a channel message (use send_channel_message)",
-            "User wants to read conversation history (use get_user_conversations)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Send a Teams message to john@company.com",
-            "Message Alex in Teams saying deployment is done",
-            "Send a direct Teams message to Vansh",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def send_user_message(
         self,
@@ -2793,24 +2595,16 @@ class Teams:
             return self._handle_error(e, "send Teams direct message")
 
     @tool(
-        app_name="teams",
-        tool_name="reply_to_message",
-        description="Reply to a specific message in a Microsoft Teams channel thread",
-        args_schema=ReplyToMessageInput,
-        when_to_use=[
-            "User wants to reply to a specific Teams message",
-            "User asks to post a thread reply in Teams",
+        path="/tools/teams/reply_to_message",
+        short_description="Reply to a specific message in a Teams channel thread",
+        description="Reply to a specific message in a Microsoft Teams channel thread.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
+            ToolParameter(name="channel_id", type=ParameterType.STRING, description="ID of the Microsoft Teams channel", required=True),
+            ToolParameter(name="parent_message_id", type=ParameterType.STRING, description="ID of the parent message to reply to", required=True),
+            ToolParameter(name="message", type=ParameterType.STRING, description="Reply text to post in the message thread", required=True),
         ],
-        when_not_to_use=[
-            "User wants a new top-level message (use send_message)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Reply to this Teams message",
-            "Post a thread reply in channel X",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def reply_to_message(
         self,
@@ -2839,24 +2633,15 @@ class Teams:
             return self._handle_error(e, "reply to Teams message")
 
     @tool(
-        app_name="teams",
-        tool_name="send_message_to_multiple_channels",
-        description="Send the same message to multiple channels in a Microsoft Team",
-        args_schema=SendMessageToMultipleChannelsInput,
-        when_to_use=[
-            "User wants to broadcast a message to multiple Teams channels",
-            "User asks to post same update in several channels",
+        path="/tools/teams/send_message_to_multiple_channels",
+        short_description="Send the same message to multiple channels in a Team",
+        description="Send the same message to multiple channels in a Microsoft Team simultaneously.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
+            ToolParameter(name="channel_ids", type=ParameterType.STRING, description="List of Teams channel IDs to send the same message to (JSON array)", required=True),
+            ToolParameter(name="message", type=ParameterType.STRING, description="Message text to send to all channels", required=True),
         ],
-        when_not_to_use=[
-            "User wants a single-channel message (use send_message)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Send this update to channels A, B, and C",
-            "Broadcast message to multiple Teams channels",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def send_message_to_multiple_channels(
         self,
@@ -2880,24 +2665,16 @@ class Teams:
             return self._handle_error(e, "send Teams message to multiple channels")
 
     @tool(
-        app_name="teams",
-        tool_name="search_messages",
-        description="Search messages in Microsoft Teams channels",
-        args_schema=SearchMessagesInput,
-        when_to_use=[
-            "User wants to find Teams messages by text",
-            "User asks to search channel messages",
+        path="/tools/teams/search_messages",
+        short_description="Search messages in Microsoft Teams channels",
+        description="Search messages in Microsoft Teams channels by text content, optionally scoped to a specific team or channel.",
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="Search text to match in message content", required=True),
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="Optional Team ID to scope search", required=False),
+            ToolParameter(name="channel_id", type=ParameterType.STRING, description="Optional Channel ID to scope search", required=False),
+            ToolParameter(name="top_per_channel", type=ParameterType.INTEGER, description="Max recent messages scanned per channel (default 25)", required=False),
         ],
-        when_not_to_use=[
-            "User wants full channel history without filtering (use get_channel_messages)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Search Teams messages for deployment failure",
-            "Find channel messages containing keyword X",
-        ],
-        category=ToolCategory.SEARCH,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def search_messages(
         self,
@@ -2931,27 +2708,16 @@ class Teams:
             return self._handle_error(e, "search Teams messages")
 
     @tool(
-        app_name="teams",
-        tool_name="add_reaction",
-        description="Add a reaction to a Microsoft Teams channel message",
-        args_schema=AddReactionInput,
-        when_to_use=[
-            "User wants to react to a Teams channel message",
-            "User asks to add emoji reaction on a Teams message",
-            "User provides message ID and wants to add reaction",
+        path="/tools/teams/add_reaction",
+        short_description="Add a reaction to a Microsoft Teams channel message",
+        description="Add an emoji reaction (like, heart, laugh, surprised, sad, angry) to a specific Teams channel message.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
+            ToolParameter(name="channel_id", type=ParameterType.STRING, description="ID of the Microsoft Teams channel", required=True),
+            ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the Teams message to react to", required=True),
+            ToolParameter(name="reaction_type", type=ParameterType.STRING, description="Reaction type to add (e.g.: like, heart, laugh, surprised, sad, angry)", required=True),
         ],
-        when_not_to_use=[
-            "User wants to send a new channel message (use send_message)",
-            "User wants to read message history (use get_channel_messages)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Add a like reaction to this Teams message",
-            "React with heart to message ID X",
-            "Add emoji reaction in Teams channel",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def add_reaction(
         self,
@@ -2982,24 +2748,15 @@ class Teams:
             return self._handle_error(e, "add Teams reaction")
 
     @tool(
-        app_name="teams",
-        tool_name="get_reactions",
-        description="Get reactions for a Microsoft Teams channel message",
-        args_schema=GetReactionsInput,
-        when_to_use=[
-            "User wants to view reactions on a Teams message",
-            "User asks what emoji reactions a message has",
+        path="/tools/teams/get_reactions",
+        short_description="Get reactions for a Microsoft Teams channel message",
+        description="Get the list of emoji reactions on a specific Teams channel message.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
+            ToolParameter(name="channel_id", type=ParameterType.STRING, description="ID of the Microsoft Teams channel", required=True),
+            ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the Teams message", required=True),
         ],
-        when_not_to_use=[
-            "User wants to add reaction (use add_reaction)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show reactions for this message",
-            "Get Teams message emoji reactions",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_reactions(self, team_id: str, channel_id: str, message_id: str) -> tuple[bool, str]:
         try:
@@ -3028,24 +2785,16 @@ class Teams:
             return self._handle_error(e, "get Teams reactions")
 
     @tool(
-        app_name="teams",
-        tool_name="remove_reaction",
-        description="Remove a reaction from a Microsoft Teams channel message",
-        args_schema=RemoveReactionInput,
-        when_to_use=[
-            "User wants to remove emoji reaction from Teams message",
-            "User asks to undo reaction on a message",
+        path="/tools/teams/remove_reaction",
+        short_description="Remove a reaction from a Microsoft Teams channel message",
+        description="Remove an emoji reaction from a specific Teams channel message.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
+            ToolParameter(name="channel_id", type=ParameterType.STRING, description="ID of the Microsoft Teams channel", required=True),
+            ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the Teams message", required=True),
+            ToolParameter(name="reaction_type", type=ParameterType.STRING, description="Reaction type to remove", required=True),
         ],
-        when_not_to_use=[
-            "User wants to add reaction (use add_reaction)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Remove like reaction from message",
-            "Undo heart reaction in Teams",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def remove_reaction(
         self,
@@ -3075,24 +2824,15 @@ class Teams:
             return self._handle_error(e, "remove Teams reaction")
 
     @tool(
-        app_name="teams",
-        tool_name="get_channel_messages",
-        description="List messages from a Microsoft Teams channel",
-        args_schema=GetChannelMessagesInput,
-        when_to_use=[
-            "User wants to read message history from a Teams channel",
-            "User asks for recent messages in a channel",
+        path="/tools/teams/get_channel_messages",
+        short_description="List messages from a Microsoft Teams channel",
+        description="List recent messages from a specific Microsoft Teams channel.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
+            ToolParameter(name="channel_id", type=ParameterType.STRING, description="ID of the Microsoft Teams channel", required=True),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of messages to return (default 20, max 100)", required=False),
         ],
-        when_not_to_use=[
-            "User wants to send a new message (use send_message)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get recent messages from channel X",
-            "Show latest posts in this Teams channel",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_channel_messages(
         self,
@@ -3124,24 +2864,16 @@ class Teams:
             return self._handle_error(e, "get channel messages")
 
     @tool(
-        app_name="teams",
-        tool_name="get_thread_replies",
-        description="Get replies in a Microsoft Teams message thread",
-        args_schema=GetThreadRepliesInput,
-        when_to_use=[
-            "User wants thread replies for a Teams message",
-            "User asks for conversation replies under a message",
+        path="/tools/teams/get_thread_replies",
+        short_description="Get replies in a Microsoft Teams message thread",
+        description="Get replies in a specific Microsoft Teams message thread.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
+            ToolParameter(name="channel_id", type=ParameterType.STRING, description="ID of the Microsoft Teams channel", required=True),
+            ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the parent Teams message", required=True),
+            ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of replies to return (default 50, max 200)", required=False),
         ],
-        when_not_to_use=[
-            "User wants top-level channel messages (use get_channel_messages)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show thread replies for this message",
-            "Get replies in Teams message thread",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_thread_replies(
         self,
@@ -3174,26 +2906,17 @@ class Teams:
             return self._handle_error(e, "get Teams thread replies")
 
     @tool(
-        app_name="teams",
-        tool_name="update_message",
-        description="Update an existing Microsoft Teams message in a channel or direct chat",
-        args_schema=UpdateMessageInput,
-        when_to_use=[
-            "User wants to edit a Teams channel message",
-            "User wants to edit a Teams direct chat message",
-            "User asks to modify message text",
+        path="/tools/teams/update_message",
+        short_description="Update an existing Microsoft Teams message",
+        description="Update an existing Microsoft Teams message in a channel or direct chat.",
+        parameters=[
+            ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the Teams message to update", required=True),
+            ToolParameter(name="message", type=ParameterType.STRING, description="Updated message text", required=True),
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team (required when updating a channel message)", required=False),
+            ToolParameter(name="channel_id", type=ParameterType.STRING, description="ID of the Microsoft Teams channel (required when updating a channel message)", required=False),
+            ToolParameter(name="chat_id", type=ParameterType.STRING, description="ID of the Teams chat (required when updating a direct chat message)", required=False),
         ],
-        when_not_to_use=[
-            "User wants to send new message (use send_message)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Update this Teams message",
-            "Edit message in channel",
-            "Edit this direct Teams message",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def update_message(
         self,
@@ -3234,24 +2957,15 @@ class Teams:
             return self._handle_error(e, "update Teams message")
 
     @tool(
-        app_name="teams",
-        tool_name="get_message_permalink",
-        description="Get a permalink/URL for a Microsoft Teams channel message",
-        args_schema=GetMessagePermalinkInput,
-        when_to_use=[
-            "User wants a shareable link to a Teams message",
-            "User asks for message URL",
+        path="/tools/teams/get_message_permalink",
+        short_description="Get a permalink/URL for a Teams channel message",
+        description="Get a shareable permalink URL for a specific Microsoft Teams channel message.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
+            ToolParameter(name="channel_id", type=ParameterType.STRING, description="ID of the Microsoft Teams channel", required=True),
+            ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the Teams message", required=True),
         ],
-        when_not_to_use=[
-            "User wants message content list (use get_channel_messages)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get permalink for this Teams message",
-            "Share message URL",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_message_permalink(self, team_id: str, channel_id: str, message_id: str) -> tuple[bool, str]:
         try:
@@ -3279,27 +2993,15 @@ class Teams:
     # ------------------------------------------------------------------
 
     @tool(
-        app_name="teams",
-        tool_name="create_chat",
-        description="Create a 1:1 or group chat in Microsoft Teams",
-        args_schema=CreateChatInput,
-        when_to_use=[
-            "User wants to start a direct message or group chat in Teams",
-            "User asks to create a 1:1 chat with someone",
-            "User wants to start a group conversation outside of a channel",
+        path="/tools/teams/create_chat",
+        short_description="Create a 1:1 or group chat in Microsoft Teams",
+        description="Create a 1:1 or group chat in Microsoft Teams with specified members.",
+        parameters=[
+            ToolParameter(name="chat_type", type=ParameterType.STRING, description="Type of chat: 'oneOnOne' for 1:1 direct message or 'group' for group chat", required=True),
+            ToolParameter(name="member_user_ids", type=ParameterType.STRING, description="List of Azure AD user object IDs (or UPNs) to include in the chat (JSON array)", required=True),
+            ToolParameter(name="topic", type=ParameterType.STRING, description="Topic/title for group chats (optional for 1:1 chats)", required=False),
         ],
-        when_not_to_use=[
-            "User wants to send a message to an existing channel (use send_message)",
-            "User wants to create a whole new team (use create_team)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Start a 1:1 chat with john@example.com",
-            "Create a group chat with Alice and Bob",
-            "Open a direct message conversation in Teams",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
     )
     async def create_chat(
         self,
@@ -3346,25 +3048,13 @@ class Teams:
             return self._handle_error(e, "create chat")
 
     @tool(
-        app_name="teams",
-        tool_name="get_chat",
-        description="Get details of a specific Microsoft Teams chat",
-        args_schema=GetChatInput,
-        when_to_use=[
-            "User wants details of a specific Teams chat by its ID",
-            "User needs to look up chat metadata",
+        path="/tools/teams/get_chat",
+        short_description="Get details of a specific Microsoft Teams chat",
+        description="Get details and metadata of a specific Microsoft Teams chat by chat ID.",
+        parameters=[
+            ToolParameter(name="chat_id", type=ParameterType.STRING, description="ID of the chat to retrieve", required=True),
         ],
-        when_not_to_use=[
-            "User wants to list all teams (use get_teams)",
-            "User wants to read channel messages (use get_channel_messages)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Get details for chat ID X",
-            "Show me information about this Teams chat",
-        ],
-        category=ToolCategory.COMMUNICATION,
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
     )
     async def get_chat(self, chat_id: str) -> tuple[bool, str]:
         try:

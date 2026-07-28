@@ -389,6 +389,7 @@ function ChatContent() {
             knowledgeCollectionRows: collectionRows,
             knowledgeDefaults: knowledgeDefaultsForStore,
             deprecatedToolNames,
+            hasWebSearch: agent?.webSearch != null,
           });
           store.setAgentContextDisplayName(agent?.name?.trim() || null);
           store.setAgentContextCreatedBy(agent?.createdBy ?? null);
@@ -780,10 +781,16 @@ function ChatContent() {
     () => ctxKeyFromAgent(historyAndShareAgentId),
     [historyAndShareAgentId]
   );
+  const prevSlotStreamingRef = useRef(false);
   useEffect(() => {
     if (!activeSlotId || !activeSlotConversationModelInfo) return;
+    // Skip mode restoration when modelInfo was set by a stream that just completed —
+    // the user's chosen mode should persist across turns in the same session.
+    const wasStreaming = prevSlotStreamingRef.current;
+    prevSlotStreamingRef.current = activeSlotIsStreaming;
+    if (wasStreaming || activeSlotIsStreaming) return;
     applyConversationModelInfoToStore(activeSlotConversationModelInfo, modelCtxKey);
-  }, [activeSlotId, activeSlotConversationModelInfo, modelCtxKey]);
+  }, [activeSlotId, activeSlotConversationModelInfo, modelCtxKey, activeSlotIsStreaming]);
 
   // Handle suggestion click - send message through runtime
   const handleSuggestionClick = (suggestion: ChatSuggestion) => {
@@ -1473,6 +1480,7 @@ function ChatContent() {
                     size: previewFile.size,
                     webUrl: previewFile.webUrl,
                     previewRenderable: previewFile.previewRenderable,
+                    version: previewFile.version,
                   }}
                   isLoading={previewFile.isLoading}
                   error={previewFile.error}
@@ -1483,6 +1491,9 @@ function ChatContent() {
                   initialCitationId={previewFile.initialCitationId}
                   hideFileDetails={previewFile.hideFileDetails}
                   showDownload={previewFile.showDownload}
+                  latestVersion={previewFile.latestVersion}
+                  onVersionChange={previewFile.onVersionChange}
+                  isSwitchingVersion={previewFile.isSwitchingVersion}
                   defaultTab="preview"
                   onToggleFullscreen={() => setPreviewMode('fullscreen')}
                   onClose={() => clearPreview()}
@@ -1510,6 +1521,7 @@ function ChatContent() {
             size: previewFile.size,
             webUrl: previewFile.webUrl,
             previewRenderable: previewFile.previewRenderable,
+            version: previewFile.version,
           }}
           isLoading={previewFile.isLoading}
           error={previewFile.error}
@@ -1520,6 +1532,9 @@ function ChatContent() {
           initialCitationId={previewFile.initialCitationId}
           hideFileDetails={previewFile.hideFileDetails}
           showDownload={previewFile.showDownload}
+          latestVersion={previewFile.latestVersion}
+          onVersionChange={previewFile.onVersionChange}
+          isSwitchingVersion={previewFile.isSwitchingVersion}
           defaultTab="preview"
           onExitFullscreen={isMobile ? undefined : () => setPreviewMode('sidebar')}
           onClose={() => clearPreview()}

@@ -4,9 +4,8 @@ from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 from app.agents.actions.utils import run_async
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -127,12 +126,13 @@ class S3:
 
 
     @tool(
-        app_name="s3",
-        tool_name="list_buckets",
-        description="List S3 buckets",
-        parameters=[]
+        path="/tools/s3/list_buckets",
+        short_description="List all S3 buckets",
+        description="List all S3 buckets accessible with the configured credentials.",
+        parameters=[],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
     )
-    def list_buckets(self) -> Tuple[bool, str]:
+    async def list_buckets(self) -> Tuple[bool, str]:
         """List S3 buckets"""
         """
         Returns:
@@ -151,9 +151,9 @@ class S3:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="s3",
-        tool_name="create_bucket",
-        description="Create an S3 bucket",
+        path="/tools/s3/create_bucket",
+        short_description="Create a new S3 bucket",
+        description="Create a new S3 bucket with an optional AWS region.",
         parameters=[
             ToolParameter(
                 name="bucket_name",
@@ -167,9 +167,10 @@ class S3:
                 description="AWS region for the bucket",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="create")],
     )
-    def create_bucket(
+    async def create_bucket(
         self,
         bucket_name: str,
         region: Optional[str] = None
@@ -198,9 +199,9 @@ class S3:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="s3",
-        tool_name="delete_bucket",
-        description="Delete an S3 bucket",
+        path="/tools/s3/delete_bucket",
+        short_description="Delete an S3 bucket",
+        description="Delete an S3 bucket by name.",
         parameters=[
             ToolParameter(
                 name="bucket_name",
@@ -208,9 +209,10 @@ class S3:
                 description="Name of the bucket to delete",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="delete")],
     )
-    def delete_bucket(self, bucket_name: str) -> Tuple[bool, str]:
+    async def delete_bucket(self, bucket_name: str) -> Tuple[bool, str]:
         """Delete an S3 bucket"""
         """
         Args:
@@ -231,9 +233,9 @@ class S3:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="s3",
-        tool_name="list_objects",
-        description="List objects in an S3 bucket",
+        path="/tools/s3/list_objects",
+        short_description="List objects in an S3 bucket",
+        description="List objects in an S3 bucket with optional prefix filtering, pagination, and timestamp-based filtering.",
         parameters=[
             ToolParameter(
                 name="bucket_name",
@@ -265,9 +267,10 @@ class S3:
                 description="ISO format timestamp (e.g., '2024-01-01T00:00:00Z'). If provided, only objects modified after this timestamp will be returned. If null, all objects are returned.",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
     )
-    def list_objects(
+    async def list_objects(
         self,
         bucket_name: str,
         prefix: Optional[str] = None,
@@ -356,9 +359,9 @@ class S3:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="s3",
-        tool_name="get_object",
-        description="Get an object from S3",
+        path="/tools/s3/get_object",
+        short_description="Get an object from S3",
+        description="Get an object from S3 by bucket name and object key.",
         parameters=[
             ToolParameter(
                 name="bucket_name",
@@ -372,9 +375,10 @@ class S3:
                 description="Key of the object",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
     )
-    def get_object(
+    async def get_object(
         self,
         bucket_name: str,
         key: str
@@ -403,9 +407,9 @@ class S3:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="s3",
-        tool_name="put_object",
-        description="Upload an object to S3",
+        path="/tools/s3/put_object",
+        short_description="Upload an object to S3",
+        description="Upload an object to S3 with the given content and optional content type.",
         parameters=[
             ToolParameter(
                 name="bucket_name",
@@ -431,9 +435,10 @@ class S3:
                 description="Content type of the object",
                 required=False
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="write")],
     )
-    def put_object(
+    async def put_object(
         self,
         bucket_name: str,
         key: str,
@@ -472,9 +477,9 @@ class S3:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="s3",
-        tool_name="delete_object",
-        description="Delete an object from S3",
+        path="/tools/s3/delete_object",
+        short_description="Delete an object from S3",
+        description="Delete an object from S3 by bucket name and object key.",
         parameters=[
             ToolParameter(
                 name="bucket_name",
@@ -488,9 +493,10 @@ class S3:
                 description="Key of the object",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="delete")],
     )
-    def delete_object(
+    async def delete_object(
         self,
         bucket_name: str,
         key: str
@@ -519,9 +525,9 @@ class S3:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="s3",
-        tool_name="copy_object",
-        description="Copy an object in S3",
+        path="/tools/s3/copy_object",
+        short_description="Copy an object in S3",
+        description="Copy an object from one S3 location to another.",
         parameters=[
             ToolParameter(
                 name="source_bucket",
@@ -547,9 +553,10 @@ class S3:
                 description="Key of the destination object",
                 required=True
             )
-        ]
+        ],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="write")],
     )
-    def copy_object(
+    async def copy_object(
         self,
         source_bucket: str,
         source_key: str,

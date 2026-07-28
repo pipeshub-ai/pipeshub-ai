@@ -78,8 +78,6 @@ async def resolve_attachments(
 
         if is_image:
             if not is_multimodal_llm:
-                # Model cannot process images; insert a text hint so it is at
-                # least aware the user attached something.
                 blocks.append(
                     {"type": "text", "text": f"[Image attached by user: {record_name}]\n"}
                 )
@@ -96,6 +94,8 @@ async def resolve_attachments(
                 continue
 
             try:
+                from app.utils.chat_helpers import record_to_message_content  # noqa: PLC0415
+
                 record = await blob_store.get_record_from_storage(
                     virtual_record_id=virtual_record_id,
                     org_id=org_id,
@@ -111,13 +111,20 @@ async def resolve_attachments(
                 if out_records is not None:
                     out_records[virtual_record_id] = record
 
-                image_blocks = _extract_image_blocks(record, record_name, logger)
-                if image_blocks:
-                    blocks.extend(image_blocks)
+                img_content, ref_mapper = record_to_message_content(
+                    record, ref_mapper=ref_mapper, is_multimodal_llm=True,
+                )
+                if img_content:
+                    blocks.extend(img_content)
                 else:
-                    logger.debug(
-                        "No image blocks found in record for %s; skipping", record_name
-                    )
+                    image_blocks_raw = _extract_image_blocks(record, record_name, logger)
+                    if image_blocks_raw:
+                        blocks.extend(image_blocks_raw)
+                    else:
+                        logger.debug(
+                            "No image blocks found in record for %s; skipping",
+                            record_name,
+                        )
             except Exception as exc:
                 logger.warning(
                     "Failed to resolve attachment %s (vrid=%s): %s",

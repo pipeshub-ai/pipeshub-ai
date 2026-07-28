@@ -39,6 +39,10 @@ export const OAuthScopeNames = Object.freeze({
   AGENT_WRITE: 'agent:write',
   AGENT_EXECUTE: 'agent:execute',
 
+  // Agent Skills
+  SKILL_READ: 'skill:read',
+  SKILL_WRITE: 'skill:write',
+
   // Connectors
   CONNECTOR_READ: 'connector:read',
   CONNECTOR_WRITE: 'connector:write',

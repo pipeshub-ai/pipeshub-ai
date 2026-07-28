@@ -432,10 +432,15 @@ def create_fetch_slack_thread_tool(
     ) -> Dict[str, Any]:
         """Fetch every record belonging to a Slack thread.
 
-        Use this when the conversation context shows a Slack thread record
-        (isReply=True) OR a channel-level Slack message
-        that has replies, and you need the full back-and-forth
-        of replies + any files shared in the thread to answer the question.
+        Reads indexed `SLACK_THREAD` records from the knowledge base — no live
+        API call is made. Use this when the conversation context shows a Slack
+        thread record (isReply=True) OR a channel-level Slack message that has
+        replies, and you need the full back-and-forth to answer the question.
+
+        For surrounding channel history (before/after a message), use
+        `fetch_slack_nearby_messages` instead. To get live replies not yet
+        indexed or to reply/react, use the live Slack toolset tools such as
+        `slack__get_thread_replies`.
 
         Pass the 'Record ID :' value from the context exactly. The tool will:
           1. Resolve the SLACK_THREAD RecordGroup the record belongs to.

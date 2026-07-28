@@ -3790,6 +3790,62 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_knowledge_hub_node_access(
+        self,
+        node_id: str,
+        user_key: str,
+        org_id: str,
+        folder_mime_types: list[str],
+        transaction: str | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        Resolve a node to its metadata ONLY if it belongs to org_id and user_key
+        holds any permission role on it.
+
+        Returns a dict with keys: id, name, nodeType, subType, connector,
+        webUrl, recordType, indexingStatus, userRole.
+        Returns None for missing nodes AND for permission-denied — callers
+        must not distinguish between the two cases.
+
+        Args:
+            node_id: Node ID (record _key, recordGroup _key, or app _key)
+            user_key: User's internal key
+            org_id: Organization ID
+            folder_mime_types: MIME types that classify a record as a folder
+            transaction: Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def get_linked_records(
+        self,
+        record_id: str,
+        org_id: str,
+        user_key: str,
+        relation_types: list[str],
+        limit: int = 10,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Return cross-reference edges (anything except PARENT_CHILD / ATTACHMENT)
+        enriched with recordName, recordType, connectorName, webUrl,
+        permission-filtered and bounded, in a single query.
+
+        Args:
+            record_id: Source record ID (_key)
+            org_id: Organization ID (used to scope results)
+            user_key: User's internal key (used for permission filtering)
+            relation_types: Relation types to include (e.g. LINKED_TO, RELATED, BLOCKS …)
+            limit: Maximum number of results to return
+            transaction: Optional transaction context
+
+        Returns:
+            List of dicts with id, name, recordType, connectorName, webUrl,
+            relationshipType, hasChildren.
+        """
+        pass
+
+    @abstractmethod
     async def get_knowledge_hub_parent_node(
         self,
         node_id: str,
@@ -4342,5 +4398,42 @@ class IGraphDBProvider(ABC):
             Dict with ``valid: True`` and context on success, or
             ``valid: False, success: False, code: <4xx|5xx>, reason: <str>``
             on failure.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_locations(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        *,
+        max_depth: int = 6,
+        transaction: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Batched immediate-parent lookup for a list of record IDs.
+
+        Resolves ONE level of ancestry per record in a single round trip so
+        the retrieval hot-path can annotate results with a breadcrumb without
+        incurring an N+1 per-record query.  Deeper traversal (full breadcrumb
+        trail) uses the existing ``get_knowledge_hub_breadcrumbs`` method.
+
+        Priority order:
+          1. ``parentNodeId`` denormalized field on the record (attachments).
+          2. ``recordGroupId`` denormalized field on the record (project/space).
+          3. Parent Record via recordRelations PARENT_CHILD / ATTACHMENT.
+          4. Parent RecordGroup via belongsTo record→recordGroup.
+          5. Parent App via belongsTo record→app (KB records / no RecordGroup).
+
+        Returns a dict keyed by record_id.  Each value is::
+
+            {
+              "path":     [str],        # [parentName] or [] if root/orphan
+              "parentId": str | None,   # nearest ancestor's node key
+              "truncated": False,       # always False (1-level impl)
+            }
+
+        Records not found in the graph or with a non-matching orgId are
+        omitted from the result (callers should treat missing keys as
+        "no parent known").
         """
         pass

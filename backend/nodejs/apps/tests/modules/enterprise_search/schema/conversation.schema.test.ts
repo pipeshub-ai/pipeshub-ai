@@ -124,14 +124,25 @@ describe('enterprise_search/schema/conversation.schema', () => {
         'error',
         'feedback',
         'system',
+        'tool_call',
       ])
     })
 
-    it('should require content in messages', () => {
+    it('should default content to an empty string rather than requiring it', () => {
+      // `tool_call` messages (e.g. `ask_user_question`) carry no text content --
+      // mirrors agent.conversation.schema.ts's identical relaxation.
       const messageSchema = Conversation.schema.path('messages').schema
       const contentPath = messageSchema.path('content')
       expect(contentPath).to.exist
-      expect(contentPath).to.have.property('isRequired', true)
+      expect(contentPath).to.not.have.property('isRequired', true)
+      expect(contentPath.defaultValue).to.equal('')
+    })
+
+    it('should define tools, reasoning, and parts fields for agent-loop transcripts', () => {
+      const messageSchema = Conversation.schema.path('messages').schema
+      expect(messageSchema.path('tools')).to.exist
+      expect(messageSchema.path('reasoning')).to.exist
+      expect(messageSchema.path('parts')).to.exist
     })
 
     it('should define contentFormat enum', () => {

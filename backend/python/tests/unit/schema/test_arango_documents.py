@@ -201,6 +201,34 @@ class TestRequiredFields:
 
 
 # ---------------------------------------------------------------------------
+# Artifact version bookkeeping
+# ---------------------------------------------------------------------------
+class TestArtifactVersionsField:
+    """The schema has to accept exactly what the writer produces. It didn't,
+    and every artifact version bump failed validation on Neo4j."""
+
+    def test_accepts_the_serialized_form_the_writer_emits(self):
+        from app.models.entities import serialize_artifact_versions
+        from app.schema.node_validator import NodeSchemaValidator
+
+        payload = serialize_artifact_versions([
+            {"registryVersion": 1, "storageVersion": 0, "contentHash": "abc", "sizeBytes": 12, "createdAt": 1},
+            {"registryVersion": 2, "storageVersion": 1, "contentHash": "def", "sizeBytes": 34, "createdAt": 2},
+        ])
+
+        NodeSchemaValidator().validate_node_update(
+            CollectionNames.ARTIFACTS.value, {"version": 2, "versions": payload},
+        )
+
+    def test_still_accepts_arrays_written_before_serialization(self):
+        from app.schema.node_validator import NodeSchemaValidator
+
+        NodeSchemaValidator().validate_node_update(
+            CollectionNames.ARTIFACTS.value, {"versions": []},
+        )
+
+
+# ---------------------------------------------------------------------------
 # Node collection wiring
 # ---------------------------------------------------------------------------
 class TestNodeCollectionSchemaWiring:

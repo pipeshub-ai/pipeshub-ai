@@ -63,6 +63,9 @@ from app.models.entities import (
 )
 from app.schema.arango.documents import (
     agent_schema,
+    agent_skill_candidates_schema,
+    agent_skill_versions_schema,
+    agent_skills_schema,
     agent_template_schema,
     app_role_schema,
     app_schema,
@@ -95,7 +98,9 @@ from app.schema.arango.documents import (
 )
 from app.schema.arango.edges import (
     agent_has_knowledge_schema,
+    agent_has_skill_schema,
     agent_has_toolset_schema,
+    agent_skill_relation_schema,
     basic_edge_schema,
     belongs_to_schema,
     contact_schema,
@@ -158,6 +163,9 @@ NODE_COLLECTIONS = [
     (CollectionNames.AGENT_KNOWLEDGE.value, knowledge_schema),
     (CollectionNames.AGENT_TOOLSETS.value, toolset_schema),
     (CollectionNames.AGENT_TOOLS.value, tool_schema),
+    (CollectionNames.AGENT_SKILLS.value, agent_skills_schema),
+    (CollectionNames.AGENT_SKILL_VERSIONS.value, agent_skill_versions_schema),
+    (CollectionNames.AGENT_SKILL_CANDIDATES.value, agent_skill_candidates_schema),
     (CollectionNames.TICKETS.value, ticket_record_schema),
     (CollectionNames.MEETINGS.value, meeting_record_schema),
     (CollectionNames.PROJECTS.value, project_record_schema),
@@ -193,6 +201,8 @@ EDGE_COLLECTIONS = [
     (CollectionNames.AGENT_HAS_KNOWLEDGE.value, agent_has_knowledge_schema),
     (CollectionNames.AGENT_HAS_TOOLSET.value, agent_has_toolset_schema),
     (CollectionNames.TOOLSET_HAS_TOOL.value, toolset_has_tool_schema),
+    (CollectionNames.AGENT_SKILL_RELATION.value, agent_skill_relation_schema),
+    (CollectionNames.AGENT_HAS_SKILL.value, agent_has_skill_schema),
     (CollectionNames.PROSPECT.value, prospect_schema),
     (CollectionNames.CUSTOMER.value, customer_schema),
     (CollectionNames.LEAD.value, lead_schema),
@@ -643,6 +653,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ["orgId"],
         )
 
+        # COMPOSITE: webUrl + orgId (URL-based record lookup, get_record_by_weburl)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["webUrl", "orgId"],
+        )
+
         # SINGLE: connectorId (queried independently in many patterns)
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
@@ -720,6 +736,33 @@ class ArangoHTTPProvider(IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORD_GROUPS.value,
             ["groupType"],
+        )
+
+        # ==================== AGENT SKILLS INDEXES ====================
+
+        # COMPOSITE: orgId + status — GraphSkillStore.list_skills's hot path
+        # (catalog refresh per SkillManager.start()/refresh()).
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.AGENT_SKILLS.value,
+            ["orgId", "status"],
+        )
+
+        # SINGLE: name — get_skill/exists/create's uniqueness-within-org lookup.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.AGENT_SKILLS.value,
+            ["orgId", "name"],
+        )
+
+        # COMPOSITE: skillKey + version — GraphSkillStore.get_version lookup.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.AGENT_SKILL_VERSIONS.value,
+            ["skillKey", "version"],
+        )
+
+        # SINGLE: orgId — GraphSkillStore candidate queue listing.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.AGENT_SKILL_CANDIDATES.value,
+            ["orgId"],
         )
 
     async def _ensure_departments_seed(self) -> None:
@@ -14655,6 +14698,136 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self.logger.debug(f"get_knowledge_hub_breadcrumbs finished in {elapsed * 1000} ms")
         return breadcrumbs
 
+    async def get_record_locations(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        *,
+        max_depth: int = 6,
+        transaction: str | None = None,
+    ) -> dict[str, dict]:
+        """Batched immediate-parent lookup for a list of record IDs — one AQL round trip.
+
+        Resolves the nearest ancestor for each record:
+          1. ``parentNodeId`` denormalized field on the record document (attachments).
+          2. ``recordGroupId`` denormalized field on the record document (project/space).
+          3. A parent Record via a recordRelations PARENT_CHILD/ATTACHMENT edge.
+          4. A RecordGroup via a belongsTo record→recordGroup edge.
+          5. An App via a belongsTo record→app edge (KB records / no RecordGroup).
+
+        Returns ``{record_id: {path: [parentName], parentId: str|None, truncated: False}}``.
+        The path always contains at most one entry (the immediate parent's display name);
+        ``max_depth`` is accepted by the interface but only 1-level resolution is performed
+        here — deeper walks use ``get_knowledge_hub_breadcrumbs`` (single-node, N+1).
+
+        Records not found in the graph or whose orgId doesn't match are omitted.
+        Ancestor names are filtered to org_id so cross-org names never leak.
+        """
+        if not record_ids:
+            return {}
+
+        if not self.http_client:
+            return {}
+
+        start = time.perf_counter()
+
+        query = """
+FOR rid IN @record_ids
+  LET rec = DOCUMENT(CONCAT("records/", rid))
+  FILTER rec != null AND rec.orgId == @org_id
+
+  // Priority 1: denormalized parentNodeId (set at index time for attachments)
+  LET field_parent_doc = rec.parentNodeId != null
+    ? DOCUMENT(CONCAT("records/", rec.parentNodeId))
+    : null
+  LET field_parent = (field_parent_doc != null AND field_parent_doc.orgId == @org_id)
+    ? {id: field_parent_doc._key, name: COALESCE(field_parent_doc.recordName, field_parent_doc.name, field_parent_doc.title, field_parent_doc._key)}
+    : null
+
+  // Priority 2: denormalized recordGroupId (project / space / drive)
+  LET field_rg_doc = (field_parent == null AND rec.recordGroupId != null)
+    ? DOCUMENT(CONCAT("recordGroups/", rec.recordGroupId))
+    : null
+  LET field_rg = (field_rg_doc != null AND field_rg_doc.orgId == @org_id)
+    ? {id: field_rg_doc._key, name: COALESCE(field_rg_doc.groupName, field_rg_doc.name, field_rg_doc._key)}
+    : null
+
+  // Priority 3: parent Record via recordRelations PARENT_CHILD/ATTACHMENT
+  LET rec_parent = (field_parent == null AND field_rg == null) ? FIRST(
+    FOR e IN recordRelations
+      FILTER e._to == rec._id
+        AND e.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+      LET p = DOCUMENT(e._from)
+      FILTER p != null
+        AND PARSE_IDENTIFIER(e._from).collection == "records"
+        AND p.orgId == @org_id
+      RETURN {id: p._key, name: COALESCE(p.recordName, p.name, p.title, p._key)}
+  ) : null
+
+  // Priority 4: parent RecordGroup via belongsTo record→recordGroup
+  LET rg_parent = (field_parent == null AND field_rg == null AND rec_parent == null) ? FIRST(
+    FOR e IN belongsTo
+      FILTER e._from == rec._id
+      LET rg = DOCUMENT(e._to)
+      FILTER rg != null
+        AND PARSE_IDENTIFIER(e._to).collection == "recordGroups"
+        AND rg.orgId == @org_id
+      RETURN {id: rg._key, name: COALESCE(rg.groupName, rg.name, rg._key)}
+  ) : null
+
+  // Priority 5: parent App via belongsTo record→app
+  LET app_parent = (field_parent == null AND field_rg == null AND rec_parent == null AND rg_parent == null) ? FIRST(
+    FOR e IN belongsTo
+      FILTER e._from == rec._id
+      LET a = DOCUMENT(e._to)
+      FILTER a != null
+        AND PARSE_IDENTIFIER(e._to).collection == "apps"
+        AND a.orgId == @org_id
+      RETURN {id: a._key, name: COALESCE(a.appName, a.name, a._key)}
+  ) : null
+
+  LET immediate = COALESCE(field_parent, field_rg, rec_parent, rg_parent, app_parent)
+
+  RETURN {
+    recordId: rid,
+    parentId: immediate != null ? immediate.id : null,
+    parentName: immediate != null ? immediate.name : null
+  }
+"""
+        try:
+            result = await self.http_client.execute_aql(
+                query,
+                bind_vars={"record_ids": record_ids, "org_id": org_id},
+                txn_id=transaction,
+            )
+            rows: list[dict] = result if isinstance(result, list) else []
+        except Exception as exc:
+            self.logger.warning("get_record_locations: AQL failed — %s", exc)
+            return {}
+
+        output: dict[str, dict] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            rid = row.get("recordId")
+            if not rid:
+                continue
+            parent_id = row.get("parentId")
+            parent_name = row.get("parentName")
+            path = [parent_name] if parent_name else []
+            output[rid] = {
+                "path": path,
+                "parentId": parent_id,
+                "truncated": False,
+            }
+
+        elapsed = time.perf_counter() - start
+        self.logger.debug(
+            "get_record_locations: %d records, %d resolved, %.1f ms",
+            len(record_ids), len(output), elapsed * 1000,
+        )
+        return output
+
     async def get_user_app_ids(
         self,
         user_key: str,
@@ -14881,6 +15054,213 @@ class ArangoHTTPProvider(IGraphDBProvider):
         elapsed = time.perf_counter() - start
         self.logger.debug(f"get_knowledge_hub_node_info finished in {elapsed * 1000} ms")
         return results[0] if results and results[0] else None
+
+    async def get_knowledge_hub_node_access(
+        self,
+        node_id: str,
+        user_key: str,
+        org_id: str,
+        folder_mime_types: list[str],
+        transaction: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Resolve a node to its metadata only if org-scoped and user has a role on it.
+
+        Returns None for both missing nodes and permission-denied — callers
+        must not distinguish the two cases (prevents information leakage).
+        """
+        start = time.perf_counter()
+        record_permission_role_aql = self._get_permission_role_aql("record", "record", "u")
+        rg_permission_role_aql = self._get_permission_role_aql("recordGroup", "rg", "u")
+        app_permission_role_aql = self._get_permission_role_aql("app", "app", "u")
+
+        query = f"""
+        LET u = DOCUMENT("{CollectionNames.USERS.value}", @user_key)
+        FILTER u != null
+
+        LET record = DOCUMENT("{CollectionNames.RECORDS.value}", @node_id)
+        LET rg = record == null ? DOCUMENT("{CollectionNames.RECORD_GROUPS.value}", @node_id) : null
+        LET app = record == null AND rg == null ? DOCUMENT("{CollectionNames.APPS.value}", @node_id) : null
+
+        // ---- record branch ----
+        LET record_result = (
+            FILTER record != null AND record.orgId == @org_id AND record.isDeleted != true
+
+            {record_permission_role_aql}
+
+            LET r_norm = IS_ARRAY(permission_role)
+                ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                : permission_role
+            FILTER r_norm != null AND r_norm != ""
+
+            LET file_info = FIRST(
+                FOR fe IN isOfType FILTER fe._from == record._id
+                LET f = DOCUMENT(fe._to) RETURN f
+            )
+            RETURN {{
+                id: record._key,
+                name: record.recordName,
+                nodeType: record.mimeType IN @folder_mime_types ? "folder" : "record",
+                subType: record.recordType,
+                connector: record.connectorName,
+                webUrl: record.webUrl,
+                recordType: record.recordType,
+                indexingStatus: record.indexingStatus,
+                userRole: r_norm
+            }}
+        )
+
+        // ---- recordGroup branch ----
+        LET rg_result = (
+            FILTER rg != null AND rg.orgId == @org_id
+
+            {rg_permission_role_aql}
+
+            LET rg_norm = IS_ARRAY(permission_role)
+                ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                : permission_role
+            FILTER rg_norm != null AND rg_norm != ""
+
+            RETURN {{
+                id: rg._key,
+                name: rg.groupName,
+                nodeType: "recordGroup",
+                subType: rg.connectorName == "KB" ? "COLLECTION" : (rg.groupType || rg.connectorName),
+                connector: rg.connectorName,
+                webUrl: rg.webUrl,
+                recordType: null,
+                indexingStatus: null,
+                userRole: rg_norm
+            }}
+        )
+
+        // ---- app branch ----
+        LET app_result = (
+            FILTER app != null AND app.orgId == @org_id
+
+            {app_permission_role_aql}
+
+            LET a_norm = IS_ARRAY(permission_role)
+                ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                : permission_role
+            FILTER a_norm != null AND a_norm != ""
+
+            RETURN {{
+                id: app._key,
+                name: app.name,
+                nodeType: "app",
+                subType: app.type,
+                connector: app.type,
+                webUrl: app.webUrl,
+                recordType: null,
+                indexingStatus: null,
+                userRole: a_norm
+            }}
+        )
+
+        LET result = LENGTH(record_result) > 0 ? record_result[0]
+                   : (LENGTH(rg_result) > 0 ? rg_result[0]
+                   : (LENGTH(app_result) > 0 ? app_result[0] : null))
+        FILTER result != null
+        RETURN result
+        """
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "node_id": node_id,
+                    "user_key": user_key,
+                    "org_id": org_id,
+                    "folder_mime_types": folder_mime_types,
+                },
+                txn_id=transaction,
+            )
+            elapsed = time.perf_counter() - start
+            self.logger.debug("get_knowledge_hub_node_access finished in %.1f ms", elapsed * 1000)
+            return results[0] if results and results[0] else None
+        except Exception as e:
+            self.logger.error("❌ get_knowledge_hub_node_access failed: %s", str(e))
+            return None
+
+    async def get_linked_records(
+        self,
+        record_id: str,
+        org_id: str,
+        user_key: str,
+        relation_types: list[str],
+        limit: int = 10,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch cross-reference edges (non-containment) enriched and permission-filtered.
+
+        Uses a single AQL query: graph traversal + orgId scoping + permission check.
+        Replaces the old N+1 loop of check_record_access + get_document per relation.
+        """
+        start = time.perf_counter()
+        record_doc_id = f"{CollectionNames.RECORDS.value}/{record_id}"
+        record_permission_role_aql = self._get_permission_role_aql("record", "record", "u")
+
+        query = f"""
+        LET u = DOCUMENT("{CollectionNames.USERS.value}", @user_key)
+        FILTER u != null
+
+        LET source = DOCUMENT(@record_doc_id)
+        FILTER source != null AND source.orgId == @org_id
+
+        LET linked = (
+            FOR v, e IN 1..1 ANY @record_doc_id {CollectionNames.RECORD_RELATIONS.value}
+                FILTER e.relationshipType IN @relation_types
+                LET record = v
+                FILTER record != null AND record.orgId == @org_id
+                AND record.isDeleted != true
+
+                {record_permission_role_aql}
+
+                LET r_norm = IS_ARRAY(permission_role)
+                    ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                    : permission_role
+                FILTER r_norm != null AND r_norm != ""
+
+                LET has_children = LENGTH(
+                    FOR ce IN {CollectionNames.RECORD_RELATIONS.value}
+                        FILTER ce._from == record._id
+                        AND ce.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
+
+                LIMIT @limit
+                RETURN {{
+                    id: record._key,
+                    name: record.recordName,
+                    recordType: record.recordType,
+                    connectorName: record.connectorName,
+                    webUrl: record.webUrl,
+                    relationshipType: e.relationshipType,
+                    hasChildren: has_children,
+                    indexingStatus: record.indexingStatus,
+                    userRole: r_norm
+                }}
+        )
+        RETURN linked
+        """
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "record_doc_id": record_doc_id,
+                    "user_key": user_key,
+                    "org_id": org_id,
+                    "relation_types": relation_types,
+                    "limit": limit,
+                },
+                txn_id=transaction,
+            )
+            elapsed = time.perf_counter() - start
+            self.logger.debug("get_linked_records finished in %.1f ms", elapsed * 1000)
+            return results[0] if results and results[0] else []
+        except Exception as e:
+            self.logger.error("❌ get_linked_records failed: %s", str(e))
+            return []
 
     async def get_knowledge_hub_parent_node(
         self,
@@ -19077,6 +19457,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }}
             )
 
+            // Get linked skills (agentHasSkill -> agentSkills) — mirrors
+            // linked_toolsets/linked_knowledge above; kept deliberately
+            // flat (no nested join) since a skill carries no sub-entities
+            // analogous to a toolset's tools.
+            LET linked_skills = (
+                FOR edge IN {CollectionNames.AGENT_HAS_SKILL.value}
+                    FILTER edge._from == agent_path
+                    LET skill = DOCUMENT(edge._to)
+                    FILTER skill != null
+                    RETURN {{
+                        name: skill.name,
+                        description: skill.description,
+                        category: skill.category,
+                        subcategory: skill.subcategory,
+                        version: skill.version,
+                        status: skill.status
+                    }}
+            )
+
             // shareWithOrg: when org_id is provided match the specific org node;
             // when org_id is absent check whether any Orgs collection node has a
             // permission edge to this agent (source collection check, not type field)
@@ -19101,6 +19500,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             RETURN MERGE(agent, {{
                 toolsets: linked_toolsets,
                 knowledge: linked_knowledge,
+                skills: linked_skills,
                 shareWithOrg: share_with_org
             }})
             """

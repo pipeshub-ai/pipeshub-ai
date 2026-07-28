@@ -122,7 +122,6 @@
 |-----------|-------------|
 | FastAPI | Yüksek performanslı Python web çerçevesi |
 | LangChain | LLM ardışık düzenleri için çerçeve |
-| LangGraph | LLM iş akışları için durum grafiği |
 | Qdrant | Vektör benzerliği arama motoru |
 | Neo4j / ArangoDB | Grafik veritabanı |
 | Kafka / Redis Streams | Dağıtık olay akışı platformu |
@@ -265,7 +264,7 @@ Not: Bulut dağıtımları için HTTPS kullanın. HTTP, ön uçta güvenlik enge
 
 ### PipesHub hangi LLM sağlayıcılarını destekler?
 
-PipesHub "Kendi Modelini Getir" yaklaşımını benimser — herhangi bir LLM sağlayıcısını kullanabilirsiniz. Tercih ettiğiniz modellerle kendi VPC'nizde dağıtım yapın. Teknoloji yığını, LLM ardışık düzenleri ve iş akışları için LangChain ve LangGraph içerir.
+PipesHub "Kendi Modelini Getir" yaklaşımını benimser — herhangi bir LLM sağlayıcısını kullanabilirsiniz. Tercih ettiğiniz modellerle kendi VPC'nizde dağıtım yapın. Teknoloji yığını, LLM ardışık düzenleri ve iş akışları için LangChain içerir.
 
 ### Bilgi Grafiği ile Erişim özelliği nedir?
 

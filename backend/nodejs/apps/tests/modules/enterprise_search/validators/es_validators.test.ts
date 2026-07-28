@@ -112,6 +112,15 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
+    it('should accept the universal agent chatMode ("agent", no strategy suffix)', () => {
+      // Sent by the toolbar's "Agent" query mode when no specific custom
+      // agent is selected -- `parseChatMode` (es_controller.ts) routes this
+      // to `/api/v1/agent/agentIdPlaceholder/chat/stream`.
+      const data = { body: { query: 'hello', chatMode: 'agent' } }
+      const result = enterpriseSearchCreateSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
     it('should reject attachment entries missing recordId', () => {
       const data = {
         body: {
@@ -433,6 +442,15 @@ describe('enterprise_search/validators/es_validators', () => {
       const result = addMessageParamsSchema.safeParse(data)
       expect(result.success).to.be.true
     })
+
+    it('should accept the universal agent chatMode ("agent", no strategy suffix)', () => {
+      const data = {
+        params: { conversationId: '507f1f77bcf86cd799439011' },
+        body: { query: 'follow up', chatMode: 'agent' },
+      }
+      const result = addMessageParamsSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
   })
 
   describe('regenerateAnswersParamsSchema', () => {
@@ -446,6 +464,99 @@ describe('enterprise_search/validators/es_validators', () => {
       }
       const result = regenerateAnswersParamsSchema.safeParse(data)
       expect(result.success).to.be.true
+    })
+  })
+
+  describe('agentCapabilities — survives unknown-key stripping', () => {
+    // The validation middleware replaces req.body with the parsed result, so a
+    // field absent from the schema is deleted before the controller reads it.
+    const caps = { internalSearch: false, webSearch: false, deepSearch: false }
+
+    it('is preserved on the new-conversation stream body', () => {
+      const result = enterpriseSearchCreateSchema.safeParse({
+        body: { query: 'hi', chatMode: 'agent', agentCapabilities: caps },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.agentCapabilities).to.deep.equal(caps)
+      }
+    })
+
+    it('is preserved on the continue-conversation stream body', () => {
+      const result = addMessageParamsSchema.safeParse({
+        params: { conversationId: '507f1f77bcf86cd799439011' },
+        body: { query: 'hi', chatMode: 'agent', agentCapabilities: caps },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.agentCapabilities).to.deep.equal(caps)
+      }
+    })
+
+    it('is preserved on the regenerate body', () => {
+      const result = regenerateAnswersParamsSchema.safeParse({
+        params: {
+          conversationId: '507f1f77bcf86cd799439011',
+          messageId: '507f1f77bcf86cd799439012',
+        },
+        body: { chatMode: 'agent', filters: {}, agentCapabilities: caps },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.agentCapabilities).to.deep.equal(caps)
+      }
+    })
+
+    it('is preserved on the scoped-agent stream bodies', () => {
+      const created = agentStreamCreateSchema.safeParse({
+        params: { agentKey: 'slack-bot-agent' },
+        body: { query: 'hi', agentCapabilities: caps },
+      })
+      expect(created.success).to.be.true
+      if (created.success) {
+        expect(created.data.body.agentCapabilities).to.deep.equal(caps)
+      }
+
+      const followUp = agentAddMessageParamsSchema.safeParse({
+        params: {
+          agentKey: 'slack-bot-agent',
+          conversationId: '507f1f77bcf86cd799439011',
+        },
+        body: { query: 'hi', agentCapabilities: caps },
+      })
+      expect(followUp.success).to.be.true
+      if (followUp.success) {
+        expect(followUp.data.body.agentCapabilities).to.deep.equal(caps)
+      }
+    })
+
+    it('accepts a partial object (missing flags mean enabled downstream)', () => {
+      const result = enterpriseSearchCreateSchema.safeParse({
+        body: { query: 'hi', agentCapabilities: { internalSearch: false } },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.agentCapabilities).to.deep.equal({
+          internalSearch: false,
+        })
+      }
+    })
+
+    it('stays undefined when the client omits it', () => {
+      const result = enterpriseSearchCreateSchema.safeParse({
+        body: { query: 'hi' },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.agentCapabilities).to.be.undefined
+      }
+    })
+
+    it('rejects a non-object value', () => {
+      const result = enterpriseSearchCreateSchema.safeParse({
+        body: { query: 'hi', agentCapabilities: 'yes' },
+      })
+      expect(result.success).to.be.false
     })
   })
 

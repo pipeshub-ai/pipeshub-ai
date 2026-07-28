@@ -41,7 +41,7 @@ def _get_helper():
     # Extract the two blocks by crude anchoring so the test stays resilient
     # to nearby edits.
     const_marker = "_CODE_EXECUTION_APPS: frozenset[str] = frozenset({"
-    func_marker = "def _code_execution_enabled(state"
+    func_marker = "def code_execution_enabled(state"
 
     i_const = text.index(const_marker)
     i_func = text.index(func_marker)
@@ -60,7 +60,7 @@ def _get_helper():
 
     ns: dict = {}
     exec(snippet, ns)
-    return ns["_code_execution_enabled"], ns["_CODE_EXECUTION_APPS"]
+    return ns["code_execution_enabled"], ns["_CODE_EXECUTION_APPS"]
 
 
 @pytest.fixture(scope="module")

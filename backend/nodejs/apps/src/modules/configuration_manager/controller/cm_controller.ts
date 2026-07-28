@@ -3914,7 +3914,14 @@ export const getCustomSystemPrompt =
       );
 
       if (!encryptedAIConfig) {
-        res.status(200).json({ customSystemPrompt: '', customSystemPromptWebSearch: '' }).end();
+        res
+          .status(200)
+          .json({
+            customSystemPrompt: '',
+            customSystemPromptWebSearch: '',
+            customSystemPromptAgent: '',
+          })
+          .end();
         return;
       }
 
@@ -3927,7 +3934,11 @@ export const getCustomSystemPrompt =
 
       const customSystemPrompt = aiModels.customSystemPrompt || '';
       const customSystemPromptWebSearch = aiModels.customSystemPromptWebSearch || '';
-      res.status(200).json({ customSystemPrompt, customSystemPromptWebSearch }).end();
+      const customSystemPromptAgent = aiModels.customSystemPromptAgent || '';
+      res
+        .status(200)
+        .json({ customSystemPrompt, customSystemPromptWebSearch, customSystemPromptAgent })
+        .end();
     } catch (error: any) {
       logger.error('Error getting custom system prompt', { error });
       next(error);
@@ -3938,13 +3949,23 @@ export const setCustomSystemPrompt =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { customSystemPrompt, customSystemPromptWebSearch } = req.body;
+      const {
+        customSystemPrompt,
+        customSystemPromptWebSearch,
+        // Older clients may not send this field yet -- default to '' rather
+        // than rejecting the request, so agent-mode prompt rollout doesn't
+        // break existing Internal Search / Web Search saves.
+        customSystemPromptAgent = '',
+      } = req.body;
 
       if (typeof customSystemPrompt !== 'string') {
         throw new BadRequestError('customSystemPrompt must be a string');
       }
       if (typeof customSystemPromptWebSearch !== 'string') {
         throw new BadRequestError('customSystemPromptWebSearch must be a string');
+      }
+      if (typeof customSystemPromptAgent !== 'string') {
+        throw new BadRequestError('customSystemPromptAgent must be a string');
       }
 
       const configManagerConfig = loadConfigurationManagerConfig();
@@ -3971,6 +3992,7 @@ export const setCustomSystemPrompt =
         // Update only the custom prompt fields, keeping everything else intact
         aiModels.customSystemPrompt = customSystemPrompt;
         aiModels.customSystemPromptWebSearch = customSystemPromptWebSearch;
+        aiModels.customSystemPromptAgent = customSystemPromptAgent;
 
         // Encrypt the updated configuration
         const encryptedUpdatedConfig = EncryptionService.getInstance(
@@ -4007,6 +4029,7 @@ export const setCustomSystemPrompt =
         message: 'Custom system prompts updated successfully',
         customSystemPrompt,
         customSystemPromptWebSearch,
+        customSystemPromptAgent,
       });
     } catch (error: any) {
       logger.error('Error setting custom system prompt', { error });

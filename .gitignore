@@ -212,3 +212,5 @@ backend/python/.claude/settings.local.json
 .opencode
 .codex
 .commandcode
+# Subagent-driven-development progress ledger (scratch, not committed)
+.superpowers/

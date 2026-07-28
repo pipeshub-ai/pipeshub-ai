@@ -235,92 +235,6 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Error initializing departments: {str(e)}")
             raise
 
-    async def _populate_tools_collections(self) -> None:
-        """Populate tools and tools_ctags collections from the tools registry"""
-        try:
-            # Lazy import to avoid circular dependencies
-            try:
-                from app.agents.tools.discovery import discover_tools
-                from app.agents.tools.registry import _global_tools_registry
-            except ImportError:
-                self.logger.debug("Tools registry not available, skipping tools population")
-                return
-
-            # Discover and register tools
-            self.logger.info("🔍 Discovering tools for Neo4j...")
-            discover_tools(self.logger)
-
-            tool_registry = _global_tools_registry
-            if not tool_registry:
-                self.logger.debug("No tools registry available, skipping tools population")
-                return
-
-            all_tools = tool_registry.get_all_tools()
-            if not all_tools:
-                self.logger.info("No tools found in registry")
-                return
-
-            self.logger.info(f"📦 Populating {len(all_tools)} tools into Neo4j...")
-
-            tools_to_upsert = []
-            ctags_to_upsert = []
-
-            for tool in all_tools.values():
-                tool_id = f"{tool.app_name}_{tool.tool_name}"
-
-                # Generate ctag
-                content = json.dumps({
-                    "description": tool.description,
-                    "parameters": [param.to_json_serializable_dict() for param in tool.parameters],
-                    "returns": tool.returns,
-                    "examples": tool.examples,
-                    "tags": tool.tags
-                }, sort_keys=True)
-                ctag = hashlib.md5(content.encode()).hexdigest()
-
-                # Check if tool exists
-                existing_tool = await self.get_document(tool_id, "tools")
-
-                if existing_tool and existing_tool.get("ctag") == ctag:
-                    # Tool hasn't changed, skip update
-                    continue
-
-                # Prepare tool node (convert _key to id for Neo4j)
-                tool_node = {
-                    "id": tool_id,
-                    "app_name": tool.app_name,
-                    "tool_name": tool.tool_name,
-                    "description": tool.description,
-                    "parameters": [param.to_json_serializable_dict() for param in tool.parameters],
-                    "returns": tool.returns,
-                    "examples": tool.examples,
-                    "tags": tool.tags,
-                    "ctag": ctag,
-                    "created_at": existing_tool.get("created_at") if existing_tool else datetime.now(timezone.utc).isoformat(),
-                    "updated_at": datetime.now(timezone.utc).isoformat()
-                }
-                tools_to_upsert.append(tool_node)
-
-                # Prepare ctag node
-                ctag_node = {
-                    "id": tool.app_name,
-                    "connector_name": tool.app_name,
-                    "ctag": ctag,
-                    "last_updated": datetime.now(timezone.utc).isoformat()
-                }
-                ctags_to_upsert.append(ctag_node)
-
-            # Batch upsert tools
-            if tools_to_upsert:
-                await self.batch_upsert_nodes(tools_to_upsert, "tools")
-            # Batch upsert ctags
-            if ctags_to_upsert:
-                await self.batch_upsert_nodes(ctags_to_upsert, "tools_ctags")
-
-        except Exception as e:
-            self.logger.warning(f"⚠️ Failed to populate tools collections: {str(e)}")
-            # Don't raise - tools population is not critical for provider initialization
-
     # ==================== Transaction Management ====================
 
     async def begin_transaction(self, read: list[str], write: list[str]) -> str:
@@ -427,6 +341,12 @@ class Neo4jProvider(IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_org_id IF NOT EXISTS "
             "FOR (n:Record) ON (n.orgId)"
+        )
+
+        # COMPOSITE: webUrl + orgId (URL-based record lookup, get_record_by_weburl)
+        indexes.append(
+            "CREATE INDEX record_web_url IF NOT EXISTS "
+            "FOR (n:Record) ON (n.webUrl, n.orgId)"
         )
 
         # SINGLE: connectorId (queried independently in many patterns)
@@ -12436,21 +12356,32 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def get_record_by_weburl(
         self,
-        connector_id: str,
-        web_url: str,
-        transaction: str | None = None
+        weburl: str,
+        org_id: str | None = None,
+        transaction: str | None = None,
     ) -> Record | None:
-        """Get record by web URL."""
+        """Get record by web URL (exact match). Skips LINK records."""
         try:
-            query = """
-            MATCH (r:Record {connectorId: $connector_id, webUrl: $web_url})
-            RETURN r
-            LIMIT 1
-            """
+            if org_id:
+                query = """
+                MATCH (r:Record {webUrl: $weburl, orgId: $org_id})
+                WHERE r.recordType <> 'LINK' AND (r.isDeleted IS NULL OR r.isDeleted = false)
+                RETURN r
+                LIMIT 1
+                """
+                parameters = {"weburl": weburl, "org_id": org_id}
+            else:
+                query = """
+                MATCH (r:Record {webUrl: $weburl})
+                WHERE r.recordType <> 'LINK' AND (r.isDeleted IS NULL OR r.isDeleted = false)
+                RETURN r
+                LIMIT 1
+                """
+                parameters = {"weburl": weburl}
             results = await self.client.execute_query(
                 query,
-                parameters={"connector_id": connector_id, "web_url": web_url},
-                txn_id=transaction
+                parameters=parameters,
+                txn_id=transaction,
             )
             if results:
                 record_data = results[0].get("r", {})
@@ -13228,6 +13159,88 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(traceback.format_exc())
             return []
 
+    async def get_record_locations(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        *,
+        max_depth: int = 6,
+        transaction: str | None = None,
+    ) -> dict[str, dict]:
+        """Batched immediate-parent lookup for a list of record IDs — one Cypher round trip.
+
+        Resolves the nearest ancestor for each record:
+          1. ``parentNodeId`` denormalized field on the Record (attachments).
+          2. ``recordGroupId`` denormalized field on the Record (project/space).
+          3. A parent Record via a RECORD_RELATION (PARENT_CHILD/ATTACHMENT).
+          4. A RecordGroup via a directed BELONGS_TO edge (Record→RecordGroup).
+          5. An App via a directed BELONGS_TO edge (Record→App).
+
+        Returns ``{record_id: {path: [parentName], parentId: str|None, truncated: False}}``.
+        ``max_depth`` is accepted by the interface but only 1-level resolution is performed
+        here — deeper walks use ``get_knowledge_hub_breadcrumbs`` (single-node, N+1).
+        """
+        if not record_ids:
+            return {}
+        if not self.client:
+            return {}
+        try:
+            query = """
+UNWIND $record_ids AS rid
+MATCH (r:Record {_key: rid, orgId: $org_id})
+OPTIONAL MATCH (fp:Record {_key: r.parentNodeId, orgId: $org_id})
+  WHERE r.parentNodeId IS NOT NULL
+OPTIONAL MATCH (frg:RecordGroup {_key: r.recordGroupId, orgId: $org_id})
+  WHERE fp IS NULL AND r.recordGroupId IS NOT NULL
+OPTIONAL MATCH (p:Record)-[e:RECORD_RELATION]->(r)
+  WHERE fp IS NULL AND frg IS NULL
+    AND e.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+OPTIONAL MATCH (r)-[:BELONGS_TO]->(rg:RecordGroup)
+  WHERE fp IS NULL AND frg IS NULL AND p IS NULL
+OPTIONAL MATCH (r)-[:BELONGS_TO]->(a:App)
+  WHERE fp IS NULL AND frg IS NULL AND p IS NULL AND rg IS NULL
+WITH rid,
+     CASE WHEN fp IS NOT NULL THEN fp._key
+          WHEN frg IS NOT NULL THEN frg._key
+          WHEN p IS NOT NULL THEN p._key
+          WHEN rg IS NOT NULL THEN rg._key
+          ELSE a._key END AS parentId,
+     CASE WHEN fp IS NOT NULL
+          THEN coalesce(fp.recordName, fp.name, fp.title, fp._key)
+          WHEN frg IS NOT NULL
+          THEN coalesce(frg.groupName, frg.name, frg._key)
+          WHEN p IS NOT NULL
+          THEN coalesce(p.recordName, p.name, p.title, p._key)
+          WHEN rg IS NOT NULL
+          THEN coalesce(rg.groupName, rg.name, rg._key)
+          WHEN a IS NOT NULL
+          THEN coalesce(a.appName, a.name, a._key)
+          ELSE null END AS parentName
+RETURN rid AS recordId, parentId, parentName
+"""
+            rows: list[dict] = await self.client.execute_query(
+                query,
+                {"record_ids": record_ids, "org_id": org_id},
+                txn_id=transaction,
+            )
+            output: dict[str, dict] = {}
+            for row in rows:
+                rid = row.get("recordId")
+                if not rid:
+                    continue
+                parent_id = row.get("parentId")
+                parent_name = row.get("parentName")
+                path = [parent_name] if parent_name else []
+                output[rid] = {
+                    "path": path,
+                    "parentId": parent_id,
+                    "truncated": False,
+                }
+            return output
+        except Exception as exc:
+            self.logger.warning("get_record_locations: Cypher failed — %s", exc)
+            return {}
+
     async def get_user_app_ids(
         self,
         user_key: str,
@@ -13477,6 +13490,178 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Get knowledge hub node info failed: {str(e)}")
             return None
+
+    async def get_knowledge_hub_node_access(
+        self,
+        node_id: str,
+        user_key: str,
+        org_id: str,
+        folder_mime_types: list[str],
+        transaction: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Resolve a node to its metadata only if org-scoped and user has a role on it.
+
+        Returns None for both missing nodes and permission-denied — callers
+        must not distinguish the two cases.
+
+        Uses UNION ALL across the three node types so each branch is
+        self-contained and leverages ``_get_permission_role_cypher`` for
+        the full 10-path permission model (same as every other access
+        check in this provider).
+        """
+        record_perm = self._get_permission_role_cypher("record", "record", "u")
+        rg_perm = self._get_permission_role_cypher("recordGroup", "rg", "u")
+        app_perm = self._get_permission_role_cypher("app", "app", "u")
+
+        query = f"""
+            // ---- record branch ----
+            MATCH (u:User {{id: $user_key}})
+            MATCH (record:Record {{id: $node_id, orgId: $org_id}})
+            WHERE record.isDeleted IS NULL OR record.isDeleted = false
+
+            {record_perm}
+
+            WITH record, permission_role
+            WHERE permission_role IS NOT NULL AND permission_role <> ''
+
+            RETURN {{
+                id: record.id,
+                name: record.recordName,
+                nodeType: CASE WHEN record.mimeType IN $folder_mime_types THEN 'folder' ELSE 'record' END,
+                subType: record.recordType,
+                connector: record.connectorName,
+                webUrl: record.webUrl,
+                recordType: record.recordType,
+                indexingStatus: record.indexingStatus,
+                userRole: permission_role
+            }} AS result
+
+            UNION ALL
+
+            // ---- recordGroup branch ----
+            MATCH (u:User {{id: $user_key}})
+            MATCH (rg:RecordGroup {{id: $node_id, orgId: $org_id}})
+
+            {rg_perm}
+
+            WITH rg, permission_role
+            WHERE permission_role IS NOT NULL AND permission_role <> ''
+
+            RETURN {{
+                id: rg.id,
+                name: rg.groupName,
+                nodeType: 'recordGroup',
+                subType: CASE WHEN rg.connectorName = 'KB' THEN 'COLLECTION'
+                              ELSE coalesce(rg.groupType, rg.connectorName) END,
+                connector: rg.connectorName,
+                webUrl: rg.webUrl,
+                recordType: null,
+                indexingStatus: null,
+                userRole: permission_role
+            }} AS result
+
+            UNION ALL
+
+            // ---- app branch ----
+            MATCH (u:User {{id: $user_key}})
+            MATCH (app:App {{id: $node_id, orgId: $org_id}})
+
+            {app_perm}
+
+            WITH app, permission_role
+            WHERE permission_role IS NOT NULL AND permission_role <> ''
+
+            RETURN {{
+                id: app.id,
+                name: app.name,
+                nodeType: 'app',
+                subType: app.type,
+                connector: app.type,
+                webUrl: app.webUrl,
+                recordType: null,
+                indexingStatus: null,
+                userRole: permission_role
+            }} AS result
+        """
+        try:
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "node_id": node_id,
+                    "user_key": user_key,
+                    "org_id": org_id,
+                    "folder_mime_types": folder_mime_types,
+                },
+                txn_id=transaction,
+            )
+            if results and results[0].get("result"):
+                return results[0]["result"]
+            return None
+        except Exception as e:
+            self.logger.error(f"❌ get_knowledge_hub_node_access failed: {str(e)}")
+            return None
+
+    async def get_linked_records(
+        self,
+        record_id: str,
+        org_id: str,
+        user_key: str,
+        relation_types: list[str],
+        limit: int = 10,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch cross-reference edges enriched and permission-filtered in one query."""
+        try:
+            query = """
+            MATCH (u:User {id: $user_key})
+            MATCH (source:Record {id: $record_id, orgId: $org_id})
+
+            MATCH (source)-[e:RECORD_RELATION]-(v:Record)
+            WHERE e.relationshipType IN $relation_types
+              AND (v.orgId = $org_id)
+              AND (v.isDeleted IS NULL OR v.isDeleted = false)
+
+            WITH u, v, e
+            WHERE (
+                EXISTS { (u)-[:PERMISSION]->(v) }
+                OR EXISTS { (u)-[:PERMISSION]->(:RecordGroup)<-[:INHERIT_PERMISSIONS*1..20]-(v) }
+                OR EXISTS { (u)-[:BELONGS_TO]->(:Organization)-[:PERMISSION]->(v) }
+            )
+
+            WITH v, e
+            OPTIONAL MATCH (v)-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(:Record)
+            WITH v, e, count(*) > 0 AS has_child_pc
+            OPTIONAL MATCH (v)-[:RECORD_RELATION {relationshipType: 'ATTACHMENT'}]->(:Record)
+            WITH v, e, has_child_pc, count(*) > 0 AS has_child_att
+
+            RETURN {
+                id: v.id,
+                name: v.recordName,
+                recordType: v.recordType,
+                connectorName: v.connectorName,
+                webUrl: v.webUrl,
+                relationshipType: e.relationshipType,
+                hasChildren: (has_child_pc OR has_child_att),
+                indexingStatus: v.indexingStatus,
+                userRole: null
+            } AS item
+            LIMIT $limit
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "record_id": record_id,
+                    "user_key": user_key,
+                    "org_id": org_id,
+                    "relation_types": relation_types,
+                    "limit": limit,
+                },
+                txn_id=transaction,
+            )
+            return [r["item"] for r in results if r.get("item")] if results else []
+        except Exception as e:
+            self.logger.error(f"❌ get_linked_records failed: {str(e)}")
+            return []
 
     async def get_knowledge_hub_parent_node(
         self,
@@ -16327,6 +16512,41 @@ class Neo4jProvider(IGraphDBProvider):
 
         return result_map
 
+    async def _project_agent_skills(
+        self, agent_id: str, transaction: str | None = None
+    ) -> list[dict]:
+        """Fetch skills explicitly assigned to a single agent (agentHasSkill -> AgentSkills).
+
+        Mirrors the ``linked_skills`` AQL subquery in the Arango provider's
+        ``get_agent``. Kept separate from ``_project_agents_toolsets_and_knowledge``
+        because, like Arango, skill enrichment is only needed for the single-agent
+        fetch (``get_agent``), not the list projection used by ``get_all_agents``.
+        Flat by design — a skill carries no sub-entities analogous to a toolset's tools.
+        """
+        agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+        skill_label = collection_to_label(CollectionNames.AGENT_SKILLS.value)
+        agent_has_skill_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_SKILL.value)
+
+        query = f"""
+        MATCH (agent:{agent_label} {{id: $agent_id}})-[:{agent_has_skill_rel}]->(skill:{skill_label})
+        RETURN skill.name AS name, skill.description AS description, skill.category AS category,
+               skill.subcategory AS subcategory, skill.version AS version, skill.status AS status
+        """
+        result = await self.client.execute_query(
+            query, parameters={"agent_id": agent_id}, txn_id=transaction
+        )
+        return [
+            {
+                "name": row["name"],
+                "description": row["description"],
+                "category": row["category"],
+                "subcategory": row["subcategory"],
+                "version": row["version"],
+                "status": row["status"],
+            }
+            for row in result or []
+        ]
+
     async def get_agent(self, agent_id: str, org_id: str | None = None, transaction: str | None = None) -> dict | None:
         """
         Fetch the complete agent document with linked graph data.
@@ -16338,6 +16558,7 @@ class Neo4jProvider(IGraphDBProvider):
         - Agent document
         - Linked toolsets with their tools (via agentHasToolset -> toolsetHasTool)
         - Linked knowledge with filters (via agentHasKnowledge)
+        - Linked skills (via agentHasSkill)
         - shareWithOrg flag (requires org_id to evaluate the ORG permission edge)
         """
         try:
@@ -16370,6 +16591,7 @@ class Neo4jProvider(IGraphDBProvider):
             agent_projection = projection.get(agent_id, {"toolsets": [], "knowledge": []})
             agent["toolsets"] = agent_projection["toolsets"]
             agent["knowledge"] = agent_projection["knowledge"]
+            agent["skills"] = await self._project_agent_skills(agent_id, transaction)
 
             # shareWithOrg: when org_id is provided match the specific org node;
             # when org_id is absent check whether any Orgs label node has a

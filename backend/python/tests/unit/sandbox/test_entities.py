@@ -18,10 +18,11 @@ class TestArtifactType:
         assert ArtifactType.PRESENTATION == "PRESENTATION"
         assert ArtifactType.DATA_FILE == "DATA_FILE"
         assert ArtifactType.OTHER == "OTHER"
+        assert ArtifactType.CODE == "CODE"
 
     def test_member_count(self):
         from app.models.entities import ArtifactType
-        assert len(ArtifactType) == 8
+        assert len(ArtifactType) == 9
 
     def test_is_str_enum(self):
         from app.models.entities import ArtifactType

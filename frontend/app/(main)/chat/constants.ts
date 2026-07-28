@@ -52,7 +52,7 @@ export const QUERY_MODES: QueryModeConfig[] = [
     id: 'agent',
     label: 'Agent',
     toolbarLabel: 'chat.queryModes.agent.toolbarLabel',
-    description: 'Delegate multi-step reasoning and tool use with a configurable strategy',
+    description: 'Agent that can plan and use tools to complete complex tasks',
     icon: 'smart_toy',
     iconType: 'material',
     colors: {

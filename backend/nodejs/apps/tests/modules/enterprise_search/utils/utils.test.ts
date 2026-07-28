@@ -33,6 +33,7 @@ import { InternalServerError, BadRequestError } from '../../../../src/libs/error
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { Conversation } from '../../../../src/modules/enterprise_search/schema/conversation.schema'
 import { AgentConversation } from '../../../../src/modules/enterprise_search/schema/agent.conversation.schema'
+import { AGUI_PROTOCOL, LEGACY_PROTOCOL } from '../../../../src/modules/enterprise_search/utils/agui'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -4114,3 +4115,311 @@ describe('Enterprise Search Utils - coverage', () => {
   })
 })
 }
+
+// ---------------------------------------------------------------------------
+// AG-UI protocol negotiation — the SSE helpers stay byte-identical for every
+// caller that omits `protocol` (see `isAGUI()`'s `undefined -> false`
+// default), and only re-frame when a request explicitly negotiated `agui`.
+// ---------------------------------------------------------------------------
+describe('AG-UI Protocol', () => {
+  afterEach(() => {
+    sinon.restore()
+  })
+
+  describe('initializeSSEResponse', () => {
+    it('should send legacy connected event when protocol is omitted', () => {
+      const res = createMockResponse()
+      initializeSSEResponse(res)
+
+      const writeArg = res.write.firstCall.args[0]
+      expect(writeArg).to.include('event: connected')
+    })
+
+    it('should send legacy connected event when protocol is legacy', () => {
+      const res = createMockResponse()
+      initializeSSEResponse(res, LEGACY_PROTOCOL)
+
+      const writeArg = res.write.firstCall.args[0]
+      expect(writeArg).to.include('event: connected')
+    })
+
+    it('should send CUSTOM conversation_created event in agui mode', () => {
+      const res = createMockResponse()
+      initializeSSEResponse(res, AGUI_PROTOCOL)
+
+      const writeArg = res.write.firstCall.args[0]
+      expect(writeArg).to.include('event: CUSTOM')
+      const data = JSON.parse(writeArg.split('data: ')[1].trim())
+      expect(data.type).to.equal('CUSTOM')
+      expect(data.name).to.equal('conversation_created')
+    })
+  })
+
+  describe('sendSSEErrorEvent', () => {
+    it('should send RUN_ERROR in agui mode', async () => {
+      const res = createMockResponse()
+      await sendSSEErrorEvent(res, 'boom', undefined, undefined, AGUI_PROTOCOL)
+
+      const writeArg = res.write.firstCall.args[0]
+      expect(writeArg).to.include('event: RUN_ERROR')
+      const data = JSON.parse(writeArg.split('data: ')[1].trim())
+      expect(data.message).to.equal('boom')
+      expect(data.code).to.equal('unknown_error')
+    })
+
+    it('should classify agui error as streaming_error when details are present', async () => {
+      const res = createMockResponse()
+      await sendSSEErrorEvent(res, 'boom', 'stack trace', undefined, AGUI_PROTOCOL)
+
+      const data = JSON.parse(res.write.firstCall.args[0].split('data: ')[1].trim())
+      expect(data.code).to.equal('streaming_error')
+    })
+
+    it('should include conversation in the agui RUN_ERROR payload when provided', async () => {
+      const res = createMockResponse()
+      await sendSSEErrorEvent(res, 'boom', undefined, { id: 'c1' }, AGUI_PROTOCOL)
+
+      const data = JSON.parse(res.write.firstCall.args[0].split('data: ')[1].trim())
+      expect(data.conversation).to.deep.equal({ id: 'c1' })
+    })
+
+    it('should fall back to legacy error event when protocol is omitted', async () => {
+      const res = createMockResponse()
+      await sendSSEErrorEvent(res, 'boom')
+
+      expect(res.write.firstCall.args[0]).to.include('event: error')
+    })
+  })
+
+  describe('sendSSECompleteEvent', () => {
+    it('should send RUN_FINISHED wrapping the response payload in agui mode', () => {
+      const res = createMockResponse()
+      sendSSECompleteEvent(res, { id: 'c1' }, 2, 'req-1', Date.now(), AGUI_PROTOCOL)
+
+      const writeArg = res.write.firstCall.args[0]
+      expect(writeArg).to.include('event: RUN_FINISHED')
+      const data = JSON.parse(writeArg.split('data: ')[1].trim())
+      expect(data.type).to.equal('RUN_FINISHED')
+      expect(data.result.conversation).to.deep.equal({ id: 'c1' })
+      expect(data.result.recordsUsed).to.equal(2)
+    })
+
+    it('should fall back to legacy complete event when protocol is legacy', () => {
+      const res = createMockResponse()
+      sendSSECompleteEvent(res, { id: 'c1' }, 2, 'req-1', Date.now(), LEGACY_PROTOCOL)
+
+      expect(res.write.firstCall.args[0]).to.include('event: complete')
+    })
+  })
+
+  describe('handleRegenerationStreamData', () => {
+    it('should capture RUN_FINISHED result and not forward it', () => {
+      const res = createMockResponse()
+      const result = { answer: 'Hello', citations: [] }
+      const chunk = Buffer.from(
+        `event: RUN_FINISHED\ndata: ${JSON.stringify({ type: 'RUN_FINISHED', result })}\n\n`,
+      )
+      let capturedData: any = null
+
+      handleRegenerationStreamData(
+        chunk, '', null, -1, null, 'req-1', res, (d) => { capturedData = d }, AGUI_PROTOCOL,
+      )
+
+      expect(capturedData).to.deep.equal(result)
+      expect(res.write.called).to.be.false
+    })
+
+    it('should fall back to the raw payload when RUN_FINISHED has no result field', () => {
+      const res = createMockResponse()
+      const payload = { type: 'RUN_FINISHED', answer: 'direct' }
+      const chunk = Buffer.from(`event: RUN_FINISHED\ndata: ${JSON.stringify(payload)}\n\n`)
+      let capturedData: any = null
+
+      handleRegenerationStreamData(
+        chunk, '', null, -1, null, 'req-1', res, (d) => { capturedData = d }, AGUI_PROTOCOL,
+      )
+
+      expect(capturedData).to.deep.equal(payload)
+    })
+
+    it('should forward RUN_FINISHED when its data fails to parse', () => {
+      const res = createMockResponse()
+      const chunk = Buffer.from('event: RUN_FINISHED\ndata: {invalid json}\n\n')
+      const onComplete = sinon.stub()
+
+      handleRegenerationStreamData(chunk, '', null, -1, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
+
+      expect(onComplete.called).to.be.false
+      expect(res.write.calledOnce).to.be.true
+    })
+
+    it('should replace the message with the error and forward RUN_ERROR', () => {
+      const res = createMockResponse()
+      const mockConv: any = {
+        _id: 'c1',
+        messages: [{ _id: 'm1' }, { _id: 'm2' }],
+        conversationErrors: [],
+        status: 'Inprogress',
+        save: sinon.stub().resolves({}),
+      }
+      const chunk = Buffer.from(
+        `event: RUN_ERROR\ndata: ${JSON.stringify({ type: 'RUN_ERROR', message: 'boom' })}\n\n`,
+      )
+
+      handleRegenerationStreamData(chunk, '', mockConv, 1, null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL)
+
+      expect(res.write.calledOnce).to.be.true
+      expect(res.write.firstCall.args[0]).to.include('event: RUN_ERROR')
+    })
+
+    it('should persist an ask_user_question tool_call from a CUSTOM event', () => {
+      const res = createMockResponse()
+      const mockConv: any = { _id: 'c1', agentKey: 'agent-1' }
+      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+      const toolData = { question: 'Pick a channel', options: ['#general', '#random'] }
+      const chunk = Buffer.from(
+        `event: CUSTOM\ndata: ${JSON.stringify({
+          type: 'CUSTOM',
+          name: 'ask_user_question',
+          value: { status: 'success', toolData },
+        })}\n\n`,
+      )
+
+      handleRegenerationStreamData(chunk, '', mockConv, 0, null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL)
+
+      expect(res.write.calledOnce).to.be.true
+      expect(findByIdAndUpdateStub.calledOnce).to.be.true
+      const updatePayload = findByIdAndUpdateStub.firstCall.args[1]
+      expect(updatePayload.$push.messages.tools[0].toolName).to.equal('ask_user_question')
+      expect(updatePayload.$push.messages.tools[0].toolResult).to.deep.equal(toolData)
+    })
+
+    it('should ignore CUSTOM events that are not ask_user_question', () => {
+      const res = createMockResponse()
+      const mockConv: any = { _id: 'c1', agentKey: 'agent-1' }
+      const findByIdAndUpdateStub = sinon.stub(AgentConversation, 'findByIdAndUpdate').resolves({})
+      const chunk = Buffer.from(
+        `event: CUSTOM\ndata: ${JSON.stringify({ type: 'CUSTOM', name: 'artifact', value: {} })}\n\n`,
+      )
+
+      handleRegenerationStreamData(chunk, '', mockConv, 0, null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL)
+
+      expect(res.write.calledOnce).to.be.true
+      expect(findByIdAndUpdateStub.called).to.be.false
+    })
+
+    it('should not treat legacy complete/error/ask_user_question event names as agui frames', () => {
+      const res = createMockResponse()
+      const onComplete = sinon.stub()
+      const chunk = Buffer.from('event: complete\ndata: {"answer":"legacy"}\n\n')
+
+      handleRegenerationStreamData(chunk, '', null, -1, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
+
+      // Under `agui`, the legacy `complete` name has no special handling and
+      // is forwarded through unchanged rather than being parsed as a completion.
+      expect(onComplete.called).to.be.false
+      expect(res.write.calledOnce).to.be.true
+    })
+  })
+
+  describe('buildAIResponseMessage reasoning propagation', () => {
+    it('should attach reasoning turns when present on the AI response', () => {
+      const reasoning = [{ content: 'Let me think about this...', startedAt: new Date(), endedAt: new Date() }]
+      const aiResponse = {
+        statusCode: 200,
+        data: { answer: 'hello', confidence: 0.9, reasoning },
+      }
+
+      const result = buildAIResponseMessage(aiResponse as any)
+
+      expect(result.reasoning).to.deep.equal(reasoning)
+    })
+
+    it('should omit reasoning when the field is absent', () => {
+      const aiResponse = {
+        statusCode: 200,
+        data: { answer: 'hello' },
+      }
+
+      const result = buildAIResponseMessage(aiResponse as any)
+
+      expect(result.reasoning).to.be.undefined
+    })
+
+    it('should omit reasoning when the array is empty', () => {
+      const aiResponse = {
+        statusCode: 200,
+        data: { answer: 'hello', reasoning: [] },
+      }
+
+      const result = buildAIResponseMessage(aiResponse as any)
+
+      expect(result.reasoning).to.be.undefined
+    })
+  })
+
+  describe('buildAIResponseMessage parts propagation', () => {
+    it('should attach the agent-activity transcript when parts are present (agui protocol)', () => {
+      const parts = [
+        { type: 'reasoning', content: 'thinking...' },
+        {
+          type: 'tool_call',
+          toolCallId: 'call-1',
+          toolName: 'jira_search',
+          status: 'completed',
+          resultPreview: '3 issues',
+        },
+        { type: 'text', content: 'hello' },
+      ]
+      const aiResponse = {
+        statusCode: 200,
+        data: { answer: 'hello', confidence: 0.9, parts },
+      }
+
+      const result = buildAIResponseMessage(aiResponse as any)
+
+      expect(result.parts).to.deep.equal(parts)
+    })
+
+    it('should preserve nested sub_agent parts unchanged (no truncation on the Node side)', () => {
+      const parts = [
+        {
+          type: 'sub_agent',
+          runId: 'child-1',
+          roleName: 'explorer',
+          parts: [{ type: 'text', content: 'delegate answer' }],
+        },
+      ]
+      const aiResponse = {
+        statusCode: 200,
+        data: { answer: 'hello', parts },
+      }
+
+      const result = buildAIResponseMessage(aiResponse as any)
+
+      expect(result.parts).to.deep.equal(parts)
+    })
+
+    it('should omit parts when the field is absent (legacy protocol)', () => {
+      const aiResponse = {
+        statusCode: 200,
+        data: { answer: 'hello' },
+      }
+
+      const result = buildAIResponseMessage(aiResponse as any)
+
+      expect(result.parts).to.be.undefined
+    })
+
+    it('should omit parts when the array is empty', () => {
+      const aiResponse = {
+        statusCode: 200,
+        data: { answer: 'hello', parts: [] },
+      }
+
+      const result = buildAIResponseMessage(aiResponse as any)
+
+      expect(result.parts).to.be.undefined
+    })
+  })
+})

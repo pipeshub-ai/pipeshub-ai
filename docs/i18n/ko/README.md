@@ -122,7 +122,6 @@
 |-----------|-------------|
 | FastAPI | 고성능 Python 웹 프레임워크 |
 | LangChain | LLM 파이프라인용 프레임워크 |
-| LangGraph | LLM 워크플로용 상태 그래프 |
 | Qdrant | 벡터 유사도 검색 엔진 |
 | Neo4j / ArangoDB | 그래프 데이터베이스 |
 | Kafka / Redis Streams | 분산 이벤트 스트리밍 플랫폼 |
@@ -265,7 +264,7 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 
 ### PipesHub는 어떤 LLM 제공업체를 지원하나요?
 
-PipesHub는 "자체 모델 사용(Bring Your Own Model)" 방식으로, 어떤 LLM 제공업체든 사용할 수 있습니다. 원하는 모델을 VPC에 배포하세요. 기술 스택에는 LLM 파이프라인과 워크플로를 위한 LangChain과 LangGraph가 포함됩니다.
+PipesHub는 "자체 모델 사용(Bring Your Own Model)" 방식으로, 어떤 LLM 제공업체든 사용할 수 있습니다. 원하는 모델을 VPC에 배포하세요. 기술 스택에는 LLM 파이프라인과 워크플로를 위한 LangChain이 포함됩니다.
 
 ### 지식 그래프 검색 기능이란 무엇인가요?
 
