@@ -219,7 +219,7 @@ const parseChatMode = (requestChatMode?: string): { chatMode: string; agentMode:
   let agentMode: boolean = false;
 
   if (chatMode.includes('agent')) {
-    chatMode = chatMode.split(':')[1] || 'quick';
+    chatMode = chatMode.split(':')[1] || 'auto';
     agentMode = true;
   }
 
@@ -2709,6 +2709,9 @@ export const getAllConversations = async (
   try {
     const userId = req.user?.userId;
     const orgId = req.user?.orgId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
     const { conversationId } = req.query;
     logger.debug('Fetching conversations', {
       requestId,
@@ -4399,6 +4402,9 @@ export const listAllArchivesConversation = async (
   try {
     const userId = req.user?.userId;
     const orgId = req.user?.orgId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
     const { conversationId } = req.query;
 
     logger.debug('Fetching all archived conversations', {
@@ -4769,9 +4775,12 @@ export const searchHistory = async (
   const startTime = Date.now();
 
   try {
-    const { page, limit, skip } = getPaginationParams(req);
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
+    const { page, limit, skip } = getPaginationParams(req);
     const sortOptions = buildSortOptions(req);
     const filter = buildFilter(req, orgId, userId);
 
@@ -5128,6 +5137,9 @@ export const archiveSearch = async (
   try {
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
     const filter = buildFilter(req, orgId, userId, searchId);
 
     logger.debug('Attempting to archive search', {
@@ -5201,6 +5213,9 @@ export const unarchiveSearch = async (
   try {
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
     const filter = {
       ...buildFilter(req, orgId, userId, searchId),
       isArchived: true,
@@ -5274,6 +5289,9 @@ export const deleteSearchHistory = async (
   try {
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
     const filter = buildFilter(req, orgId, userId);
 
     logger.debug('Attempting to delete search history', {
@@ -7564,6 +7582,9 @@ export const getAllAgentConversations = async (
   try {
     const userId = req.user?.userId;
     const orgId = req.user?.orgId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
     const { conversationId, agentKey } = req.params;
     logger.debug('Fetching conversations', {
       requestId,

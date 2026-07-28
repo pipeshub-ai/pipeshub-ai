@@ -917,7 +917,7 @@ class TestRecursiveGeneratorRetry:
         connector.processed_urls = 0
         connector.max_size_mb = 10
         connector.follow_external = False
-        connector.indexing_filters = MagicMock()
+        connector.url_should_contain = []
 
         connector.retry_urls = {
             "https://example.com/retry": RetryUrl(
@@ -927,11 +927,21 @@ class TestRecursiveGeneratorRetry:
             ),
         }
         connector._normalize_url = MagicMock(side_effect=lambda u: u.rstrip("/"))
-        connector._fetch_and_process_url = AsyncMock(return_value=None)
 
-        results = []
-        async for update in connector._crawl_recursive_generator("https://example.com/other", 0):
-            results.append(update)
+        # Non-retryable status (404) so _validate_fetch_result drops the URL
+        # without adding it to retry_urls — avoids the real backoff sleep in
+        # the "no queue left, wait for retry candidates" branch.
+        fetch_response = FetchResponse(
+            status_code=404, content_bytes=b"", headers={},
+            final_url="https://example.com/other", strategy="aiohttp",
+        )
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock, return_value=fetch_response,
+        ):
+            results = []
+            async for update in connector._crawl_recursive_generator("https://example.com/other", 0):
+                results.append(update)
         assert len(results) == 0
 
 

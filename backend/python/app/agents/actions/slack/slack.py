@@ -358,6 +358,11 @@ class ResolveUserInput(BaseModel):
     """Schema for resolving a user"""
     user_id: str = Field(description="The user ID to resolve")
 
+class SearchUsersInput(BaseModel):
+    """Schema for searching users by name"""
+    name: str = Field(description="The name (display name, real name, or username) to search for")
+    include_bots: bool = Field(default=False, description="Include bot users in search results")
+
 class AddReactionInput(BaseModel):
     """Schema for adding a reaction to a message"""
     channel: str = Field(description="The channel id containing the message e.g 'C1234567890','G1234567890', 'D1234567890'")
@@ -1575,6 +1580,107 @@ class Slack:
             return (True, SlackResponse(success=True, data=result).to_json())
         except Exception as e:
             logger.error(f"Error in resolve_user: {e}")
+            slack_response = self._handle_slack_error(e)
+            return (slack_response.success, slack_response.to_json())
+
+    @tool(
+        path="/tools/slack/search_users",
+        short_description="Search Slack users by name",
+        description=(
+            "Search for Slack users by display name, real name, or username. "
+            "Returns matching users with their user ID, display name, real name, and email. "
+            "Use when the user wants to find someone by name and needs their account ID or email. "
+            "Supports partial matching (e.g. 'john' matches 'John Smith'). "
+            "For a known user ID use resolve_user; for a known email use get_user_info."
+        ),
+        parameters=[
+            ToolParameter(name="name", type=ParameterType.STRING, description="The name to search for (display name, real name, or username). Minimum 2 characters.", required=True),
+            ToolParameter(name="include_bots", type=ParameterType.BOOLEAN, description="Include bot users in results. Defaults to false.", required=False),
+        ],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        args_summary=args_template('Searching Slack users: "{name}"', "name"),
+        result_summary=list_summary(
+            ("data", "users"),
+            lambda u: f"{u.get('display_name') or u.get('real_name') or '?'} ({u.get('email') or u.get('id', '?')})",
+            "user",
+        ),
+    )
+    async def search_users(self, name: str, include_bots: bool = False) -> Tuple[bool, str]:
+        """Search for Slack users by name and return their ID, name, and email"""
+        try:
+            if not name or len(name.strip()) < 2:
+                return (False, SlackResponse(
+                    success=False,
+                    error="Search query must be at least 2 characters."
+                ).to_json())
+
+            query = name.strip().casefold()
+            matches: List[Dict[str, Any]] = []
+            seen_ids: set = set()
+            cursor = None
+
+            while True:
+                response = await self.client.users_list(cursor=cursor, limit=1000)
+                slack_response = self._handle_slack_response(response)
+
+                if not slack_response.success or not slack_response.data:
+                    break
+
+                members = slack_response.data.get('members', [])
+                if not members:
+                    break
+
+                for member in members:
+                    if member.get('deleted'):
+                        continue
+                    if not include_bots and member.get('is_bot'):
+                        continue
+
+                    user_id = member.get('id')
+                    if not user_id or user_id in seen_ids:
+                        continue
+
+                    profile = member.get('profile', {}) or {}
+                    names_to_check = [
+                        profile.get('display_name_normalized'),
+                        profile.get('real_name_normalized'),
+                        profile.get('display_name'),
+                        profile.get('real_name'),
+                        member.get('name'),
+                    ]
+
+                    matched = False
+                    for candidate in names_to_check:
+                        if isinstance(candidate, str) and query in candidate.casefold():
+                            matched = True
+                            break
+
+                    if matched:
+                        seen_ids.add(user_id)
+                        matches.append({
+                            'id': user_id,
+                            'name': member.get('name'),
+                            'real_name': member.get('real_name'),
+                            'display_name': profile.get('display_name') or member.get('name') or member.get('real_name'),
+                            'email': profile.get('email'),
+                            'is_bot': member.get('is_bot', False),
+                            'is_admin': member.get('is_admin', False),
+                            'team_id': member.get('team_id'),
+                        })
+
+                response_metadata = slack_response.data.get('response_metadata', {})
+                next_cursor = response_metadata.get('next_cursor')
+                if not next_cursor:
+                    break
+                cursor = next_cursor
+
+            return (True, SlackResponse(
+                success=True,
+                data={"users": matches, "count": len(matches), "query": name.strip()}
+            ).to_json())
+
+        except Exception as e:
+            logger.error(f"Error in search_users: {e}")
             slack_response = self._handle_slack_error(e)
             return (slack_response.success, slack_response.to_json())
 

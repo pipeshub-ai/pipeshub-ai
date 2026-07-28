@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -93,7 +94,9 @@ class TestRegistryBackedStore:
             registry=registry, actor=_actor(), conversation_id="conv_1",
         )
         aid = await store.store("data", tool_name="t")
-        assert aid.startswith("artifact_")
+        # Fallback IDs are plain uuid4 strings (InMemoryArtifactStore), not a
+        # prefixed format.
+        assert uuid.UUID(aid).version == 4
         assert await store.get(aid) == "data"
 
     @pytest.mark.asyncio

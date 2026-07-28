@@ -481,8 +481,9 @@ describe('Enterprise Search Controller', () => {
 
       const upstreamMessage =
         'No documents are available for you to search yet. Upload files in Collections'
-      const errorChunk = `event: error\ndata: ${JSON.stringify({
-        status: 'accessible_records_not_found',
+      const errorChunk = `event: RUN_ERROR\ndata: ${JSON.stringify({
+        type: 'RUN_ERROR',
+        code: 'accessible_records_not_found',
         message: upstreamMessage,
       })}\n\n`
       mockStream.emit('data', Buffer.from(errorChunk))
@@ -4706,9 +4707,10 @@ describe('Enterprise Search Controller', () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
 
       const toolData = { question: 'Which channel?', options: ['#general', '#random'] }
-      const askChunk = `event: ask_user_question\ndata: ${JSON.stringify({
-        status: 'success',
-        toolData,
+      const askChunk = `event: CUSTOM\ndata: ${JSON.stringify({
+        type: 'CUSTOM',
+        name: 'ask_user_question',
+        value: { status: 'success', toolData },
       })}\n\n`
       mockStream.emit('data', Buffer.from(askChunk))
       await new Promise((resolve) => setTimeout(resolve, 50))
@@ -5270,9 +5272,10 @@ describe('Enterprise Search Controller', () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
 
       const toolData = { question: 'Pick a channel', options: ['#general', '#random'] }
-      const askChunk = `event: ask_user_question\ndata: ${JSON.stringify({
-        status: 'success',
-        toolData,
+      const askChunk = `event: CUSTOM\ndata: ${JSON.stringify({
+        type: 'CUSTOM',
+        name: 'ask_user_question',
+        value: { status: 'success', toolData },
       })}\n\n`
       mockStream.emit('data', Buffer.from(askChunk))
       await new Promise((resolve) => setTimeout(resolve, 50))
@@ -5438,7 +5441,7 @@ describe('Enterprise Search Controller', () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
     })
 
-    it('should not include a protocol field in aiPayload for legacy (default) requests', async () => {
+    it('should default to agui and propagate it to Python when protocol is omitted', async () => {
       const handler = streamAgentConversation(createMockAppConfig())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -5463,9 +5466,9 @@ describe('Enterprise Search Controller', () => {
       const promise = handler(req, res)
       await new Promise((resolve) => setTimeout(resolve, 50))
 
-      expect(res.write.firstCall.args[0]).to.include('event: connected')
+      expect(res.write.firstCall.args[0]).to.include('event: CUSTOM')
       const sentBody = JSON.parse((executeStreamStub.thisValues[0] as any).body)
-      expect(sentBody.protocol).to.be.undefined
+      expect(sentBody.protocol).to.equal('agui')
 
       mockStream.emit('end')
       await new Promise((resolve) => setTimeout(resolve, 50))
@@ -6814,7 +6817,7 @@ describe('Enterprise Search Controller', () => {
       await new Promise((resolve) => setTimeout(resolve, 100))
 
       const writeArgs = res.write.args.map((a: any) => a[0]).join('')
-      expect(writeArgs).to.include('error')
+      expect(writeArgs).to.include('RUN_ERROR')
       expect(res.end.called).to.be.true
     })
   })
@@ -6858,7 +6861,7 @@ describe('Enterprise Search Controller', () => {
       await new Promise((resolve) => setTimeout(resolve, 100))
 
       const writeArgs = res.write.args.map((a: any) => a[0]).join('')
-      expect(writeArgs).to.include('error')
+      expect(writeArgs).to.include('RUN_ERROR')
       expect(res.end.called).to.be.true
     })
   })
@@ -8841,7 +8844,7 @@ describe('Enterprise Search Controller', () => {
       await new Promise((resolve) => setTimeout(resolve, 100))
 
       const writeArgs = res.write.args.map((a: any) => a[0]).join('')
-      expect(writeArgs).to.include('error')
+      expect(writeArgs).to.include('RUN_ERROR')
       expect(res.end.called).to.be.true
     })
   })
@@ -8878,7 +8881,7 @@ describe('Enterprise Search Controller', () => {
       await new Promise((resolve) => setTimeout(resolve, 100))
 
       const writeArgs = res.write.args.map((a: any) => a[0]).join('')
-      expect(writeArgs).to.include('error')
+      expect(writeArgs).to.include('RUN_ERROR')
       expect(res.end.called).to.be.true
     })
   })
@@ -11788,7 +11791,7 @@ describe('Enterprise Search Controller', () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
     })
 
-    it('should not include a protocol field in aiPayload for legacy (default) requests', async () => {
+    it('should default to agui and propagate it to Python when protocol is omitted', async () => {
       const handler = streamChat(createMockAppConfig())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -11810,9 +11813,9 @@ describe('Enterprise Search Controller', () => {
       const promise = handler(req, res)
       await new Promise((resolve) => setTimeout(resolve, 50))
 
-      expect(res.write.firstCall.args[0]).to.include('event: connected')
+      expect(res.write.firstCall.args[0]).to.include('event: CUSTOM')
       const sentBody = JSON.parse((executeStreamStub.thisValues[0] as any).body)
-      expect(sentBody.protocol).to.be.undefined
+      expect(sentBody.protocol).to.equal('agui')
 
       mockStream.emit('end')
       await new Promise((resolve) => setTimeout(resolve, 50))

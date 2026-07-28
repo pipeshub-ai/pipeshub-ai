@@ -68,17 +68,15 @@ def frame(event_type: AGUIEventType, **fields: Any) -> dict[str, Any]:
 
 
 def resolve_protocol(protocol_field: str | None, request: "Request") -> str:
-    """Negotiate the SSE wire protocol shared by every `/chat/stream`-shaped
-    route (`agent.py::chat_stream`, `chatbot.py::askAIStream`) — an explicit
-    body field (how Node.js's hand-built outbound request sets it) takes
-    precedence over a `?protocol=` query param (for direct API callers),
-    defaulting to `"legacy"` for absolutely everything else: the Slack bot,
-    internal/service-account routes, and any existing API client keep
-    working with zero changes. The ONLY recognized non-legacy value is
-    `"agui"` — anything else collapses to legacy rather than erroring, so a
-    typo'd param never breaks a request."""
-    value = protocol_field or request.query_params.get("protocol")
-    return "agui" if value == "agui" else "legacy"
+    """Resolve the SSE wire protocol shared by every `/chat/stream`-shaped
+    route (`agent.py::chat_stream`, `chatbot.py::askAIStream`). AG-UI is the
+    only supported protocol: this always returns `"agui"`, independent of
+    the request body field or `?protocol=` query param — there is no
+    legacy fallback to negotiate into. Signature kept unchanged (still
+    takes `protocol_field`/`request`) so call sites don't need to change if
+    protocol negotiation is ever reintroduced."""
+    del protocol_field, request
+    return "agui"
 
 
 __all__ = ["AGUIEventType", "new_id", "frame", "resolve_protocol"]

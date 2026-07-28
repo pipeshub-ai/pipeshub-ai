@@ -257,7 +257,7 @@ class TestMultimodalLLMDetection:
         ):
             r = Retrieval(state=state)
             result = await r.search_internal_knowledge(query="test")
-            assert "Retrieved" in result
+            assert "Top 1 block from 0 records (ranked sample — other records may match)." in result
             mock_flatten.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -290,7 +290,7 @@ class TestMultimodalLLMDetection:
         ):
             r = Retrieval(state=state)
             result = await r.search_internal_knowledge(query="test")
-            assert "Retrieved" in result
+            assert "Top 1 block from 0 records (ranked sample — other records may match)." in result
 
 
 # ============================================================================
@@ -325,7 +325,7 @@ class TestFlattenedResultsEmpty:
         ):
             r = Retrieval(state=state)
             result = await r.search_internal_knowledge(query="test")
-            assert "Retrieved" in result
+            assert "Top 1 block from 0 records (ranked sample — other records may match)." in result
             assert "1" in result
 
 

@@ -23,7 +23,7 @@ class TestGenerateChatStreamViaAgentLoop:
         request.app.container.logger.return_value = MagicMock()
         return request
 
-    async def test_llm_init_failure_yields_error_without_calling_run_chat_stream(self):
+    async def test_llm_init_failure_yields_run_error_without_calling_run_chat_stream(self):
         from app.api.routes.chatbot import ChatQuery, _generate_chat_stream_via_agent_loop
 
         request = self._mock_request({})
@@ -42,7 +42,8 @@ class TestGenerateChatStreamViaAgentLoop:
 
         mock_run_chat_stream.assert_not_called()
         assert len(events) == 1
-        assert "error" in events[0]
+        assert events[0].startswith("event: RUN_ERROR\n")
+        assert '"type": "RUN_ERROR"' in events[0]
 
     async def test_llm_init_failure_with_agui_protocol_yields_run_error(self):
         from app.api.routes.chatbot import ChatQuery, _generate_chat_stream_via_agent_loop
@@ -66,7 +67,7 @@ class TestGenerateChatStreamViaAgentLoop:
         assert events[0].startswith("event: RUN_ERROR\n")
         assert '"type": "RUN_ERROR"' in events[0]
 
-    async def test_protocol_defaults_to_legacy_and_forwards_agui_when_requested(self):
+    async def test_protocol_forwards_agui_when_explicitly_requested(self):
         from app.api.routes.chatbot import ChatQuery, _generate_chat_stream_via_agent_loop
 
         request = self._mock_request({})
@@ -144,7 +145,7 @@ class TestGenerateChatStreamViaAgentLoop:
 
         policy_arg = call_args.args[3]
         assert policy_arg is AGENT_POLICY
-        assert call_args.kwargs["protocol"] == "legacy"
+        assert call_args.kwargs["protocol"] == "agui"
 
     async def test_ollama_provider_keeps_tool_calls_enabled(self):
         """Ollama must not be forced into the no-tools degradation path --

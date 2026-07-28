@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import datetime
 import json
+from typing import Any
+
+from pydantic import BaseModel as _PydanticBaseModel
 
 from app.agent_loop_lib.core.scope import StateSlot
 from app.agent_loop_lib.core.types import (
@@ -24,6 +27,16 @@ stays independently testable.
 None of this is agent *behavior* — it's harness observability plumbing that
 happens to need identity fields off the agent.
 """
+
+
+def _content_to_json(content: Any) -> str:
+    if isinstance(content, _PydanticBaseModel):
+        return content.model_dump_json()
+    try:
+        return json.dumps(content)
+    except (TypeError, ValueError):
+        return str(content)
+
 
 # Not `persist=True`: the sequence counter is meaningless across a
 # checkpoint/resume boundary (the timeline store keeps growing across
@@ -172,7 +185,7 @@ async def write_turn_memory(agent, turn: "AgentTurn", turn_index: int) -> None:
         )
 
     for tr in turn.tool_results:
-        content_str = json.dumps(tr.content) if not isinstance(tr.content, str) else tr.content
+        content_str = _content_to_json(tr.content) if not isinstance(tr.content, str) else tr.content
         summary = f"Tool '{tr.name}' result: {content_str[:500]}"
         await agent.runtime.memory.add(
             content=summary,

@@ -75,6 +75,14 @@ def get_message_content(*args, **kwargs):
     return content
 
 
+def get_json_message_content(flattened, vr_map, **kwargs):
+    """Backward-compatible wrapper for the old json-mode get_message_content:
+    flattens build_message_content_array's list-of-lists into a single list.
+    """
+    parts, _ = build_message_content_array(flattened, vr_map, **kwargs)
+    return [item for sublist in parts for item in sublist]
+
+
 def record_to_message_content(*args, **kwargs):
     """Backward-compatible wrapper: return only content list."""
     content, _ = _record_to_message_content(*args, **kwargs)
@@ -1188,7 +1196,7 @@ class TestGetMessageContent:
             _make_flattened_result(block_index=1, content="Text B"),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "user info", "my query", mode="no_tools")
+        result = get_message_content(flattened, vr_map, "user info", "my query")
         assert isinstance(result, list)
         assert len(result) == 1
         assert result[0]["type"] == "text"
@@ -1199,7 +1207,7 @@ class TestGetMessageContent:
             _make_flattened_result(block_index=0, block_type=BlockType.IMAGE.value, content="data:image/png;base64,abc"),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "query", mode="no_tools")
+        result = get_message_content(flattened, vr_map, "", "query")
         # The image should be skipped, so no block content about image
         text = result[0]["text"]
         assert "data:image" not in text
@@ -1213,7 +1221,7 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "query", mode="no_tools")
+        result = get_message_content(flattened, vr_map, "", "query")
         text = result[0]["text"]
         assert "Table: Table summary here" in text
 
@@ -1223,7 +1231,7 @@ class TestGetMessageContent:
             _make_flattened_result(block_index=0, content="Same"),  # dup
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "query", mode="no_tools")
+        result = get_message_content(flattened, vr_map, "", "query")
         text = result[0]["text"]
         # Should only appear once in chunks
         assert text.count("Same") == 1
@@ -1234,39 +1242,22 @@ class TestGetMessageContent:
             _make_flattened_result(block_index=1, content="Second block"),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
         assert len(result) > 1
-        # First element should have the instructions
         assert result[0]["type"] == "text"
         # Should contain record context and block content
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "First block" in combined
 
-    def test_json_mode_includes_jira_fetch_rule_for_jira_ticket(self):
-        flattened = [_make_flattened_result(block_index=0, content="Ticket body")]
-        vr_map = {
-            "vr-jira": _make_record_blob(
-                virtual_record_id="vr-jira",
-                record_type=RecordType.TICKET.value,
-                connector_name=Connectors.JIRA.value,
-                context_metadata="Record ID: rec-jira",
-            ),
-        }
-        flattened[0]["virtual_record_id"] = "vr-jira"
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
-        instructions = result[0]["text"]
-        assert "story points" in instructions
-        assert "Jira tickets" in instructions
-        assert "<jira_tickets_in_context>" not in instructions
-
     def test_json_mode_no_jira_fetch_rule_without_jira_ticket(self):
         flattened = [_make_flattened_result(block_index=0, content="Doc body")]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
-        instructions = result[0]["text"]
-        assert "Jira tickets" not in instructions
+        result = get_json_message_content(flattened, vr_map)
+        texts = [item["text"] for item in result if item.get("type") == "text"]
+        combined = " ".join(texts)
+        assert "Jira tickets" not in combined
 
     def test_no_tools_mode_omits_jira_fetch_rule_even_with_jira_ticket(self):
         flattened = [_make_flattened_result(block_index=0, content="Ticket body")]
@@ -1278,7 +1269,7 @@ class TestGetMessageContent:
             ),
         }
         flattened[0]["virtual_record_id"] = "vr-jira"
-        result = get_message_content(flattened, vr_map, "user", "query", mode="no_tools")
+        result = get_message_content(flattened, vr_map, "user", "query")
         text = result[0]["text"]
         assert "Jira tickets" not in text
         assert "fetch_full_record" not in text
@@ -1334,30 +1325,12 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": record}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "Record ID       : rec-1" in combined
         assert "Policy Doc" in combined
         assert "High-level overview" in combined
-
-    def test_json_mode_uses_virtual_map_records_when_flattened_empty(self):
-        flattened = []
-        record = _make_record_blob(
-            virtual_record_id="vr-attachment",
-            record_type="SQL_TABLE",
-            block_containers={
-                "blocks": [_make_text_block(index=0, data="Attachment block text")],
-                "block_groups": [],
-            },
-        )
-        vr_map = {"vr-attachment": record}
-
-        result = get_message_content(flattened, vr_map, "user", "explain", mode="json")
-
-        texts = [item["text"] for item in result if item.get("type") == "text"]
-        combined = " ".join(texts)
-        assert "Attachment block text" in combined
 
     def test_json_mode_image_block_data_uri(self):
         flattened = [
@@ -1368,12 +1341,9 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(
+        result = get_json_message_content(
             flattened,
             vr_map,
-            "",
-            "query",
-            mode="json",
             is_multimodal_llm=True,
             from_tool=False,
         )
@@ -1391,7 +1361,7 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "query", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "image description" in combined
@@ -1406,7 +1376,7 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "Table sum" in combined
@@ -1421,7 +1391,7 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         # Table blocks are rendered even when child_results is empty; the
@@ -1437,7 +1407,7 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "table_row" not in combined
@@ -1452,7 +1422,7 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
 
     def test_json_mode_record_numbering_increments(self):
@@ -1464,7 +1434,7 @@ class TestGetMessageContent:
             _make_flattened_result(virtual_record_id="vr-2", block_index=0, content="B"),
         ]
         vr_map = {"vr-1": rec1, "vr-2": rec2}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "A" in combined  # content of first record
@@ -1476,7 +1446,7 @@ class TestGetMessageContent:
             _make_flattened_result(block_index=5, content="Unique"),  # dup
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert combined.count("Unique") == 1
@@ -1486,20 +1456,9 @@ class TestGetMessageContent:
             _make_flattened_result(virtual_record_id="vr-1", block_index=0, content="A"),
         ]
         vr_map = {"vr-1": None}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
-        # Should still return a list (with instructions) but the None record is skipped
+        result = get_json_message_content(flattened, vr_map)
+        # Should still return a list but the None record is skipped
         assert isinstance(result, list)
-
-    def test_json_mode_ends_with_closing_tags(self):
-        flattened = [
-            _make_flattened_result(block_index=0, content="data"),
-        ]
-        vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
-        texts = [item["text"] for item in result if item.get("type") == "text"]
-        combined = " ".join(texts)
-        assert "</record>" in combined
-        assert "</context>" in combined
 
     def test_json_mode_unknown_block_type_skipped(self):
         flattened = [
@@ -1510,31 +1469,18 @@ class TestGetMessageContent:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "custom content" not in combined
 
-    def test_json_mode_sql_tool_section_included_when_has_sql_connector_true(self):
-        """When has_sql_connector=True, the execute_sql_query tool block is rendered."""
-        flattened = [
-            _make_flattened_result(block_index=0, content="data"),
-        ]
-        vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(
-            flattened, vr_map, "", "q", mode="json", has_sql_connector=True
-        )
-        texts = [item["text"] for item in result if item.get("type") == "text"]
-        combined = " ".join(texts)
-        assert "execute_sql_query" in combined
-
     def test_json_mode_sql_tool_section_excluded_when_has_sql_connector_false(self):
-        """Default has_sql_connector=False must suppress the execute_sql_query block."""
+        """execute_sql_query tool instructions are not part of build_message_content_array output."""
         flattened = [
             _make_flattened_result(block_index=0, content="data"),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "", "q", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "execute_sql_query" not in combined
@@ -4031,11 +3977,11 @@ class TestGetMessageContentDeeper:
             "record_name": "TestDoc",
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(flattened, vr_map, "user data", "query", mode="no_tools")
+        result = get_message_content(flattened, vr_map, "user data", "query")
         assert isinstance(result, list)
 
     def test_standard_mode_with_image_block(self):
-        """Lines 1273-1287: Standard mode with image blocks."""
+        """Standard (tool/json-array) mode with image blocks."""
         flattened = [{
             "virtual_record_id": "vr-1",
             "block_index": 0,
@@ -4043,11 +3989,9 @@ class TestGetMessageContentDeeper:
             "content": _VALID_MINIMAL_PNG_DATA_URI,
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(
+        result = get_json_message_content(
             flattened,
             vr_map,
-            "user",
-            "query",
             is_multimodal_llm=True,
             from_tool=False,
         )
@@ -4057,7 +4001,7 @@ class TestGetMessageContentDeeper:
         assert has_image
 
     def test_standard_mode_with_non_base64_image(self):
-        """Lines 1283-1287: Standard mode with image description (not base64)."""
+        """Standard mode with image description (not base64)."""
         flattened = [{
             "virtual_record_id": "vr-1",
             "block_index": 0,
@@ -4065,13 +4009,13 @@ class TestGetMessageContentDeeper:
             "content": "A photo of a sunset",
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         assert any("image description" in t for t in text_parts)
 
     def test_standard_mode_with_table_with_rows(self):
-        """Lines 1288-1301: Standard mode with table block type and child results."""
+        """Standard mode with table block type and child results."""
         flattened = [{
             "virtual_record_id": "vr-1",
             "block_index": 0,
@@ -4080,7 +4024,7 @@ class TestGetMessageContentDeeper:
             "content": ("Table Summary", [{"content": "Row 1", "block_index": 0}]),
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
 
     def test_standard_mode_with_table_no_rows(self):
@@ -4093,7 +4037,7 @@ class TestGetMessageContentDeeper:
             "content": ("Table Summary", []),
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         combined = " ".join(text_parts)
@@ -4101,7 +4045,7 @@ class TestGetMessageContentDeeper:
         assert "Table Summary" in combined
 
     def test_standard_mode_table_row_type(self):
-        """Lines 1312-1316: Standard mode with table_row block type."""
+        """Standard mode with table_row block type."""
         flattened = [{
             "virtual_record_id": "vr-1",
             "block_index": 0,
@@ -4109,14 +4053,14 @@ class TestGetMessageContentDeeper:
             "content": "Row content here",
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         combined = " ".join(text_parts)
         assert "Row content here" not in combined
 
     def test_standard_mode_group_type(self):
-        """Lines 1317-1321: Standard mode with group type block."""
+        """Standard mode with group type block."""
         flattened = [{
             "virtual_record_id": "vr-1",
             "block_index": 0,
@@ -4124,11 +4068,11 @@ class TestGetMessageContentDeeper:
             "content": "List item content",
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
 
     def test_standard_mode_unknown_type(self):
-        """Lines 1322-1326: Standard mode with unknown block type."""
+        """Standard mode with unknown block type."""
         flattened = [{
             "virtual_record_id": "vr-1",
             "block_index": 0,
@@ -4136,14 +4080,14 @@ class TestGetMessageContentDeeper:
             "content": "Custom content",
         }]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         combined = " ".join(text_parts)
         assert "Custom content" not in combined
 
     def test_standard_mode_duplicate_block_skipped(self):
-        """Line 1327-1328: Duplicate block IDs are skipped."""
+        """Duplicate block IDs are skipped."""
         flattened = [
             {"virtual_record_id": "vr-1", "block_index": 0,
              "block_type": "text", "content": "Text 1"},
@@ -4151,14 +4095,14 @@ class TestGetMessageContentDeeper:
              "block_type": "text", "content": "Text 1 duplicate"},
         ]
         vr_map = {"vr-1": {"context_metadata": "Test"}}
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         # Only one occurrence of the block
         text_count = sum(1 for t in text_parts if "Text 1" in t)
         assert text_count == 1
 
     def test_multiple_records(self):
-        """Lines 1247-1252: Multiple virtual records generate </record> tags."""
+        """Multiple virtual records generate </record> tags."""
         flattened = [
             {"virtual_record_id": "vr-1", "block_index": 0,
              "block_type": "text", "content": "Content 1"},
@@ -4169,20 +4113,20 @@ class TestGetMessageContentDeeper:
             "vr-1": {"context_metadata": "Record 1"},
             "vr-2": {"context_metadata": "Record 2"},
         }
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         text_parts = [c["text"] for c in result if isinstance(c, dict) and c.get("type") == "text"]
         # Should have </record> between records
         has_close_tag = any("</record>" in t for t in text_parts)
         assert has_close_tag
 
     def test_null_record_skipped(self):
-        """Line 1255-1256: None record is skipped."""
+        """None record is skipped."""
         flattened = [
             {"virtual_record_id": "vr-1", "block_index": 0,
              "block_type": "text", "content": "Content"},
         ]
         vr_map = {"vr-1": None}
-        result = get_message_content(flattened, vr_map, "user", "query")
+        result = get_json_message_content(flattened, vr_map)
         assert isinstance(result, list)
 
 
@@ -6289,40 +6233,6 @@ class TestBuildMessageContentArraySummaryCitation:
 # ===================================================================
 class TestGetMessageContentSqlTableOnlyInMap:
 
-    def test_appends_sql_table_when_virtual_id_only_in_result_map(self):
-        flattened = [_make_flattened_result(
-            virtual_record_id="vr-main",
-            block_index=0,
-            content="chunk from retrieval",
-        )]
-        sql_extra = _make_record_blob(
-            virtual_record_id="vr-sql-only",
-            id="rec-sql",
-            record_type=RecordType.SQL_TABLE.value,
-            context_metadata="ONLY_IN_MAP_SQL_MARKER",
-            block_containers={"blocks": [], "block_groups": []},
-        )
-        main = _make_record_blob(virtual_record_id="vr-main")
-        vr_map = {"vr-main": main, "vr-sql-only": sql_extra}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
-        texts = [item["text"] for item in result if item.get("type") == "text"]
-        combined = " ".join(texts)
-        assert "ONLY_IN_MAP_SQL_MARKER" in combined
-
-    def test_skips_non_sql_record_only_in_result_map(self):
-        flattened = [_make_flattened_result()]
-        extra = _make_record_blob(
-            virtual_record_id="vr-file-only-map",
-            record_type="FILE",
-            context_metadata="SHOULD_NOT_APPEAR_FOR_FILEONLY",
-            block_containers={"blocks": [], "block_groups": []},
-        )
-        vr_map = {"vr-1": _make_record_blob(), "vr-file-only-map": extra}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
-        texts = [item["text"] for item in result if item.get("type") == "text"]
-        combined = " ".join(texts)
-        assert "SHOULD_NOT_APPEAR_FOR_FILEONLY" not in combined
-
     def test_no_tools_mode_does_not_append_sql_only_in_map(self):
         flattened = [_make_flattened_result()]
         sql_extra = _make_record_blob(
@@ -6332,7 +6242,7 @@ class TestGetMessageContentSqlTableOnlyInMap:
             block_containers={"blocks": [], "block_groups": []},
         )
         vr_map = {"vr-1": _make_record_blob(), "vr-sql-map-only": sql_extra}
-        result = get_message_content(flattened, vr_map, "", "query", mode="no_tools")
+        result = get_message_content(flattened, vr_map, "", "query")
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "NO_TOOLS_SKIP_ME" not in combined
@@ -6378,7 +6288,7 @@ class TestGetMessageContentFKRelations:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "FK Relations" in combined
@@ -6402,7 +6312,7 @@ class TestGetMessageContentFKRelations:
             connector_id="conn-pg",
             context_metadata=context_metadata,
         )}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "POSTGRES" in combined
@@ -6418,7 +6328,7 @@ class TestGetMessageContentFKRelations:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "FK Relations" not in combined
@@ -6450,7 +6360,7 @@ class TestGetMessageContentFKRelations:
             ),
         ]
         vr_map = {"vr-1": _make_record_blob()}
-        result = get_message_content(flattened, vr_map, "user", "query", mode="json")
+        result = get_json_message_content(flattened, vr_map)
         texts = [item["text"] for item in result if item.get("type") == "text"]
         combined = " ".join(texts)
         assert "CREATE TABLE users" in combined

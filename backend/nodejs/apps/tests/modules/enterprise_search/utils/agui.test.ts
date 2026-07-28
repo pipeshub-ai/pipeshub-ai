@@ -22,20 +22,20 @@ describe('AG-UI protocol utils', () => {
       expect(resolveProtocol({ protocol: 'agui' }, { protocol: 'legacy' })).to.equal(AGUI_PROTOCOL)
     })
 
-    it('should default to legacy when neither body nor query specify protocol', () => {
-      expect(resolveProtocol({}, {})).to.equal(LEGACY_PROTOCOL)
+    it('should resolve to agui when neither body nor query specify protocol', () => {
+      expect(resolveProtocol({}, {})).to.equal(AGUI_PROTOCOL)
     })
 
-    it('should default to legacy when body and query are undefined', () => {
-      expect(resolveProtocol(undefined, undefined)).to.equal(LEGACY_PROTOCOL)
+    it('should resolve to agui when body and query are undefined', () => {
+      expect(resolveProtocol(undefined, undefined)).to.equal(AGUI_PROTOCOL)
     })
 
-    it('should collapse an unrecognized protocol value to legacy', () => {
-      expect(resolveProtocol({ protocol: 'ws' }, undefined)).to.equal(LEGACY_PROTOCOL)
+    it('should resolve to agui even when an unrecognized protocol value is sent', () => {
+      expect(resolveProtocol({ protocol: 'ws' }, undefined)).to.equal(AGUI_PROTOCOL)
     })
 
-    it('should collapse a falsy-but-present protocol value to legacy', () => {
-      expect(resolveProtocol({ protocol: '' }, { protocol: 'agui' })).to.equal(LEGACY_PROTOCOL)
+    it('should resolve to agui even when a legacy protocol value is explicitly sent', () => {
+      expect(resolveProtocol({ protocol: 'legacy' }, { protocol: 'agui' })).to.equal(AGUI_PROTOCOL)
     })
   })
 

@@ -84,6 +84,53 @@ _STOP_REASON_TRUNCATED = {"length", "max_tokens"}
 _NETWORK_ERROR_NAME_HINTS = ("connectionerror", "connecttimeout", "readtimeout", "timeouterror", "apitimeouterror", "apiconnectionerror")
 
 
+def _truncate_raw_for_log(raw: Any, max_len: int = 500) -> str:  # noqa: ANN401
+    """Best-effort string preview of the raw LLM response for diagnostics."""
+    try:
+        text = str(raw)
+    except Exception:
+        return "<unrenderable>"
+    if len(text) > max_len:
+        return text[:max_len] + "... [truncated]"
+    return text
+
+
+def _extract_json_from_raw(raw: Any) -> dict[str, Any] | None:
+    """Last-resort extraction: pull JSON from the raw AIMessage content when
+    LangChain's own structured-output parser returns parsed=None.
+
+    Many providers return perfectly valid JSON in the message body that
+    LangChain's parser fails to pick up (e.g. the model wraps it in markdown
+    fences, or the provider's response envelope differs from what the parser
+    expects).  Rather than giving up entirely, we try to salvage it."""
+    import json
+    import re
+
+    text: str | None = None
+    if isinstance(raw, AIMessage):
+        content = raw.content
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = " ".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in content
+            )
+    if not text:
+        return None
+
+    # Strip markdown code fences if the model wrapped its JSON in them.
+    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+    if fence_match:
+        text = fence_match.group(1).strip()
+
+    try:
+        obj = json.loads(text)
+        return obj if isinstance(obj, dict) else None
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
 def _is_network_error(exc: Exception) -> bool:
     if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
         return True
@@ -265,17 +312,38 @@ class LangChainTransport(LLMTransport):
         first (supported by most modern LangChain chat model integrations
         per `BaseChatModel.with_structured_output`'s docstring); fall back
         to a dynamically-built Pydantic model for the providers/versions
-        that require one — see the module docstring in `converters.py`."""
+        that require one — see the module docstring in `converters.py`.
+
+        If both structured attempts yield parsed=None (the LLM returned
+        content but LangChain's parser couldn't map it), we try one more
+        time to manually extract JSON from the raw AIMessage body.  This
+        covers the common case where the model wraps valid JSON in markdown
+        fences or the provider's response envelope surprises LangChain's
+        output parser."""
+        first_attempt_error: Exception | None = None
+        first_raw: Any = None
         try:
             structured_llm = self._llm.with_structured_output(output_schema, include_raw=True)
             result = await structured_llm.ainvoke(lc_messages, config=self._langchain_config())
             parsed = result.get("parsed") if isinstance(result, dict) else None
-            raw = result.get("raw") if isinstance(result, dict) else None
+            first_raw = result.get("raw") if isinstance(result, dict) else None
             if parsed is not None:
-                return parsed, raw
-        except Exception:
-            pass
+                return parsed, first_raw
+            parsing_error = result.get("parsing_error") if isinstance(result, dict) else None
+            logger.warning(
+                "LangChainTransport: raw-schema attempt returned parsed=None; "
+                "parsing_error=%s; raw=%s",
+                parsing_error, _truncate_raw_for_log(first_raw),
+            )
+        except Exception as exc:
+            first_attempt_error = exc
+            logger.warning(
+                "LangChainTransport: raw-schema attempt raised %s: %s",
+                type(exc).__name__, exc,
+            )
 
+        second_raw: Any = None
+        second_parsing_error: Exception | None = None
         try:
             args_model = output_schema_to_pydantic_model(output_schema)
             structured_llm = self._llm.with_structured_output(args_model, include_raw=True)
@@ -283,12 +351,38 @@ class LangChainTransport(LLMTransport):
         except Exception as exc:
             raise self._wrap_error(exc, "complete_structured") from exc
 
-        raw = result.get("raw") if isinstance(result, dict) else None
+        second_raw = result.get("raw") if isinstance(result, dict) else None
         parsed_obj = result.get("parsed") if isinstance(result, dict) else None
+        second_parsing_error = result.get("parsing_error") if isinstance(result, dict) else None
         parsed = parsed_obj.model_dump() if hasattr(parsed_obj, "model_dump") else parsed_obj
-        if parsed is None:
-            raise TransportError("LangChain structured output parsing failed for both raw-schema and Pydantic-model attempts")
-        return parsed, raw
+        if parsed is not None:
+            return parsed, second_raw
+        logger.warning(
+            "LangChainTransport: Pydantic-model attempt also returned parsed=None; "
+            "parsing_error=%s; raw=%s",
+            second_parsing_error, _truncate_raw_for_log(second_raw),
+        )
+
+        best_raw = second_raw or first_raw
+        manual = _extract_json_from_raw(best_raw)
+        if manual is not None:
+            logger.info(
+                "LangChainTransport: recovered structured output via manual "
+                "JSON extraction from raw AIMessage content",
+            )
+            return manual, best_raw
+
+        raw_preview = _truncate_raw_for_log(best_raw)
+        parts = [
+            "LangChain structured output parsing failed for both raw-schema and "
+            "Pydantic-model attempts",
+        ]
+        if first_attempt_error:
+            parts.append(f"first attempt error: {first_attempt_error}")
+        if second_parsing_error:
+            parts.append(f"second attempt parsing_error: {second_parsing_error}")
+        parts.append(f"raw response: {raw_preview}")
+        raise TransportError("; ".join(parts))
 
     async def stream(
         self,

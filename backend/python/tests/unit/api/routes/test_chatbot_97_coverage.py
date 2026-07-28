@@ -89,31 +89,24 @@ class TestAskAIStreamHTTPExceptionStringDetail:
     @pytest.mark.asyncio
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
     async def test_http_exception_string_detail(self, mock_get_llm):
-        """HTTPException with string detail emits string error event."""
+        """HTTPException with string detail during LLM init emits an AG-UI RUN_ERROR event."""
         from app.api.routes.chatbot import askAIStream
 
-        mock_llm = MagicMock()
-        config = {"provider": "openai", "isMultimodal": False, "contextLength": 4096}
-        mock_get_llm.return_value = (mock_llm, config, {})
+        mock_get_llm.side_effect = HTTPException(status_code=404, detail="Not found")
 
         mock_request = MagicMock()
         mock_request.state.user = {"orgId": "org-1", "userId": "user-1"}
         mock_request.query_params = {"sendUserInfo": True}
-        mock_request.json = AsyncMock(return_value={"query": "test", "quickMode": True})
+        mock_request.json = AsyncMock(
+            return_value={"query": "test", "quickMode": True, "protocol": "agui"}
+        )
         mock_container = MagicMock()
         mock_container.logger.return_value = MagicMock()
         mock_request.app.container = mock_container
 
-        mock_retrieval = AsyncMock()
-        mock_retrieval.search_with_filters = AsyncMock(return_value={
-            "searchResults": [],
-            "status_code": 404,
-            "message": "Not found",
-        })
-
         response = await askAIStream(
             request=mock_request,
-            retrieval_service=mock_retrieval,
+            retrieval_service=AsyncMock(),
             graph_provider=AsyncMock(),
             config_service=AsyncMock(),
         )
@@ -123,7 +116,9 @@ class TestAskAIStreamHTTPExceptionStringDetail:
             events.append(chunk)
 
         combined = "".join(events)
-        assert "error" in combined
+        assert "RUN_ERROR" in combined
+        assert "Not found" in combined
+        assert "llm_initialization_failed" in combined
 
 
 # ===================================================================
@@ -189,32 +184,27 @@ class TestAskAIStreamHTTPExceptionDictDetail:
     @pytest.mark.asyncio
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
     async def test_http_exception_dict_detail(self, mock_get_llm):
-        """HTTPException with dict detail emits structured error."""
+        """HTTPException with dict detail during LLM init emits an AG-UI RUN_ERROR event with the detail serialized in the message."""
         from app.api.routes.chatbot import askAIStream
 
-        mock_llm = MagicMock()
-        config = {"provider": "openai", "isMultimodal": False, "contextLength": 4096}
-        mock_get_llm.return_value = (mock_llm, config, {})
+        mock_get_llm.side_effect = HTTPException(
+            status_code=202,
+            detail={"status": "indexing", "message": "Still processing"},
+        )
 
         mock_request = MagicMock()
         mock_request.state.user = {"orgId": "org-1", "userId": "user-1"}
         mock_request.query_params = {"sendUserInfo": True}
-        mock_request.json = AsyncMock(return_value={"query": "test", "quickMode": True})
+        mock_request.json = AsyncMock(
+            return_value={"query": "test", "quickMode": True, "protocol": "agui"}
+        )
         mock_container = MagicMock()
         mock_container.logger.return_value = MagicMock()
         mock_request.app.container = mock_container
 
-        mock_retrieval = AsyncMock()
-        mock_retrieval.search_with_filters = AsyncMock(return_value={
-            "searchResults": [],
-            "status_code": 202,
-            "status": "indexing",
-            "message": "Still processing",
-        })
-
         response = await askAIStream(
             request=mock_request,
-            retrieval_service=mock_retrieval,
+            retrieval_service=AsyncMock(),
             graph_provider=AsyncMock(),
             config_service=AsyncMock(),
         )
@@ -224,7 +214,9 @@ class TestAskAIStreamHTTPExceptionDictDetail:
             events.append(chunk)
 
         combined = "".join(events)
-        assert "error" in combined
+        assert "RUN_ERROR" in combined
+        assert "indexing" in combined
+        assert "llm_initialization_failed" in combined
 
 
 # ===================================================================
@@ -245,7 +237,7 @@ class TestAskAIStreamGenericError:
         mock_request = MagicMock()
         mock_request.state.user = {"orgId": "org-1", "userId": "user-1"}
         mock_request.query_params = {"sendUserInfo": True}
-        mock_request.json = AsyncMock(return_value={"query": "test"})
+        mock_request.json = AsyncMock(return_value={"query": "test", "protocol": "agui"})
         mock_container = MagicMock()
         mock_container.logger.return_value = MagicMock()
         mock_request.app.container = mock_container
@@ -262,7 +254,9 @@ class TestAskAIStreamGenericError:
             events.append(chunk)
 
         combined = "".join(events)
-        assert "error" in combined
+        assert "RUN_ERROR" in combined
+        assert "unexpected crash" in combined
+        assert "llm_initialization_failed" in combined
 
 
 # ===================================================================
@@ -283,7 +277,7 @@ class TestAskAIStreamHTTPExceptionNonDictDetail:
         mock_request = MagicMock()
         mock_request.state.user = {"orgId": "org-1", "userId": "user-1"}
         mock_request.query_params = {"sendUserInfo": True}
-        mock_request.json = AsyncMock(return_value={"query": "test"})
+        mock_request.json = AsyncMock(return_value={"query": "test", "protocol": "agui"})
         mock_container = MagicMock()
         mock_container.logger.return_value = MagicMock()
         mock_request.app.container = mock_container
@@ -300,7 +294,9 @@ class TestAskAIStreamHTTPExceptionNonDictDetail:
             events.append(chunk)
 
         combined = "".join(events)
-        assert "error" in combined
+        assert "RUN_ERROR" in combined
+        assert "Service unavailable string" in combined
+        assert "llm_initialization_failed" in combined
 
     @pytest.mark.asyncio
     @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
@@ -313,7 +309,7 @@ class TestAskAIStreamHTTPExceptionNonDictDetail:
         mock_request = MagicMock()
         mock_request.state.user = {"orgId": "org-1", "userId": "user-1"}
         mock_request.query_params = {"sendUserInfo": True}
-        mock_request.json = AsyncMock(return_value={"query": "test"})
+        mock_request.json = AsyncMock(return_value={"query": "test", "protocol": "agui"})
         mock_container = MagicMock()
         mock_container.logger.return_value = MagicMock()
         mock_request.app.container = mock_container
@@ -330,7 +326,9 @@ class TestAskAIStreamHTTPExceptionNonDictDetail:
             events.append(chunk)
 
         combined = "".join(events)
-        assert "error" in combined
+        assert "RUN_ERROR" in combined
+        assert "500: Internal Server Error" in combined
+        assert "llm_initialization_failed" in combined
 
 
 # ===================================================================

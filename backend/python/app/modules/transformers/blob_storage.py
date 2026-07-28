@@ -944,7 +944,7 @@ class BlobStorage(Transformer):
                             if data.get("record"):
                                 record = self._process_downloaded_record(data)
                                 record_name = record.get("record_name")
-                                self.logger.info("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
+                                self.logger.debug("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
                                 return record
                             elif data.get("signedUrl"):
                                 signed_url = data.get("signedUrl")
@@ -990,7 +990,7 @@ class BlobStorage(Transformer):
                                 if data.get("record"):
                                     record = self._process_downloaded_record(data)
                                     record_name = record.get("record_name")
-                                    self.logger.info("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
+                                    self.logger.debug("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
                                     return record
                                 else:
                                     self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)

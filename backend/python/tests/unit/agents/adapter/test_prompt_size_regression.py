@@ -122,26 +122,26 @@ _MID_CHAR_CEILINGS: dict[str, int] = {
 # tool parameter description instead).
 #
 # Baseline sizes / ceilings with ~10% headroom:
-#   no_sources:            4,086 →  4,500
+#   no_sources:            4,568 →  5,050
 #   kb_only:               7,191 →  7,950
 #   kb_plus_3_apps:        7,400 →  8,150
 #   duplicate_apps:        7,437 →  8_200
 #   web_search_mode:       5,603 →  6,200
 #   kb_plus_service_tools: 7,846 →  8,650
-#   run_code_no_web:       5,105 →  5,650
+#   run_code_no_web:       5,768 →  6,350
 #   composed_agents:       8,602 →  9,500
 #   service_only:          4,871 →  5,400
 #   lazy_with_pinned:      9,006 →  9,950
 #   kb_with_full_record:   8,391 →  9,250
 # ---------------------------------------------------------------------------
 _FRONTIER_CHAR_CEILINGS: dict[str, int] = {
-    "no_sources":            4_500,
+    "no_sources":            5_050,
     "kb_only":               7_950,
     "kb_plus_3_apps":        8_150,
     "duplicate_apps":        8_200,
     "web_search_mode":       6_200,
     "kb_plus_service_tools": 8_650,
-    "run_code_no_web":       5_650,
+    "run_code_no_web":       6_350,
     "composed_agents":       9_500,
     "service_only":          5_400,
     "lazy_with_pinned":      9_950,

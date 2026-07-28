@@ -5321,14 +5321,12 @@ components:
           type: string
           enum:
             - agui
-            - legacy
           description: |
-            Wire-protocol negotiation for the SSE response. When `agui`, the
-            stream frames events using the AG-UI vocabulary (`RUN_STARTED`,
-            `TEXT_MESSAGE_CONTENT`, etc. — see `AssistantStreamSSEEvent`).
-            When omitted or `legacy`, the classic event names (`connected`,
-            `answer_chunk`, `complete`, `error`) are used. Legacy is
-            maintained for backward compatibility with existing clients.
+            AG-UI is the only supported wire protocol. When present must be
+            `"agui"`. Omitting the field is equivalent — the server always
+            uses the AG-UI vocabulary (`RUN_STARTED`, `TEXT_MESSAGE_CONTENT`,
+            etc.). Kept in the schema for backward compatibility with callers
+            that already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
 
@@ -5468,14 +5466,12 @@ components:
           type: string
           enum:
             - agui
-            - legacy
           description: |
-            Wire-protocol negotiation for the SSE response. When `agui`, the
-            stream frames events using the AG-UI vocabulary (see
-            `AgentStreamSSEEvent`). When omitted or `legacy`, the classic
-            event names (`connected`, `answer_chunk`, `complete`, `error`)
-            are used. Legacy is maintained for backward compatibility with
-            existing clients.
+            AG-UI is the only supported wire protocol. When present must be
+            `"agui"`. Omitting the field is equivalent — the server always
+            uses the AG-UI vocabulary (see `AgentStreamSSEEvent`). Kept in
+            the schema for backward compatibility with callers that already
+            send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
       example:
@@ -5589,13 +5585,11 @@ components:
           type: string
           enum:
             - agui
-            - legacy
           description: |
-            Wire-protocol negotiation for the SSE response. When `agui`, the
-            stream frames events using the AG-UI vocabulary. When omitted or
-            `legacy`, the classic event names (`connected`, `answer_chunk`,
-            `complete`, `error`) are used. Legacy is maintained for backward
-            compatibility with existing clients.
+            AG-UI is the only supported wire protocol. When present must be
+            `"agui"`. Omitting the field is equivalent — the server always
+            uses the AG-UI vocabulary. Kept in the schema for backward
+            compatibility with callers that already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
 
@@ -5663,14 +5657,12 @@ components:
           type: string
           enum:
             - agui
-            - legacy
           description: |
-            Wire-protocol negotiation for the SSE response. When `agui`, the
-            stream frames events using the AG-UI vocabulary (see
-            `AssistantMessageStreamSSEEvent`). When omitted or `legacy`, the
-            classic event names (`connected`, `answer_chunk`, `complete`,
-            `error`) are used. Legacy is maintained for backward
-            compatibility with existing clients.
+            AG-UI is the only supported wire protocol. When present must be
+            `"agui"`. Omitting the field is equivalent — the server always
+            uses the AG-UI vocabulary (see `AssistantMessageStreamSSEEvent`).
+            Kept in the schema for backward compatibility with callers that
+            already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
 
@@ -5816,14 +5808,12 @@ components:
           type: string
           enum:
             - agui
-            - legacy
           description: |
-            Wire-protocol negotiation for the SSE response. When `agui`, the
-            stream frames events using the AG-UI vocabulary (see
-            `AgentMessageStreamSSEEvent`). When omitted or `legacy`, the
-            classic event names (`connected`, `answer_chunk`, `complete`,
-            `error`) are used. Legacy is maintained for backward
-            compatibility with existing clients.
+            AG-UI is the only supported wire protocol. When present must be
+            `"agui"`. Omitting the field is equivalent — the server always
+            uses the AG-UI vocabulary (see `AgentMessageStreamSSEEvent`).
+            Kept in the schema for backward compatibility with callers that
+            already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
       example:
@@ -9972,15 +9962,12 @@ components:
       additionalProperties: false
       description: |
         SSE event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate`.
-        The event vocabulary depends on the `protocol` field sent in the
-        regenerate request body.
+        AG-UI is the sole wire protocol.
 
-        **AG-UI protocol** (`protocol: "agui"`) — primary, recommended.
         `event` carries the AG-UI type name and `data` is a JSON object that
         includes a `"type"` field matching `event`, plus type-specific
-        fields (`runId`, `delta`, `toolCallId`, etc. — see
-        `AGUIWireEventType` in the frontend types for the full field
-        reference). Stable top-level outcomes:
+        fields (`runId`, `delta`, `toolCallId`, etc.). Stable top-level
+        outcomes:
 
         - `RUN_FINISHED` returns `{ type, runId, threadId, result }` where
           `result` is `{ conversation, recordsUsed, meta }` — the updated
@@ -9990,24 +9977,12 @@ components:
           lookup failures, unauthorized conversation access, and regenerate
           rule failures such as "not the last message" are reported here.
 
-        **Legacy protocol** (no `protocol` field, or `protocol: "legacy"`)
-        — deprecated, kept for backward compatibility with existing
-        clients. `data` is a JSON-encoded string:
-
-        - `connected` confirms the stream is open.
-        - `complete` returns the updated conversation plus request metadata
-          after the regenerated bot response is persisted.
-        - `error` returns a failure message. Conversation lookup failures,
-          unauthorized conversation access, and regenerate rule failures such
-          as "not the last message" are reported here after the stream starts.
-
         Other events are forwarded from the agent backend and should be
         treated as informational updates.
       properties:
         event:
           type: string
           enum:
-            # AG-UI protocol (primary)
             - RUN_STARTED
             - RUN_FINISHED
             - RUN_ERROR
@@ -10029,35 +10004,19 @@ components:
             - STATE_SNAPSHOT
             - CUSTOM
             - HEARTBEAT
-            # Legacy protocol (deprecated)
-            - connected
-            - status
-            - tool_calls
-            - tool_call
-            - tool_success
-            - tool_error
-            - tool_result
-            - tool_execution_complete
-            - answer_chunk
-            - restreaming
-            - metadata
-            - complete
-            - error
         data:
           type: string
           description: |
-            JSON-encoded event payload. For AG-UI events the decoded JSON
-            includes a `"type"` field matching `event`, plus type-specific
-            fields; for legacy events the decoded JSON is the raw
-            event-specific payload. Shape depends on `event`.
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`.
 
     SSEEvent:
       type: object
       description: |
-        Server-Sent Event envelope for streaming chat responses. The event
-        vocabulary depends on the `protocol` field sent in the request body.
+        Server-Sent Event envelope for streaming chat responses. AG-UI is
+        the sole wire protocol.
 
-        **AG-UI protocol** (`protocol: "agui"`) — primary, recommended.
         `event` carries the AG-UI type name and `data` is a JSON-encoded
         object that includes a `"type"` field matching `event`, plus
         type-specific fields. Stable top-level outcomes:
@@ -10069,32 +10028,12 @@ components:
           and optional `code`. The conversation row is marked FAILED before
           the stream closes.
 
-        **Legacy protocol** (no `protocol` field, or `protocol: "legacy"`)
-        — deprecated, kept for backward compatibility with existing
-        clients. `data` is a JSON-encoded string; three events are emitted
-        by the API layer and have stable shapes documented on the
-        streaming routes:
-
-        - `connected` — fired once on connection. Carries the newly created
-          `conversationId` and `title` so the client can link the stream to
-          a row before any tokens arrive.
-        - `complete` — fired once after the AI backend finishes. Carries the
-          full persisted `conversation` and a `meta` block with `requestId`,
-          `timestamp` and `duration`.
-        - `error` — fired when the stream fails. Carries an `error` message
-          and optional `details`. The conversation row is marked FAILED
-          before the stream closes.
-
-        All other events are forwarded verbatim from the AI backend; their
-        payloads are AI-backend defined and may evolve. Currently observed
-        legacy names include `status`, `answer_chunk`, `tool_call`,
-        `tool_calls`, `tool_result`, `tool_success`, `tool_error`,
-        `tool_execution_complete`, `restreaming`, and `metadata`.
+        Clients should ignore unknown event names rather than treating them
+        as errors.
       properties:
         event:
           type: string
           enum:
-            # AG-UI protocol (primary)
             - RUN_STARTED
             - RUN_FINISHED
             - RUN_ERROR
@@ -10116,36 +10055,20 @@ components:
             - STATE_SNAPSHOT
             - CUSTOM
             - HEARTBEAT
-            # Legacy protocol (deprecated)
-            - connected
-            - status
-            - answer_chunk
-            - tool_call
-            - tool_calls
-            - tool_result
-            - tool_success
-            - tool_error
-            - tool_execution_complete
-            - restreaming
-            - metadata
-            - complete
-            - error
         data:
           type: string
           description: |
-            JSON-encoded event payload. For AG-UI events the decoded JSON
-            includes a `"type"` field matching `event`, plus type-specific
-            fields; for legacy events the decoded JSON is the raw
-            event-specific payload. Shape depends on `event`.
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`.
 
     AssistantStreamSSEEvent:
       type: object
       description: |
         Server-Sent Event envelope for non-agent assistant chat streams
-        (`internal_search` / `web_search` chat modes). The event vocabulary
-        depends on the `protocol` field sent in the request body.
+        (`internal_search` / `web_search` chat modes). AG-UI is the sole
+        wire protocol.
 
-        **AG-UI protocol** (`protocol: "agui"`) — primary, recommended.
         `event` carries the AG-UI type name and `data` is a JSON-encoded
         object that includes a `"type"` field matching `event`, plus
         type-specific fields. `STEP_STARTED` / `STEP_FINISHED` are not
@@ -10164,46 +10087,12 @@ components:
           and optional `code`; the conversation row is marked FAILED
           before close.
 
-        **Legacy protocol** (no `protocol` field, or `protocol: "legacy"`)
-        — deprecated, kept for backward compatibility with existing
-        clients. `data` is a JSON-encoded string. Three events are emitted
-        by the API layer with stable, server-defined shapes:
-
-        - `connected` — `{ "message": string, "conversationId": string,
-          "title": string }`. Fired once on connection so the client can link
-          the stream to the new row before any tokens arrive.
-        - `complete` — `{ "conversation": Conversation,
-          "meta": { "requestId": string, "timestamp": string,
-          "duration": number } }`. Fired once after the AI backend finishes.
-        - `error` — `{ "error": string, "details"?: string }`. Fired when the
-          stream fails; the conversation row is marked FAILED before close.
-
-        The remaining legacy events are forwarded from the Python query
-        service. Their payloads are AI-backend defined and may evolve:
-
-        - `status` — progress message describing the current pipeline stage
-          (for example `started`, `searching`, `processing`, `checking_tools`,
-          `generating_answer`, `transforming`).
-        - `answer_chunk` — incremental token batch with running `accumulated`
-          text and any new `citations`.
-        - `tool_calls` — the assistant requested one or more tool calls.
-          Carries the assistant message that triggered the tool round.
-        - `tool_call` — emitted once per individual tool invocation as it
-          starts. Payload includes `tool_name`, `tool_args`, and `call_id`.
-        - `tool_success` — a tool finished successfully. Payload includes
-          `tool_name`, `summary`, `call_id`, and any `record_info`.
-        - `tool_error` — a tool invocation failed. Payload includes
-          `tool_name`, `error`, and `call_id`.
-        - `restreaming` — the LLM is being restarted with new context, for
-          example before a citation-verification pass.
-
         Clients should ignore unknown event names rather than treating them
         as errors.
       properties:
         event:
           type: string
           enum:
-            # AG-UI protocol (primary)
             - RUN_STARTED
             - RUN_FINISHED
             - RUN_ERROR
@@ -10223,23 +10112,11 @@ components:
             - STATE_SNAPSHOT
             - CUSTOM
             - HEARTBEAT
-            # Legacy protocol (deprecated)
-            - connected
-            - status
-            - answer_chunk
-            - tool_calls
-            - tool_call
-            - tool_success
-            - tool_error
-            - restreaming
-            - complete
-            - error
         data:
           type: string
           description: |
-            JSON-encoded event payload. For AG-UI events the decoded JSON
-            includes a `"type"` field matching `event`, plus type-specific
-            fields; for legacy events the decoded JSON is the raw
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
             event-specific payload. Shape depends on `event`.
 
     AssistantMessageStreamSSEEvent:
@@ -10247,13 +10124,11 @@ components:
       description: |
         Server-Sent Event envelope for non-agent assistant follow-up message
         streams (`internal_search` / `web_search` chat modes) on an existing
-        conversation. The event vocabulary depends on the `protocol` field
-        sent in the request body; it is otherwise the same vocabulary as the
-        conversation-creation stream — only the connection/completion
-        payloads differ because the conversation already exists when this
-        route is called.
+        conversation. AG-UI is the sole wire protocol; the vocabulary is the
+        same as the conversation-creation stream — only the
+        connection/completion payloads differ because the conversation
+        already exists when this route is called.
 
-        **AG-UI protocol** (`protocol: "agui"`) — primary, recommended.
         `event` carries the AG-UI type name and `data` is a JSON-encoded
         object that includes a `"type"` field matching `event`, plus
         type-specific fields. `STEP_STARTED` / `STEP_FINISHED` are not
@@ -10271,50 +10146,12 @@ components:
           and optional `code`; the conversation row is marked FAILED
           before close.
 
-        **Legacy protocol** (no `protocol` field, or `protocol: "legacy"`)
-        — deprecated, kept for backward compatibility with existing
-        clients. `data` is a JSON-encoded string. Three events are emitted
-        by the API layer with stable, server-defined shapes:
-
-        - `connected` — `{ "message": string }`. Fired once on connection.
-          No `conversationId` or `title` is included because the caller
-          already passed the conversation ID in the URL.
-        - `complete` — `{ "conversation": Conversation, "recordsUsed": number,
-          "meta": { "requestId": string, "timestamp": string,
-          "duration": number, "recordsUsed": number } }`. Fired once after
-          the AI backend finishes. `recordsUsed` is the count of citations
-          attached to the new assistant message.
-        - `error` — `{ "error": string, "details"?: string }`. Fired when the
-          stream fails; the conversation row is marked FAILED before close.
-
-        The remaining legacy events are forwarded from the Python query
-        service. Their payloads are AI-backend defined and may evolve:
-
-        - `status` — progress message describing the current pipeline stage
-          (for example `started`, `transforming`, `searching`, `processing`,
-          `checking_tools`, `generating_answer`). `transforming` is common on
-          this route because follow-up turns always have prior history to
-          rewrite the query against.
-        - `answer_chunk` — incremental token batch with running `accumulated`
-          text and any new `citations`.
-        - `tool_calls` — the assistant requested one or more tool calls.
-          Carries the assistant message that triggered the tool round.
-        - `tool_call` — emitted once per individual tool invocation as it
-          starts. Payload includes `tool_name`, `tool_args`, and `call_id`.
-        - `tool_success` — a tool finished successfully. Payload includes
-          `tool_name`, `summary`, `call_id`, and any `record_info`.
-        - `tool_error` — a tool invocation failed. Payload includes
-          `tool_name`, `error`, and `call_id`.
-        - `restreaming` — the LLM is being restarted with new context, for
-          example before a citation-verification pass.
-
         Clients should ignore unknown event names rather than treating them
         as errors.
       properties:
         event:
           type: string
           enum:
-            # AG-UI protocol (primary)
             - RUN_STARTED
             - RUN_FINISHED
             - RUN_ERROR
@@ -10334,33 +10171,19 @@ components:
             - STATE_SNAPSHOT
             - CUSTOM
             - HEARTBEAT
-            # Legacy protocol (deprecated)
-            - connected
-            - status
-            - answer_chunk
-            - tool_calls
-            - tool_call
-            - tool_success
-            - tool_error
-            - restreaming
-            - complete
-            - error
         data:
           type: string
           description: |
-            JSON-encoded event payload. For AG-UI events the decoded JSON
-            includes a `"type"` field matching `event`, plus type-specific
-            fields; for legacy events the decoded JSON is the raw
-            event-specific payload. Shape depends on `event`.
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`.
 
     AgentStreamSSEEvent:
       type: object
       description: |
         SSE event envelope for `POST /agents/{agentKey}/conversations/stream`.
-        The event vocabulary depends on the `protocol` field sent in the
-        request body.
+        AG-UI is the sole wire protocol.
 
-        **AG-UI protocol** (`protocol: "agui"`) — primary, recommended.
         `event` carries the AG-UI type name and `data` is a JSON-encoded
         object that includes a `"type"` field matching `event`, plus
         type-specific fields. Unlike the non-agent assistant routes,
@@ -10369,18 +10192,12 @@ components:
         emitted here when `chatMode` spawns domain sub-agents (`react`,
         `deep`, `planExecute`).
 
-        **Legacy protocol** (no `protocol` field, or `protocol: "legacy"`)
-        — deprecated, kept for backward compatibility with existing
-        clients. `data` is a JSON-encoded string using the classic event
-        names below.
+        Clients should ignore unknown event names rather than treating them
+        as errors.
       properties:
         event:
           type: string
-          description: |
-            SSE event name. See the enum for possible values; the
-            applicable subset depends on the negotiated `protocol`.
           enum:
-            # AG-UI protocol (primary)
             - RUN_STARTED
             - RUN_FINISHED
             - RUN_ERROR
@@ -10402,36 +10219,19 @@ components:
             - STATE_SNAPSHOT
             - CUSTOM
             - HEARTBEAT
-            # Legacy protocol (deprecated)
-            - connected
-            - status
-            - tool_calls
-            - tool_call
-            - tool_success
-            - tool_error
-            - tool_result
-            - tool_execution_complete
-            - answer_chunk
-            - restreaming
-            - metadata
-            - complete
-            - error
         data:
           type: string
           description: |
-            JSON-encoded event payload. For AG-UI events the decoded JSON
-            includes a `"type"` field matching `event`, plus type-specific
-            fields; for legacy events the decoded JSON is the raw
-            event-specific payload. Shape depends on `event`.
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`.
 
     AgentMessageStreamSSEEvent:
       type: object
       description: |
         Server-Sent Event envelope for `POST /agents/{agentKey}/conversations/{conversationId}/messages/stream`.
-        The event vocabulary depends on the `protocol` field sent in the
-        request body.
+        AG-UI is the sole wire protocol.
 
-        **AG-UI protocol** (`protocol: "agui"`) — primary, recommended.
         `event` carries the AG-UI type name and `data` is a JSON-encoded
         object that includes a `"type"` field matching `event`, plus
         type-specific fields. `STEP_STARTED` / `STEP_FINISHED` (and nested
@@ -10449,44 +10249,12 @@ components:
           already started, including conversation lookup failures, upstream
           AI startup failures, save failures, and stream transport errors.
 
-        **Legacy protocol** (no `protocol` field, or `protocol: "legacy"`)
-        — deprecated, kept for backward compatibility with existing
-        clients. `data` is a JSON-encoded string. Three events have stable
-        API-defined payloads:
-
-        - `connected` — `{ "message": "SSE connection established" }`. Fired once
-          after the SSE stream opens. No `conversationId` is included because it is already
-          present in the request path.
-        - `complete` — `{ "conversation": AgentConversation, "recordsUsed": number,
-          "meta": { "requestId": string, "timestamp": string, "duration": number,
-          "recordsUsed": number } }`. Fired once after the upstream AI `complete` payload
-          is parsed, citations are saved, and the updated conversation is persisted.
-        - `error` — `{ "error": string, "details"?: string }`. Fired for runtime failures
-          after the stream has already started, including conversation lookup failures,
-          upstream AI startup failures, save failures, and stream transport errors.
-
-        All other legacy events are forwarded from the upstream agent
-        backend. Common event names:
-
-        - `status` — progress update for the current agent phase.
-        - `answer_chunk` — incremental token batch with running accumulated text.
-        - `tool_calls` / `tool_call` / `tool_success` / `tool_error` / `tool_result` /
-          `tool_execution_complete` — tool lifecycle events emitted by the upstream agent.
-        - `restreaming` — the upstream agent restarted generation with refreshed context.
-        - `metadata` — auxiliary metadata or keep-alive payload from the upstream agent.
-
-        Important wire behavior (legacy protocol only):
-
-        - The upstream agent's `complete` event is consumed server-side and replaced with the
-          API-defined `complete` event above.
-        - If the upstream `complete` payload cannot be parsed as JSON, the raw upstream
-          `complete` frame is forwarded unchanged instead.
-        - Unknown future event names may appear and should be ignored by clients.
+        Clients should ignore unknown event names rather than treating them
+        as errors.
       properties:
         event:
           type: string
           enum:
-            # AG-UI protocol (primary)
             - RUN_STARTED
             - RUN_FINISHED
             - RUN_ERROR
@@ -10508,27 +10276,12 @@ components:
             - STATE_SNAPSHOT
             - CUSTOM
             - HEARTBEAT
-            # Legacy protocol (deprecated)
-            - connected
-            - status
-            - tool_calls
-            - tool_call
-            - tool_success
-            - tool_error
-            - tool_result
-            - tool_execution_complete
-            - answer_chunk
-            - restreaming
-            - metadata
-            - complete
-            - error
         data:
           type: string
           description: |
-            JSON-encoded event payload. For AG-UI events the decoded JSON
-            includes a `"type"` field matching `event`, plus type-specific
-            fields; for legacy events the decoded JSON is the raw
-            event-specific payload. Shape depends on `event`.
+            JSON-encoded event payload. The decoded JSON includes a `"type"`
+            field matching `event`, plus type-specific fields. Shape depends
+            on `event`.
 
     # ==================== CONVERSATIONAL SPEECH SCHEMAS ====================
     SpeakRequest:

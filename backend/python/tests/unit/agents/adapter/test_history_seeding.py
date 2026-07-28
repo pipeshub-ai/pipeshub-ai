@@ -13,7 +13,18 @@ calls."""
 from __future__ import annotations
 
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage, UserMessage
+from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.factory import PipesHubAgentFactory, _convert_conversation_turn
+
+
+def _make_context(**overrides: object) -> AgentContext:
+    defaults: dict[str, object] = {
+        "org_id": "org-1",
+        "user_id": "user-1",
+        "user_email": "u@example.com",
+    }
+    defaults.update(overrides)
+    return AgentContext(**defaults)
 
 
 class TestConvertConversationTurn:
@@ -230,7 +241,9 @@ class TestSeedConversationHistory:
             {"role": "user_query", "content": "thanks"},
         ]
 
-        await PipesHubAgentFactory._seed_conversation_history(agent, previous_conversations)
+        await PipesHubAgentFactory._seed_conversation_history(
+            agent, previous_conversations, _make_context()
+        )
 
         messages = await agent.context.messages()
         assert len(messages) == 5
@@ -243,6 +256,6 @@ class TestSeedConversationHistory:
     async def test_empty_history_yields_empty_context(self) -> None:
         agent = _FakeAgent()
 
-        await PipesHubAgentFactory._seed_conversation_history(agent, [])
+        await PipesHubAgentFactory._seed_conversation_history(agent, [], _make_context())
 
         assert await agent.context.messages() == []

@@ -25,7 +25,7 @@ class TestSearchInternalKnowledgeArgsSummary:
 
     def test_query_and_connector_ids(self) -> None:
         summary = args_summary({"query": "bug bash", "connector_ids": ["c1", "c2"]})
-        assert summary == 'Searched for "bug bash" in 2 sources'
+        assert summary == 'Searched for "bug bash"\n2 sources'
 
     def test_missing_query_returns_none(self) -> None:
         assert args_summary({}) is None

@@ -122,11 +122,8 @@ class ChatQuery(BaseModel):
     callerEmail: str | None = None
     attachments: list[dict[str, Any]] = []
     # AG-UI protocol negotiation (see the migration plan) — Node.js sets
-    # this explicitly on the outbound request body (it hand-builds the
-    # request, so header passthrough alone never reaches here); absent/
-    # anything other than "agui" keeps today's event names. Also readable
-    # as a `?protocol=` query param for direct API callers — see
-    # `_resolve_protocol` below.
+    # AG-UI is the only supported SSE wire protocol. This field is
+    # accepted but ignored — `resolve_protocol` always returns "agui".
     protocol: str | None = None
     # Per-request capability toggles — allow the user to narrow what the
     # agent uses for a single session. Capabilities only narrow, never

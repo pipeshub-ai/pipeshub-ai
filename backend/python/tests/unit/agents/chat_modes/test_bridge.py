@@ -542,8 +542,12 @@ class TestRunChatStream:
         constraint_text = " ".join(str(c) for c in captured["goal"].constraints)
         assert "rec-2" in constraint_text, "list must appear even without whole_document bit"
         assert "1 of 20 blocks" in constraint_text
-        # Neutral header, not the emphatic one.
-        assert "if this request needs more than the blocks above" in constraint_text
+        # Coverage is 5% (< low-coverage threshold), so the low-coverage header
+        # applies regardless of the whole-document bit being False.
+        assert (
+            "read in full before answering if the question needs more than "
+            "the specific passages already visible" in constraint_text
+        )
 
     async def test_agent_run_failure_emits_error_event(self) -> None:
         async def _fake_create(self, context, llm, chat_mode, *, query, model_name=""):

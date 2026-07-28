@@ -64,8 +64,8 @@ class ChatQuery(BaseModel):
     currentTime: str | None = None  # ISO 8601 datetime string from the client
     conversationId: str | None = None  # Passed by Node.js layer for background task tracking
     attachments: list[dict[str, Any]] = []
-    # SSE wire protocol negotiation ("legacy" | "agui") -- see
-    # `app.agents.agent_loop.protocol.resolve_protocol`.
+    # AG-UI is the only supported SSE wire protocol. This field is
+    # accepted but ignored — `resolve_protocol` always returns "agui".
     protocol: str | None = None
     # Per-request capability toggles for agent mode (both paths).
     # When absent defaults to both enabled, preserving existing behavior.

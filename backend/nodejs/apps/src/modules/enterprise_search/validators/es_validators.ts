@@ -110,11 +110,15 @@ const contextFieldsSchema = {
     })
     .optional(),
   tools: z.array(z.string().min(1)).optional(),
-  // AG-UI wire-protocol negotiation (see utils/agui.ts::resolveProtocol).
+  // AG-UI is the only supported wire protocol (see
+  // utils/agui.ts::resolveProtocol, which always resolves to `agui`
+  // regardless of this field). Kept accepted-but-inert for callers still
+  // sending it; any value other than `agui` is rejected rather than
+  // silently downgrading a caller to a protocol that no longer exists.
   // Must be declared here or Zod's default unknown-key stripping removes it
   // from req.body before the controller can read it — the validation
   // middleware replaces req.body with the parsed result.
-  protocol: z.enum(['agui', 'legacy']).optional(),
+  protocol: z.enum(['agui']).optional(),
   // Per-request agent capability toggles. Subject to the same declare-or-be-
   // stripped constraint as `protocol` above. Python treats a missing flag as
   // enabled, so partial objects are valid.

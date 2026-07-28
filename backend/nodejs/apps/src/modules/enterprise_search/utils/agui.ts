@@ -1,15 +1,15 @@
 /**
  * AG-UI protocol helpers for the Node.js proxy layer — see the AG-UI
  * migration plan. Node intercepts a handful of event names to persist
- * conversations to Mongo (today: `complete`/`error`/`ask_user_question`);
- * in `agui` mode the SAME interceptions key off the AG-UI names instead
+ * conversations to Mongo, keying off the AG-UI names
  * (`RUN_FINISHED`/`RUN_ERROR`/`CUSTOM{name:"ask_user_question"}`), and
  * Node's own outbound frames (the early `connected` event, the
  * re-emitted `complete`) are reframed to `CUSTOM`/`RUN_FINISHED` too.
  *
- * Protocol is negotiated EXPLICITLY on the request body Node hand-builds
- * for the Python backend (`aiPayload.protocol`) — header passthrough
- * never reaches Python, since Node constructs that request itself. See
+ * AG-UI is the only supported wire protocol; the legacy SSE format has
+ * been removed. `LEGACY_PROTOCOL` and the (now unreachable) legacy
+ * formatting branches remain in this proxy layer purely as dead code to
+ * minimize churn — no caller can select them anymore. See
  * `resolveProtocol()`.
  */
 
@@ -18,20 +18,15 @@ export const LEGACY_PROTOCOL = 'legacy' as const;
 export type SSEProtocol = typeof AGUI_PROTOCOL | typeof LEGACY_PROTOCOL;
 
 /**
- * Negotiate the wire protocol for one request: an explicit `protocol`
- * field/query param wins, defaulting to legacy for every existing client
- * (Slack bot, internal/service-account routes, any API caller that never
- * opts in). The only recognized non-legacy value is `"agui"` — anything
- * else (a typo, an unrelated truthy value) collapses to legacy rather
- * than erroring.
+ * AG-UI is the only supported protocol — always resolve to it regardless
+ * of what the caller sends. Kept as a function (rather than inlining the
+ * constant at call sites) so the protocol can be reintroduced as a real
+ * negotiation later without touching every call site.
  */
 export const resolveProtocol = (
-  body: Record<string, unknown> | undefined,
-  query: Record<string, unknown> | undefined,
-): SSEProtocol => {
-  const value = body?.['protocol'] ?? query?.['protocol'];
-  return value === AGUI_PROTOCOL ? AGUI_PROTOCOL : LEGACY_PROTOCOL;
-};
+  _body?: Record<string, unknown>,
+  _query?: Record<string, unknown>,
+): SSEProtocol => AGUI_PROTOCOL;
 
 export const isAGUI = (protocol: SSEProtocol | undefined): boolean =>
   protocol === AGUI_PROTOCOL;

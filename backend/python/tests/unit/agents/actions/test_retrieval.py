@@ -263,7 +263,7 @@ class TestSearchInternalKnowledge:
         ):
             r = Retrieval(state=state)
             result = await r.search_internal_knowledge(query="test query")
-            assert "Retrieved" in result
+            assert "Top 1 block from 0 records (ranked sample — other records may match)." in result
             assert "1" in result
 
     @pytest.mark.asyncio
@@ -291,7 +291,7 @@ class TestSearchInternalKnowledge:
         ):
             r = Retrieval(state=state)
             result = await r.search_internal_knowledge(query="test")
-            assert "Retrieved" in result
+            assert "Top 50 blocks from 0 records (ranked sample — other records may match)." in result
 
     @pytest.mark.asyncio
     async def test_exception_returns_error(self):

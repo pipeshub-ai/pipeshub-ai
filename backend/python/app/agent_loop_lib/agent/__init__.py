@@ -45,6 +45,7 @@ from app.agent_loop_lib.events.base import AgentEvent, EventType
 from app.agent_loop_lib.hooks.middleware.builtin.turn_guards import install_turn_guards
 from app.agent_loop_lib.tools.executor import ToolExecutor
 from app.agent_loop_lib.tools.tags import TAG_LIFECYCLE_TERMINAL, TAG_SPAWN_BATCH
+from pydantic import BaseModel as _PydanticBaseModel
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.agent.spec import AgentSpec
@@ -52,6 +53,20 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.core.responses import ModelResponse
     from app.agent_loop_lib.models.base import Model
     from app.agent_loop_lib.runtime.runtime import AgentRuntime
+
+
+def _content_to_json(content: Any) -> str:
+    """Serialize tool-result content to a JSON string.
+
+    Handles Pydantic models, dicts, lists, and other non-string types.
+    """
+    if isinstance(content, _PydanticBaseModel):
+        return content.model_dump_json()
+    try:
+        return json.dumps(content)
+    except (TypeError, ValueError):
+        return str(content)
+
 
 # See Agent.emit — legacy event -> AG-UI-aligned event, fired alongside
 # (never instead of) the legacy one. TOOL_BLOCKED counts as a TOOL_CALL_END
@@ -926,7 +941,7 @@ class Agent:
             # prose rule.  See _OPERATING_RULES in prompt_builder.py.
             any_useful = any(
                 not tr.is_error and bool(
-                    tr.content if isinstance(tr.content, str) else json.dumps(tr.content)
+                    tr.content if isinstance(tr.content, str) else _content_to_json(tr.content)
                 )
                 for tr in tool_results
             )
@@ -940,7 +955,7 @@ class Agent:
                 f" stale_rounds={self._stale_tool_rounds}]"
             )
             for tr in tool_results:
-                content_str = json.dumps(tr.content) if not isinstance(tr.content, str) else tr.content
+                content_str = _content_to_json(tr.content) if not isinstance(tr.content, str) else tr.content
                 # Skip the footer on terminal-tool results — they stop the loop.
                 is_terminal = TAG_LIFECYCLE_TERMINAL in runtime.tool_registry.tags_for_name(tr.name)
                 await context.add(ToolMessage(

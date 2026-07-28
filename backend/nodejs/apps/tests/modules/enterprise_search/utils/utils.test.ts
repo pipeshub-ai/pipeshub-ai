@@ -4127,7 +4127,7 @@ describe('AG-UI Protocol', () => {
   })
 
   describe('initializeSSEResponse', () => {
-    it('should send legacy connected event when protocol is omitted', () => {
+    it('should fall back to the pre-AG-UI connected event when protocol is omitted', () => {
       const res = createMockResponse()
       initializeSSEResponse(res)
 
@@ -4135,7 +4135,7 @@ describe('AG-UI Protocol', () => {
       expect(writeArg).to.include('event: connected')
     })
 
-    it('should send legacy connected event when protocol is legacy', () => {
+    it('should fall back to the pre-AG-UI connected event when protocol is legacy', () => {
       const res = createMockResponse()
       initializeSSEResponse(res, LEGACY_PROTOCOL)
 
