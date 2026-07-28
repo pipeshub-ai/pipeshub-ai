@@ -9,8 +9,6 @@ import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
 import type { QueryMode, QueryModeConfig } from '@/chat/types';
 import { QUERY_MODES } from '@/chat/constants';
 
-const QUERY_MODES_VISIBLE = QUERY_MODES.filter((m) => m.id !== 'agent');
-
 interface QueryModePanelProps {
   /** Currently active query mode */
   activeMode: QueryMode;
@@ -18,6 +16,8 @@ interface QueryModePanelProps {
   onSelect: (mode: QueryMode) => void;
   /** Hide the heading when embedded in a container that provides its own header */
   hideHeader?: boolean;
+  /** Whether workspace administrators allow web search in main chat. */
+  webSearchEnabled?: boolean;
 }
 
 /**
@@ -25,8 +25,16 @@ interface QueryModePanelProps {
  * Renders inside the ChatInput expansion area as card-style items
  * matching the Figma "Different Modes of Query" design.
  */
-export function QueryModePanel({ activeMode, onSelect, hideHeader = false }: QueryModePanelProps) {
+export function QueryModePanel({
+  activeMode,
+  onSelect,
+  hideHeader = false,
+  webSearchEnabled = true,
+}: QueryModePanelProps) {
   const { t } = useTranslation();
+  const visibleModes = QUERY_MODES.filter(
+    (mode) => mode.id !== 'agent' && (webSearchEnabled || mode.id !== 'web-search'),
+  );
   return (
     <Flex direction="column" gap="4">
       {/* Heading */}
@@ -42,7 +50,7 @@ export function QueryModePanel({ activeMode, onSelect, hideHeader = false }: Que
 
       {/* Mode items */}
       <Flex direction="column" gap="2">
-        {QUERY_MODES_VISIBLE.map((mode) => (
+        {visibleModes.map((mode) => (
           <QueryModeItem
             key={mode.id}
             mode={mode}

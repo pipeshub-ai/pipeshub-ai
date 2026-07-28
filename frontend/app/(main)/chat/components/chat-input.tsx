@@ -27,6 +27,7 @@ import { MobileQueryOptionsSheet } from '@/chat/components/chat-panel/expansion-
 import { MobileQueryModesSheet } from '@/chat/components/chat-panel/expansion-panels/mobile-query-modes-sheet';
 import { AgentStrategyDropdown } from '@/chat/components/agent-strategy-dropdown';
 import { getQueryModeConfig } from '@/chat/constants';
+import { WebSearchApi } from '@/workspace/web-search/api';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useCommandStore } from '@/lib/store/command-store';
@@ -188,6 +189,7 @@ export function ChatInput({
   const [isCompactToolbar, setIsCompactToolbar] = useState(false);
   const [isCompactMenuOpen, setIsCompactMenuOpen] = useState(false);
   const [isInputFocused, setIsInputFocused] = useState(false);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const isMobile = useIsMobile();
   // ── Message action state (local — NOT in Zustand store) ──
   const [activeMessageAction, setActiveMessageAction] = useState<ActiveMessageAction>(null);
@@ -259,6 +261,30 @@ export function ChatInput({
   const universalAgentStreamTools = useChatStore((s) => s.universalAgentStreamTools);
   const universalAgentToolsLoading = useChatStore((s) => s.universalAgentToolsLoading);
   const universalAgentToolGroups = useChatStore((s) => s.universalAgentToolGroups);
+
+  useEffect(() => {
+    if (isAgentChat) return;
+
+    let cancelled = false;
+    WebSearchApi.getConfig().then((config) => {
+      if (cancelled) return;
+      setWebSearchEnabled(config.settings.enabled);
+      if (!config.settings.enabled) {
+        setIsModePanelOpen(false);
+        setIsMobileModesOpen(false);
+      }
+      if (
+        !config.settings.enabled &&
+        useChatStore.getState().settings.queryMode === 'web-search'
+      ) {
+        setQueryMode('chat');
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAgentChat, setQueryMode]);
 
   // Context key for the active (agent-scoped or assistant) chat. All
   // model-related reads/writes below are keyed by this so assistant selections
@@ -1137,6 +1163,7 @@ export function ChatInput({
               isSearchMode={isSearchMode}
               isModePanelOpen={false}
               showFullUI={false}
+              showModeSelector={webSearchEnabled}
               onLeftClick={handleExpand}
               onRightClick={handleExpand}
             />
@@ -1602,6 +1629,7 @@ export function ChatInput({
         >
           <QueryModePanel
             activeMode={settings.queryMode}
+            webSearchEnabled={webSearchEnabled}
             onSelect={(queryMode) => {
               setQueryMode(queryMode);
               if (isSearchMode) {
@@ -1761,12 +1789,15 @@ export function ChatInput({
               isSearchMode={isSearchMode}
               isModePanelOpen={isModePanelOpen}
               showFullUI={showFullUI}
+              showModeSelector={webSearchEnabled}
               onLeftClick={
                 isSearchMode
                   ? () => {
                       setMode('chat');
                       useChatStore.getState().clearSearchResults();
                     }
+                  : !webSearchEnabled
+                    ? () => {}
                   : isMobile
                     ? () => setIsMobileModesOpen(true)
                     : () => {
@@ -2226,6 +2257,7 @@ export function ChatInput({
       open={isMobileModesOpen}
       onOpenChange={setIsMobileModesOpen}
       agentChat={isAgentChat}
+      webSearchEnabled={webSearchEnabled}
     />
 
     {/* Overlay panel — collections (assistant) or agent resources (overlay mode) */}

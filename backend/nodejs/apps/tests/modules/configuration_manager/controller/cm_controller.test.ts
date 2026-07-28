@@ -1120,6 +1120,7 @@ describe('ConfigurationManager Controller', () => {
         { ...duckDuckGoProvider, isDefault: true },
       ])
       expect(response.settings).to.deep.equal({
+        enabled: true,
         includeImages: false,
         maxImages: 3,
       })
@@ -1165,7 +1166,10 @@ describe('ConfigurationManager Controller', () => {
         isDefault: true,
       }
       mockEncService.decrypt.returns(
-        JSON.stringify({ providers: [storedTavily], settings: { includeImages: true } }),
+        JSON.stringify({
+          providers: [storedTavily],
+          settings: { enabled: false, includeImages: true },
+        }),
       )
       const kvs = createMockKeyValueStore({
         get: sinon.stub().resolves('encrypted:web-search-config'),
@@ -1184,6 +1188,7 @@ describe('ConfigurationManager Controller', () => {
         storedTavily,
       ])
       expect(response.settings).to.deep.equal({
+        enabled: false,
         includeImages: true,
         maxImages: 3,
       })

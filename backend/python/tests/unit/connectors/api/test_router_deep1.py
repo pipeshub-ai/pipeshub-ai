@@ -321,10 +321,27 @@ class TestConvertToPdf:
         with (
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_process),
             patch("os.path.exists", return_value=False),
+            patch("os.listdir", return_value=[]),
         ):
             with pytest.raises(HTTPException) as exc:
                 await convert_to_pdf("/tmp/file.pptx", "/tmp")
             assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+
+    @pytest.mark.asyncio
+    async def test_uses_pdf_renamed_by_libreoffice(self):
+        """A successful conversion accepts LibreOffice's normalized output name."""
+        mock_process = AsyncMock()
+        mock_process.communicate = AsyncMock(return_value=(b"ok", b""))
+        mock_process.returncode = 0
+
+        with (
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_process),
+            patch("os.path.exists", return_value=False),
+            patch("os.listdir", return_value=["Quarterly Review.pdf"]),
+        ):
+            result = await convert_to_pdf("/tmp/Quarterly%20Review.pptx", "/tmp")
+
+        assert result == "/tmp/Quarterly Review.pdf"
 
     @pytest.mark.asyncio
     async def test_generic_subprocess_exception(self):
@@ -375,6 +392,40 @@ class TestConvertBufferToPdfStream:
                 mock_stream.return_value = StreamingResponse(iter([b"pdf"]), media_type="application/pdf")
                 result = await convert_buffer_to_pdf_stream(buffer, "slides.pptx", "pptx")
                 assert isinstance(result, StreamingResponse)
+
+    @pytest.mark.asyncio
+    async def test_adds_inferred_pptx_extension_to_temporary_file(self):
+        """MIME-inferred PPTX records without a suffix remain convertible."""
+        with (
+            patch(f"{_ROUTER}.convert_to_pdf", new_callable=AsyncMock) as mock_convert,
+            patch("builtins.open", create=True) as mock_open,
+            patch("os.path.exists", return_value=True),
+            patch(f"{_ROUTER}.create_stream_record_response") as mock_stream,
+            patch("asyncio.to_thread", side_effect=lambda fn, *a: fn(*a)),
+        ):
+            write_buf = io.BytesIO()
+            read_buf = io.BytesIO(b"pdf-data")
+
+            def open_side_effect(path, mode="r"):
+                cm = MagicMock()
+                cm.__enter__ = MagicMock(
+                    return_value=write_buf if "w" in mode else read_buf
+                )
+                cm.__exit__ = MagicMock(return_value=False)
+                return cm
+
+            mock_open.side_effect = open_side_effect
+            mock_convert.return_value = "/tmp/test/Quarterly review.pdf"
+            mock_stream.return_value = StreamingResponse(
+                iter([b"pdf"]), media_type="application/pdf"
+            )
+
+            await convert_buffer_to_pdf_stream(
+                b"fake-pptx", "Quarterly review", "pptx"
+            )
+
+        input_path = mock_convert.await_args.args[0]
+        assert input_path.endswith("Quarterly review.pptx")
 
     @pytest.mark.asyncio
     async def test_streaming_response_buffer(self):

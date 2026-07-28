@@ -16,6 +16,7 @@ interface MobileQueryModesSheetProps {
    * instead of query mode (internal search / web / agent).
    */
   agentChat?: boolean;
+  webSearchEnabled?: boolean;
 }
 
 /**
@@ -28,6 +29,7 @@ export function MobileQueryModesSheet({
   open,
   onOpenChange,
   agentChat = false,
+  webSearchEnabled = true,
 }: MobileQueryModesSheetProps) {
   const { t } = useTranslation();
   const settings = useChatStore((s) => s.settings);
@@ -63,6 +65,7 @@ export function MobileQueryModesSheet({
           activeMode={settings.queryMode}
           onSelect={handleSelectQueryMode}
           hideHeader
+          webSearchEnabled={webSearchEnabled}
         />
       )}
     </MobileBottomSheet>

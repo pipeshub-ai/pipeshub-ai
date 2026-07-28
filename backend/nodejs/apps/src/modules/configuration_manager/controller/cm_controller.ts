@@ -102,6 +102,7 @@ function shouldHideSecrets(): boolean {
 }
 
 const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
+  enabled: true,
   includeImages: false,
   maxImages: 3,
 });
@@ -113,8 +114,16 @@ const DUCKDUCKGO_WEB_SEARCH_PROVIDER = Object.freeze({
 });
 
 const normalizeWebSearchSettings = (
-  settings?: Partial<{ includeImages: unknown; maxImages: unknown }>,
+  settings?: Partial<{
+    enabled: unknown;
+    includeImages: unknown;
+    maxImages: unknown;
+  }>,
 ) => {
+  const enabled =
+    typeof settings?.enabled === 'boolean'
+      ? settings.enabled
+      : DEFAULT_WEB_SEARCH_SETTINGS.enabled;
   const includeImages =
     typeof settings?.includeImages === 'boolean'
       ? settings.includeImages
@@ -128,6 +137,7 @@ const normalizeWebSearchSettings = (
       : DEFAULT_WEB_SEARCH_SETTINGS.maxImages;
 
   return {
+    enabled,
     includeImages,
     maxImages,
   };
@@ -4159,7 +4169,7 @@ export const updateWebSearchSettings =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { includeImages, maxImages } = req.body;
+      const { enabled, includeImages, maxImages } = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
 
       // Use Compare-and-Set (CAS) pattern with retries to prevent race conditions
@@ -4191,6 +4201,8 @@ export const updateWebSearchSettings =
           webSearchConfig.settings,
         );
         normalizedSettings = normalizeWebSearchSettings({
+          enabled:
+            typeof enabled === 'boolean' ? enabled : existingSettings.enabled,
           includeImages,
           maxImages:
             typeof maxImages === 'number'

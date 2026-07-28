@@ -66,6 +66,9 @@ def _assert_web_search_success_shape(body: dict) -> None:
     assert isinstance(settings, dict), (
         f"Expected settings object, got {type(settings).__name__}"
     )
+    assert isinstance(settings.get("enabled"), bool), (
+        "settings.enabled must be boolean"
+    )
     assert isinstance(settings.get("includeImages"), bool), (
         "settings.includeImages must be boolean"
     )

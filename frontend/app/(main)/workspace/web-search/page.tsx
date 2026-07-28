@@ -3,7 +3,7 @@
 import { useTranslation } from 'react-i18next';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Box, Flex, Text, Heading, Button, IconButton } from '@radix-ui/themes';
+import { Box, Flex, Text, Heading, Button, IconButton, Switch } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SettingsSaveBar } from '../components/settings-save-bar';
@@ -43,6 +43,7 @@ export default function WebSearchPage() {
   // ── State ─────────────────────────────────────────────────
   const [configuredProviders, setConfiguredProviders] = useState<ConfiguredWebSearchProvider[]>([]);
   const [settings, setSettings] = useState<WebSearchSettings>({
+    enabled: true,
     includeImages: false,
     maxImages: 3,
   });
@@ -271,7 +272,7 @@ export default function WebSearchPage() {
         setSettings(previous);
         addToast({
           variant: 'error',
-          title: 'Failed to update image settings',
+          title: 'Failed to update web search settings',
           description: message,
           duration: 5000,
         });
@@ -286,6 +287,17 @@ export default function WebSearchPage() {
     (enabled: boolean) => {
       const next = { ...settings, includeImages: enabled };
       const message = enabled ? 'Images will be sent to LLM' : 'Images will not be sent to LLM';
+      saveSettings(next, message);
+    },
+    [settings, saveSettings],
+  );
+
+  const handleEnabledToggle = useCallback(
+    (enabled: boolean) => {
+      const next = { ...settings, enabled };
+      const message = enabled
+        ? 'Web search is now enabled'
+        : 'Web search is now disabled';
       saveSettings(next, message);
     },
     [settings, saveSettings],
@@ -349,6 +361,61 @@ export default function WebSearchPage() {
             </span>
             {t('workspace.bots.documentation')}
           </Button>
+        </Flex>
+
+        {/* ── Workspace availability ── */}
+        <Flex
+          align="center"
+          gap="3"
+          style={{
+            padding: '14px 16px',
+            border: '1px solid var(--olive-3)',
+            borderRadius: 'var(--radius-1)',
+            background: 'var(--olive-2)',
+            marginBottom: 'var(--space-5)',
+          }}
+        >
+          <Flex
+            align="center"
+            justify="center"
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 'var(--radius-2)',
+              backgroundColor: 'var(--slate-3)',
+              flexShrink: 0,
+            }}
+          >
+            <MaterialIcon name="travel_explore" size={18} color="var(--slate-11)" />
+          </Flex>
+          <Box style={{ flex: 1, minWidth: 0 }}>
+            <Text
+              size="2"
+              weight="medium"
+              style={{ color: 'var(--slate-12)', display: 'block' }}
+            >
+              Enable web search
+            </Text>
+            <Text
+              size="1"
+              style={{
+                color: 'var(--slate-10)',
+                display: 'block',
+                marginTop: 2,
+                fontWeight: 300,
+              }}
+            >
+              Disable to prevent workspace users from accessing web search. The option will also
+              be hidden from the main chat.
+            </Text>
+          </Box>
+          <Switch
+            color="jade"
+            size="2"
+            checked={settings.enabled}
+            disabled={isSettingsSaving}
+            onCheckedChange={handleEnabledToggle}
+          />
         </Flex>
 
         {/* ── Providers section ── */}
