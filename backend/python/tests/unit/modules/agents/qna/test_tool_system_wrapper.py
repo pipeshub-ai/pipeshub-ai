@@ -161,3 +161,24 @@ class TestFlattenedShapeIsConsumerCompatible:
 
         out = _flatten_success_into_payload(False, {"error": "boom"})
         assert ToolResultExtractor.extract_success_status(out) is False
+
+
+# ---------------------------------------------------------------------------
+# get_tool_results_summary
+# ---------------------------------------------------------------------------
+
+class TestGetToolResultsSummary:
+    def test_no_tool_results(self):
+        from app.modules.agents.qna.tool_system import get_tool_results_summary
+
+        assert "No tools executed yet." in get_tool_results_summary({"all_tool_results": []})
+
+    def test_unknown_status_not_counted(self):
+        """Results with a status other than success/error are ignored in counts."""
+        from app.modules.agents.qna.tool_system import get_tool_results_summary
+
+        state = {"all_tool_results": [{"tool_name": "slack.send", "status": "pending"}]}
+        summary = get_tool_results_summary(state)
+        assert "Tool Execution Summary" in summary
+        assert "Success: 0" in summary
+        assert "Failed: 0" in summary

@@ -1,4 +1,4 @@
-import { apiClient, streamSSERequest, SSEEvent } from '@/lib/api';
+import { apiClient, streamSSERequest } from '@/lib/api';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import {
   ChatMessage,
@@ -12,12 +12,10 @@ import {
   SharedWithEntry,
   StreamChatRequest,
   AgentStrategyApiSegment,
-  SSEEventType,
   SSEConnectedEvent,
   SSEStatusEvent,
   SSEAnswerChunkEvent,
   SSECompleteEvent,
-  SSEErrorEvent,
   type AgentCapabilities,
   SSEArtifactEvent,
   SSEAskUserQuestionEvent,
@@ -30,16 +28,6 @@ import {
 } from './types';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 import { createAGUIEventHandler, type AGUIStreamTracking } from './agui-event-handler';
-
-/**
- * Rollout switch for the AG-UI migration plan's Phase 3/4c. Default ON:
- * Node (`es_controller.ts`) and Python (`AGUIEventEmitter`/`ProtocolFormatter`)
- * both negotiate `protocol: 'agui'` end-to-end, and the e2e fixtures under
- * `tests/e2e/chat/*.spec.ts` speak AG-UI frames (see `agui-sse-builder.ts`).
- * Flip back to `false` only as a kill switch if a live-backend regression
- * surfaces — the legacy dispatcher path is kept working for that reason.
- */
-const USE_AGUI_PROTOCOL = true;
 
 export interface FeedbackPayload {
   isHelpful: boolean;
@@ -83,111 +71,23 @@ export interface StreamMessageCallbacks {
   signal?: AbortSignal;
 }
 
-interface StreamDispatchTracking {
-  receivedComplete: boolean;
-  lastSSEError: SSEErrorEvent | null;
-}
-
 /**
- * Legacy `{event, data}` dispatcher — byte-identical to the switch that used
- * to be duplicated across `streamMessage`/`streamRegenerate`/`streamAgentRegenerate`.
- * Extracted once so the AG-UI branch (see `runChatStream`) doesn't need a second
- * copy of every call site.
- */
-function legacyEventDispatcher(
-  callbacks: StreamMessageCallbacks,
-  tracking: StreamDispatchTracking,
-  logLabel: string,
-): (event: SSEEvent) => void {
-  return (event: SSEEvent) => {
-    switch (event.event as SSEEventType) {
-      case 'connected':
-        callbacks.onConnected?.(event.data as SSEConnectedEvent);
-        break;
-      case 'status':
-        callbacks.onStatus?.(event.data as SSEStatusEvent);
-        break;
-      case 'answer_chunk':
-        callbacks.onChunk?.(event.data as SSEAnswerChunkEvent);
-        break;
-      case 'complete':
-        tracking.receivedComplete = true;
-        callbacks.onComplete?.(event.data as SSECompleteEvent);
-        break;
-      case 'restreaming':
-        callbacks.onRestreaming?.();
-        break;
-      case 'ask_user_question':
-        callbacks.onAskUserQuestion?.(event.data as SSEAskUserQuestionEvent);
-        break;
-      case 'tool_call':
-      case 'tool_success':
-      case 'tool_error':
-      case 'tool_calls':
-      case 'tool_result':
-        // Tool / orchestration events — no separate UI; status + answer_chunk carry UX
-        break;
-      case 'metadata':
-        // Citations / enrichment hints — UI uses answer_chunk + complete; ignore payload
-        break;
-      case 'artifact':
-        callbacks.onArtifact?.(event.data as SSEArtifactEvent);
-        break;
-      case 'error':
-        // SSE error events may be non-fatal — the backend might still
-        // continue streaming after this. Save the error and check after
-        // the stream ends whether a complete event followed.
-        tracking.lastSSEError = event.data as SSEErrorEvent;
-        console.warn(`[${logLabel}] Backend warning:`, tracking.lastSSEError.message || tracking.lastSSEError.error);
-        break;
-      default:
-        // Future / proxy-only event names — ignore silently (no user-facing noise)
-        break;
-    }
-  };
-}
-
-/**
- * Runs one chat SSE stream and dispatches every frame to `callbacks`,
- * negotiating AG-UI vs legacy wire events in one place (AG-UI migration
- * plan, Phase 3b) — `endpoint`/`payload` stay protocol-agnostic; this is the
- * only function that adds `protocol` to the request and picks the matching
- * `onEvent` handler.
+ * Runs one chat SSE stream and dispatches every AG-UI frame to `callbacks`.
+ * `endpoint`/`payload` stay protocol-agnostic; this is the only function
+ * that adds `protocol: 'agui'` to the request.
  */
 async function runChatStream(
   endpoint: string,
   payload: Record<string, unknown>,
   callbacks: StreamMessageCallbacks,
-  logLabel: string,
 ): Promise<void> {
-  const body = USE_AGUI_PROTOCOL ? { ...payload, protocol: 'agui' } : payload;
-
-  if (USE_AGUI_PROTOCOL) {
-    const tracking: AGUIStreamTracking = { receivedComplete: false };
-    await streamSSERequest(endpoint, body, {
-      onEvent: createAGUIEventHandler(callbacks, tracking),
-      onError: (error) => callbacks.onError?.(error),
-      signal: callbacks.signal,
-    });
-    return;
-  }
-
-  const tracking: StreamDispatchTracking = { receivedComplete: false, lastSSEError: null };
+  const body = { ...payload, protocol: 'agui' };
+  const tracking: AGUIStreamTracking = { receivedComplete: false };
   await streamSSERequest(endpoint, body, {
-    onEvent: legacyEventDispatcher(callbacks, tracking, logLabel),
+    onEvent: createAGUIEventHandler(callbacks, tracking),
     onError: (error) => callbacks.onError?.(error),
     signal: callbacks.signal,
   });
-
-  // If the stream ended without a complete event but had an error,
-  // the error was fatal — propagate it. (AG-UI's RUN_ERROR is always
-  // explicit and already invoked onError synchronously above, so this
-  // fallback is legacy-only.)
-  if (!tracking.receivedComplete && tracking.lastSSEError) {
-    const errorMessage =
-      tracking.lastSSEError.message || tracking.lastSSEError.error || 'Stream ended with an error';
-    callbacks.onError?.(new Error(errorMessage));
-  }
 }
 
 /** Map GET /conversations (or agent conversations) row → sidebar `Conversation` */
@@ -434,7 +334,7 @@ export const ChatApi = {
       };
     }
 
-    await runChatStream(endpoint, payload, callbacks, 'Chat SSE');
+    await runChatStream(endpoint, payload, callbacks);
   },
 
   /**
@@ -480,7 +380,7 @@ export const ChatApi = {
       body.agentCapabilities = request.agentCapabilities;
     }
 
-    await runChatStream(endpoint, body, callbacks, 'Regenerate SSE');
+    await runChatStream(endpoint, body, callbacks);
   },
 
   /**
@@ -521,7 +421,7 @@ export const ChatApi = {
       agentRegenBody.agentCapabilities = model.agentCapabilities;
     }
 
-    await runChatStream(endpoint, agentRegenBody, callbacks, 'Agent regenerate SSE');
+    await runChatStream(endpoint, agentRegenBody, callbacks);
   },
 
   /**

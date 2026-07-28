@@ -1,13 +1,16 @@
 """End-to-end contract test: a full `Agent.run(goal)` lifecycle through the
-real adapter-layer pieces (`PipesHubToolAdapter`, Phase 5's hooks via
-`PipesHubAgentFactory._build_hooks`), driven by `ScriptedTransport` instead
-of a real LangChain model — validates that a scripted tool call actually
-executes through `RegistryToolWrapper` and that its result lands in
+real adapter-layer pieces (`PipesHubStructuredToolAdapter`, Phase 5's hooks
+via `PipesHubAgentFactory._build_hooks`), driven by `ScriptedTransport`
+instead of a real LangChain model — validates that a scripted tool call
+actually executes and that its result lands in
 `AgentContext.tool_state["all_tool_results"]` for `RespondPipeline` to read
 afterward, using only agent-loop's own `Agent`/`ReActLoop`, per the
 migration plan's "bring `test_agent.py` scenarios" guidance."""
 
 from __future__ import annotations
+
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel
 
 from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.loops import ReActLoop
@@ -18,29 +21,32 @@ from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.agent_loop.factory import PipesHubAgentFactory
-from app.agents.agent_loop.tool_adapter import PipesHubToolAdapter
-from app.agents.tools.models import Tool as RegistryTool
+from app.agents.agent_loop.tool_adapter import PipesHubStructuredToolAdapter
 from tests.unit.agents.adapter.conftest import make_context
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
 
+_CALC_TOOL_NAME = "calc__add"
+
+
+class _AddArgs(BaseModel):
+    a: int
+    b: int
+
 
 def _add(a: int, b: int) -> str:
-    """Module-level (not nested) so `RegistryToolWrapper._is_class_method()`
-    — which treats ANY dotted `__qualname__` as a bound method needing
-    instantiation via `ClientFactoryRegistry` — correctly treats this as a
-    plain function instead of misrouting it through the class-method path."""
     return f"sum is {a + b}"
 
 
-def _make_calc_registry_tool() -> RegistryTool:
-    return RegistryTool(app_name="calc", tool_name="add", description="Add two numbers", function=_add)
+def _make_calc_tool() -> PipesHubStructuredToolAdapter:
+    structured_tool = StructuredTool.from_function(
+        name="add", description="Add two numbers", args_schema=_AddArgs, func=_add,
+    )
+    return PipesHubStructuredToolAdapter(structured_tool, "calc", "add")
 
 
 def _build_agent(context, transport: ScriptedTransport, *, max_turns: int = 15) -> Agent:
     registry = ToolRegistry()
-    registry.register_tool(
-        PipesHubToolAdapter(_make_calc_registry_tool(), "calc", "add", context_ref=lambda: context)
-    )
+    registry.register_tool(_make_calc_tool())
 
     transport_registry = TransportRegistry()
     transport_registry.register("scripted", lambda: transport)
@@ -65,7 +71,7 @@ class TestScriptedToolCallLifecycle:
 
         context = make_context()
         transport = ScriptedTransport()
-        transport.add_tool_call(ToolCall(id="call-1", name="calc_add", arguments={"a": 3, "b": 4}))
+        transport.add_tool_call(ToolCall(id="call-1", name=_CALC_TOOL_NAME, arguments={"a": 3, "b": 4}))
         transport.add_text("The sum is 7.")
 
         agent = _build_agent(context, transport)
@@ -85,7 +91,7 @@ class TestScriptedToolCallLifecycle:
         context = make_context()
         transport = ScriptedTransport()
         # Missing required "b" argument -> the underlying function raises.
-        transport.add_tool_call(ToolCall(id="call-1", name="calc_add", arguments={"a": 3}))
+        transport.add_tool_call(ToolCall(id="call-1", name=_CALC_TOOL_NAME, arguments={"a": 3}))
         transport.add_text("I couldn't complete that calculation.")
 
         agent = _build_agent(context, transport)
@@ -102,7 +108,7 @@ class TestScriptedToolCallLifecycle:
         context = make_context()
         transport = ScriptedTransport()
         for _ in range(4):
-            transport.add_tool_call(ToolCall(id="call-x", name="calc_add", arguments={"a": 1}))
+            transport.add_tool_call(ToolCall(id="call-x", name=_CALC_TOOL_NAME, arguments={"a": 1}))
         transport.add_text("Giving up.")
 
         agent = _build_agent(context, transport, max_turns=6)
@@ -128,4 +134,4 @@ class TestScriptedToolCallLifecycle:
         assert transport.calls
         tools: list[ToolSchema] | None = transport.calls[0]["tools"]
         assert tools is not None
-        assert any(t.name == "calc_add" for t in tools)
+        assert any(t.name == _CALC_TOOL_NAME for t in tools)

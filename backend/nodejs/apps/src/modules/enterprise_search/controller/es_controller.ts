@@ -2241,13 +2241,18 @@ export const addMessageStream =
                 const errorData = JSON.parse(dataLine);
                 const errorMessage = errorData.message || 'Unknown error occurred';
                 upstreamAiErrorEventForwarded = true;
-                markConversationFailed(
+                void markConversationFailed(
                   existingConversation as IConversationDocument,
                   errorMessage,
                   session,
                   'streaming_error',
                   errorData.stack,
-                );
+                ).catch((markErr: any) => {
+                  logger.error('Failed to mark conversation from AI RUN_ERROR SSE', {
+                    requestId,
+                    error: markErr?.message,
+                  });
+                });
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
                 logger.error('Failed to parse RUN_ERROR event data', {
@@ -2285,7 +2290,7 @@ export const addMessageStream =
                   errorData.error ||
                   'Unknown error occurred';
                 upstreamAiErrorEventForwarded = true;
-                markConversationFailed(
+                void markConversationFailed(
                   existingConversation as IConversationDocument,
                   errorMessage,
                   session,
@@ -2294,7 +2299,12 @@ export const addMessageStream =
                   errorData.metadata
                     ? new Map(Object.entries(errorData.metadata))
                     : undefined,
-                );
+                ).catch((markErr: any) => {
+                  logger.error('Failed to mark conversation from AI error SSE', {
+                    requestId,
+                    error: markErr?.message,
+                  });
+                });
                 filteredChunk += event + '\n\n';
               } catch (parseError: any) {
                 logger.error('Failed to parse error event data', {
@@ -2305,13 +2315,18 @@ export const addMessageStream =
                 upstreamAiErrorEventForwarded = true;
                 const errorMessage = `Failed to parse error event: ${parseError.message}`;
                 if (existingConversation) {
-                  markConversationFailed(
+                  void markConversationFailed(
                     existingConversation as IConversationDocument,
                     errorMessage,
                     session,
                     'parse_error',
                     parseError.stack,
-                  );
+                  ).catch((markErr: any) => {
+                    logger.error('Failed to mark conversation after SSE parse error', {
+                      requestId,
+                      error: markErr?.message,
+                    });
+                  });
                 }
                 filteredChunk += event + '\n\n';
               }

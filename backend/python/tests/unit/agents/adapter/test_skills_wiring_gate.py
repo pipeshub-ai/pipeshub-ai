@@ -2,7 +2,7 @@
 for the default-drift fix: the function's actual default (`os.getenv(...,
 "true")`) must match its own module docstring, which used to claim "default
 OFF" while the code was actually "default ON". Same deployment-level
-opt-out convention as `PIPESHUB_USE_AGENT_LOOP`/`PIPESHUB_USE_COMPOSED_
+opt-out convention as `PIPESHUB_USE_COMPOSED_AGENTS`
 AGENTS` (both also default `"true"`) — fixed to match the DOCSTRING to the
 CODE (not the other way around), since flipping the actual default would
 be a behavior change existing deployments/tests already rely on.

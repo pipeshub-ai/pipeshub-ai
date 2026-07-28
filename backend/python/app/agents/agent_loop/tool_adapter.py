@@ -136,6 +136,13 @@ def _params_from_schema(schema: Any) -> list[ToolParameter]:  # noqa: ANN401
 
 
 def _to_tool_output(result: Any) -> ToolOutput:  # noqa: ANN401
+    if isinstance(result, str) and "<record>" in result:
+        # Pre-formatted retrieval content (see `app.agents.actions.retrieval`)
+        # routinely contains words like "error"/"failed"/"traceback" (bug
+        # reports, incident postmortems, ...), which `ToolResultExtractor`'s
+        # generic substring heuristic below would otherwise false-positive
+        # on, misclassifying a successful search as a failed tool call.
+        return ToolOutput(success=True, data=result)
     success = ToolResultExtractor.extract_success_status(result)
     content = clean_tool_result(result)
     if isinstance(content, tuple) and len(content) == 2:
@@ -154,41 +161,6 @@ def _stringify(payload: Any) -> str:  # noqa: ANN401
         return str(payload)
 
 
-def _is_toolset_auth_error(result: Any) -> bool:  # noqa: ANN401
-    """Detects the `error_type: "toolset_auth"` marker
-    `RegistryToolWrapper._format_error` adds (additively) when the failure
-    traces back to a `ToolsetAuthError` — i.e. the connector IS attached
-    but its credentials are missing/invalid, as opposed to a generic tool
-    failure. `result` is `RegistryToolWrapper.arun()`'s raw return value,
-    always a JSON string for the error path."""
-    if not isinstance(result, str):
-        return False
-    try:
-        payload = json.loads(result)
-    except (json.JSONDecodeError, TypeError):
-        return False
-    return isinstance(payload, dict) and payload.get("error_type") == "toolset_auth"
-
-
-async def _emit_tool_unavailable(
-    context: "AgentContext", *, tool_name: str, toolset: str, reason: str, message: str | None,
-) -> None:
-    """Emits the same `{"event": "tool_unavailable", ...}` SSE shape
-    `SSEEventEmitter` produces for the search-time fallback (see
-    `EventType.TOOL_UNAVAILABLE`), but directly through `event_sink` since
-    this fires from inside `Tool.execute()`, below the `Agent`/`emit()`
-    layer a `RouteContext` would give access to."""
-    if context.event_sink is None:
-        return
-    try:
-        for evt in context.formatter.tool_unavailable(
-            context, tool=tool_name, toolset=toolset, reason=reason, message=message,
-        ):
-            await context.event_sink.write(evt)
-    except Exception:
-        logger.debug("Failed to emit tool_unavailable SSE event for %s", tool_name, exc_info=True)
-
-
 class _PermissiveValidationMixin:
     """PipesHub tools tolerate loosely-typed LLM tool-call arguments today
     (no Pydantic re-validation happens between `RegistryToolWrapper.arun()`
@@ -204,80 +176,6 @@ class _PermissiveValidationMixin:
 
     def validate(self, kwargs: dict[str, Any]) -> None:
         return
-
-
-class PipesHubToolAdapter(_PermissiveValidationMixin, Tool):
-    """Wraps a single `_global_tools_registry` tool as an agent-loop `Tool`."""
-
-    def __init__(
-        self,
-        registry_tool: "RegistryTool",
-        app_name: str,
-        tool_name: str,
-        context_ref: Callable[[], "AgentContext"],
-    ) -> None:
-        self._registry_tool = registry_tool
-        self._app_name = app_name
-        self._tool_name = tool_name
-        self._context_ref = context_ref
-
-    @property
-    def app_name(self) -> str:
-        """Public accessor for domain-grouping consumers (e.g. Phase 10's
-        `OrchestratorLoop`, which groups registered tool names by domain to
-        build each `spawn_agent` call's explicit `tools` list) — everything
-        else on this class already needs `_app_name` privately, so this is
-        the one place it's exposed outside the adapter itself."""
-        return self._app_name
-
-    @property
-    def name(self) -> str:
-        return f"{self._app_name}_{self._tool_name}"
-
-    @property
-    def short_description(self) -> str:
-        return self._registry_tool.description or f"{self._app_name} {self._tool_name}"
-
-    @property
-    def description(self) -> str:
-        # Per-tool guidance (Layer 1 of the three-layer prompt system):
-        # llm_description + when_to_use/when_not_to_use, carried directly on
-        # the schema agent-loop sends the LLM — see Phase 3 plan notes on
-        # why this replaces a separate per-tool guidance layer.
-        parts: list[str] = []
-        if self._registry_tool.llm_description:
-            parts.append(self._registry_tool.llm_description)
-        if self._registry_tool.when_to_use:
-            parts.append("When to use: " + "; ".join(self._registry_tool.when_to_use))
-        if self._registry_tool.when_not_to_use:
-            parts.append("When NOT to use: " + "; ".join(self._registry_tool.when_not_to_use))
-        return "\n".join(parts) or self.short_description
-
-    @property
-    def path(self) -> str:
-        return f"/connectors/{self._app_name}/{self._tool_name}"
-
-    @property
-    def parameters(self) -> list[ToolParameter]:
-        return _params_from_schema(self._registry_tool.args_schema)
-
-    async def execute(self, **kwargs: Any) -> ToolOutput:  # noqa: ANN401
-        ctx = self._context_ref()
-        wrapper = RegistryToolWrapper(
-            self._app_name, self._tool_name, self._registry_tool, ctx.tool_state
-        )
-        try:
-            result = await wrapper.arun(kwargs)
-        except Exception as exc:
-            logger.exception("Tool %s raised outside RegistryToolWrapper's own error handling", self.name)
-            return ToolOutput(success=False, error=str(exc))
-        output = _to_tool_output(result)
-        if not output.success and _is_toolset_auth_error(result):
-            await _emit_tool_unavailable(
-                ctx, tool_name=self.name, toolset=self._app_name,
-                reason="not_authenticated", message=output.error,
-            )
-        return output
 
 
 class PipesHubStructuredToolAdapter(_PermissiveValidationMixin, Tool):

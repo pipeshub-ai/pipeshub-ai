@@ -16,11 +16,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.tools.base import ParameterType
 from app.agents.agent_loop.converters import convert_tool_schema_to_langchain
-from app.agents.agent_loop.tool_adapter import PipesHubToolAdapter, _params_from_schema
+from app.agents.agent_loop.tool_adapter import PipesHubStructuredToolAdapter, _params_from_schema
 
 
 class _JiraFilter(BaseModel):
@@ -129,23 +130,23 @@ class TestParamsFromSchemaNesting:
         assert tags.required is True
 
 
+def _make_jira_search_adapter() -> PipesHubStructuredToolAdapter:
+    structured_tool = StructuredTool.from_function(
+        name="search", description="search jira",
+        args_schema=_JiraSearchArgs, func=lambda **kwargs: "ok",
+    )
+    return PipesHubStructuredToolAdapter(structured_tool, "jira", "search")
+
+
 class TestToolAdapterToSchemaRoundTrip:
-    """`PipesHubToolAdapter.to_schema()` (inherited default from `Tool`) must
-    carry the nested structure all the way into `ToolSchema.input_schema`,
-    and `LangChainTransport._bind_tools`'s conversion back to a Pydantic
-    model (via `convert_tool_schema_to_langchain`) must be able to consume
-    it without errors and without flattening it away."""
+    """`PipesHubStructuredToolAdapter.to_schema()` (inherited default from
+    `Tool`) must carry the nested structure all the way into
+    `ToolSchema.input_schema`, and `LangChainTransport._bind_tools`'s
+    conversion back to a Pydantic model (via `convert_tool_schema_to_langchain`)
+    must be able to consume it without errors and without flattening it away."""
 
     def test_to_schema_input_schema_has_nested_properties(self) -> None:
-        context = object()
-        adapter = PipesHubToolAdapter.__new__(PipesHubToolAdapter)
-        adapter._registry_tool = type("Fake", (), {
-            "args_schema": _JiraSearchArgs, "description": "search jira",
-            "llm_description": None, "when_to_use": [], "when_not_to_use": [],
-        })()
-        adapter._app_name = "jira"
-        adapter._tool_name = "search"
-        adapter._context_ref = lambda: context
+        adapter = _make_jira_search_adapter()
 
         schema = adapter.to_schema()
         filters_schema = schema.input_schema["properties"]["filters"]
@@ -153,15 +154,7 @@ class TestToolAdapterToSchemaRoundTrip:
         assert filters_schema["items"]["properties"]["field"]["type"] == "string"
 
     def test_langchain_round_trip_preserves_nested_array_of_objects(self) -> None:
-        context = object()
-        adapter = PipesHubToolAdapter.__new__(PipesHubToolAdapter)
-        adapter._registry_tool = type("Fake", (), {
-            "args_schema": _JiraSearchArgs, "description": "search jira",
-            "llm_description": None, "when_to_use": [], "when_not_to_use": [],
-        })()
-        adapter._app_name = "jira"
-        adapter._tool_name = "search"
-        adapter._context_ref = lambda: context
+        adapter = _make_jira_search_adapter()
 
         tool_schema = adapter.to_schema()
         lc_tool = convert_tool_schema_to_langchain(tool_schema)

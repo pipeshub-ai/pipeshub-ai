@@ -4,7 +4,7 @@
 directly, and the adapter deliberately does NOT special-case them (see
 `tool_adapter.py`'s module docstring). This suite verifies a tool's
 fire-and-forget `register_task()` side effect still lands in the shared
-`conversation_tasks` registry when executed through `PipesHubToolAdapter`/
+`conversation_tasks` registry when executed through
 `PipesHubStructuredToolAdapter`, and that `RespondPipeline`'s draining path
 (`RespondPipeline` / `await_and_collect_results`) can still retrieve it
 afterward."""
@@ -16,13 +16,8 @@ import asyncio
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
 
-from app.agents.agent_loop.tool_adapter import (
-    PipesHubStructuredToolAdapter,
-    PipesHubToolAdapter,
-)
-from app.agents.tools.models import Tool as RegistryTool
+from app.agents.agent_loop.tool_adapter import PipesHubStructuredToolAdapter
 from app.utils import conversation_tasks
-from tests.unit.agents.adapter.conftest import make_context
 
 
 class _NoArgs(BaseModel):
@@ -43,27 +38,7 @@ def _upload_artifact_and_register(conversation_id: str) -> str:
     return "Generating image in the background..."
 
 
-class TestBackgroundTaskSurvivesRegistryToolAdapter:
-    async def test_registry_tool_registers_task_that_can_be_drained(self) -> None:
-        context = make_context()
-        conversation_id = "conv-registry-1"
-
-        registry_tool = RegistryTool(
-            app_name="image_generator", tool_name="generate",
-            description="Generate an image", function=_upload_artifact_and_register,
-        )
-        adapter = PipesHubToolAdapter(
-            registry_tool, "image_generator", "generate", context_ref=lambda: context
-        )
-
-        output = await adapter.execute(conversation_id=conversation_id)
-
-        assert output.success is True
-        assert "background" in output.data.lower()
-
-        results = await conversation_tasks.await_and_collect_results(conversation_id)
-        assert results == [{"url": "https://blob.example.com/artifact.png"}]
-
+class TestConversationTasksDraining:
     async def test_draining_an_unregistered_conversation_returns_empty(self) -> None:
         results = await conversation_tasks.await_and_collect_results("conv-never-used")
         assert results == []

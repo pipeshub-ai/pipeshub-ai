@@ -9,9 +9,9 @@
  *   CUSTOM(conversation_created) -> TEXT_MESSAGE_START ->
  *   TEXT_MESSAGE_CONTENT(s) -> TEXT_MESSAGE_END -> RUN_FINISHED
  *
- * `USE_AGUI_PROTOCOL` in `chat/api.ts` is now the default, so every e2e spec
- * that mocks a chat stream response must speak this wire format instead of
- * the legacy `connected/status/answer_chunk/complete` one.
+ * `chat/api.ts::runChatStream` always negotiates `protocol: 'agui'`, so
+ * every e2e spec that mocks a chat stream response must speak this wire
+ * format instead of the legacy `connected/status/answer_chunk/complete` one.
  */
 
 function frame(type: string, fields: Record<string, unknown> = {}): string {

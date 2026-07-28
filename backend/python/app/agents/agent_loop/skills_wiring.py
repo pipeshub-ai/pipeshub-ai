@@ -5,7 +5,7 @@ inlined into `factory.py`) so the already-long factory stays readable and
 this feature's env gate/wiring is one grep away.
 
 Entirely gated by `PIPESHUB_ENABLE_SKILLS` (default ON) — same rollout
-convention as `PIPESHUB_USE_COMPOSED_AGENTS`/`PIPESHUB_USE_AGENT_LOOP`
+convention as `PIPESHUB_USE_COMPOSED_AGENTS`
 elsewhere in this adapter layer: a deployment-level opt-OUT, not an
 opt-in, so it stays on unless explicitly disabled (e.g. for a deployment
 whose graph DB hasn't provisioned the `agentSkills*` collections/indexes

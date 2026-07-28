@@ -6,8 +6,8 @@
  *
  * All backend calls are intercepted with page.route() so no live server is
  * needed. The mock SSE body replicates the AG-UI event sequence the real
- * backend emits now that `USE_AGUI_PROTOCOL` is the frontend default
- * (see `chat/api.ts` and `agui-sse-builder.ts`):
+ * backend emits, since `chat/api.ts::runChatStream` always negotiates
+ * `protocol: 'agui'` (see `agui-sse-builder.ts`):
  *
  *   CUSTOM(conversation_created) → TEXT_MESSAGE_START →
  *   TEXT_MESSAGE_CONTENT(s) → TEXT_MESSAGE_END → RUN_FINISHED

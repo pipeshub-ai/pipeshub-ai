@@ -151,11 +151,9 @@ function NarrationText({ content, citationMaps, citationCallbacks }: { content: 
   citMapsRef.current = citationMaps;
   const citCbRef = useRef(citationCallbacks);
   citCbRef.current = citationCallbacks;
-  const seenRecordIdsRef = useRef<Set<string>>(new Set());
-  seenRecordIdsRef.current = new Set();
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const components = useMemo(() => createMarkdownComponents(citMapsRef, citCbRef, seenRecordIdsRef), []);
+  const components = useMemo(() => createMarkdownComponents(citMapsRef, citCbRef), []);
 
   return (
     <Box className="narration-text" style={{ color: 'var(--slate-12)', fontSize: 'var(--font-size-2)', lineHeight: 1.6 }}>

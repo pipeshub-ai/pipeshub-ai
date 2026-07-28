@@ -360,10 +360,5 @@ class PipesHubToolLoader:
             return True
         return any(cfg_name.endswith(ts_name) for cfg_name in configured_apps)
 
-    @staticmethod
-    def _build_adapter(structured_tool: "StructuredTool", context: "AgentContext") -> "Tool":
-        app_name, tool_name = split_original_tool_name(structured_tool)
-        return PipesHubStructuredToolAdapter(structured_tool, app_name, tool_name)
-
 
 __all__ = ["PipesHubToolLoader"]

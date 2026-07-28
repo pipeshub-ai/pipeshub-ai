@@ -2595,6 +2595,3 @@ async def test_revoke_invalid_payload_and_bad_user():
 
     assert out["revoked"] == 0
 
-@pytest.mark.asyncio
-
-

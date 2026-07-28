@@ -174,11 +174,12 @@ def _find_cycle(
     — they can never participate in a cycle.
     """
     adjacency: dict[str, list[str]] = {}
+    call_ids_set = set(call_ids)
     for cid in call_ids:
         successors: list[str] = []
         for dep_task_id in depends_by_call_id.get(cid, []):
             dep_cid = call_id_by_task_id.get(dep_task_id)
-            if dep_cid is not None and dep_cid in set(call_ids):
+            if dep_cid is not None and dep_cid in call_ids_set:
                 successors.append(dep_cid)
         adjacency[cid] = successors
     return _shared_find_cycle(adjacency)

@@ -187,7 +187,6 @@ _AUTO_COMPACT_PHASE2_TAIL_RATIO = 0.40
 
 def _composed_agents_enabled() -> bool:
     """Kill-switch for domain-agent composition (see `domain_agents.py`) —
-    same env-var rollout pattern as `PIPESHUB_USE_AGENT_LOOP`: not a
     customer-facing setting, exists so a deployment can fall back to the
     flat all-tools agent without a code change."""
     return os.getenv("PIPESHUB_USE_COMPOSED_AGENTS", "true").strip().lower() == "true"

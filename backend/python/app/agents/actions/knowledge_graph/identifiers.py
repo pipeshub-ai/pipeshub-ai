@@ -115,6 +115,24 @@ def _is_url(text: str) -> bool:
     return text.startswith(("http://", "https://"))
 
 
+def _domain_matches(host: str, domain: str) -> bool:
+    """True if ``host`` is exactly ``domain`` or a subdomain of it.
+
+    Anchors on the label boundary so ``evil-atlassian.net.attacker.com``
+    does not match ``atlassian.net`` (a plain substring check would).
+    """
+    return host == domain or host.endswith("." + domain)
+
+
+def _has_label(host: str, label: str) -> bool:
+    """True if one of ``host``'s dot-separated labels equals ``label``.
+
+    Heuristic match for self-hosted instances (e.g. ``jira.company.com``),
+    anchored to a full label so ``notjira.evil.com`` does not match ``jira``.
+    """
+    return label in host.split(".")
+
+
 def resolve_canonical_ref(raw: str) -> CanonicalRef | None:
     """Parse ``raw`` into a ``CanonicalRef``.
 
@@ -148,7 +166,7 @@ def resolve_canonical_ref(raw: str) -> CanonicalRef | None:
     qs_raw = parsed.query
 
     # --- Jira ---
-    if "atlassian.net" in host or "jira." in host:
+    if _domain_matches(host, "atlassian.net") or _has_label(host, "jira"):
         for pattern in (_JIRA_BROWSE, _JIRA_ISSUE_PATH):
             m = pattern.search(path)
             if m:
@@ -158,7 +176,7 @@ def resolve_canonical_ref(raw: str) -> CanonicalRef | None:
             return CanonicalRef(kind=RefKind.ISSUE_KEY, value=m.group(1).upper(), connector_hint="JIRA")
 
     # --- Confluence ---
-    if "confluence" in host or "atlassian.net" in host:
+    if _has_label(host, "confluence") or _domain_matches(host, "atlassian.net"):
         m = _CONFLUENCE_PAGE_PATH.search(path)
         if m:
             return CanonicalRef(kind=RefKind.EXTERNAL_ID, value=m.group(1), connector_hint="CONFLUENCE")
@@ -171,7 +189,7 @@ def resolve_canonical_ref(raw: str) -> CanonicalRef | None:
             return CanonicalRef(kind=RefKind.WEB_URL, value=normalize_weburl(raw), connector_hint="CONFLUENCE")
 
     # --- Google Drive / Docs / Sheets / Slides ---
-    if "google.com" in host and any(s in host for s in ("docs", "drive", "sheets", "slides")):
+    if _domain_matches(host, "google.com") and host.split(".", 1)[0] in ("docs", "drive", "sheets", "slides"):
         m = _DRIVE_FILE_PATH.search(path)
         if m:
             return CanonicalRef(kind=RefKind.DRIVE_FILE, value=m.group(1), connector_hint="GOOGLE_DRIVE")
@@ -180,7 +198,7 @@ def resolve_canonical_ref(raw: str) -> CanonicalRef | None:
             return CanonicalRef(kind=RefKind.DRIVE_FILE, value=m.group(1), connector_hint="GOOGLE_DRIVE")
 
     # --- Slack ---
-    if "slack.com" in host:
+    if _domain_matches(host, "slack.com"):
         m = _SLACK_PERMALINK.search(path)
         if m:
             channel_id = m.group(1).upper()
@@ -195,26 +213,26 @@ def resolve_canonical_ref(raw: str) -> CanonicalRef | None:
             )
 
     # --- Linear ---
-    if "linear.app" in host:
+    if _domain_matches(host, "linear.app"):
         m = _LINEAR_ISSUE.search(path)
         if m:
             return CanonicalRef(kind=RefKind.ISSUE_KEY, value=m.group(1).upper(), connector_hint="LINEAR")
 
     # --- Notion ---
-    if "notion.so" in host or "notion.com" in host:
+    if _domain_matches(host, "notion.so") or _domain_matches(host, "notion.com"):
         m = _NOTION_UUID.search(path)
         if m:
             uid = (m.group(1) or m.group(2)).lower()
             return CanonicalRef(kind=RefKind.EXTERNAL_ID, value=uid, connector_hint="NOTION")
 
     # --- ServiceNow ---
-    if "service-now.com" in host or "servicenow.com" in host:
+    if _domain_matches(host, "service-now.com") or _domain_matches(host, "servicenow.com"):
         m = _SERVICENOW_SYS_ID.search(qs_raw)
         if m:
             return CanonicalRef(kind=RefKind.EXTERNAL_ID, value=m.group(1), connector_hint="SERVICENOW")
 
     # --- SharePoint ---
-    if "sharepoint.com" in host:
+    if _domain_matches(host, "sharepoint.com"):
         m = _SHAREPOINT_ITEM_QS.search(qs_raw)
         if m:
             return CanonicalRef(kind=RefKind.EXTERNAL_ID, value=unquote(m.group(1)), connector_hint="SHAREPOINT")

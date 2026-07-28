@@ -21,6 +21,9 @@ account for that extra call.
 
 from __future__ import annotations
 
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel
+
 from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.messages import ToolCall
@@ -34,31 +37,32 @@ from app.agents.agent_loop.loops.orchestrator import (
     domain_spec_factory,
     register_coordination_tools,
 )
-from app.agents.agent_loop.tool_adapter import PipesHubToolAdapter
-from app.agents.tools.models import Tool as RegistryTool
+from app.agents.agent_loop.tool_adapter import PipesHubStructuredToolAdapter
 from tests.unit.agents.adapter.conftest import make_context
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
 
-_JIRA_TOOL_NAME = "jira_search_issues"
+_JIRA_TOOL_NAME = "jira__search_issues"
+
+
+class _SearchIssuesArgs(BaseModel):
+    query: str
 
 
 def _search_issues(query: str) -> str:
-    """Module-level (see `test_agent_run_contract.py`'s `_add`) so
-    `RegistryToolWrapper._is_class_method()` doesn't misroute this as a
-    bound method needing `ClientFactoryRegistry` instantiation."""
     return f"3 open issues matching {query!r}"
+
+
+def _make_jira_tool() -> PipesHubStructuredToolAdapter:
+    structured_tool = StructuredTool.from_function(
+        name="search_issues", description="Search Jira issues",
+        args_schema=_SearchIssuesArgs, func=_search_issues,
+    )
+    return PipesHubStructuredToolAdapter(structured_tool, "jira", "search_issues")
 
 
 def _build_orchestrator(context, transport: ScriptedTransport, *, max_turns: int = 15) -> tuple[Agent, ToolRegistry]:
     registry = ToolRegistry()
-    registry.register_tool(
-        PipesHubToolAdapter(
-            RegistryTool(app_name="jira", tool_name="search_issues", description="Search Jira issues", function=_search_issues),
-            "jira",
-            "search_issues",
-            context_ref=lambda: context,
-        )
-    )
+    registry.register_tool(_make_jira_tool())
     register_coordination_tools(registry)
 
     transport_registry = TransportRegistry()
@@ -218,14 +222,7 @@ def _build_orchestrator_with_context(
     """Like `_build_orchestrator` but passes `context` to
     `domain_spec_factory` so the child inherits user/time context."""
     registry = ToolRegistry()
-    registry.register_tool(
-        PipesHubToolAdapter(
-            RegistryTool(app_name="jira", tool_name="search_issues", description="Search Jira issues", function=_search_issues),
-            "jira",
-            "search_issues",
-            context_ref=lambda: context,
-        )
-    )
+    registry.register_tool(_make_jira_tool())
     register_coordination_tools(registry)
 
     transport_registry = TransportRegistry()

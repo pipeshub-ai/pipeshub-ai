@@ -69,8 +69,9 @@ const TEST_ANSWER =
   'Machine learning is a subset of AI where systems learn from data to improve their performance over time.';
 
 // ---------------------------------------------------------------------------
-// SSE body builder (AG-UI wire format — matches real backend event sequence
-// now that `USE_AGUI_PROTOCOL` is the frontend default; see agui-sse-builder.ts)
+// SSE body builder (AG-UI wire format — matches real backend event sequence,
+// since `chat/api.ts::runChatStream` always negotiates `protocol: 'agui'`;
+// see agui-sse-builder.ts)
 // ---------------------------------------------------------------------------
 
 function buildSseBody(question: string, answer: string): string {

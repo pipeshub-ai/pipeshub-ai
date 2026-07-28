@@ -406,7 +406,7 @@ async def _unbound_tool_coroutine(**_kwargs: Any) -> Any:  # noqa: ANN401
         "This LangChain tool object exists only to carry a schema for "
         "LLM function-calling (LangChainTransport.complete/stream). Actual "
         "execution happens through agent-loop's ToolExecutor calling the "
-        "matching PipesHubToolAdapter, never through this StructuredTool."
+        "matching registered Tool adapter, never through this StructuredTool."
     )
 
 

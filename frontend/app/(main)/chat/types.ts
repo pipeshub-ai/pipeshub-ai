@@ -366,32 +366,13 @@ export const CHAT_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
 /** Maximum number of attachments per message. */
 export const CHAT_ATTACHMENT_MAX_FILES = 10;
 
-// SSE Event Types
-export type SSEEventType =
-  | 'connected'
-  | 'status'
-  | 'answer_chunk'
-  | 'complete'
-  | 'tool_call'
-  | 'tool_success'
-  | 'artifact'
-  | 'tool_error'
-  /** Internal tool round-trip — UI ignores (same as legacy chat) */
-  | 'tool_calls'
-  /** Agent / deep flows — UI ignores */
-  | 'tool_result'
-  /** Interactive questionnaire card — internaltools.ask_user_question */
-  | 'ask_user_question'
-  | 'metadata'
-  | 'restreaming'
-  | 'error';
-
 /**
  * AG-UI wire event type discriminators (`data.type` on every AG-UI frame —
  * see `backend/python/app/agents/agent_loop/protocol/agui.py::AGUIEventType`
  * and the Node-side mirror in `backend/nodejs/.../utils/agui.ts`).
- * Consumed exclusively by `agui-event-handler.ts`; `SSEEventType` above
- * remains the legacy-protocol vocabulary.
+ * Consumed exclusively by `agui-event-handler.ts`. The frontend always
+ * negotiates `protocol: 'agui'` (see `api.ts::runChatStream`), so this is
+ * the only wire vocabulary the client needs to parse.
  */
 export type AGUIWireEventType =
   | 'RUN_STARTED'

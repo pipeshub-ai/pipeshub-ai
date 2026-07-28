@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from app.agents.agent_loop.protocol.transcript_collector import MessagePart
 
-# Not a customer-facing setting (same rationale as `PIPESHUB_USE_AGENT_LOOP`/
 # `PIPESHUB_USE_COMPOSED_AGENTS`) — a deployment-level opt-out, not an
 # admin-UI toggle.
 _MAX_REASONING_CHARS = 4000
