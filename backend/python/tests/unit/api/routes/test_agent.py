@@ -2362,32 +2362,15 @@ class TestShareAgentTemplate:
 
 
 class TestMarkDeprecatedTools:
-    """Unit tests for `_mark_deprecated_tools`: stamps deprecated=True on
-    agent.toolsets[].tools[] whose fullName is no longer in the tool registry."""
+    """Unit tests for `_mark_deprecated_tools`.
 
-    def _patch_registry(self, names: list[str]):
-        registry = MagicMock()
-        registry.list_tools = MagicMock(return_value=names)
-        return patch("app.agents.tools.registry._global_tools_registry", registry)
+    The old global tools registry was removed; the function is currently a
+    no-op pending a replacement registry. Tests confirm it does not mutate
+    the agent and does not raise.
+    """
 
-    def test_known_tool_marked_not_deprecated(self) -> None:
-        from app.api.routes.agent import _mark_deprecated_tools
-
-        agent = {
-            "_key": "a1",
-            "toolsets": [
-                {"name": "ts", "tools": [{"name": "Search", "fullName": "google.search"}]}
-            ],
-        }
-        logger = MagicMock()
-
-        with self._patch_registry(["google.search", "google.gmail"]):
-            _mark_deprecated_tools(agent, logger)
-
-        assert agent["toolsets"][0]["tools"][0]["deprecated"] is False
-        logger.info.assert_not_called()
-
-    def test_unknown_tool_marked_deprecated(self) -> None:
+    def test_is_noop_does_not_mutate_agent(self) -> None:
+        """Function must not add or modify any keys on the agent dict."""
         from app.api.routes.agent import _mark_deprecated_tools
 
         agent = {
@@ -2395,82 +2378,22 @@ class TestMarkDeprecatedTools:
             "toolsets": [
                 {"name": "ts", "tools": [
                     {"name": "Search", "fullName": "google.search"},
-                    {"name": "GoneTool", "fullName": "google.removed_tool"},
-                ]}
+                    {"name": "Gone", "fullName": "google.removed_tool"},
+                ]},
             ],
         }
+        import copy
+        original = copy.deepcopy(agent)
         logger = MagicMock()
 
-        with self._patch_registry(["google.search"]):
-            _mark_deprecated_tools(agent, logger)
+        _mark_deprecated_tools(agent, logger)
 
-        tools = agent["toolsets"][0]["tools"]
-        assert tools[0]["deprecated"] is False
-        assert tools[1]["deprecated"] is True
-        # Info log fires only when ≥1 tool is flagged.
-        logger.info.assert_called_once()
-
-    def test_case_insensitive_match(self) -> None:
-        """Registry returns mixed-case names; agent stores mixed-case fullNames."""
-        from app.api.routes.agent import _mark_deprecated_tools
-
-        agent = {
-            "_key": "a1",
-            "toolsets": [
-                {"name": "ts", "tools": [{"name": "S", "fullName": "Google.Search"}]}
-            ],
-        }
-        logger = MagicMock()
-
-        with self._patch_registry(["google.search"]):
-            _mark_deprecated_tools(agent, logger)
-
-        assert agent["toolsets"][0]["tools"][0]["deprecated"] is False
-
-    def test_empty_registry_is_skipped(self) -> None:
-        """Empty registry (e.g. startup discovery failed) must NOT mark every tool
-        as deprecated and mislead the UI."""
-        from app.api.routes.agent import _mark_deprecated_tools
-
-        agent = {
-            "_key": "a1",
-            "toolsets": [
-                {"name": "ts", "tools": [{"name": "X", "fullName": "anything.x"}]}
-            ],
-        }
-        logger = MagicMock()
-
-        with self._patch_registry([]):
-            _mark_deprecated_tools(agent, logger)
-
-        assert "deprecated" not in agent["toolsets"][0]["tools"][0]
-        logger.warning.assert_called_once()
+        assert agent == original, "no-op must not mutate the agent"
         logger.info.assert_not_called()
-
-    def test_blank_or_missing_fullname_not_flagged(self) -> None:
-        """A tool with no fullName cannot be looked up — leave it un-flagged
-        (deprecated=False) rather than mass-marking it deprecated."""
-        from app.api.routes.agent import _mark_deprecated_tools
-
-        agent = {
-            "_key": "a1",
-            "toolsets": [
-                {"name": "ts", "tools": [
-                    {"name": "Blank", "fullName": ""},
-                    {"name": "Missing"},
-                ]}
-            ],
-        }
-        logger = MagicMock()
-
-        with self._patch_registry(["google.search"]):
-            _mark_deprecated_tools(agent, logger)
-
-        tools = agent["toolsets"][0]["tools"]
-        assert tools[0]["deprecated"] is False
-        assert tools[1]["deprecated"] is False
+        logger.warning.assert_not_called()
 
     def test_no_toolsets_or_tools_is_noop(self) -> None:
+        """Edge-case agent shapes must not cause AttributeError."""
         from app.api.routes.agent import _mark_deprecated_tools
 
         for agent in (
@@ -2481,8 +2404,7 @@ class TestMarkDeprecatedTools:
             {"_key": "a5", "toolsets": [{"name": "ts", "tools": None}]},
         ):
             logger = MagicMock()
-            with self._patch_registry(["google.search"]):
-                _mark_deprecated_tools(agent, logger)
+            _mark_deprecated_tools(agent, logger)
             logger.info.assert_not_called()
 
 
@@ -2508,9 +2430,9 @@ class TestGetAgent:
             mark_dep.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_found_stamps_deprecated_on_response(self) -> None:
-        """End-to-end: GET /agents/{id} must surface `deprecated=True` for tools
-        whose fullName is no longer in the registry, so the UI can warn the user."""
+    async def test_found_returns_agent_toolsets_unchanged(self) -> None:
+        """GET /agents/{id} must return the agent doc without mutating its tools.
+        _mark_deprecated_tools is currently a no-op (registry removed)."""
         from app.api.routes.agent import get_agent
 
         agent_doc = {
@@ -2531,24 +2453,21 @@ class TestGetAgent:
         services["graph_provider"].get_agent = AsyncMock(return_value=agent_doc)
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_read": True})
 
-        registry = MagicMock()
-        registry.list_tools = MagicMock(return_value=["google.search"])
-
         request = MagicMock()
 
         with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
-             patch("app.api.routes.agent._enrich_agent_models", new_callable=AsyncMock), \
-             patch("app.agents.tools.registry._global_tools_registry", registry):
+             patch("app.api.routes.agent._enrich_agent_models", new_callable=AsyncMock):
 
             result = await get_agent(request, "a1")
 
         assert result.status_code == 200
         body = json.loads(result.body)
         tools = body["agent"]["toolsets"][0]["tools"]
-        assert tools[0]["deprecated"] is False
-        assert tools[1]["deprecated"] is True
+        # No deprecated key should be injected while _mark_deprecated_tools is a no-op.
+        assert "deprecated" not in tools[0]
+        assert "deprecated" not in tools[1]
 
     @pytest.mark.asyncio
     async def test_not_found(self) -> None:

@@ -1,6 +1,7 @@
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 
 import asyncio
+import logging
 import os
 import traceback
 from collections.abc import AsyncGenerator
@@ -611,12 +612,12 @@ async def health_check() -> JSONResponse:
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
-    except Exception as e:
+    except Exception:
+        logging.getLogger(__name__).error("Health check failed", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
                 "status": "fail",
-                "error": str(e),
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )

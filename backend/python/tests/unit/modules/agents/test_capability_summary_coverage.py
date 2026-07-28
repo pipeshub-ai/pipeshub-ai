@@ -219,9 +219,8 @@ class TestKnowledgeSectionTeachesTheRecordModel:
         assert "navigate" in rendered.lower() and "children" in rendered.lower()
 
     def test_fetch_record_named_in_canonical_block(self) -> None:
-        """The canonical block describes fetch_record as one of the five tools
-        so the model understands the system. It is dynamically granted later."""
-        rendered = _knowledge_rendered()
+        """fetch_record appears in the canonical block when the tool is granted."""
+        rendered = _knowledge_rendered(tool_names=["knowledgegraph__fetch_record"])
         assert "knowledgegraph__fetch_record" in rendered
 
 

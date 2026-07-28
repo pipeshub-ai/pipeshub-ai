@@ -282,16 +282,15 @@ class TestCanonicalKnowledgeBlock:
         assert "content" in rendered.lower()
         assert "metadata" in rendered.lower()
 
-    def test_canonical_block_only_on_agent_route(self) -> None:
-        """Chat route (ids_actionable=False) must not render the canonical block."""
+    def test_canonical_block_always_rendered(self) -> None:
+        """The canonical knowledge-system block is rendered for all routes."""
         state = {
             "agent_knowledge": [],
             "available_connectors": [{"type": "confluence"}],
         }
         catalog = SourceCatalog.from_state(state)
         rendered = catalog.render()
-        assert "ranked sample" not in rendered.lower()
-        assert "knowledge system" not in rendered.lower()
+        assert "knowledge system" in rendered.lower()
 
     def test_combining_them_section_present_on_agent_route(self) -> None:
         """The 'Combining them' paragraph must be in the canonical block."""

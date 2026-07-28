@@ -1181,7 +1181,21 @@ class TestHyperlinkEdgeCases:
         assert "https://" in out
 
 
+def _multiprocessing_available() -> bool:
+    try:
+        import multiprocessing.synchronize  # noqa: F401
+        import os
+        os.sysconf("SC_SEM_NSEMS_MAX")
+        return True
+    except (ImportError, PermissionError, OSError):
+        return False
+
+
 class TestRasterize:
+    @pytest.mark.skipif(
+        not _multiprocessing_available(),
+        reason="multiprocessing semaphores unavailable in this environment",
+    )
     def test_rasterize_page_from_stream(self):
         page = _make_pdf_page(lambda c: c.drawString(72, 700, "x"))
         img, scale = _rasterize_page(page, 72)

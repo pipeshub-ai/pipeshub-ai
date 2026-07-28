@@ -209,8 +209,11 @@ async function fetchDeletedAgentKeysForUser(
 
 /**
  * Parses the chatMode from request body and determines if agent mode is enabled.
- * Supports formats: 'agent:auto', 'agent:quick', 'agent' (defaults to 'auto'), or regular modes like 'quick'.
- * 
+ * Supports formats: 'agent:auto', 'agent:quick', 'agent' (defaults to 'quick' — Universal
+ * Agent Mode has no strategy selector, so it always runs the fast flat-ReAct loop rather
+ * than paying for the LLM tier-classifier round-trip 'auto' would trigger), or regular
+ * modes like 'quick'.
+ *
  * @param requestChatMode - The chatMode value from request body
  * @returns Object containing the parsed chatMode and agentMode flag
  */
@@ -219,7 +222,7 @@ const parseChatMode = (requestChatMode?: string): { chatMode: string; agentMode:
   let agentMode: boolean = false;
 
   if (chatMode.includes('agent')) {
-    chatMode = chatMode.split(':')[1] || 'auto';
+    chatMode = chatMode.split(':')[1] || 'quick';
     agentMode = true;
   }
 

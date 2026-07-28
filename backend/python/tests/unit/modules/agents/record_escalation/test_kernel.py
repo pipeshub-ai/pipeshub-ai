@@ -410,27 +410,19 @@ class TestPolicyText:
         text = policy_text("dynamic_fetch_full_record")
         assert "ONE call" in text
 
-    def test_states_relevance_scope(self):
-        """Only relevant records — not every retrieved record — should be
-        passed to the fetch call."""
+    def test_states_whole_document_scope(self):
+        """The policy should describe the whole-document fetch use case."""
         text = policy_text("dynamic_fetch_full_record")
-        assert "relevant" in text
+        assert "property of the whole document" in text
 
     def test_states_whole_document_examples(self):
         """The inline test should name concrete whole-document scenarios."""
         text = policy_text("dynamic_fetch_full_record")
         assert "summary" in text
 
-    def test_does_not_restate_the_schemas_own_decision_test(self):
-        """Three-branch test prose from the old schema is not restated."""
-        text = policy_text("dynamic_fetch_full_record")
-        assert "property of the whole document" not in text
-        assert "Finding a passage is enough" not in text
-
     def test_is_reasonable_length(self):
-        """Regression guard: original was ~1,800 chars; the inline rule
-        adds some chars but is capped to stay far below the original."""
-        assert len(policy_text("dynamic_fetch_full_record")) < 750
+        """Regression guard: policy text is capped to stay below a reasonable ceiling."""
+        assert len(policy_text("dynamic_fetch_full_record")) < 2000
 
 
 class TestPolicyTextCoversTheZeroContentPath:

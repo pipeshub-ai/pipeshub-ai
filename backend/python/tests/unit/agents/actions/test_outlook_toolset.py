@@ -98,7 +98,13 @@ class TestDecodeGraphFileAttachmentContentBytes:
     def test_decodes_base64_text_payload(self):
         raw = b"hello"
         encoded = base64.b64encode(raw)
-        assert _decode_graph_file_attachment_content_bytes(encoded) == raw
+        # Pin to a pre-fix Kiota version so the legacy ASCII-detect/decode
+        # path runs regardless of what version is actually installed.
+        with patch(
+            "app.agents.actions.microsoft.outlook.outlook.importlib.metadata.version",
+            return_value="1.11.6",
+        ):
+            assert _decode_graph_file_attachment_content_bytes(encoded) == raw
 
     def test_empty_bytes(self):
         assert _decode_graph_file_attachment_content_bytes(b"") == b""

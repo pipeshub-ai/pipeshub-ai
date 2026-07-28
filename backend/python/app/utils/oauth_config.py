@@ -89,9 +89,11 @@ def extract_oauth_error_message(exc: Exception) -> str:
             description = (error_body.get("message") or "").strip()
         # Slack uses "error" as a code string, no separate description
 
-    # If we got a meaningful description from the provider, use it directly
+    # If we got a meaningful description from the provider, use it directly.
+    # Cap at 200 chars to prevent unexpectedly long or information-rich
+    # provider responses from being surfaced verbatim to the client.
     if description and len(description) > 5:
-        clean_desc = description.rstrip(".")
+        clean_desc = description[:200].rstrip(".")
         return f"OAuth provider error: {clean_desc}. Please verify your OAuth credentials in the admin settings."
 
     # --- 3. Map the error code to a known message -------------------------

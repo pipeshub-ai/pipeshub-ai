@@ -10518,7 +10518,7 @@ describe('Enterprise Search Controller', () => {
       await promise
     })
 
-    it('should parse plain agent as agentMode=true and chatMode=auto', async () => {
+    it('should parse plain agent as agentMode=true and chatMode=quick', async () => {
       const handler = streamChat(createMockAppConfig())
 
       const mockDoc = createMockConversationDoc({
@@ -10549,7 +10549,7 @@ describe('Enterprise Search Controller', () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
 
       expect(capturedBody).to.not.be.null
-      expect(capturedBody.chatMode).to.equal('auto')
+      expect(capturedBody.chatMode).to.equal('quick')
       expect(capturedUri).to.include('/agent/agentIdPlaceholder/chat')
 
       mockStream.emit('end')

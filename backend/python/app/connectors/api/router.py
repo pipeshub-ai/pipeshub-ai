@@ -1459,13 +1459,11 @@ async def get_records(
             }
         }
     except Exception as e:
-        logger.error(f"❌ Failed to list all records: {str(e)}")
-        return {
-            "records": [],
-            "pagination": {"page": page, "limit": limit, "totalCount": 0, "totalPages": 0},
-            "filters": {"applied": {}, "available": {}},
-            "error": str(e),
-        }
+        logger.error(f"❌ Failed to list all records: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Failed to retrieve records",
+        ) from e
 
 @router.get("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 @inject
@@ -5535,7 +5533,7 @@ async def handle_oauth_callback(
         }
 
     except Exception as e:
-        logger.error(f"Error handling OAuth callback: {e}")
+        logger.error(f"Error handling OAuth callback: {e}", exc_info=True)
 
         # Update instance authentication status on error
         if connector_id:

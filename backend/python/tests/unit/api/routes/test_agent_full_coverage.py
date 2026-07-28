@@ -1422,43 +1422,34 @@ class TestUpdateAgentPermissionEdgeCases:
 
 
 class TestMarkDeprecatedToolsEdgeCases:
-    def _mock_registry(self, tool_names):
-        mock_reg = MagicMock()
-        mock_reg.list_tools = MagicMock(return_value=list(tool_names))
-        return MagicMock(_global_tools_registry=mock_reg)
+    """The old global tools registry was removed; _mark_deprecated_tools is a
+    confirmed no-op pending a replacement registry. Verify it does not raise
+    on edge-case agent shapes.
+    """
 
-    def test_empty_toolset_skipped(self):
-        """Line 1477 — falsy toolset skipped."""
+    def test_noop_on_normal_agent(self):
+        """No-op must not mutate the agent or raise."""
         from app.api.routes.agent import _mark_deprecated_tools
-        agent = {"toolsets": [None, {"tools": [{"fullName": "jira.search"}]}]}
-        with patch.dict("sys.modules", {"app.agents.tools.registry": self._mock_registry({"jira.search"})}):
-            _mark_deprecated_tools(agent, MagicMock())
-
-    def test_empty_tool_skipped(self):
-        """Line 1480 — falsy tool skipped."""
-        from app.api.routes.agent import _mark_deprecated_tools
-        agent = {"toolsets": [{"tools": [None, {"fullName": "jira.search"}]}]}
-        with patch.dict("sys.modules", {"app.agents.tools.registry": self._mock_registry({"jira.search"})}):
-            _mark_deprecated_tools(agent, MagicMock())
-
-    def test_empty_registry_skips(self):
-        """Line 1471 — empty registry skips annotation."""
-        from app.api.routes.agent import _mark_deprecated_tools
-        agent = {"toolsets": [{"tools": [{"fullName": "jira.search"}]}]}
-        with patch.dict("sys.modules", {"app.agents.tools.registry": self._mock_registry(set())}):
-            _mark_deprecated_tools(agent, MagicMock())
-        assert "deprecated" not in agent["toolsets"][0]["tools"][0]
-
-    def test_deprecated_tool_marked(self):
-        from app.api.routes.agent import _mark_deprecated_tools
+        import copy
         agent = {"toolsets": [{"tools": [
             {"fullName": "jira.search"},
             {"fullName": "old.tool"},
         ]}]}
-        with patch.dict("sys.modules", {"app.agents.tools.registry": self._mock_registry({"jira.search"})}):
-            _mark_deprecated_tools(agent, MagicMock())
-        assert agent["toolsets"][0]["tools"][0]["deprecated"] is False
-        assert agent["toolsets"][0]["tools"][1]["deprecated"] is True
+        original = copy.deepcopy(agent)
+        _mark_deprecated_tools(agent, MagicMock())
+        assert agent == original
+
+    def test_noop_on_none_toolset_entry(self):
+        """Falsy toolset entries must not cause AttributeError."""
+        from app.api.routes.agent import _mark_deprecated_tools
+        agent = {"toolsets": [None, {"tools": [{"fullName": "jira.search"}]}]}
+        _mark_deprecated_tools(agent, MagicMock())
+
+    def test_noop_on_none_tool_entry(self):
+        """Falsy tool entries must not cause AttributeError."""
+        from app.api.routes.agent import _mark_deprecated_tools
+        agent = {"toolsets": [{"tools": [None, {"fullName": "jira.search"}]}]}
+        _mark_deprecated_tools(agent, MagicMock())
 
 
 # ============================================================================

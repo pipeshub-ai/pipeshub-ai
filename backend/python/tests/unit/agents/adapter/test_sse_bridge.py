@@ -1016,6 +1016,14 @@ class TestRunAgentLoopStream:
         ):
             events = [chunk async for chunk in run_agent_loop_stream(**self._base_kwargs())]
 
+        # The normal-exit path intentionally does NOT await the _produce() cleanup
+        # tail (orphan cancellation + sandbox teardown) so the SSE response closes
+        # promptly. The cleanup runs as a background task. Yield to the event loop
+        # enough times for: (1) CancelledError to land in both slow tasks, (2) their
+        # except-blocks to run, (3) gather to complete, and (4) destroy_all() to fire.
+        for _ in range(20):
+            await asyncio.sleep(0)
+
         assert len(events) == 1
         # Both background tasks must have been cancelled, and BOTH before
         # the sandbox was destroyed — never the other way around.

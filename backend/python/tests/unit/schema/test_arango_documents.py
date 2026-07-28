@@ -104,6 +104,9 @@ class TestDocumentSchemaInventory:
             "toolset_schema",
             "tool_schema",
             "code_file_record_schema",
+            "agent_skills_schema",
+            "agent_skill_versions_schema",
+            "agent_skill_candidates_schema",
         }
         assert expected == set(ALL_DOCUMENT_SCHEMAS.keys())
 

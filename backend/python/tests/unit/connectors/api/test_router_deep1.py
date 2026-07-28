@@ -1410,7 +1410,7 @@ class TestStreamRecordDeepPaths:
             mock_convert.return_value = StreamingResponse(iter([b"pdf"]), media_type="application/pdf")
 
             from app.connectors.api.router import stream_record
-            result = await stream_record(req, "rec-1", MimeTypes.PDF.value, gp, cs)
+            result = await stream_record(req, "rec-1", convertTo=MimeTypes.PDF.value, version=None, graph_provider=gp, config_service=cs)
             assert isinstance(result, StreamingResponse)
             mock_convert.assert_awaited_once()
 
@@ -1422,7 +1422,7 @@ class TestStreamRecordDeepPaths:
         record.mime_type = "application/pdf"
 
         from app.connectors.api.router import stream_record
-        result = await stream_record(req, "rec-1", MimeTypes.PDF.value, gp, cs)
+        result = await stream_record(req, "rec-1", convertTo=MimeTypes.PDF.value, version=None, graph_provider=gp, config_service=cs)
         assert isinstance(result, Response)
 
     @pytest.mark.asyncio
@@ -1438,7 +1438,7 @@ class TestStreamRecordDeepPaths:
             mock_convert.return_value = StreamingResponse(iter([b"pdf"]), media_type="application/pdf")
 
             from app.connectors.api.router import stream_record
-            result = await stream_record(req, "rec-1", MimeTypes.PDF.value, gp, cs)
+            result = await stream_record(req, "rec-1", convertTo=MimeTypes.PDF.value, version=None, graph_provider=gp, config_service=cs)
             mock_convert.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1453,7 +1453,7 @@ class TestStreamRecordDeepPaths:
         ):
             from app.connectors.api.router import stream_record
             with pytest.raises(HTTPException) as exc:
-                await stream_record(req, "rec-1", MimeTypes.PDF.value, gp, cs)
+                await stream_record(req, "rec-1", convertTo=MimeTypes.PDF.value, version=None, graph_provider=gp, config_service=cs)
             assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
     @pytest.mark.asyncio
@@ -1464,7 +1464,7 @@ class TestStreamRecordDeepPaths:
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
-            await stream_record(req, "rec-1", None, gp, cs)
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
@@ -1476,7 +1476,7 @@ class TestStreamRecordDeepPaths:
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
-            await stream_record(req, "rec-1", None, gp, cs)
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
@@ -1495,7 +1495,7 @@ class TestStreamRecordDeepPaths:
         gp.get_document = AsyncMock(side_effect=get_doc)
 
         from app.connectors.api.router import stream_record
-        result = await stream_record(req, "rec-1", None, gp, cs)
+        result = await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         # Should have fetched org-2 after mismatch
         assert call_count[0] >= 2
 
@@ -1507,7 +1507,7 @@ class TestStreamRecordDeepPaths:
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
-            await stream_record(req, "rec-1", None, gp, cs)
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.FORBIDDEN.value
 
     @pytest.mark.asyncio
@@ -1520,7 +1520,7 @@ class TestStreamRecordDeepPaths:
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
-            await stream_record(req, "rec-1", None, gp, cs)
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.CONFLICT.value
 
     @pytest.mark.asyncio
@@ -1534,7 +1534,7 @@ class TestStreamRecordDeepPaths:
         with patch(f"{_ROUTER}._get_streaming_connector", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = conn_obj
             from app.connectors.api.router import stream_record
-            result = await stream_record(req, "rec-1", None, gp, cs)
+            result = await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
             assert isinstance(result, Response)
             mock_get.assert_awaited_once()
 
@@ -1554,7 +1554,7 @@ class TestStreamRecordDeepPaths:
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
-            await stream_record(req, "rec-1", None, gp, cs)
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
@@ -1565,7 +1565,7 @@ class TestStreamRecordDeepPaths:
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
-            await stream_record(req, "rec-1", None, gp, cs)
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 
     @pytest.mark.asyncio
@@ -1578,7 +1578,7 @@ class TestStreamRecordDeepPaths:
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
-            await stream_record(req, "rec-1", None, gp, cs)
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == 403
 
     @pytest.mark.asyncio
@@ -1589,5 +1589,5 @@ class TestStreamRecordDeepPaths:
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
-            await stream_record(req, "rec-1", None, gp, cs)
+            await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
