@@ -867,6 +867,8 @@
         "groupLabel": "Add to a User Group",
         "groupPlaceholder": "Search or select user group(s)",
         "importCsv": "Import CSV",
+        "import": "Import",
+        "importTooltip": "Supports CSV and Excel files (.csv, .xlsx, .xls)",
         "cancel": "Cancel",
         "send": "Send Invite",
         "successTitle": "Invite sent!",

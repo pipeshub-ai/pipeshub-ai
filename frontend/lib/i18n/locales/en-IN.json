@@ -855,6 +855,8 @@
         "groupPlaceholder": "Select groups",
         "groupSearchPlaceholder": "Search groups...",
         "importCsv": "Import CSV",
+        "import": "Import",
+        "importTooltip": "Supports CSV and Excel files (.csv, .xlsx, .xls)",
         "cancel": "Cancel",
         "send": "Send Invite",
         "successTitle": "Invitations Sent",

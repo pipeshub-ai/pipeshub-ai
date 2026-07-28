@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { Box, Button } from '@radix-ui/themes';
+import { Box, Button, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useToastStore } from '@/lib/store/toast-store';
@@ -325,17 +325,24 @@ export function InviteUsersSidebar({
               style={{ display: 'none' }}
               onChange={handleImportFile}
             />
-            <Button
-              variant="outline"
-              color="gray"
-              size="2"
-              disabled={isImporting}
-              onClick={() => fileInputRef.current?.click()}
-              style={{ cursor: isImporting ? 'default' : 'pointer' }}
+            <Tooltip
+              content={t(
+                'workspace.users.invite.importTooltip',
+                'Supports CSV and Excel files (.csv, .xlsx, .xls)'
+              )}
             >
-              <MaterialIcon name="upload" size={16} />
-              {t('workspace.users.invite.importCsv', 'Import CSV')}
-            </Button>
+              <Button
+                variant="outline"
+                color="gray"
+                size="2"
+                disabled={isImporting}
+                onClick={() => fileInputRef.current?.click()}
+                style={{ cursor: isImporting ? 'default' : 'pointer' }}
+              >
+                <MaterialIcon name="upload" size={16} />
+                {t('workspace.users.invite.import', 'Import')}
+              </Button>
+            </Tooltip>
           </>
         ) : undefined
       }
