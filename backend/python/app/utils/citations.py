@@ -293,6 +293,9 @@ def _resolve_ref(target: str, ref_to_url: dict[str, str] | None) -> str:
         return ref_to_url[inner_ref]
     return target
 
+_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(ref\d+\)')
+
+
 def _renumber_citation_links(
     text: str,
     md_matches: list,
@@ -316,7 +319,18 @@ def _renumber_citation_links(
         if new_num is not None:
             replacement = f"[{new_num}]({full_url})"
             text = text[:match.start()] + replacement + text[match.end():]
+    text = _strip_unresolved_ref_citations(text)
     return text
+
+
+def _strip_unresolved_ref_citations(text: str) -> str:
+    """Remove ``[text](refN)`` links that survived renumbering.
+
+    These are dead references — typically carried over from a prior
+    conversation turn whose ``CitationRefMapper`` no longer exists.
+    Leaving them renders as broken ``[source](ref209)`` in the UI.
+    """
+    return _UNRESOLVED_REF_LINK_RE.sub('', text)
 
 
 def _extract_block_index_from_url(url: str) -> int | None:
@@ -381,17 +395,100 @@ def _append_record_page_citation(
     return citation_num + 1
 
 
+_TEXT_FRAGMENT_DIRECTIVE_PREFIX = "#:~:text="
+
+
+def _page_of(url: str) -> str:
+    """Strip a `#:~:text=` fragment so a bare page URL can be compared
+    against fragment-keyed web records (see `generate_text_fragment_url`)."""
+    return url.split(_TEXT_FRAGMENT_DIRECTIVE_PREFIX, 1)[0]
+
+
+def _build_web_record_page_index(
+    web_records: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Maps page URL (fragment stripped) -> the first web record for that
+    page. Built once per normalization call so the page-level fallback
+    below doesn't rescan `web_records` for every citation target —
+    `TerminalAnswerStreamer` re-runs the containing normalizer on every
+    streamed token, so an O(web_records) rescan per URL would make citation
+    resolution O(tokens x unique_urls x web_records)."""
+    index: dict[str, dict[str, Any]] = {}
+    for rec in web_records:
+        page = _page_of(rec.get("url", ""))
+        if page and page not in index:
+            index[page] = rec
+    return index
+
+
 def _find_web_record_by_url(
     url: str,
     web_records: list[dict[str, Any]],
+    page_index: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """Find a web record whose 'url' field matches exactly."""
+    """Find a web record for `url`. Exact match first (per-block
+    precision), then a page-level fallback: models sometimes paraphrase a
+    per-block `#:~:text=` citation down to the bare page URL, which would
+    otherwise never match and silently drop the citation."""
     if not url:
         return None
     for rec in web_records:
         if rec.get("url") == url:
             return rec
+    page = _page_of(url)
+    if page_index is not None:
+        return page_index.get(page)
+    for rec in web_records:
+        if _page_of(rec.get("url", "")) == page:
+            return rec
     return None
+
+
+def _try_append_web_citation(
+    url: str,
+    web_records: list[dict[str, Any]],
+    page_index: dict[str, dict[str, Any]],
+    new_citations: list[dict[str, Any]],
+    url_to_citation_num: dict[str, int],
+    citation_num: int,
+) -> tuple[bool, int]:
+    """Shared web-record branch for `_normalize_markdown_link_citations`
+    and its `_for_agent` twin: web citations are keyed by URL, not by the
+    `final_results`/`records` block indexes the rest of this module
+    resolves against, so they need their own lookup before falling through
+    to record/vectordb resolution.
+
+    Returns `(handled, next_citation_num)`. `handled=True` means the
+    caller should move on to the next URL regardless of whether a citation
+    was appended — a web record with no content is dropped, not passed
+    through to record-based matching (a URL that happens to also look like
+    a record URL should not be double-resolved).
+    """
+    if not web_records:
+        return False, citation_num
+    web_rec = _find_web_record_by_url(url, web_records, page_index)
+    if not web_rec:
+        return False, citation_num
+    web_content = web_rec.get("content", "")
+    if not web_content:
+        return True, citation_num
+    new_citations.append({
+        "content": _safe_stringify_content(value=web_content),
+        "chunkIndex": citation_num,
+        "metadata": {
+            "recordId": _page_of(url),
+            "mimeType": "text/html",
+            "recordName": _page_of(url),
+            "webUrl": url,
+            "origin": "WEB_SEARCH",
+            "orgId": web_rec.get("org_id", ""),
+            "connector": "WEB",
+            "recordType": "WEBPAGE",
+        },
+        "citationType": "web|url",
+    })
+    url_to_citation_num[url] = citation_num
+    return True, citation_num + 1
 
 
 def _safe_stringify_content(value: Any) -> str:
@@ -592,6 +689,7 @@ def _normalize_markdown_link_citations(
     url_to_citation_num = {}
     new_citations = []
     new_citation_num = 1
+    web_page_index = _build_web_record_page_index(web_records)
 
     def _append_citation_from_record(
         record: dict[str, Any],
@@ -651,31 +749,11 @@ def _normalize_markdown_link_citations(
         return True
 
     for url in unique_urls:
-        # Try web records first (web citations are keyed by URL)
-        if web_records:
-            web_rec = _find_web_record_by_url(url, web_records)
-            if web_rec:
-                web_content = web_rec.get("content", "")
-                if not web_content:
-                    continue
-                new_citations.append({
-                    "content": _safe_stringify_content(value=web_content),
-                    "chunkIndex": new_citation_num,
-                    "metadata": {
-                        "recordId": url.split("#:~:text=")[0],
-                        "mimeType": "text/html",
-                        "recordName": url.split("#:~:text=")[0],
-                        "webUrl": url,
-                        "origin": "WEB_SEARCH",
-                        "orgId": web_rec.get("org_id", ""),
-                        "connector": "WEB",
-                        "recordType": "WEBPAGE",
-                    },
-                    "citationType": "web|url",
-                })
-                url_to_citation_num[url] = new_citation_num
-                new_citation_num += 1
-                continue
+        handled, new_citation_num = _try_append_web_citation(
+            url, web_records, web_page_index, new_citations, url_to_citation_num, new_citation_num,
+        )
+        if handled:
+            continue
 
         if url in url_to_doc_index:
             idx = url_to_doc_index[url]
@@ -835,33 +913,14 @@ def _normalize_markdown_link_citations_for_agent(
     url_to_citation_num = {}
     new_citations = []
     new_citation_num = 1
+    web_page_index = _build_web_record_page_index(web_records)
 
     for url in unique_urls:
-        # Try web records first (web citations are keyed by URL)
-        if web_records:
-            web_rec = _find_web_record_by_url(url, web_records)
-            if web_rec:
-                web_content = web_rec.get("content", "")
-                if not web_content:
-                    continue
-                new_citations.append({
-                    "content": _safe_stringify_content(value=web_content),
-                    "chunkIndex": new_citation_num,
-                    "metadata": {
-                        "recordId": url.split("#:~:text=")[0],
-                        "mimeType": "text/html",
-                        "recordName": url.split("#:~:text=")[0],
-                        "webUrl": url,
-                        "origin": "WEB_SEARCH",
-                        "orgId": web_rec.get("org_id", ""),
-                        "connector": "WEB",
-                        "recordType": "WEBPAGE",
-                    },
-                    "citationType": "web|url",
-                })
-                url_to_citation_num[url] = new_citation_num
-                new_citation_num += 1
-                continue
+        handled, new_citation_num = _try_append_web_citation(
+            url, web_records, web_page_index, new_citations, url_to_citation_num, new_citation_num,
+        )
+        if handled:
+            continue
 
         if url in url_to_doc_index:
             idx = url_to_doc_index[url]

@@ -122,7 +122,6 @@
 |-----------|-------------|
 | FastAPI | 高性能な Python Web フレームワーク |
 | LangChain | LLM パイプライン向けフレームワーク |
-| LangGraph | LLM ワークフロー向けの状態グラフ |
 | Qdrant | ベクトル類似度検索エンジン |
 | Neo4j / ArangoDB | グラフデータベース |
 | Kafka / Redis Streams | 分散イベントストリーミングプラットフォーム |
@@ -265,7 +264,7 @@ docker compose -f docker-compose.prod.yml -p pipeshub-ai up -d
 
 ### PipesHub はどの LLM プロバイダーに対応していますか？
 
-PipesHub は「自前のモデルを使用（Bring Your Own Model）」方式で、任意の LLM プロバイダーを使用できます。お好みのモデルを VPC 内にデプロイしてください。技術スタックには、LLM パイプラインとワークフローのための LangChain と LangGraph が含まれます。
+PipesHub は「自前のモデルを使用（Bring Your Own Model）」方式で、任意の LLM プロバイダーを使用できます。お好みのモデルを VPC 内にデプロイしてください。技術スタックには、LLM パイプラインとワークフローのための LangChain が含まれます。
 
 ### ナレッジグラフ検索機能とは何ですか？
 

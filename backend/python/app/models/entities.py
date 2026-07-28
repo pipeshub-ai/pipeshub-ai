@@ -250,6 +250,9 @@ class Record(BaseModel):
     is_dependent_node: bool = Field(default=False, description="True for dependent records, False for root records")
     parent_node_id: str | None = Field(default=None, description="Internal record ID of the parent node")
 
+    # Breadcrumb path injected at retrieval time (not persisted)
+    location: str | None = Field(default=None, exclude=True, description="Rendered hierarchy path e.g. 'KB > Space > Page (parent id: abc123)'.")
+
     def _format_timestamp(self, epoch_ms: int | None) -> str:
         if epoch_ms is None:
             return "N/A"
@@ -273,6 +276,8 @@ class Record(BaseModel):
             f"Connector ID    : {self.connector_id if self.connector_id else 'N/A'}",
             f"connector Name  : {self.connector_name.value if self.connector_name else 'N/A'}",
         ]
+        if self.location:
+            lines.append(f"Location        : {self.location}")
         if self.mime_type:
             lines.append(f"MIME Type       : {self.mime_type}")
 
@@ -2236,6 +2241,23 @@ class LifecycleStatus(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class ArtifactVisibility(str, Enum):
+    """Controls whether an artifact is surfaced to the user.
+
+    VISIBLE (default) — artifact is delivered via live SSE event and
+    persisted ``::artifact`` marker so the frontend renders a download card.
+
+    STAGING — artifact is saved to blob storage and the registry (durable,
+    lineage-tracked, readable by the agent via ``retrieve_artifact_content``
+    and usable as ``run_code`` input) but suppressed from SSE events and
+    markers so the user never sees it.  Use for intermediate/pipeline
+    artifacts that are only meaningful to the agent itself.  A STAGING
+    artifact can later be promoted to VISIBLE via ``promote_artifact``.
+    """
+    VISIBLE = "VISIBLE"
+    STAGING = "STAGING"
+
+
 class ArtifactType(str, Enum):
     """Type of artifact produced by sandbox code execution."""
     CODE_OUTPUT = "CODE_OUTPUT"
@@ -2245,7 +2267,42 @@ class ArtifactType(str, Enum):
     SPREADSHEET = "SPREADSHEET"
     PRESENTATION = "PRESENTATION"
     DATA_FILE = "DATA_FILE"
+    # Source code (LLM/agent-authored, e.g. the `run_code` program that
+    # produced other artifacts) — first-class so `DERIVED_FROM` lineage
+    # edges always point at a real, versioned, fetchable artifact rather
+    # than a copy of the code embedded only in conversation history. See
+    # `app/services/artifact_registry/`.
+    CODE = "CODE"
+    TOOL_RESULT = "TOOL_RESULT"
     OTHER = "OTHER"
+
+
+def serialize_artifact_versions(versions: list[dict]) -> str:
+    """JSON-encode the `versions` registryVersion->storageVersion bookkeeping
+    list before it hits a graph doc, so it round-trips identically through
+    ArangoDB (native nested storage — this is just belt-and-suspenders there)
+    and Neo4j, whose driver rejects list-of-map node properties outright
+    (only primitives/arrays-of-primitives are storable). See
+    `deserialize_artifact_versions` for the inverse, and
+    `neo4j_provider._extract_legacy_record_group_ids` for the same
+    stringified-JSON-property pattern used elsewhere in this codebase."""
+    return json.dumps(versions or [])
+
+
+def deserialize_artifact_versions(raw: Any) -> list[dict]:
+    """Inverse of `serialize_artifact_versions`. Also accepts a native list
+    unchanged — defensive for in-memory graph-provider test doubles that
+    store whatever Python value they were given without a real DB
+    round-trip."""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 class ArtifactRecord(Record):
@@ -2257,6 +2314,29 @@ class ArtifactRecord(Record):
     conversation_id: str | None = Field(default=None, description="Conversation that produced this artifact")
     is_temporary: bool = Field(default=False, description="Whether this artifact is eligible for automatic cleanup")
     expires_at: int | None = Field(default=None, description="Epoch ms timestamp for auto-cleanup of temporary artifacts")
+    visibility: ArtifactVisibility = Field(
+        default=ArtifactVisibility.VISIBLE,
+        description="VISIBLE artifacts are surfaced to the user; STAGING artifacts are saved but suppressed from SSE events and markers",
+    )
+    # Logical identity within a conversation — stable across versions, used
+    # to match a re-run's output file name against an EXISTING artifact
+    # instead of a new one (see `VersionManager.resolve_by_logical_name`).
+    # Defaults to `record_name` when not set explicitly.
+    logical_name: str | None = Field(default=None, description="Stable logical name unique within the conversation, used to identify successive versions of the same artifact")
+    # SHA-256 of the CURRENT version's content — enables cheap dedup: a
+    # re-run producing byte-identical content skips the version bump
+    # entirely (see `VersionManager.add_version`).
+    content_hash: str | None = Field(default=None, description="SHA-256 hex digest of the current version's content")
+    result_schema: dict | None = Field(default=None, description="JSON Schema describing the tool result structure, for TOOL_RESULT artifacts")
+    # Explicit registryVersion -> storageVersion bookkeeping, one entry per
+    # version that has been given a durable blob index (see
+    # `VersionManager.add_version`). Never derive this mapping
+    # arithmetically from `version` — Node's `versionHistory` numbering can
+    # shift (lazy v0, out-of-band `isDocumentChanged` snapshots), so each
+    # entry records what actually happened at write time. Each entry:
+    # {"registryVersion": int, "storageVersion": int, "contentHash": str,
+    #  "sizeBytes": int, "createdAt": int}.
+    versions: list[dict] = Field(default_factory=list, description="Explicit per-version storage index bookkeeping")
 
     def to_arango_artifact_record(self) -> dict:
         """Return artifact sub-record for the ``artifacts`` collection."""
@@ -2275,6 +2355,11 @@ class ArtifactRecord(Record):
             "conversationId": self.conversation_id,
             "isTemporary": self.is_temporary,
             "expiresAt": self.expires_at,
+            "visibility": self.visibility.value,
+            "logicalName": self.logical_name or self.record_name,
+            "contentHash": self.content_hash,
+            "resultSchema": self.result_schema,
+            "versions": serialize_artifact_versions(self.versions) if self.versions else None,
         }
 
     @staticmethod
@@ -2297,6 +2382,12 @@ class ArtifactRecord(Record):
             artifact_type = ArtifactType(artifact_type_raw) if artifact_type_raw else ArtifactType.OTHER
         except ValueError:
             artifact_type = ArtifactType.OTHER
+
+        visibility_raw = artifact_doc.get("visibility")
+        try:
+            visibility = ArtifactVisibility(visibility_raw) if visibility_raw else ArtifactVisibility.VISIBLE
+        except ValueError:
+            visibility = ArtifactVisibility.VISIBLE
 
         return ArtifactRecord(
             id=record_doc.get("id", record_doc.get("_key")),
@@ -2329,6 +2420,11 @@ class ArtifactRecord(Record):
             conversation_id=artifact_doc.get("conversationId"),
             is_temporary=artifact_doc.get("isTemporary", False),
             expires_at=artifact_doc.get("expiresAt"),
+            visibility=visibility,
+            logical_name=artifact_doc.get("logicalName"),
+            content_hash=artifact_doc.get("contentHash"),
+            result_schema=artifact_doc.get("resultSchema"),
+            versions=deserialize_artifact_versions(artifact_doc.get("versions")),
         )
 
         

@@ -324,7 +324,7 @@ class TestFetchMultipleRecordsImpl:
                 records_map,
                 graph_provider=graph_provider,
                 org_id="org-1",
-                user_id="user-1",
+                user_id="u1",
             )
 
         assert result["ok"] is True
@@ -465,7 +465,7 @@ class TestFetchMultipleRecordsImpl:
                 ["r1"], records_map,
                 graph_provider=graph_provider,
                 org_id="org-1",
-                user_id="user-1",
+                user_id="u1",
             )
 
         assert result["ok"] is True
@@ -507,7 +507,7 @@ class TestFetchMultipleRecordsImpl:
                 ["r1"], records_map,
                 graph_provider=graph_provider,
                 org_id="org-1",
-                user_id="user-1",
+                user_id="u1",
             )
 
         assert result["ok"] is True
@@ -542,18 +542,24 @@ class TestFetchMultipleRecordsImpl:
 
 
 class TestFetchMultipleRecordsImplGraphFallback:
-    """Covers the org_id + graph_provider fallback branch (lines 97-125 in source)."""
+    """Covers the org_id + graph_provider fallback branch (lines 97-125 in source).
 
-    def _make_graph_provider(self, *, document=None, raises=None, endpoints=None, has_access=True):
+    Every case here resolves an ID that is NOT in the map, so each one needs
+    `user_id` — that path re-checks access itself and is skipped without it.
+    """
+
+    def _make_graph_provider(self, *, document=None, raises=None, endpoints=None, access=True):
         gp = MagicMock()
         gp.config_service = MagicMock()
-        gp.check_record_access_with_details = AsyncMock(return_value=has_access)
         if raises is not None:
             gp.get_document = AsyncMock(side_effect=raises)
         else:
             gp.get_document = AsyncMock(return_value=document)
         gp.config_service.get_config = AsyncMock(
             return_value=endpoints if endpoints is not None else {},
+        )
+        gp.check_record_access_with_details = AsyncMock(
+            return_value={"record": {"_key": "r1"}} if access else None,
         )
         return gp
 
@@ -578,7 +584,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
             )
 
             result = await ffr._fetch_multiple_records_impl(
-                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="u1",
             )
 
         assert result["ok"] is True
@@ -610,7 +616,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
             )
 
             result = await ffr._fetch_multiple_records_impl(
-                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="u1",
             )
 
         assert result["ok"] is True
@@ -626,7 +632,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
         )
 
         result = await ffr._fetch_multiple_records_impl(
-            ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
+            ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="u1",
         )
 
         assert result["ok"] is False
@@ -640,7 +646,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
         graph_provider = self._make_graph_provider(document=None)
 
         result = await ffr._fetch_multiple_records_impl(
-            ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
+            ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="u1",
         )
 
         assert result["ok"] is False
@@ -653,7 +659,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
         graph_provider = self._make_graph_provider(raises=RuntimeError("arango down"))
 
         result = await ffr._fetch_multiple_records_impl(
-            ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
+            ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="u1",
         )
 
         assert result["ok"] is False
@@ -678,7 +684,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
             )
 
             result = await ffr._fetch_multiple_records_impl(
-                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="u1",
             )
 
         assert result["ok"] is False
@@ -704,10 +710,86 @@ class TestFetchMultipleRecordsImplGraphFallback:
             )
 
             result = await ffr._fetch_multiple_records_impl(
-                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="user-1",
+                ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="u1",
             )
 
         assert result["ok"] is True
+
+
+class TestColdPathAccessControl:
+    """The map is built from ACL-filtered retrieval results, but an arbitrary
+    Record ID is not — the model can now get one from navigate/lookup_record.
+    So resolving an ID that is not in the map has to re-check access itself."""
+
+    def _graph_provider(self, *, access):
+        gp = MagicMock()
+        gp.config_service = MagicMock()
+        gp.config_service.get_config = AsyncMock(return_value={})
+        gp.check_record_access_with_details = AsyncMock(
+            return_value={"record": {"_key": "r1"}} if access else None,
+        )
+        gp.get_document = AsyncMock(return_value={
+            "indexingStatus": "COMPLETED", "virtualRecordId": "vrid-1",
+        })
+        return gp
+
+    @pytest.mark.asyncio
+    async def test_denied_record_is_never_read(self):
+        from app.utils import fetch_full_record as ffr
+
+        graph_provider = self._graph_provider(access=False)
+
+        result = await ffr._fetch_multiple_records_impl(
+            ["r1"], {}, org_id="org-1", graph_provider=graph_provider, user_id="u1",
+        )
+
+        assert result["ok"] is False
+        graph_provider.get_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_denied_looks_the_same_as_missing(self):
+        """A denial must not be distinguishable from a non-existent record."""
+        from app.utils import fetch_full_record as ffr
+
+        denied = await ffr._fetch_multiple_records_impl(
+            ["r1"], {"vr0": {"id": "other"}},
+            org_id="org-1", graph_provider=self._graph_provider(access=False), user_id="u1",
+        )
+        missing = await ffr._fetch_multiple_records_impl(
+            ["r1"], {"vr0": {"id": "other"}},
+            org_id="org-1", graph_provider=None, user_id="u1",
+        )
+
+        assert denied == missing
+
+    @pytest.mark.asyncio
+    async def test_without_user_id_the_path_is_skipped_not_served_unchecked(self):
+        from app.utils import fetch_full_record as ffr
+
+        graph_provider = self._graph_provider(access=True)
+
+        result = await ffr._fetch_multiple_records_impl(
+            ["r1"], {}, org_id="org-1", graph_provider=graph_provider,
+        )
+
+        assert result["ok"] is False
+        graph_provider.get_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_records_already_in_the_map_are_not_re_checked(self):
+        """Those came from an ACL-filtered search — re-checking each one would
+        add a permission traversal per record for no security gain."""
+        from app.utils import fetch_full_record as ffr
+
+        graph_provider = self._graph_provider(access=True)
+
+        result = await ffr._fetch_multiple_records_impl(
+            ["r1"], {"vr1": {"id": "r1", "content": "data"}},
+            org_id="org-1", graph_provider=graph_provider, user_id="u1",
+        )
+
+        assert result["ok"] is True
+        graph_provider.check_record_access_with_details.assert_not_awaited()
 
 
 class TestCreateFetchFullRecordTool:

@@ -1,4 +1,4 @@
-import { apiClient, streamSSERequest, SSEEvent } from '@/lib/api';
+import { apiClient, streamSSERequest } from '@/lib/api';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import {
   ChatMessage,
@@ -12,14 +12,14 @@ import {
   SharedWithEntry,
   StreamChatRequest,
   AgentStrategyApiSegment,
-  SSEEventType,
   SSEConnectedEvent,
   SSEStatusEvent,
   SSEAnswerChunkEvent,
   SSECompleteEvent,
-  SSEErrorEvent,
+  type AgentCapabilities,
   SSEArtifactEvent,
   SSEAskUserQuestionEvent,
+  MessagePart,
   AvailableLlmModel,
   SearchRequest,
   SearchResponse,
@@ -27,6 +27,7 @@ import {
   AttachmentRef,
 } from './types';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
+import { createAGUIEventHandler, type AGUIStreamTracking } from './agui-event-handler';
 
 export interface FeedbackPayload {
   isHelpful: boolean;
@@ -46,8 +47,47 @@ export interface StreamMessageCallbacks {
   /** Backend is discarding partial output (citation verify / re-parse) — clear UI buffer */
   onRestreaming?: () => void;
   onAskUserQuestion?: (data: SSEAskUserQuestionEvent) => void;
+  /**
+   * The answer is settled and only persistence remains (AG-UI protocol only —
+   * `AnswerFinalizer`'s `snapshot.final` STATE_SNAPSHOT, which reaches us
+   * ahead of the RUN_FINISHED Node withholds while it writes to Mongo).
+   * Implementations use it to stop showing progress indicators.
+   */
+  onAnswerFinal?: () => void;
+  /**
+   * Live chain-of-thought delta (AG-UI protocol only — see `agui-event-handler.ts`).
+   * `done: true` marks the end of one reasoning turn; no legacy equivalent exists,
+   * so implementations are free to no-op this until a "thinking" panel is built.
+   */
+  onReasoning?: (data: { delta: string; done: boolean }) => void;
+  /**
+   * Live agent-activity transcript snapshot (AG-UI protocol only — see
+   * `agui-event-handler.ts`). Called with the FULL parts array (not a
+   * delta) every time it changes, so implementations can just assign it
+   * straight into slot state. No legacy equivalent; safe to no-op.
+   */
+  onParts?: (parts: MessagePart[]) => void;
   onError?: (error: Error) => void;
   signal?: AbortSignal;
+}
+
+/**
+ * Runs one chat SSE stream and dispatches every AG-UI frame to `callbacks`.
+ * `endpoint`/`payload` stay protocol-agnostic; this is the only function
+ * that adds `protocol: 'agui'` to the request.
+ */
+async function runChatStream(
+  endpoint: string,
+  payload: Record<string, unknown>,
+  callbacks: StreamMessageCallbacks,
+): Promise<void> {
+  const body = { ...payload, protocol: 'agui' };
+  const tracking: AGUIStreamTracking = { receivedComplete: false };
+  await streamSSERequest(endpoint, body, {
+    onEvent: createAGUIEventHandler(callbacks, tracking),
+    onError: (error) => callbacks.onError?.(error),
+    signal: callbacks.signal,
+  });
 }
 
 /** Map GET /conversations (or agent conversations) row → sidebar `Conversation` */
@@ -265,9 +305,15 @@ export const ChatApi = {
         chatMode: agentChatMode,
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
-        tools: [...(request.agentStreamTools ?? [])],
+        // `undefined` (runtime.ts omits the field entirely when every tool
+        // is selected) must NOT become `[]` here — an empty array means
+        // "no tools" to the backend (agent.py treats `None`/missing as
+        // "use every configured toolset", `[]` as an explicit empty
+        // filter), the opposite of what an unfiltered selection means.
+        ...(request.agentStreamTools !== undefined ? { tools: request.agentStreamTools } : {}),
         ...buildAgentFiltersPayload(f.apps, f.kb),
         ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
+        ...(request.agentCapabilities ? { agentCapabilities: request.agentCapabilities } : {}),
         ...(request.attachments?.length ? { attachments: request.attachments } : {}),
       };
     } else {
@@ -288,73 +334,7 @@ export const ChatApi = {
       };
     }
 
-    // Track whether a complete event was received and the last SSE error
-    let receivedComplete = false;
-    let lastSSEError: SSEErrorEvent | null = null;
-
-    await streamSSERequest(
-      endpoint,
-      payload,
-      {
-        onEvent: (event: SSEEvent) => {
-          switch (event.event as SSEEventType) {
-            case 'connected':
-              callbacks.onConnected?.(event.data as SSEConnectedEvent);
-              break;
-            case 'status':
-              callbacks.onStatus?.(event.data as SSEStatusEvent);
-              break;
-            case 'answer_chunk':
-              callbacks.onChunk?.(event.data as SSEAnswerChunkEvent);
-              break;
-            case 'complete':
-              receivedComplete = true;
-              callbacks.onComplete?.(event.data as SSECompleteEvent);
-              break;
-            case 'restreaming':
-              callbacks.onRestreaming?.();
-              break;
-            case 'ask_user_question':
-              callbacks.onAskUserQuestion?.(event.data as SSEAskUserQuestionEvent);
-              break;
-            case 'tool_call':
-            case 'tool_success':
-            case 'tool_error':
-            case 'tool_calls':
-            case 'tool_result':
-              // Tool / orchestration events — no separate UI; status + answer_chunk carry UX
-              break;
-            case 'metadata':
-              // Citations / enrichment hints — UI uses answer_chunk + complete; ignore payload
-              break;
-            case 'artifact':
-              callbacks.onArtifact?.(event.data as SSEArtifactEvent);
-              break;
-            case 'error':
-              // SSE error events may be non-fatal — the backend might still
-              // continue streaming after this. Save the error and check after
-              // the stream ends whether a complete event followed.
-              lastSSEError = event.data as SSEErrorEvent;
-              console.warn('[Chat SSE] Backend warning:', lastSSEError.message || lastSSEError.error);
-              break;
-            default:
-              // Future / proxy-only event names — ignore silently (no user-facing noise)
-              break;
-          }
-        },
-        onError: (error) => {
-          callbacks.onError?.(error);
-        },
-        signal: callbacks.signal,
-      }
-    );
-
-    // If the stream ended without a complete event but had an error,
-    // the error was fatal — propagate it.
-    if (!receivedComplete && lastSSEError) {
-      const errorMessage = lastSSEError.message || lastSSEError.error || 'Stream ended with an error';
-      callbacks.onError?.(new Error(errorMessage));
-    }
+    await runChatStream(endpoint, payload, callbacks);
   },
 
   /**
@@ -379,12 +359,10 @@ export const ChatApi = {
       filters: StreamChatRequest['filters'];
       /** Universal agent mode: explicit tool subset (null = all, [] = none). */
       agentStreamTools?: string[];
+      agentCapabilities?: StreamChatRequest['agentCapabilities'];
     }
   ): Promise<void> {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
-
-    let receivedComplete = false;
-    let lastSSEError: SSEErrorEvent | null = null;
 
     const body: Record<string, unknown> = {
       modelKey: request.modelKey,
@@ -398,59 +376,11 @@ export const ChatApi = {
     if (request.agentStreamTools !== undefined) {
       body.tools = request.agentStreamTools;
     }
-
-    await streamSSERequest(
-      endpoint,
-      body,
-      {
-        onEvent: (event: SSEEvent) => {
-          switch (event.event as SSEEventType) {
-            case 'connected':
-              callbacks.onConnected?.(event.data as SSEConnectedEvent);
-              break;
-            case 'status':
-              callbacks.onStatus?.(event.data as SSEStatusEvent);
-              break;
-            case 'answer_chunk':
-              callbacks.onChunk?.(event.data as SSEAnswerChunkEvent);
-              break;
-            case 'complete':
-              receivedComplete = true;
-              callbacks.onComplete?.(event.data as SSECompleteEvent);
-              break;
-            case 'restreaming':
-              callbacks.onRestreaming?.();
-              break;
-            case 'ask_user_question':
-              callbacks.onAskUserQuestion?.(event.data as SSEAskUserQuestionEvent);
-              break;
-            case 'tool_call':
-            case 'tool_success':
-            case 'tool_error':
-            case 'tool_calls':
-            case 'tool_result':
-              break;
-            case 'metadata':
-              break;
-            case 'error':
-              lastSSEError = event.data as SSEErrorEvent;
-              console.warn('[Regenerate SSE] Backend warning:', lastSSEError.message || lastSSEError.error);
-              break;
-            default:
-              break;
-          }
-        },
-        onError: (error) => {
-          callbacks.onError?.(error);
-        },
-        signal: callbacks.signal,
-      }
-    );
-
-    if (!receivedComplete && lastSSEError) {
-      const errorMessage = lastSSEError.message || lastSSEError.error || 'Stream ended with an error';
-      callbacks.onError?.(new Error(errorMessage));
+    if (request.agentCapabilities !== undefined) {
+      body.agentCapabilities = request.agentCapabilities;
     }
+
+    await runChatStream(endpoint, body, callbacks);
   },
 
   /**
@@ -470,12 +400,10 @@ export const ChatApi = {
       /** Explicit tool subset for this agent context (all tools when omitted). */
       tools?: string[];
       filters: { apps: string[]; kb: string[] };
+      agentCapabilities?: AgentCapabilities;
     }
   ): Promise<void> {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
-
-    let receivedComplete = false;
-    let lastSSEError: SSEErrorEvent | null = null;
 
     const agentRegenBody: Record<string, unknown> = {
       modelKey: model.modelKey,
@@ -489,59 +417,11 @@ export const ChatApi = {
     if (model.tools !== undefined) {
       agentRegenBody.tools = model.tools;
     }
-
-    await streamSSERequest(
-      endpoint,
-      agentRegenBody,
-      {
-        onEvent: (event: SSEEvent) => {
-          switch (event.event as SSEEventType) {
-            case 'connected':
-              callbacks.onConnected?.(event.data as SSEConnectedEvent);
-              break;
-            case 'status':
-              callbacks.onStatus?.(event.data as SSEStatusEvent);
-              break;
-            case 'answer_chunk':
-              callbacks.onChunk?.(event.data as SSEAnswerChunkEvent);
-              break;
-            case 'complete':
-              receivedComplete = true;
-              callbacks.onComplete?.(event.data as SSECompleteEvent);
-              break;
-            case 'restreaming':
-              callbacks.onRestreaming?.();
-              break;
-            case 'ask_user_question':
-              callbacks.onAskUserQuestion?.(event.data as SSEAskUserQuestionEvent);
-              break;
-            case 'tool_call':
-            case 'tool_success':
-            case 'tool_error':
-            case 'tool_calls':
-            case 'tool_result':
-              break;
-            case 'metadata':
-              break;
-            case 'error':
-              lastSSEError = event.data as SSEErrorEvent;
-              console.warn('[Agent regenerate SSE] Backend warning:', lastSSEError.message || lastSSEError.error);
-              break;
-            default:
-              break;
-          }
-        },
-        onError: (error) => {
-          callbacks.onError?.(error);
-        },
-        signal: callbacks.signal,
-      }
-    );
-
-    if (!receivedComplete && lastSSEError) {
-      const errorMessage = lastSSEError.message || lastSSEError.error || 'Stream ended with an error';
-      callbacks.onError?.(new Error(errorMessage));
+    if (model.agentCapabilities !== undefined) {
+      agentRegenBody.agentCapabilities = model.agentCapabilities;
     }
+
+    await runChatStream(endpoint, agentRegenBody, callbacks);
   },
 
   /**

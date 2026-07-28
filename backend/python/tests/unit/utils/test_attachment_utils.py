@@ -363,8 +363,8 @@ class TestResolveAttachments:
         blob.get_record_from_storage.return_value = record
         att = {"mimeType": "image/png", "recordName": "photo.png", "virtualRecordId": "vrid1"}
         result = await resolve_attachments([att], blob, "org1", True, logger)
-        assert len(result) == 1
-        assert result[0]["type"] == "image_url"
+        assert len(result) >= 1
+        assert any(b.get("type") == "image_url" for b in result)
 
     async def test_out_records_populated(self, logger):
         record = _make_image_record(_PNG_URI)
@@ -504,14 +504,20 @@ class TestResolveAttachments:
             {"mimeType": "image/png", "recordName": "b.png", "virtualRecordId": "v2"},
         ]
         result = await resolve_attachments(atts, blob, "org1", True, logger)
-        assert len(result) == 2
+        image_blocks = [b for b in result if b.get("type") == "image_url"]
+        assert len(image_blocks) == 2
 
     async def test_image_with_no_image_blocks_in_record(self, logger):
-        record = {"block_containers": {"blocks": []}}
+        """When record_to_message_content returns empty content and there are no
+        raw image blocks, the attachment contributes nothing to the output."""
         blob = AsyncMock()
-        blob.get_record_from_storage.return_value = record
+        blob.get_record_from_storage.return_value = {"block_containers": {"blocks": []}}
         att = {"mimeType": "image/png", "recordName": "photo.png", "virtualRecordId": "vrid1"}
-        result = await resolve_attachments([att], blob, "org1", True, logger)
+        with patch(
+            "app.utils.chat_helpers.record_to_message_content",
+            return_value=([], None),
+        ):
+            result = await resolve_attachments([att], blob, "org1", True, logger)
         assert result == []
 
 
@@ -548,7 +554,8 @@ class TestEnsureAttachmentBlocks:
             "is_multimodal_llm": True,
         }
         result = await ensure_attachment_blocks(state, logger)
-        assert len(result) == 1
+        assert len(result) >= 1
+        assert any(b.get("type") == "image_url" for b in result)
         assert state["blob_store"] is blob
 
     async def test_creates_blob_store_when_absent(self, logger):

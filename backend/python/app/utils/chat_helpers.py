@@ -34,11 +34,7 @@ from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
     block_group_prompt,
     qna_prompt_context,
-    qna_prompt_context_header,
-    qna_prompt_instructions_1,
-    qna_prompt_instructions_2,
     qna_prompt_simple,
-    render_fetch_full_record_tool_block,
     table_prompt,
 )
 from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import is_jira_ticket_record
@@ -327,6 +323,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 mime_type=record_dict.get("mime_type", ""),
                 external_record_id=record_dict.get("external_record_id", ""),
                 weburl=record_dict.get("weburl", ""),
+                location=record_dict.get("location"),
                 version=record_dict.get("version", 1),
                 origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
                 connector_id=record_dict.get("connector_id", ""),
@@ -349,6 +346,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
         "mime_type": record_dict.get("mime_type", ""),
         "source_created_at": record_dict.get("source_created_at") or None,
         "source_updated_at": record_dict.get("source_updated_at") or None,
+        "location": record_dict.get("location"),
         "weburl": record_dict.get("weburl", ""),
         "semantic_metadata": SemanticMetadata(**record_dict.get("semantic_metadata", {})),
     }
@@ -1966,12 +1964,14 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
             if hide_weburl and recordId:
                 web_url = f"/record/{recordId}"
             elif (
-                web_url 
-                and origin != "UPLOAD" 
-                and record_type != RecordType.MAIL.value 
+                web_url
+                and origin != "UPLOAD"
+                and record_type != RecordType.MAIL.value
                 and block_type != BlockType.RECORD_SUMMARY.value
             ):
                 web_url = generate_text_fragment_url(web_url, block_text)
+            if not web_url and recordId:
+                web_url = f"/record/{recordId}"
 
             enhanced_metadata = {
                         "orgId": meta.get("orgId") or record.get("org_id", ""),
@@ -2051,6 +2051,8 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                 record["mime_type"] = graphDb_record.get("mimeType")
                 record["source_created_at"] = graphDb_record.get("sourceCreatedAtTimestamp")
                 record["source_updated_at"] = graphDb_record.get("sourceLastModifiedTimestamp")
+                if graphDb_record.get("location"):
+                    record["location"] = graphDb_record["location"]
                 graph_external_id = graphDb_record.get("externalRecordId")
                 if graph_external_id:
                     record["external_record_id"] = graph_external_id
@@ -2563,7 +2565,14 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
     return child_results
 
 
-def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMapper | None = None, is_multimodal_llm: bool = False) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+def record_to_message_content(
+    record: dict[str, Any],
+    ref_mapper: CitationRefMapper | None = None,
+    is_multimodal_llm: bool = False,
+    *,
+    start_block: int = 0,
+    max_blocks: int | None = None,
+) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """
     Convert a record JSON object to message content format matching get_message_content.
 
@@ -2571,6 +2580,12 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
         record: The record JSON object containing block_containers and other metadata
         ref_mapper: Optional shared CitationRefMapper for tiny-ref generation
         is_multimodal_llm: Whether the LLM supports image/vision input
+        start_block: Skip blocks with index < start_block (for windowed reads).
+        max_blocks: Maximum number of renderable blocks to include. When the
+            record has more renderable blocks than this window a continuation
+            hint is appended: "Showing blocks N-M of T. Call
+            dynamic_fetch_full_record with start_block=M+1 for the rest."
+            None means no cap (today's default behaviour).
 
     Returns:
         Tuple of (content list, ref_mapper)
@@ -2595,6 +2610,11 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
         rec_frontend_url = record.get("frontend_url", "")
         rec_record_id = record.get("id", "")
 
+        # Windowing: track how many renderable (non-fragment) blocks we have
+        # rendered so we can truncate at max_blocks and emit a continuation hint.
+        _renderable_rendered = 0
+        _truncated_at: int | None = None  # first block_index not rendered due to cap
+
         # Process individual blocks
         for block in blocks:
             block_index = block.get("index", 0)
@@ -2602,6 +2622,16 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
 
             # Skip fragment blocks — they are rendered via their container's group expansion.
             if block.get("parent_block_index") is not None:
+                continue
+
+            # Windowing: skip blocks before start_block.
+            if block_index < start_block:
+                continue
+
+            # Windowing: stop once we have hit the max_blocks cap.
+            if max_blocks is not None and _renderable_rendered >= max_blocks:
+                if _truncated_at is None:
+                    _truncated_at = block_index
                 continue
 
             block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, block_index)
@@ -2620,12 +2650,14 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
                             "type": "image_url",
                             "image_url": {"url": image_uri}
                         })
+                        _renderable_rendered += 1
                 continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
                 content.append({
                     "type": "text",
                     "text": f"* Block Index: {block_index}\n* Citation ID: {ref}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
                 })
+                _renderable_rendered += 1
             elif block_type == BlockType.TABLE_ROW.value:
                 block_group_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{block_group_index}"
@@ -2721,6 +2753,7 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
                                     "text": header,
                                 })
                                 content.extend(_render_blocks_with_images(child_results, is_multimodal_llm))
+                            _renderable_rendered += 1
             elif(block.get("parent_index") is not None):
                 parent_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
@@ -2763,8 +2796,22 @@ def record_to_message_content(record: dict[str, Any], ref_mapper: CitationRefMap
                         "text": header,
                     })
                     content.extend(_render_blocks_with_images(group_blocks, is_multimodal_llm))
+                _renderable_rendered += 1
             else:
                 continue
+
+        # Windowing continuation hint — appended when truncation happened.
+        if _truncated_at is not None:
+            total_blocks = len([b for b in blocks if b.get("parent_block_index") is None])
+            end_block = _truncated_at - 1
+            content.append({
+                "type": "text",
+                "text": (
+                    f"\n[Showing blocks {start_block}–{end_block} of approximately "
+                    f"{total_blocks} renderable blocks. Call knowledgegraph__fetch_record "
+                    f"with start_block={_truncated_at} for the next slice.]\n"
+                ),
+            })
 
         fk_parent = record.get("fk_parent_record_ids")
         fk_child = record.get("fk_child_record_ids")
@@ -2960,139 +3007,59 @@ def context_includes_jira_tickets(
     )
 
 
-def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, mode: str = "json",is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True, has_sql_connector: bool=False, image_blocks: list[dict[str, Any]] | None = None, has_slack_connector: bool=False) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+def get_message_content(
+    flattened_results: list[dict[str, Any]],
+    virtual_record_id_to_result: dict[str, Any],
+    user_data: str,
+    query: str,
+    ref_mapper: CitationRefMapper | None = None,
+) -> tuple[list[dict[str, Any]], CitationRefMapper]:
+    """Build the user message content for the no-tools (Ollama/simple) path.
 
+    Renders ``qna_prompt_simple`` with deduplicated, citation-enriched chunks.
+    """
     if ref_mapper is None:
         ref_mapper = CitationRefMapper()
     content = []
+    chunks = []
+    seen_blocks: set[str] = set()
+    for result in flattened_results:
+        virtual_record_id = result.get("virtual_record_id")
+        block_index = result.get("block_index")
+        result_id = f"{virtual_record_id}_{block_index}"
 
-    # Logs for Enriched Data Check, for record type -> SQL_TABLE
-    vrids_in_flattened = {r.get("virtual_record_id") for r in flattened_results if r.get("virtual_record_id")}
-    vrids_in_map = set(virtual_record_id_to_result.keys())
-    vrids_only_in_map = vrids_in_map - vrids_in_flattened
-    fk_enriched_in_flattened = [r for r in flattened_results if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT"]
-    logger.debug(
-        "get_message_content: flattened_results=%d items, virtual_record_id_to_result=%d keys; "
-        "vrids_in_flattened=%d, vrids_only_in_map (e.g. FK blob not in list)=%d %s; FK_ENRICHMENT blocks in flattened=%d",
-        len(flattened_results),
-        len(virtual_record_id_to_result),
-        len(vrids_in_flattened),
-        len(vrids_only_in_map),
-        list(vrids_only_in_map)[:5] if vrids_only_in_map else [],
-        len(fk_enriched_in_flattened),
-    )
+        if result_id not in seen_blocks:
+            seen_blocks.add(result_id)
+            block_type = result.get("block_type")
 
-    if mode == "no_tools":
-        chunks = []
-        seen_blocks = set()
-        for result in flattened_results:
-            virtual_record_id = result.get("virtual_record_id")
-            block_index = result.get("block_index")
-            result_id = f"{virtual_record_id}_{block_index}"
+            if block_type == BlockType.IMAGE.value:
+                continue
 
-            if result_id not in seen_blocks:
-                seen_blocks.add(result_id)
-                block_type = result.get("block_type")
+            block_web_url = ""
+            record = virtual_record_id_to_result.get(virtual_record_id) or {}
+            frontend_url = record.get("frontend_url", "")
+            record_id = record.get("id", "")
+            block_web_url = build_block_web_url(frontend_url, record_id, block_index) if frontend_url and record_id else ""
+            citation_ref = ref_mapper.get_or_create_ref(block_web_url) if block_web_url else ""
 
-                # Skip images for simplicity
-                if block_type == BlockType.IMAGE.value:
-                    continue
+            if block_type == GroupType.TABLE.value:
+                table_summary, _ = result.get("content")
+                content_text = f"Table: {table_summary}"
+            else:
+                content_text = result.get("content", "")
 
-                # Get content text
-                block_web_url = ""
-                record = virtual_record_id_to_result.get(virtual_record_id) or {}
-                frontend_url = record.get("frontend_url", "")
-                record_id = record.get("id", "")
-                block_web_url = build_block_web_url(frontend_url, record_id, block_index) if frontend_url and record_id else ""
-                citation_ref = ref_mapper.get_or_create_ref(block_web_url) if block_web_url else ""
-
-                if block_type == GroupType.TABLE.value:
-                    table_summary, _ = result.get("content")
-                    content_text = f"Table: {table_summary}"
-                else:
-                    content_text = result.get("content", "")
-
-                chunks.append({
-                    "metadata": {
-                        "blockText": content_text,
-                        "recordName": result.get("metadata", {}).get("recordName", ""),
-                        "block_web_url": block_web_url,
-                        "citation_ref": citation_ref,
-                    }
-                })
-
-        # Render simple prompt
-        template = Template(qna_prompt_simple)
-        rendered_form = template.render(
-            query=query,
-            chunks=chunks
-        )
-
-        content.append({
-            "type": "text",
-            "text": rendered_form
-        })
-
-        return content, ref_mapper
-    else:
-        has_jira = context_includes_jira_tickets(flattened_results, virtual_record_id_to_result)
-        fetch_block = render_fetch_full_record_tool_block(has_jira)
-        template = Template(qna_prompt_instructions_1)
-        rendered_form = template.render(
-                    user_data=user_data,
-                    query=query,
-                    mode=mode,
-                    has_sql_connector=has_sql_connector,
-                    fetch_full_record_tool_block=fetch_block,
-                    has_slack_connector=has_slack_connector,
-                    )
-
-        content.append({
-                    "type": "text",
-                    "text": rendered_form
-                })
-
-        if image_blocks:
-            content.append({
-                "type": "text",
-                "text": "Attachments:"
+            chunks.append({
+                "metadata": {
+                    "blockText": content_text,
+                    "recordName": result.get("metadata", {}).get("recordName", ""),
+                    "block_web_url": block_web_url,
+                    "citation_ref": citation_ref,
+                }
             })
-            content.extend(image_blocks)
 
-        content.append({
-            "type": "text",
-            "text": qna_prompt_context_header,
-        })
-
-        message_content_array, ref_mapper = build_message_content_array(flattened_results, virtual_record_id_to_result,is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper,from_tool=from_tool)
-        message_content_array = [item for sublist in message_content_array for item in sublist]
-
-        if vrids_only_in_map:
-            logger.info(
-                "get_message_content: adding %d full records from virtual_record_id_to_result (missing in flattened_results)",
-                len(vrids_only_in_map),
-            )
-            for vrid in vrids_only_in_map:
-                record = virtual_record_id_to_result.get(vrid)
-                if not record:
-                    continue
-                record_type = record.get("record_type")
-                if record_type != RecordType.SQL_TABLE.value:
-                    continue
-                record_content, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper, is_multimodal_llm=is_multimodal_llm)
-                if record_content:
-                    message_content_array.extend(record_content)
-
-        content.extend(message_content_array)
-        # Render instructions_2 with mode parameter
-        template_instructions_2 = Template(qna_prompt_instructions_2)
-        rendered_instructions_2 = template_instructions_2.render(mode=mode)
-
-        content.append({
-            "type": "text",
-            "text": f"</context>\n\n{rendered_instructions_2}"
-        })
-        return content, ref_mapper
+    rendered_form = Template(qna_prompt_simple).render(query=query, chunks=chunks)
+    content.append({"type": "text", "text": rendered_form})
+    return content, ref_mapper
 
 def build_message_content_array(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any],is_multimodal_llm: bool=False, ref_mapper: CitationRefMapper | None = None,from_tool: bool=True) -> tuple[list[list[dict[str, Any]]], CitationRefMapper]:
     if ref_mapper is None:

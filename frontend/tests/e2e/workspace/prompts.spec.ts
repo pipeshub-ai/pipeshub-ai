@@ -19,6 +19,19 @@ test.describe('Workspace Prompts', () => {
     }
   });
 
+  test('displays all three mode sections including Agent', async ({ page }) => {
+    await expect(page.locator('text=Internal Search').first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('text=Web Search').first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('text=Agent').first()).toBeVisible({ timeout: 5_000 });
+    // Three independent editors — one per mode.
+    expect(await page.locator('textarea').count()).toBeGreaterThanOrEqual(3);
+  });
+
+  test('shows Agent Builder scope callout', async ({ page }) => {
+    const callout = page.locator('text=/Agent Builder/i').first();
+    await expect(callout).toBeVisible({ timeout: 5_000 });
+  });
+
   test('can edit prompt and save', async ({ page }) => {
     const textarea = page.locator('textarea');
     if ((await textarea.count()) === 0) return;

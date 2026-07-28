@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { AGENT_STRATEGY_ICONS } from '@/chat/components/agent-strategy-dropdown';
+import { AGENT_STRATEGIES, AGENT_STRATEGY_ICONS } from '@/chat/components/agent-strategy-dropdown';
 import type { AgentStrategy } from '@/chat/types';
 
 export interface AgentStrategyModeSwitcherProps {
@@ -35,6 +35,8 @@ export function AgentStrategyModeSwitcher({
 }: AgentStrategyModeSwitcherProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
+
+  if (AGENT_STRATEGIES.length <= 1) return null;
 
   return (
     <Flex

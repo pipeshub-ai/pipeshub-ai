@@ -271,6 +271,8 @@ class IndexingFilterKey(str, Enum):
     EMAILS = "emails"
     MAILS = "mails"
     MESSAGES = "messages"
+    DIRECT_MESSAGES = "direct_messages"
+    GROUP_DIRECT_MESSAGES = "group_direct_messages"
     ISSUES = "issues"
     TICKETS = "tickets"
     GROUP_CONVERSATIONS = "group_conversations"

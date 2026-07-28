@@ -531,9 +531,11 @@ export const aiModelsConfigSchema = z.object({
       tts: z.array(modelConfigurationSchema).optional(),
       stt: z.array(modelConfigurationSchema).optional(),
       customSystemPrompt: z.string().optional().nullable(),
+      customSystemPromptWebSearch: z.string().optional().nullable(),
+      customSystemPromptAgent: z.string().optional().nullable(),
     })
     .strict({
-      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, and customSystemPrompt',
+      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, customSystemPrompt, customSystemPromptWebSearch, and customSystemPromptAgent',
     })
     .refine(
       (data) => {

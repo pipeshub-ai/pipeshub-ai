@@ -5,9 +5,14 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import (
+    args_template,
+    confirmation,
+    entity_summary,
+    list_summary,
+)
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -26,6 +31,19 @@ from app.sources.external.clickup.clickup import ClickUpDataSource
 logger = logging.getLogger(__name__)
 
 CLICKUP_APP_BASE = "https://app.clickup.com"
+
+
+def _clickup_task_label(task: dict) -> str:
+    return task.get("name") or task.get("id") or "?"
+
+
+def _clickup_comment_label(comment: dict) -> str:
+    user = comment.get("user")
+    username = user.get("username") if isinstance(user, dict) else None
+    preview = (comment.get("comment_text") or "").strip().splitlines()[0][:60] if comment.get("comment_text") else ""
+    if username and preview:
+        return f"{username}: {preview}"
+    return username or preview or "?"
 
 
 class ClickUpEntityType(str, Enum):
@@ -433,23 +451,11 @@ class ClickUp:
         return False, response.to_json()
 
     @tool(
-        app_name="clickup",
-        tool_name="get_authorized_user",
-        description="Get the authorized ClickUp user details.",
-        llm_description="Returns the authenticated ClickUp user (id, username, email). Use to confirm who is logged in or get user context.",
+        path="/tools/clickup/get_authorized_user",
+        short_description="Get the authorized ClickUp user details",
+        description="Returns the authenticated ClickUp user (id, username, email). Use to confirm who is logged in or get user context.",
         parameters=[],
-        returns="JSON with the authenticated user details (id, username, email, etc.)",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to know who is logged in to ClickUp",
-            "User asks for their ClickUp profile or account details",
-        ],
-        when_not_to_use=[
-            "User wants workspaces/teams (use get_authorized_teams_workspaces)",
-            "User wants spaces, lists, or tasks (use get_spaces, get_lists, get_tasks)",
-        ],
-        typical_queries=["Who am I in ClickUp?", "Get my ClickUp profile", "Which account is connected?"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
     async def get_authorized_user(self) -> tuple[bool, str]:
         """Get the authorized ClickUp user details."""
@@ -461,23 +467,11 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="get_authorized_teams_workspaces",
-        description="Get the authorized teams (workspaces).",
-        llm_description="Returns list of ClickUp workspaces (teams). Use the returned team id as team_id in get_spaces. Call this first when user asks for spaces, folders, or lists.",
+        path="/tools/clickup/get_authorized_teams_workspaces",
+        short_description="Get the authorized teams (workspaces)",
+        description="Returns list of ClickUp workspaces (teams). Use the returned team id as team_id in get_spaces. Call this first when user asks for spaces, folders, or lists.",
         parameters=[],
-        returns="JSON with list of workspaces (teams)",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to list ClickUp workspaces or teams",
-            "User needs team_id to list spaces",
-        ],
-        when_not_to_use=[
-            "User wants user profile only (use get_authorized_user)",
-            "User already has team_id and wants spaces (use get_spaces)",
-        ],
-        typical_queries=["List my ClickUp workspaces", "Show teams", "What workspaces do I have?"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
     async def get_authorized_teams_workspaces(self) -> tuple[bool, str]:
         """Get the authorized teams (workspaces)."""
@@ -496,23 +490,14 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="get_spaces",
-        description="Get all spaces in a workspace.",
-        llm_description="Returns spaces in a workspace. Need team_id from get_authorized_teams_workspaces.",
-        args_schema=GetSpacesInput,
-        returns="JSON with list of spaces in the workspace",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to list spaces in a ClickUp workspace",
-            "User needs space_id for folders or lists (call get_authorized_teams_workspaces first for team_id)",
+        path="/tools/clickup/get_spaces",
+        short_description="Get all spaces in a workspace",
+        description="Returns spaces in a workspace. Need team_id from get_authorized_teams_workspaces.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Get from get_authorized_teams_workspaces.", required=True),
+            ToolParameter(name="archived", type=ParameterType.BOOLEAN, description="Include archived spaces", required=False),
         ],
-        when_not_to_use=[
-            "User wants workspaces/teams list",
-            "User wants folders in a space",
-        ],
-        typical_queries=["List spaces in my workspace", "Show ClickUp spaces", "What spaces do I have?"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
     async def get_spaces(
         self,
@@ -536,23 +521,15 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="get_folders",
-        description="Get all folders in a space.",
-        llm_description="Returns folders in a space. Need space_id from get_spaces. Use returned folder id for get_lists.",
-        args_schema=GetFoldersInput,
-        returns="JSON with list of folders in the space",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to list folders in a ClickUp space",
-            "User needs folder_id for get_lists (call get_spaces first for space_id)",
+        path="/tools/clickup/get_folders",
+        short_description="Get all folders in a space",
+        description="Returns folders in a space. Need space_id from get_spaces. Use returned folder id for get_lists.",
+        parameters=[
+            ToolParameter(name="space_id", type=ParameterType.STRING, description="Space ID. Get from get_spaces.", required=True),
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Get from get_authorized_teams_workspaces. Required for folder web_url.", required=True),
+            ToolParameter(name="archived", type=ParameterType.BOOLEAN, description="Include archived folders", required=False),
         ],
-        when_not_to_use=[
-            "User wants folderless lists",
-            "User wants lists inside a folder",
-        ],
-        typical_queries=["List folders in this space", "Show folders", "What folders are in the space?"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
     async def get_folders(
         self,
@@ -582,23 +559,15 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="get_lists",
-        description="Get all lists in a folder.",
-        llm_description="Returns lists inside a folder. Need folder_id from get_folders. Use returned list id for get_tasks or create_task.",
-        args_schema=GetListsInput,
-        returns="JSON with list of lists in the folder",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to list lists in a ClickUp folder",
-            "User needs list_id for get_tasks or create_task (call get_folders first for folder_id)",
+        path="/tools/clickup/get_lists",
+        short_description="Get all lists in a folder",
+        description="Returns lists inside a folder. Need folder_id from get_folders. Use returned list id for get_tasks or create_task.",
+        parameters=[
+            ToolParameter(name="folder_id", type=ParameterType.STRING, description="Folder ID. Get from get_folders.", required=True),
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Get from get_authorized_teams_workspaces. Required for list web_url.", required=True),
+            ToolParameter(name="archived", type=ParameterType.BOOLEAN, description="Include archived lists", required=False),
         ],
-        when_not_to_use=[
-            "User wants lists not in a folder (use get_folderless_lists with space_id)",
-            "User wants tasks in a list (use get_tasks with list_ids=[list_id])",
-        ],
-        typical_queries=["List lists in this folder", "Show lists", "What lists are in the folder?"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
     async def get_lists(
         self,
@@ -628,23 +597,15 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="get_folderless_lists",
-        description="Get folderless lists in a space.",
-        llm_description="Returns lists that are not inside a folder. Need space_id from get_spaces. Use returned list id for get_tasks or create_task.",
-        args_schema=GetFolderlessListsInput,
-        returns="JSON with list of folderless lists in the space",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to list lists that are not inside a folder",
-            "User needs list_id and space has no folders (call get_spaces first for space_id)",
+        path="/tools/clickup/get_folderless_lists",
+        short_description="Get folderless lists in a space",
+        description="Returns lists that are not inside a folder. Need space_id from get_spaces. Use returned list id for get_tasks or create_task.",
+        parameters=[
+            ToolParameter(name="space_id", type=ParameterType.STRING, description="Space ID. Get from get_spaces.", required=True),
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Get from get_authorized_teams_workspaces. Required for list web_url.", required=True),
+            ToolParameter(name="archived", type=ParameterType.BOOLEAN, description="Include archived lists", required=False),
         ],
-        when_not_to_use=[
-            "User wants lists inside a folder (use get_lists with folder_id)",
-            "User wants folders (use get_folders)",
-        ],
-        typical_queries=["List folderless lists", "Show lists without folder", "Lists at space level"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
     async def get_folderless_lists(
         self,
@@ -674,23 +635,16 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="create_space",
-        description="Create a new space in a workspace.",
-        llm_description="Creates a space in a workspace. Need team_id from get_authorized_teams_workspaces; name is required. Optional: multiple_assignees, features.",
-        args_schema=CreateSpaceInput,
-        returns="JSON with the created space details",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to create a new space in a ClickUp workspace",
-            "User asks to add a space (need team_id from get_authorized_teams_workspaces)",
+        path="/tools/clickup/create_space",
+        short_description="Create a new space in a workspace",
+        description="Creates a space in a workspace. Need team_id from get_authorized_teams_workspaces; name is required. Optional: multiple_assignees, features.",
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Get from get_authorized_teams_workspaces.", required=True),
+            ToolParameter(name="name", type=ParameterType.STRING, description="Name of the new space.", required=True),
+            ToolParameter(name="multiple_assignees", type=ParameterType.BOOLEAN, description="Enable multiple assignees in the space", required=False),
+            ToolParameter(name="features", type=ParameterType.DICT, description="Space features configuration", required=False),
         ],
-        when_not_to_use=[
-            "User wants to list spaces (use get_spaces)",
-            "User wants to create a folder or list",
-        ],
-        typical_queries=["Create a space", "Add a space to workspace", "New space: Engineering"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
     )
     async def create_space(
         self,
@@ -721,23 +675,15 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="create_folder",
-        description="Create a new folder in a space.",
-        llm_description="Creates a folder in a space. Need space_id from get_spaces; name is required.",
-        args_schema=CreateFolderInput,
-        returns="JSON with the created folder details",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to create a new folder in a ClickUp space",
-            "User asks to add a folder (need space_id from get_spaces)",
+        path="/tools/clickup/create_folder",
+        short_description="Create a new folder in a space",
+        description="Creates a folder in a space. Need space_id from get_spaces; name is required.",
+        parameters=[
+            ToolParameter(name="space_id", type=ParameterType.STRING, description="Space ID. Get from get_spaces.", required=True),
+            ToolParameter(name="name", type=ParameterType.STRING, description="Name of the new folder.", required=True),
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Get from get_authorized_teams_workspaces. Used for web_url in response.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to list folders (use get_folders)",
-            "User wants to create a list",
-        ],
-        typical_queries=["Create a folder", "Add a folder to space", "New folder: Sprint 1"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
     )
     async def create_folder(
         self,
@@ -764,24 +710,26 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="create_list",
-        description="Create a list in a folder or a folderless list in a space.",
-        llm_description="Creates a list in a folder (provide folder_id from get_folders) or a folderless list in a space (provide space_id from get_spaces). Name required. Exactly one of folder_id or space_id required. Optional: team_id for web_url, content, due_date, priority, assignee, status.",
-        args_schema=CreateListInput,
-        returns="JSON with the created list details",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to create a new list in a ClickUp folder (use folder_id from get_folders)",
-            "User wants to create a folderless list in a space (use space_id from get_spaces)",
-            "User asks to add a list",
+        path="/tools/clickup/create_list",
+        short_description="Create a list in a folder or a folderless list in a space",
+        description=(
+            "Creates a list in a folder (provide folder_id from get_folders) or a folderless list in a space "
+            "(provide space_id from get_spaces). Name required. Exactly one of folder_id or space_id required. "
+            "Optional: team_id for web_url, content, due_date, priority, assignee, status."
+        ),
+        parameters=[
+            ToolParameter(name="folder_id", type=ParameterType.STRING, description="Folder ID from get_folders. Use to create a list inside a folder. Mutually exclusive with space_id.", required=False),
+            ToolParameter(name="space_id", type=ParameterType.STRING, description="Space ID from get_spaces. Use to create a folderless list. Mutually exclusive with folder_id.", required=False),
+            ToolParameter(name="name", type=ParameterType.STRING, description="Name of the new list.", required=True),
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Get from get_authorized_teams_workspaces. Used for web_url in response.", required=False),
+            ToolParameter(name="content", type=ParameterType.STRING, description="List description", required=False),
+            ToolParameter(name="due_date", type=ParameterType.INTEGER, description="Due date as Unix timestamp (ms)", required=False),
+            ToolParameter(name="due_date_time", type=ParameterType.BOOLEAN, description="Include time in due date", required=False),
+            ToolParameter(name="priority", type=ParameterType.INTEGER, description="Priority: 1=Urgent, 2=High, 3=Normal, 4=Low", required=False),
+            ToolParameter(name="assignee", type=ParameterType.INTEGER, description="Assignee user ID", required=False),
+            ToolParameter(name="status", type=ParameterType.STRING, description="Status name", required=False),
         ],
-        when_not_to_use=[
-            "User wants to list lists (use get_lists or get_folderless_lists)",
-            "User wants to create a task (use create_task)",
-        ],
-        typical_queries=["Create a list", "Add a list to folder", "New list: Backlog", "Create folderless list"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
     )
     async def create_list(
         self,
@@ -839,23 +787,21 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="update_list",
-        description="Update a list.",
-        llm_description="Updates a list. Need list_id from get_lists or get_folderless_lists. Pass only fields to change; omit others to leave unchanged.",
-        args_schema=UpdateListInput,
-        returns="JSON with the updated list details",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to edit or update a ClickUp list",
-            "User asks to rename a list or change list settings",
+        path="/tools/clickup/update_list",
+        short_description="Update a list",
+        description="Updates a list. Need list_id from get_lists or get_folderless_lists. Pass only fields to change; omit others to leave unchanged.",
+        parameters=[
+            ToolParameter(name="list_id", type=ParameterType.STRING, description="List ID. Get from get_lists or get_folderless_lists.", required=True),
+            ToolParameter(name="name", type=ParameterType.STRING, description="New name (omit to leave unchanged)", required=False),
+            ToolParameter(name="content", type=ParameterType.STRING, description="List description (omit to leave unchanged)", required=False),
+            ToolParameter(name="due_date", type=ParameterType.INTEGER, description="Due date as Unix timestamp (ms)", required=False),
+            ToolParameter(name="due_date_time", type=ParameterType.BOOLEAN, description="Include time in due date", required=False),
+            ToolParameter(name="priority", type=ParameterType.INTEGER, description="Priority: 1=Urgent, 2=High, 3=Normal, 4=Low", required=False),
+            ToolParameter(name="assignee_add", type=ParameterType.INTEGER, description="Add assignee by user ID", required=False),
+            ToolParameter(name="assignee_rem", type=ParameterType.INTEGER, description="Remove assignee by user ID", required=False),
+            ToolParameter(name="unset_status", type=ParameterType.BOOLEAN, description="Remove the status field", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a list (use create_list)",
-            "User wants to list lists (use get_lists)",
-        ],
-        typical_queries=["Update list", "Rename list", "Change list due date", "Edit list settings"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
     )
     async def update_list(
         self,
@@ -889,25 +835,37 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="get_tasks",
-        description="Search/filter tasks across the whole workspace.",
-        llm_description="Returns tasks across a workspace matching filters. Need team_id from get_authorized_teams_workspaces. For 'assigned to me' or 'my tasks', call get_authorized_user first and pass assignees=[user_id]. Use for one workspace only (pick by name from get_authorized_teams_workspaces). 100 tasks per page; use page for more.",
-        args_schema=GetWorkspaceTasksInput,
-        returns="JSON with list of tasks in the workspace matching filters",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants tasks across the whole workspace matching criteria",
-            "User asks for tasks in workspace by status, assignee, tags, or dates without specifying a single list",
-            "User wants all tasks assigned to someone or with a tag in the workspace",
-            "User asks for 'my tasks' or 'tasks assigned to me' in a workspace (use get_authorized_user for user id, then this with assignees=[user_id])",
+        path="/tools/clickup/get_tasks",
+        short_description="Search/filter tasks across the whole workspace",
+        description=(
+            "Returns tasks across a workspace matching filters. Need team_id from get_authorized_teams_workspaces. "
+            "For 'assigned to me' or 'my tasks', call get_authorized_user first and pass assignees=[user_id]. "
+            "Use for one workspace only (pick by name from get_authorized_teams_workspaces). 100 tasks per page; use page for more."
+        ),
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Get from get_authorized_teams_workspaces.", required=True),
+            ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number (0-based). 0 = first page. 100 tasks per page.", required=False),
+            ToolParameter(name="order_by", type=ParameterType.STRING, description="Order by: created, updated, due_date, start_date. Default: updated.", required=False),
+            ToolParameter(name="reverse", type=ParameterType.BOOLEAN, description="Reverse sort order", required=False),
+            ToolParameter(name="subtasks", type=ParameterType.BOOLEAN, description="Include subtasks", required=False),
+            ToolParameter(name="statuses", type=ParameterType.LIST, description="Filter by status names", required=False),
+            ToolParameter(name="include_closed", type=ParameterType.BOOLEAN, description="Include closed tasks", required=False),
+            ToolParameter(name="assignees", type=ParameterType.LIST, description="Filter by assignee user IDs", required=False),
+            ToolParameter(name="tags", type=ParameterType.LIST, description="Filter by tag names", required=False),
+            ToolParameter(name="due_date_gt", type=ParameterType.INTEGER, description="Filter tasks due after (Unix ms)", required=False),
+            ToolParameter(name="due_date_lt", type=ParameterType.INTEGER, description="Filter tasks due before (Unix ms)", required=False),
+            ToolParameter(name="date_created_gt", type=ParameterType.INTEGER, description="Filter tasks created after (Unix ms)", required=False),
+            ToolParameter(name="date_created_lt", type=ParameterType.INTEGER, description="Filter tasks created before (Unix ms)", required=False),
+            ToolParameter(name="date_updated_gt", type=ParameterType.INTEGER, description="Filter tasks updated after (Unix ms)", required=False),
+            ToolParameter(name="date_updated_lt", type=ParameterType.INTEGER, description="Filter tasks updated before (Unix ms)", required=False),
+            ToolParameter(name="space_ids", type=ParameterType.LIST, description="Filter by space IDs", required=False),
+            ToolParameter(name="project_ids", type=ParameterType.LIST, description="Filter by folder (project) IDs", required=False),
+            ToolParameter(name="list_ids", type=ParameterType.LIST, description="Filter by list IDs", required=False),
+            ToolParameter(name="custom_fields", type=ParameterType.LIST, description="Filter by custom field values", required=False),
         ],
-        when_not_to_use=[
-            "User wants tasks in a specific list (use get_tasks with list_ids=[list_id])",
-            "User wants a single task by id (use get_task)",
-        ],
-        typical_queries=["Tasks in workspace with status In Progress", "All tasks assigned to me", "Tasks with tag urgent in workspace"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        args_summary=args_template("Fetching ClickUp tasks for workspace {team_id}", "team_id"),
+        result_summary=list_summary("tasks", _clickup_task_label, "task"),
     )
     async def get_tasks(
         self,
@@ -969,23 +927,22 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="search_tasks",
-        description="Search tasks by keyword or phrase.",
-        llm_description="Returns tasks matching a keyword/phrase across the workspace. Creates a temporary view, fetches tasks, then deletes the view. Use for free-text search (e.g. 'login bug', 'invoice'). Get team_id from get_authorized_teams_workspaces. Prefer this over get_tasks when user asks for tasks containing specific text.",
-        args_schema=SearchTasksInput,
-        returns="JSON with list of tasks matching the keyword",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants tasks containing specific text or keyword",
-            "User asks for tasks with a word or phrase in name/description (e.g. 'login bug', 'invoice')",
+        path="/tools/clickup/search_tasks",
+        short_description="Search tasks by keyword or phrase",
+        description=(
+            "Returns tasks matching a keyword/phrase across the workspace. Creates a temporary view, fetches tasks, "
+            "then deletes the view. Use for free-text search (e.g. 'login bug', 'invoice'). Get team_id from "
+            "get_authorized_teams_workspaces. Prefer this over get_tasks when user asks for tasks containing specific text."
+        ),
+        parameters=[
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Get from get_authorized_teams_workspaces.", required=True),
+            ToolParameter(name="keyword", type=ParameterType.STRING, description="Search string for task name, description, and custom field text.", required=True),
+            ToolParameter(name="show_closed", type=ParameterType.BOOLEAN, description="Include closed (completed) tasks in search results", required=False),
+            ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number (0-based). 100 tasks per page.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to filter by status/assignee/tags/dates only (use get_tasks)",
-            "User wants tasks in a specific list (use get_tasks with list_ids)",
-        ],
-        typical_queries=["Tasks containing login bug", "Find tasks with invoice", "Search for tasks named X"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        args_summary=args_template('Searching ClickUp tasks: "{keyword}"', "keyword"),
+        result_summary=list_summary("tasks", _clickup_task_label, "task"),
     )
     async def search_tasks(
         self,
@@ -1026,23 +983,13 @@ class ClickUp:
         return result
 
     @tool(
-        app_name="clickup",
-        tool_name="get_task",
-        description="Get a specific task details.",
-        llm_description="Returns one task by task_id. Get task_id from get_tasks, create_task, or search_tasks. Use for 'show task X', 'details of task Y'.",
-        args_schema=GetTaskInput,
-        returns="JSON with task details",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants details of a specific ClickUp task",
-            "User asks for a task by ID (get task_id from get_tasks, create_task, or search_tasks)",
+        path="/tools/clickup/get_task",
+        short_description="Get a specific task's details",
+        description="Returns one task by task_id. Get task_id from get_tasks, create_task, or search_tasks. Use for 'show task X', 'details of task Y'.",
+        parameters=[
+            ToolParameter(name="task_id", type=ParameterType.STRING, description="Task ID. Get from get_tasks, create_task, or search_tasks.", required=True),
         ],
-        when_not_to_use=[
-            "User wants all tasks in a list (use get_tasks with list_ids)",
-            "User wants to create a task (use create_task)",
-        ],
-        typical_queries=["Get task abc123", "Show task details", "What is the status of this task?"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
     async def get_task(self, task_id: str) -> tuple[bool, str]:
         """Get a specific task."""
@@ -1054,23 +1001,24 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="create_task",
-        description="Create a new task or subtask in a list.",
-        llm_description="Creates a task. Need list_id from get_lists or get_folderless_lists; name is required. Optional: description, status, priority, assignees, parent (for subtasks). Returns the created task including task id.",
-        args_schema=CreateTaskInput,
-        returns="JSON with the created task details including task id",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to create a new ClickUp task",
-            "User asks to add a task to a list (need list_id from get_lists or get_folderless_lists)",
+        path="/tools/clickup/create_task",
+        short_description="Create a new task or subtask in a list",
+        description=(
+            "Creates a task. Need list_id from get_lists or get_folderless_lists; name is required. "
+            "Optional: description, status, priority, assignees, parent (for subtasks). Returns the created task including task id."
+        ),
+        parameters=[
+            ToolParameter(name="list_id", type=ParameterType.STRING, description="List ID. Get from get_lists or get_folderless_lists.", required=True),
+            ToolParameter(name="name", type=ParameterType.STRING, description="Task name", required=True),
+            ToolParameter(name="description", type=ParameterType.STRING, description="Task description", required=False),
+            ToolParameter(name="status", type=ParameterType.STRING, description="Status name (e.g. to do, in progress)", required=False),
+            ToolParameter(name="priority", type=ParameterType.INTEGER, description="Priority: 1=Urgent, 2=High, 3=Normal, 4=Low", required=False),
+            ToolParameter(name="assignees", type=ParameterType.LIST, description="Assignee user IDs (e.g. from get_authorized_user or get_list_members)", required=False),
+            ToolParameter(name="parent", type=ParameterType.STRING, description="Parent task ID to create this as a subtask", required=False),
         ],
-        when_not_to_use=[
-            "User wants to list or get tasks (use get_tasks or get_task)",
-            "User wants to update a task (use update_task)",
-        ],
-        typical_queries=["Create a task", "Add a task to the list", "New task: Fix login bug"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        args_summary=args_template('Creating ClickUp task "{name}"', "name"),
+        result_summary=entity_summary(lambda e: f"Created task: {_clickup_task_label(e)}"),
     )
     async def create_task(
         self,
@@ -1099,23 +1047,34 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="update_task",
-        description="Update an existing task.",
-        llm_description="Updates a task. Need task_id from get_tasks, create_task, or search_tasks. Pass only fields to change (name, description, status, priority, due_date, start_date, assignees_add/assignees_rem, archived, etc.); omit others to leave unchanged.",
-        args_schema=UpdateTaskInput,
-        returns="JSON with the updated task details",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to edit or update a ClickUp task",
-            "User asks to change task name, description, status, priority, due date, assignees, or archive (need task_id from get_tasks, create_task, or search_tasks)",
+        path="/tools/clickup/update_task",
+        short_description="Update an existing task",
+        description=(
+            "Updates a task. Need task_id from get_tasks, create_task, or search_tasks. "
+            "Pass only fields to change (name, description, status, priority, due_date, start_date, "
+            "assignees_add/assignees_rem, archived, etc.); omit others to leave unchanged."
+        ),
+        parameters=[
+            ToolParameter(name="task_id", type=ParameterType.STRING, description="Task ID. Get from get_tasks, create_task, or search_tasks.", required=True),
+            ToolParameter(name="name", type=ParameterType.STRING, description="New task name (omit to leave unchanged)", required=False),
+            ToolParameter(name="description", type=ParameterType.STRING, description="New task description, plain text (omit to leave unchanged)", required=False),
+            ToolParameter(name="markdown_description", type=ParameterType.STRING, description="New task description in markdown (omit to leave unchanged)", required=False),
+            ToolParameter(name="status", type=ParameterType.STRING, description="New status name (omit to leave unchanged)", required=False),
+            ToolParameter(name="priority", type=ParameterType.INTEGER, description="Priority: 1=Urgent, 2=High, 3=Normal, 4=Low (omit to leave unchanged)", required=False),
+            ToolParameter(name="due_date", type=ParameterType.INTEGER, description="Due date as Unix timestamp in ms (omit to leave unchanged)", required=False),
+            ToolParameter(name="due_date_time", type=ParameterType.BOOLEAN, description="Include time in due date (omit to leave unchanged)", required=False),
+            ToolParameter(name="time_estimate", type=ParameterType.INTEGER, description="Time estimate in milliseconds (omit to leave unchanged)", required=False),
+            ToolParameter(name="start_date", type=ParameterType.INTEGER, description="Start date as Unix timestamp in ms (omit to leave unchanged)", required=False),
+            ToolParameter(name="start_date_time", type=ParameterType.BOOLEAN, description="Include time in start date (omit to leave unchanged)", required=False),
+            ToolParameter(name="assignees_add", type=ParameterType.LIST, description="User IDs to add as assignees", required=False),
+            ToolParameter(name="assignees_rem", type=ParameterType.LIST, description="User IDs to remove from assignees", required=False),
+            ToolParameter(name="archived", type=ParameterType.BOOLEAN, description="Archive or unarchive the task", required=False),
+            ToolParameter(name="custom_task_ids", type=ParameterType.BOOLEAN, description="Use custom task IDs; requires team_id if true", required=False),
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="Team ID (required when custom_task_ids is true)", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a task (use create_task)",
-            "User wants to read task details (use get_task)",
-        ],
-        typical_queries=["Update task abc123", "Change task status to Done", "Edit task name", "Set due date", "Add assignee"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        args_summary=args_template("Updating ClickUp task {task_id}", "task_id"),
+        result_summary=entity_summary(lambda e: f"Updated task: {_clickup_task_label(e)}"),
     )
     async def update_task(
         self,
@@ -1167,22 +1126,28 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="get_comments",
-        description="Get comments on a task or replies to a comment.",
-        llm_description="Returns comments on a task (pass task_id) or replies to a comment (pass comment_id; optionally task_id for web_url). Get task_id from get_tasks, get_task, create_task, or search_tasks; comment_id from get_comments. For task comments: optional custom_task_ids, team_id, start, start_id.",
-        args_schema=GetCommentsInput,
-        returns="JSON with list of comments or comment replies",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to see comments on a task (pass task_id)",
-            "User wants to see replies to a comment / comment thread (pass comment_id from get_comments)",
+        path="/tools/clickup/get_comments",
+        short_description="Get comments on a task or replies to a comment",
+        description=(
+            "Returns comments on a task (pass task_id) or replies to a comment (pass comment_id; optionally task_id for web_url). "
+            "Get task_id from get_tasks, get_task, create_task, or search_tasks; comment_id from get_comments. "
+            "For task comments: optional custom_task_ids, team_id, start, start_id."
+        ),
+        parameters=[
+            ToolParameter(name="task_id", type=ParameterType.STRING, description="Task ID to list all comments on the task. Get from get_tasks, get_task, create_task, or search_tasks.", required=False),
+            ToolParameter(name="comment_id", type=ParameterType.STRING, description="Comment ID to list replies (thread). Get from get_comments. When set, returns only replies; optionally pass task_id for web_url.", required=False),
+            ToolParameter(name="custom_task_ids", type=ParameterType.BOOLEAN, description="Use custom task IDs (only when task_id is set). If true, team_id is required.", required=False),
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Required when custom_task_ids is true. Optional when comment_id is set (for web_url).", required=False),
+            ToolParameter(name="start", type=ParameterType.INTEGER, description="Start timestamp for pagination (only when task_id is set).", required=False),
+            ToolParameter(name="start_id", type=ParameterType.STRING, description="Start comment ID for pagination (only when task_id is set).", required=False),
         ],
-        when_not_to_use=[
-            "User wants to add a comment (use create_task_comment)",
-        ],
-        typical_queries=["Comments on task", "List task comments", "Replies to comment", "Comment thread"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        args_summary=lambda args: (
+            f"Fetching replies to ClickUp comment {args['comment_id']}"
+            if args.get("comment_id")
+            else f"Fetching comments on ClickUp task {args.get('task_id', '?')}"
+        ),
+        result_summary=list_summary("comments", _clickup_comment_label, "comment"),
     )
     async def get_comments(
         self,
@@ -1236,22 +1201,29 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="create_task_comment",
-        description="Add a comment to a task or a reply to a comment.",
-        llm_description="Creates a top-level comment on a task (provide task_id) or a reply to a comment (provide comment_id from get_comments). comment_text required. Exactly one of task_id or comment_id required. Optional: assignee, notify_all; for task_id only: custom_task_ids, team_id.",
-        args_schema=CreateTaskCommentInput,
-        returns="JSON with the created comment or reply",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to add a comment to a task (use task_id)",
-            "User wants to reply to a comment (use comment_id from get_comments)",
+        path="/tools/clickup/create_task_comment",
+        short_description="Add a comment to a task or a reply to a comment",
+        description=(
+            "Creates a top-level comment on a task (provide task_id) or a reply to a comment "
+            "(provide comment_id from get_comments). comment_text required. Exactly one of task_id or comment_id required. "
+            "Optional: assignee, notify_all; for task_id only: custom_task_ids, team_id."
+        ),
+        parameters=[
+            ToolParameter(name="task_id", type=ParameterType.STRING, description="Task ID for a new top-level comment, or for web_url when replying. Get from get_tasks, get_task, create_task, or search_tasks.", required=False),
+            ToolParameter(name="comment_id", type=ParameterType.STRING, description="Comment ID for a reply (threaded comment). Get from get_comments. When set, creates a reply; optionally pass task_id for web_url in response.", required=False),
+            ToolParameter(name="comment_text", type=ParameterType.STRING, description="The comment or reply text (plain text).", required=True),
+            ToolParameter(name="assignee", type=ParameterType.INTEGER, description="Assign the comment/reply to a user ID.", required=False),
+            ToolParameter(name="notify_all", type=ParameterType.BOOLEAN, description="Notify all assignees.", required=False),
+            ToolParameter(name="custom_task_ids", type=ParameterType.BOOLEAN, description="Use custom task IDs (only when task_id is set for new comment). If true, team_id is required.", required=False),
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Required when task_id is set and custom_task_ids is true.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to read comments (use get_comments)",
-        ],
-        typical_queries=["Add comment to task", "Reply on task", "Reply to comment", "Comment on task X"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        args_summary=lambda args: (
+            f"Replying to ClickUp comment {args['comment_id']}"
+            if args.get("comment_id")
+            else f"Commenting on ClickUp task {args.get('task_id', '?')}"
+        ),
+        result_summary=confirmation("Comment added"),
     )
     async def create_task_comment(
         self,
@@ -1305,22 +1277,16 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="create_checklist",
-        description="Create a checklist on a task.",
-        llm_description="Creates a checklist on a task. Need task_id from get_tasks or create_task; name required. Returns checklist id for create_checklist_item. Optional: custom_task_ids, team_id.",
-        args_schema=CreateChecklistInput,
-        returns="JSON with the created checklist (includes checklist id for create_checklist_item)",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to add a checklist to a task",
-            "User asks to create a checklist on a task (need task_id)",
+        path="/tools/clickup/create_checklist",
+        short_description="Create a checklist on a task",
+        description="Creates a checklist on a task. Need task_id from get_tasks or create_task; name required. Returns checklist id for create_checklist_item. Optional: custom_task_ids, team_id.",
+        parameters=[
+            ToolParameter(name="task_id", type=ParameterType.STRING, description="Task ID. Get from get_tasks, get_task, create_task, or search_tasks.", required=True),
+            ToolParameter(name="name", type=ParameterType.STRING, description="Checklist name.", required=True),
+            ToolParameter(name="custom_task_ids", type=ParameterType.BOOLEAN, description="Use custom task IDs. If true, team_id is required.", required=False),
+            ToolParameter(name="team_id", type=ParameterType.STRING, description="Workspace (team) ID. Required when custom_task_ids is true.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to add checklist items (use create_checklist_item after create_checklist)",
-        ],
-        typical_queries=["Add checklist to task", "Create checklist on task", "New checklist"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
     )
     async def create_checklist(
         self,
@@ -1344,22 +1310,15 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="create_checklist_item",
-        description="Add an item to a checklist.",
-        llm_description="Adds an item to a checklist. Need checklist_id from task checklists (get_task) or create_checklist; name required. Optional: assignee.",
-        args_schema=CreateChecklistItemInput,
-        returns="JSON with the created checklist item",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to add an item to a checklist",
-            "User asks to add a checklist item (need checklist_id from create_checklist or task checklists)",
+        path="/tools/clickup/create_checklist_item",
+        short_description="Add an item to a checklist",
+        description="Adds an item to a checklist. Need checklist_id from task checklists (get_task) or create_checklist; name required. Optional: assignee.",
+        parameters=[
+            ToolParameter(name="checklist_id", type=ParameterType.STRING, description="Checklist ID. Get from task checklists (get_task) or create_checklist response.", required=True),
+            ToolParameter(name="name", type=ParameterType.STRING, description="Checklist item name.", required=True),
+            ToolParameter(name="assignee", type=ParameterType.INTEGER, description="Assignee user ID.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create the checklist (use create_checklist)",
-        ],
-        typical_queries=["Add item to checklist", "Add checklist item", "New checklist item"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
     )
     async def create_checklist_item(
         self,
@@ -1380,22 +1339,18 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="update_checklist_item",
-        description="Update or check/uncheck a checklist item.",
-        llm_description="Updates a checklist item (name, assignee, resolved/checked, parent). Need checklist_id and checklist_item_id from task checklists or create_checklist_item. Pass only fields to change.",
-        args_schema=UpdateChecklistItemInput,
-        returns="JSON with the updated checklist item",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to check/uncheck or edit a checklist item",
-            "User asks to rename item, set assignee, or mark resolved (need checklist_id and checklist_item_id)",
+        path="/tools/clickup/update_checklist_item",
+        short_description="Update or check/uncheck a checklist item",
+        description="Updates a checklist item (name, assignee, resolved/checked, parent). Need checklist_id and checklist_item_id from task checklists or create_checklist_item. Pass only fields to change.",
+        parameters=[
+            ToolParameter(name="checklist_id", type=ParameterType.STRING, description="Checklist ID. Get from task checklists or create_checklist response.", required=True),
+            ToolParameter(name="checklist_item_id", type=ParameterType.STRING, description="Checklist item ID. Get from checklist items or create_checklist_item response.", required=True),
+            ToolParameter(name="name", type=ParameterType.STRING, description="New item name (omit to leave unchanged).", required=False),
+            ToolParameter(name="assignee", type=ParameterType.INTEGER, description="Assignee user ID.", required=False),
+            ToolParameter(name="resolved", type=ParameterType.BOOLEAN, description="Mark item resolved (checked) or unresolved.", required=False),
+            ToolParameter(name="parent", type=ParameterType.STRING, description="Parent checklist item ID for nesting.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to add an item (use create_checklist_item)",
-        ],
-        typical_queries=["Check checklist item", "Uncheck item", "Rename checklist item", "Mark checklist item done"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
     )
     async def update_checklist_item(
         self,
@@ -1423,23 +1378,18 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="get_workspace_docs",
-        description="List docs in a workspace.",
-        llm_description="Returns docs in a workspace. Pass only workspace_id unless user asks to filter (e.g. my docs, first 10).",
-        args_schema=GetWorkspaceDocsInput,
-        returns="JSON with list of docs in the workspace",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to list ClickUp docs in a workspace",
-            "User needs doc_id to list pages or get page details (call get_authorized_teams_workspaces first for workspace_id)",
+        path="/tools/clickup/get_workspace_docs",
+        short_description="List docs in a workspace",
+        description="Returns docs in a workspace. Pass only workspace_id unless user asks to filter (e.g. my docs, first 10).",
+        parameters=[
+            ToolParameter(name="workspace_id", type=ParameterType.STRING, description="Workspace ID. Same as team id from get_authorized_teams_workspaces.", required=True),
+            ToolParameter(name="creator", type=ParameterType.INTEGER, description="Only set when user asks 'my docs' (use get_authorized_user id). Leave unset for list all docs.", required=False),
+            ToolParameter(name="parent_id", type=ParameterType.STRING, description="Only set when user asks docs under a specific parent. Leave unset for list all docs.", required=False),
+            ToolParameter(name="parent_type", type=ParameterType.STRING, description="Only set when user explicitly filters by parent type. Leave unset for list all docs; do not use WORKSPACE.", required=False),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, description="Only set when user asks to limit (e.g. 'first 10 docs'); use 10 then. Leave unset for list all docs.", required=False),
+            ToolParameter(name="cursor", type=ParameterType.STRING, description="Cursor for next page; only when paginating. Leave unset for first page.", required=False),
         ],
-        when_not_to_use=[
-            "User wants tasks or lists (use get_tasks, get_lists, etc.)",
-            "User wants pages inside a doc (use get_doc_pages with doc_id)",
-        ],
-        typical_queries=["List docs in workspace", "Show all docs", "What docs do we have?"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
     async def get_workspace_docs(
         self,
@@ -1479,23 +1429,14 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="get_doc_pages",
-        description="List pages in a doc.",
-        llm_description="Returns pages in a doc. Need workspace_id and doc_id from get_workspace_docs. Use returned page ids for get_doc_page.",
-        args_schema=GetDocPagesInput,
-        returns="JSON with list or tree of pages in the doc",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to list pages in a ClickUp doc",
-            "User needs page_id to get page details (call get_workspace_docs first for doc_id)",
+        path="/tools/clickup/get_doc_pages",
+        short_description="List pages in a doc",
+        description="Returns pages in a doc. Need workspace_id and doc_id from get_workspace_docs. Use returned page ids for get_doc_page.",
+        parameters=[
+            ToolParameter(name="workspace_id", type=ParameterType.STRING, description="Workspace ID. Same as team id from get_authorized_teams_workspaces.", required=True),
+            ToolParameter(name="doc_id", type=ParameterType.STRING, description="Doc ID. Get from get_workspace_docs.", required=True),
         ],
-        when_not_to_use=[
-            "User wants to list docs (use get_workspace_docs)",
-            "User wants details of one page (use get_doc_page with page_id)",
-        ],
-        typical_queries=["List pages in this doc", "Show doc outline", "Pages in doc X"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
     async def get_doc_pages(
         self,
@@ -1525,23 +1466,15 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="get_doc_page",
-        description="Get details of a page.",
-        llm_description="Returns full details of one page. Need workspace_id, doc_id from get_workspace_docs, and page_id from get_doc_pages.",
-        args_schema=GetDocPageInput,
-        returns="JSON with page details and content",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants details or content of a specific page in a doc",
-            "User asks for one page by id (get page_id from get_doc_pages)",
+        path="/tools/clickup/get_doc_page",
+        short_description="Get details of a page",
+        description="Returns full details of one page. Need workspace_id, doc_id from get_workspace_docs, and page_id from get_doc_pages.",
+        parameters=[
+            ToolParameter(name="workspace_id", type=ParameterType.STRING, description="Workspace ID. Same as team id from get_authorized_teams_workspaces.", required=True),
+            ToolParameter(name="doc_id", type=ParameterType.STRING, description="Doc ID. Get from get_workspace_docs.", required=True),
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID. Get from get_doc_pages.", required=True),
         ],
-        when_not_to_use=[
-            "User wants to list pages (use get_doc_pages)",
-            "User wants to list docs (use get_workspace_docs)",
-        ],
-        typical_queries=["Get page details", "Show page content", "Details of page X"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
     async def get_doc_page(
         self,
@@ -1568,23 +1501,20 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="create_doc",
-        description="Create a doc in a workspace.",
-        llm_description="Creates a doc in a workspace. Need workspace_id and name. Optional: parent_id+parent_type (type 4=Space, 5=Folder, 6=List, 7=Everything, 12=Workspace), visibility (PUBLIC/PRIVATE).",
-        args_schema=CreateDocInput,
-        returns="JSON with the created doc (includes doc id for create_doc_page)",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to create a new doc in a workspace",
-            "User asks to add a doc (need workspace_id from get_authorized_teams_workspaces)",
+        path="/tools/clickup/create_doc",
+        short_description="Create a doc in a workspace",
+        description=(
+            "Creates a doc in a workspace. Need workspace_id and name. Optional: parent_id+parent_type "
+            "(type 4=Space, 5=Folder, 6=List, 7=Everything, 12=Workspace), visibility (PUBLIC/PRIVATE)."
+        ),
+        parameters=[
+            ToolParameter(name="workspace_id", type=ParameterType.STRING, description="Workspace ID. Same as team id from get_authorized_teams_workspaces.", required=True),
+            ToolParameter(name="name", type=ParameterType.STRING, description="Name of the new doc.", required=True),
+            ToolParameter(name="parent_id", type=ParameterType.STRING, description="Parent id (e.g. space_id, folder_id, list_id). Required if parent_type is set.", required=False),
+            ToolParameter(name="parent_type", type=ParameterType.INTEGER, description="Parent type: 4=Space, 5=Folder, 6=List, 7=Everything, 12=Workspace. Use with parent_id.", required=False),
+            ToolParameter(name="visibility", type=ParameterType.STRING, description="Visibility: PUBLIC or PRIVATE.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to list docs (use get_workspace_docs)",
-            "User wants to create a page in a doc (use create_doc_page)",
-        ],
-        typical_queries=["Create a doc", "New doc in workspace", "Add a doc"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
     )
     async def create_doc(
         self,
@@ -1619,23 +1549,19 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="create_doc_page",
-        description="Create a page in a ClickUp doc",
-        llm_description="Creates a page in a doc. Need workspace_id and doc_id from get_workspace_docs; optional parent_page_id, name, sub_title, content, content_format.",
-        args_schema=CreateDocPageInput,
-        returns="JSON with the created page (includes page id for get_doc_page or update_doc_page)",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to add a page to a doc",
-            "User asks to create a page in a doc (need doc_id from get_workspace_docs)",
+        path="/tools/clickup/create_doc_page",
+        short_description="Create a page in a ClickUp doc",
+        description="Creates a page in a doc. Need workspace_id and doc_id from get_workspace_docs; optional parent_page_id, name, sub_title, content, content_format.",
+        parameters=[
+            ToolParameter(name="workspace_id", type=ParameterType.STRING, description="Workspace ID. Same as team id from get_authorized_teams_workspaces.", required=True),
+            ToolParameter(name="doc_id", type=ParameterType.STRING, description="Doc ID. Get from get_workspace_docs.", required=True),
+            ToolParameter(name="parent_page_id", type=ParameterType.STRING, description="Parent page ID. Omit for a root page in the doc.", required=False),
+            ToolParameter(name="name", type=ParameterType.STRING, description="Name of the new page.", required=False),
+            ToolParameter(name="sub_title", type=ParameterType.STRING, description="Subtitle of the new page.", required=False),
+            ToolParameter(name="content", type=ParameterType.STRING, description="Content of the new page.", required=False),
+            ToolParameter(name="content_format", type=ParameterType.STRING, description="Content format: text/md (markdown) or text/plain.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a doc (use create_doc)",
-            "User wants to list pages (use get_doc_pages)",
-        ],
-        typical_queries=["Add page to doc", "Create doc page", "New page in doc"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
     )
     async def create_doc_page(
         self,
@@ -1674,23 +1600,23 @@ class ClickUp:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="clickup",
-        tool_name="update_doc_page",
-        description="Edit or update a page in a doc",
-        llm_description="Updates a doc page. Need workspace_id, doc_id from get_workspace_docs, page_id from get_doc_pages. Pass only fields to change (name, sub_title, content); content_edit_mode: replace, append, prepend.",
-        args_schema=UpdateDocPageInput,
-        returns="JSON with the updated page details",
-        primary_intent=ToolIntent.ACTION,
-        category=ToolCategory.PROJECT_MANAGEMENT,
-        when_to_use=[
-            "User wants to edit or update a doc page",
-            "User asks to change page content or name (need page_id from get_doc_pages)",
+        path="/tools/clickup/update_doc_page",
+        short_description="Edit or update a page in a doc",
+        description=(
+            "Updates a doc page. Need workspace_id, doc_id from get_workspace_docs, page_id from get_doc_pages. "
+            "Pass only fields to change (name, sub_title, content); content_edit_mode: replace, append, prepend."
+        ),
+        parameters=[
+            ToolParameter(name="workspace_id", type=ParameterType.STRING, description="Workspace ID. Same as team id from get_authorized_teams_workspaces.", required=True),
+            ToolParameter(name="doc_id", type=ParameterType.STRING, description="Doc ID. Get from get_workspace_docs.", required=True),
+            ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID. Get from get_doc_pages.", required=True),
+            ToolParameter(name="name", type=ParameterType.STRING, description="Updated name of the page (omit to leave unchanged).", required=False),
+            ToolParameter(name="sub_title", type=ParameterType.STRING, description="Updated subtitle (omit to leave unchanged).", required=False),
+            ToolParameter(name="content", type=ParameterType.STRING, description="Updated content (omit to leave unchanged).", required=False),
+            ToolParameter(name="content_edit_mode", type=ParameterType.STRING, description="How to update content: replace, append, or prepend.", required=False),
+            ToolParameter(name="content_format", type=ParameterType.STRING, description="Content format: text/md or text/plain.", required=False),
         ],
-        when_not_to_use=[
-            "User wants to create a page (use create_doc_page)",
-            "User wants to read a page (use get_doc_page)",
-        ],
-        typical_queries=["Edit doc page", "Update page content", "Change page name"],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
     )
     async def update_doc_page(
         self,

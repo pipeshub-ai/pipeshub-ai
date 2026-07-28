@@ -537,7 +537,116 @@ class RetrievalService:
                     self.logger.warning(f"Failed to batch fetch mails: {str(e)}")
                     return {}
 
-            if file_record_ids_to_fetch or mail_record_ids_to_fetch:
+            async def fetch_locations() -> dict[str, str]:
+                """Batch-resolve location breadcrumbs for all unique records.
+
+                Prefer denormalized fields already on the fetched record docs
+                (``parentNodeId`` for attachments, ``recordGroupId`` for
+                project/space membership) — these are written at index time and
+                do not require an edge traversal. Fall back to the provider's
+                edge-based ``get_record_locations`` for anything still missing.
+                """
+                try:
+                    from app.agents.actions.knowledge_graph.location import (
+                        RecordLocation,
+                        resolve_locations,
+                    )
+
+                    rids = list(unique_record_ids)
+                    if not rids:
+                        return {}
+
+                    # --- Path A: denormalized parentNodeId / recordGroupId ---
+                    # rid -> (collection, parent_id)
+                    rid_to_parent: dict[str, tuple[str, str]] = {}
+                    parent_ids_by_coll: dict[str, set[str]] = {
+                        CollectionNames.RECORDS.value: set(),
+                        CollectionNames.RECORD_GROUPS.value: set(),
+                    }
+                    for rid in rids:
+                        rec = record_id_to_record_map.get(rid)
+                        if not isinstance(rec, dict):
+                            continue
+                        parent_node_id = rec.get("parentNodeId")
+                        record_group_id = rec.get("recordGroupId")
+                        if parent_node_id:
+                            rid_to_parent[rid] = (CollectionNames.RECORDS.value, parent_node_id)
+                            parent_ids_by_coll[CollectionNames.RECORDS.value].add(parent_node_id)
+                        elif record_group_id:
+                            rid_to_parent[rid] = (
+                                CollectionNames.RECORD_GROUPS.value, record_group_id
+                            )
+                            parent_ids_by_coll[CollectionNames.RECORD_GROUPS.value].add(
+                                record_group_id
+                            )
+
+                    # Batch-fetch parent display names
+                    parent_names: dict[str, str] = {}
+                    fetch_tasks = []
+                    fetch_keys: list[tuple[str, str]] = []  # (collection, id)
+                    for coll, pids in parent_ids_by_coll.items():
+                        for pid in pids:
+                            fetch_tasks.append(self.graph_provider.get_document(pid, coll))
+                            fetch_keys.append((coll, pid))
+                    if fetch_tasks:
+                        fetched = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+                        for (coll, pid), doc in zip(fetch_keys, fetched):
+                            if not doc or isinstance(doc, Exception):
+                                continue
+                            if coll == CollectionNames.RECORDS.value:
+                                name = (
+                                    doc.get("recordName")
+                                    or doc.get("name")
+                                    or doc.get("title")
+                                    or pid
+                                )
+                            else:
+                                name = doc.get("groupName") or doc.get("name") or pid
+                            if name:
+                                parent_names[pid] = name
+
+                    result: dict[str, str] = {}
+                    for rid, (_coll, pid) in rid_to_parent.items():
+                        name = parent_names.get(pid)
+                        if not name:
+                            continue
+                        rendered = RecordLocation(
+                            path=(name,), parent_id=pid, truncated=False
+                        ).render()
+                        if rendered:
+                            result[rid] = rendered
+                    via_doc = len(result)
+
+                    # --- Path B: edge-based lookup for anything still missing ---
+                    missing = [rid for rid in rids if rid not in result]
+                    if missing:
+                        loc_cache: dict = {}
+                        locs = await resolve_locations(
+                            missing,
+                            graph_provider=self.graph_provider,
+                            org_id=org_id,
+                            cache=loc_cache,
+                        )
+                        for rid, loc in locs.items():
+                            rendered = loc.render()
+                            if rendered:
+                                result[rid] = rendered
+
+                    self.logger.info(
+                        "fetch_locations: %d/%d resolved (%d via document fields, %d via edges)",
+                        len(result), len(rids), via_doc, len(result) - via_doc,
+                    )
+                    return result
+                except Exception as loc_exc:
+                    self.logger.warning("fetch_locations: skipped — %s", loc_exc, exc_info=True)
+                    return {}
+
+            locations_map: dict[str, str] = {}
+            if file_record_ids_to_fetch or mail_record_ids_to_fetch or unique_record_ids:
+                files_map, mails_map, locations_map = await asyncio.gather(
+                    fetch_files(), fetch_mails(), fetch_locations()
+                )
+            else:
                 files_map, mails_map = await asyncio.gather(fetch_files(), fetch_mails())
 
             for idx, (record_id, record_type) in result_to_record_map.items():
@@ -571,6 +680,16 @@ class RetrievalService:
                         result["metadata"]["extension"] = fallback_ext
 
                 final_search_results.append(result)
+
+            # Inject location into virtual_to_record_map entries so get_record()
+            # (chat_helpers.py) can forward it to Record.to_llm_context().
+            if locations_map:
+                for vr_entry in virtual_to_record_map.values():
+                    if vr_entry is None:
+                        continue
+                    rid = vr_entry.get("_key")
+                    if rid and rid in locations_map:
+                        vr_entry["location"] = locations_map[rid]
 
             # OPTIMIZATION: Get full record documents from Arango using list comprehension
             records = [

@@ -4,9 +4,8 @@ import logging
 import threading
 from typing import Coroutine, Dict, List, Optional, Tuple
 
-from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -184,9 +183,9 @@ class Airtable:
         })
 
     @tool(
-        app_name="airtable",
-        tool_name="create_records",
-        description="Create one or more records in an Airtable table",
+        path="/tools/airtable/create_records",
+        short_description="Create records in an Airtable table",
+        description="Create one or more records in an Airtable table. Pass records as a JSON array of objects with 'fields' keys.",
         parameters=[
             ToolParameter(
                 name="base_id",
@@ -210,9 +209,9 @@ class Airtable:
                 required=False
             )
         ],
-        returns="JSON with creation result"
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="create")],
     )
-    def create_records(
+    async def create_records(
         self,
         base_id: str,
         table_id_or_name: str,
@@ -247,9 +246,9 @@ class Airtable:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="airtable",
-        tool_name="get_record",
-        description="Retrieve a single record by record ID",
+        path="/tools/airtable/get_record",
+        short_description="Retrieve a single Airtable record by ID",
+        description="Retrieve a single record by record ID from an Airtable table.",
         parameters=[
             ToolParameter(
                 name="base_id",
@@ -267,9 +266,9 @@ class Airtable:
                 description="Record ID (starts with 'rec')"
             )
         ],
-        returns="JSON with record data"
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
     )
-    def get_record(
+    async def get_record(
         self,
         base_id: str,
         table_id_or_name: str,
@@ -294,9 +293,9 @@ class Airtable:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="airtable",
-        tool_name="list_records",
-        description="List records with optional view or formula filtering",
+        path="/tools/airtable/list_records",
+        short_description="List records in an Airtable table",
+        description="List records with optional view or formula filtering and pagination.",
         parameters=[
             ToolParameter(
                 name="base_id",
@@ -322,14 +321,14 @@ class Airtable:
             ),
             ToolParameter(
                 name="page_size",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="Number of records to fetch (max 100)",
                 required=False
             )
         ],
-        returns="JSON with list of records"
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
     )
-    def list_records(
+    async def list_records(
         self,
         base_id: str,
         table_id_or_name: str,
@@ -358,9 +357,9 @@ class Airtable:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="airtable",
-        tool_name="update_records",
-        description="Update one or more records by ID",
+        path="/tools/airtable/update_records",
+        short_description="Update Airtable records by ID",
+        description="Update one or more records by ID in an Airtable table.",
         parameters=[
             ToolParameter(
                 name="base_id",
@@ -390,9 +389,9 @@ class Airtable:
                 required=False
             )
         ],
-        returns="JSON with update result"
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="update")],
     )
-    def update_records(
+    async def update_records(
         self,
         base_id: str,
         table_id_or_name: str,
@@ -428,9 +427,9 @@ class Airtable:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="airtable",
-        tool_name="delete_records",
-        description="Delete one or more records by ID",
+        path="/tools/airtable/delete_records",
+        short_description="Delete Airtable records by ID",
+        description="Delete one or more records by ID from an Airtable table.",
         parameters=[
             ToolParameter(
                 name="base_id",
@@ -448,9 +447,9 @@ class Airtable:
                 description="Comma-separated record IDs (e.g. rec1,rec2)"
             )
         ],
-        returns="JSON with deletion result"
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="delete")],
     )
-    def delete_records(
+    async def delete_records(
         self,
         base_id: str,
         table_id_or_name: str,
@@ -479,9 +478,9 @@ class Airtable:
             return False, json.dumps({"error": str(e)})
 
     @tool(
-        app_name="airtable",
-        tool_name="search_records",
-        description="Search records using an Airtable formula",
+        path="/tools/airtable/search_records",
+        short_description="Search Airtable records by formula",
+        description="Search records in an Airtable table using an Airtable formula filter.",
         parameters=[
             ToolParameter(
                 name="base_id",
@@ -500,14 +499,14 @@ class Airtable:
             ),
             ToolParameter(
                 name="page_size",
-                type=ParameterType.NUMBER,
+                type=ParameterType.INTEGER,
                 description="Number of records to fetch (max 100)",
                 required=False
             )
         ],
-        returns="JSON with search results"
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
     )
-    def search_records(
+    async def search_records(
         self,
         base_id: str,
         table_id_or_name: str,

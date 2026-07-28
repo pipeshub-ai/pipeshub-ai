@@ -11,22 +11,11 @@ import asyncio
 import logging
 import os
 from typing import Any, Optional
-from uuid import uuid4
 
-from app.config.constants.arangodb import (
-    CollectionNames,
-    Connectors,
-    OriginTypes,
-)
-from app.models.entities import (
-    ArtifactRecord,
-    ArtifactType,
-    LifecycleStatus,
-    RecordType,
-)
+from app.config.constants.arangodb import Connectors
+from app.models.entities import ArtifactType
 from app.sandbox.models import ArtifactOutput, ExecutionResult
 from app.utils.conversation_tasks import register_task
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +43,7 @@ MIME_TO_ARTIFACT_TYPE: dict[str, ArtifactType] = {
 }
 
 
-def _infer_artifact_type(mime_type: str) -> ArtifactType:
+def infer_artifact_type(mime_type: str) -> ArtifactType:
     return MIME_TO_ARTIFACT_TYPE.get(mime_type, ArtifactType.OTHER)
 
 
@@ -71,84 +60,38 @@ async def create_artifact_record(
     connector_name: Connectors = Connectors.CODING_SANDBOX,
     source_tool: str | None = None,
 ) -> str:
-    """Create an ArtifactRecord in ArangoDB with permission edges.
+    """Create an ArtifactRecord in ArangoDB with permission edges, for a
+    blob the caller already uploaded elsewhere (e.g. `database_sandbox.py`'s
+    CSV export).
+
+    Thin wrapper over `ArtifactRegistryService.register_existing` (see
+    `app/services/artifact_registry/`) — kept as a free function with this
+    EXACT signature so every existing call site keeps working unchanged
+    while the actual record/permission-edge writes flow through the same
+    single registry every other artifact producer now uses.
 
     Returns the record ID (``_key``) of the created record.
     """
-    record_id = str(uuid4())
-    now = get_epoch_timestamp_in_ms()
+    from app.services.artifact_registry import Actor, ArtifactRegistryService
 
-    # user_id is the external userId field; resolve to the _key used in edges
-    user_doc = await graph_provider.get_user_by_user_id(user_id)
-    if not user_doc:
-        raise ValueError(f"User not found for userId: {user_id}")
-    user_key = user_doc.get("_key") or user_doc.get("id")
-
-    artifact = ArtifactRecord(
-        id=record_id,
-        org_id=org_id,
-        record_name=file_name,
-        record_type=RecordType.ARTIFACT,
-        external_record_id=document_id,
-        version=1,
-        origin=OriginTypes.UPLOAD,
-        connector_name=connector_name,
-        connector_id=f"{connector_name.value.lower()}_{org_id}",
+    registry = ArtifactRegistryService(graph_provider, blob_store=None)
+    actor = Actor(org_id=org_id, user_id=user_id)
+    metadata = await registry.register_existing(
+        actor=actor,
+        document_id=document_id,
+        name=file_name,
+        artifact_type=infer_artifact_type(mime_type),
         mime_type=mime_type,
-        size_in_bytes=size_bytes,
-        created_at=now,
-        updated_at=now,
-        indexing_status="NOT_STARTED",
-        extraction_status="NOT_STARTED",
-        preview_renderable=True,
-        hide_weburl=True,
-        artifact_type=_infer_artifact_type(mime_type),
-        lifecycle_status=LifecycleStatus.PUBLISHED,
-        source_tool=source_tool,
+        size_bytes=size_bytes,
         conversation_id=conversation_id,
+        connector_name=connector_name,
+        source_tool=source_tool,
     )
-
-    record_data = artifact.to_arango_base_record()
-    artifact_data = artifact.to_arango_artifact_record()
-
-    permission_edge = {
-        "from_id": user_key,
-        "from_collection": CollectionNames.USERS.value,
-        "to_id": record_id,
-        "to_collection": CollectionNames.RECORDS.value,
-        "type": "USER",
-        "role": "OWNER",
-        "createdAtTimestamp": now,
-        "updatedAtTimestamp": now,
-    }
-
-    is_of_type_edge = {
-        "from_id": record_id,
-        "from_collection": CollectionNames.RECORDS.value,
-        "to_id": record_id,
-        "to_collection": CollectionNames.ARTIFACTS.value,
-        "createdAtTimestamp": now,
-        "updatedAtTimestamp": now,
-    }
-
-    await graph_provider.batch_upsert_nodes(
-        [record_data], CollectionNames.RECORDS.value,
-    )
-    await graph_provider.batch_upsert_nodes(
-        [artifact_data], CollectionNames.ARTIFACTS.value,
-    )
-    await graph_provider.batch_create_edges(
-        [permission_edge], CollectionNames.PERMISSION.value,
-    )
-    await graph_provider.batch_create_edges(
-        [is_of_type_edge], CollectionNames.IS_OF_TYPE.value,
-    )
-
     logger.info(
         "Created ArtifactRecord %s for document %s (user=%s, conversation=%s)",
-        record_id, document_id, user_id, conversation_id,
+        metadata.artifact_id, document_id, user_id, conversation_id,
     )
-    return record_id
+    return metadata.artifact_id
 
 
 async def upload_bytes_artifact(
@@ -166,16 +109,21 @@ async def upload_bytes_artifact(
 ) -> dict[str, Any] | None:
     """Upload an in-memory artifact (already produced bytes) to blob storage.
 
-    Mirrors the single-file branch of :func:`upload_artifacts_to_blob` but
-    skips the on-disk ``_read_file_bytes`` path since the bytes are already
-    produced server-side (no sandbox-root check needed).
+    When ``user_id`` and ``graph_provider`` are provided, routes through
+    `ArtifactRegistryService.register_output` (see
+    `app/services/artifact_registry/`) instead of the old flat, always-new,
+    never-versioned upload — a call with a file name that already exists as
+    an artifact in this conversation now bumps that artifact's version
+    instead of creating a disconnected duplicate (this is a semantic
+    upgrade for every existing caller — `image_generator`/`database_sandbox`
+    — with no call-site change). Without both, falls back to a plain,
+    unregistered blob upload exactly as before (used by tests/callers with
+    no graph access).
 
-    When ``user_id`` and ``graph_provider`` are provided, also creates an
-    ``ArtifactRecord`` in ArangoDB with permission edges.
-
-    Returns the upload-info dict (``fileName``, ``signedUrl``/``downloadUrl``,
-    ``mimeType``, ``sizeBytes``, optional ``recordId``), or ``None`` on
-    failure (including when ``file_bytes`` exceeds ``MAX_ARTIFACT_BYTES``).
+    Returns the upload-info dict (``fileName``, ``documentId``,
+    ``downloadUrl``, ``mimeType``, ``sizeBytes``, optional ``recordId``/
+    ``version``), or ``None`` on failure (including when ``file_bytes``
+    exceeds ``MAX_ARTIFACT_BYTES``).
     """
     if len(file_bytes) > MAX_ARTIFACT_BYTES:
         logger.warning(
@@ -183,6 +131,45 @@ async def upload_bytes_artifact(
             file_name, len(file_bytes), MAX_ARTIFACT_BYTES,
         )
         return None
+
+    if user_id and graph_provider:
+        from app.services.artifact_registry import Actor, ArtifactRegistryService
+
+        registry = ArtifactRegistryService(graph_provider, blob_store)
+        actor = Actor(org_id=org_id, user_id=user_id)
+        try:
+            metadata, version = await registry.register_output(
+                actor=actor,
+                name=file_name,
+                artifact_type=infer_artifact_type(mime_type),
+                mime_type=mime_type,
+                content=file_bytes,
+                conversation_id=conversation_id,
+                source_tool=source_tool,
+                connector_name=connector_name,
+            )
+        except Exception:
+            logger.exception("Failed to register artifact %s via registry", file_name)
+            return None
+
+        result_entry: dict[str, Any] = {
+            "documentId": metadata.document_id,
+            "fileName": metadata.name,
+            "mimeType": metadata.mime_type,
+            "sizeBytes": metadata.size_bytes,
+            "recordId": metadata.artifact_id,
+            "version": metadata.version,
+            "artifactType": metadata.artifact_type.value,
+        }
+        if version is not None and version.deduplicated:
+            result_entry["deduplicated"] = True
+        try:
+            result_entry["downloadUrl"] = await registry.get_download_url(actor=actor, artifact_id=metadata.artifact_id)
+        except Exception:
+            logger.warning("Failed to obtain download URL for artifact %s", metadata.artifact_id, exc_info=True)
+        return result_entry
+
+    # No graph access — plain, unregistered blob upload (legacy behavior).
     try:
         upload_info = await blob_store.save_conversation_file_to_storage(
             org_id=org_id,
@@ -195,35 +182,11 @@ async def upload_bytes_artifact(
         logger.exception("Failed to save bytes artifact %s to blob", file_name)
         return None
 
-    result_entry: dict[str, Any] = {
+    return {
         **upload_info,
         "mimeType": mime_type,
         "sizeBytes": len(file_bytes),
     }
-
-    if user_id and graph_provider:
-        document_id = upload_info.get("documentId", "")
-        if document_id:
-            try:
-                record_id = await create_artifact_record(
-                    graph_provider=graph_provider,
-                    document_id=document_id,
-                    file_name=file_name,
-                    mime_type=mime_type,
-                    size_bytes=len(file_bytes),
-                    org_id=org_id,
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                    connector_name=connector_name,
-                    source_tool=source_tool,
-                )
-                result_entry["recordId"] = record_id
-            except Exception:
-                logger.exception(
-                    "Failed to create ArtifactRecord for %s", file_name,
-                )
-
-    return result_entry
 
 
 async def upload_artifacts_to_blob(
@@ -266,6 +229,7 @@ async def upload_artifacts_to_blob(
                 **upload_info,
                 "mimeType": artifact.mime_type,
                 "sizeBytes": artifact.size_bytes,
+                "artifactType": infer_artifact_type(artifact.mime_type).value,
             }
 
             if user_id and graph_provider:

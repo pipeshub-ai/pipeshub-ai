@@ -9,8 +9,6 @@ import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
 import type { QueryMode, QueryModeConfig } from '@/chat/types';
 import { QUERY_MODES } from '@/chat/constants';
 
-const QUERY_MODES_VISIBLE = QUERY_MODES.filter((m) => m.id !== 'agent');
-
 interface QueryModePanelProps {
   /** Currently active query mode */
   activeMode: QueryMode;
@@ -42,7 +40,7 @@ export function QueryModePanel({ activeMode, onSelect, hideHeader = false }: Que
 
       {/* Mode items */}
       <Flex direction="column" gap="2">
-        {QUERY_MODES_VISIBLE.map((mode) => (
+        {QUERY_MODES.map((mode) => (
           <QueryModeItem
             key={mode.id}
             mode={mode}

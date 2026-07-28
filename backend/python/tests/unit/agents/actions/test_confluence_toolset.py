@@ -1,15 +1,18 @@
 """Comprehensive unit tests for `app.agents.actions.confluence.confluence`.
 
 Covers:
-* 11 Pydantic input schemas
+* 14 Pydantic input schemas (including 3 new attachment schemas)
 * `_handle_response` (success/204/JSON-error/non-JSON/parsing-failure paths)
 * `_resolve_space_id` (numeric pass-through, key match, `~` prefix variants,
   not-found, exception)
-* All 12 `@tool` methods: success + URL-construction + validation + API-error
+* All 15 `@tool` methods: success + URL-construction + validation + API-error
   + exception paths.
+* New: `_harvest_mentions`, `_bulk_resolve_users`, attachment tools,
+  updated `get_page_content`, search_users guidance text.
 """
 
 import json
+from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,11 +21,14 @@ from app.agents.actions.confluence.confluence import (
     CommentOnPageInput,
     Confluence,
     CreatePageInput,
+    DownloadAttachmentInput,
+    GetAttachmentMetadataInput,
     GetChildPagesInput,
     GetPageContentInput,
     GetPagesInSpaceInput,
     GetPageVersionsInput,
     GetSpaceInput,
+    ListPageAttachmentsInput,
     SearchContentInput,
     SearchPagesInput,
     SearchUsersInput,
@@ -54,7 +60,27 @@ def _build_confluence() -> Confluence:
     conf = Confluence.__new__(Confluence)
     conf.client = MagicMock()
     conf._site_url = None
+    conf.chat_state = None
     return conf
+
+
+async def _async_gen(*chunks: bytes) -> AsyncGenerator[bytes, None]:
+    """Async generator yielding the provided chunks — use for mocking download_attachment."""
+    for chunk in chunks:
+        yield chunk
+
+
+def _page_response(page_id: str = "p1", space_id: str = "99", title: str = "T",
+                   body_html: str = "<p>Hello</p>") -> MagicMock:
+    """Build an export_view-shaped page API response."""
+    return _mock_response(200, {
+        "id": page_id,
+        "title": title,
+        "spaceId": space_id,
+        "status": "current",
+        "version": {"number": 1, "authorId": "author-1"},
+        "body": {"export_view": {"value": body_html, "representation": "export_view"}},
+    })
 
 
 def _spaces_response(entries):
@@ -71,8 +97,36 @@ class TestInputSchemas:
         assert data.space_id == "SD"
         assert data.page_title == "t"
 
-    def test_get_page_content_input(self):
-        assert GetPageContentInput(page_id="123").page_id == "123"
+    def test_get_page_content_input_defaults(self):
+        d = GetPageContentInput(page_id="123")
+        assert d.page_id == "123"
+        assert d.body_format == "markdown"
+        assert d.include_comments is True
+        assert d.include_attachments is True
+
+    def test_get_page_content_input_storage_format(self):
+        d = GetPageContentInput(page_id="1", body_format="storage", include_comments=False)
+        assert d.body_format == "storage"
+        assert d.include_comments is False
+
+    def test_list_page_attachments_input_defaults(self):
+        d = ListPageAttachmentsInput(page_id="1")
+        assert d.page_id == "1"
+        assert d.media_type is None
+        assert d.limit == 25
+
+    def test_list_page_attachments_input_with_filter(self):
+        d = ListPageAttachmentsInput(page_id="1", media_type="application/pdf", limit=10)
+        assert d.media_type == "application/pdf"
+        assert d.limit == 10
+
+    def test_get_attachment_metadata_input(self):
+        assert GetAttachmentMetadataInput(attachment_id="att-1").attachment_id == "att-1"
+
+    def test_download_attachment_input(self):
+        d = DownloadAttachmentInput(page_id="1", attachment_id="att-1")
+        assert d.page_id == "1"
+        assert d.attachment_id == "att-1"
 
     def test_get_pages_in_space_input(self):
         assert GetPagesInSpaceInput(space_id="SD").space_id == "SD"
@@ -379,8 +433,97 @@ class TestCreatePage:
 
 
 # ===========================================================================
-# get_page_content
+# _harvest_mentions
 # ===========================================================================
+
+class TestHarvestMentions:
+    def test_extracts_account_id_and_name(self):
+        html = (
+            '<a class="confluence-userlink user-mention" data-account-id="abc-123">John Doe</a>'
+        )
+        result = Confluence._harvest_mentions(html)
+        assert result == {"abc-123": "John Doe"}
+
+    def test_multiple_mentions(self):
+        html = (
+            '<a data-account-id="id-1">Alice</a>'
+            '<a data-account-id="id-2">Bob</a>'
+        )
+        result = Confluence._harvest_mentions(html)
+        assert result == {"id-1": "Alice", "id-2": "Bob"}
+
+    def test_empty_html_returns_empty(self):
+        assert Confluence._harvest_mentions("") == {}
+
+    def test_tags_without_data_account_id_skipped(self):
+        html = '<a href="/user/1">No account id</a>'
+        assert Confluence._harvest_mentions(html) == {}
+
+    def test_empty_account_id_skipped(self):
+        html = '<a data-account-id="">Name</a>'
+        assert Confluence._harvest_mentions(html) == {}
+
+    def test_empty_name_skipped(self):
+        html = '<a data-account-id="id-1"></a>'
+        assert Confluence._harvest_mentions(html) == {}
+
+
+# ===========================================================================
+# _bulk_resolve_users
+# ===========================================================================
+
+class TestBulkResolveUsers:
+    @pytest.mark.asyncio
+    async def test_empty_set_returns_empty(self):
+        conf = _build_confluence()
+        result = await conf._bulk_resolve_users(set())
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_resolves_single_chunk(self):
+        conf = _build_confluence()
+        conf.client.create_bulk_user_lookup = AsyncMock(return_value=_mock_response(200, {
+            "results": [
+                {"accountId": "id-1", "displayName": "Alice", "email": "alice@x.com"},
+                {"accountId": "id-2", "displayName": "Bob"},
+            ],
+        }))
+        result = await conf._bulk_resolve_users({"id-1", "id-2"})
+        assert result["id-1"] == {"displayName": "Alice", "email": "alice@x.com"}
+        assert result["id-2"] == {"displayName": "Bob"}
+
+    @pytest.mark.asyncio
+    async def test_chunks_at_25_per_request(self):
+        conf = _build_confluence()
+        conf.client.create_bulk_user_lookup = AsyncMock(return_value=_mock_response(200, {
+            "results": [],
+        }))
+        ids = {f"id-{i}" for i in range(30)}
+        await conf._bulk_resolve_users(ids)
+        assert conf.client.create_bulk_user_lookup.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_api_error_skips_chunk(self):
+        conf = _build_confluence()
+        conf.client.create_bulk_user_lookup = AsyncMock(return_value=_mock_response(500, {}))
+        result = await conf._bulk_resolve_users({"id-1"})
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_exception_in_chunk_skips(self):
+        conf = _build_confluence()
+        conf.client.create_bulk_user_lookup = AsyncMock(side_effect=RuntimeError("network"))
+        result = await conf._bulk_resolve_users({"id-1"})
+        assert result == {}
+
+
+# ===========================================================================
+# get_page_content (updated)
+# ===========================================================================
+
+def _empty_list_response():
+    return _mock_response(200, {"results": []})
+
 
 class TestGetPageContent:
     @pytest.mark.asyncio
@@ -391,44 +534,214 @@ class TestGetPageContent:
         assert "Invalid page_id" in json.loads(payload)["error"]
 
     @pytest.mark.asyncio
-    async def test_success_with_url_numeric_space(self):
+    async def test_success_markdown_default(self):
         conf = _build_confluence()
-        conf.client.get_page_by_id = AsyncMock(
-            return_value=_mock_response(200, {"id": "p1", "spaceId": "99", "title": "T"}),
-        )
-        conf.client.get_spaces = AsyncMock(return_value=_spaces_response([
-            {"id": "99", "key": "SD"},
-        ]))
-        with patch.object(conf, "_get_site_url", AsyncMock(return_value="https://s")):
+        html_body = "<h1>Title</h1><p>Hello world</p>"
+        conf.client.get_page_by_id = AsyncMock(return_value=_page_response(body_html=html_body))
+        conf.client.get_page_footer_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_inline_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_attachments = AsyncMock(return_value=_empty_list_response())
+        conf.client.create_bulk_user_lookup = AsyncMock(return_value=_mock_response(200, {"results": []}))
+        with patch.object(conf, "_get_site_url", AsyncMock(return_value=None)):
             ok, payload = await conf.get_page_content("1")
-        data = json.loads(payload)["data"]
-        assert data["url"] == "https://s/wiki/spaces/SD/pages/p1"
+        body = json.loads(payload)
+        assert ok is True
+        assert body["contentFormat"] == "markdown"
+        assert "Title" in body["content"]
+        assert "footerComments" in body
+        assert "inlineComments" in body
+        assert "attachments" in body
 
     @pytest.mark.asyncio
-    async def test_success_non_numeric_space_skips_lookup(self):
+    async def test_storage_format_skips_conversion(self):
         conf = _build_confluence()
-        conf.client.get_page_by_id = AsyncMock(
-            return_value=_mock_response(200, {"id": "p1", "spaceId": "SD"}),
-        )
-        with patch.object(conf, "_get_site_url", AsyncMock(return_value="https://s")):
-            ok, payload = await conf.get_page_content("1")
-        assert json.loads(payload)["data"]["url"] == "https://s/wiki/spaces/SD/pages/p1"
+        storage_xml = "<p><b>raw storage</b></p>"
+        conf.client.get_page_by_id = AsyncMock(return_value=_mock_response(200, {
+            "id": "1", "title": "T", "spaceId": "SD", "status": "current",
+            "version": {"number": 1},
+            "body": {"storage": {"value": storage_xml, "representation": "storage"}},
+        }))
+        conf.client.get_page_footer_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_inline_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_attachments = AsyncMock(return_value=_empty_list_response())
+        conf.client.create_bulk_user_lookup = AsyncMock(return_value=_mock_response(200, {"results": []}))
+        with patch.object(conf, "_get_site_url", AsyncMock(return_value=None)):
+            ok, payload = await conf.get_page_content("1", body_format="storage")
+        body = json.loads(payload)
+        assert ok is True
+        assert body["contentFormat"] == "storage"
+        assert body["content"] == storage_xml
 
     @pytest.mark.asyncio
-    async def test_success_no_site_url(self):
+    async def test_mention_harvest_populates_resolved_users(self):
+        html = '<h1>Hi</h1><a data-account-id="id-1">Alice Smith</a>'
         conf = _build_confluence()
-        conf.client.get_page_by_id = AsyncMock(
-            return_value=_mock_response(200, {"id": "p1", "spaceId": "SD"}),
-        )
+        conf.client.get_page_by_id = AsyncMock(return_value=_page_response(body_html=html))
+        conf.client.get_page_footer_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_inline_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_attachments = AsyncMock(return_value=_empty_list_response())
+        conf.client.create_bulk_user_lookup = AsyncMock(return_value=_mock_response(200, {"results": []}))
+        with patch.object(conf, "_get_site_url", AsyncMock(return_value=None)):
+            ok, payload = await conf.get_page_content("1")
+        body = json.loads(payload)
+        assert ok is True
+        assert body["resolvedUsers"].get("id-1") == {"displayName": "Alice Smith"}
+
+    @pytest.mark.asyncio
+    async def test_bulk_resolve_called_only_for_unharvested_ids(self):
+        """The page author (from version.authorId) is not a mention — must go through /users-bulk."""
+        html = '<p>no mentions</p>'
+        conf = _build_confluence()
+        conf.client.get_page_by_id = AsyncMock(return_value=_mock_response(200, {
+            "id": "1", "title": "T", "spaceId": "SD", "status": "current",
+            "version": {"number": 1, "authorId": "author-42"},
+            "body": {"export_view": {"value": html}},
+        }))
+        conf.client.get_page_footer_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_inline_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_attachments = AsyncMock(return_value=_empty_list_response())
+        conf.client.create_bulk_user_lookup = AsyncMock(return_value=_mock_response(200, {
+            "results": [{"accountId": "author-42", "displayName": "John Author"}],
+        }))
+        with patch.object(conf, "_get_site_url", AsyncMock(return_value=None)):
+            ok, payload = await conf.get_page_content("1")
+        body = json.loads(payload)
+        assert ok is True
+        assert body["resolvedUsers"].get("author-42") == {"displayName": "John Author"}
+        sent_ids = conf.client.create_bulk_user_lookup.call_args.kwargs["body"]["accountIds"]
+        assert "author-42" in sent_ids
+
+    @pytest.mark.asyncio
+    async def test_string_owner_id_does_not_crash(self):
+        """ownerId is a plain account-ID string in the v2 API — must not call .get() on it."""
+        conf = _build_confluence()
+        conf.client.get_page_by_id = AsyncMock(return_value=_mock_response(200, {
+            "id": "1", "title": "T", "spaceId": "SD", "status": "current",
+            "ownerId": "owner-string-id",
+            "version": {"number": 1, "authorId": "author-42"},
+            "body": {"export_view": {"value": "<p>hi</p>"}},
+        }))
+        conf.client.get_page_footer_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_inline_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_attachments = AsyncMock(return_value=_empty_list_response())
+        conf.client.create_bulk_user_lookup = AsyncMock(return_value=_mock_response(200, {
+            "results": [
+                {"accountId": "owner-string-id", "displayName": "Owner"},
+                {"accountId": "author-42", "displayName": "Author"},
+            ],
+        }))
+        with patch.object(conf, "_get_site_url", AsyncMock(return_value=None)):
+            ok, payload = await conf.get_page_content("1")
+        body = json.loads(payload)
+        assert ok is True
+        assert body["resolvedUsers"].get("owner-string-id") == {"displayName": "Owner"}
+
+    @pytest.mark.asyncio
+    async def test_harvested_ids_not_sent_to_bulk(self):
+        """An account resolved from the HTML mention should NOT appear in /users-bulk."""
+        html = '<a data-account-id="mention-id">Mentioned User</a>'
+        conf = _build_confluence()
+        conf.client.get_page_by_id = AsyncMock(return_value=_mock_response(200, {
+            "id": "1", "title": "T", "spaceId": "SD", "status": "current",
+            "version": {"number": 1},
+            "body": {"export_view": {"value": html}},
+        }))
+        conf.client.get_page_footer_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_inline_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_attachments = AsyncMock(return_value=_empty_list_response())
+        conf.client.create_bulk_user_lookup = AsyncMock(return_value=_mock_response(200, {"results": []}))
+        with patch.object(conf, "_get_site_url", AsyncMock(return_value=None)):
+            await conf.get_page_content("1")
+        # create_bulk_user_lookup may or may not be called, but if called, must not
+        # include the already-harvested mention-id.
+        if conf.client.create_bulk_user_lookup.called:
+            sent_ids = conf.client.create_bulk_user_lookup.call_args.kwargs["body"]["accountIds"]
+            assert "mention-id" not in sent_ids
+
+    @pytest.mark.asyncio
+    async def test_comment_failure_is_non_fatal(self):
+        """A 403 on comments returns page content regardless."""
+        conf = _build_confluence()
+        conf.client.get_page_by_id = AsyncMock(return_value=_page_response())
+        conf.client.get_page_footer_comments = AsyncMock(return_value=_mock_response(403))
+        conf.client.get_page_inline_comments = AsyncMock(return_value=_mock_response(403))
+        conf.client.get_page_attachments = AsyncMock(return_value=_empty_list_response())
+        conf.client.create_bulk_user_lookup = AsyncMock(return_value=_mock_response(200, {"results": []}))
+        with patch.object(conf, "_get_site_url", AsyncMock(return_value=None)):
+            ok, payload = await conf.get_page_content("1")
+        body = json.loads(payload)
+        assert ok is True
+        # Comments should be empty lists (graceful degradation)
+        assert body["footerComments"] == []
+        assert body["inlineComments"] == []
+
+    @pytest.mark.asyncio
+    async def test_attachment_failure_is_non_fatal(self):
+        conf = _build_confluence()
+        conf.client.get_page_by_id = AsyncMock(return_value=_page_response())
+        conf.client.get_page_footer_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_inline_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_attachments = AsyncMock(return_value=_mock_response(403))
+        conf.client.create_bulk_user_lookup = AsyncMock(return_value=_mock_response(200, {"results": []}))
         with patch.object(conf, "_get_site_url", AsyncMock(return_value=None)):
             ok, payload = await conf.get_page_content("1")
         assert ok is True
-        assert "url" not in json.loads(payload)["data"]
+        assert json.loads(payload)["attachments"] == []
 
     @pytest.mark.asyncio
-    async def test_api_error(self):
+    async def test_attachments_note_present_when_attachments_found(self):
+        conf = _build_confluence()
+        conf.client.get_page_by_id = AsyncMock(return_value=_page_response())
+        conf.client.get_page_footer_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_inline_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_attachments = AsyncMock(return_value=_mock_response(200, {
+            "results": [{"id": "att-1", "title": "doc.pdf", "mediaType": "application/pdf", "fileSize": 1024}],
+        }))
+        conf.client.create_bulk_user_lookup = AsyncMock(return_value=_mock_response(200, {"results": []}))
+        with patch.object(conf, "_get_site_url", AsyncMock(return_value=None)):
+            ok, payload = await conf.get_page_content("1")
+        body = json.loads(payload)
+        assert ok is True
+        assert len(body["attachments"]) == 1
+        assert "attachmentsNote" in body
+        assert "download_attachment" in body["attachmentsNote"]
+
+    @pytest.mark.asyncio
+    async def test_no_comments_when_include_comments_false(self):
+        conf = _build_confluence()
+        conf.client.get_page_by_id = AsyncMock(return_value=_page_response())
+        conf.client.get_page_attachments = AsyncMock(return_value=_empty_list_response())
+        conf.client.create_bulk_user_lookup = AsyncMock(return_value=_mock_response(200, {"results": []}))
+        with patch.object(conf, "_get_site_url", AsyncMock(return_value=None)):
+            ok, payload = await conf.get_page_content("1", include_comments=False)
+        body = json.loads(payload)
+        assert ok is True
+        assert "footerComments" not in body
+        assert "inlineComments" not in body
+        conf.client.get_page_footer_comments.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_url_built_for_numeric_space(self):
+        conf = _build_confluence()
+        conf.client.get_page_by_id = AsyncMock(return_value=_page_response(space_id="99"))
+        conf.client.get_page_footer_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_inline_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_attachments = AsyncMock(return_value=_empty_list_response())
+        conf.client.create_bulk_user_lookup = AsyncMock(return_value=_mock_response(200, {"results": []}))
+        conf.client.get_spaces = AsyncMock(return_value=_spaces_response([{"id": "99", "key": "SD"}]))
+        with patch.object(conf, "_get_site_url", AsyncMock(return_value="https://s")):
+            ok, payload = await conf.get_page_content("1")
+        body = json.loads(payload)
+        assert ok is True
+        assert body["url"] == "https://s/wiki/spaces/SD/pages/1"
+
+    @pytest.mark.asyncio
+    async def test_page_fetch_error_returns_false(self):
         conf = _build_confluence()
         conf.client.get_page_by_id = AsyncMock(return_value=_mock_response(404))
+        conf.client.get_page_footer_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_inline_comments = AsyncMock(return_value=_empty_list_response())
+        conf.client.get_page_attachments = AsyncMock(return_value=_empty_list_response())
         ok, _ = await conf.get_page_content("1")
         assert ok is False
 
@@ -436,7 +749,8 @@ class TestGetPageContent:
     async def test_exception(self):
         conf = _build_confluence()
         conf.client.get_page_by_id = AsyncMock(side_effect=RuntimeError("boom"))
-        ok, payload = await conf.get_page_content("1")
+        # Disable side fetches so asyncio.gather only schedules the one failing task.
+        ok, payload = await conf.get_page_content("1", include_comments=False, include_attachments=False)
         assert ok is False
         assert "boom" in json.loads(payload)["error"]
 
@@ -1961,3 +2275,233 @@ class TestGetChildPagesSort:
         conf = _build_confluence()
         ok, _ = await conf.get_child_pages("not-an-int", sort_by="title")
         assert ok is False
+
+
+# ===========================================================================
+# list_page_attachments
+# ===========================================================================
+
+class TestListPageAttachments:
+    @pytest.mark.asyncio
+    async def test_invalid_page_id(self):
+        conf = _build_confluence()
+        ok, payload = await conf.list_page_attachments("not-a-number")
+        assert ok is False
+        assert "Invalid page_id" in json.loads(payload)["error"]
+
+    @pytest.mark.asyncio
+    async def test_success_returns_attachment_list(self):
+        conf = _build_confluence()
+        conf.client.get_page_attachments = AsyncMock(return_value=_mock_response(200, {
+            "results": [
+                {"id": "att-1", "title": "spec.pdf", "mediaType": "application/pdf", "fileSize": 2048},
+                {"id": "att-2", "title": "logo.png", "mediaType": "image/png", "fileSize": 512},
+            ],
+        }))
+        ok, payload = await conf.list_page_attachments("1")
+        body = json.loads(payload)
+        assert ok is True
+        assert body["total"] == 2
+        assert body["results"][0]["id"] == "att-1"
+        assert body["results"][0]["mimeType"] == "application/pdf"
+        assert "download_attachment" in body["note"]
+
+    @pytest.mark.asyncio
+    async def test_media_type_filter_forwarded(self):
+        conf = _build_confluence()
+        conf.client.get_page_attachments = AsyncMock(return_value=_mock_response(200, {"results": []}))
+        await conf.list_page_attachments("1", media_type="application/pdf", limit=10)
+        kwargs = conf.client.get_page_attachments.call_args.kwargs
+        assert kwargs["mediaType"] == "application/pdf"
+        assert kwargs["limit"] == 10
+
+    @pytest.mark.asyncio
+    async def test_api_error(self):
+        conf = _build_confluence()
+        conf.client.get_page_attachments = AsyncMock(return_value=_mock_response(403))
+        ok, _ = await conf.list_page_attachments("1")
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_exception(self):
+        conf = _build_confluence()
+        conf.client.get_page_attachments = AsyncMock(side_effect=RuntimeError("boom"))
+        ok, payload = await conf.list_page_attachments("1")
+        assert ok is False
+        assert "boom" in json.loads(payload)["error"]
+
+
+# ===========================================================================
+# get_attachment_metadata
+# ===========================================================================
+
+class TestGetAttachmentMetadata:
+    @pytest.mark.asyncio
+    async def test_success(self):
+        conf = _build_confluence()
+        conf.client.get_attachment_by_id = AsyncMock(return_value=_mock_response(200, {
+            "id": "att-1", "title": "report.pdf",
+            "mediaType": "application/pdf", "fileSize": 4096,
+        }))
+        ok, payload = await conf.get_attachment_metadata("att-1")
+        body = json.loads(payload)
+        assert ok is True
+        assert body["id"] == "att-1"
+        assert body["title"] == "report.pdf"
+        assert body["mimeType"] == "application/pdf"
+
+    @pytest.mark.asyncio
+    async def test_api_error(self):
+        conf = _build_confluence()
+        conf.client.get_attachment_by_id = AsyncMock(return_value=_mock_response(404))
+        ok, _ = await conf.get_attachment_metadata("att-x")
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_exception(self):
+        conf = _build_confluence()
+        conf.client.get_attachment_by_id = AsyncMock(side_effect=RuntimeError("boom"))
+        ok, payload = await conf.get_attachment_metadata("att-x")
+        assert ok is False
+        assert "boom" in json.loads(payload)["error"]
+
+
+# ===========================================================================
+# download_attachment
+# ===========================================================================
+
+class TestDownloadAttachment:
+    @staticmethod
+    def _build_conf_with_registry():
+        """Return a Confluence instance with a mock registry injected via chat_state."""
+        conf = _build_confluence()
+        mock_registry = MagicMock()
+        conf._registry = MagicMock(return_value=mock_registry)
+        conf._actor = MagicMock(return_value=MagicMock(org_id="org-1", user_id="u-1"))
+        conf.chat_state = {"conversation_id": "conv-1", "org_id": "org-1", "user_id": "u-1"}
+        return conf, mock_registry
+
+    @pytest.mark.asyncio
+    async def test_no_registry_returns_error(self):
+        conf = _build_confluence()
+        conf._registry = MagicMock(return_value=None)
+        ok, payload = await conf.download_attachment("1", "att-1")
+        assert ok is False
+        assert "registry is unavailable" in json.loads(payload)["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_metadata_fetch_failure_returns_error(self):
+        conf, _ = self._build_conf_with_registry()
+        conf.client.get_attachment_by_id = AsyncMock(return_value=_mock_response(404))
+        ok, payload = await conf.download_attachment("1", "att-1")
+        assert ok is False
+        assert "metadata" in json.loads(payload)["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_oversize_reported_size_rejected_before_streaming(self):
+        conf, _ = self._build_conf_with_registry()
+        # 30 MiB > 25 MiB cap
+        conf.client.get_attachment_by_id = AsyncMock(return_value=_mock_response(200, {
+            "id": "att-1", "title": "big.pdf",
+            "mediaType": "application/pdf", "fileSize": 30 * 1024 * 1024,
+        }))
+        ok, payload = await conf.download_attachment("1", "att-1")
+        assert ok is False
+        assert "exceeds" in json.loads(payload)["error"].lower()
+        conf.client.download_attachment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_oversize_during_streaming_aborts(self):
+        conf, _ = self._build_conf_with_registry()
+        conf.client.get_attachment_by_id = AsyncMock(return_value=_mock_response(200, {
+            "id": "att-1", "title": "sneaky.pdf",
+            "mediaType": "application/pdf", "fileSize": 1024,
+        }))
+        # Stream 26 MiB in one chunk (exceeds the 25 MiB cap mid-stream)
+        big_chunk = b"x" * (26 * 1024 * 1024)
+        conf.client.download_attachment = MagicMock(return_value=_async_gen(big_chunk))
+        ok, payload = await conf.download_attachment("1", "att-1")
+        assert ok is False
+        assert "streaming limit" in json.loads(payload)["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_success_registers_artifact(self):
+        conf, mock_registry = self._build_conf_with_registry()
+        conf.client.get_attachment_by_id = AsyncMock(return_value=_mock_response(200, {
+            "id": "att-1", "title": "report.pdf",
+            "mediaType": "application/pdf", "fileSize": 100,
+        }))
+        content = b"PDF content here"
+        conf.client.download_attachment = MagicMock(return_value=_async_gen(content))
+
+        mock_artifact = MagicMock()
+        mock_artifact.artifact_id = "artifact-uuid"
+        mock_artifact.name = "report.pdf"
+        mock_registry.register = AsyncMock(return_value=mock_artifact)
+
+        ok, payload = await conf.download_attachment("1", "att-1")
+        body = json.loads(payload)
+        assert ok is True
+        assert body["artifact_id"] == "artifact-uuid"
+        assert body["name"] == "report.pdf"
+        assert body["sizeBytes"] == len(content)
+        mock_registry.register.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_registry_failure_returns_error(self):
+        conf, mock_registry = self._build_conf_with_registry()
+        conf.client.get_attachment_by_id = AsyncMock(return_value=_mock_response(200, {
+            "id": "att-1", "title": "file.txt",
+            "mediaType": "text/plain", "fileSize": 10,
+        }))
+        conf.client.download_attachment = MagicMock(return_value=_async_gen(b"hello"))
+        mock_registry.register = AsyncMock(side_effect=RuntimeError("db error"))
+
+        ok, payload = await conf.download_attachment("1", "att-1")
+        assert ok is False
+        assert "Failed to register" in json.loads(payload)["error"]
+
+    @pytest.mark.asyncio
+    async def test_streaming_exception_returns_error(self):
+        conf, _ = self._build_conf_with_registry()
+        conf.client.get_attachment_by_id = AsyncMock(return_value=_mock_response(200, {
+            "id": "att-1", "title": "file.txt", "mediaType": "text/plain", "fileSize": 10,
+        }))
+
+        async def _failing_gen():
+            raise RuntimeError("network error")
+            yield b""  # make it a generator
+
+        conf.client.download_attachment = MagicMock(return_value=_failing_gen())
+        ok, payload = await conf.download_attachment("1", "att-1")
+        assert ok is False
+        assert "Download failed" in json.loads(payload)["error"]
+
+
+# ===========================================================================
+# search_users — Jira guidance in zero-results branch (Cloud only)
+# ===========================================================================
+
+class TestSearchUsersGuidance:
+    @pytest.mark.asyncio
+    async def test_zero_results_guidance_mentions_jira(self):
+        conf = _build_confluence()
+        conf.client.search_users = AsyncMock(return_value=_users_response([]))
+        ok, payload = await conf.search_users("ghost@example.com")
+        body = json.loads(payload)
+        assert ok is False
+        guidance = body.get("guidance", "")
+        assert "Jira" in guidance or "jira" in guidance.lower()
+        assert "accountId" in guidance or "accountid" in guidance.lower()
+
+    @pytest.mark.asyncio
+    async def test_non_zero_results_no_jira_guidance(self):
+        """When users are found, no Jira cross-product tip should appear."""
+        conf = _build_confluence()
+        conf.client.search_users = AsyncMock(return_value=_users_response([
+            {"accountId": "id-1", "displayName": "Alice"},
+        ]))
+        ok, payload = await conf.search_users("alice")
+        body = json.loads(payload)
+        assert ok is True
+        assert "guidance" not in body

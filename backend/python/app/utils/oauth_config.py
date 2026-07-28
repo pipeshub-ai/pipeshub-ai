@@ -7,6 +7,8 @@ from urllib.parse import urlparse
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.token_service.oauth_service import OAuthConfig
 
+logger = logging.getLogger(__name__)
+
 
 # ============================================================================
 # OAuth Error Formatting
@@ -60,9 +62,17 @@ def extract_oauth_error_message(exc: Exception) -> str:
     - GitHub / GitLab (``{"error": "...", "error_description": "..."}``)
     - ServiceNow (``{"error": "...", "error_description": "..."}``)
 
+    The function never echoes raw exception text or provider-supplied free
+    text back to the caller — the ``except Exception`` blocks that call this
+    helper span more than just the OAuth token exchange (DB updates, cache
+    refresh, scheduling), so ``exc`` may carry internal details unrelated to
+    the OAuth provider. Instead it only classifies the exception against a
+    fixed allow-list of known messages, logging any provider-supplied
+    description server-side for debugging.
+
     The function tries, in order:
       1. Parse the embedded JSON response from the exception message
-      2. Extract ``error_description`` or ``message`` for a provider-supplied explanation
+      2. Log any ``error_description``/``message`` the provider supplied (not returned)
       3. Map the ``error`` code to a known user-friendly string
       4. Use the HTTP status code for a generic message
       5. Fall back to a safe generic message
@@ -79,8 +89,7 @@ def extract_oauth_error_message(exc: Exception) -> str:
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # --- 2. Extract the provider's human-readable description -------------
-    description = ""
+    # --- 2. Log the provider's human-readable description (never returned) ---
     if isinstance(error_body, dict):
         # Standard OAuth / Atlassian / Google / Microsoft / GitHub / GitLab / Linear
         description = (error_body.get("error_description") or "").strip()
@@ -88,11 +97,8 @@ def extract_oauth_error_message(exc: Exception) -> str:
         if not description:
             description = (error_body.get("message") or "").strip()
         # Slack uses "error" as a code string, no separate description
-
-    # If we got a meaningful description from the provider, use it directly
-    if description and len(description) > 5:
-        clean_desc = description.rstrip(".")
-        return f"OAuth provider error: {clean_desc}. Please verify your OAuth credentials in the admin settings."
+        if description:
+            logger.info(f"OAuth token exchange failed, provider description: {description[:500]}")
 
     # --- 3. Map the error code to a known message -------------------------
     error_code = ""

@@ -115,7 +115,6 @@
 |-----------|-------------|
 | FastAPI | High-performance Python web framework |
 | LangChain | Framework for LLM pipelines |
-| LangGraph | State graph for LLM workflows |
 | Qdrant | Vector similarity search engine |
 | Neo4j / ArangoDB | Graph database |
 | Kafka / Redis Streams | Distributed event streaming platform |
@@ -247,7 +246,7 @@ Note: Use HTTPS for cloud deployments. HTTP may cause frontend security blocks.
 
 ### What LLM providers does PipesHub support?
 
-PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models. The tech stack includes LangChain and LangGraph for LLM pipelines and workflows.
+PipesHub is "Bring Your Own Model" — you can use any LLM provider. Deploy in your VPC with your preferred models. The tech stack includes LangChain for LLM pipelines and workflows.
 
 ### What is the Knowledge Graph Retrieval feature?
 

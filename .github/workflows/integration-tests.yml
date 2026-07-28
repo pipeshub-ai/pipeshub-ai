@@ -82,19 +82,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Each matrix value is one job. "arango"/"neo4j" run that backend only;
-        # "both" runs the two backends sequentially inside a single job.
-        # Sequential is the default; high-priority runs opt into parallel via
-        # the run_mode dispatch input or an `it-parallel` label on the PR. env
-        # context is not available in `strategy`, so this derives from
-        # inputs/labels directly.
-        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || '["both"]') }}
+        # One job per value; "both" runs both backends sequentially in one job.
+        # Select backends via the graph_db dispatch input or the
+        # it-neo4j / it-arango / it-parallel PR labels (default: sequential "both").
+        # `strategy` can't read the job env block, so derive from inputs/labels here.
+        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || '["both"]') }}
 
-    # Schedule uses a separate environment so daily runs are not blocked by
-    # deployment protection on `integration-test-dev`. Create
-    # `integration-test-daily` in repo Settings → Environments with the same
-    # environment secrets as `integration-test-dev`, but leave required
-    # reviewers / wait timer disabled.
+    # One shared env; its required reviewers are the approval gate. Per-backend
+    # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
+    # Schedule uses integration-test-daily to bypass deployment protection.
     environment:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
 
@@ -135,10 +131,9 @@ jobs:
       JIRA_TEST_PROJECT_KEYS: ${{ secrets.JIRA_TEST_PROJECT_KEYS }}
       LINEAR_TEST_API_TOKEN: ${{ secrets.LINEAR_TEST_API_TOKEN }}
       LINEAR_TEST_TEAM_IDS: ${{ secrets.LINEAR_TEST_TEAM_IDS }}
-      # Playwright runs once per workflow: on the job that has the neo4j stack
-      # (the neo4j leg, or the sequential "both" job), or on the arango job when
-      # arango is the only backend selected.
-      RUN_PLAYWRIGHT: ${{ (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both' || github.event.inputs.graph_db == 'arango') && 'true' || 'false' }}
+      # Playwright runs once: on the neo4j/both leg, or the arango leg only when
+      # arango is the sole backend (arango dispatch input, or it-arango alone).
+      RUN_PLAYWRIGHT: ${{ (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both' || (matrix.graph_db == 'arango' && (github.event.inputs.graph_db == 'arango' || (contains(github.event.pull_request.labels.*.name, 'it-arango') && !contains(github.event.pull_request.labels.*.name, 'it-neo4j') && !contains(github.event.pull_request.labels.*.name, 'it-parallel'))))) && 'true' || 'false' }}
 
     steps:
       - name: Checkout code
@@ -436,35 +431,9 @@ jobs:
           cp -r frontend/playwright-report integration-tests/reports/playwright/html-report 2>/dev/null || true
           cp frontend/test-results/playwright-junit.xml integration-tests/reports/playwright/ 2>/dev/null || true
 
-      - name: Upload reports artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: reports-${{ matrix.graph_db }}
-          path: integration-tests/reports/
-          if-no-files-found: ignore
-
-  report:
-    name: Integration Tests Report
-    needs: integration-tests
-    # Report failed runs, but stay silent when the run was cancelled or skipped.
-    if: ${{ !cancelled() && needs.integration-tests.result != 'skipped' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Download reports from all jobs
-        uses: actions/download-artifact@v4
-        with:
-          pattern: reports-*
-          path: integration-tests/reports
-          merge-multiple: true
-
-      - name: Ensure reports directory exists
-        run: mkdir -p integration-tests/reports
-
-      - name: Collect test results and prepare email
+      - name: Collect test results and prepare Slack report
         id: test-results
+        if: ${{ !cancelled() }}
         working-directory: integration-tests
         env:
           # Route untrusted PR metadata through env vars so the shell script
@@ -475,6 +444,7 @@ jobs:
           PR_URL_IN: ${{ github.event.pull_request.html_url }}
           PR_LOGIN_IN: ${{ github.event.pull_request.user.login }}
           ACTOR_IN: ${{ github.actor }}
+          JOB_STATUS: ${{ job.status }}
         run: |
           TOTAL_PASSED=0
           TOTAL_FAILED=0
@@ -545,9 +515,13 @@ jobs:
             PW_PASS_RATE=0
           fi
 
-          # Overall health: green only when both suites are fully passing
+          # Green only when suites pass AND the job is healthy — a stack that never
+          # came up yields zero counts, which would otherwise read as success.
           OVERALL_OK=true
           if [ "$TOTAL_FAILED" -gt 0 ] || [ "$TOTAL_ERRORS" -gt 0 ] || [ "$PW_FAILED" -gt 0 ] || [ "$PW_ERRORS" -gt 0 ]; then
+            OVERALL_OK=false
+          fi
+          if [ "$JOB_STATUS" != "success" ] || [ "$TOTAL_TESTS" -eq 0 ]; then
             OVERALL_OK=false
           fi
 
@@ -577,8 +551,11 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Zip reports folder
+        if: ${{ !cancelled() }}
         working-directory: integration-tests
-        run: zip -r reports.zip reports/
+        run: |
+          mkdir -p reports
+          zip -r reports.zip reports/
 
       - name: Send Slack report
         if: ${{ !cancelled() }}
@@ -595,7 +572,7 @@ jobs:
                   "type": "header",
                   "text": {
                     "type": "plain_text",
-                    "text": "${{ steps.test-results.outputs.OVERALL_OK == 'true' && ':large_green_circle:' || ':red_circle:' }} Integration Tests — ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
+                    "text": "${{ steps.test-results.outputs.OVERALL_OK == 'true' && ':large_green_circle:' || ':red_circle:' }} Integration Tests (${{ matrix.graph_db }}) — ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
                   }
                 },
                 {
@@ -663,7 +640,7 @@ jobs:
                 {
                   "type": "context",
                   "elements": [
-                    { "type": "mrkdwn", "text": "Commit: `${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha || github.sha }}`" }
+                    { "type": "mrkdwn", "text": "Commit: `${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha || github.sha }}` • Job: `${{ job.status }}`" }
                   ]
                 },
                 {
@@ -696,7 +673,7 @@ jobs:
 
           RESPONSE=$(curl -s -X POST "https://slack.com/api/files.getUploadURLExternal" \
             -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-            -d "filename=integration-test-reports.zip" \
+            -d "filename=integration-test-reports-${{ matrix.graph_db }}.zip" \
             -d "length=$FILE_SIZE")
           OK=$(echo "$RESPONSE" | jq -r '.ok')
           if [ "$OK" != "true" ]; then
@@ -708,7 +685,7 @@ jobs:
 
           curl -s -X POST "$UPLOAD_URL" -F "file=@reports.zip"
 
-          COMPLETE_PAYLOAD="{\"files\":[{\"id\":\"$FILE_ID\",\"title\":\"Integration Test Reports\"}],\"channel_id\":\"$CHANNEL_ID\""
+          COMPLETE_PAYLOAD="{\"files\":[{\"id\":\"$FILE_ID\",\"title\":\"Integration Test Reports (${{ matrix.graph_db }})\"}],\"channel_id\":\"$CHANNEL_ID\""
           if [ -n "$THREAD_TS" ]; then
             COMPLETE_PAYLOAD="$COMPLETE_PAYLOAD,\"thread_ts\":\"$THREAD_TS\""
           fi
@@ -724,6 +701,7 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
           MESSAGE_RESPONSE: ${{ steps.slack-message.outputs.response || '{}' }}
+          GRAPH_DB: ${{ matrix.graph_db }}
         working-directory: integration-tests
         run: |
           python3 - << 'PYEOF'
@@ -732,6 +710,7 @@ jobs:
           msg_response = os.environ.get('MESSAGE_RESPONSE', '{}')
           channel_id   = os.environ.get('CHANNEL_ID', '')
           bot_token    = os.environ.get('SLACK_BOT_TOKEN', '')
+          graph_db     = os.environ.get('GRAPH_DB', '')
 
           try:
               thread_ts = json.loads(msg_response).get('ts', '')
@@ -767,7 +746,7 @@ jobs:
               truncated = body[:BODY_LIMIT].rsplit("\n", 1)[0]
               omitted   = len(names) - truncated.count("\n") - 1
               body      = truncated + f"\n… ({omitted} more — see reports zip for full list)"
-          text    = "*Failed Tests:*\n```\n" + body + "\n```"
+          text    = f"*Failed Tests ({graph_db}):*\n```\n" + body + "\n```"
           payload = json.dumps({"channel": channel_id, "thread_ts": thread_ts, "text": text}).encode()
           req     = urllib.request.Request(
               "https://slack.com/api/chat.postMessage",
@@ -782,3 +761,11 @@ jobs:
               print(f"::warning::Slack postMessage failed: {e}", file=sys.stderr)
               sys.exit(1)
           PYEOF
+
+      - name: Upload reports artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ matrix.graph_db }}
+          path: integration-tests/reports/
+          if-no-files-found: ignore

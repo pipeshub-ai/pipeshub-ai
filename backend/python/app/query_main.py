@@ -1,6 +1,7 @@
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -21,6 +22,7 @@ from app.api.routes.health import router as health_router
 from app.api.routes.search import router as search_router
 from app.api.routes.ai_models_registry import router as ai_models_registry_router
 from app.api.routes.speech import router as speech_router
+from app.api.routes.skills import router as skills_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.containers.query import QueryAppContainer
 from app.health.health import Health
@@ -230,16 +232,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # stays responsive and the lifespan completes faster.
     logger.info("🔄 Initializing in-memory toolset registry for agents...")
     from app.agents.registry.toolset_registry import get_toolset_registry
-    from app.agents.tools.registry import _global_tools_registry
 
     toolset_registry = get_toolset_registry()
     await asyncio.to_thread(toolset_registry.auto_discover_toolsets)
     app.state.toolset_registry = toolset_registry
     logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
-
-    # Log tool count from in-memory registry
-    tool_count = len(_global_tools_registry.list_tools())
-    logger.info(f"✅ {tool_count} tools available from in-memory registry")
 
     yield
     # Shutdown
@@ -341,12 +338,12 @@ async def health_check() -> JSONResponse:
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
-    except Exception as e:
+    except Exception:
+        logging.getLogger(__name__).error("Health check failed", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={
                 "status": "unhealthy",
-                "error": str(e),
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -378,6 +375,7 @@ app.include_router(search_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(speech_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")
+app.include_router(skills_router, prefix="/api/v1/skills")
 app.include_router(toolsets_router)
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(ai_models_registry_router, prefix="/api/v1")

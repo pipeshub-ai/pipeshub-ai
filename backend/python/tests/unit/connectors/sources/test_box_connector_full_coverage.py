@@ -375,6 +375,154 @@ class TestBoxProcessEventBatch:
         box_connector._remove_user_access_from_folder_recursively.assert_awaited_once()
 
 
+class TestBoxBackfillSharedWithMeHistory:
+    async def test_no_events_stops_after_first_page(self, box_connector):
+        box_connector.data_source.events_get_events = AsyncMock(
+            return_value=MagicMock(success=True, data={
+                "entries": [], "next_stream_position": "pos-1"
+            })
+        )
+        box_connector._process_event_batch = AsyncMock()
+
+        await box_connector._backfill_shared_with_me_history({"u1"})
+
+        box_connector.data_source.events_get_events.assert_awaited_once()
+        box_connector._process_event_batch.assert_not_awaited()
+
+    async def test_single_page_replays_events_with_org_user_ids(self, box_connector):
+        event = {
+            "event_id": "e1", "event_type": "COLLABORATION_INVITE",
+            "source": {
+                "item": {"id": "f1", "type": "file"},
+                "accessible_by": {"id": "u1", "login": "user@test.com"},
+                "owned_by": {"id": "owner1"},
+            },
+            "created_at": "2024-01-01T00:00:00Z",
+        }
+        box_connector.data_source.events_get_events = AsyncMock(
+            return_value=MagicMock(success=True, data={
+                "entries": [event], "next_stream_position": None
+            })
+        )
+        box_connector._process_event_batch = AsyncMock()
+
+        await box_connector._backfill_shared_with_me_history({"owner1"})
+
+        box_connector.data_source.events_get_events.assert_awaited_once()
+        box_connector._process_event_batch.assert_awaited_once_with(
+            [event], our_org_box_user_ids={"owner1"}
+        )
+
+    async def test_paginates_until_no_next_stream_position(self, box_connector):
+        page1_event = {"event_id": "e1", "event_type": "COLLABORATION_INVITE",
+                       "source": {"id": "f1", "type": "file"},
+                       "created_at": "2024-01-01T00:00:00Z"}
+        page2_event = {"event_id": "e2", "event_type": "COLLABORATION_REMOVE",
+                       "source": {"id": "f2", "type": "file"},
+                       "created_at": "2024-01-02T00:00:00Z"}
+        box_connector.data_source.events_get_events = AsyncMock(side_effect=[
+            MagicMock(success=True, data={
+                "entries": [page1_event], "next_stream_position": "pos-1"
+            }),
+            MagicMock(success=True, data={
+                "entries": [page2_event], "next_stream_position": None
+            }),
+        ])
+        box_connector._process_event_batch = AsyncMock()
+
+        await box_connector._backfill_shared_with_me_history(set())
+
+        assert box_connector.data_source.events_get_events.await_count == 2
+        assert box_connector._process_event_batch.await_count == 2
+
+    async def test_stops_when_next_stream_position_unchanged(self, box_connector):
+        event = {"event_id": "e1", "event_type": "COLLABORATION_INVITE",
+                 "source": {"id": "f1", "type": "file"},
+                 "created_at": "2024-01-01T00:00:00Z"}
+        box_connector.data_source.events_get_events = AsyncMock(
+            return_value=MagicMock(success=True, data={
+                "entries": [event], "next_stream_position": "0"
+            })
+        )
+        box_connector._process_event_batch = AsyncMock()
+
+        await box_connector._backfill_shared_with_me_history(set())
+
+        box_connector.data_source.events_get_events.assert_awaited_once()
+        box_connector._process_event_batch.assert_awaited_once()
+
+    async def test_uses_admin_logs_stream_and_collab_event_types(self, box_connector):
+        box_connector.data_source.events_get_events = AsyncMock(
+            return_value=MagicMock(success=True, data={
+                "entries": [], "next_stream_position": None
+            })
+        )
+        box_connector._process_event_batch = AsyncMock()
+
+        await box_connector._backfill_shared_with_me_history(set())
+
+        _, kwargs = box_connector.data_source.events_get_events.call_args
+        assert kwargs["stream_type"] == "admin_logs"
+        assert kwargs["stream_position"] == "0"
+        assert kwargs["event_type"] == [
+            "COLLABORATION_INVITE", "COLLABORATION_ACCEPT", "COLLABORATION_REMOVE"
+        ]
+
+    async def test_api_failure_breaks_loop_without_raising(self, box_connector):
+        box_connector.data_source.events_get_events = AsyncMock(
+            return_value=MagicMock(success=False, error="rate limited")
+        )
+        box_connector._process_event_batch = AsyncMock()
+
+        await box_connector._backfill_shared_with_me_history(set())
+
+        box_connector.data_source.events_get_events.assert_awaited_once()
+        box_connector._process_event_batch.assert_not_awaited()
+
+    async def test_exception_from_events_api_is_caught(self, box_connector):
+        box_connector.data_source.events_get_events = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+        box_connector._process_event_batch = AsyncMock()
+
+        await box_connector._backfill_shared_with_me_history(set())
+
+        box_connector._process_event_batch.assert_not_awaited()
+
+    async def test_exception_during_batch_processing_is_caught(self, box_connector):
+        event = {"event_id": "e1", "event_type": "COLLABORATION_INVITE",
+                 "source": {"id": "f1", "type": "file"},
+                 "created_at": "2024-01-01T00:00:00Z"}
+        box_connector.data_source.events_get_events = AsyncMock(
+            return_value=MagicMock(success=True, data={
+                "entries": [event], "next_stream_position": "pos-1"
+            })
+        )
+        box_connector._process_event_batch = AsyncMock(side_effect=RuntimeError("boom"))
+
+        await box_connector._backfill_shared_with_me_history(set())
+
+    async def test_respects_max_pages_safety_cap(self, box_connector):
+        call_count = [0]
+
+        async def _events_side_effect(**kwargs) -> MagicMock:
+            call_count[0] += 1
+            return MagicMock(success=True, data={
+                "entries": [{"event_id": f"e{call_count[0]}", "event_type": "COLLABORATION_INVITE",
+                            "source": {"id": "f1", "type": "file"},
+                            "created_at": "2024-01-01T00:00:00Z"}],
+                "next_stream_position": str(call_count[0]),
+            })
+
+        box_connector.data_source.events_get_events = AsyncMock(side_effect=_events_side_effect)
+        box_connector._process_event_batch = AsyncMock()
+
+        await box_connector._backfill_shared_with_me_history(set())
+
+        assert box_connector.data_source.events_get_events.await_count == 200
+        assert box_connector._process_event_batch.await_count == 200
+
+
 class TestBoxFetchAndSyncFilesForOwner:
     async def test_successful_sync(self, box_connector):
         box_connector.data_source.set_as_user_context = AsyncMock()
@@ -834,7 +982,7 @@ class TestBoxFetchAndSyncItemsAsSharedWithMe:
             record=MagicMock(), new_permissions=[]
         ))
 
-        items = [("f1", "file", "u1", "user@test.com")]
+        items = [("f1", "file", "u1", "user@test.com", None)]
         await box_connector._fetch_and_sync_items_as_shared_with_me(items)
         box_connector.data_entities_processor.on_new_records.assert_awaited()
 
@@ -852,7 +1000,7 @@ class TestBoxFetchAndSyncItemsAsSharedWithMe:
         ))
         box_connector._sync_folder_contents_recursively = AsyncMock()
 
-        items = [("d1", "folder", "u1", "user@test.com")]
+        items = [("d1", "folder", "u1", "user@test.com", None)]
         await box_connector._fetch_and_sync_items_as_shared_with_me(items)
         box_connector._sync_folder_contents_recursively.assert_awaited()
 

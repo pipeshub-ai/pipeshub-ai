@@ -1568,6 +1568,184 @@ class TestBoxProcessEventBatch:
         await box_connector._process_event_batch(events)
         box_connector._remove_user_access_from_folder_recursively.assert_awaited_once()
 
+    async def test_grant_then_revoke_same_collab_id_collapses_to_revoke(self, box_connector):
+        events = [
+            {
+                "event_id": "e8", "event_type": "COLLABORATION_ACCEPT",
+                "source": {
+                    "item": {"id": "f1", "type": "file"},
+                    "accessible_by": {"id": "u1", "login": "user@test.com"},
+                    "owned_by": {"id": "owner1"},
+                },
+                "additional_details": {"collab_id": "c1"},
+                "created_at": "2024-01-01T00:00:00Z",
+            },
+            {
+                "event_id": "e9", "event_type": "COLLABORATION_REMOVE",
+                "source": {
+                    "item": {"id": "f1"},
+                    "accessible_by": {"id": "u1", "login": "user@test.com"},
+                },
+                "additional_details": {"collab_id": "c1"},
+                "created_at": "2024-01-01T00:00:10Z",
+            },
+        ]
+        mock_user = MagicMock()
+        mock_user.id = "internal-1"
+        box_connector._get_app_users_by_emails = AsyncMock(return_value=[mock_user])
+        box_connector._fetch_and_sync_files_for_owner = AsyncMock()
+        box_connector._fetch_and_sync_items_as_shared_with_me = AsyncMock()
+
+        existing_record = MagicMock()
+        existing_record.mime_type = "application/pdf"
+        tx = _make_mock_tx_store(existing_record=existing_record)
+
+        @asynccontextmanager
+        async def _transaction():
+            yield tx
+
+        box_connector.data_store_provider = MagicMock()
+        box_connector.data_store_provider.transaction = _transaction
+
+        await box_connector._process_event_batch(events, our_org_box_user_ids={"owner1"})
+
+        # The grant is superseded by the later revoke sharing the same collab_id,
+        # so neither the owner-permission refresh nor the shared-with-me sync should run.
+        box_connector._fetch_and_sync_files_for_owner.assert_not_awaited()
+        box_connector._fetch_and_sync_items_as_shared_with_me.assert_not_awaited()
+        tx.remove_user_access_to_record.assert_awaited_once()
+
+    async def test_revoke_then_grant_same_collab_id_collapses_to_grant(self, box_connector):
+        events = [
+            {
+                "event_id": "e10", "event_type": "COLLABORATION_REMOVE",
+                "source": {
+                    "item": {"id": "f1"},
+                    "accessible_by": {"id": "u1", "login": "user@test.com"},
+                },
+                "additional_details": {"collab_id": "c2"},
+                "created_at": "2024-01-01T00:00:00Z",
+            },
+            {
+                "event_id": "e11", "event_type": "COLLABORATION_INVITE_ACCEPTED",
+                "source": {
+                    "item": {"id": "f1", "type": "file"},
+                    "accessible_by": {"id": "u1", "login": "user@test.com"},
+                    "owned_by": {"id": "owner1"},
+                },
+                "additional_details": {"collab_id": "c2"},
+                "created_at": "2024-01-01T00:00:10Z",
+            },
+        ]
+        box_connector._get_app_users_by_emails = AsyncMock(return_value=[])
+        box_connector._fetch_and_sync_files_for_owner = AsyncMock()
+
+        tx = _make_mock_tx_store()
+
+        @asynccontextmanager
+        async def _transaction():
+            yield tx
+
+        box_connector.data_store_provider = MagicMock()
+        box_connector.data_store_provider.transaction = _transaction
+
+        await box_connector._process_event_batch(events, our_org_box_user_ids={"owner1"})
+
+        # The earlier revoke is superseded by the re-invite sharing the same collab_id,
+        # so the removal call should never run - only the final grant is processed.
+        tx.remove_user_access_to_record.assert_not_awaited()
+        box_connector._fetch_and_sync_files_for_owner.assert_awaited_once()
+
+    async def test_collaboration_events_without_collab_id_processed_individually(self, box_connector):
+        events = [
+            {
+                "event_id": "e12", "event_type": "COLLABORATION_CREATED",
+                "source": {
+                    "item": {"id": "f2", "type": "file"},
+                    "accessible_by": {"id": "u2", "login": "user2@test.com"},
+                    "owned_by": {"id": "owner2"},
+                },
+                "created_at": "2024-01-01T00:00:00Z",
+            },
+            {
+                "event_id": "e13", "event_type": "COLLABORATION_REMOVE",
+                "source": {
+                    "item": {"id": "f3"},
+                    "accessible_by": {"id": "u3", "login": "user3@test.com"},
+                },
+                "created_at": "2024-01-01T00:00:10Z",
+            },
+        ]
+
+        mock_user = MagicMock()
+        mock_user.id = "internal-3"
+
+        async def _get_app_users_side_effect(emails):
+            return [mock_user] if emails == ["user3@test.com"] else []
+
+        box_connector._get_app_users_by_emails = AsyncMock(side_effect=_get_app_users_side_effect)
+        box_connector._fetch_and_sync_files_for_owner = AsyncMock()
+
+        existing_record = MagicMock()
+        existing_record.mime_type = "application/pdf"
+        tx = _make_mock_tx_store(existing_record=existing_record)
+
+        @asynccontextmanager
+        async def _transaction():
+            yield tx
+
+        box_connector.data_store_provider = MagicMock()
+        box_connector.data_store_provider.transaction = _transaction
+
+        await box_connector._process_event_batch(events, our_org_box_user_ids={"owner2"})
+
+        # Neither event carries additional_details.collab_id, so both fall back to
+        # being processed on their own - no collapsing across the unrelated items.
+        box_connector._fetch_and_sync_files_for_owner.assert_awaited_once()
+        tx.remove_user_access_to_record.assert_awaited_once()
+
+    async def test_multiple_revokes_same_collab_id_collapse_to_single_call(self, box_connector):
+        events = [
+            {
+                "event_id": "e14", "event_type": "COLLABORATION_REMOVE",
+                "source": {
+                    "item": {"id": "f4"},
+                    "accessible_by": {"id": "u4", "login": "user4@test.com"},
+                },
+                "additional_details": {"collab_id": "c3"},
+                "created_at": "2024-01-01T00:00:00Z",
+            },
+            {
+                "event_id": "e15", "event_type": "COLLABORATION_REMOVE",
+                "source": {
+                    "item": {"id": "f4"},
+                    "accessible_by": {"id": "u4", "login": "user4@test.com"},
+                },
+                "additional_details": {"collab_id": "c3"},
+                "created_at": "2024-01-01T00:00:05Z",
+            },
+        ]
+        mock_user = MagicMock()
+        mock_user.id = "internal-4"
+        box_connector._get_app_users_by_emails = AsyncMock(return_value=[mock_user])
+
+        existing_record = MagicMock()
+        existing_record.mime_type = "application/pdf"
+        tx = _make_mock_tx_store(existing_record=existing_record)
+
+        @asynccontextmanager
+        async def _transaction():
+            yield tx
+
+        box_connector.data_store_provider = MagicMock()
+        box_connector.data_store_provider.transaction = _transaction
+
+        await box_connector._process_event_batch(events)
+
+        # Distinct event_ids mean event-id dedup doesn't apply here - only the
+        # collab_id-based collapsing should reduce this to a single removal call.
+        tx.remove_user_access_to_record.assert_awaited_once()
+
 
 class TestBoxFetchAndSyncFilesForOwner:
     async def test_successful_sync(self, box_connector):
@@ -2028,7 +2206,7 @@ class TestBoxFetchAndSyncItemsAsSharedWithMe:
             record=MagicMock(), new_permissions=[]
         ))
 
-        items = [("f1", "file", "u1", "user@test.com")]
+        items = [("f1", "file", "u1", "user@test.com", None)]
         await box_connector._fetch_and_sync_items_as_shared_with_me(items)
         box_connector.data_entities_processor.on_new_records.assert_awaited()
 
@@ -2046,9 +2224,63 @@ class TestBoxFetchAndSyncItemsAsSharedWithMe:
         ))
         box_connector._sync_folder_contents_recursively = AsyncMock()
 
-        items = [("d1", "folder", "u1", "user@test.com")]
+        items = [("d1", "folder", "u1", "user@test.com", None)]
         await box_connector._fetch_and_sync_items_as_shared_with_me(items)
         box_connector._sync_folder_contents_recursively.assert_awaited()
+
+    async def test_skips_external_owner_without_fetch(self, box_connector):
+        box_connector._get_app_users_by_emails = AsyncMock(return_value=[])
+        box_connector.data_source.set_as_user_context = AsyncMock()
+        box_connector.data_source.files_get_file_by_id = AsyncMock()
+
+        items = [("f1", "file", "u1", "user@test.com", "external@other.com")]
+        await box_connector._fetch_and_sync_items_as_shared_with_me(items)
+
+        box_connector._get_app_users_by_emails.assert_awaited_once_with(["external@other.com"])
+        box_connector.data_source.set_as_user_context.assert_not_awaited()
+        box_connector.data_source.files_get_file_by_id.assert_not_awaited()
+
+    async def test_in_org_owner_is_fetched(self, box_connector):
+        mock_owner_user = MagicMock()
+        mock_owner_user.email = "owner@pipeshub.app"
+        box_connector._get_app_users_by_emails = AsyncMock(return_value=[mock_owner_user])
+        box_connector.data_source.set_as_user_context = AsyncMock()
+        box_connector.data_source.clear_as_user_context = AsyncMock()
+        box_connector.data_source.files_get_file_by_id = AsyncMock(
+            return_value=MagicMock(success=True, data=_make_box_entry_fullcov())
+        )
+        box_connector._to_dict = MagicMock(return_value=_make_box_entry_fullcov())
+        box_connector._process_box_entry = AsyncMock(return_value=MagicMock(
+            record=MagicMock(), new_permissions=[]
+        ))
+
+        items = [("f1", "file", "u1", "user@test.com", "owner@pipeshub.app")]
+        await box_connector._fetch_and_sync_items_as_shared_with_me(items)
+
+        box_connector.data_source.files_get_file_by_id.assert_awaited()
+
+    async def test_owner_lookup_batched_across_items(self, box_connector):
+        mock_owner_user = MagicMock()
+        mock_owner_user.email = "owner@pipeshub.app"
+        box_connector._get_app_users_by_emails = AsyncMock(return_value=[mock_owner_user])
+        box_connector.data_source.set_as_user_context = AsyncMock()
+        box_connector.data_source.clear_as_user_context = AsyncMock()
+        box_connector.data_source.files_get_file_by_id = AsyncMock(
+            return_value=MagicMock(success=True, data=_make_box_entry_fullcov())
+        )
+        box_connector._to_dict = MagicMock(return_value=_make_box_entry_fullcov())
+        box_connector._process_box_entry = AsyncMock(return_value=MagicMock(
+            record=MagicMock(), new_permissions=[]
+        ))
+
+        items = [
+            ("f1", "file", "u1", "user1@test.com", "owner@pipeshub.app"),
+            ("f2", "file", "u2", "user2@test.com", "owner@pipeshub.app"),
+        ]
+        await box_connector._fetch_and_sync_items_as_shared_with_me(items)
+
+        # Same owner across both items - resolved once, not once per item.
+        box_connector._get_app_users_by_emails.assert_awaited_once_with(["owner@pipeshub.app"])
 
 
 class TestBoxProcessBoxEntryFileExtensionFilter:

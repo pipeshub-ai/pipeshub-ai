@@ -1428,6 +1428,23 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error getting group post attachments: {e}")
             return []
 
+    @staticmethod
+    def _decode_content_bytes(content_bytes: bytes | str) -> bytes:
+        """Decode Graph API content_bytes handling both old and new Kiota behavior.
+
+        Kiota ≤1.11.6 returned base64 text as UTF-8 bytes; ≥1.11.7 returns
+        properly decoded raw bytes. Detect by checking for non-ASCII content.
+        """
+        raw = content_bytes if isinstance(content_bytes, bytes) else content_bytes.encode("utf-8")
+        try:
+            raw.decode("ascii")
+        except UnicodeDecodeError:
+            return raw
+        try:
+            return base64.b64decode(raw, validate=False)
+        except Exception:
+            return raw
+
     async def _download_group_post_attachment(
         self, group_id: str, thread_id: str, post_id: str, attachment_id: str
     ) -> bytes:
@@ -1455,7 +1472,7 @@ class OutlookConnector(BaseConnector):
             if not content_bytes:
                 return b''
 
-            return base64.b64decode(content_bytes)
+            return self._decode_content_bytes(content_bytes)
 
         except Exception as e:
             self.logger.error(f"Error downloading group post attachment: {e}")
@@ -2762,7 +2779,7 @@ class OutlookConnector(BaseConnector):
             if not content_bytes:
                 return b''
 
-            return base64.b64decode(content_bytes)
+            return self._decode_content_bytes(content_bytes)
 
         except Exception as e:
             self.logger.error(f"Error downloading attachment {attachment_id} for message {message_id}: {e}")

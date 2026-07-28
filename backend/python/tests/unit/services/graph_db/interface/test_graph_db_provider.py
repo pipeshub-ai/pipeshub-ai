@@ -368,6 +368,8 @@ class TestAbstractMethodInventory:
         "get_knowledge_hub_context_permissions",
         "get_knowledge_hub_filter_options",
         "get_knowledge_hub_node_info",
+        "get_knowledge_hub_node_access",
+        "get_linked_records",
         "get_knowledge_hub_parent_node",
         "validate_folder_exists_in_kb",
         "get_key_by_external_message_id",
@@ -399,6 +401,8 @@ class TestAbstractMethodInventory:
         "get_agents_by_model_key",
         # Upload validation
         "validate_folder_for_upload",
+        # Record location lookup
+        "get_record_locations",
     ]
 
     def test_all_expected_methods_are_abstract(self):

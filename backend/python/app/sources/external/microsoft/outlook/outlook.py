@@ -14,6 +14,7 @@ from kiota_abstractions.base_request_configuration import (  # type: ignore
 )
 from kiota_abstractions.headers_collection import HeadersCollection
 from msgraph.generated.models.attachment import Attachment  # type: ignore
+from msgraph.generated.models.file_attachment import FileAttachment  # type: ignore
 from msgraph.generated.models.attendee import Attendee  # type: ignore
 from msgraph.generated.models.attendee_type import AttendeeType  # type: ignore
 from msgraph.generated.models.body_type import BodyType  # type: ignore
@@ -179,6 +180,25 @@ def _dict_to_recipient(data: dict) -> Recipient:
     email.name = email_data.get("name")
     recipient.email_address = email
     return recipient
+
+
+def _dict_to_attachment(data: dict) -> FileAttachment:
+    """Convert an attachment dict to a typed FileAttachment SDK object.
+
+    The msgraph SDK requires a typed model — passing a raw dict to
+    ``attachments.post(body=...)`` raises ``AttributeError: 'dict' object has
+    no attribute 'serialize'``. This mirrors the existing ``_dict_to_message``
+    pattern.
+    """
+    att = FileAttachment()
+    att.name = data.get("name")
+    att.content_type = data.get("contentType")
+    if "contentBytes" in data:
+        import base64
+        raw = data["contentBytes"]
+        att.content_bytes = base64.b64decode(raw) if isinstance(raw, str) else raw
+    att.is_inline = data.get("isInline", False)
+    return att
 
 
 def _dict_to_event(data: dict) -> Event:
@@ -7870,7 +7890,12 @@ class OutlookCalendarContactsDataSource:
                     config.headers = {}
                 config.headers['ConsistencyLevel'] = 'eventual'
 
-            response = await self.client.me.messages.by_message_id(message_id).attachments.post(body=request_body, request_configuration=config)
+            body = (
+                _dict_to_attachment(request_body)
+                if isinstance(request_body, dict)
+                else request_body
+            )
+            response = await self.client.me.messages.by_message_id(message_id).attachments.post(body=body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
             return OutlookCalendarContactsResponse(

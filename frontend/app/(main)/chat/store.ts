@@ -12,10 +12,43 @@ import {
   SearchResultItem,
   type ModelInfo,
   type PendingAskUserQuestion,
+  type AgentCapabilities,
+  DEFAULT_AGENT_CAPABILITIES,
 } from './types';
 import type { RecordDetailsResponse } from '@/knowledge-base/types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
 import type { AgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
+
+// ── localStorage helpers for agent capabilities ──────────────────────
+
+const LS_AGENT_CAPS_KEY = 'pipeshub-agent-capabilities';
+
+function lsGetAgentCapabilities(agentId?: string): AgentCapabilities {
+  if (typeof window === 'undefined') return { ...DEFAULT_AGENT_CAPABILITIES };
+  try {
+    const key = agentId ? `${LS_AGENT_CAPS_KEY}:${agentId}` : LS_AGENT_CAPS_KEY;
+    const raw = localStorage.getItem(key);
+    if (!raw) return { ...DEFAULT_AGENT_CAPABILITIES };
+    const parsed = JSON.parse(raw) as Partial<AgentCapabilities>;
+    return {
+      internalSearch: typeof parsed.internalSearch === 'boolean' ? parsed.internalSearch : true,
+      webSearch: typeof parsed.webSearch === 'boolean' ? parsed.webSearch : true,
+      deepSearch: typeof parsed.deepSearch === 'boolean' ? parsed.deepSearch : false,
+    };
+  } catch {
+    return { ...DEFAULT_AGENT_CAPABILITIES };
+  }
+}
+
+function lsSetAgentCapabilities(caps: AgentCapabilities, agentId?: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const key = agentId ? `${LS_AGENT_CAPS_KEY}:${agentId}` : LS_AGENT_CAPS_KEY;
+    localStorage.setItem(key, JSON.stringify(caps));
+  } catch {
+    // Storage unavailable — silently ignore
+  }
+}
 
 /**
  * File preview state for citation preview in chat.
@@ -69,6 +102,33 @@ export interface ChatPreviewFile {
    * able to save the file locally.
    */
   showDownload?: boolean;
+  /**
+   * Artifact registry version currently loaded into `url`/`blob`. Undefined
+   * for previews that aren't version-tracked artifacts (citations, plain KB
+   * records) — the version switcher only renders when this is set.
+   */
+  version?: number;
+  /**
+   * Highest version known to exist for this artifact (see `MessageList`'s
+   * `latestArtifactVersions`). Drives the version-switcher dropdown's range;
+   * equal to `version` when this IS the latest (no older versions to jump
+   * back to, so the switcher stays non-interactive).
+   */
+  latestVersion?: number;
+  /**
+   * Re-fetches this artifact at `version` and replaces `url`/`blob`/`version`
+   * in place via `setPreviewFile`. Bound by the caller (`chat-response.tsx`)
+   * to whatever record/stream logic produced this preview in the first
+   * place — the preview shell itself has no knowledge of artifacts.
+   */
+  onVersionChange?: (version: number) => void | Promise<void>;
+  /**
+   * True while `onVersionChange` is in flight. Kept separate from `isLoading`
+   * so the previously-loaded content stays visible (and the switcher shows a
+   * small spinner) instead of the whole panel flashing to a loading skeleton
+   * on every version switch.
+   */
+  isSwitchingVersion?: boolean;
 }
 
 /**
@@ -157,6 +217,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     streamingQuestion: '',
     currentStatusMessage: null,
     streamingCitationMaps: null,
+    streamingParts: [],
     userScrollOverride: false,
     savedScrollTop: null,
     savedScrollWasStreaming: false,
@@ -250,6 +311,8 @@ interface ChatState {
   agentKnowledgeScope: { apps: string[]; kb: string[] } | null;
   /** Resolved agent name for the top chat header when `agentId` is in the URL */
   agentContextDisplayName: string | null;
+  /** Whether the current scoped agent was configured with a web search provider. */
+  agentHasWebSearch: boolean;
   /** MongoDB user ID of the agent creator from GET agent `createdBy` */
   agentContextCreatedBy: string | null;
   /** Access flags (canEdit / showViewAgent / …) for the agent in context — drives the chat header menu */
@@ -391,6 +454,8 @@ interface ChatState {
     knowledgeCollectionRows: Array<{ id: string; name: string; sourceType?: string }>;
     knowledgeDefaults: { apps: string[]; kb: string[] };
     deprecatedToolNames: string[];
+    /** Whether the agent was built with a web search provider. */
+    hasWebSearch?: boolean;
   } | null) => void;
   setAgentKnowledgeScope: (scope: { apps: string[]; kb: string[] } | null) => void;
   setAgentContextDisplayName: (name: string | null) => void;
@@ -442,6 +507,15 @@ interface ChatState {
   setSelectedModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
   setDefaultModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
   setAvailableModelsForCtx: (ctxKey: string, models: import('./types').AvailableLlmModel[]) => void;
+  /** Update universal agent mode capability toggles and persist to localStorage. */
+  setAgentCapabilities: (caps: Partial<import('./types').AgentCapabilities>) => void;
+  /**
+   * Per-scoped-agent capability overrides (keyed by agentId).
+   * Allows temporarily disabling a capability the agent has configured.
+   * Stored in localStorage under `pipeshub-agent-capabilities:{agentId}`.
+   */
+  scopedAgentCapabilities: Record<string, import('./types').AgentCapabilities>;
+  setScopedAgentCapabilities: (agentId: string, caps: Partial<import('./types').AgentCapabilities>) => void;
 
   // ── Search actions ──
   setSearchResults: (results: SearchResultItem[], searchId: string | null, query: string) => void;
@@ -501,6 +575,7 @@ const initialState = {
   agentKnowledgeDefaults: { apps: [] as string[], kb: [] as string[] },
   agentKnowledgeScope: null as { apps: string[]; kb: string[] } | null,
   agentContextDisplayName: null as string | null,
+  agentHasWebSearch: false,
   agentContextCreatedBy: null as string | null,
   agentContextAccess: null as AgentSidebarRowMenuAccess | null,
   agentDeprecatedToolNames: [] as string[],
@@ -522,15 +597,18 @@ const initialState = {
   settings: {
     mode: 'chat' as ChatMode,
     queryMode: 'chat' as QueryMode,
-    agentStrategy: 'auto' as AgentStrategy,
+    agentStrategy: 'quick' as AgentStrategy,
     filters: {
       apps: [] as string[],
       kb: [] as string[],
     },
+    agentCapabilities: lsGetAgentCapabilities(),
     selectedModels: {} as Record<string, import('./types').ModelOverride | null>,
     defaultModels: {} as Record<string, import('./types').ModelOverride | null>,
     availableModels: {} as Record<string, { models: import('./types').AvailableLlmModel[]; fetchedAt: number }>,
   },
+
+  scopedAgentCapabilities: {} as Record<string, AgentCapabilities>,
 
   previewFile: null as ChatPreviewFile | null,
   previewMode: 'sidebar' as 'sidebar' | 'fullscreen',
@@ -843,6 +921,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             agentKnowledgeCollectionRows: payload.knowledgeCollectionRows,
             agentKnowledgeDefaults: payload.knowledgeDefaults,
             agentDeprecatedToolNames: payload.deprecatedToolNames,
+            agentHasWebSearch: payload.hasWebSearch ?? false,
             agentKnowledgeScope: null,
             agentStreamTools: null,
             collectionNamesCache: (() => {
@@ -871,6 +950,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             agentKnowledgeCollectionRows: [],
             agentKnowledgeDefaults: { apps: [], kb: [] },
             agentDeprecatedToolNames: [],
+            agentHasWebSearch: false,
             agentKnowledgeScope: null,
             agentStreamTools: null,
           }
@@ -1106,6 +1186,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
     },
   })),
 
+  setAgentCapabilities: (caps) => set((state) => {
+    const next: AgentCapabilities = { ...state.settings.agentCapabilities, ...caps };
+    lsSetAgentCapabilities(next);
+    return { settings: { ...state.settings, agentCapabilities: next } };
+  }),
+
+  setScopedAgentCapabilities: (agentId, caps) => set((state) => {
+    const current: AgentCapabilities = state.scopedAgentCapabilities[agentId]
+      ?? lsGetAgentCapabilities(agentId);
+    const next: AgentCapabilities = { ...current, ...caps };
+    lsSetAgentCapabilities(next, agentId);
+    return {
+      scopedAgentCapabilities: { ...state.scopedAgentCapabilities, [agentId]: next },
+    };
+  }),
+
   // ── Search actions ──────────────────────────────────────────────
 
   setSearchResults: (results, searchId, query) =>
@@ -1191,6 +1287,7 @@ if (typeof window !== 'undefined') {
     'universalAgentToolsLoading',
     'universalAgentToolsError',
     'settings', 'previewFile', 'previewMode', 'expansionViewMode',
+    'scopedAgentCapabilities',
     'collectionNamesCache', 'collectionMetaCache', 'conversationsVersion',
     'searchResults', 'searchQuery', 'searchId', 'isSearching', 'searchError',
   ] as const;

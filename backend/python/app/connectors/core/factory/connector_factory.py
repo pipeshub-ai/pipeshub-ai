@@ -133,7 +133,7 @@ class ConnectorFactory:
         "gitlabpersonal": GitLabPersonalConnector,
         "mariadb": MariaDBConnector,
         "slackworkspace": SlackConnector,
-        # "slack": SlackIndividualConnector,
+        "slack": SlackIndividualConnector,
     }
 
     # Beta connector definitions - single source of truth

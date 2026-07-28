@@ -802,7 +802,7 @@ class TestDiscoverToolsGetmembersException:
         # The bad_func's _tool_metadata.tool_name raises, triggering lines 255-259
         result = self.registry._discover_tools_from_class(TestClass)
         # good_tool should still be discovered despite the error with bad_func
-        assert "good_tool" in result
+        assert any(t["name"] == "good_tool" for t in result)
 
     def test_getmembers_hasattr_raises(self):
         """When hasattr check on _tool_metadata itself triggers an exception."""
@@ -833,7 +833,7 @@ class TestDiscoverToolsGetmembersException:
 
         result = self.registry._discover_tools_from_class(TestClass)
         # Should not crash, returns whatever it could find
-        assert isinstance(result, dict)
+        assert isinstance(result, list)
 
 
 # ---------------------------------------------------------------------------
@@ -915,7 +915,7 @@ class TestDiscoverToolsDictFallbackException:
         # Instead, let's use the approach of patching the __dict__ to contain a
         # function whose __dict__ access raises.
         result = self.registry._discover_tools_from_class(TestClass)
-        assert isinstance(result, dict)
+        assert isinstance(result, list)
 
     def test_dict_loop_with_callable_having_func_and_bad_metadata(self):
         """Test __dict__ path where callable has __func__ but _tool_metadata raises."""
@@ -953,112 +953,7 @@ class TestDiscoverToolsDictFallbackException:
         TestClass.my_method = descriptor
 
         result = self.registry._discover_tools_from_class(TestClass)
-        assert isinstance(result, dict)
-
-
-# ---------------------------------------------------------------------------
-# register_toolset with @tool-decorated methods (covers lines 157-168, 191-199)
-# ---------------------------------------------------------------------------
-
-class TestRegisterToolsetWithDiscoveredTools:
-    def setup_method(self):
-        self.registry = _fresh_registry()
-
-    def _make_mock_tool_metadata(self, name="search"):
-        """Create a mock _tool_metadata that mimics the Tool dataclass."""
-        mock_tool_metadata = MagicMock()
-        mock_tool_metadata.tool_name = name
-        mock_tool_metadata.description = "Search for items"
-        mock_tool_metadata.returns = "list of results"
-        mock_tool_metadata.examples = [{"input": "find docs"}]
-        mock_tool_metadata.tags = ["search"]
-        mock_tool_metadata.args_schema = None
-        mock_tool_metadata.parameters = None
-        return mock_tool_metadata
-
-    def test_register_toolset_with_tool_decorated_methods(self):
-        """Register a toolset whose class has methods with _tool_metadata.
-        This exercises the tool discovery and conversion to dict (lines 157-168)
-        and the global registry check (lines 191-199)."""
-        from app.agents.registry.toolset_registry import Toolset
-
-        mock_tool_metadata = self._make_mock_tool_metadata()
-
-        @Toolset(
-            name="DiscoverTest",
-            app_group="TestGroup",
-            supported_auth_types="API_TOKEN",
-            description="Test toolset with tools",
-        )
-        class DiscoverTestToolset:
-            pass
-
-        # Manually add a method with _tool_metadata to simulate @tool decorator
-        def fake_tool(self):
-            pass
-        fake_tool._tool_metadata = mock_tool_metadata
-        DiscoverTestToolset.fake_tool = fake_tool
-
-        # Patch the global tools registry so the lookup doesn't fail
-        with patch("app.agents.tools.registry._global_tools_registry") as mock_reg:
-            mock_reg.get_tool_by_full_name.return_value = MagicMock()
-            result = self.registry.register_toolset(DiscoverTestToolset)
-
-        assert result is True
-        meta = self.registry.get_toolset_metadata("DiscoverTest", serialize=True)
-        assert meta is not None
-        # Should have discovered the tool
-        assert len(meta["tools"]) >= 1
-
-    def test_register_toolset_global_registry_tool_not_found(self):
-        """When global registry doesn't find the tool, it passes gracefully."""
-        from app.agents.registry.toolset_registry import Toolset
-
-        mock_tool_metadata = self._make_mock_tool_metadata("missing_tool")
-
-        @Toolset(
-            name="MissingToolTest",
-            app_group="G",
-            supported_auth_types="API_TOKEN",
-        )
-        class MissingToolTestToolset:
-            pass
-
-        def fake_tool(self):
-            pass
-        fake_tool._tool_metadata = mock_tool_metadata
-        MissingToolTestToolset.fake_tool = fake_tool
-
-        with patch("app.agents.tools.registry._global_tools_registry") as mock_reg:
-            mock_reg.get_tool_by_full_name.return_value = None
-            result = self.registry.register_toolset(MissingToolTestToolset)
-
-        assert result is True
-
-    def test_register_toolset_global_registry_raises(self):
-        """When global registry lookup raises, it's caught gracefully."""
-        from app.agents.registry.toolset_registry import Toolset
-
-        mock_tool_metadata = self._make_mock_tool_metadata("err_tool")
-
-        @Toolset(
-            name="ErrToolTest",
-            app_group="G",
-            supported_auth_types="API_TOKEN",
-        )
-        class ErrToolTestToolset:
-            pass
-
-        def fake_tool(self):
-            pass
-        fake_tool._tool_metadata = mock_tool_metadata
-        ErrToolTestToolset.fake_tool = fake_tool
-
-        with patch("app.agents.tools.registry._global_tools_registry") as mock_reg:
-            mock_reg.get_tool_by_full_name.side_effect = Exception("registry broken")
-            result = self.registry.register_toolset(ErrToolTestToolset)
-
-        assert result is True
+        assert isinstance(result, list)
 
 
 # ---------------------------------------------------------------------------
@@ -1098,7 +993,7 @@ class TestDiscoverToolsFromClassErrors:
         # Create a property that raises when accessed during inspection
         # but the method should still continue
         result = self.registry._discover_tools_from_class(BrokenAttrClass)
-        assert isinstance(result, dict)
+        assert isinstance(result, list)
 
     def test_discover_tools_dict_fallback_with_tool_metadata(self):
         """Test __dict__ fallback path for methods with _tool_metadata."""
@@ -1117,7 +1012,7 @@ class TestDiscoverToolsFromClassErrors:
         TestClass.dict_tool = method_func
 
         result = self.registry._discover_tools_from_class(TestClass)
-        assert "dict_tool" in result
+        assert any(t["name"] == "dict_tool" for t in result)
 
     def test_discover_tools_dict_fallback_error_path(self):
         """When __dict__ iteration encounters an error, it continues."""
@@ -1147,7 +1042,7 @@ class TestDiscoverToolsFromClassErrors:
         # The error path in __dict__ scanning is hard to trigger directly,
         # but we can verify the method handles errors gracefully
         result = self.registry._discover_tools_from_class(TestClass)
-        assert isinstance(result, dict)
+        assert isinstance(result, list)
 
 
 # ---------------------------------------------------------------------------

@@ -3,21 +3,25 @@ Internal Knowledge Retrieval Tool
 
 - Writes results directly to state (accumulates for parallel calls)
 - Returns properly formatted <record> tool messages (same as chatbot)
-- Block numbering (R-labels) happens ONCE after all parallel calls are merged
+- Block dedup on accumulation by (virtual_record_id, block_index)
 """
 
+import asyncio
 import json
 import logging
-from typing import Any
+import re
+from typing import TYPE_CHECKING, Any
 
-from langgraph.types import StreamWriter
 from pydantic import BaseModel, Field
 
-from app.agents.tools.config import ToolCategory
-from app.agents.tools.decorator import tool
-from app.agents.tools.models import ToolIntent
+from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.tool_summaries import as_text, bullet_list, parse_json_maybe
 from app.connectors.core.registry.auth_builder import AuthBuilder
-from app.connectors.core.registry.tool_builder import ToolsetBuilder
+from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope
+from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
+from app.models.entities import RecordType
+from app.modules.agents.context.source_catalog import SourceCatalog
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
@@ -27,11 +31,148 @@ from app.utils.chat_helpers import (
     get_flattened_results,
 )
 
+if TYPE_CHECKING:
+    from app.agent_loop_lib.core.types import ToolResult
+
 logger = logging.getLogger(__name__)
 
 # Cap the divisor to prevent excessively small per-source limits when many
 # knowledge sources are configured simultaneously.
 _MAX_RETRIEVAL_SOURCES_DIVISOR = 5
+
+_RETRIEVAL_ERROR_STATUS_CODES = frozenset({202, 500, 503})
+
+# connector_id → human label, populated per-request by Retrieval.__init__.
+# Safe for concurrent requests: UUIDs are globally unique so the same ID
+# always maps to the same label regardless of which request writes it.
+_SOURCE_LABELS: dict[str, str] = {}
+
+
+def _block_accumulation_key(entry: dict[str, Any]) -> str | None:
+    """Stable dedup key for a retrieval block; None when key parts are missing."""
+    virtual_record_id = entry.get("virtual_record_id")
+    block_index = entry.get("block_index")
+    if virtual_record_id is None or block_index is None:
+        return None
+    return f"{virtual_record_id}_{block_index}"
+
+
+def _dedupe_append_final_results(
+    existing: list[dict[str, Any]],
+    new_blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Append new_blocks, skipping duplicates by (virtual_record_id, block_index)."""
+    if not isinstance(existing, list):
+        existing = []
+    seen_keys = {
+        key
+        for entry in existing
+        if (key := _block_accumulation_key(entry)) is not None
+    }
+    appended = list(existing)
+    for entry in new_blocks:
+        key = _block_accumulation_key(entry)
+        if key is None or key not in seen_keys:
+            if key is not None:
+                seen_keys.add(key)
+            appended.append(entry)
+    return appended
+
+
+# ---------------------------------------------------------------------------
+# Agent-activity summaries for search_internal_knowledge — declared here
+# (colocated with the tool) rather than in a central registry, per `@tool`'s
+# `args_summary`/`result_summary` params (see `agent_loop_lib/tools/
+# decorators.py`). This tool returns a bare `str` rather than the
+# `(bool, str)` tuple most connector tools use, so `ToolOutput.success` is
+# always True — errors are only visible as `{"status": "error", ...}` JSON
+# in the content, which is why the result formatter parses that instead of
+# trusting `result.is_error`.
+# ---------------------------------------------------------------------------
+
+# `Name`/`Web URL` are fixed-width-padded labels rendered by
+# `Record.to_llm_context()` (`app/models/entities.py`) inside every
+# `<record>...</record>` block this tool returns. A tolerant, line-based
+# parse (vs. a full XML parser) because these blocks are LLM-facing text,
+# not strict markup, and any future field reordering/addition must not
+# break this into raising.
+_RECORD_NAME_RE = re.compile(r"^Name\s*:\s*(.+)$", re.MULTILINE)
+# See the `summary = f"Retrieved {N} knowledge blocks from {M} documents.\n\n"`
+# line below, prefixed to every successful result.
+_RETRIEVED_COUNT_RE = re.compile(r"^Retrieved (\d+) knowledge blocks? from (\d+) documents?", re.IGNORECASE)
+
+# Record types whose sub-items (or linked records) retrieval can never
+# surface — it returns matching BLOCKS, not the record's children — so a
+# hit on one of these is exactly when `knowledgegraph.navigate()` adds
+# something search structurally cannot. Conditional on record type alone:
+# `virtual_record_id_to_result` entries carry `record_type` but not
+# `hasChildren`, and computing the latter would cost an extra query per hit.
+_HIERARCHICAL_RECORD_TYPES = frozenset({
+    RecordType.TICKET.value,
+    RecordType.PROJECT.value,
+    RecordType.CONFLUENCE_PAGE.value,
+    RecordType.SHAREPOINT_LIST.value,
+    RecordType.SHAREPOINT_DOCUMENT_LIBRARY.value,
+})
+_NAVIGATE_TIP = (
+    "\n\nTip: these are content excerpts. For a record's sub-items (epic to "
+    "stories to sub-tasks, page to child pages) or its linked records, call "
+    'knowledgegraph.navigate(node_id="<Record ID>").'
+)
+
+
+def _has_hierarchical_record(virtual_record_id_to_result: dict[str, Any]) -> bool:
+    return any(
+        isinstance(rec, dict) and rec.get("record_type") in _HIERARCHICAL_RECORD_TYPES
+        for rec in virtual_record_id_to_result.values()
+    )
+
+
+def _extract_record_names(text: str) -> list[str]:
+    names = []
+    for block in text.split("<record>")[1:]:
+        match = _RECORD_NAME_RE.search(block)
+        if match is not None:
+            names.append(match.group(1).strip())
+    return names
+
+
+def _search_internal_knowledge_args_summary(args: dict[str, Any]) -> str | None:
+    query = args.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return None
+    summary = f'Searched for "{query.strip()}"'
+    connector_ids = args.get("connector_ids")
+    if isinstance(connector_ids, list) and connector_ids:
+        resolved = [_SOURCE_LABELS[cid] for cid in connector_ids if cid in _SOURCE_LABELS]
+        if resolved:
+            summary += f"\nSources: {', '.join(resolved)}"
+        else:
+            summary += f"\n{len(connector_ids)} source{'s' if len(connector_ids) != 1 else ''}"
+    return summary
+
+
+def _search_internal_knowledge_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    text = as_text(result.content)
+    if not text:
+        return None
+    parsed = parse_json_maybe(text)
+    if isinstance(parsed, dict) and parsed.get("status") == "error":
+        return f"Search failed: {parsed.get('message') or 'Unknown error'}"
+    if isinstance(parsed, dict) and (
+        parsed.get("result_count") == 0 or (isinstance(parsed.get("results"), list) and not parsed["results"])
+    ):
+        return str(parsed.get("message") or "No results found")
+
+    match = _RETRIEVED_COUNT_RE.search(text)
+    if not match:
+        return None
+    blocks, docs = match.group(1), match.group(2)
+    header = f"Retrieved {blocks} block{'s' if blocks != '1' else ''} from {docs} document{'s' if docs != '1' else ''}"
+    names = _extract_record_names(text)
+    if not names:
+        return header
+    return header + "\n" + bullet_list(names)
 
 
 def _normalize_list_param(value: str | list[str] | None) -> list[str] | None:
@@ -60,78 +201,76 @@ class RetrievalToolOutput(BaseModel):
 class SearchInternalKnowledgeInput(BaseModel):
     """Input schema for the search_internal_knowledge tool"""
     query: str = Field(description="The search query to find relevant information")
-    connector_ids: list[str] | None = Field(default=None, description="Filter to specific connectors by their IDs. If not provided or IDs don't match agent scope, uses all agent connectors.")
-    collection_ids: list[str] | None = Field(default=None, description="Filter to specific KB collections by their record group IDs. If not provided or IDs don't match agent scope, uses all agent collections.")
+    connector_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "Filter to specific sources by their connector ID — covers BOTH app "
+            "connectors (Jira, Confluence, Slack, ...) and KB collections alike, "
+            "since a KB collection's ID is a connector ID too. If not provided or "
+            "the IDs don't match agent scope, uses all agent-configured sources."
+        ),
+    )
 
 
 @ToolsetBuilder("Retrieval")\
     .in_group("Internal Tools")\
     .with_description("Internal knowledge retrieval tool - always available, no authentication required")\
-    .with_category(ToolCategory.UTILITY)\
+    .with_category(ToolsetCategory.UTILITY)\
     .with_auth([
         AuthBuilder.type("NONE").fields([])
     ])\
     .as_internal()\
+    .as_essential()\
     .configure(lambda builder: builder.with_icon("/assets/icons/toolsets/retrieval.svg"))\
     .build_decorator()
 
 class Retrieval:
     """Internal knowledge retrieval tool exposed to agents"""
 
-    def __init__(self, state: ChatState | None = None, writer: StreamWriter | None = None, **kwargs) -> None:
+    def __init__(self, state: ChatState | None = None, **kwargs) -> None:
         self.state: ChatState | None = state or kwargs.get('state')
-        self.writer = writer
         logger.info("🚀 Initializing Internal Knowledge Retrieval tool")
+        self._populate_source_labels()
+
+    def _populate_source_labels(self) -> None:
+        """Populate module-level source-ID → label mapping for args summaries."""
+        if not self.state:
+            return
+        try:
+            catalog = SourceCatalog.from_state(self.state)
+            for source in catalog.sources:
+                if source.source_id and source.label:
+                    _SOURCE_LABELS[source.source_id] = source.label
+        except Exception:
+            pass
 
     @tool(
-        app_name="retrieval",
-        tool_name="search_internal_knowledge",
+        path="/tools/retrieval/search_internal_knowledge",
+        short_description="Search internal knowledge bases and connected data sources",
         description=(
-            "Search and retrieve information from internal collections and indexed applications"
-        ),
-        args_schema=SearchInternalKnowledgeInput,
-        llm_description=(
             "Search and retrieve information from indexed company documents, knowledge "
             "bases, and connected data sources. Returns content chunks with citations.\n\n"
-            "HYBRID-SEARCH RULE: when the agent has BOTH this tool AND a search tool for "
-            "an indexed service (e.g. Confluence, Jira, Drive, OneDrive, etc.) available, call "
-            "BOTH in PARALLEL for any topic / information query. Indexed snapshots and "
-            "live API data complement each other — the user gets a richer answer when "
-            "both are merged. Some service tools are live-only (e.g. Slack, Outlook, "
-            "Gmail, Calendar) — for those, follow the planner's per-service rules instead "
-            "of pairing with retrieval. Only skip this tool entirely for: exact ID "
-            "lookups (use the service tool), write actions, real-time-only data ('my "
-            "unread mail right now'), pure greetings, or arithmetic."
+            "For a topic that also has a live-API search tool (e.g. Jira, Confluence), "
+            "call BOTH this and that tool together — this covers historical/cross-service "
+            "content the live API snapshot may not have; a service name in the query "
+            "narrows which live tool to also call, it does not replace this call.\n\n"
+            "Pass a single `connector_ids` value per call and run one call per source "
+            "in parallel. Use the source IDs from the Knowledge Sources section of the "
+            "system prompt. Omit `connector_ids` to search all accessible sources."
         ),
-        category=ToolCategory.KNOWLEDGE,
-        is_essential=True,
-        requires_auth=False,
-        when_to_use=[
-            "Any topic, keyword, concept, name, or phrase — even a single bare word",
-            "Information / documentation requests ('what is X', 'how does Y work', 'tell me about Z')",
-            "Policy / procedure / general knowledge questions",
-            "ALWAYS in parallel with a service search tool when one is configured for the same topic",
-            "When the query asks about a person, entity, or topic that is NOT present in the attached documents** — do NOT refuse; search the internal knowledge base instead."
+        parameters=[
+            ToolParameter(name="query", type=ParameterType.STRING, description="The search query to find relevant information", required=True),
+            ToolParameter(name="connector_ids", type=ParameterType.ARRAY, description="Filter to a specific source by its ID. Pass a single ID per call — use one call per source and run them in parallel. Pass a KB collection's id or an app connector's id — both use this same parameter. Omit to search all accessible sources.", required=False, items={"type": "string"}),
         ],
-        when_not_to_use=[
-            "Exact ID lookup ('get page 12345') — use the service tool directly",
-            "Write actions (create / update / delete) — use the service tool",
-            "Real-time-only data ('my unread mail right now', 'today's calendar') — use the service tool",
-            "Pure greetings, thanks, or arithmetic",
-            "ONLY when the attachment content fully and directly answers the query for the **exact same** person, entity, or topic being asked about — do not call this tool unnecessarily."
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "What is our vacation policy?",
-            "How do I submit expenses?",
-            "Find information about Q4 results"
-        ]
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=_search_internal_knowledge_args_summary,
+        result_summary=_search_internal_knowledge_result_summary,
+        display_name="Searched the knowledge base",
     )
     async def search_internal_knowledge(
         self,
         query: str | None = None,
         connector_ids: list[str] | None = None,
-        collection_ids: list[str] | None = None,
     ) -> str:
         """Search internal knowledge bases and return formatted results."""
         search_query = query
@@ -165,45 +304,49 @@ class Retrieval:
             org_id = self.state.get("org_id", "")
             user_id = self.state.get("user_id", "")
 
-            # Normalize list inputs
+            # Normalize list input. A KB collection's id IS a connector id now,
+            # so there is a single unified `connector_ids` parameter covering
+            # both app connectors and KB collections — the LLM never needs to
+            # know which bucket an id belongs to; this tool resolves that.
             connector_ids = _normalize_list_param(connector_ids)
-            collection_ids = _normalize_list_param(collection_ids)
 
             # === BUILD FILTERS — always scoped to agent's configured knowledge ===
-            # Get agent's configured filters from state
-            agent_filters = self.state.get("filters", {}) or {}
-            agent_filter_apps = set(agent_filters.get("apps") or [])
-            agent_filter_kbs = set(agent_filters.get("kb") or [])
-
-            agent_configured_apps = self.state.get("apps", [])
-            agent_configured_kbs = self.state.get("kb", [])
-
-            # Start from an empty filter dict — we build it precisely below.
-            filter_groups: dict[str, list[str]] = {}
-
-            # === TARGETED vs BROAD FILTER LOGIC ===
             #
-            # Rule: if the caller explicitly provides EITHER connector_ids OR
-            # collection_ids, treat that as a targeted search and do NOT add the
-            # other side from the agent scope. Mixing both would create an
-            # unnecessary union that defeats the purpose of the explicit filter.
-            #
-            # Only when NEITHER is provided do we fall back to the full agent
-            # scope (both connectors and KB collections).
-            #
-            explicit_connectors = bool(connector_ids)
-            explicit_collections = bool(collection_ids)
-            broad_search = not explicit_connectors and not explicit_collections
-
-            # Placeholder agent: broaden scope to all configured connectors/KBs
-            # since filters are not author-curated for this synthetic agent.
+            # Retrieval uses the curated session `filters` as its primary scope
+            # (the user's explicit filter selection for the turn), not state["apps"]
+            # which is the full agent knowledge config. Placeholder agents are
+            # the exception: their filters are synthetic, so fall back to the
+            # full configured sources.
             is_placeholder_agent = self.state.get("is_placeholder_agent", False)
-            if is_placeholder_agent:
-                agent_filter_apps = list(agent_configured_apps) if agent_configured_apps else []
-                agent_filter_kbs = list(agent_configured_kbs) if agent_configured_kbs else []
+            agent_filters = self.state.get("filters", {}) or {}
 
-            agent_connector_ids_count = len(agent_filter_apps)
-            agent_collection_ids_count = len(agent_filter_kbs)
+            if is_placeholder_agent:
+                raw_filter_apps: list[str] = list(self.state.get("apps") or [])
+                raw_filter_kbs: list[str] = list(self.state.get("kb") or [])
+            else:
+                raw_filter_apps = list(agent_filters.get("apps") or [])
+                raw_filter_kbs = list(agent_filters.get("kb") or [])
+
+            from app.agents.actions.knowledge_graph.ops.scope import _clean_kb
+            base_scope = KnowledgeScope(
+                app_ids=tuple(raw_filter_apps),
+                kb_ids=_clean_kb(raw_filter_kbs),
+            )
+
+            explicit_ids = bool(connector_ids)
+
+            # Only fan-out when the LLM provided specific ids that all resolved;
+            # a fallback (no match → full scope) uses a single combined call.
+            narrowed_scope: KnowledgeScope | None = None
+            if explicit_ids:
+                candidate = base_scope.narrow_to(connector_ids)
+                if candidate is not base_scope:
+                    narrowed_scope = candidate
+
+            resolved_scope = narrowed_scope if narrowed_scope is not None else base_scope
+
+            agent_connector_ids_count = len(base_scope.app_ids)
+            agent_collection_ids_count = len(base_scope.kb_ids)
             total_sources = agent_connector_ids_count + agent_collection_ids_count
             if total_sources <= 1:
                 adjusted_limit = 50
@@ -211,39 +354,14 @@ class Retrieval:
                 adjusted_limit = 100 // min(total_sources, _MAX_RETRIEVAL_SOURCES_DIVISOR)
 
             logger_instance.debug(f"is_placeholder_agent: {is_placeholder_agent}")
-            logger_instance.debug(f"agent_filter_apps: {sorted(agent_filter_apps)}")
-            logger_instance.debug(f"agent_filter_kbs: {sorted(agent_filter_kbs)}")
+            logger_instance.debug(f"base_scope.app_ids: {sorted(base_scope.app_ids)}")
+            logger_instance.debug(f"base_scope.kb_ids: {sorted(base_scope.kb_ids)}")
 
-            # --- App connectors ---
-            if explicit_connectors:
-                # Scope to the intersection with the agent's allowed connectors.
-                resolved_apps = [cid for cid in connector_ids if cid in agent_filter_apps]
-                # If the LLM hallucinated an ID not in scope, ignore it and use
-                # the full agent connector set as a safe fallback.
-                filter_groups["apps"] = resolved_apps if resolved_apps else list(agent_filter_apps)
-            elif broad_search:
-                # No explicit filter — include all agent connectors.
-                filter_groups["apps"] = list(agent_filter_apps) if agent_filter_apps else []
-            else:
-                # collection_ids were given but connector_ids were not:
-                # exclude connectors entirely so the search is KB-only.
-                filter_groups["apps"] = []
+            filter_groups = resolved_scope.to_filter_groups()
 
-            # --- KB collections ---
-            if explicit_collections:
-                # Scope to the intersection with the agent's allowed KB groups.
-                resolved_kbs = [cid for cid in collection_ids if cid in agent_filter_kbs]
-                # Fallback to full KB scope if IDs don't match.
-                filter_groups["kb"] = resolved_kbs if resolved_kbs else list(agent_filter_kbs)
-            elif broad_search:
-                # No explicit filter — include all agent KB collections.
-                filter_groups["kb"] = list(agent_filter_kbs) if agent_filter_kbs else []
-            else:
-                # connector_ids were given but collection_ids were not:
-                # exclude KB collections so the search is connector-only.
-                filter_groups["kb"] = ['NO_KB_SELECTED']
-                if is_placeholder_agent:
-                    filter_groups["kb"] = []
+            # Use narrowed ids for fan-out (empty when fallback occurred)
+            resolved_apps = list(narrowed_scope.app_ids) if narrowed_scope else []
+            resolved_kbs = list(narrowed_scope.kb_ids) if narrowed_scope else []
 
             # === SEARCH ===
             is_service_account = bool(self.state.get("is_service_account", False))
@@ -254,31 +372,100 @@ class Retrieval:
 
             logger_instance.debug(f"filter_groups: {filter_groups}")
 
-            logger_instance.debug(f"Executing retrieval with limit: {adjusted_limit}")
-            results = await retrieval_service.search_with_filters(
-                queries=[search_query],
-                org_id=org_id,
-                user_id=user_id,
-                limit=adjusted_limit,
-                filter_groups=filter_groups,
-            )
+            # Fan-out only when there are multiple sources of the SAME type.
+            # A single app + single KB is combined into one call so the
+            # retrieval service can cross-rank them; fan-out is for when each
+            # source deserves its own adjusted_limit allocation.
+            fan_out_sources = explicit_ids and (len(resolved_apps) > 1 or len(resolved_kbs) > 1)
+            per_source_fan_out = False
 
-            if results is None:
-                logger_instance.warning("Retrieval service returned None")
-                return json.dumps({
-                    "status": "error",
-                    "message": "Retrieval service returned no results"
-                })
+            async def _search_with_filter_groups(
+                source_filter_groups: dict[str, list[str]],
+            ) -> dict[str, Any] | None:
+                return await retrieval_service.search_with_filters(
+                    queries=[search_query],
+                    org_id=org_id,
+                    user_id=user_id,
+                    limit=adjusted_limit,
+                    filter_groups=source_filter_groups,
+                )
 
-            status_code = results.get("status_code", 200)
-            if status_code in [202, 500, 503]:
-                return json.dumps({
-                    "status": "error",
-                    "status_code": status_code,
-                    "message": results.get("message", "Retrieval service unavailable")
-                })
+            if fan_out_sources:
+                per_source_fan_out = True
+                search_tasks: list[Any] = []
+                for app_id in resolved_apps:
+                    search_tasks.append(_search_with_filter_groups(
+                        resolved_scope.to_filter_groups_for_source(
+                            app_id=app_id, placeholder_agent=is_placeholder_agent,
+                        )
+                    ))
+                for kb_id in resolved_kbs:
+                    search_tasks.append(_search_with_filter_groups(
+                        resolved_scope.to_filter_groups_for_source(
+                            kb_id=kb_id, placeholder_agent=is_placeholder_agent,
+                        )
+                    ))
 
-            search_results = results.get("searchResults", [])
+                raw_results = await asyncio.gather(*search_tasks, return_exceptions=True)
+                search_results: list[dict[str, Any]] = []
+                virtual_to_record_map: dict[str, Any] = {}
+                any_success = False
+                error_status: int | None = None
+                error_message = "Retrieval service unavailable"
+
+                for raw in raw_results:
+                    if isinstance(raw, Exception):
+                        logger_instance.warning(
+                            "Per-source retrieval failed: %s", raw, exc_info=raw,
+                        )
+                        continue
+                    if raw is None:
+                        logger_instance.warning("Per-source retrieval returned None")
+                        continue
+                    status_code = raw.get("status_code", 200)
+                    if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
+                        error_status = error_status or status_code
+                        error_message = raw.get("message", error_message)
+                        continue
+                    any_success = True
+                    search_results.extend(raw.get("searchResults", []))
+                    virtual_to_record_map.update(raw.get("virtual_to_record_map", {}))
+
+                if not any_success:
+                    if error_status is not None:
+                        return json.dumps({
+                            "status": "error",
+                            "status_code": error_status,
+                            "message": error_message,
+                        })
+                    return json.dumps({
+                        "status": "success",
+                        "message": "No results found",
+                        "results": [],
+                        "result_count": 0,
+                    })
+            else:
+                logger_instance.debug(f"Executing retrieval with limit: {adjusted_limit}")
+                results = await _search_with_filter_groups(filter_groups)
+
+                if results is None:
+                    logger_instance.warning("Retrieval service returned None")
+                    return json.dumps({
+                        "status": "error",
+                        "message": "Retrieval service returned no results"
+                    })
+
+                status_code = results.get("status_code", 200)
+                if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
+                    return json.dumps({
+                        "status": "error",
+                        "status_code": status_code,
+                        "message": results.get("message", "Retrieval service unavailable")
+                    })
+
+                search_results = results.get("searchResults", [])
+                virtual_to_record_map = results.get("virtual_to_record_map", {})
+
             logger_instance.info(f"✅ Retrieved {len(search_results)} documents")
 
             if not search_results:
@@ -309,10 +496,8 @@ class Retrieval:
                 pass
 
             virtual_record_id_to_result = {}
-            # Retrieve virtual_to_record_map from search results — same as chatbot.
-            # This enriches records with graph-DB metadata (record type, web URL, etc.)
-            # so that context_metadata is populated for get_message_content().
-            virtual_to_record_map = results.get("virtual_to_record_map", {})
+            # Enrich records with graph-DB metadata (record type, web URL, etc.)
+            # from the search response's virtual_to_record_map.
 
             flattened_results = await get_flattened_results(
                 search_results,
@@ -341,29 +526,24 @@ class Retrieval:
 
             # === TRIM ===
             # Do NOT sort here. The upstream retrieval service returns results
-            # ranked by relevance. merge_and_number_retrieval_results() in
-            # nodes.py will correctly:
-            #   1. Deduplicate blocks across parallel retrieval calls
-            #   2. Group blocks by document (by best-score descending)
-            #   3. Sort blocks within each document by block_index
-            final_results = final_results[:adjusted_limit]
+            # ranked by relevance. Single-call searches share one top-K; when
+            # multiple explicit connector_ids fan out, each source already
+            # received its own adjusted_limit.
+            if not per_source_fan_out:
+                final_results = final_results[:adjusted_limit]
 
             # ================================================================
             # Write results directly to state (accumulate for parallel calls)
             # and return properly formatted tool message like the chatbot.
             #
-            # Block numbering (R-labels) still happens ONCE after all parallel
-            # calls are merged in nodes.py (merge_and_number_retrieval_results()).
-            # But the ToolMessage content the LLM sees during planning/ReAct
-            # is now properly formatted with <record> XML blocks instead of
-            # raw JSON dumps.
+            # Accumulation dedupes blocks by (virtual_record_id, block_index)
+            # so parallel or repeat calls do not inflate final_results.
             # ================================================================
 
-            # --- Accumulate results in state (same pattern as _process_retrieval_output) ---
             existing_final_results = self.state.get("final_results", [])
-            if not isinstance(existing_final_results, list):
-                existing_final_results = []
-            self.state["final_results"] = existing_final_results + final_results
+            self.state["final_results"] = _dedupe_append_final_results(
+                existing_final_results, final_results,
+            )
 
             existing_virtual_map = self.state.get("virtual_record_id_to_result", {})
             if not isinstance(existing_virtual_map, dict):
@@ -377,6 +557,67 @@ class Retrieval:
             existing_record_ids = {r.get("_id") for r in existing_tool_records if isinstance(r, dict) and "_id" in r}
             unique_new = [r for r in new_tool_records if not (isinstance(r, dict) and r.get("_id") in existing_record_ids)]
             self.state["tool_records"] = existing_tool_records + unique_new
+
+            # --- Candidate list (record escalation) ---
+            # Must run BEFORE the display sort so candidate order follows the
+            # upstream relevance ranking (final_results[:adjusted_limit]) that
+            # the comment at line 384 asks us to preserve.
+            #
+            # Runs regardless of needs_whole_document: the counts ("you have 4
+            # of 87 blocks") are the only way the model can tell whether
+            # reading further would add anything, and withholding them when the
+            # query signal misfires leaves it unable to judge a fetch at all.
+            # The signal only chooses the header's framing.
+            candidate_suffix = ""
+            needs_whole_doc = bool(self.state.get("needs_whole_document", False))
+            from app.modules.agents.record_escalation import (
+                analyze_coverage,
+                build_candidates,
+                render_candidate_table,
+            )
+            # Coverage over ALL accumulated results, not just this call's, so
+            # parallel/repeat retrieval calls do not each report partial counts.
+            all_final = self.state.get("final_results", [])
+            full_vr_map = self.state.get("virtual_record_id_to_result", {})
+            coverage = analyze_coverage(all_final, full_vr_map)
+            already_fetched: set[str] = set(self.state.get("full_records_fetched", set()))
+
+            # Relevance order: records in final_results order (before the
+            # display sort), de-duped on first appearance.
+            seen_rids: set[str] = set()
+            records_in_order: list[dict] = []
+            for entry in all_final:
+                vrid = entry.get("virtual_record_id")
+                if not vrid:
+                    continue
+                rec = full_vr_map.get(vrid)
+                if not rec:
+                    continue
+                rid = rec.get("id")
+                if rid and rid not in seen_rids:
+                    seen_rids.add(rid)
+                    records_in_order.append(rec)
+
+            plan = build_candidates(
+                coverage=coverage,
+                records_in_relevance_order=records_in_order,
+                already_fetched_ids=already_fetched,
+            )
+            # Stash on state so full_record_gate can read without re-computing.
+            self.state["fetch_coverage"] = coverage
+            self.state["fetch_plan"] = plan
+
+            logger_instance.info(
+                "record_escalation: needs_whole_document=%s | candidates=%s | excluded=%s",
+                needs_whole_doc,
+                [c.record_id for c in plan.candidates],
+                list(plan.excluded),
+            )
+
+            if plan.has_candidates:
+                candidate_suffix = render_candidate_table(
+                    plan, needs_whole_document=needs_whole_doc,
+                )
 
             # --- Format results like the chatbot does ---
             sorted_results = sorted(
@@ -404,10 +645,13 @@ class Retrieval:
             )
 
             summary = (
-                f"Retrieved {len(final_results)} knowledge blocks from "
-                f"{len(virtual_record_id_to_result)} documents.\n\n"
+                f"Top {len(final_results)} block{'s' if len(final_results) != 1 else ''} "
+                f"from {len(virtual_record_id_to_result)} "
+                f"record{'s' if len(virtual_record_id_to_result) != 1 else ''} "
+                f"(ranked sample — other records may match).\n\n"
             )
-            return summary + "\n".join(formatted_records)
+            tip = _NAVIGATE_TIP if _has_hierarchical_record(virtual_record_id_to_result) else ""
+            return summary + "\n".join(formatted_records) + candidate_suffix + tip
 
         except Exception as e:
             logger_instance = self.state.get("logger", logger) if self.state else logger

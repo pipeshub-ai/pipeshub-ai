@@ -29,6 +29,7 @@ import { ToolsetsApi } from '@/app/(main)/toolsets/api';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import { CollectionsTab } from './connectors-collections/collections-tab';
 import type { CollectionScopeSelection } from './connectors-collections/collections-tab';
+import { AgentCapabilitiesBar } from './agent-capabilities-bar';
 
 type ExpansionViewMode = 'inline' | 'overlay';
 
@@ -43,10 +44,12 @@ function UniversalAgentFilterTablist({
   value,
   onValueChange,
   labels,
+  disabledTabs = [],
 }: {
   value: TabValue;
   onValueChange: (next: TabValue) => void;
   labels: Record<TabValue, string>;
+  disabledTabs?: TabValue[];
 }) {
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
@@ -84,10 +87,12 @@ function UniversalAgentFilterTablist({
     const i = TAB_VALUES.indexOf(value);
     if (e.key === 'ArrowRight') {
       e.preventDefault();
-      onValueChange(TAB_VALUES[(i + 1) % TAB_VALUES.length]!);
+      const next = TAB_VALUES[(i + 1) % TAB_VALUES.length]!;
+      if (!disabledTabs.includes(next)) onValueChange(next);
     } else if (e.key === 'ArrowLeft') {
       e.preventDefault();
-      onValueChange(TAB_VALUES[(i - 1 + TAB_VALUES.length) % TAB_VALUES.length]!);
+      const next = TAB_VALUES[(i - 1 + TAB_VALUES.length) % TAB_VALUES.length]!;
+      if (!disabledTabs.includes(next)) onValueChange(next);
     }
   };
 
@@ -100,13 +105,16 @@ function UniversalAgentFilterTablist({
     >
       {TAB_VALUES.map((tabValue) => {
         const selected = value === tabValue;
+        const isDisabled = disabledTabs.includes(tabValue);
         return (
           <button
             key={tabValue}
             type="button"
             role="tab"
             aria-selected={selected}
-            onClick={() => onValueChange(tabValue)}
+            aria-disabled={isDisabled}
+            disabled={isDisabled}
+            onClick={() => { if (!isDisabled) onValueChange(tabValue); }}
             style={{
               boxSizing: 'border-box',
               flex: '1 1 0',
@@ -121,13 +129,14 @@ function UniversalAgentFilterTablist({
               borderRadius: FIGMA_TABLIST_RADIUS,
               border: selected ? selectedBorder : '1px solid transparent',
               background: selected ? selectedBg : 'rgba(255, 255, 255, 0.00001)',
-              color: inactiveColor,
+              color: isDisabled ? 'var(--gray-7)' : inactiveColor,
               fontSize: 12,
               lineHeight: '16px',
               letterSpacing: '0.04px',
               fontWeight: selected ? 500 : 400,
               fontFamily: 'inherit',
-              cursor: 'pointer',
+              cursor: isDisabled ? 'not-allowed' : 'pointer',
+              opacity: isDisabled ? 0.5 : 1,
               isolation: 'isolate',
             }}
           >
@@ -321,6 +330,8 @@ export function UniversalAgentResourcesPanel({
 
   const settings = useChatStore((s) => s.settings);
   const setFilters = useChatStore((s) => s.setFilters);
+  const setAgentCapabilities = useChatStore((s) => s.setAgentCapabilities);
+  const agentCapabilities = settings.agentCapabilities;
 
   const toolGroups = useChatStore((s) => s.universalAgentToolGroups);
   const toolCatalog = useChatStore((s) => s.universalAgentToolCatalogFullNames);
@@ -538,6 +549,18 @@ export function UniversalAgentResourcesPanel({
     setFilters({ apps: [], kb: [] });
   }, [setSelectedTools, setFilters]);
 
+  // When internalSearch is turned off, snap tab to 'actions' if currently on a disabled tab.
+  const internalSearchEnabled = agentCapabilities.internalSearch;
+  const disabledTabs = useMemo<TabValue[]>(
+    () => (!internalSearchEnabled ? ['connectors', 'collections'] : []),
+    [internalSearchEnabled]
+  );
+
+  // If the active tab becomes disabled, switch to 'actions'
+  React.useEffect(() => {
+    if (disabledTabs.includes(tab)) setTab('actions');
+  }, [disabledTabs, tab]);
+
   // ── Filtered views ──
 
   const filteredToolGroups = useMemo(() => {
@@ -605,6 +628,14 @@ export function UniversalAgentResourcesPanel({
         </Callout.Root>
       )}
 
+      {/* Capabilities toggles */}
+      <AgentCapabilitiesBar
+        internalSearch={agentCapabilities.internalSearch}
+        webSearch={agentCapabilities.webSearch}
+        onToggleInternalSearch={(enabled) => setAgentCapabilities({ internalSearch: enabled })}
+        onToggleWebSearch={(enabled) => setAgentCapabilities({ webSearch: enabled })}
+      />
+
       {/* Header: tabs + expand/collapse toggle */}
       <Flex align="center" justify="between" gap="2" style={{ width: '100%', flexShrink: 0 }}>
         <UniversalAgentFilterTablist
@@ -614,6 +645,7 @@ export function UniversalAgentResourcesPanel({
             setSearch('');
           }}
           labels={tabLabels}
+          disabledTabs={disabledTabs}
         />
         <IconButton
           variant="ghost"

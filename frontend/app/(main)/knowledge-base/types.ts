@@ -206,6 +206,7 @@ export interface KnowledgeHubNode {
   updatedAt?: number;
   webUrl?: string;
   recordType?: RecordType | null;
+  recordGroupType?: string | null;
   indexingStatus?: IndexingStatus | null;
   reason?: string | null;
   sizeInBytes?: number | null;

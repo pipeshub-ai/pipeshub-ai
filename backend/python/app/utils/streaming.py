@@ -16,7 +16,6 @@ from langchain_anthropic import ChatAnthropic
 from langchain_aws import ChatBedrock
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
-from langchain_core.output_parsers import PydanticOutputParser
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mistralai import ChatMistralAI
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
@@ -24,15 +23,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.modules.agents.qna.reference_data import normalize_reference_data_items
-from app.modules.agents.qna.schemas import (
-    AgentAnswerWithMetadataDict,
-    AgentAnswerWithMetadataJSON,
-)
 from app.modules.parsers.excel.prompt_template import RowDescriptions
-from app.modules.qna.prompt_templates import (
-    AnswerWithMetadataDict,
-    AnswerWithMetadataJSON,
-)
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.aimodels import coerce_message_content_to_text
@@ -116,30 +107,6 @@ ANTHROPIC_LEGACY_MODEL_PATTERNS = [
     "claude-instant",
 ]
 
-
-def supports_human_message_after_tool(llm: BaseChatModel) -> bool:
-    """
-    Check if the LLM provider supports adding a HumanMessage after ToolMessages.
-
-    Some providers (e.g., MistralAI) do not support this message ordering pattern.
-    """
-    # MistralAI does not support Human message after Tool message
-    if isinstance(llm, ChatMistralAI):
-        return False
-    return True
-
-
-def _get_schema_for_structured_output() -> type[AgentAnswerWithMetadataDict] | type[AnswerWithMetadataDict]:
-    return AgentAnswerWithMetadataDict
-
-
-def _get_schema_for_parsing() -> type[AgentAnswerWithMetadataJSON] | type[AnswerWithMetadataJSON]:
-    return AgentAnswerWithMetadataJSON
-
-def get_parser(schema: type[BaseModel] = AnswerWithMetadataJSON) -> tuple[PydanticOutputParser, str]:
-    parser = PydanticOutputParser(pydantic_object=schema)
-    format_instructions = parser.get_format_instructions()
-    return parser, format_instructions
 
 async def stream_content(signed_url: str, record_id: str | None = None, file_name: str | None = None) -> AsyncGenerator[bytes, None]:
     # Validate that signed_url is actually a string, not a coroutine
@@ -399,554 +366,6 @@ VECTOR_DB_LIMIT_TIERS = [
 ]
 DEFAULT_VECTOR_DB_LIMIT = 266
 
-def get_vectorDb_limit(context_length: int) -> int:
-    """Determines the vector db search limit based on the LLM's context length."""
-    for length_threshold, limit in VECTOR_DB_LIMIT_TIERS:
-        if context_length <= length_threshold:
-            return limit
-    return DEFAULT_VECTOR_DB_LIMIT
-
-async def execute_single_tool(args, tool, tool_name, call_id, valid_tool_names, tool_runtime_kwargs) -> dict[str, Any]:
-    """Execute a single tool and return result with metadata"""
-    if tool is None:
-        logger.warning("execute_tool_calls: unknown tool requested name=%s", tool_name)
-        return {
-            "ok": False,
-            "error": f"Unknown tool: {tool_name}",
-            "tool_name": tool_name,
-            "call_id": call_id
-        }
-
-    if tool_name not in valid_tool_names:
-        logger.warning("invalid tool requested, name=%s", tool_name)
-        return {
-            "ok": False,
-            "error": f"Invalid tool: {tool_name}",
-            "tool_name": tool_name,
-            "call_id": call_id
-        }
-    try:
-        logger.debug(
-            "Running tool name=%s call_id=%s args=%s",
-            tool.name,
-            call_id,
-            str(args),
-        )
-        tool_result = await tool.arun(args, **tool_runtime_kwargs)
-        if isinstance(tool_result, str):
-            try:
-                tool_result = json.loads(tool_result)
-            except (json.JSONDecodeError, ValueError):
-                tool_result = {"ok": True, "content": tool_result, "result_type": "content"}
-        if not isinstance(tool_result, dict):
-            tool_result = {"ok": True, "content": tool_result, "result_type": "content"}
-        tool_result["tool_name"] = tool_name
-        tool_result["call_id"] = call_id
-        return tool_result
-    except Exception as e:
-        logger.exception(
-            "Exception while running tool name=%s call_id=%s args=%s",
-            tool_name,
-            call_id,
-            str(args),
-        )
-        return {
-            "ok": False,
-            "error": str(e),
-            "tool_name": tool_name,
-            "call_id": call_id
-        }
-
-async def execute_tool_calls(
-    llm,
-    messages: list[dict],
-    tools: list,
-    tool_runtime_kwargs: dict[str, Any],
-    final_results: list[dict[str, Any]],
-    virtual_record_id_to_result: dict[str, dict[str, Any]],
-    blob_store: BlobStorage,
-    all_queries: list[str],
-    retrieval_service: RetrievalService,
-    user_id: str,
-    org_id: str,
-    context_length:int|None,
-    target_words_per_chunk: int = 1,
-    is_multimodal_llm: bool | None = False,
-    max_hops: int = MAX_TOOL_HOPS,
-    is_service_account: bool = False,
-    filter_groups: dict[str, Any] | None = None,
-    mode: str = "json",  # "json" for structured output, "simple" for raw text
-    ref_mapper: CitationRefMapper | None = None,
-    chat_mode: str | None = None,
-    initial_web_records: list[dict[str, Any]] | None = None,
-    defer_tool_until_called_name: str | None = None,
-    deferred_tool: Any | None = None,
-) -> AsyncGenerator[dict[str, Any], tuple[list[dict], bool]]:
-    """
-    Execute tool calls if present in the LLM response.
-    Yields tool events and returns updated messages and whether tools were executed.
-
-    ``deferred_tool`` may be a single tool or a list of tools that are added to
-    the active tool set after the trigger tool (``defer_tool_until_called_name``)
-    is invoked.
-    """
-    if not tools:
-        raise ValueError("Tools are required")
-
-    # Normalise deferred_tool to a list for uniform handling.
-    if deferred_tool is not None:
-        _deferred_tools: list[Any] = deferred_tool if isinstance(deferred_tool, list) else [deferred_tool]
-    else:
-        _deferred_tools = []
-
-    hops = 0
-    tools_executed = False
-    tool_args = []
-    tool_results = []
-    records = []
-    web_records: list[dict[str, Any]] = list(initial_web_records) if initial_web_records else []
-    tool_instructions_added = False
-    while hops < max_hops:
-        llm_to_pass = bind_tools_for_llm(llm, tools)
-        if not llm_to_pass:
-            if mode == "json":
-                schema_for_structured = _get_schema_for_structured_output()
-                logger.warning("Failed to bind tools for LLM, so using structured output")
-                llm_to_pass = _apply_structured_output(llm, schema=schema_for_structured)
-            else:
-                logger.warning("Failed to bind tools for LLM, using raw LLM")
-                llm_to_pass = llm
-
-        current_hop_records = []
-        # with error handling for provider-level tool failures
-        try:
-            # Measure LLM invocation latency
-            ai = None
-
-            async for event in call_aiter_function(
-                llm_to_pass,
-                messages,
-                final_results,
-                target_words_per_chunk=target_words_per_chunk,
-                original_llm=llm,
-                virtual_record_id_to_result=virtual_record_id_to_result,
-                ref_to_url=ref_mapper.ref_to_url if ref_mapper else None,
-                mode=mode,
-                chat_mode=chat_mode,
-                records=records,
-                web_records=web_records,
-            ):
-                if event.get("event") == "complete" or event.get("event") == "error":
-                    yield event
-                    return
-                elif event.get("event") == "tool_calls":
-                    ai = event.get("data").get("ai")
-                else:
-                    yield event
-
-            ai = AIMessage(
-                content = ai.content,
-                tool_calls = getattr(ai, 'tool_calls', []),
-            )
-        except Exception as e:
-            logger.error(f"LLM invocation failed at hop {hops}: {str(e)}")
-            break
-
-        # Check if there are tool calls
-        if not (isinstance(ai, AIMessage) and getattr(ai, "tool_calls", None)):
-            logger.info(f"No tool calls returned at hop {hops}, ending tool loop")
-            messages.append(ai)
-            break
-
-        tools_executed = True
-
-        # Yield tool call events
-        for call in ai.tool_calls:
-            yield {
-                "event": "tool_call",
-                "data": {
-                    "tool_name": call["name"],
-                    "tool_args": call.get("args", {}),
-                    "call_id": call.get("id")
-                }
-            }
-
-        # Execute tools
-        tool_args = []
-        for call in ai.tool_calls:
-            name = call["name"]
-            args = call.get("args", {}) or {}
-            call_id = call.get("id")
-            tool = next((t for t in tools if t.name == name), None)
-            tool_args.append((args,tool))
-
-        tool_results_inner = []
-        valid_tool_names = [t.name for t in tools]
-        # Execute all tools in parallel using asyncio.gather
-
-
-        # Create parallel tasks for all tools
-        tool_tasks = []
-        for (args, tool), call in zip(tool_args, ai.tool_calls):
-            tool_name = call["name"]
-            call_id = call.get("id")
-            tool_tasks.append(execute_single_tool(args, tool, tool_name, call_id, valid_tool_names, tool_runtime_kwargs))
-
-        # Execute all tools in parallel
-        tool_results_inner = await asyncio.gather(*tool_tasks, return_exceptions=False)
-
-        # Process results and yield events
-        for tool_result in tool_results_inner:
-            tool_name = tool_result.get("tool_name", "unknown")
-            call_id = tool_result.get("call_id")
-
-            if tool_result.get("ok", False):
-                tool_results.append(tool_result)
-                yield {
-                    "event": "tool_success",
-                    "data": {
-                        "tool_name": tool_name,
-                        "summary": f"Successfully executed {tool_name}",
-                        "call_id": call_id,
-                        "record_info": tool_result.get("record_info", {})
-                    }
-                }
-                # Use handler to extract records and check token management needs
-                handler = ToolHandlerRegistry.get_handler(tool_result)
-                extracted_records = handler.extract_records(tool_result,org_id)
-                if extracted_records:
-                    # Separate web records from document records
-                    for rec in extracted_records:
-                        if rec.get("source_type") == "web":
-                            web_records.append(rec)
-                        else:
-                            records.append(rec)
-                            current_hop_records.append(rec)
-            else:
-                yield {
-                    "event": "tool_error",
-                    "data": {
-                        "tool_name": tool_name,
-                        "error": tool_result.get("error", "Unknown error"),
-                        "call_id": call_id
-                    }
-                }
-
-        if _deferred_tools and defer_tool_until_called_name:
-            trigger_called = any(
-                call.get("name") == defer_tool_until_called_name
-                for call in ai.tool_calls
-            )
-            if trigger_called:
-                existing_names = {t.name for t in tools}
-                for dt in _deferred_tools:
-                    if dt.name not in existing_names:
-                        tools.append(dt)
-                        logger.info(
-                            "execute_tool_calls: deferred tool %s attached after %s call",
-                            dt.name,
-                            defer_tool_until_called_name,
-                        )
-
-        # First, add the AI message with tool calls to messages
-        messages.append(ai)
-
-        # Build message contents for document records (token-managed)
-        message_contents = []
-        if current_hop_records:
-
-            _refs_before_tools = len(ref_mapper.ref_to_url) if ref_mapper else 0
-            logger.debug(
-                "🔎 [KB-CITE] execute_tool_calls: about to format tool records | records=%d refs_before=%d",
-                len(current_hop_records), _refs_before_tools,
-            )
-            for record in current_hop_records:
-                message_content, ref_mapper = record_to_message_content(record, ref_mapper=ref_mapper)
-                message_contents.append(message_content)
-            _refs_after_tools = len(ref_mapper.ref_to_url) if ref_mapper else 0
-            logger.debug(
-                "🔎 [KB-CITE] execute_tool_calls: formatted tool records | records=%d refs_before=%d refs_after=%d new_refs=%d",
-                len(message_contents), _refs_before_tools, _refs_after_tools, _refs_after_tools - _refs_before_tools,
-            )
-            current_message_tokens, new_tokens = count_tokens(messages, message_contents)
-
-            MAX_TOKENS_THRESHOLD = int(context_length * TOOL_EXECUTION_TOKEN_RATIO)
-
-            logger.debug(
-                "execute_tool_calls: token_count | current_messages=%d new_records=%d threshold=%d",
-                current_message_tokens,
-                new_tokens,
-                MAX_TOKENS_THRESHOLD,
-            )
-
-            if new_tokens + current_message_tokens > MAX_TOKENS_THRESHOLD:
-
-                message_contents = []
-                logger.info(
-                    "execute_tool_calls: tokens exceed threshold; fetching reduced context via retrieval_service"
-                )
-
-                virtual_record_ids = [r.get("virtual_record_id") for r in current_hop_records if r.get("virtual_record_id")]
-                vector_db_limit =  get_vectorDb_limit(context_length)
-                # For service-account agents pass the agent-scoped filter_groups so the
-                # fallback retrieval honours the same KB/connector scope that the primary
-                # retrieval used.  Also forward is_service_account so per-user permission
-                # checks are bypassed — otherwise a user who has no direct access to the
-                # agent's knowledge sources would always get an empty fallback result.
-                result = await retrieval_service.search_with_filters(
-                    queries=[all_queries[0]],
-                    org_id=org_id,
-                    user_id=user_id,
-                    limit=vector_db_limit,
-                    filter_groups=filter_groups if is_service_account else None,
-                    virtual_record_ids_from_tool=virtual_record_ids
-                )
-
-                search_results = result.get("searchResults", [])
-                status_code = result.get("status_code", 500)
-                logger.debug(
-                    "execute_tool_calls: retrieval_service response | status=%s results=%d",
-                    status_code,
-                    len(search_results) if isinstance(search_results, list) else 0,
-                )
-
-                if status_code in [202, 500, 503]:
-                    raise HTTPException(
-                        status_code=status_code,
-                        detail={
-                            "status": result.get("status", "error"),
-                            "message": result.get("message", "No results found"),
-                        }
-                    )
-
-                search_results = result.get("searchResults", [])
-                status_code = result.get("status_code", 500)
-
-                if search_results:
-                    flatten_search_results = await get_flattened_results(search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result, from_tool=True)
-                    final_tool_results = sorted(flatten_search_results, key=flattened_result_sort_key)
-
-                    message_contents, ref_mapper = build_message_content_array(final_tool_results, virtual_record_id_to_result, is_multimodal_llm=is_multimodal_llm, ref_mapper=ref_mapper, from_tool=True)
-
-
-        # Build tool messages using handler registry (extensible for new tool types)
-        tool_msgs = []
-        has_content_handler_this_hop = False
-        handler_context = {
-            "message_contents": message_contents,
-            "ref_mapper": ref_mapper,
-            "config_service": tool_runtime_kwargs.get("config_service"),
-            "is_multimodal_llm": is_multimodal_llm,
-        }
-
-        for tool_result in tool_results_inner:
-            if tool_result.get("ok"):
-                handler = ToolHandlerRegistry.get_handler(tool_result)
-                tool_msg_content = await handler.format_message(tool_result, handler_context)
-                tool_msgs.append(ToolMessage(content=tool_msg_content, tool_call_id=tool_result["call_id"]))
-                if isinstance(handler, ContentHandler):
-                    has_content_handler_this_hop = True
-
-            else:
-                tool_msg = {
-                    "ok": False,
-                    "error": tool_result.get("error", "Unknown error"),
-                }
-                tool_msgs.append(ToolMessage(content=json.dumps(tool_msg), tool_call_id=tool_result["call_id"]))
-
-        # Add messages for next iteration
-        logger.debug(
-            "execute_tool_calls: appending %d tool messages; next hop",
-            len(tool_msgs),
-        )
-
-        messages.extend(tool_msgs)
-        if has_content_handler_this_hop and not tool_instructions_added:
-            has_sql_connector = tool_runtime_kwargs.get("has_sql_connector", False)
-            has_jira = any(
-                tr.get("has_jira_tickets_in_context")
-                for tr in tool_results_inner
-                if tr.get("ok")
-            )
-            instructions = ContentHandler.build_tool_instructions(
-                has_sql_connector,
-                has_jira_tickets_in_context=has_jira,
-            )
-            ai_idx = len(messages) - len(tool_msgs) - 1
-            inserted = False
-            for i in range(ai_idx - 1, -1, -1):
-                if isinstance(messages[i], HumanMessage):
-                    existing = messages[i].content
-                    if isinstance(existing, str):
-                        messages[i] = HumanMessage(content=existing + "\n\n" + instructions)
-                        inserted = True
-                        tool_instructions_added = True
-                        break
-                    elif isinstance(existing, list):
-                        messages[i] = HumanMessage(content=existing + [{"type": "text", "text": "\n\n" + instructions}])
-                        inserted = True
-                        tool_instructions_added = True
-                        break
-                elif isinstance(messages[i], dict):
-                    role = messages[i].get("role")
-                    if role == "user":
-                        content = messages[i].get("content")
-                        if isinstance(content, str):
-                            messages[i] = {"role": "user", "content": content + "\n\n" + instructions}
-                            inserted = True
-                            tool_instructions_added = True
-                            break
-                        elif isinstance(content, list):
-                            messages[i] = {"role": "user", "content": content + [{"type": "text", "text": "\n\n" + instructions}]}
-                            inserted = True
-                            tool_instructions_added = True
-                            break
-            if not inserted and supports_human_message_after_tool(llm):
-                messages.append(HumanMessage(content=instructions))
-                tool_instructions_added = True
-        
-        hops += 1
-
-    yield {
-        "event": "tool_execution_complete",
-        "data": {
-            "messages": messages,
-            "tools_executed": tools_executed,
-            "tool_args": tool_args,
-            "tool_results": tool_results,
-            "web_records": web_records,
-            "records": records,
-        }
-    }
-
-async def stream_llm_response(
-    llm,
-    messages,
-    final_results,
-    logger,
-    target_words_per_chunk: int = 1,
-    virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
-    records: list[dict[str, Any]] | None = None,
-    citation_reflection_retry_count: int = 0,
-    ref_to_url: dict[str, str] | None = None,
-) -> AsyncGenerator[dict[str, Any], None]:
-    """
-    Incrementally stream the answer portion of an LLM response.
-    For each chunk we also emit the citations visible so far.
-    simple mode (direct streaming).
-    """
-    if records is None:
-        records = []
-
-    
-    # Simple mode: stream content directly without JSON parsing
-    logger.debug("stream_llm_response: simple mode - streaming raw content")
-    content_buf: str = ""
-    WORD_ITER = re.compile(r'\S+').finditer
-    prev_norm_len = 0
-    emit_upto = 0
-    words_in_chunk = 0
-    # Stream directly from LLM
-    try:
-        async for token in aiter_llm_stream(llm, messages):
-            content_buf += token
-
-            # Stream content in word-based chunks.
-            # Capture emit_upto once: match positions are relative to the
-            # substring start, so the same base must be used for every match.
-            start_emit_upto = emit_upto
-            # consumed_pos tracks how far we've actually consumed (including
-            # citation blocks appended after a word), so that WORD_ITER matches
-            # that overlap with an already-consumed citation block are skipped.
-            consumed_pos = emit_upto
-            for match in WORD_ITER(content_buf[start_emit_upto:]):
-                # Skip words that fall inside a citation block consumed by a
-                # prior iteration of this loop.
-                if start_emit_upto + match.start() < consumed_pos:
-                    continue
-
-                words_in_chunk += 1
-                if words_in_chunk >= target_words_per_chunk:
-                    char_end = start_emit_upto + match.end()
-
-                    # Include any citation blocks that immediately follow
-                    if m := CITE_BLOCK_RE.match(content_buf[char_end:]):
-                        char_end += m.end()
-
-                    current_raw = content_buf[:char_end]
-                    # If the citation is incomplete, don't advance emit_upto;
-                    # continue so remaining words in this token can complete it.
-                    if INCOMPLETE_CITE_RE.search(current_raw):
-                        continue
-
-                    emit_upto = char_end
-                    consumed_pos = char_end
-                    words_in_chunk = 0
-
-                    normalized, cites = normalize_citations_and_chunks_for_agent(
-                        current_raw, final_results, virtual_record_id_to_result, records,
-                        ref_to_url=ref_to_url,
-                    )
-
-                    chunk_text = normalized[prev_norm_len:]
-                    prev_norm_len = len(normalized)
-
-                    yield {
-                        "event": "answer_chunk",
-                        "data": {
-                            "chunk": chunk_text,
-                            "accumulated": normalized,
-                            "citations": cites,
-                        },
-                    }
-
-        # Citation URL reflection before final normalization
-        if citation_reflection_retry_count < MAX_CITATION_REFLECTION_RETRIES:
-            hallucinated = detect_hallucinated_citation_urls(
-                content_buf, records, final_results,
-                virtual_record_id_to_result=virtual_record_id_to_result,
-                ref_to_url=ref_to_url,
-            )
-            if hallucinated:
-                logger.warning(
-                    "Citation reflection (agent simple): %d hallucinated URLs (attempt %d). URLs: %s",
-                    len(hallucinated), citation_reflection_retry_count + 1, hallucinated,
-                )
-                yield {"event": "restreaming", "data": {}}
-                yield {"event": "status", "data": {"status": "processing", "message": "Verifying citations..."}}
-                reflection_content = _build_citation_reflection_message(hallucinated)
-                updated_messages = list(messages)
-                updated_messages.append(AIMessage(content=content_buf))
-                updated_messages.append(HumanMessage(content=reflection_content))
-                async for event in stream_llm_response(
-                    llm, updated_messages, final_results, logger,
-                    target_words_per_chunk, virtual_record_id_to_result, records,
-                    citation_reflection_retry_count=citation_reflection_retry_count + 1,
-                    ref_to_url=ref_to_url,
-                ):
-                    yield event
-                return
-
-        # Final normalization and emit complete
-        normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results, virtual_record_id_to_result, records, ref_to_url=ref_to_url)
-        yield {
-            "event": "complete",
-            "data": {
-                "answer": normalized,
-                "citations": cites,
-                "reason": None,
-                "confidence": None,
-            },
-        }
-    except Exception as exc:
-        logger.error("Error in simple mode LLM streaming", exc_info=True)
-        yield {
-            "event": "error",
-            "data": {"error": f"Error in LLM streaming: {exc}"},
-        }
-
-
-
 def extract_json_from_string(input_string: str) -> "dict[str, Any]":
     """
     Extracts a JSON object from a string that may contain markdown code blocks
@@ -982,114 +401,105 @@ def extract_json_from_string(input_string: str) -> "dict[str, Any]":
         raise ValueError(f"Invalid JSON structure: {e}") from e
 
 
-CONFIDENCE_DELIMITER_RE = re.compile(
-    r'\n---\s*\nConfidence:\s*(Very High|High|Medium|Low)\s*[.!]?\s*$',
-    re.IGNORECASE
+# The confidence trailer asked for by `agent_loop/prompt_builder.py`'s
+# `_ANSWER_CONFIDENCE` and `modules/qna/prompt_templates.py`. Matched leniently
+# because a trailer that fails to parse is not a missing indicator — it is the
+# raw `Confidence: High` line rendered to the user as part of the answer. Models
+# routinely drop the `---` rule entirely, bold the label (`**Confidence:** High`),
+# or separate with a dash, so the rule is optional and emphasis is skipped
+# wherever it can appear.
+_CONFIDENCE_LINE_RE = re.compile(
+    r"^[ \t*_]*confidence(?:[ \t]+(?:level|score))?[ \t*_]*[:\-\u2013][ \t*_]*"
+    r"(very[ \t]+high|high|medium|low)[ \t*_]*[.!]?[ \t*_]*$",
+    re.IGNORECASE,
 )
+
+# Every shape `_CONFIDENCE_LINE_RE` accepts, with emphasis/whitespace squashed
+# out, so a streaming caller can ask "could this line still become a trailer?"
+# by prefix — `re` has no partial-match mode.
+_CONFIDENCE_TRAILER_FORMS = tuple(
+    f"confidence{separator}{level}"
+    for separator in (":", "-", "\u2013", "level:", "score:")
+    for level in ("veryhigh", "high", "medium", "low")
+)
+_EMPHASIS_AND_SPACE_RE = re.compile(r"[*_\s]+")
+
+
+def _canonical_confidence_level(raw: str) -> str:
+    """`"very  high"` / `"HIGH"` -> `"Very High"` / `"High"`, so the frontend
+    gets one spelling regardless of how the model cased or spaced it."""
+    return " ".join(word.capitalize() for word in raw.split())
+
+
+def _is_horizontal_rule(line: str) -> bool:
+    """A markdown rule line (`---`, `***`, `___`) including the partial forms a
+    streaming caller sees (`-`, `--`). A `- item` bullet has other characters,
+    so it never matches."""
+    stripped = line.strip()
+    return bool(stripped) and not stripped.strip("-*_ \t")
 
 
 def parse_confidence_from_answer(answer: str) -> tuple[str, str | None]:
-    """Strip trailing ---/Confidence block from answer, return (clean_answer, confidence)."""
-    match = CONFIDENCE_DELIMITER_RE.search(answer)
-    if match:
-        return answer[:match.start()].rstrip(), match.group(1)
-    return answer, None
+    """Split the trailing confidence line (plus the optional markdown rule above
+    it) off `answer`, returning `(clean_answer, level)`. `level` is `None` and
+    `answer` comes back untouched when the last non-blank line is not a
+    confidence line — the trailer only counts at the very end, never mid-body."""
+    lines = answer.split("\n")
+    end = len(lines)
+    while end > 0 and not lines[end - 1].strip():
+        end -= 1
+    if end == 0:
+        return answer, None
+
+    match = _CONFIDENCE_LINE_RE.match(lines[end - 1])
+    if match is None:
+        return answer, None
+
+    cut = end - 1
+    while cut > 0 and not lines[cut - 1].strip():
+        cut -= 1
+    if cut > 0 and _is_horizontal_rule(lines[cut - 1]):
+        cut -= 1
+    return "\n".join(lines[:cut]).rstrip(), _canonical_confidence_level(match.group(1))
 
 
-
-async def handle_json_mode(
-    llm: BaseChatModel,
-    messages: list[BaseMessage],
-    final_results: list[dict[str, Any]],
-    records: list[dict[str, Any]],
-    logger: logging.Logger,
-    target_words_per_chunk: int = 1,
-    virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
-    ref_to_url: dict[str, str] | None = None,
-    web_records: list[dict[str, Any]] | None = None,
-) -> AsyncGenerator[dict[str, Any], None]:
-    # Agent path: use structured output (unchanged)
-    schema_for_structured = _get_schema_for_structured_output()
-
-    # Fast-path: if the last message is already an AI answer (e.g., from invalid tool call conversion), stream it directly
-    try:
-        last_msg = messages[-1] if messages else None
-        existing_ai_content: str | None = None
-        if isinstance(last_msg, AIMessage):
-            existing_ai_content = getattr(last_msg, "content", None)
-        elif isinstance(last_msg, BaseMessage) and getattr(last_msg, "type", None) == "ai":
-            existing_ai_content = getattr(last_msg, "content", None)
-        elif isinstance(last_msg, dict) and last_msg.get("role") == "assistant":
-            existing_ai_content = last_msg.get("content")
-
-        if existing_ai_content:
-            logger.info("stream_llm_response_with_tools: detected existing AI message, streaming directly without LLM call")
-            try:
-                parsed = json.loads(existing_ai_content)
-                final_answer = parsed.get("answer", existing_ai_content)
-                reason = parsed.get("reason")
-                confidence = parsed.get("confidence")
-                reference_data = parsed.get("referenceData", None)  # Extract referenceData if present
-            except Exception:
-                final_answer = existing_ai_content
-                reason = None
-                confidence = None
-                reference_data = None
-
-            normalized, cites = normalize_citations_and_chunks(final_answer, final_results, records, ref_to_url=ref_to_url, web_records=web_records, virtual_record_id_to_result=virtual_record_id_to_result)
-
-            words = re.findall(r'\S+', normalized)
-            for i in range(0, len(words), target_words_per_chunk):
-                chunk_words = words[i:i + target_words_per_chunk]
-                chunk_text = ' '.join(chunk_words)
-                accumulated = ' '.join(words[:i + len(chunk_words)])
-                yield {
-                    "event": "answer_chunk",
-                    "data": {
-                        "chunk": chunk_text,
-                        "accumulated": accumulated,
-                        "citations": cites,
-                    },
-                }
-
-            complete_data = {
-                "answer": normalized,
-                "citations": cites,
-                "reason": reason,
-                "confidence": confidence,
-            }
-            # Include referenceData if present (for agent responses)
-            if reference_data:
-                complete_data["referenceData"] = normalize_reference_data_items(reference_data)
-            yield {
-                "event": "complete",
-                "data": complete_data,
-            }
-            return
-    except Exception as e:
-        # If fast-path detection fails, fall back to normal path
-        logger.debug("stream_llm_response_with_tools: fast-path failed, falling back to LLM call: %s", str(e))
+def _could_become_confidence_line(line: str) -> bool:
+    """True when `line` is the start of a confidence line, complete or not:
+    `""`, `"Conf"`, `"**Confidence:"`, `"Confidence: Med"`, ..."""
+    squashed = _EMPHASIS_AND_SPACE_RE.sub("", line).lower().rstrip(".!")
+    return not squashed or any(form.startswith(squashed) for form in _CONFIDENCE_TRAILER_FORMS)
 
 
-    try:
-        llm_with_structured_output = _apply_structured_output(llm, schema=schema_for_structured)
+def strip_partial_confidence_trailer(text: str) -> str:
+    """Hide a still-being-generated confidence trailer.
 
-        async for token in call_aiter_llm_stream(
-            llm_with_structured_output,
-            messages,
-            final_results,
-            records,
-            target_words_per_chunk,
-            virtual_record_id_to_result=virtual_record_id_to_result,
-            ref_to_url=ref_to_url,
-            web_records=web_records,
-        ):
-            yield token
-    except Exception as exc:
-        yield {
-            "event": "error",
-            "data": {"error": f"Error in LLM streaming: {exc}"},
-        }
+    `parse_confidence_from_answer` only matches the COMPLETE trailer, which is
+    all a caller finalizing a finished answer needs. A caller streaming the
+    model's own tokens live (`agent_loop/answer_streamer.py`) sees the trailer
+    arrive a few characters at a time and would flash every partial state on
+    screen, so it also has to drop the incomplete forms.
+
+    Only the final line is considered (plus a rule/blank lines above it), and
+    only while it could still become a confidence line — real content after a
+    rule, or a `- ` list item, is left alone.
+    """
+    lines = text.split("\n")
+    cut = len(lines) - 1
+    if _could_become_confidence_line(lines[cut]):
+        while cut > 0 and not lines[cut - 1].strip():
+            cut -= 1
+        if cut > 0 and _is_horizontal_rule(lines[cut - 1]):
+            cut -= 1
+    elif not _is_horizontal_rule(lines[cut]):
+        return text
+
+    # Nothing but trailing whitespace so far — no trailer to hide yet, and
+    # trimming it would churn the streamed text on every newline token.
+    if all(not line.strip() for line in lines[cut:]):
+        return text
+    return "\n".join(lines[:cut]).rstrip()
+
+
 
 async def handle_simple_mode(
     llm: BaseChatModel,
@@ -1103,8 +513,7 @@ async def handle_simple_mode(
     web_records: list[dict[str, Any]] | None = None,
     chat_mode: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
-    # Simple mode: stream content directly without JSON parsing
-        logger.debug("stream_llm_response_with_tools: simple mode - streaming raw content")
+        logger.debug("handle_simple_mode: streaming raw content")
 
         # Fast-path: if the last message is already an AI answer
         try:
@@ -1118,7 +527,7 @@ async def handle_simple_mode(
                 existing_ai_content = last_msg.get("content")
 
             if existing_ai_content:
-                logger.info("stream_llm_response_with_tools: detected existing AI message (simple mode), streaming directly")
+                logger.info("handle_simple_mode: detected existing AI message (simple mode), streaming directly")
                 clean_answer, confidence = parse_confidence_from_answer(existing_ai_content)
                 normalized, cites = normalize_citations_and_chunks(
                     clean_answer, final_results, records,
@@ -1153,7 +562,7 @@ async def handle_simple_mode(
                 }
                 return
         except Exception as e:
-            logger.debug("stream_llm_response_with_tools: simple mode fast-path failed: %s", str(e))
+            logger.debug("handle_simple_mode: fast-path failed, falling back to LLM call: %s", str(e))
 
         async for event in call_aiter_llm_stream_simple(
             llm, messages, final_results, records, target_words_per_chunk,
@@ -1172,13 +581,57 @@ async def handle_simple_mode(
 _LLM_ARTIFACT_MARKER_RE = re.compile(
     r"::artifact\[[^\]]+\]\([^)]+\)\{[^}]*\}",
 )
+# Mid-form: `::artifact[name]{meta}` — has the `{meta}` block but no `(url)`.
+_LLM_ARTIFACT_NO_URL_MARKER_RE = re.compile(
+    r"::artifact\[[^\]]+\]\{[^}]*\}",
+)
+# Short-form variant LLMs sometimes hallucinate (no `(url){meta}` block).
+_LLM_ARTIFACT_SHORT_MARKER_RE = re.compile(
+    r"::artifact\[[^\]]+\](?:\([^)]*\))?(?!\{)",
+)
 _LLM_DOWNLOAD_MARKER_RE = re.compile(
     r"::download_conversation_task\[[^\]]+\]\([^)]+\)",
 )
 
+# A real, clickable download is ALWAYS delivered via the `::artifact`
+# marker this module appends below — never authored by the model itself.
+# When a generation step doesn't actually deliver a file (e.g. `run_code`
+# wrote outside `$OUTPUT_DIR`, or failed silently) a model can still hand-
+# write an ordinary markdown link like "[Download the report]
+# (sandbox://report.pdf)" claiming success anyway. The frontend's
+# `rehype-sanitize` schema only allows `http`/`https`/`mailto` hrefs
+# (`answer-content.tsx`) and drops anything else outright, so such a link
+# renders styled (colored, underlined) but is inert — worse than plain
+# text since it visually promises something that doesn't work. Flatten
+# markdown links to plain text (dropping the link, keeping the words) only
+# when the URL has an EXPLICIT non-allowed scheme — a genuine citation or
+# search-result link the model quotes always carries a real absolute
+# http(s) URL, and a same-origin relative link (no scheme at all) is left
+# untouched since the sanitizer renders those as-is.
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]*)\)")
+_URL_SCHEME_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):")
+_ALLOWED_LINK_SCHEMES = frozenset({"http", "https", "mailto"})
+
+
+def _flatten_unusable_markdown_links(answer: str) -> str:
+    if not answer or "](" not in answer:
+        return answer
+
+    def _flatten_if_unusable(match: "re.Match[str]") -> str:
+        text, url = match.group(1), match.group(2).strip()
+        scheme_match = _URL_SCHEME_RE.match(url)
+        if scheme_match is None or scheme_match.group(1).lower() in _ALLOWED_LINK_SCHEMES:
+            return match.group(0)
+        return text
+
+    return _MARKDOWN_LINK_RE.sub(_flatten_if_unusable, answer)
+
 
 def _strip_llm_authored_markers(answer: str) -> str:
-    """Remove any LLM-authored artifact / download markers from *answer*.
+    """Remove any LLM-authored artifact / download markers from *answer*,
+    and flatten any hand-written markdown link the model composed with a
+    URL scheme the frontend would render as dead (see
+    `_flatten_unusable_markdown_links`).
 
     The frontend's marker parser runs against the full saved message, so a
     marker anywhere in the stream is a URL-spoofing primitive. We drop them
@@ -1187,8 +640,32 @@ def _strip_llm_authored_markers(answer: str) -> str:
     if not answer:
         return answer
     stripped = _LLM_ARTIFACT_MARKER_RE.sub("", answer)
+    stripped = _LLM_ARTIFACT_NO_URL_MARKER_RE.sub("", stripped)
+    stripped = _LLM_ARTIFACT_SHORT_MARKER_RE.sub("", stripped)
     stripped = _LLM_DOWNLOAD_MARKER_RE.sub("", stripped)
+    stripped = _flatten_unusable_markdown_links(stripped)
     return stripped
+
+
+def strip_llm_authored_markers_in_parts(parts: list | None) -> None:
+    """Sanitize every `text` part of a transcript in place, recursing into
+    `sub_agent` children.
+
+    :func:`_append_task_markers` only sanitizes the answer string, but the
+    activity timeline renders every OTHER text part as raw markdown with no
+    marker parsing (`agent-activity.tsx`). A marker the model copied out of
+    an earlier turn — they are persisted in message content, so they are in
+    its context — therefore surfaces there verbatim: literal
+    ``::artifact[...]`` text plus an anchor whose ``record:`` href no
+    browser can follow.
+    """
+    for part in parts or []:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "sub_agent":
+            strip_llm_authored_markers_in_parts(part.get("parts"))
+        elif part.get("type") == "text" and part.get("content"):
+            part["content"] = _strip_llm_authored_markers(part["content"])
 
 
 def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
@@ -1208,19 +685,49 @@ def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
         return answer
 
     parts: list[str] = []
+    seen_artifacts: set[str] = set()
     for t in conversation_tasks:
         task_type = t.get("type", "")
 
         if task_type == "artifacts":
             for art in t.get("artifacts", []):
-                url = art.get("signedUrl") or art.get("downloadUrl", "")
-                if not url:
-                    continue
                 fname = art.get("fileName", "Download")
                 mime = art.get("mimeType", "application/octet-stream")
                 doc_id = art.get("documentId", "")
                 record_id = art.get("recordId", "")
-                parts.append(f"::artifact[{fname}]({url}){{{mime}|{doc_id}|{record_id}}}")
+                # Optional trailing segments (the frontend parser tolerates
+                # their absence for markers persisted before they existed).
+                artifact_type = art.get("artifactType", "")
+                version = art.get("version", "")
+
+                # PERSISTED markers must never carry a signed URL: it expires
+                # in ~10 min, so it would be permanent dead weight (and a
+                # URL-trust surface the frontend already has to defend
+                # against) in every saved message forever. `recordId` is
+                # the durable identity the frontend already prefers for
+                # streaming/download (`parseArtifactMarkers` in
+                # `parse-download-markers.ts`) — a stable placeholder in the
+                # `(url)` slot keeps that parser's regex (which requires a
+                # non-empty segment there) satisfied without a real URL.
+                # Only fall back to embedding a real URL for the rare
+                # artifact that has none (no recordId to stream through) —
+                # otherwise it would be permanently undownloadable.
+                if record_id:
+                    url = f"record:{record_id}"
+                else:
+                    url = art.get("signedUrl") or art.get("downloadUrl", "")
+                    if not url:
+                        continue
+
+                # One download card per artifact version, even when two
+                # producers (or a re-run) queued the same artifact twice.
+                dedupe_key = f"{record_id or doc_id or url}:{version}"
+                if dedupe_key in seen_artifacts:
+                    continue
+                seen_artifacts.add(dedupe_key)
+                parts.append(
+                    f"::artifact[{fname}]({url}){{{mime}|{doc_id}|{record_id}|{artifact_type}|{version}}}"
+                )
         else:
             url = t.get("signedUrl") or t.get("downloadUrl", "")
             if url:
@@ -1232,187 +739,6 @@ def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
 
     return answer + "\n\n" + "\n\n".join(parts)
 
-
-async def stream_llm_response_with_tools(
-    llm,
-    messages,
-    final_results,
-    all_queries,
-    retrieval_service,
-    user_id,
-    org_id,
-    virtual_record_id_to_result,
-    blob_store,
-    is_multimodal_llm,
-    context_length:int|None,
-    tools: list | None = None,
-    tool_runtime_kwargs: dict[str, Any] | None = None,
-    target_words_per_chunk: int = 1,
-    mode: str | None = "simple",
-    conversation_id: str | None = None,
-    is_service_account: bool = False,
-    filter_groups: dict[str, Any] | None = None,
-    ref_mapper: CitationRefMapper | None = None,
-    max_hops: int = MAX_TOOL_HOPS,
-    chat_mode: str | None = None,
-    initial_web_records: list[dict[str, Any]] | None = None,
-    defer_tool_until_called_name: str | None = None,
-    deferred_tool: Any | None = None,
-) -> AsyncGenerator[dict[str, Any], None]:
-    """
-    Enhanced streaming with tool support.
-    Incrementally stream the answer portion of an LLM JSON response.
-    For each chunk we also emit the citations visible so far.
-    Now supports tool calls before generating the final answer.
-    """
-    records = []
-    web_records: list[dict[str, Any]] = list(initial_web_records) if initial_web_records else []
-
-    if tools and tool_runtime_kwargs and mode != "no_tools":
-        # Execute tools and get updated messages
-        final_messages = messages.copy()
-        tools_were_called = False
-        try:
-            tool_names = [tool.name for tool in tools]
-            logger.info(f"Tools available={tool_names}")
-
-            async for tool_event in execute_tool_calls(
-                llm=llm,
-                messages=final_messages,
-                tools=tools,
-                tool_runtime_kwargs=tool_runtime_kwargs,
-                final_results=final_results,
-                virtual_record_id_to_result=virtual_record_id_to_result,
-                blob_store=blob_store,
-                all_queries=all_queries,
-                retrieval_service=retrieval_service,
-                user_id=user_id,
-                org_id=org_id,
-                context_length=context_length,
-                is_multimodal_llm=is_multimodal_llm,
-                is_service_account=is_service_account,
-                filter_groups=filter_groups,
-                mode=mode,
-                ref_mapper=ref_mapper,
-                max_hops=max_hops,
-                chat_mode=chat_mode,
-                initial_web_records=initial_web_records,
-                defer_tool_until_called_name=defer_tool_until_called_name,
-                deferred_tool=deferred_tool,
-            ):
-
-                if tool_event.get("event") == "tool_execution_complete":
-                    # Extract the final messages and tools_executed status
-                    final_messages = tool_event["data"]["messages"]
-                    tools_were_called = tool_event["data"]["tools_executed"]
-                    web_records = tool_event["data"].get("web_records", [])
-                    records = tool_event["data"].get("records", [])
-                elif tool_event.get("event") in ["tool_call", "tool_success", "tool_error"]:
-                    # First time we see an actual tool event, show the status message
-                    if not tools_were_called:
-                        yield {
-                            "event": "status",
-                            "data": {"status": "checking_tools", "message": "Using tools to fetch additional information..."}
-                        }
-                        tools_were_called = True
-                    logger.debug("stream_llm_response_with_tools: forwarding tool event type=%s", tool_event.get("event"))
-                    yield tool_event
-                elif tool_event.get("event") == "complete" or tool_event.get("event") == "error":
-                    # Collect background conversation tasks and append markers to answer
-                    # so they are saved with the message (no separate SSE events).
-                    if conversation_id:
-                        from app.utils.conversation_tasks import (
-                            await_and_collect_results,
-                        )
-
-                        logger.info(
-                            "stream_llm_response_with_tools: early-return path — awaiting conversation tasks for %s",
-                            conversation_id,
-                        )
-                        task_results = await await_and_collect_results(conversation_id)
-                        if task_results and tool_event.get("data"):
-                            current = tool_event["data"].get("answer", "") or ""
-                            tool_event["data"]["answer"] = _append_task_markers(current, task_results)
-                    yield tool_event
-                    return
-                else:
-                    yield tool_event
-
-            messages = final_messages
-        except Exception as e:
-            logger.error("Error in execute_tool_calls", exc_info=True)
-            # Yield error event instead of raising to allow graceful handling
-            yield {
-                "event": "error",
-                "data": {"error": f"Error during tool execution: {str(e)}"}
-            }
-            # Return early to prevent further processing
-            return
-
-        yield {
-            "event": "status",
-            "data": {"status": "generating_answer", "message": "Generating final answer..."}
-        }
-
-    # Collect background conversation tasks BEFORE generating final answer so we can
-    # append ::download markers to the complete event answer (saved with message).
-    task_results: list[dict[str, Any]] = []
-    if conversation_id:
-        from app.utils.conversation_tasks import await_and_collect_results
-
-        logger.info(
-            "stream_llm_response_with_tools: awaiting conversation tasks for %s",
-            conversation_id,
-        )
-        task_results = await await_and_collect_results(conversation_id)
-        logger.info(
-            "stream_llm_response_with_tools: got %d task results for %s",
-            len(task_results), conversation_id,
-        )
-
-    # Take a fresh snapshot of ref_to_url since ref_mapper may have grown during tool execution
-    _ref_to_url = ref_mapper.ref_to_url if ref_mapper else None
-
-    # Stream the final answer with comprehensive error handling
-    try:
-        if mode == "json":
-            async for event in handle_json_mode(
-                llm,
-                messages,
-                final_results,
-                records,
-                logger,
-                target_words_per_chunk,
-                virtual_record_id_to_result=virtual_record_id_to_result,
-                ref_to_url=_ref_to_url,
-                web_records=web_records,
-            ):
-                if event.get("event") == "complete" and task_results and event.get("data") is not None:
-                    event["data"]["answer"] = _append_task_markers(
-                        event["data"].get("answer", "") or "", task_results
-                    )
-                yield event
-        else:
-            async for event in handle_simple_mode(
-                llm, messages, final_results, records, logger, target_words_per_chunk,
-                virtual_record_id_to_result=virtual_record_id_to_result,
-                ref_to_url=_ref_to_url,
-                web_records=web_records,
-                chat_mode=chat_mode,
-                ):
-                if event.get("event") == "complete" and task_results and event.get("data") is not None:
-                    event["data"]["answer"] = _append_task_markers(
-                        event["data"].get("answer", "") or "", task_results
-                    )
-                yield event
-
-        logger.info("stream_llm_response_with_tools: COMPLETE | Successfully completed streaming")
-    except Exception as e:
-        logger.error("Error during final answer generation", exc_info=True)
-        yield {
-            "event": "error",
-            "data": {"error": f"Error generating final answer: {str(e)}"}
-        }
 
 def create_sse_event(event_type: str, data: str | dict | list) -> str:
     """Create Server-Sent Event format"""
@@ -1596,377 +922,6 @@ async def call_aiter_llm_stream_simple(
         logger.error("Error in call_aiter_llm_stream_simple", exc_info=True)
         yield {"event": "error", "data": {"error": f"Error in LLM streaming: {exc}"}}
         return
-
-async def call_aiter_llm_stream(
-    llm,
-    messages,
-    final_results,
-    records=None,
-    target_words_per_chunk=1,
-    reflection_retry_count=0,
-    max_reflection_retries=MAX_REFLECTION_RETRIES_DEFAULT,
-    original_llm=None,
-    citation_reflection_retry_count: int = 0,
-    virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
-    ref_to_url: dict[str, str] | None = None,
-    web_records: list[dict[str, Any]] | None = None,
-) -> AsyncGenerator[dict[str, Any], None]:
-    """Stream LLM response and parse answer field from JSON, emitting chunks and final event.
-    """
-    schema = _get_schema_for_parsing()
-
-    state = AnswerParserState()
-    answer_key_re, cite_block_re, incomplete_cite_re, word_iter = _initialize_answer_parser_regex()
-
-    parts = []
-    async for token in aiter_llm_stream(llm, messages,parts):
-        if isinstance(token, dict):
-            state.full_json_buf = token
-
-            answer = token.get("answer", "")
-            if answer:
-                state.answer_buf = answer
-
-                                # Check for incomplete citations at the end of the answer
-                safe_answer = answer
-                if incomplete_match := incomplete_cite_re.search(answer):
-                    # Only process up to the incomplete citation
-                    safe_answer = answer[:incomplete_match.start()]
-
-                # Only process if we have new content beyond what we've already emitted
-                if len(safe_answer) <= state.emit_upto:
-                    # Nothing safe to emit yet, wait for more content
-                    yield {
-                        "event": "metadata",
-                        "data": {},
-                    }
-                    continue
-
-                state.emit_upto = len(safe_answer)
-                normalized, cites = normalize_citations_and_chunks(
-                            safe_answer, final_results, records,
-                            ref_to_url=ref_to_url,
-                            virtual_record_id_to_result=virtual_record_id_to_result,
-                            web_records=web_records
-                        )
-
-                chunk_text = normalized[state.prev_norm_len:]
-                state.prev_norm_len = len(normalized)
-
-                if chunk_text:  # Only yield if there's actual content to emit
-                    yield {
-                        "event": "answer_chunk",
-                        "data": {
-                            "chunk": chunk_text,
-                            "accumulated": normalized,
-                            "citations": cites,
-                        },
-                    }
-
-            continue
-
-        state.full_json_buf += token
-        # Look for the start of the "answer" field
-        if not state.answer_buf:
-            match = answer_key_re.search(state.full_json_buf)
-            if match:
-                after_key = state.full_json_buf[match.end():]
-                state.answer_buf += after_key
-        elif not state.answer_done:
-            state.answer_buf += token
-
-        # Check if we've reached the end of the answer field
-        if not state.answer_done:
-            end_idx = find_unescaped_quote(state.answer_buf)
-            if end_idx != -1:
-                state.answer_done = True
-                state.answer_buf = state.answer_buf[:end_idx]
-        # Stream answer in word-based chunks.
-        # Capture emit_upto once: match positions are relative to the
-        # substring start, so the same base must be used for every match.
-        if state.answer_buf:
-            start_emit_upto = state.emit_upto
-            words_to_process = list(word_iter(state.answer_buf[start_emit_upto:]))
-
-            if words_to_process:
-                # Process words until we reach the threshold
-                for match in words_to_process:
-                    # Increment word counter
-                    state.words_in_chunk += 1
-
-                    # Check if we've reached the threshold
-                    if state.words_in_chunk >= target_words_per_chunk:
-                        char_end = start_emit_upto + match.end()
-
-                        # Include any citation blocks that immediately follow
-                        if m := cite_block_re.match(state.answer_buf[char_end:]):
-                            char_end += m.end()
-
-                        current_raw = state.answer_buf[:char_end]
-
-                        incomplete_match = incomplete_cite_re.search(current_raw)
-                        if incomplete_match:
-                            # FIX: continue (not break) — a LATER word in this
-                            # same buffer may close the citation and become
-                            # safe to emit immediately. Breaking here is what
-                            # caused chunks to freeze for the rest of the
-                            # answer once the LLM emitted its first markdown
-                            # link with reasoning-model delta sizes.
-                            state.words_in_chunk = target_words_per_chunk - 1
-                            continue
-
-                        state.emit_upto = char_end
-                        state.words_in_chunk = 0
-
-                        normalized, cites = normalize_citations_and_chunks(
-                            current_raw, final_results, records,
-                            ref_to_url=ref_to_url,
-                            virtual_record_id_to_result=virtual_record_id_to_result,
-                            web_records=web_records
-                        )
-
-                        chunk_text = normalized[state.prev_norm_len:]
-                        state.prev_norm_len = len(normalized)
-
-                        yield {
-                            "event": "answer_chunk",
-                            "data": {
-                                "chunk": chunk_text,
-                                "accumulated": normalized,
-                                "citations": cites,
-                            },
-                        }
-                        # FIX: cooperative yield + no break — when one LLM
-                        # delta carries many words (reasoning-model burst),
-                        # we want to emit every safe boundary inside this
-                        # buffer, not just the first one. sleep(0) hands
-                        # control back so the LangGraph custom-stream
-                        # writer queue and the SSE consumer can flush each
-                        # chunk before we synchronously build the next.
-                        await asyncio.sleep(0)
-
-    ai = None
-    tool_calls_happened = True
-    for part in parts:
-        if isinstance(part, dict):
-            logger.info("part is a dict, breaking from loop")
-            tool_calls_happened = False
-            break
-        if ai is None:
-            ai = part
-        else:
-            ai += part
-
-    if tool_calls_happened and ai is not None:
-        tool_calls = getattr(ai, 'tool_calls', [])
-        if tool_calls:
-            yield {
-                "event": "tool_calls",
-                "data": {
-                    "ai": ai,
-                },
-            }
-            logger.info("tool_calls detected, returning")
-            return
-
-    try:
-        response_text = state.full_json_buf
-        logger.debug("[streaming] before cleanup_content (full_json_buf) type=%s", type(response_text).__name__)
-        if  isinstance(response_text, str):
-            response_text = cleanup_content(response_text)
-
-        parser, format_instructions = get_parser(schema)
-
-        try:
-            if isinstance(response_text, str):
-                parsed = parser.parse(response_text)
-            else:
-                # Response is already a dict/Pydantic model
-                parsed = schema.model_validate(response_text)
-        except Exception as e:
-            # JSON parsing failed - use reflection to guide the LLM
-            if reflection_retry_count < max_reflection_retries:
-                yield {"event": "restreaming","data": {}}
-                yield {"event": "status", "data": {"status": "processing", "message": "Rethinking..."}}
-                parse_error = str(e)
-                logger.warning(
-                    "JSON parsing failed for LLM response with error: %s. Using reflection to guide LLM to proper format. Retry count: %d.",
-                    parse_error,
-                    reflection_retry_count
-                )
-
-                # Create reflection message to guide the LLM
-                reflection_message = HumanMessage(
-                    content=(f"""The previous response failed validation with the following error: {parse_error}. {format_instructions}"""
-                ))
-                # Add the reflection message to the messages list
-                updated_messages = messages.copy()
-
-                # Ensure response_text is a string for AIMessage (can be dict from structured output)
-                ai_message_content = response_text if isinstance(response_text, str) else json.dumps(response_text)
-                ai_message = AIMessage(
-                    content=ai_message_content,
-                )
-                updated_messages.append(ai_message)
-
-                updated_messages.append(reflection_message)
-
-                if original_llm:
-                    schema_for_structured = _get_schema_for_structured_output()
-                    llm = _apply_structured_output(original_llm, schema=schema_for_structured)
-                async for event in call_aiter_llm_stream(
-                    llm,
-                    updated_messages,
-                    final_results,
-                    records,
-                    target_words_per_chunk,
-                    reflection_retry_count + 1,
-                    max_reflection_retries,
-                    original_llm=original_llm,
-                    citation_reflection_retry_count=citation_reflection_retry_count,
-                    virtual_record_id_to_result=virtual_record_id_to_result,
-                    ref_to_url=ref_to_url,
-                    web_records=web_records,
-                ):
-                    yield event
-                return
-            else:
-                logger.error(
-                    "call_aiter_llm_stream: JSON parsing failed after %d reflection attempts. Falling back to answer_buf.",
-                    max_reflection_retries
-                )
-                # After max retries, fallback to using answer_buf if available
-                if state.answer_buf:
-                    # Citation reflection on fallback path
-                    if citation_reflection_retry_count < MAX_CITATION_REFLECTION_RETRIES:
-                        hallucinated = detect_hallucinated_citation_urls(
-                            state.answer_buf, records, final_results,
-                            virtual_record_id_to_result=virtual_record_id_to_result,
-                            ref_to_url=ref_to_url,
-                        )
-                        if hallucinated:
-                            logger.warning(
-                                "Citation reflection (chatbot JSON fallback): %d hallucinated URLs (attempt %d). URLs: %s",
-                                len(hallucinated), citation_reflection_retry_count + 1, hallucinated,
-                            )
-                            yield {"event": "restreaming", "data": {}}
-                            yield {"event": "status", "data": {"status": "processing", "message": "Verifying citations..."}}
-                            reflection_content = _build_citation_reflection_message(hallucinated)
-                            updated_msgs = list(messages)
-                            updated_msgs.append(AIMessage(content=state.answer_buf))
-                            updated_msgs.append(HumanMessage(content=reflection_content))
-                            if original_llm:
-                                schema_for_structured = _get_schema_for_structured_output()
-                                retry_llm = _apply_structured_output(original_llm, schema=schema_for_structured)
-                            else:
-                                retry_llm = llm
-                            async for event in call_aiter_llm_stream(
-                                retry_llm, updated_msgs, final_results, records,
-                                target_words_per_chunk, 0, max_reflection_retries,
-                                original_llm=original_llm,
-                                citation_reflection_retry_count=citation_reflection_retry_count + 1,
-                                virtual_record_id_to_result=virtual_record_id_to_result,
-                                ref_to_url=ref_to_url,
-                                web_records=web_records,
-                            ):
-                                yield event
-                            return
-
-                    normalized, c = normalize_citations_and_chunks(
-                        state.answer_buf, final_results, records,
-                        ref_to_url=ref_to_url,
-                        virtual_record_id_to_result=virtual_record_id_to_result,
-                        web_records=web_records,
-                    )
-                    yield {
-                        "event": "complete",
-                        "data": {
-                            "answer": normalized,
-                            "citations": c,
-                            "reason": None,
-                            "confidence": None,
-                        },
-                    }
-                else:
-                    # No answer at all, return error
-                    yield {
-                        "event": "error",
-                        "data": {
-                            "error": "LLM did not provide any appropriate answer"
-                        },
-                    }
-                return
-
-        final_answer = parsed.answer if parsed.answer else state.answer_buf
-
-        # Citation URL reflection: detect hallucinated URLs and ask LLM to fix
-        if citation_reflection_retry_count < MAX_CITATION_REFLECTION_RETRIES:
-            hallucinated = detect_hallucinated_citation_urls(
-                final_answer, records, final_results,
-                virtual_record_id_to_result=virtual_record_id_to_result,
-                ref_to_url=ref_to_url,
-            )
-            if hallucinated:
-                logger.warning(
-                    "Citation reflection (chatbot JSON): %d hallucinated URLs detected (attempt %d). Triggering reflection. URLs: %s",
-                    len(hallucinated), citation_reflection_retry_count + 1, hallucinated,
-                )
-                yield {"event": "restreaming", "data": {}}
-                yield {"event": "status", "data": {"status": "processing", "message": "Verifying citations..."}}
-                reflection_content = _build_citation_reflection_message(hallucinated)
-                updated_msgs = list(messages)
-                updated_msgs.append(AIMessage(content=final_answer))
-                updated_msgs.append(HumanMessage(content=reflection_content))
-                if original_llm:
-                    schema_for_structured = _get_schema_for_structured_output()
-                    retry_llm = _apply_structured_output(original_llm, schema=schema_for_structured)
-                else:
-                    retry_llm = llm
-                async for event in call_aiter_llm_stream(
-                    retry_llm, updated_msgs, final_results, records,
-                    target_words_per_chunk, 0, max_reflection_retries,
-                    original_llm=original_llm,
-                    citation_reflection_retry_count=citation_reflection_retry_count + 1,
-                    virtual_record_id_to_result=virtual_record_id_to_result,
-                    ref_to_url=ref_to_url,
-                    web_records=web_records,
-                ):
-                    yield event
-                return
-
-        normalized, c = normalize_citations_and_chunks(
-            final_answer, final_results, records,
-            ref_to_url=ref_to_url,
-            virtual_record_id_to_result=virtual_record_id_to_result,
-            web_records=web_records,
-        )
-        complete_data = {
-            "answer": normalized,
-            "citations": c,
-            "reason": parsed.reason,
-            "confidence": parsed.confidence,
-        }
-        # Include referenceData if present (IDs for follow-up queries)
-        if hasattr(parsed, "referenceData") and parsed.referenceData:
-            complete_data["referenceData"] = normalize_reference_data_items(parsed.referenceData)
-        yield {
-            "event": "complete",
-            "data": complete_data,
-        }
-    except Exception as e:
-        logger.error("Error in call_aiter_llm_stream", exc_info=True)
-        yield {"event": "error","data": {"error": f"Error in call_aiter_llm_stream: {str(e)}"}}
-        return
-
-def bind_tools_for_llm(llm, tools: list[object]) -> BaseChatModel|bool:
-    """
-    Bind tools to the LLM.
-    """
-    try:
-        return llm.bind_tools(tools)
-    except Exception:
-        logger.warning("Tool binding failed, using llm without tools.")
-        return False
 
 def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
     if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI,ChatBedrock)):
@@ -2242,44 +1197,3 @@ Respond with a valid JSON object:
     except Exception as e:
         logger.error(f"Reflection attempt failed with error: {e}")
         return None
-
-async def call_aiter_function(
-    llm,
-    messages,
-    final_results,
-    target_words_per_chunk=1,
-    original_llm=None,
-    virtual_record_id_to_result=None,
-    ref_to_url=None,
-    mode="json",
-    chat_mode: str | None = None,
-    records: list[dict[str, Any]] = [],
-    web_records: list[dict[str, Any]] = [],
-) -> AsyncGenerator[dict[str, Any], None]:
-    if mode == "simple":
-        async for event in call_aiter_llm_stream_simple(
-            llm=llm,
-            messages=messages,
-            final_results=final_results,
-            records=records,
-            web_records=web_records,
-            target_words_per_chunk=target_words_per_chunk,
-            original_llm=original_llm,
-            virtual_record_id_to_result=virtual_record_id_to_result,
-            ref_to_url=ref_to_url,
-            chat_mode=chat_mode,
-        ):
-            yield event
-    else:
-        async for event in call_aiter_llm_stream(
-            llm=llm,
-            messages=messages,
-            final_results=final_results,
-            target_words_per_chunk=target_words_per_chunk,
-            original_llm=original_llm,
-            virtual_record_id_to_result=virtual_record_id_to_result,
-            ref_to_url=ref_to_url,
-            records=records,
-            web_records=web_records,
-        ):
-            yield event
